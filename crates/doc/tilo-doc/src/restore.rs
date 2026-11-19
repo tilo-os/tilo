@@ -36,10 +36,7 @@ pub fn restore_to_heads(
     let mut target = target.to_vec();
     target.compact_sort();
     target.dedup();
-    if target
-        .iter()
-        .any(|hash| doc.get_change_by_hash(hash).is_none())
-    {
+    if target.iter().any(|hash| !doc.has_change(hash)) {
         return Err(DocError::Invalid(
             "the version to restore is not in this document's history".into(),
         ));
@@ -415,7 +412,7 @@ mod tests {
         let mut doc = AutoCommit::load(&restored).unwrap();
         for head in heads_of(&v2) {
             assert!(
-                doc.get_change_by_hash(&head).is_some(),
+                doc.has_change(&head),
                 "the restore descends from the current version"
             );
         }
@@ -488,7 +485,7 @@ mod tests {
         let doc = AutoCommit::load(&restored).unwrap();
         for head in heads_of(&v2).into_iter().chain(heads_of(&other)) {
             assert!(
-                doc.get_change_by_hash(&head).is_some(),
+                doc.has_change(&head),
                 "another history: both histories are kept"
             );
         }

@@ -155,7 +155,8 @@ pub fn commit_genesis(doc: &mut AutoCommit) {
 }
 
 /// The key of the resource identity naming the surface its changes are
-/// decided against: the content hash of its app package's `surface.toml`.
+/// decided against: the content hash of its app's surface in the form it is
+/// kept by.
 pub const SURFACE: &str = "surface";
 
 /// Name, in the resource's identity, the surface of its app running here: `Some(true)` when it

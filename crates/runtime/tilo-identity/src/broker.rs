@@ -1160,11 +1160,13 @@ label = "Comment"
 field = "comments"
 params = []
 "#;
-            let hash = *blake3::hash(surface.as_bytes()).as_bytes();
+            let (_, kept) = collab_types::surface::SurfaceFile::kept(surface.as_bytes())
+                .expect("the fixture is a surface");
+            let hash = *blake3::hash(kept.as_bytes()).as_bytes();
             let hex = hex::encode(hash);
             collab_types::Surfaces::set_process(collab_types::Surfaces::from_source(
                 std::sync::Arc::new(collab_types::surface::ContentSurfaces::new(
-                    move |_, wanted| (wanted == hex).then(|| surface.as_bytes().to_vec()),
+                    move |_, wanted| (wanted == hex).then(|| kept.clone().into_bytes()),
                 )),
             ));
             let change = |what: tilo_actions::Did, seq: u64| {

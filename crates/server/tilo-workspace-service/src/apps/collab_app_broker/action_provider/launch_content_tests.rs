@@ -12,3 +12,21 @@ fn an_empty_typed_argument_map_opens_without_content() {
     );
     assert_eq!(launch_content_hash(Some(&nonempty)), nonempty);
 }
+
+#[test]
+fn a_file_handed_over_by_its_name_opens_its_content() {
+    let hash = "ab".repeat(32);
+    let tilo_actions::remote::InvokeArgument::Json(map) =
+        tilo_actions::remote::ApplicationLaunch::with_content("so.tilo.notes", &hash)
+            .named("plan.txt")
+            .argument()
+    else {
+        panic!("a named launch sends its argument map");
+    };
+    let named = format!(
+        "{}{}",
+        tilo_actions::ARGUMENTS_JSON_PREFIX,
+        serde_json::Value::Object(map)
+    );
+    assert_eq!(launch_content_hash(Some(&named)), hash);
+}

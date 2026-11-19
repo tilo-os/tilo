@@ -675,10 +675,12 @@ pub const ATTENDED_TAG: &str = "tilo.attended";
 /// their window and learn nothing ([`ActionContract::only_shows`]).
 pub const SCREEN_TAG: &str = "tilo.screen";
 
-/// The contract tag of an effect of [`SCREEN_TAG`] that shows the row or item its first parameter
-/// names. It is answered against its caller's view: the person at the screen is shown the row,
-/// and anyone else is placed at it in their own view of the window, where the person sees their
-/// presence. So it is not the person's alone ([`ActionContract::only_shows`]).
+/// The contract tag of an effect of [`SCREEN_TAG`] offered on a row or item
+/// (`#[effect(screen, on = Row)]`), which shows the row it is offered on. It is
+/// answered against its caller's view: anyone else is placed at that row in
+/// their own view of the window, where the person sees their presence, and the
+/// person's own screen does not move. So it is not the person's alone
+/// ([`ActionContract::only_shows`]).
 pub const SCREEN_PLACE_TAG: &str = "tilo.screen.place";
 
 /// The contract tag of an effect whose whole scope is the invoking
@@ -752,6 +754,16 @@ pub struct ActionContract {
     /// an action that makes nothing, or whose declaration names no collection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creates: Option<String>,
+    /// The collection whose item the action acts on, when its declaration
+    /// says it acts on one (`item = issues`) and no item is bound to it yet:
+    /// "Open issue" on the tracker itself. It is offered only where an item
+    /// is in hand, bound on that item, so a listing that holds none (a
+    /// palette with nothing selected, an agent's listing of the tracker)
+    /// leaves it out ([`Self::needs_an_item`]). A caller that names the
+    /// action and its item still invokes it here. `None` for an action that
+    /// needs no item, or one already bound to its item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
 }
 
 /// Largest CPU time an [`Offload`] may declare: a compute job's ceiling.
@@ -845,6 +857,7 @@ impl Default for ActionContract {
             offload: None,
             step: None,
             creates: None,
+            item: None,
         }
     }
 }
@@ -962,8 +975,8 @@ impl ActionContract {
         self.tags.iter().any(|tag| tag == SCREEN_TAG) && !self.shows_a_place()
     }
 
-    /// Whether the effect shows the row or item it names, answered against its caller's view
-    /// ([`SCREEN_PLACE_TAG`]).
+    /// Whether the effect shows the row it is offered on, answered against its
+    /// caller's view ([`SCREEN_PLACE_TAG`]).
     pub fn shows_a_place(&self) -> bool {
         self.tags.iter().any(|tag| tag == SCREEN_PLACE_TAG)
     }
@@ -1004,6 +1017,29 @@ impl ActionContract {
     /// Whether agents' listings offer it. See [`Audience::reaches_agents`].
     pub fn reaches_agents(&self) -> bool {
         self.audience().reaches_agents()
+    }
+
+    /// Whether it acts on an item it has not been given ([`Self::item`]):
+    /// what only a place holding an item offers.
+    #[must_use]
+    pub fn needs_an_item(&self) -> bool {
+        self.item.is_some()
+    }
+
+    /// Whether a listing that holds no item offers it to a person: one for
+    /// people that needs no item ([`Self::needs_an_item`]). The palette with
+    /// nothing selected, a window's controls and a search list this.
+    #[must_use]
+    pub fn offered_to_people(&self) -> bool {
+        self.reaches_people() && !self.needs_an_item()
+    }
+
+    /// [`Self::offered_to_people`] for agents: what an agent's listing of a
+    /// resource offers it, an action that needs an item being offered on
+    /// the item.
+    #[must_use]
+    pub fn offered_to_agents(&self) -> bool {
+        self.reaches_agents() && !self.needs_an_item()
     }
 
     /// Whether the action reads the open document's first page. See

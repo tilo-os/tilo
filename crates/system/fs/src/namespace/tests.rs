@@ -414,7 +414,6 @@ tilo_test_env::scenario! {
         {
             let mut ns = Namespace::new("a").unwrap();
             ns.document_index.clear();
-            ns.document_index_order.clear();
             for value in 1..=100_001_u128 {
                 let document_id = FileDocumentId(Uuid::from_u128(value));
                 ns.document_index.insert(
@@ -427,7 +426,6 @@ tilo_test_env::scenario! {
                         is_dir: false,
                     },
                 );
-                ns.document_index_order.push(document_id);
             }
             let before = ns.document_index_rebuild_count();
             let page = ns.indexed_document_page(100_000, 128);
@@ -831,10 +829,6 @@ pub(super) fn assert_indexes_match_rebuild(ns: &Namespace) {
         "record owners"
     );
     assert_eq!(ns.document_index, rebuilt.document_index, "rows");
-    assert_eq!(
-        ns.document_index_order, rebuilt.document_index_order,
-        "order"
-    );
     assert_eq!(
         ns.document_index_digest, rebuilt.document_index_digest,
         "digest"

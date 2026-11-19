@@ -41,7 +41,7 @@
 import {execFile, execFileSync, spawn} from 'node:child_process';
 import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {FIRST_RUN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
+import {FIRST_SCREEN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory} from './waits.mjs';
 
@@ -76,7 +76,7 @@ const state = tab => tab.evaluate(`JSON.stringify({
   refusal: document.documentElement.dataset.refusal ?? null,
   waitList: document.documentElement.dataset.waitList ?? null,
   entry: document.documentElement.dataset.entry ?? null,
-  firstRun: document.documentElement.dataset.firstRun ?? null,
+  firstScreen: document.documentElement.dataset.firstScreen ?? null,
   title: document.title,
   workspace: globalThis.tiloMount?.state?.()?.workspaceName ?? null,
 })`).then(JSON.parse).catch(error => ({unreachable: String(error?.message ?? error).slice(0, 300)}));
@@ -149,9 +149,9 @@ const until = async (tab, expression, what, timeout = stepLimit(4)) => {
 const visit = async (name, {passkey = false, setupDone = false} = {}) => {
   const browser = await launch();
   browsers.push(browser);
-  const tab = await browser.tab({firstRun: true});
+  const tab = await browser.tab({firstScreen: true});
   tab.log ??= [];
-  if (setupDone) await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: FIRST_RUN_SEEN});
+  if (setupDone) await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: FIRST_SCREEN_SEEN});
   await tab.send('Network.enable', {}).catch(() => {});
   await tab.send('Log.enable', {}).catch(() => {});
   await tab.send('Page.enable', {}).catch(() => {});
@@ -341,10 +341,10 @@ const mailLink = (mail, marker) => {
 };
 
 /** Whether the first screen is in front of the person. Its element is in every
- * page the entry serves (`#first-run`), so what shows is whether the page set
- * `data-first-run` and displayed it. */
-const firstScreenShown = `(document.documentElement.dataset.firstRun !== undefined
-  && getComputedStyle(document.getElementById('first-run')).display !== 'none')`;
+ * page the entry serves (`#first-screen`), so what shows is whether the page set
+ * `data-first-screen` and displayed it. */
+const firstScreenShown = `(document.documentElement.dataset.firstScreen !== undefined
+  && getComputedStyle(document.getElementById('first-screen')).display !== 'none')`;
 
 // -- tilo.sh as a person meets it --------------------------------------------
 /** A person arriving at the site, in a tab that has not been here before.
@@ -443,11 +443,26 @@ try {
   })()`).catch(() => null);
   if (!operatorPerson) await fail('the operator\'s tab made no person to add');
   await addOwner(operatorPerson);
-  report.operator = {user: operatorPerson};
   await arrive(operator, {expected: 'let in'});
   await until(operator.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.workspace`,
     'the entry letting in the person the deployment made an owner', stepLimit(8));
   mark('the operator the deployment made an owner is let in by the closed entry');
+
+  // The operator gives their name, as anyone does: the invitations they make
+  // say who asked the stranger in, and the first thing that stranger reads is
+  // a person, never "someone".
+  const operatorName = 'Maya Chen';
+  await search(operator.tab, 'set your name', 'Set your name');
+  await until(operator.tab, `!!document.querySelector('input[name=display-name]')`, 'the name form', stepLimit(4));
+  await operator.tab.evaluate(`(() => {
+    const input = document.querySelector('input[name=display-name]');
+    input.value = ${JSON.stringify(operatorName)};
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    input.closest('form').querySelector('button[type=submit]').click();
+  })()`);
+  await until(operator.tab, `!document.querySelector('input[name=display-name]')`, 'the name kept', stepLimit(6));
+  report.operator = {user: operatorPerson, name: operatorName};
+  mark('the operator gave their name, so those they invite know who asked them in');
 
   // -- 1. a stranger at the wait list ----------------------------------------
   const stranger = await visit('stranger', {passkey: true});
@@ -573,21 +588,22 @@ try {
   await stranger.tab.navigate(inviteLink);
   const invitedCard = await until(stranger.tab, `(() => {
     const text = (document.body.innerText || '').replace(/\\s+/g, ' ').trim();
-    return text.includes('invited you to') ? text : '';
-  })()`, 'the invitation naming who invited them', stepLimit(6));
+    return text.includes(${JSON.stringify(`${operatorName} invited you`)}) ? text : '';
+  })()`, `the invitation naming who invited them (${operatorName})`, stepLimit(6));
   report.invitationCard = String(invitedCard).slice(0, 400);
   await dump(stranger.tab, '4-invitation');
-  if (!await pressText(stranger.tab, 'Join')) await fail(`the invitation offered no Join: ${report.invitationCard}`);
-  // Joined: the page enters a workspace other than the one the Lounge listed
-  // for it before. A newcomer who joined is not handed to the site's first
-  // screen: the workspace they joined opens, and the setup waits inside it,
-  // offered from their own card once they used it. Nothing stands between
-  // them and the workspace they were invited to.
+  mark('the invitation says who invited the stranger in');
+  // Someone let in off the wait list is new to this server: the invitation
+  // admits them to the Lounge, and their page opens a workspace of their own
+  // to work in, with the Lounge one switch away. A newcomer is not handed to
+  // the site's first screen either way; the setup waits in their workspace,
+  // offered from their own card once they used it.
+  if (!await pressText(stranger.tab, 'Open my workspace')) await fail(`the invitation offered no way into the workspace: ${report.invitationCard}`);
   await until(stranger.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.workspace`,
     'the stranger joining through the invitation', stepLimit(8));
   await until(stranger.tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)
     && !!globalThis.tiloMount?.state?.()?.phase`, 'the workspace the stranger joined', stepLimit(8));
-  const overWorkspace = await stranger.tab.evaluate(`document.documentElement.dataset.firstRun ?? null`);
+  const overWorkspace = await stranger.tab.evaluate(`document.documentElement.dataset.firstScreen ?? null`);
   if (overWorkspace !== null) await fail(`the first screen came over the workspace the stranger joined (${overWorkspace})`);
   report.joined = JSON.parse(await until(stranger.tab, `(() => {
     const state = globalThis.tiloMount?.state?.() ?? null;
@@ -595,7 +611,7 @@ try {
       ? JSON.stringify({workspace: state.workspaceName, title: document.title}) : '';
   })()`, 'the workspace the stranger joined, drawn', stepLimit(8)));
   await dump(stranger.tab, '4-joined-workspace');
-  mark('the invitation brought the stranger into the workspace, which opened with no first screen over it');
+  mark('the invitation brought the stranger into a workspace of their own, with no first screen over it');
   console.log(`ok: the invitation brought the stranger into ${report.joined.workspace}, which opened with no first screen over it (${report.joined.title})`);
 
   // Their own setup is offered inside the workspace: the person's card's
@@ -619,17 +635,17 @@ try {
   report.firstScreenShown = await stranger.tab.evaluate(firstScreenShown);
   if (!report.firstScreenShown) await fail('the first screen is in the page but not shown');
   report.firstScreen = await stranger.tab.evaluate(`({
-    heading: document.getElementById('first-run-heading')?.textContent?.trim() ?? null,
-    prompt: document.getElementById('first-run-offer')?.textContent?.trim() ?? null,
-    skip: document.getElementById('first-run-skip')?.textContent?.trim() ?? null,
-    manual: document.getElementById('first-run-manual-toggle')?.textContent?.trim() ?? null,
+    heading: document.getElementById('first-screen-heading')?.textContent?.trim() ?? null,
+    prompt: document.getElementById('first-screen-offer')?.textContent?.trim() ?? null,
+    skip: document.getElementById('first-screen-skip')?.textContent?.trim() ?? null,
+    manual: document.getElementById('first-screen-manual-toggle')?.textContent?.trim() ?? null,
   })`);
   if (!report.firstScreen.skip) await fail('the first screen offers no way past it for a person without an agent');
-  await until(stranger.tab, `document.getElementById('first-run')?.dataset.setup === 'ready'`, 'the setup prompt made', stepLimit(6));
+  await until(stranger.tab, `document.getElementById('first-screen')?.dataset.setup === 'ready'`, 'the setup prompt made', stepLimit(6));
   const beforeCopy = await stranger.tab.evaluate(`navigator.clipboard.readText().catch(() => '')`).catch(() => '');
   await stranger.tab.send('Browser.grantPermissions', {origin: siteOrigin, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});
-  await pressId(stranger.tab, 'first-run-agent');
-  await until(stranger.tab, `document.documentElement.dataset.firstRun === 'waiting'`, 'the first screen answering the click', stepLimit(4));
+  await pressId(stranger.tab, 'first-screen-agent');
+  await until(stranger.tab, `document.documentElement.dataset.firstScreen === 'waiting'`, 'the first screen answering the click', stepLimit(4));
   const prompt = await copied(stranger.tab, beforeCopy);
   report.prompt = prompt;
   const setup = commandOf(prompt);

@@ -52,7 +52,7 @@ impl RunMode {
 #[derive(Default)]
 pub(crate) struct Fixtures {
     values: HashMap<TypeId, Rc<dyn Any>>,
-    members: Vec<(String, ResourceSelection)>,
+    members: Vec<Shown>,
     content: Option<tilo_content::ContentStore>,
     /// Kept for as long as anything built from the capture is.
     _directory: Option<tempfile::TempDir>,
@@ -258,9 +258,18 @@ impl Run {
     }
 
     /// The members a capture shows, where they are in the resource.
-    pub(crate) fn members(&self) -> &[(String, ResourceSelection)] {
+    pub(crate) fn members(&self) -> &[Shown] {
         &self.fixtures.members
     }
+}
+
+/// Someone a capture shows in the resource.
+#[derive(Clone, Debug)]
+pub(crate) enum Shown {
+    /// A member by name, where their window says they are.
+    Member(String, ResourceSelection),
+    /// An agent whose own view of this window stands where its action left it.
+    Agent(super::Landing),
 }
 
 /// What other providers' actions answer in a capture
@@ -305,7 +314,7 @@ pub struct Fixture<R: Resource> {
     /// What the record starts with, written before the versions.
     start: Option<Start>,
     history: Vec<Version<R>>,
-    members: Vec<(String, ResourceSelection)>,
+    members: Vec<Shown>,
     content: Option<tilo_content::ContentStore>,
     directory: Option<tempfile::TempDir>,
 }
@@ -447,7 +456,27 @@ impl<R: Resource> Fixture<R> {
     /// (a selected item, a caret) the way their presence arrives in a
     /// shared window.
     pub fn member(&mut self, name: &str, at: ResourceSelection) {
-        self.members.push((name.to_owned(), at));
+        self.members.push(Shown::Member(name.to_owned(), at));
+    }
+
+    /// An agent (`id`, shown as `name`) whose own view of the window stands
+    /// at `place`, where its action left it.
+    pub fn agent(&mut self, id: &str, name: &str, place: tilo_resource::Place) {
+        let member = tilo_resource::MemberId::agent(id);
+        let id = String::from_utf8_lossy(&member.actor_bytes()).into_owned();
+        let presence = match tilo_actions::PresenceId::new(id) {
+            Ok(presence) => presence,
+            Err(error) => {
+                tracing::warn!(%error, "a capture's agent names no presence; it is not shown");
+                return;
+            }
+        };
+        self.members.push(Shown::Agent(super::Landing {
+            presence,
+            member: Some(member),
+            name: Some(name.to_owned()),
+            place,
+        }));
     }
 
     /// Write the record's start and the other people's versions into `doc`.

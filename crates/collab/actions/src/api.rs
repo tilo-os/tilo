@@ -521,14 +521,29 @@ pub fn survey_placed_level(
     parent: &str,
     visit: &mut dyn FnMut(PlacedAction) -> bool,
 ) -> bool {
-    children.iter().all(|child| {
+    survey_placed_level_items(children, parent, &mut |_, placed| visit(placed))
+}
+
+/// [`survey_placed_level`] with where each row stands: `visit` is told the
+/// index in `children` of the resource the action is on, so a caller listing
+/// a page counts what each resource admits and keeps its place from one page
+/// to the next. `false` when `visit` stopped it.
+pub fn survey_placed_level_items(
+    children: &[ResourceSpec],
+    parent: &str,
+    visit: &mut dyn FnMut(usize, PlacedAction) -> bool,
+) -> bool {
+    children.iter().enumerate().all(|(at, child)| {
         let has_children = !child.children.is_empty();
         child.actions.iter().all(|action| {
-            visit(PlacedAction {
-                parent: parent.to_owned(),
-                has_children,
-                action: describe(child, action),
-            })
+            visit(
+                at,
+                PlacedAction {
+                    parent: parent.to_owned(),
+                    has_children,
+                    action: describe(child, action),
+                },
+            )
         })
     })
 }

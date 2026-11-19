@@ -694,7 +694,7 @@ impl BrowserShell {
         let wake = Arc::clone(&sources.wake);
         let session = Arc::clone(&sources.session);
         let caller = sources.caller.clone();
-        handle.set_wake(page_wake(&wake, &shared));
+        handle.set_wake(page_wake(&shared));
         let (chrome, intents) = page_chrome(&handle, &offers, &wake, sources);
         let source = Rc::new(HostChrome::new(Rc::clone(&chrome)));
         let tree = handle.read(Clone::clone);
@@ -865,43 +865,61 @@ impl BrowserShell {
     /// Stop following whom this page follows: what the person's own press or key does, and what
     /// the roster's banner does with its Stop.
     fn stop_following(&self) {
-        let Some(sync) = &self.sync else {
-            return;
-        };
-        let mut own = sync.own();
-        if own.following.take().is_some() {
-            sync.set_own(own);
+        if let Some(sync) = &self.sync {
+            sync.stop_following();
         }
     }
 
     /// While this page follows someone: the window of what they are in comes forward, each time it
-    /// changes, and where no window here shows it their app opens in front. Whether anything came
-    /// forward.
+    /// changes, and where no window here shows it their app opens in front. The windows' apps hear
+    /// whom this page's person follows, as a native shell's apps do. Whether anything changed.
     fn follow_followed(&self) -> bool {
         let Some(sync) = self.sync.clone() else {
             return false;
         };
+        let shared = self.chrome.shared.clone();
         let followed = sync.own().following;
-        if followed.is_none() && self.follow.borrow().followed().is_none() {
+        if self.follow.borrow().idle(followed.as_deref()) {
             return false;
         }
-        self.follow.borrow_mut().follow(followed);
-        let shared = self.chrome.shared.clone();
         let tree = self.handle.read(Clone::clone);
         let people = here_people(sync.here(), &shared, &tree);
         let places: Vec<tilo_session_core::presence::Place<'_>> = people
             .iter()
-            .map(|person| tilo_session_core::presence::Place {
-                id: &person.id,
-                tab: person.tab,
-                app: person.followed_app(),
-            })
+            .map(tilo_desktop::here::Person::place)
             .collect();
-        let mut follow = self.follow.borrow_mut();
-        let step = follow.step(&places);
-        drop(follow);
-        match step {
-            tilo_session_core::presence::Step::Rest => false,
+        let member = followed
+            .as_deref()
+            .and_then(|id| tilo_desktop::here::followed_member(&people, id));
+        // The page ends following as the person's own press or key arrives, so no pass here finds
+        // them working on something of their own.
+        let owed = self.follow.borrow_mut().owe(
+            followed,
+            false,
+            sync.follow_asked(),
+            &places,
+            member,
+            &shared.workspace,
+        );
+        let Some(owed) = owed else {
+            return false;
+        };
+        sync.forget_follow_asked();
+        if owed.ended {
+            sync.stop_following();
+        }
+        let told = match owed.tell {
+            Some((_workspace, member)) => {
+                let told = crate::follow::Told::of(member);
+                *shared.follow_to_tell.borrow_mut() = Some(told);
+                true
+            }
+            None => false,
+        };
+        match owed.step {
+            tilo_session_core::presence::Step::Rest | tilo_session_core::presence::Step::Gone => {
+                told
+            }
             tilo_session_core::presence::Step::Bring(
                 tilo_session_core::presence::Target::Window(tab),
             ) => {
@@ -919,11 +937,6 @@ impl BrowserShell {
                     self.launch(&app);
                 }
                 true
-            }
-            tilo_session_core::presence::Step::Gone => {
-                // They left: following them ends with them.
-                self.stop_following();
-                false
             }
         }
     }
@@ -976,9 +989,7 @@ impl BrowserShell {
             if sync.own().following.is_some() {
                 break;
             }
-            let mut own = sync.own();
-            own.following = Some(publisher);
-            sync.set_own(own);
+            sync.set_following(Some(publisher));
             self.chrome.shared.ask_app_action(
                 tilo_desktop::launchpad::LaunchpadAppAction::ask_agent(
                     ui::presence::agent_client(&label),
@@ -1448,7 +1459,7 @@ impl BrowserShell {
                     }
                     Ok(_) => {}
                 }
-                woken.store(true, std::sync::atomic::Ordering::Release);
+                crate::desktop::wake(&woken);
             }),
         );
         if let Err(error) = asked {
@@ -1642,9 +1653,9 @@ impl BrowserShell {
             }
             ProfileChoice::Follow(id) => {
                 if let Some(sync) = &self.sync {
-                    let mut own = sync.own();
-                    own.following = (own.following.as_deref() != Some(id.as_str())).then_some(id);
-                    sync.set_own(own);
+                    let following =
+                        (sync.own().following.as_deref() != Some(id.as_str())).then_some(id);
+                    sync.set_following(following);
                 }
                 (self.chrome.wake)();
                 return;
@@ -1859,15 +1870,9 @@ fn workspace_settings_sheet(
 /// agent. The shell is host work the next frame takes, which is also the frame that presents what
 /// that pass did, so the wake marks the work and asks for the frame: a shell left to itself would
 /// carry the choice out whenever an unrelated frame came, seconds or a minute later.
-fn page_wake(wake: &Arc<dyn Fn() + Send + Sync>, shared: &crate::desktop::Shared) -> Rc<dyn Fn()> {
-    let wake = Arc::clone(wake);
-    let shared = shared.clone();
-    Rc::new(move || {
-        shared
-            .woken
-            .store(true, std::sync::atomic::Ordering::Release);
-        wake();
-    })
+fn page_wake(shared: &crate::desktop::Shared) -> Arc<dyn Fn() + Send + Sync> {
+    let woken = Arc::clone(&shared.woken);
+    Arc::new(move || crate::desktop::wake(&woken))
 }
 
 /// The launchpad's words in the page: what Tilo is and that work is kept

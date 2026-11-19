@@ -576,7 +576,7 @@ impl ContentStore {
                 return Err(error.into());
             }
         }
-        self.sync_unless_deferred().await?;
+        self.note_write_durability();
         Ok((hash, len))
     }
 
@@ -759,9 +759,11 @@ impl ContentStore {
         Ok(removed)
     }
 
-    /// Make the writes just made durable now or, inside a deferred-durability group, leave the one sync
-    /// to the group's end.
-    async fn sync_unless_deferred(&self) -> Result<()> {
+    /// Note the writes just made durable, or that a deferred-durability group owes their one
+    /// sync at its end. Outside a group every write committed its database transaction durably
+    /// already ([`crate::store::area`]), so nothing synced here: an empty transaction synced
+    /// after each of them cost a checkout a whole extra fsync per file.
+    fn note_write_durability(&self) {
         let deferred = {
             let mut deferred = self.deferred.lock_recover();
             if deferred.0 > 0 {
@@ -772,10 +774,7 @@ impl ContentStore {
         if !deferred {
             self.write_syncs
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let files = Arc::clone(&self.files);
-            tokio::task::spawn_blocking(move || files.sync_db()).await??;
         }
-        Ok(())
     }
 
     async fn persist_owned(&self, data: Bytes) -> Result<Hash> {
@@ -808,7 +807,7 @@ impl ContentStore {
             Ok(stored)
         })
         .await??;
-        self.sync_unless_deferred().await?;
+        self.note_write_durability();
         for (hash, bytes) in &stored {
             self.cache_insert(*hash, bytes.clone());
         }

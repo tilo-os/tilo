@@ -27,7 +27,7 @@ use tilo_lock::MutexRecover as _;
 #[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 #[cfg(target_arch = "wasm32")]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 #[cfg(target_arch = "wasm32")]
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
@@ -388,7 +388,7 @@ impl PageIdentity {
             key: key.to_owned(),
             reason: reason.to_owned(),
         });
-        self.woken.store(true, Ordering::Release);
+        crate::desktop::wake(&self.woken);
         Ok(InvocationReceipt {
             invocation: request.invocation,
             status: ReceiptStatus::Completed {

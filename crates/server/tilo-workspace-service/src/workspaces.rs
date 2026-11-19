@@ -64,6 +64,8 @@ mod device_rejoin_tests;
 #[cfg(test)]
 mod hard_stop_tests;
 #[cfg(test)]
+mod removed_keeper_tests;
+#[cfg(test)]
 mod returning_person_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod holding;
@@ -1834,7 +1836,7 @@ impl Workspaces {
     fn follow(
         &self,
         workspace: String,
-        mut notices: tokio::sync::mpsc::Receiver<([u8; 32], Vec<u8>)>,
+        mut notices: tokio::sync::mpsc::Receiver<crate::workspace::GovernorNotice>,
     ) {
         let workspaces = Arc::downgrade(&self.inner);
         let mut arrivals = crate::surfaces::arrivals();
@@ -1843,11 +1845,12 @@ impl Workspaces {
             loop {
                 tokio::select! {
                     notice = notices.recv() => {
-                        let Some((author, body)) = notice else { break };
+                        let Some(crate::workspace::GovernorNotice { author, body, taken }) = notice else { break };
                         let Some(inner) = workspaces.upgrade() else { break };
                         if let Err(error) = (Self { inner }).absorb_kept(&workspace, author, &body).await {
                             tracing::warn!(%workspace, author = %hex::encode(author), %error, "governed workspace did not follow a record write");
                         }
+                        let _ = taken.send(());
                     }
                     Ok(()) = arrivals.changed() => {
                         let Some(inner) = workspaces.upgrade() else { break };
@@ -1876,7 +1879,10 @@ impl Workspaces {
         self.found_retained(workspace, &state, &retained).await;
         let mut governed = state.lock().await;
         self.recall_retained(&mut governed, retained);
-        self.retry_held(&mut governed).await;
+        let mut gone = std::collections::BTreeSet::new();
+        self.retry_held(&mut governed, &mut gone).await;
+        drop(governed);
+        self.retire_kept_agents(workspace, &gone).await;
     }
 
     /// Found every record of `workspace` that `retained` holds a write of and
@@ -2231,10 +2237,6 @@ impl Workspaces {
     /// nobody: members take governance only from the governor, and the
     /// governor never took these in, so the member published them again
     /// every few seconds for nothing.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked until its decision is committed, published and answered"
-    )]
     async fn absorb_topology(
         &self,
         workspace: &str,
@@ -2246,20 +2248,31 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let mut workspace = workspace.lock().await;
-        if !self.take_topology(&mut workspace, author, message).await? {
+        let mut gone = std::collections::BTreeSet::new();
+        if !self
+            .take_topology(&mut workspace, author, message, &mut gone)
+            .await?
+        {
             // Held back for history this device lacks: the history the
             // server keeps is taken in again, and the change with it.
             self.replay_soon(workspace.workspace().to_owned());
             return Ok(());
         }
-        self.retry_held(&mut workspace).await;
+        self.retry_held(&mut workspace, &mut gone).await;
+        let identity = workspace.workspace().to_owned();
+        drop(workspace);
+        self.retire_kept_agents(&identity, &gone).await;
         Ok(())
     }
 
     /// Try again the changes held back for history (`take_topology`), now
     /// that something landed: those whose history arrived are taken in, the
-    /// others held on.
-    async fn retry_held(&self, workspace: &mut GovernedWorkspace) {
+    /// others held on. The people those changes removed are added to `gone`.
+    async fn retry_held(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        gone: &mut std::collections::BTreeSet<[u8; 32]>,
+    ) {
         loop {
             let held = workspace.holders.take_held();
             if held.is_empty() {
@@ -2267,7 +2280,7 @@ impl Workspaces {
             }
             let mut took = false;
             for (author, message) in held {
-                match self.take_topology(workspace, author, message).await {
+                match self.take_topology(workspace, author, message, gone).await {
                     Ok(taken) => took |= taken,
                     Err(error) => {
                         tracing::warn!(workspace = %workspace.workspace(), %error, "a change held back for its history was refused");
@@ -2286,12 +2299,14 @@ impl Workspaces {
     /// builds on history this device lacks is held back
     /// ([`holding::Holders::hold`]) until that history arrives, and the
     /// workspace's copy status says so; a member's windows built on a
-    /// history the workspace started over from are refused.
+    /// history the workspace started over from are refused. The people the
+    /// change removed from the workspace are added to `removed`.
     async fn take_topology(
         &self,
         workspace: &mut GovernedWorkspace,
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
+        gone: &mut std::collections::BTreeSet<[u8; 32]>,
     ) -> Result<bool, String> {
         let host = &self.inner.host;
         if let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = &message {
@@ -2356,6 +2371,7 @@ impl Workspaces {
         }
         let removed = removed.into_inner();
         workspace.keep_out_removed(&removed, author_person, tilo_clock::unix_now_ns())?;
+        gone.extend(removed);
         self.settle(workspace).await?;
         Ok(true)
     }

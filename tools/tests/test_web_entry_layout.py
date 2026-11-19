@@ -75,7 +75,7 @@ class Layout(unittest.TestCase):
             'entered-workspaces.mjs': "export const enteredWorkspaces = () => [];\n",
             # The first screen's module, which the entry page loads by a script
             # of its own as well as through the entry module.
-            'first-run.mjs': "export const firstRun = null;\n",
+            'first-screen.mjs': "export const firstScreen = null;\n",
         }
         for name, text in modules.items():
             module = bundle / name
@@ -135,7 +135,7 @@ class Layout(unittest.TestCase):
                 for src in re.findall(r'<script\b[^>]*\bsrc="([^"]+)"', self.page(site, page)):
                     self.assertIn(f'v/{version}/', src, f'{page} loads {src} outside the versioned directory')
                     self.assertTrue((site / page).parent.joinpath(src).resolve().is_file(), f'{page}: {src}')
-            self.assertIn(f'src="./v/{version}/first-run.mjs"', self.page(site, 'index.html'))
+            self.assertIn(f'src="./v/{version}/first-screen.mjs"', self.page(site, 'index.html'))
 
     def test_the_app_entry_page_points_one_level_up(self):
         with tempfile.TemporaryDirectory() as directory:

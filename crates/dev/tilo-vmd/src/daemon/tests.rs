@@ -1768,3 +1768,172 @@ fn the_state_dump_says_whether_the_desktop_moves() {
     ));
     assert!(!super::desktop_in_transition(r#"{"state":{"chrome":{}}}"#));
 }
+
+tilo_test_env::scenario! {
+    fn a_claim_works_on_a_machine_whose_own_session_holds_the_display;
+
+    phase a_claim_on_a_board_stops_the_machines_own_session_before_the_accounts;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let mut apply = RecordingApply::with_device("tester");
+        let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        apply.mirror = Some(std::sync::Arc::clone(&mirror));
+        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+        daemon
+            .create(
+                "kh",
+                AccountKind::Headful,
+                Owner::default(),
+                &[],
+                IdentityRequest::None,
+            )
+            .unwrap();
+        let result = daemon.claim("kh", Owner::default(), false).unwrap();
+        assert!(result.changed);
+        let stopped: Vec<&str> = result
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                Action::StopUnit { unit } => Some(unit.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            stopped.get(..2),
+            Some(
+                [
+                    "tilo-board-headless-session@tester.service",
+                    "tilo-board-drm-session.service"
+                ]
+                .as_slice()
+            ),
+            "the machine's own session lets go first: {:?}",
+            result.actions
+        );
+        let calls = mirror.lock().unwrap().clone();
+        let supervisor = calls
+            .iter()
+            .position(|call| call == "stop tilo-board-headless-session@tester.service")
+            .expect("the machine's supervisor is stopped");
+        let display = calls
+            .iter()
+            .position(|call| call == "stop tilo-board-drm-session.service")
+            .expect("the unit that held the panel is stopped");
+        let claimed = calls
+            .iter()
+            .rposition(|call| call == "start tilo-vm-session@kh.service")
+            .expect("the claimed account starts on the panel");
+        assert!(
+            supervisor < display && display < claimed,
+            "the machine's own session lets go before the claim starts: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|call| call == "stop greetd.service"),
+            "a machine without a greeter has none to stop: {calls:?}"
+        );
+    }
+
+    phase a_release_on_a_board_puts_the_machines_own_session_back_on_the_panel;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let mut apply = RecordingApply::with_device("tester");
+        let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        apply.mirror = Some(std::sync::Arc::clone(&mirror));
+        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+        daemon
+            .create(
+                "kh",
+                AccountKind::Headful,
+                Owner::default(),
+                &[],
+                IdentityRequest::None,
+            )
+            .unwrap();
+        daemon.claim("kh", Owner::default(), false).unwrap();
+        let released = daemon.release("kh").unwrap();
+        assert!(released.changed);
+        assert!(
+            released.actions.contains(&Action::StartUnit {
+                unit: "tilo-board-headless-session@tester.service".into(),
+            }),
+            "{:?}",
+            released.actions
+        );
+        assert!(
+            !released.actions.contains(&Action::StartUnit {
+                unit: GREETER_UNIT.into(),
+            }),
+            "a board has no greeter to start: {:?}",
+            released.actions
+        );
+        let calls = mirror.lock().unwrap().clone();
+        let back = calls
+            .iter()
+            .position(|call| call == "start tilo-board-headless-session@tester.service")
+            .expect("the machine's own session starts again");
+        let on_its_display = calls
+            .iter()
+            .rposition(|call| call == "start tilo-vm-session@kh.service")
+            .expect("the account is back on its own display");
+        assert!(
+            on_its_display < back,
+            "the account leaves the panel before the machine's session takes it: {calls:?}"
+        );
+    }
+
+    phase a_claim_holds_through_a_reboot_where_the_machine_starts_its_own_session_first;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let mut apply = RecordingApply::with_device("tester");
+        let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        apply.mirror = Some(std::sync::Arc::clone(&mirror));
+        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+        daemon
+            .create(
+                "kh",
+                AccountKind::Headful,
+                Owner::default(),
+                &[],
+                IdentityRequest::None,
+            )
+            .unwrap();
+        daemon.claim("kh", Owner::default(), false).unwrap();
+        // The board's supervisor is enabled and starts before the restore begins.
+        daemon
+            .apply
+            .start_unit("tilo-board-headless-session@tester.service")
+            .unwrap();
+        let mark = mirror.lock().unwrap().len();
+        let issues = restore_accounts(
+            &daemon.accounts,
+            &daemon.layers,
+            &daemon.locks,
+            daemon.apply.as_mut(),
+        );
+        assert!(issues.is_empty(), "{issues:?}");
+        let calls = mirror.lock().unwrap().clone();
+        let at_boot = &calls[mark..];
+        let supervisor = at_boot
+            .iter()
+            .position(|call| call == "stop tilo-board-headless-session@tester.service")
+            .expect("the machine's own session lets go of the claimed display");
+        let display = at_boot
+            .iter()
+            .position(|call| call == "stop tilo-board-drm-session.service")
+            .expect("the unit that held the panel is stopped");
+        let claimed = at_boot
+            .iter()
+            .position(|call| call == "start tilo-vm-session@kh.service")
+            .expect("the claimed account starts on the panel again");
+        assert!(
+            supervisor < display && display < claimed,
+            "the claim starts before the machine's own session can take the panel: {at_boot:?}"
+        );
+        assert!(
+            !at_boot
+                .iter()
+                .any(|call| call == "start tilo-board-headless-session@tester.service"),
+            "the machine's own session must not take the claimed display at boot: {at_boot:?}"
+        );
+    }
+}

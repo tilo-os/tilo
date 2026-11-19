@@ -5052,13 +5052,7 @@ impl App {
                     owner,
                     steal,
                 })?;
-                let text = if result.changed {
-                    format!(
-                        "account {account} now runs on seat0 (the hypervisor window); greetd is stopped; session restarted"
-                    )
-                } else {
-                    format!("account {account} already holds seat0; nothing to do")
-                };
+                let text = crate::panel::describe_claim(&account, &result.actions, result.changed);
                 Ok(Outcome::new(text, json!(result))
                     .next(&["tilo-vm vm shot", "tilo-vm seat release"]))
             }
@@ -5067,14 +5061,8 @@ impl App {
                 let result = self.connect(&vm)?.call(SeatRelease {
                     account: account.clone(),
                 })?;
-                let text = if result.changed {
-                    format!(
-                        "seat0 returned to greetd; account {account} restarted on {}",
-                        result.seat
-                    )
-                } else {
-                    format!("account {account} does not hold seat0; nothing to do")
-                };
+                let text =
+                    crate::panel::describe_release(&account, &result.actions, result.changed);
                 Ok(Outcome::new(text, json!(result)))
             }
         }

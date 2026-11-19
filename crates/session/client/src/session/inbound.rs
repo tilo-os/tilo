@@ -297,14 +297,19 @@ impl Task {
         }
     }
 
+    /// The server answered this subscription with the workspace's membership
+    /// answer: the replica is installed from it, or one the page kept for the
+    /// same server and device stands. Either way the page reads what that
+    /// replica's governance says now — a kept replica's member list is no
+    /// change on this connection, and a page that waited for one named nobody
+    /// until the workspace's governance next moved.
     fn bootstrap(&mut self, workspace_id: WorkspaceId, bootstrap: &[u8]) {
         self.keep_arrived();
         match self
             .replicas
             .bootstrap(workspace_id, bootstrap, tilo_clock::wall())
         {
-            Ok(true) => self.follow_governance(workspace_id),
-            Ok(false) => {}
+            Ok(()) => self.follow_governance(workspace_id),
             Err(error) => self.fail("protocol-rejected", error),
         }
     }
@@ -476,12 +481,31 @@ impl Task {
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> bool {
-        // Governance the replica refuses is not the workspace's.
-        let Ok(report) = self
+        // Governance the replica refuses is not the workspace's. A device that
+        // cannot decide it at all leaves the workspace without its governance
+        // and every write held, so it says so.
+        let report = match self
             .replicas
             .admit(workspace_id, author, message, tilo_clock::wall())
-        else {
-            return false;
+        {
+            Ok(report) => report,
+            Err(error) => {
+                if error.is_device_failure() {
+                    tracing::warn!(
+                        %workspace_id,
+                        %error,
+                        "this device cannot decide the workspace's governance"
+                    );
+                } else {
+                    tracing::debug!(
+                        %workspace_id,
+                        author = %hex::encode(author),
+                        %error,
+                        "governance the replica refused"
+                    );
+                }
+                return false;
+            }
         };
         // Documents the replica held for this governance are decided now.
         if let Some(workspace) = self.replicas.workspace(workspace_id) {

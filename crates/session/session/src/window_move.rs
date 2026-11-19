@@ -998,7 +998,7 @@ impl crate::Session {
         let handoff = self
             .app_wire
             .as_ref()
-            .map(crate::app_wire::AppWire::handoff);
+            .map(crate::app_wire::AppWire::follow_dispatcher);
         self.shared
             .moves
             .follow(&self.shared, &mut self.compositor, handoff.as_ref());

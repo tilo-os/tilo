@@ -2945,5 +2945,8 @@ fn a_windows_bar_is_in_the_accessibility_tree_once() {
 #[path = "surface/wheel.rs"]
 mod wheel;
 
+#[path = "surface/wakes.rs"]
+mod wakes;
+
 #[path = "surface/search.rs"]
 mod search;

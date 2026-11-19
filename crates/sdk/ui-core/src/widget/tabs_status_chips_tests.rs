@@ -64,9 +64,19 @@ tilo_test_env::scenario! {
         assert_eq!(node.name.as_deref(), Some("Jane Doe\u{2019}s agent"));
         assert_eq!(
             node.description.as_deref(),
-            Some("Fill Jane Doe\u{2019}s visa application"),
-            "the run alone: the mark names the agent already"
+            Some("Jane Doe\u{2019}s agent opened this window\nFill Jane Doe\u{2019}s visa application"),
+            "who opened it, then its step on a line of its own"
         );
+        // Once the page knows whom the agent works for, the mark says so.
+        assert!(bar.set_opened_for(1, Some("Quinten".into())));
+        assert!(!bar.set_opened_for(1, Some("Quinten".into())), "unchanged");
+        draw(&mut bar, &mut tr, &theme);
+        let (_, node) = bar.opened_by_stop().expect("still marked");
+        assert_eq!(
+            node.description.as_deref(),
+            Some("Jane Doe\u{2019}s agent opened this window for Quinten\nFill Jane Doe\u{2019}s visa application"),
+        );
+        assert!(bar.set_opened_for(1, None));
 
         assert!(bar.press_opened_by(rect.center()));
         assert_eq!(bar.take_opened_by_press(), Some((1, mark.run.clone())));

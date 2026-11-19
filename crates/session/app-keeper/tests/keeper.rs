@@ -1619,3 +1619,40 @@ fn a_window_that_replaces_the_one_before_keeps_the_keyboard() {
     });
     assert!(!app.broken, "the app is still connected");
 }
+
+/// A window the desktop told 100×80 in its tile, drawn 200×140 anyway, is cut at the tile: what
+/// the desktop configured reaches the app through the keeper unchanged, and a program that
+/// ignores it draws over no neighbour.
+#[test]
+fn a_window_that_ignores_the_size_it_was_told_is_cut_at_its_tile() {
+    let mut rig = Rig::on(crate::support::tile_desktop(640, 480));
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Wider", Some("org.example.Wider"));
+    rig.pump(&mut [&mut app], |_, apps| apps[0].heard.configured > 0);
+    let (width, height, states) = app
+        .heard
+        .configures
+        .last()
+        .cloned()
+        .expect("the window was configured");
+    assert_eq!(
+        (width, height),
+        (100, 80),
+        "the size of its tile, through the keeper: {states:?}"
+    );
+    app.show(&mut rig, (200, 140), RED);
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    rig.desktop().render().expect("a frame");
+    let background = rig.pixel(600, 400);
+    assert_eq!(rig.pixel(150, 150), RED, "inside its tile the window shows");
+    assert_eq!(
+        rig.pixel(250, 150),
+        background,
+        "past its tile to the right the desktop shows, not the window"
+    );
+    assert_eq!(
+        rig.pixel(150, 220),
+        background,
+        "past its tile below the desktop shows, not the window"
+    );
+}

@@ -301,15 +301,22 @@ impl WorkspaceShells {
         let root = self.state.join(safe(workspace));
         let files = self.files(workspace);
         std::fs::create_dir_all(&files)?;
-        let grants = vec![tilo_environment::dir_grant(&files, true).map_err(io::Error::other)?];
+        let target = self.target_for(payer);
+        let programs_here = target.is_none() && self.on_machine;
+        // A shell whose programs start on this machine sees it as they do: its own commands (cd,
+        // ls, cat, rm) reach every file the server's user may, not only the workspace's files,
+        // or a command could name a checkout its `git` reaches while `cd` refuses it.
+        let grants = vec![if programs_here {
+            tilo_environment::machine_grant()
+        } else {
+            tilo_environment::dir_grant(&files, true).map_err(io::Error::other)?
+        }];
         let environment = Arc::new(Files {
             grants,
             kept: Recoverable::at(root.join("recoverable")),
             content: EnvironmentContent::at(root.join("content")),
         });
         let refused = Arc::new(Mutex::new(None));
-        let target = self.target_for(payer);
-        let programs_here = target.is_none() && self.on_machine;
         let programs: Arc<dyn Programs> = match target {
             Some(target) => {
                 let shared = files.clone();

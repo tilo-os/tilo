@@ -85,6 +85,45 @@ runtimes and the commit, so it is the faster one to ask for while working on
 the disk or the desktop. Nothing is published and the disk is uncompressed (a
 64 GiB sparse qcow2); run the check once and reuse the file for every VM.
 
+## Windows support (Proton) on a dev image
+
+Proton and the Steam runtime are not in the image: they are the `windows-compat`
+download (`/usr/share/tilo/system-extensions/README.md`), a 3.4 GB system
+extension a device installs from a signed manifest. A manifest exists only for
+an image CI resolved it for, keyed by that image's package set, so test it on a
+published dev image, not on a disk of your own tree (its packages resolve anew
+and match no manifest: the install answers "Not available for this version of
+Tilo yet").
+
+For the newest published dev image (`x86_64-ci`), `<commit>` its revision
+(`skopeo inspect docker://registry.tilo.so/tilo/tilo-vm:x86_64-ci`):
+
+```sh
+t dispatch --repo tilo --ref main publish-windows-compat-x86_64 \
+  --input revision=<commit> --publish        # the payload, for that image
+t dispatch --repo tilo --ref main publish-extension-manifests-x86_64 --publish
+```
+
+The second signs a manifest for every published image whose payload exists; it
+ends red while another extension does not resolve, and still publishes the rest
+(its log says `published tilo-extension-windows-compat ...`). Then, in a VM of
+that image (`tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci-x86_64`),
+install it the way Settings does:
+
+```sh
+sudo systemctl start tilo-extension@install:windows-compat.service
+sudo /usr/libexec/tilo-extension status:windows-compat   # installing -> installed
+ls /usr/lib/tilo/windows-runners                          # proton, steam-runtime
+```
+
+On a check server, `t test os-vm-x86_64` from a tree that differs from main
+gives a VM to reach with `t vm ssh` (a VM of main's own result takes no
+connections); move it onto the published image with `bootc switch` first.
+
+Known: with the extension merged, a dev VM hangs at boot in
+`systemd-tmpfiles-setup.service` and new logins hang, so the Proton route is not
+yet usable on a dev image.
+
 ## Building somewhere else: `tilo-vm image build`
 
 The local builds below (`image build`, `--from local`, `--image <layout>`) are the

@@ -1294,18 +1294,14 @@ fn change_hashes(bytes: &[u8]) -> Option<Vec<ChangeHash>> {
 
 /// Whether every change of `mutation` is in `doc`: a snapshot's heads (it
 /// holds all their ancestors), or each incremental change by hash.
-fn covered_by(doc: &mut AutoCommit, mutation: &DocumentMutation) -> bool {
+fn covered_by(doc: &AutoCommit, mutation: &DocumentMutation) -> bool {
     let hashes = match mutation {
         DocumentMutation::Snapshot(bytes) => snapshot_heads(bytes)
             .map(|heads| heads.into_iter().map(ChangeHash).collect())
             .or_else(|| AutoCommit::load(bytes).ok().map(|mut doc| doc.get_heads())),
         DocumentMutation::Incremental(bytes) => change_hashes(bytes),
     };
-    hashes.is_some_and(|hashes| {
-        hashes
-            .iter()
-            .all(|hash| doc.get_change_by_hash(hash).is_some())
-    })
+    hashes.is_some_and(|hashes| hashes.iter().all(|hash| doc.has_change(hash)))
 }
 
 fn unit_bytes(entries: &[ChannelEntry], unit: &Unit) -> usize {
@@ -1444,11 +1440,9 @@ fn fold_leaving_out(
     for bytes in snapshots {
         // A snapshot the document already contains is not loaded at all:
         // holding two large documents at once is the costly part.
-        if snapshot_heads(bytes).is_some_and(|heads| {
-            heads
-                .iter()
-                .all(|head| doc.get_change_by_hash(&ChangeHash(*head)).is_some())
-        }) {
+        if snapshot_heads(bytes)
+            .is_some_and(|heads| heads.iter().all(|head| doc.has_change(&ChangeHash(*head))))
+        {
             continue;
         }
         let mut other = AutoCommit::load(bytes).ok()?;
@@ -1476,7 +1470,7 @@ fn fold_leaving_out(
             _ if refused.contains(&at) => false,
             None => false,
             Some(DocumentMutation::Snapshot(_)) => true,
-            Some(mutation) => all_applied || covered_by(&mut doc, mutation),
+            Some(mutation) => all_applied || covered_by(&doc, mutation),
         })
         .collect();
     let stuck = units.iter().zip(&folded_units).any(|(unit, folded)| {

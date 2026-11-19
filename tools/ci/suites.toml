@@ -106,6 +106,7 @@ inputs = [
 ]
 suites = [
   "os/dev/test-assemble-app-runtime.py",
+  "os/dev/test-sysext-image.py",
   "os/dev/test-runtime-font-payload.py",
   "os/dev/test-export-sdk-compiler.py",
   "os/dev/test-install-copy-scratch-cleanup.sh",
@@ -618,7 +619,7 @@ name = "browser-runtime-web"
 inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "crates/browser/tilo-web-desktop/src/lazy.rs", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
 suites = [
   "crates/browser/tilo-browser-runtime/web/app-bar.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/first-run.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/first-screen.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-prefetch.test.mjs",
   "crates/browser/tilo-browser-runtime/web/startup-order.test.mjs",
   "crates/browser/tilo-browser-runtime/web/here.test.mjs",
@@ -1036,6 +1037,8 @@ inputs = [
   "os/etc/polkit-1/rules.d/49-tilo-extension.rules",
   "os/usr/lib/systemd/system/tilo-extension@.service",
   "os/usr/lib/systemd/system/tilo-extension-activate.service",
+  "os/usr/lib/systemd/system/tilo-extension-trial.service",
+  "os/usr/lib/systemd/system/tilo-extension-booted.service",
   "os/usr/lib/systemd/system/tilo-extension-refresh.timer",
   "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf",
   "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/50-tilo-live-update.conf",
@@ -1628,7 +1631,7 @@ package = "tilo-session-client"
 # The store's test reads an app's committed surface to check the types and verbs
 # it declares.
 inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/notes/surface.toml", "apps/tasks/surface.toml", "crates/collab/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
-readers = ["crates/session/client/tests/voice_browsers.rs", "crates/session/client/tests/headless_audio_lifetime.rs", "crates/session/client/tests/surface_by_hash.rs", "crates/session/client/src/device.rs", "crates/session/client/src/engine.rs", "crates/session/client/tests/support/mod.rs"]
+readers = ["crates/session/client/tests/voice_browsers.rs", "crates/session/client/tests/headless_audio_lifetime.rs", "crates/session/client/tests/surface_by_hash.rs", "crates/session/client/src/device.rs", "crates/session/client/tests/support/mod.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
 
 [[cargo]]
@@ -1738,6 +1741,10 @@ reason = "needs root, KVM, loop devices and the built VM host and hosted guest i
 [[unrequired]]
 suite = "os/containers/tilo-sh/test-peer-kill-midwrite.sh"
 reason = "needs a whole tilo.sh stack and a FUSE mount, and minutes for the bulk write and its convergence; the peer-kill-midwrite check brings one up when named"
+
+[[unrequired]]
+suite = "os/containers/tilo-sh/test-warm-restart.sh"
+reason = "restarts a stack a person brought up on the build server and reads the bundle it then serves: it needs that stack's TILO_SH_* environment, minutes of the build server's walls and node; it is the local bundle's own loop, run where the bundle is being worked on"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-wait-list.sh"

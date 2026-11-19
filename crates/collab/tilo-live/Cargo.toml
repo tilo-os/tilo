@@ -49,6 +49,11 @@ iroh = { workspace = true, optional = true }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# A page reaches a server that takes no WebTransport (one behind a NAT) through its packet
+# relay, over iroh's browser endpoint: relay-only, no UDP. Its live session rides that too.
+iroh = { version = "1.0.3", default-features = false, features = ["tls-ring"], optional = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 serde_json.workspace = true

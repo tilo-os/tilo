@@ -407,3 +407,182 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     })
     .unwrap_or_else(|error| panic!("{error}"));
 }
+
+/// `message` delivered as an importer delivers one: what remains of it and
+/// each large part's pieces kept as content, named by reference.
+fn deliver_apart(app: &mut TestApp<MailShell>, message: &[u8]) -> serde_json::Value {
+    let split = tilo_mail_parts::split(message);
+    assert!(!split.apart.is_empty(), "the message has large parts");
+    let mut keep = |bytes: &[u8]| format!("tilo.content:{}", app.content().put(bytes).unwrap());
+    let original = keep(&split.rest);
+    let parts: Vec<serde_json::Value> = split
+        .apart
+        .iter()
+        .map(|part| {
+            json!({
+                "at": part.at,
+                "size": part.size,
+                "pieces": part.pieces().map(&mut keep).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    deliver(
+        app,
+        json!({
+            "from": "Grace Hopper <grace@example.net>",
+            "subject": "Plans",
+            "body": "The files are attached.",
+            "date": "2026-11-03T10:00:00Z",
+            "message_id": "plans@example.net",
+            "original": original,
+            "parts": parts,
+        }),
+    )
+}
+
+#[test]
+fn a_message_with_large_attachments_is_kept_with_its_parts_apart_and_opens_whole() {
+    use tilo_mail_parts::fixture::{attachment_bytes, message_with_attachments};
+    let files = [
+        ("plans.pdf", 3 * 1024 * 1024),
+        ("photo.jpg", 700 * 1024),
+        ("note.txt", 200),
+    ];
+    let message = message_with_attachments("plans@example.net", "Plans", &files);
+    let mut app = TestApp::<MailShell>::new().unwrap();
+    let id = deliver_apart(&mut app, &message)["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // The held message names its parts; no one piece of content is the message.
+    let held = crate::resource::TestMail::held_by(&app);
+    let (_, kept) = held.held_message(&id).unwrap();
+    assert_eq!(
+        kept.parts.len(),
+        2,
+        "the two large attachments are kept apart"
+    );
+    assert!(kept.original.as_ref().unwrap().len() < 16 * 1024);
+
+    // An agent reading it sees every attachment by name and size.
+    let at = messages(&mut app);
+    let read = app
+        .call_on(&at, "read", json!({ "item": &id }))
+        .unwrap()
+        .unwrap();
+    let listed: Vec<(String, u64)> = read["message"]["attachments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| {
+            (
+                file["name"].as_str().unwrap().to_owned(),
+                file["size"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    let expected: Vec<(String, u64)> = files
+        .iter()
+        .map(|(name, size)| ((*name).to_owned(), *size as u64))
+        .collect();
+    assert_eq!(listed, expected);
+
+    // The window shows it whole, and each attachment opens with its bytes.
+    let message_id: crate::model::MessageId = id.parse().unwrap();
+    app.with_surface(|mail: &mut crate::app::MailApp| {
+        let shown = mail
+            .shared
+            .borrow()
+            .mailbox
+            .get(message_id)
+            .cloned()
+            .unwrap();
+        assert!(shown.body.contains("attached"), "{}", shown.body);
+        assert!(
+            shown
+                .attachments
+                .iter()
+                .all(crate::model::Attachment::is_downloadable)
+        );
+    })
+    .unwrap();
+    for (index, (name, size)) in files.iter().enumerate() {
+        let handed = app
+            .effect_on(
+                &format!("mail.attachment:{id}:{index}"),
+                &crate::actions::MailEffect::Content {
+                    message: id.clone(),
+                    index,
+                },
+            )
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        let answer = handed.value.unwrap();
+        let hash = ui::tilo_actions::content_hash(answer["content"].as_str().unwrap()).unwrap();
+        let bytes = app.content().read(hash).unwrap();
+        assert!(
+            bytes == attachment_bytes(name, *size),
+            "{name}: {} bytes",
+            bytes.len()
+        );
+    }
+
+    // Exported, it is the message that was sent, byte for byte.
+    let eml = app
+        .call("export-content", json!({ "format": "eml", "message": &id }))
+        .unwrap()
+        .unwrap();
+    let eml = exported(&app, &eml);
+    assert!(eml == message, "{} of {} bytes", eml.len(), message.len());
+}
+
+#[test]
+fn a_message_whose_part_is_not_here_exports_once_it_is_never_without_it() {
+    use tilo_mail_parts::fixture::message_with_attachments;
+    let message =
+        message_with_attachments("plans@example.net", "Plans", &[("plans.pdf", 600 * 1024)]);
+    let mut app = TestApp::<MailShell>::new().unwrap();
+    let id = deliver_apart(&mut app, &message)["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let held = crate::resource::TestMail::held_by(&app);
+    let (_, kept) = held.held_message(&id).unwrap();
+    let piece = kept.parts[0].pieces[0].reference().unwrap();
+    let bytes = app.content().read(&piece).unwrap();
+    app.content().release(&piece).unwrap();
+
+    // Without its attachment's bytes, the export fails rather than answering a
+    // copy of the message that has lost the attachment.
+    let lacking = app.call("export-content", json!({ "format": "eml", "message": &id }));
+    assert!(lacking.is_err(), "{lacking:?}");
+
+    // Once it is here again, the export is the message that was sent.
+    app.content().put_as(&piece, &bytes).unwrap();
+    let eml = app
+        .call("export-content", json!({ "format": "eml", "message": &id }))
+        .unwrap()
+        .unwrap();
+    let eml = exported(&app, &eml);
+    assert!(eml == message, "{} of {} bytes", eml.len(), message.len());
+}
+
+#[test]
+fn a_part_that_does_not_go_back_into_its_message_is_refused() {
+    let mut app = TestApp::<MailShell>::new().unwrap();
+    let original = format!("tilo.content:{}", app.content().put(&[b'x'; 4096]).unwrap());
+    let piece = format!("tilo.content:{}", app.content().put(&[b'y'; 4096]).unwrap());
+    let at = messages(&mut app);
+    let refused = app.call_on(
+        &at,
+        "deliver-message",
+        json!({
+            "from": "a@example.net",
+            "subject": "x",
+            "body": "x",
+            "original": original,
+            "parts": [{ "at": 5000, "size": 1, "pieces": [piece] }],
+        }),
+    );
+    assert!(refused.is_err(), "{refused:?}");
+}

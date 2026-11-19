@@ -174,6 +174,9 @@ pub struct ResourceOperation<'a> {
     request: OperationRequest<'a>,
     scope: Option<&'a ResourceInvocationScope>,
     target: Option<&'a OperationTarget>,
+    /// The resource the operation was resolved against: the app's own, a
+    /// child, or a live row.
+    resource: Option<&'a str>,
 }
 
 impl std::fmt::Debug for ResourceOperation<'_> {
@@ -203,6 +206,7 @@ impl<'a> ResourceOperation<'a> {
             },
             scope: None,
             target: None,
+            resource: None,
         }
     }
 
@@ -222,6 +226,7 @@ impl<'a> ResourceOperation<'a> {
             },
             scope: Some(scope),
             target: None,
+            resource: None,
         }
     }
 
@@ -230,8 +235,19 @@ impl<'a> ResourceOperation<'a> {
         self
     }
 
+    pub(crate) fn with_resource(mut self, resource: &'a str) -> Self {
+        self.resource = Some(resource);
+        self
+    }
+
     pub fn target(&self) -> Option<&OperationTarget> {
         self.target
+    }
+
+    /// The resource the operation was resolved against: the app's own, a
+    /// child, or a live row.
+    pub fn resource(&self) -> Option<&'a str> {
+        self.resource
     }
 
     pub fn invocation(&self) -> tilo_actions::InvocationId {

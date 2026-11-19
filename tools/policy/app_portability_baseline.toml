@@ -158,7 +158,6 @@ D1 = 1
 D2 = 9
 
 [sdk.settings-store]
-R1 = 1
 W3 = 9
 
 [sdk.tilo-app]
@@ -174,6 +173,6 @@ R1 = 17
 W3 = 11
 
 [sdk.tilo-ui]
-R1 = 193
+R1 = 192
 W1 = 10
 W3 = 41

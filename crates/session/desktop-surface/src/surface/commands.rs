@@ -5,6 +5,8 @@
 //! peers and the next session read the shell it leaves, and each row is told what changed in it,
 //! in order, so its live widgets follow without being rebuilt.
 
+use std::rc::Rc;
+
 use ui::automerge::{AutoCommit, ObjId};
 use ui::search::Scope;
 use ui::widget::Widget as _;
@@ -16,11 +18,28 @@ use crate::navigation::{self, Admitted, RouteIds};
 use super::paging::pan_row;
 use super::tile_content::descriptor;
 use super::{
-    ACTIVITY_APP, DesktopSurface, find_group, find_tab, floats, launch, reveal_source, route_of,
-    row_op::RowOp, search, tab_beside, window_menu,
+    ACTIVITY_APP, DesktopHandle, DesktopSurface, find_group, find_tab, floats, launch,
+    reveal_source, route_of, row_op::RowOp, search, tab_beside, window_menu,
 };
 
 impl DesktopSurface {
+    /// Save and share the tree, when it changed since it was last shared.
+    pub(super) fn publish(&self) {
+        let publish = {
+            let mut shared = self.shared.borrow_mut();
+            if shared.published == shared.revision {
+                return;
+            }
+            shared.published = shared.revision;
+            shared.publish.clone()
+        };
+        if let Some(publish) = publish {
+            publish(&DesktopHandle {
+                shared: Rc::clone(&self.shared),
+            });
+        }
+    }
+
     /// Apply queued navigation to the tree, then to the live rows.
     #[allow(
         clippy::too_many_lines,
@@ -268,6 +287,9 @@ impl DesktopSurface {
                 shared.changed();
             }
         }
+        // The tree holds what the commands did: it is shared now, not after the windows they
+        // opened are built and drawn.
+        self.publish();
         self.show_active_strip();
         for op in ops {
             match op {

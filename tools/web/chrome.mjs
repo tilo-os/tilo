@@ -42,11 +42,11 @@ export const STEP_MS = Math.round(1000 * (Number(process.env.TILO_STEP_SECONDS) 
 export const stepLimit = n => n * STEP_MS;
 
 /** Run in a page before its own scripts: the entry page's first screen (its
- * first visit's "Set up with your agent", web/first-run.mjs) counts as seen,
+ * first visit's "Set up with your agent", web/first-screen.mjs) counts as seen,
  * so a test that opens the site in a fresh profile gets the desktop it drives,
  * as a returning person does. A test of the first screen opts out
- * (`tab({firstRun: true})`). */
-export const FIRST_RUN_SEEN = "try { localStorage.setItem('tilo-setup', JSON.stringify({step: 'done'})); } catch {}";
+ * (`tab({firstScreen: true})`). */
+export const FIRST_SCREEN_SEEN = "try { localStorage.setItem('tilo-setup', JSON.stringify({step: 'done'})); } catch {}";
 
 /** The certificate `origin` presents, as a pin for [`pinnedCertificates`]:
  * `{certificate, host}`. A check whose stack makes its certificate in memory (a
@@ -393,7 +393,7 @@ export async function launch({args = [], media = false} = {}) {
     '--headless=new',
     '--remote-debugging-port=0',
     `--user-data-dir=${profile}`,
-    '--no-first-run',
+    '--no-first-screen',
     '--no-default-browser-check',
     // A throwaway profile has nothing to keep secret: never ask the macOS
     // keychain (or a Linux keyring) for the profile's encryption key, which
@@ -515,8 +515,8 @@ export async function launch({args = [], media = false} = {}) {
 
   /** A tab: navigate, evaluate (awaiting promises), collect errors. In
    * `context` (from `context()`) when given, else the browser's own profile.
-   * The entry page's first screen counts as seen unless `firstRun`. */
-  async function tab({context, firstRun = false} = {}) {
+   * The entry page's first screen counts as seen unless `firstScreen`. */
+  async function tab({context, firstScreen = false} = {}) {
     const {result: {targetId}} = await send('Target.createTarget',
       {url: 'about:blank', ...(context ? {browserContextId: context} : {})});
     const {result: {sessionId}} = await send('Target.attachToTarget', {targetId, flatten: true});
@@ -568,7 +568,7 @@ export async function launch({args = [], media = false} = {}) {
     await send('Page.enable', {}, sessionId);
     // The domain that reports a renderer's death (`Inspector.targetCrashed`).
     await send('Inspector.enable', {}, sessionId).catch(() => {});
-    if (!firstRun) await send('Page.addScriptToEvaluateOnNewDocument', {source: FIRST_RUN_SEEN}, sessionId);
+    if (!firstScreen) await send('Page.addScriptToEvaluateOnNewDocument', {source: FIRST_SCREEN_SEEN}, sessionId);
     const evaluate = async (expression, {timeout = 120000} = {}) => {
       if (dead) throw new Error(`${expression}: ${dead}`);
       const reply = await send('Runtime.evaluate', {

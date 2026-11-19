@@ -8,18 +8,10 @@ description = "Tilo's pinned font catalog: its manifest, where it is installed, 
 repository.workspace = true
 homepage.workspace = true
 
-[features]
-# The catalog's recorded faces (`faces`): what fontdb reads of each file,
-# written when a catalog is built and read by processes that set text.
-faces = ["dep:fontdb", "dep:serde_json"]
-
 [dependencies]
-serde.workspace = true
 sha2.workspace = true
 hex.workspace = true
 thiserror.workspace = true
-fontdb = { version = "0.23", default-features = false, features = ["std", "fs"], optional = true }
-serde_json = { workspace = true, optional = true }
 
 [build-dependencies]
 # Reads `manifest.toml` into the Rust `manifest()` builds (build.rs).
@@ -30,12 +22,6 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
-
-[target.'cfg(unix)'.dependencies]
-# `fstatvfs` and `geteuid`: whether a catalog file sits on read-only storage
-# this user cannot change (`Trust`).
-libc.workspace = true
-rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

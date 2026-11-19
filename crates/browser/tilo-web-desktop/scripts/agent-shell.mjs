@@ -1595,7 +1595,7 @@ try {
       const mobile = width < 500;
       // A fresh profile each time: every shot is of a first visit.
       const context = await browser.context();
-      const tab = await browser.tab({context, firstRun: true});
+      const tab = await browser.tab({context, firstScreen: true});
       let agent = null;
       let memory = null;
       await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: MEMORY_SHIM});
@@ -1606,7 +1606,7 @@ try {
       try {
         // 1. The first screen, and the code in the prompt it copies.
         await tab.navigate(`${siteOrigin}/`);
-        await tab.waitFor(`document.getElementById('first-run') && getComputedStyle(document.getElementById('first-run')).display !== 'none'`,
+        await tab.waitFor(`document.getElementById('first-screen') && getComputedStyle(document.getElementById('first-screen')).display !== 'none'`,
           {timeout: 180000});
         await sleep(600);
         // The workspace the first screen stands in, which is the one the agent is let into.
@@ -1621,23 +1621,30 @@ try {
             `status=${await tab.evaluate('document.getElementById("status")?.textContent ?? ""')}`);
           log(`${combo}: console`, tab.log.slice(-12).join(' | '));
         }
-        const button = await tab.evaluate(`(() => {
-          const rect = document.getElementById('first-run-agent').getBoundingClientRect();
-          return {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2};
-        })()`);
-        for (const type of ['mousePressed', 'mouseReleased']) {
-          await tab.send('Input.dispatchMouseEvent', {type, x: button.x, y: button.y, button: 'left', clickCount: 1});
-        }
+        // The button offers the prompt: the press makes it, and with it the
+        // workspace its code names. The press after that copies it.
+        const press = async () => {
+          const button = await tab.evaluate(`(() => {
+            const rect = document.getElementById('first-screen-agent').getBoundingClientRect();
+            return {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2};
+          })()`);
+          for (const type of ['mousePressed', 'mouseReleased']) {
+            await tab.send('Input.dispatchMouseEvent', {type, x: button.x, y: button.y, button: 'left', clickCount: 1});
+          }
+        };
+        await press();
+        await until(() => tab.evaluate(`document.getElementById('first-screen')?.dataset.setup === 'ready'`), 60000, 300);
+        await press();
         const SCREEN = `(() => ({
-          run: document.documentElement.dataset.firstRun ?? null,
-          prompt: document.getElementById('first-run-prompt')?.textContent ?? '',
-          problem: document.getElementById('first-run-problem')?.textContent ?? '',
-          steps: document.getElementById('first-run-steps')?.textContent ?? '',
+          step: document.documentElement.dataset.firstScreen ?? null,
+          prompt: document.getElementById('first-screen-prompt')?.textContent ?? '',
+          problem: document.getElementById('first-screen-problem')?.textContent ?? '',
+          steps: document.getElementById('first-screen-steps')?.textContent ?? '',
         }))()`;
         const asked = await until(async () => {
           const state = await tab.evaluate(SCREEN);
           if (/tilo login [A-Za-z0-9-]{4,}/.test(state.prompt)) return state;
-          if (state.run === 'failed' || state.problem) return {failed: state};
+          if (state.step === 'failed' || state.problem) return {failed: state};
         }, 90000, 300);
         let prompt = asked?.prompt ?? '';
         let offered = Boolean(prompt);
@@ -1682,7 +1689,7 @@ try {
         check(`${combo}: tilo login made this computer a device of the person`, /Logged in:/.test(loggedIn.stdout),
           loggedIn.stdout.split('\n')[0] ?? '');
         const followed = await until(async () => {
-          const state = await tab.evaluate(`document.documentElement.dataset.firstRun ?? null`);
+          const state = await tab.evaluate(`document.documentElement.dataset.firstScreen ?? null`);
           return state === 'connected' || state === null || state === 'failed' ? state ?? 'left' : undefined;
         }, 90000, 200);
         if (offered) {
@@ -1697,16 +1704,16 @@ try {
         if (!offered) {
           // The screen made no code, so it never leaves by itself: its own
           // "Skip for now" takes the person into the workspace.
-          await tab.evaluate(`document.getElementById('first-run-skip')?.click()`);
+          await tab.evaluate(`document.getElementById('first-screen-skip')?.click()`);
           await sleep(1500);
         }
         const PAGE = `(() => ({
           entry: document.documentElement.dataset.entry ?? null,
-          firstRun: document.documentElement.dataset.firstRun ?? null,
+          firstScreen: document.documentElement.dataset.firstScreen ?? null,
           // The entry page keeps the screen's markup (a link may show it):
           // what matters is whether it is shown.
-          screen: Boolean(document.getElementById('first-run')) &&
-            getComputedStyle(document.getElementById('first-run')).display !== 'none',
+          screen: Boolean(document.getElementById('first-screen')) &&
+            getComputedStyle(document.getElementById('first-screen')).display !== 'none',
           mount: Boolean(globalThis.tiloMount),
           status: document.getElementById('status')?.textContent ?? '',
         }))()`;

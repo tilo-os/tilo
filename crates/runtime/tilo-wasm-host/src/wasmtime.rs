@@ -1,23 +1,26 @@
 //! wasmtime behind the shared layer: the compiled tier a native runtime executes beside the
 //! interpreter, and Winch to compare engines with. Never built for wasm32.
 //!
-//! It is also the engine that can stop a call by the clock: an engine ticks a counter of its
-//! own ([`TICK`]), and every store is given a call's number of ticks to reach. A guest past
-//! its ticks stops at its next epoch check, which compiled code keeps at every function entry
-//! and every loop's back edge, so a loop that never calls the host is stopped as surely as one
-//! that does.
+//! It is also the engine that can stop a call by the clock: while a call is inside the guest
+//! its engine's epoch advances every [`TICK`], and the store is given the call's number of ticks
+//! to reach. A guest past its ticks stops at its next epoch check, which compiled code keeps at
+//! every function entry and every loop's back edge, so a loop that never calls the host is
+//! stopped as surely as one that does. The clock advances only while a call is in flight: an
+//! engine with no call in it wakes no thread.
 
 use std::fmt;
-use std::thread;
+use std::ops::Deref;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use wasmtime::{Config, Engine, Module, ResourceLimiter, Store, Strategy as Compiler};
+use wasmtime::{Config, Module, ResourceLimiter, Store, Strategy as Compiler};
 
 use crate::failure::{DEADLINE_EXCEEDED, Deadline, trap_text};
 use crate::{Failure, GROWTH_LIMITED, ImportPolicy, Limits, OUT_OF_FUEL};
 
-/// How often an engine's epoch advances, and so how much later than its deadline a call can
-/// stop: a call stops within one tick of running past it.
+/// How often an engine's epoch advances while a call is in flight, and so how much later than
+/// its deadline a call can stop: a call stops within one tick of running past it.
 pub const TICK: Duration = Duration::from_millis(5);
 
 /// The ticks a call with `deadline` may take: one per [`TICK`], rounded up, plus the tick
@@ -28,26 +31,158 @@ fn ticks(deadline: Duration) -> u64 {
     u64::try_from(ticks).unwrap_or(u64::MAX).saturating_add(1)
 }
 
-/// Advance `engine`'s epoch every [`TICK`] until the engine is dropped: the ticker a deadline
-/// is measured in.
+/// An engine and the clock that bounds its calls.
 ///
-/// The thread holds the engine weakly, so it ends with the engine rather than keeping it alive.
-fn tick(engine: &Engine) {
-    let weak = engine.weak();
-    let spawned = thread::Builder::new()
-        .name("wasm-epoch".to_owned())
-        .spawn(move || {
-            while let Some(engine) = weak.upgrade() {
-                engine.increment_epoch();
-                // Dropped before the sleep: the ticker must never be what keeps the engine
-                // alive, or the thread would outlive the engine it exists for.
-                drop(engine);
-                thread::sleep(TICK);
-            }
+/// It derefs to the engine it wraps, so it goes wherever wasmtime takes an engine.
+pub struct Engine {
+    inner: wasmtime::Engine,
+    clock: Arc<Clock>,
+    ticker: Option<JoinHandle<()>>,
+}
+
+impl Deref for Engine {
+    type Target = wasmtime::Engine;
+
+    fn deref(&self) -> &wasmtime::Engine {
+        &self.inner
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        self.clock.stop();
+        if let Some(ticker) = self.ticker.take() {
+            ticker.join().ok();
+        }
+    }
+}
+
+impl Engine {
+    /// The ticks this engine's clock has made.
+    #[cfg(test)]
+    pub(crate) fn ticks(&self) -> u64 {
+        self.clock.ticks()
+    }
+}
+
+/// An engine's epoch, advanced while calls are in flight.
+struct Clock {
+    state: Mutex<State>,
+    wake: Condvar,
+}
+
+#[derive(Default)]
+struct State {
+    /// Calls inside guest code.
+    calls: usize,
+    /// The engine is gone: the ticker ends.
+    gone: bool,
+    /// Ticks made so far.
+    ticks: u64,
+}
+
+impl Clock {
+    /// A clock for `engine`, and the ticker that advances it, if the thread could be started.
+    fn new(engine: &wasmtime::Engine) -> (Arc<Self>, Option<JoinHandle<()>>) {
+        let clock = Arc::new(Self {
+            state: Mutex::new(State::default()),
+            wake: Condvar::new(),
         });
-    // An engine without a ticker still executes; its calls then have the fuel bound alone,
-    // which is what they had before there was a deadline.
-    let _ = spawned;
+        let weak = engine.weak();
+        let ticking = Arc::clone(&clock);
+        let ticker = thread::Builder::new()
+            .name("wasm-epoch".to_owned())
+            .spawn(move || ticking.tick(&weak))
+            .ok();
+        (clock, ticker)
+    }
+
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Advance the epoch every [`TICK`] while a call is in flight, and wait with no deadline
+    /// while none is: an idle engine wakes this thread never.
+    ///
+    /// It holds the engine weakly, so it ends with the engine rather than keeping it alive.
+    fn tick(&self, engine: &wasmtime::EngineWeak) {
+        let mut state = self.lock();
+        loop {
+            while !state.gone && state.calls == 0 {
+                state = self
+                    .wake
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+            if state.gone {
+                return;
+            }
+            // Dropped before the wait: neither the clock nor its ticker may keep the engine
+            // alive, or the thread would outlive the engine it exists for.
+            match engine.upgrade() {
+                Some(engine) => engine.increment_epoch(),
+                None => return,
+            }
+            state.ticks = state.ticks.saturating_add(1);
+            state = self
+                .wake
+                .wait_timeout(state, TICK)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// Count a call in, and keep the epoch advancing until the returned guard is dropped.
+    fn arm(&self) -> InCall<'_> {
+        let mut state = self.lock();
+        state.calls = state.calls.saturating_add(1);
+        drop(state);
+        self.wake.notify_one();
+        InCall { clock: self }
+    }
+
+    fn disarm(&self) {
+        let mut state = self.lock();
+        state.calls = state.calls.saturating_sub(1);
+        let idle = state.calls == 0;
+        drop(state);
+        if idle {
+            self.wake.notify_all();
+        }
+    }
+
+    fn stop(&self) {
+        let mut state = self.lock();
+        state.gone = true;
+        drop(state);
+        self.wake.notify_all();
+    }
+
+    #[cfg(test)]
+    fn ticks(&self) -> u64 {
+        self.lock().ticks
+    }
+}
+
+/// A call inside guest code: while it lives the engine's epoch advances every [`TICK`], so the
+/// call's deadline can arrive. Dropped when the call returns, and an engine with no call in it
+/// then ticks nothing.
+#[must_use = "dropped at once, the call's deadline never arrives"]
+pub struct InCall<'a> {
+    clock: &'a Clock,
+}
+
+impl Drop for InCall<'_> {
+    fn drop(&mut self) {
+        self.clock.disarm();
+    }
+}
+
+/// Advance `engine`'s clock while the returned guard lives: give guest code outside [`begin`]
+/// the same deadline, its start function included.
+#[must_use = "dropped at once, the guest gets no deadline"]
+pub fn in_call(engine: &Engine) -> InCall<'_> {
+    engine.clock.arm()
 }
 
 /// Which compiler wasmtime uses.
@@ -74,9 +209,13 @@ pub fn engine(strategy: Strategy) -> Result<Engine, wasmtime::Error> {
     config.consume_fuel(true);
     config.epoch_interruption(true);
     config.wasm_backtrace_max_frames(None);
-    let engine = Engine::new(&config)?;
-    tick(&engine);
-    Ok(engine)
+    let inner = wasmtime::Engine::new(&config)?;
+    let (clock, ticker) = Clock::new(&inner);
+    Ok(Engine {
+        inner,
+        clock,
+        ticker,
+    })
 }
 
 /// A memory or table growth past what the instance may hold.
@@ -164,12 +303,12 @@ pub fn store<D: Limited + 'static>(
     data: D,
     limits: &Limits,
 ) -> Result<Store<D>, Failure> {
-    let mut store = Store::new(engine, data);
+    let mut store = Store::new(&engine.inner, data);
     store.limiter(|data: &mut D| data.limits());
     // The deadline's last tick fails the call as a spent budget, with a text that says which
     // budget it was.
     store.epoch_deadline_callback(|_| Err(wasmtime::Error::new(Deadline)));
-    begin(&mut store, limits)?;
+    budget(&mut store, limits)?;
     Ok(store)
 }
 
@@ -179,7 +318,7 @@ pub fn store<D: Limited + 'static>(
 /// # Errors
 ///
 /// The engine does not meter fuel, which a host cannot make: [`engine`] always turns it on.
-pub fn begin<T>(store: &mut Store<T>, limits: &Limits) -> Result<(), Failure> {
+fn budget<T>(store: &mut Store<T>, limits: &Limits) -> Result<(), Failure> {
     store
         .set_fuel(limits.fuel_per_call)
         .map_err(|error| Failure::Link(error.to_string()))?;
@@ -192,6 +331,21 @@ pub fn begin<T>(store: &mut Store<T>, limits: &Limits) -> Result<(), Failure> {
     Ok(())
 }
 
+/// Give the store a whole call's budget and advance the engine's clock until the returned guard
+/// is dropped, which is when the call returns.
+///
+/// # Errors
+///
+/// The engine does not meter fuel, which a host cannot make: [`engine`] always turns it on.
+pub fn begin<'a, T>(
+    engine: &'a Engine,
+    store: &mut Store<T>,
+    limits: &Limits,
+) -> Result<InCall<'a>, Failure> {
+    budget(store, limits)?;
+    Ok(in_call(engine))
+}
+
 /// Compile and validate `bytes`, refusing any import `policy` does not admit.
 ///
 /// # Errors
@@ -199,7 +353,8 @@ pub fn begin<T>(store: &mut Store<T>, limits: &Limits) -> Result<(), Failure> {
 /// The bytes are not a wasm module ([`Failure::Invalid`]), or the module imports what the policy
 /// admits nothing named ([`Failure::Imports`]).
 pub fn compile(engine: &Engine, bytes: &[u8], policy: ImportPolicy) -> Result<Module, Failure> {
-    let module = Module::new(engine, bytes).map_err(|error| Failure::Invalid(error.to_string()))?;
+    let module =
+        Module::new(&engine.inner, bytes).map_err(|error| Failure::Invalid(error.to_string()))?;
     if policy == ImportPolicy::None
         && let Some(import) = module.imports().next()
     {

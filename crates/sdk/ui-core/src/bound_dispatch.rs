@@ -1,6 +1,9 @@
 //! Lifetime and canonical-record routing shared by retained and raw widget dispatch.
 pub(crate) mod local_target;
 
+mod published_target;
+use published_target::{resolve_published_action, shared_target};
+
 mod executing;
 use executing::{ExecutingHostDevice, ExecutingHostPerson, ExecutingScope};
 pub use executing::{
@@ -25,6 +28,17 @@ use filter::{inherit_filtered, insert_available_permitted};
 mod ordinary_confirmation;
 use deferred_intent::validate_deferred_arguments;
 pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
+
+mod control;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use control::control_draft_identity;
+pub(crate) use control::{
+    ControlContinuationArguments, ControlDeclaration, ControlIdentity, ControlObservation,
+    control_declaration, control_observation, control_observation_with_arguments,
+};
+use control::{
+    ControlInputSurface, control_input_surface, resources_for_control_target, unique_control_spec,
+};
 
 use crate::permissions::{MemberId, PermissionContext, SharedPermissions};
 use crate::published::SharedResource;
@@ -1717,13 +1731,12 @@ pub(crate) fn discover_cached_bound_resources(
     Ok(snapshots)
 }
 
-/// Action-scoped authority shared by native and headless legacy and outer
-/// hosts, as the bound API decides it: the action `action` on `resource`
-/// runs when allowed; where the workspace's grants ask first it runs once the
-/// person confirmed it (`confirmed`), and is
-/// [`tilo_actions::ApiError::ConfirmationRequired`] until then, so the
-/// window asks them, saying who decides. A plain quick control (a button's
-/// effect) gets no further than an action declaring its confirmation.
+/// Action-scoped authority the bound dispatch shares: the action `action` on
+/// `resource` runs when allowed; where the workspace's grants ask first it
+/// runs once the person confirmed it (`confirmed`), and is
+/// [`tilo_actions::ApiError::ConfirmationRequired`] until then, so the window
+/// asks them, saying who decides. A plain quick control (a button's effect)
+/// gets no further than an action declaring its confirmation.
 pub(crate) fn admit_local_action(
     permissions: &PermissionContext,
     (app_id, resource, action): (&str, &ResourceSpec, &tilo_actions::ActionSpec),
@@ -2191,321 +2204,6 @@ pub(crate) struct OrdinaryConfirmation {
     confirming: bool,
 }
 
-fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface {
-    match spec.input() {
-        tilo_actions::ActionInput::Immediate(_) => ControlInputSurface::Immediate,
-        tilo_actions::ActionInput::Deferred { type_id } => ControlInputSurface::Deferred {
-            type_id: type_id.to_owned(),
-        },
-        tilo_actions::ActionInput::Prompted {
-            prompt,
-            placeholder,
-            collects,
-        } => ControlInputSurface::Prompted {
-            prompt: prompt.to_owned(),
-            placeholder: placeholder.to_owned(),
-            collects,
-        },
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct ControlObservation {
-    identity: ControlIdentity,
-    intent: PreparedActionIntent,
-    confirmation: tilo_actions::ConfirmationPolicy,
-    /// What the action is called, as its declaration says ("Mark as read"): how a held control is named
-    /// to people.
-    label: String,
-}
-
-impl PartialEq for ControlObservation {
-    fn eq(&self, other: &Self) -> bool {
-        self.identity == other.identity
-            && self.intent == other.intent
-            && self.confirmation == other.confirmation
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
-enum ControlInputSurface {
-    Immediate,
-    Deferred {
-        type_id: String,
-    },
-    Prompted {
-        prompt: String,
-        placeholder: String,
-        collects: tilo_actions::Collects,
-    },
-}
-
-#[derive(Clone, PartialEq)]
-pub(crate) struct ControlIdentity {
-    continuation: tilo_actions::ContinuationEvidence,
-    locus: tilo_actions::ExecutionLocus,
-    kind: tilo_actions::OperationKind,
-    operation_type: Option<String>,
-    risk: tilo_actions::RiskLevel,
-    retry: tilo_actions::RetryPolicy,
-    execution: tilo_actions::ExecutionMode,
-    result: tilo_actions::ResultSpec,
-    tags: Vec<String>,
-    params: Vec<tilo_actions::ActionParam>,
-    input_surface: ControlInputSurface,
-}
-
-impl ControlObservation {
-    pub(crate) fn confirmation(&self) -> &tilo_actions::ConfirmationPolicy {
-        &self.confirmation
-    }
-    pub(crate) fn identity(&self) -> &ControlIdentity {
-        &self.identity
-    }
-    pub(crate) fn label(&self) -> &str {
-        &self.label
-    }
-}
-
-#[derive(Clone)]
-pub(crate) enum ControlContinuationArguments {
-    Immediate,
-    Text(String),
-    Json(serde_json::Map<String, serde_json::Value>),
-}
-
-impl ControlContinuationArguments {
-    pub(crate) fn as_api_arguments(
-        &self,
-    ) -> (
-        Option<&str>,
-        Option<&serde_json::Map<String, serde_json::Value>>,
-    ) {
-        match self {
-            Self::Immediate => (None, None),
-            Self::Text(text) => (Some(text), None),
-            Self::Json(json) => (None, Some(json)),
-        }
-    }
-    fn query(&self) -> tilo_actions::ContinuationArguments<'_> {
-        match self {
-            Self::Immediate => tilo_actions::ContinuationArguments::Immediate,
-            Self::Text(value) => tilo_actions::ContinuationArguments::Text(value),
-            Self::Json(arguments) => tilo_actions::ContinuationArguments::Json(arguments),
-        }
-    }
-}
-
-/// Re-resolve one exact ownership target and derive inert comparison data.
-/// The returned encoding is never executed.
-pub(crate) fn control_observation(
-    root: &dyn Widget,
-    doc: &AutoCommit,
-    target: &local_target::LocalResourceTarget,
-    invocation: &tilo_actions::ControlInvocation,
-) -> Result<ControlObservation, tilo_actions::ApiError> {
-    control_observation_with_arguments(
-        root,
-        doc,
-        target,
-        invocation,
-        &ControlContinuationArguments::Json(invocation.arguments.clone()),
-    )
-}
-
-pub(crate) fn control_observation_with_arguments(
-    root: &dyn Widget,
-    doc: &AutoCommit,
-    target: &local_target::LocalResourceTarget,
-    invocation: &tilo_actions::ControlInvocation,
-    original_arguments: &ControlContinuationArguments,
-) -> Result<ControlObservation, tilo_actions::ApiError> {
-    let resources = resources_for_control_target(root, doc, target, &invocation.address)?;
-    let (resource, spec) = unique_control_spec(&resources, &invocation.address)?;
-    let (argument, arguments) = match original_arguments {
-        ControlContinuationArguments::Immediate => (None, None),
-        ControlContinuationArguments::Text(value) => (Some(value.as_str()), None),
-        ControlContinuationArguments::Json(arguments) => (None, Some(arguments)),
-    };
-    let (intent, continuation) =
-        if matches!(spec.input(), tilo_actions::ActionInput::Deferred { .. }) {
-            validate_deferred_arguments(spec, arguments, argument)?;
-            let intent = DeferredIntent::capture(spec)?;
-            let continuation = intent.draft().clone();
-            (PreparedActionIntent::Deferred(intent), continuation)
-        } else {
-            let encoded =
-                encode_resource_action(&resources, &invocation.address, arguments, argument)?;
-            let continuation = spec
-                .continuation_identity(tilo_actions::ContinuationQuery::Exact(
-                    original_arguments.query(),
-                ))
-                .ok_or_else(|| tilo_actions::ApiError::Unavailable {
-                    code: "unsupported_continuation_identity".into(),
-                    reason:
-                        "The action provider cannot prove the original target and handler identity"
-                            .into(),
-                })?;
-            (PreparedActionIntent::Encoded(encoded), continuation)
-        };
-    Ok(ControlObservation {
-        identity: control_identity_from_spec(resource, spec, continuation),
-        intent,
-        confirmation: spec.contract.confirmation.clone(),
-        label: spec.label.clone(),
-    })
-}
-
-/// What a control's action is declared as, for people: its name ("Mark as read") and whether it is
-/// housekeeping.
-pub(crate) struct ControlDeclaration {
-    pub(crate) label: Option<String>,
-    pub(crate) housekeeping: bool,
-}
-
-/// [`ControlDeclaration`] of the action a control invokes, when `address` still resolves to one.
-pub(crate) fn control_declaration(
-    root: &dyn Widget,
-    doc: &AutoCommit,
-    target: &local_target::LocalResourceTarget,
-    address: &tilo_actions::ActionAddress,
-) -> Option<ControlDeclaration> {
-    let resources = resources_for_control_target(root, doc, target, address).ok()?;
-    let (_, spec) = unique_control_spec(&resources, address).ok()?;
-    Some(ControlDeclaration {
-        label: Some(spec.label.trim().to_owned()).filter(|label| !label.is_empty()),
-        housekeeping: spec
-            .contract
-            .tags
-            .iter()
-            .any(|tag| tag == tilo_actions::HOUSEKEEPING_TAG),
-    })
-}
-
-fn resources_for_control_target(
-    root: &dyn Widget,
-    doc: &AutoCommit,
-    target: &local_target::LocalResourceTarget,
-    address: &tilo_actions::ActionAddress,
-) -> Result<Vec<ResourceSpec>, tilo_actions::ApiError> {
-    match target {
-        local_target::LocalResourceTarget::Component(target) => {
-            if target.address.address != *address {
-                return Err(tilo_actions::ApiError::Unknown(address.clone()));
-            }
-            let snapshots = discover_bound_resources_with_filter(root, doc, Some(address), false)
-                .map_err(|error| BoundActionError::Dispatch(error).into_api())?;
-            let snapshot = snapshots
-                .into_iter()
-                .find(|snapshot| snapshot.binding.same_component(&target.binding))
-                .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
-            unique_control_spec(snapshot.resources(), address)?;
-            let binding = snapshot.binding.clone();
-            Ok(snapshot
-                .into_resources()
-                .into_iter()
-                .filter_map(|resource| filter_resource(&binding, resource))
-                .collect())
-        }
-        local_target::LocalResourceTarget::Outer => {
-            let mut resources = Vec::new();
-            collect_unbound_resources(root, doc, &mut resources);
-            if tilo_actions::api::resolve(&resources, address).is_none()
-                && let Some(resource) = resolve_unbound_resource(root, doc, &address.resource)
-            {
-                resources.push(resource);
-            }
-            Ok(resources)
-        }
-    }
-}
-
-fn unique_control_spec<'a>(
-    resources: &'a [ResourceSpec],
-    address: &tilo_actions::ActionAddress,
-) -> Result<(&'a ResourceSpec, &'a tilo_actions::ActionSpec), tilo_actions::ApiError> {
-    fn matches<'a>(
-        resources: &'a [ResourceSpec],
-        address: &tilo_actions::ActionAddress,
-        found: &mut Vec<&'a ResourceSpec>,
-    ) {
-        for resource in resources {
-            if resource.id.as_str() == address.resource {
-                found.push(resource);
-            }
-            matches(&resource.children, address, found);
-        }
-    }
-    let mut found = Vec::new();
-    matches(resources, address, &mut found);
-    let [resource] = found.as_slice() else {
-        return if found.is_empty() {
-            Err(tilo_actions::ApiError::Unknown(address.clone()))
-        } else {
-            Err(tilo_actions::ApiError::Unavailable {
-                code: "ambiguous_action_identity".into(),
-                reason: "More than one declaration in the retained owner claims this address"
-                    .into(),
-            })
-        };
-    };
-    let actions = resource
-        .actions
-        .iter()
-        .filter(|spec| spec.id == address.action)
-        .collect::<Vec<_>>();
-    let [spec] = actions.as_slice() else {
-        return if actions.is_empty() {
-            Err(tilo_actions::ApiError::Unknown(address.clone()))
-        } else {
-            Err(tilo_actions::ApiError::Unavailable {
-                code: "ambiguous_action_identity".into(),
-                reason: "More than one action declaration in the retained resource claims this id"
-                    .into(),
-            })
-        };
-    };
-    Ok((*resource, *spec))
-}
-
-fn control_identity_from_spec(
-    _resource: &ResourceSpec,
-    spec: &tilo_actions::ActionSpec,
-    continuation: tilo_actions::ContinuationEvidence,
-) -> ControlIdentity {
-    let input_surface = control_input_surface(spec);
-    ControlIdentity {
-        continuation,
-        locus: spec.locus,
-        kind: spec.kind,
-        operation_type: spec.operation_type.clone(),
-        risk: spec.contract.risk,
-        retry: spec.contract.retry,
-        execution: spec.contract.execution.clone(),
-        result: spec.contract.result.clone(),
-        tags: spec.contract.tags.clone(),
-        params: spec.params().to_vec(),
-        input_surface,
-    }
-}
-
-pub(crate) fn control_draft_identity(
-    root: &dyn Widget,
-    doc: &AutoCommit,
-    target: &local_target::LocalResourceTarget,
-    address: &tilo_actions::ActionAddress,
-) -> Result<ControlIdentity, tilo_actions::ApiError> {
-    let resources = resources_for_control_target(root, doc, target, address)?;
-    let (resource, spec) = unique_control_spec(&resources, address)?;
-    let continuation = spec
-        .continuation_identity(tilo_actions::ContinuationQuery::Draft)
-        .ok_or_else(|| tilo_actions::ApiError::Unavailable {
-            code: "unsupported_continuation_identity".into(),
-            reason: "The action provider cannot prove a stable draft resolution domain".into(),
-        })?;
-    Ok(control_identity_from_spec(resource, spec, continuation))
-}
-
 /// The item resources the action in `envelope` created, each with its id and
 /// the address it is published under, in minting order: what a write answers
 /// its caller, so nothing reads an id out of a rendered address. `minted`
@@ -2810,8 +2508,7 @@ pub(crate) fn actions_not_in() -> tilo_actions::ApiError {
     }
 }
 
-/// One execution body for bound components and legacy shell roots. Broker
-/// admission and semantic delivery are host concerns surrounding this body.
+/// One execution body for bound components, under the broker's admission.
 pub(crate) fn execute_resource_operation(
     widget: &mut dyn Widget,
     doc: &mut AutoCommit,
@@ -2921,9 +2618,8 @@ fn perform_resource_operation(
                 ));
             }
             note_native_text_policy(widget, doc, &encoded);
-            // A document action that runs without an authenticated publication
-            // makes this input's history unsigned only when it actually changes
-            // the document. Input that edits nothing never reaches this branch.
+            // Input that runs without an authenticated publication leaves its
+            // history unsigned only where it changes the document.
             let unsigned = if !broker_admitted && source_invocation.is_none() {
                 crate::local_document_action::unsigned_input(Some(&context))
                     .map(|edits| (edits, doc.get_heads()))
@@ -3003,8 +2699,7 @@ fn perform_resource_operation(
             if indexed {
                 doc.reset_diff_cursor();
             }
-            // What the action minted, taken before it answers: the answer
-            // carries it beside what the action itself said, and a group's
+            // What the action minted, taken before it answers: a group's
             // members' ids are here together.
             let minted = tilo_resource::take_minted();
             let made = match (applied.as_ref(), before.as_ref()) {
@@ -3094,7 +2789,9 @@ fn perform_resource_operation(
                     &encoded.payload,
                 ),
             };
-            let op = op.with_target(target.as_ref());
+            let op = op
+                .with_target(target.as_ref())
+                .with_resource(resource.id.as_str());
             tilo_actions::with_invoking_context(ambient.cloned(), || {
                 crate::widget::start_operation(
                     &mut *widget,
@@ -3420,110 +3117,6 @@ fn perform_resource_action(
     )))
 }
 
-/// The resource a local invocation of `address` resolves to in `widget`'s
-/// filtered tree, found in the component's shared tree without building the
-/// rest of it ([`shared_target`]), then read as the widget publishes it: what
-/// a surface says of a row now (its status: whether the effect can be used
-/// there, and how it is named) is laid over the published tree and not kept in
-/// the shared one, so a caller cannot invoke what the palette refuses. `None`
-/// defers to the whole tree: the tree does not
-/// resolve the address itself (the unbound and provider fallbacks), or the
-/// action is not permitted there.
-fn resolve_published_action(
-    widget: &dyn Widget,
-    doc: &AutoCommit,
-    binding: &CallbackBinding,
-    address: &tilo_actions::ActionAddress,
-) -> Option<ResourceSpec> {
-    if widget.has_separate_document_owner() {
-        return None;
-    }
-    let forest = crate::resources::shared_resources(widget, doc);
-    let found = shared_target(&forest, Some(binding), address)?;
-    let Some(publisher) =
-        crate::widget::capability::capability::<dyn crate::resources::PublishesResources>(widget)
-    else {
-        return Some(found);
-    };
-    publisher
-        .resource_for(None, doc, found.id.as_str())
-        .and_then(|resource| filter_resource(binding, resource))
-        .filter(|resource| {
-            resource
-                .actions
-                .iter()
-                .any(|action| action.id == address.action)
-        })
-        .or(Some(found))
-}
-
-/// The node `address` names in `forest`, exactly as [`resolve_resource_invocation`] finds it in
-/// the tree [`filter_resource`] keeps for `binding` (or in the whole tree, with no binding): the
-/// first, depth first, with the address's resource id that filtering does not drop. Answered as
-/// its head alone, with its permitted actions and without its children, found without building,
-/// copying or filtering the rest of the tree: a resource of thousands of items resolves one of them,
-/// or itself, for the cost of finding it. `None` when the forest does not resolve the address, or
-/// the node found does not offer the action.
-fn shared_target(
-    forest: &[SharedResource],
-    binding: Option<&CallbackBinding>,
-    address: &tilo_actions::ActionAddress,
-) -> Option<ResourceSpec> {
-    fn resolves(node: &SharedResource, address: &tilo_actions::ActionAddress) -> bool {
-        (node.id() == address.resource
-            && node
-                .head()
-                .actions
-                .iter()
-                .any(|action| action.id == address.action))
-            || node.children().iter().any(|child| resolves(child, address))
-    }
-    fn kept(decider: &crate::permissions::ActionDecider<'_>, node: &SharedResource) -> bool {
-        let head = node.head();
-        head.actions
-            .iter()
-            .any(|action| decider.permits(&head.kind, head.id.as_str(), action))
-            || node.children().iter().any(|child| kept(decider, child))
-    }
-    /// The first node with resource id `id` that filtering keeps (any, with no decider). A node
-    /// filtering drops has no kept node beneath it.
-    fn first<'a>(
-        decider: Option<&crate::permissions::ActionDecider<'_>>,
-        node: &'a SharedResource,
-        id: &str,
-    ) -> Option<&'a SharedResource> {
-        if node.id() == id && decider.is_none_or(|decider| kept(decider, node)) {
-            return Some(node);
-        }
-        node.children()
-            .iter()
-            .find_map(|child| first(decider, child, id))
-    }
-    if !forest.iter().any(|node| resolves(node, address)) {
-        return None;
-    }
-    let permissions = binding.map(|binding| binding.permissions.borrow());
-    let decider = binding
-        .zip(permissions.as_ref())
-        .map(|(binding, permissions)| {
-            permissions.action_decider_on(&binding.app_id, binding.checkout.id.as_str())
-        });
-    let node = forest
-        .iter()
-        .find_map(|node| first(decider.as_ref(), node, &address.resource))?;
-    let mut resource = node.head().clone();
-    if let Some(decider) = &decider {
-        resource
-            .actions
-            .retain(|action| decider.permits(&node.head().kind, node.head().id.as_str(), action));
-    }
-    resource
-        .actions
-        .iter()
-        .any(|action| action.id == address.action)
-        .then_some(resource)
-}
-
 fn below_root(root: bool, resource: ResourceSpec) -> ResourceSpec {
     if root {
         resource
@@ -3734,11 +3327,9 @@ pub(crate) fn service_retained_owner_model(
                     current.drain_owned_tree(owner, document).map(|_| ())
                 })
                 .and_then(|result| result);
-            // The original host attempts sync after a nonpanic update/drain
-            // refusal. Retain its first error without omitting the fresh API.
+            // A refused update is still synced, and the first error stands.
             let admitted = updated.and(synced);
-            // Original status projection follows the canonical loan, including
-            // refusal. No application callback runs under a record-store loan.
+            // Status is projected after the loan, even refused; no callback runs in it.
             let projected = current.enter().and_then(|_entry| {
                 let handle = current.lifetime.clone();
                 let wake: durable_store::ReadyWake =
@@ -3773,10 +3364,16 @@ pub(crate) fn service_retained_owner_model(
 /// A record's save moved on and nothing else woke the owner
 /// ([`crate::owner_wake::OwnerWakeRequest::save_progress_only`]): its owner is told the save status
 /// alone.
+/// Show the save status this wake sampled to the owner, when it differs from
+/// `told` — the status the window last told the owner. Returns the status the
+/// owner was told, or `None` when it already shows the sampled one: a save
+/// landing after every keystroke repeats the status the key's own frame
+/// already showed, and telling it again would draw a second frame for it.
 pub(crate) fn service_owner_save_progress(
     root: &mut dyn Widget,
     work: &crate::owner_wake::OwnerWakeRequest,
-) -> Result<bool, BoundDispatchError> {
+    told: Option<&crate::resource::ResourceSaveStatus>,
+) -> Result<Option<crate::resource::ResourceSaveStatus>, BoundDispatchError> {
     let captured = work.binding();
     let _entry = captured.enter()?;
     let mut result = None;
@@ -3792,10 +3389,11 @@ pub(crate) fn service_owner_save_progress(
                 let status = current
                     .sampled_save_status(&parts, &wake)
                     .map_err(BoundDispatchError::Record)?;
-                let bar = crate::window_toolbar::revision();
-                owner.resource_save_status(status);
-                Ok(crate::window_toolbar::revision() != bar
-                    || (owner.needs_redraw() || owner.needs_animation_frame()))
+                if told == Some(&status) {
+                    return Ok(None);
+                }
+                owner.resource_save_status(status.clone());
+                Ok(Some(status))
             }));
         }
         None

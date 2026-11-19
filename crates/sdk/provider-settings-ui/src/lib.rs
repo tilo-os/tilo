@@ -126,7 +126,7 @@ pub enum ProviderEffect {
     /// sign-in: shows whether the connection works, and answers the models
     /// to choose from with what each can do.
     #[effect(kind = "outside")]
-    #[effect(job, row, returns, label = "agent-test-connection")]
+    #[effect(job, row, returns, label = "agent-test-connection", on = AgentProvider)]
     ListProviderModels {
         #[param("The provider's id")]
         provider: String,
@@ -134,7 +134,7 @@ pub enum ProviderEffect {
     /// Make one model the one agents use from this provider: one it listed,
     /// or any other id.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = AgentProvider)]
     SetProviderModel {
         #[param("The provider's id")]
         provider: String,
@@ -143,7 +143,7 @@ pub enum ProviderEffect {
     },
     /// Speak another protocol to a provider.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = AgentProvider)]
     SetProviderProtocol {
         #[param("The provider's id")]
         provider: String,
@@ -152,7 +152,7 @@ pub enum ProviderEffect {
     },
     /// Offer a provider to agents, or stop offering it.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = AgentProvider)]
     SetProviderEnabled {
         #[param("The provider's id")]
         provider: String,
@@ -160,7 +160,7 @@ pub enum ProviderEffect {
     },
     /// Name a provider, where it is, and the model agents use from it.
     #[effect(kind = "outside")]
-    #[effect(job, row)]
+    #[effect(job, row, on = AgentProvider)]
     SetProviderDetails {
         #[param("The provider's id")]
         provider: String,
@@ -173,7 +173,7 @@ pub enum ProviderEffect {
     },
     /// Set this model's request allowance; omit both values to restore defaults.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = AgentProviderModel)]
     SetModelRequestLimits {
         provider: String,
         model: String,
@@ -182,13 +182,13 @@ pub enum ProviderEffect {
         plan_timeout_ms: Option<u32>,
     },
     /// Read source context and this model's configured deployment limits.
-    #[effect(row, returns, kind = "read")]
+    #[effect(row, returns, kind = "read", on = AgentProviderModel)]
     InspectModelRequestLimits { provider: String, model: String },
     /// Say what one model can do, over what its provider's list or Tilo's
     /// table of model families says; omit both to let them decide again.
     /// An agent plans only with a model that calls tools.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = AgentProvider)]
     SetModelCapabilities {
         #[param("The provider's id")]
         provider: String,
@@ -201,7 +201,7 @@ pub enum ProviderEffect {
     },
     /// Make a provider the one agents use unless told otherwise.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent, label = "agent-use-default")]
+    #[effect(job, row, idempotent, label = "agent-use-default", on = AgentProvider)]
     SetDefaultProvider {
         #[param("The provider's id")]
         provider: String,
@@ -232,12 +232,29 @@ pub enum ProviderEffect {
     },
     /// Remove a provider.
     #[effect(kind = "outside")]
-    #[effect(job, row, destructive, label = "agent-remove-provider")]
+    #[effect(job, row, destructive, label = "agent-remove-provider", on = AgentProvider)]
     RemoveProvider {
         #[param("The provider's id")]
         provider: String,
     },
 }
+/// A provider Agent Models lists: its row offers turning it on or off,
+/// making it the default, removing it, listing its models, and editing its
+/// details, protocol, model and capabilities.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.agent-provider", label = "Provider", effects = ProviderEffect)]
+struct AgentProvider;
+
+/// One model of a provider: its row offers reading and setting the model's
+/// request limits.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "settings.agent-provider-model",
+    label = "Model",
+    effects = ProviderEffect
+)]
+struct AgentProviderModel;
+
 fn protocol_slug(protocol: ProviderProtocol) -> &'static str {
     match protocol {
         ProviderProtocol::Anthropic => "anthropic",
@@ -262,87 +279,105 @@ fn request_limit_rows(profile: &ProviderProfile) -> Vec<LiveRow> {
 }
 
 fn request_limit_row(profile: &ProviderProfile, selected: &ModelDescriptor) -> LiveRow {
-    LiveRow::new(
+    let provider = profile.id.clone();
+    let model = selected.id.clone();
+    let bindings = ui::tilo_resource::RowBindings::new()
+        .bind(
+            ProviderEffect::INSPECT_MODEL_REQUEST_LIMITS,
+            [
+                ("provider", provider.clone().into()),
+                ("model", model.clone().into()),
+            ],
+        )
+        .bind_asking(
+            ProviderEffect::SET_MODEL_REQUEST_LIMITS,
+            [
+                ("provider", provider.into()),
+                ("model", model.into()),
+                ("max_output_tokens", serde_json::Value::Null),
+                ("runtime_context_tokens", serde_json::Value::Null),
+                ("plan_timeout_ms", serde_json::Value::Null),
+            ],
+            &[
+                "max_output_tokens",
+                "runtime_context_tokens",
+                "plan_timeout_ms",
+            ],
+        );
+    LiveRow::typed_with::<AgentProviderModel>(
         format!(
             "settings.agent-provider-model:{}:{}",
             hex::encode(&profile.id),
             hex::encode(&selected.id)
         ),
-        "settings.agent-provider-model",
-        selected.display_label().to_owned(),
-    )
-    .effect(&ProviderEffect::InspectModelRequestLimits {
-        provider: profile.id.clone(),
-        model: selected.id.clone(),
-    })
-    .operation(
-        ProviderEffect::SetModelRequestLimits {
-            provider: profile.id.clone(),
-            model: selected.id.clone(),
-            max_output_tokens: None,
-            runtime_context_tokens: None,
-            plan_timeout_ms: None,
-        }
-        .bound_asking(&[
-            "max_output_tokens",
-            "runtime_context_tokens",
-            "plan_timeout_ms",
-        ]),
+        selected.display_label(),
+        &bindings,
     )
 }
 
 fn provider_row(profile: &ProviderProfile) -> LiveRow {
-    let offer = |effect: ProviderEffect| effect.bound();
     let id = profile.id.clone();
-    let row = LiveRow::new(
-        format!("settings.agent-provider:{id}"),
-        "settings.agent-provider",
-        profile.display_label().to_owned(),
-    )
-    .operation(offer(ProviderEffect::SetProviderEnabled {
-        provider: id.clone(),
-        on: !profile.enabled,
-    }))
-    .operation(offer(ProviderEffect::SetDefaultProvider {
-        provider: id.clone(),
-    }))
-    .operation(offer(ProviderEffect::RemoveProvider {
-        provider: id.clone(),
-    }))
-    .operation(offer(ProviderEffect::ListProviderModels {
-        provider: id.clone(),
-    }))
-    .operation(
-        ProviderEffect::SetProviderModel {
-            provider: id.clone(),
-            model: profile.default_model.clone().unwrap_or_default(),
-        }
-        .bound_asking(&["model"]),
-    );
-    row.operation(
-        ProviderEffect::SetProviderDetails {
-            provider: id.clone(),
-            label: profile.label.clone(),
-            endpoint: profile.endpoint.clone(),
-            model: profile.default_model.clone(),
-        }
-        .bound_asking(&["label", "endpoint", "model"]),
-    )
-    .operation(
-        ProviderEffect::SetProviderProtocol {
-            provider: id.clone(),
-            protocol: protocol_slug(profile.protocol).into(),
-        }
-        .bound_asking(&["protocol"]),
-    )
-    .operation(
-        ProviderEffect::SetModelCapabilities {
-            provider: id,
-            model: profile.default_model.clone().unwrap_or_default(),
-            vision: None,
-            tool_calling: None,
-        }
-        .bound_asking(&["model", "vision", "tool_calling"]),
+    let model = profile.default_model.clone().unwrap_or_default();
+    let bindings = ui::tilo_resource::RowBindings::new()
+        .bind(
+            ProviderEffect::SET_PROVIDER_ENABLED,
+            [
+                ("provider", id.clone().into()),
+                ("on", (!profile.enabled).into()),
+            ],
+        )
+        .bind(
+            ProviderEffect::SET_DEFAULT_PROVIDER,
+            [("provider", id.clone().into())],
+        )
+        .bind(
+            ProviderEffect::REMOVE_PROVIDER,
+            [("provider", id.clone().into())],
+        )
+        .bind(
+            ProviderEffect::LIST_PROVIDER_MODELS,
+            [("provider", id.clone().into())],
+        )
+        .bind_asking(
+            ProviderEffect::SET_PROVIDER_MODEL,
+            [
+                ("provider", id.clone().into()),
+                ("model", model.clone().into()),
+            ],
+            &["model"],
+        )
+        .bind_asking(
+            ProviderEffect::SET_PROVIDER_DETAILS,
+            [
+                ("provider", id.clone().into()),
+                ("label", profile.label.clone().into()),
+                ("endpoint", profile.endpoint.clone().into()),
+                ("model", profile.default_model.clone().into()),
+            ],
+            &["label", "endpoint", "model"],
+        )
+        .bind_asking(
+            ProviderEffect::SET_PROVIDER_PROTOCOL,
+            [
+                ("provider", id.clone().into()),
+                ("protocol", protocol_slug(profile.protocol).into()),
+            ],
+            &["protocol"],
+        )
+        .bind_asking(
+            ProviderEffect::SET_MODEL_CAPABILITIES,
+            [
+                ("provider", id.into()),
+                ("model", model.into()),
+                ("vision", serde_json::Value::Null),
+                ("tool_calling", serde_json::Value::Null),
+            ],
+            &["model", "vision", "tool_calling"],
+        );
+    LiveRow::typed_with::<AgentProvider>(
+        format!("settings.agent-provider:{}", profile.id),
+        profile.display_label(),
+        &bindings,
     )
 }
 

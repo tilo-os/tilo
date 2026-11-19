@@ -402,8 +402,21 @@ impl Worker {
                 // actions would be asked about as it stands: no name is looked up here.
                 let carries = super::carried::read(&descriptor, &arguments, |_| None);
                 let about = self.about(workspace_id, route, &descriptor, arguments, carries);
+                // An agent working inside a turn is decided as every action of its is: what its
+                // person let stand goes ahead, and otherwise they are asked in the conversation,
+                // whose answer the server carries out and tells the agent about. A question on
+                // their devices would outlive the turn that waits for it.
+                if let Some(permissions) = self.stands_for(workspace_id, caller, request, &about) {
+                    if let Some(link) = self.shared.link.get() {
+                        for permission in &permissions {
+                            link.permission_used(workspace_id, caller, permission);
+                        }
+                    }
+                    return Ok(());
+                }
                 Err(self
-                    .ask_person(workspace_id, caller, request, &about)
+                    .ask_in_conversation(workspace_id, caller, request, &about)
+                    .or_else(|| self.ask_person(workspace_id, caller, request, &about))
                     .unwrap_or_else(|| refused(ActionCallError::confirmation_required())))
             }
         }

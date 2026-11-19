@@ -49,12 +49,15 @@ const RELAY_LINES_MAX: u64 = 5_000;
 /// How many of an app's last stderr lines its end keeps for the report.
 pub const TAIL_LINES: usize = 12;
 
-/// What an app wrote that the log kept for its end: the last stderr lines, and
-/// how many lines were not relayed.
+/// What an app wrote that the log kept for its end: the last lines of each stream, and how many
+/// lines did not reach the log. A program that stopped with an error says why on its error stream when
+/// it says it anywhere; a console tool prints its usage on its normal output, so both are kept.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OutputTail {
     /// Its last stderr lines, oldest first.
     pub stderr: Vec<String>,
+    /// Its last stdout lines, oldest first.
+    pub stdout: Vec<String>,
     /// Lines of either stream the log did not relay.
     pub dropped: u64,
 }
@@ -76,8 +79,14 @@ pub struct AppOutput {
     /// reads it.
     file: Option<Mutex<std::fs::File>>,
     stderr_tail: Mutex<VecDeque<String>>,
+    stdout_tail: Mutex<VecDeque<String>>,
     /// The threads reading the app's streams, joined by [`Self::finish`].
     readers: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    /// The keeper's directory, for a launch kept across a restart: what this desktop reads from
+    /// the launcher is the same bytes its keeper writes to its files, so what was read is kept
+    /// there, and the desktop that follows reads on from it rather than logging any of it twice.
+    #[cfg(target_os = "linux")]
+    kept: Mutex<Option<std::path::PathBuf>>,
     /// Set when the app ended: a reader following a stream that has not closed yet stops.
     stopping: Arc<AtomicBool>,
     relayed: AtomicU64,
@@ -93,7 +102,10 @@ impl AppOutput {
             app,
             file: file.map(Mutex::new),
             stderr_tail: Mutex::new(VecDeque::with_capacity(TAIL_LINES)),
+            stdout_tail: Mutex::new(VecDeque::with_capacity(TAIL_LINES)),
             readers: Mutex::new(Vec::new()),
+            #[cfg(target_os = "linux")]
+            kept: Mutex::new(None),
             stopping: Arc::new(AtomicBool::new(false)),
             relayed: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
@@ -119,15 +131,67 @@ impl AppOutput {
     }
 
     /// Keep what the app wrote before this desktop took it over, and from now on: its keeper
-    /// kept both streams in `dir` while no session read them.
+    /// kept both streams in `dir` while no session read them, and this desktop reads on from
+    /// where the one before it stopped.
     #[cfg(target_os = "linux")]
     pub fn follow(self: &Arc<Self>, dir: &std::path::Path) {
+        self.seed_tail(dir);
+        self.keep_followed(dir, false);
+    }
+
+    /// Keep what this desktop reads in `dir`, its keeper's directory: the desktop that follows
+    /// reads on from it.
+    #[cfg(target_os = "linux")]
+    pub fn keep_position_in(&self, dir: &std::path::Path) {
+        *self.kept.lock_recover() = Some(dir.to_path_buf());
+    }
+
+    /// Keep the last lines its keeper holds as this launch's end report names them, without
+    /// relaying them again: the desktop before this one read them, and only new lines go to the
+    /// log, while a crash report still says what the app wrote before it.
+    #[cfg(target_os = "linux")]
+    fn seed_tail(&self, dir: &std::path::Path) {
+        for (stream, tail) in [("stderr", &self.stderr_tail), ("stdout", &self.stdout_tail)] {
+            let path = tilo_app_keeper::output::path(dir, stream);
+            let stopping = Arc::new(AtomicBool::new(true));
+            let Ok(mut whole) = tilo_app_keeper::output::Follow::whole(&path, stopping) else {
+                continue;
+            };
+            let mut kept = Vec::new();
+            if std::io::Read::read_to_end(&mut whole, &mut kept).is_err() {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&kept);
+            let lines = text.lines();
+            let skip = lines.clone().count().saturating_sub(TAIL_LINES);
+            let mut tail = tail.lock_recover();
+            for line in lines.skip(skip) {
+                if tail.len() == TAIL_LINES {
+                    tail.pop_front();
+                }
+                tail.push_back(line.to_owned());
+            }
+        }
+    }
+
+    /// Keep all the app wrote that its keeper still holds in `dir`, as [`Self::follow`] does but
+    /// from the oldest line kept: what an end report is made of, whose tail names the last lines
+    /// whether or not a desktop's log read them.
+    #[cfg(target_os = "linux")]
+    pub fn follow_whole(self: &Arc<Self>, dir: &std::path::Path) {
+        self.keep_followed(dir, true);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn keep_followed(self: &Arc<Self>, dir: &std::path::Path, whole: bool) {
         for stream in ["stdout", "stderr"] {
             let path = tilo_app_keeper::output::path(dir, stream);
-            let follow = match tilo_app_keeper::output::Follow::open(
-                &path,
-                Arc::clone(&self.stopping),
-            ) {
+            let stopping = Arc::clone(&self.stopping);
+            let follow = match if whole {
+                tilo_app_keeper::output::Follow::whole(&path, stopping)
+            } else {
+                tilo_app_keeper::output::Follow::open(&path, stopping)
+            } {
                 Ok(follow) => follow,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => {
@@ -141,6 +205,19 @@ impl AppOutput {
             }
         }
     }
+
+    /// Keep `received` bytes of `stream` as what this desktop read, for the desktop that follows.
+    #[cfg(target_os = "linux")]
+    fn keep_position(&self, stream: &str, received: usize) {
+        let Some(dir) = self.kept.lock_recover().clone() else {
+            return;
+        };
+        let path = tilo_app_keeper::output::cursor(&tilo_app_keeper::output::path(&dir, stream));
+        let _ = std::fs::write(path, received.to_string());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn keep_position(&self, _: &str, _: usize) {}
 
     /// Wait until both streams are read to their end: the app's pipes close
     /// with it, and the tail is what it said only once they are drained.
@@ -183,6 +260,7 @@ impl AppOutput {
         let mut chunk = [0_u8; 4096];
         let mut partial = Vec::with_capacity(LINE_BYTES.min(chunk.len()));
         let mut truncated = false;
+        let mut received = 0_usize;
         loop {
             let read = match reader.read(&mut chunk) {
                 Ok(0) => break,
@@ -200,6 +278,8 @@ impl AppOutput {
                     truncated = true;
                 }
             }
+            received = received.saturating_add(read);
+            self.keep_position(stream, received);
         }
         if !partial.is_empty() || truncated {
             self.keep(stream, &mut partial, &mut truncated, file, &mut bucket);
@@ -227,8 +307,13 @@ impl AppOutput {
         {
             let _ = writeln!(file, "{said}");
         }
-        if stream == "stderr" {
-            let mut tail = self.stderr_tail.lock_recover();
+        {
+            let tail = if stream == "stderr" {
+                &self.stderr_tail
+            } else {
+                &self.stdout_tail
+            };
+            let mut tail = tail.lock_recover();
             if tail.len() == TAIL_LINES {
                 tail.pop_front();
             }
@@ -278,6 +363,7 @@ impl AppOutput {
     pub fn tail(&self) -> OutputTail {
         OutputTail {
             stderr: self.stderr_tail.lock_recover().iter().cloned().collect(),
+            stdout: self.stdout_tail.lock_recover().iter().cloned().collect(),
             dropped: self.dropped.load(Ordering::Relaxed),
         }
     }
@@ -349,8 +435,13 @@ mod tests {
             let app = output();
             let long = "x".repeat(LINE_BYTES.saturating_mul(2));
             read(&app, &format!("{long}\n"), "stdout");
-            let kept = app.tail().stderr;
-            assert!(kept.is_empty(), "a stdout line is not the stderr tail");
+            let kept = app.tail();
+            assert!(kept.stderr.is_empty(), "a stdout line is not the stderr tail");
+            assert_eq!(
+                kept.stdout,
+                ["x".repeat(LINE_BYTES) + "… [truncated]"],
+                "and it is kept as its own stream's line, cut at the bound"
+            );
         }
 
         phase a_chatty_app_is_rate_limited_and_the_log_says_how_much_it_left_out;

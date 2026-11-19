@@ -237,6 +237,59 @@ fn a_row_binds_its_own_state_into_the_effects_it_offers() {
 }
 
 #[test]
+#[should_panic(expected = "names none")]
+fn a_resource_no_declaration_shaped_is_not_a_row() {
+    let _ = LiveRow::declared(tilo_actions::ResourceSpec::new("x", "test.none", "None"));
+}
+
+#[test]
+fn a_row_asks_the_value_it_would_act_with_as_the_default() {
+    let bindings = tilo_resource::RowBindings::new().bind_asking(
+        TransferEffect::PAUSE,
+        [("transfer", "t:3".into()), ("until", "6".into())],
+        &["until"],
+    );
+    let row = LiveRow::typed_with::<Transfer>("t:3", "Backup", &bindings).into_resource();
+    let pause = &row.actions[0];
+    assert_eq!(
+        pause
+            .params()
+            .iter()
+            .map(|param| param.name.to_string())
+            .collect::<Vec<_>>(),
+        ["until"],
+        "the row's own value is asked, not taken"
+    );
+    assert_eq!(
+        pause.params()[0]
+            .schema
+            .as_deref()
+            .and_then(|schema| schema.get("default"))
+            .and_then(serde_json::Value::as_str),
+        Some("6"),
+        "the row's own value is the field's default"
+    );
+    let given = pause
+        .build_json(&serde_json::Map::from_iter([(
+            "until".to_owned(),
+            "9".into(),
+        )]))
+        .unwrap();
+    assert_eq!(
+        TransferEffect::from_payload(&given.payload).unwrap(),
+        TransferEffect::Pause {
+            transfer: "t:3".into(),
+            until: "9".into(),
+        },
+        "a caller may give another value"
+    );
+    assert!(
+        pause.build_json(&serde_json::Map::new()).is_err(),
+        "the parameter stays asked: a caller gives it"
+    );
+}
+
+#[test]
 fn a_row_offering_an_effect_asks_what_its_state_does_not_know() {
     let bindings = tilo_resource::RowBindings::new().offer(TransferEffect::PAUSE);
     let row = LiveRow::typed_with::<Transfer>("t:2", "Index", &bindings).into_resource();
@@ -738,32 +791,6 @@ fn a_rows_own_row_offers_its_vocabularys_effects_unasked() {
             .collect::<Vec<_>>(),
         ["job", "force"],
         "nothing is bound: what the effect takes is asked"
-    );
-}
-
-#[test]
-fn a_row_specializes_a_declared_effect_only_it_can_shape() {
-    let row = LiveRow::typed::<Plain>("plain:1", "Plain")
-        .specialized([JobEffect::Stop {
-            job: "plain:1".into(),
-            force: Some(true),
-        }
-        .bound()])
-        .into_resource();
-    assert_eq!(row.actions.len(), 1);
-    let stop = &row.actions[0];
-    assert_eq!(stop.id, "stop");
-    assert!(
-        stop.params().is_empty(),
-        "the row's own effect is bound whole"
-    );
-    let encoded = stop.build_json(&serde_json::Map::new()).unwrap();
-    assert_eq!(
-        JobEffect::from_payload(&encoded.payload).unwrap(),
-        JobEffect::Stop {
-            job: "plain:1".into(),
-            force: Some(true),
-        }
     );
 }
 

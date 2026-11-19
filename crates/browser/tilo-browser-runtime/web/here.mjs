@@ -22,7 +22,7 @@ export const TICK_MS = 4_000;
  * @param options.active       whether the mount is still shown
  * @param options.layer        the workspace's live layer, or undefined
  * @param options.peer         the certified peer: `userPublicKey`, `liveNote()` (why this page
- *                             shows no live presence), `membersSeen(people)`
+ *                             shows no live presence)
  * @param options.photos       follows people's profile pictures (`profile-photos.mjs` `followPhotos`), if any
  */
 export function createHere({runtime, mountId, active, layer, peer, photos = null,
@@ -74,7 +74,6 @@ export function createHere({runtime, mountId, active, layer, peer, photos = null
         runtime.desktop_say_doing(mountId(), now());
         const here = people();
         photos?.seen(here);
-        peer?.membersSeen?.(here);
       }
     } catch (error) {
       onError(error);

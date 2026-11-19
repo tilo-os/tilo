@@ -110,6 +110,8 @@ pub mod row_effects;
 pub mod save_document;
 #[path = "scenarios.rs"]
 pub mod scenarios;
+#[path = "screen_place.rs"]
+pub mod screen_place;
 #[path = "scroll_copy.rs"]
 pub mod scroll_copy;
 #[path = "settings.rs"]

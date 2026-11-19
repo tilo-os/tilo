@@ -1,4 +1,5 @@
 //! Same-barrier native outgoing ownership; server queue acceptance is never an ACK.
+use super::answers::AnswerSignature;
 use crate::StatePeer;
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, enrollment, stored};
 use crate::owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
@@ -200,6 +201,8 @@ pub(crate) struct StoredPublication {
     /// the history its host acknowledged ([`NativeWorkspaceOwner::compact_outgoing`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     slots: Vec<[u8; 32]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) unanswered: Vec<AnswerSignature>,
 }
 /// One of [`StoredPublication::hosted`]: the host's writes of `record` of `app` the record
 /// holds here only inside this device's compaction, in the host's order: those of `runs`
@@ -380,6 +383,7 @@ impl Default for StoredPublication {
             tail: Vec::new(),
             hosted: Vec::new(),
             slots: Vec::new(),
+            unanswered: Vec::new(),
         }
     }
 }
@@ -1838,7 +1842,7 @@ impl NativeWorkspaceOwner {
                 match (envelope.kind, answer) {
                     // A segment is taken with its compaction.
                     (OpKind::Compaction, _) if collab_types::is_compaction_segment(&envelope) => {}
-                    (OpKind::Compaction, _) => {
+                    (OpKind::Compaction, answer) => {
                         let owed = owed_to(publication, runs, route)?;
                         for segment in owed.iter().filter(|write| {
                             collab_types::is_compaction_segment(write)
@@ -1849,12 +1853,19 @@ impl NativeWorkspaceOwner {
                                 .gather_sealed_piece(route, segment.clone())?;
                         }
                         take_hosted(live, publication, runs, route, &envelope, &owed, now)?;
+                        // A refused compaction is drafted again in its place, and stays one
+                        // its server has not taken until it takes another.
+                        if matches!(answer, HostAnswer::Durable(_)) {
+                            publication.answered_write(&envelope);
+                        }
                     }
                     (_, HostAnswer::Refused) => {
                         live.withdraw_local_document(&app_id, &document_id, &envelope)?;
+                        publication.answered_write(&envelope);
                     }
                     (_, HostAnswer::Durable(_)) => {
                         publication.hosted_write(live, runs, route, &envelope)?;
+                        publication.answered_write(&envelope);
                     }
                 }
                 publication.answer(&app_id, &document_id, answer);
@@ -1977,12 +1988,20 @@ impl NativeWorkspaceOwner {
                 .collect())
         };
         let admit = |live: &mut StatePeer,
-                     _: &mut StoredPublication,
+                     publication: &mut StoredPublication,
                      original: NeighbourMsg,
                      renewal: Vec<SignedOp>| {
             let renewal = renewal.into_iter().next().ok_or("no renewal drafted")?;
-            live.outbox_mut()
-                .admit_sealed_renewal(&original, renewal, now)
+            let message =
+                live.outbox_mut()
+                    .admit_sealed_renewal(&original, renewal.clone(), now)?;
+            if let NeighbourMsg::AppDocument { envelope, .. } = &original {
+                // The document holds the renewal in the original's place, and its server has
+                // neither.
+                publication.answered_write(envelope);
+                publication.unanswered_write(&renewal);
+            }
+            Ok(message)
         };
         self.commit_outgoing(workspace, signer, now, draft, admit)
             .await
@@ -2107,7 +2126,6 @@ impl NativeWorkspaceOwner {
             {
                 due.push(route.clone());
             }
-            let publication = state(view)?;
             let mut open = |write: &SignedOp| keys.open(workspace, write);
             due.into_iter()
                 .filter_map(|(app, record)| {
@@ -2134,10 +2152,7 @@ impl NativeWorkspaceOwner {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push((app.clone(), record.clone()));
-                    Some(
-                        owed_to(publication, runs, route)
-                            .map(|owed| (None, (app, record, owed), ops)),
-                    )
+                    Some(Ok((None, (app, record), ops)))
                 })
                 .collect()
         };
@@ -2145,9 +2160,9 @@ impl NativeWorkspaceOwner {
         // inside it now are what this device knows of the host's history beside it.
         let admit = |live: &mut StatePeer,
                      publication: &mut StoredPublication,
-                     (app, record, owed): (String, String, Vec<SignedOp>),
+                     (app, record): (String, String),
                      ops| {
-            compacted_here(live, publication, runs, (&app, &record), &owed, ops, now)
+            compacted_here(live, publication, runs, (&app, &record), ops, now)
         };
         let compacted = self
             .commit_outgoing(workspace, signer, now, draft, admit)
@@ -2472,20 +2487,18 @@ impl NativeWorkspaceOwner {
         Some(taken)
     }
 }
-/// Commit `op`, a compaction of this device's own history of `record` of `app`, into the
-/// record: its history becomes the compaction, and the host's writes it holds only inside it now
-/// are what this device knows of the host's history beside it. `owed` are the writes ownership
-/// still owes the host.
+/// Commit `op`, a compaction of this device's own history of `app`'s document, into it: its
+/// history becomes the compaction, and the server's writes it holds only inside it now are what
+/// this device knows of the server's history beside it.
 fn compacted_here(
     live: &mut StatePeer,
     publication: &mut StoredPublication,
     runs: Runs<'_>,
     (app, record): (&str, &str),
-    owed: &[SignedOp],
     ops: Vec<SignedOp>,
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
-    let history = host_history(live, publication, runs, (app, record), owed)?;
+    let history = host_history(live, publication, runs, (app, record))?;
     let mut hosted = if let Some(hosted) = publication.hosted(runs, (app, record))? {
         hosted
     } else {
@@ -2499,12 +2512,16 @@ fn compacted_here(
         }
         hosted
     };
+    let unanswered = ops.first().cloned();
     let message = live
         .publication_mut()
         .admit_sealed_compaction(app, record, ops, now)?
         .into_iter()
         .next()
         .ok_or("a compaction publishes as its own message")?;
+    if let Some(op) = &unanswered {
+        publication.unanswered_write(op);
+    }
     hosted.writes = history
         .into_iter()
         .filter(|write| !live.publication().holds_sealed(app, record, write))
@@ -2513,8 +2530,8 @@ fn compacted_here(
     Ok(message)
 }
 /// The compaction ownership of `view` sends next, when ownership holds its place at its head:
-/// drafted against `history`, the host's history as it acknowledged it, under the sequence of
-/// the place, as the record's ownership message, or `None` when it cannot be drafted.
+/// drafted against `host_history`, the server's history as it acknowledged it, as ownership's own
+/// message, or `None` when it cannot be drafted.
 type NextDrafted = (
     [u8; 32],
     NeighbourMsg,
@@ -2539,15 +2556,22 @@ fn next_drafted(
     let NeighbourMsg::AppDocument {
         app_id,
         document_id,
-        envelope,
         ..
     } = &message
     else {
         return Err("a compaction held is a document write".into());
     };
     let route = (app_id.as_str(), document_id.as_str());
-    let owed = owed_to(publication, runs, route)?;
-    let history = host_history(&view.peer, publication, runs, route, &owed)?;
+    let history = host_history(&view.peer, publication, runs, route)?;
+    // Numbered as the last of this device's writes the history covers, as a compaction is: the
+    // seq stored in the entry belongs to the draft its history once held, which may be longer.
+    let device = view.device().device_public_key;
+    let seq = history
+        .iter()
+        .filter(|write| write.author.as_bytes() == &device)
+        .map(|write| write.seq)
+        .max()
+        .unwrap_or(0);
     let mut open = |write: &SignedOp| keys.open(workspace, write);
     let mut seal =
         |snapshot: &[u8]| seal_for_document(keys, &view.peer, workspace, route, snapshot, now);
@@ -2556,7 +2580,7 @@ fn next_drafted(
         history.clone(),
         &mut open,
         &mut seal,
-        (view.device().device_public_key, envelope.seq),
+        (device, seq),
         now,
     );
     let drafted = drafted
@@ -2564,9 +2588,9 @@ fn next_drafted(
         .ok();
     Ok(Some((entry.id, message, drafted.map(|ops| (ops, history)))))
 }
-/// Commit `op`, drafted against `history` (the host's history of `record` of `app` as it
+/// Commit `op`, drafted against `history` (the server's history of `app`'s document as it
 /// acknowledged it) in place of `message`, ownership's compaction of this device's own history:
-/// where the record's history is that compaction, it takes `op` in its place. Answers the
+/// where its history is that compaction, it takes `op` in its place. Answers the
 /// ownership message `op` goes as.
 fn drafted_here(
     live: &mut StatePeer,
@@ -2587,9 +2611,9 @@ fn drafted_here(
         app_id,
         cluster_id,
         document_id,
-        envelope,
         own,
         readers,
+        ..
     } = message
     else {
         return Err("a compaction held is a document write".into());
@@ -2597,9 +2621,18 @@ fn drafted_here(
     let first = live
         .publication()
         .sealed_history(route.0, route.1)
-        .first()
-        .map(|first| first.signature);
-    if first == Some(envelope.signature) {
+        .into_iter()
+        .next();
+    // A compaction of this device's the document holds first is one its server has not taken,
+    // or has: one it has not is what this draft replaces, whether the entry held for it is
+    // that compaction or one drafted there before it.
+    let replaced = first
+        .as_ref()
+        .filter(|first| !collab_types::is_compaction_segment(first))
+        .filter(|first| first.kind == OpKind::Compaction)
+        .filter(|first| publication.unanswered(first))
+        .cloned();
+    if let Some(replaced) = replaced {
         let mut hosted = publication.hosted(runs, route)?.unwrap_or_default();
         live.publication_mut().take_sealed_compaction(
             route,
@@ -2607,6 +2640,7 @@ fn drafted_here(
             &|write| hosted.covers(write),
             now,
         )?;
+        publication.answered_write(&replaced);
         hosted.writes = history
             .iter()
             .filter(|write| !live.publication().holds_sealed(route.0, route.1, write))
@@ -2617,6 +2651,7 @@ fn drafted_here(
         live.publication_mut()
             .record_sealed_compaction(route.0, route.1, &op)?;
     }
+    publication.unanswered_write(&op);
     Ok(NeighbourMsg::AppDocument {
         peer,
         app_id,
@@ -2727,14 +2762,13 @@ fn owed_to(
         })
         .collect())
 }
-/// The history the host holds of `record` of `app` as far as it acknowledged it: what this
-/// device holds of it, but `owed`, the writes ownership still owes the host.
+/// The history the server holds of `app`'s document as far as it acknowledged it: what this
+/// device holds of it but the writes its server has not taken.
 fn host_history(
     live: &StatePeer,
     publication: &StoredPublication,
     runs: Runs<'_>,
     (app, record): (&str, &str),
-    owed: &[SignedOp],
 ) -> Result<Vec<SignedOp>, String> {
     let held = live.publication().sealed_history(app, record);
     let history: Vec<SignedOp> = match publication.hosted(runs, (app, record))? {
@@ -2754,7 +2788,7 @@ fn host_history(
     };
     Ok(history
         .into_iter()
-        .filter(|write| !owed.iter().any(|owed| owed.signature == write.signature))
+        .filter(|write| !publication.unanswered(write))
         .collect())
 }
 /// Take `compaction`, which the host now holds first in its history of `record` of `app`, into
@@ -2943,53 +2977,5 @@ mod encoding_tests {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{COMPACTION_RETRY, Resting, WorkspaceId};
-
-    fn workspace() -> WorkspaceId {
-        WorkspaceId::parse("23fb5a50-60db-42bd-bb3b-f597bfab1377").unwrap()
-    }
-
-    /// What a store keeps beside an entry has the name stores wrote it with before the code
-    /// called it anything else, and the name builds gave it for a while is the other one a
-    /// store looks under.
-    #[test]
-    fn kept_writes_are_named_as_stores_have_kept_them() {
-        let hash = [0xab; 32];
-        let hex = "ab".repeat(32);
-        assert_eq!(
-            super::ownership_run_name(workspace(), hash),
-            format!("23fb5a50-60db-42bd-bb3b-f597bfab1377.custody.{hex}")
-        );
-        assert_eq!(
-            super::ownership_name_between(workspace(), hash),
-            format!("23fb5a50-60db-42bd-bb3b-f597bfab1377.ownership.{hex}")
-        );
-    }
-
-    /// One history that cannot fold yet rests a while, and every other history of the
-    /// workspace — one that is full and refusing writes, say — is folded on the very next pass.
-    #[test]
-    fn a_history_that_cannot_fold_rests_alone() {
-        let resting = Resting::default();
-        let (stuck, ready) = (
-            ("so.tilo.files".to_owned(), "tree".to_owned()),
-            ("so.tilo.files".to_owned(), "chunk.1@tree".to_owned()),
-        );
-        resting.failed(workspace(), stuck.clone());
-        let still = resting.pass(workspace());
-        assert_eq!(still, std::collections::BTreeSet::from([stuck]));
-        assert!(!still.contains(&ready), "another record is not resting");
-
-        // Its rest is spent after its passes, and it is tried again.
-        for _ in 0..COMPACTION_RETRY {
-            resting.pass(workspace());
-        }
-        assert!(resting.pass(workspace()).is_empty());
-
-        // One that folds leaves no rest behind.
-        resting.failed(workspace(), ready.clone());
-        resting.folded(workspace(), ready.clone());
-        assert!(!resting.pass(workspace()).contains(&ready));
-    }
-}
+#[path = "publication_tests.rs"]
+mod tests;

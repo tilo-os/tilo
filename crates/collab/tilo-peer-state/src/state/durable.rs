@@ -13,7 +13,7 @@ use super::{DurableDocument, SealedHistory};
 use crate::NeighbourMsg;
 
 #[cfg(test)]
-use automerge::{ReadDoc as _, transaction::Transactable as _};
+use automerge::transaction::Transactable as _;
 
 /// The durable layout this build writes and reads. A change to what is
 /// stored bumps this: a build refuses state of another version by name
@@ -210,7 +210,7 @@ impl StatePeer {
             .doc
             .base_heads()
             .iter()
-            .all(|head| accepted.doc.get_change_by_hash(head).is_some());
+            .all(|head| accepted.doc.has_change(head));
         Ok(Some((receipt, current)))
     }
     /// Whether the durable receipt for the record covers its current heads.

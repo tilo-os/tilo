@@ -369,6 +369,7 @@ trait Backend: Send + Sync + Sized + 'static {
     /// Call `export` with `cx` in the store, giving it a whole call's budget from `limits`, and
     /// take `cx` out again.
     fn call(
+        &self,
         instance: &mut Self::Instance,
         export: &str,
         args: &[Wasm],
@@ -767,7 +768,10 @@ impl<B: Backend> Pools<B> {
         cx: Cx,
     ) -> Result<Option<Wasm>, CallError> {
         let mut instance = self.checkout(module, limits)?;
-        let outcome = B::call(&mut instance, export, args, limits, cx);
+        let outcome = self
+            .compiler
+            .backend
+            .call(&mut instance, export, args, limits, cx);
         // A trapped instance may have been left mid-way through its own memory; it is dropped.
         if tilo_wasm_host::reusable(&outcome)
             && let Some(c) = self.modules.borrow_mut().get_mut(module)

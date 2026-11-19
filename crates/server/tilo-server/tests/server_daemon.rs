@@ -345,10 +345,13 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             other => panic!("expected Delta, got {other:?}"),
         }
 
-        // A does NOT receive its own delta back (author-exclusion).
-        // We wait a short window; anything within it is a bug.
-        let ghost = tokio::time::timeout(Duration::from_millis(200), a_client.recv()).await;
-        assert!(ghost.is_err(), "A should not receive its own delta");
+        // A does NOT receive its own delta back (author-exclusion). We wait a
+        // short window; anything but the person's own workspace list, which the
+        // server sends every session of theirs when it changes, is a bug.
+        assert!(
+            crate::common::quiet(&a_client, Duration::from_millis(200)).await,
+            "A should not receive its own delta"
+        );
 
         let snap = server.server.handle().metrics.snapshot();
         assert!(snap.conns_authed >= 2, "at least both peers authed");

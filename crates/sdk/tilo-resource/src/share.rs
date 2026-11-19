@@ -236,7 +236,7 @@ fn spec(invite: bool, kind: String, views: Vec<SharedView>) -> ActionSpec {
         OperationKind::Effect,
         type_id,
         params,
-        move |target, args| {
+        Arc::new(move |target, args| {
             let request = ShareRequest {
                 resource: target.get::<String>().cloned().unwrap_or_default(),
                 kind: kind.clone(),
@@ -248,7 +248,7 @@ fn spec(invite: bool, kind: String, views: Vec<SharedView>) -> ActionSpec {
                 type_id: type_id.into(),
                 payload: Vec::new(),
             })
-        },
+        }),
     )
     .of_kind(action_kind)
     .with_description(description);

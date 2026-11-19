@@ -54,8 +54,8 @@ impl tilo_workspace_keys::GovernanceTransport for HostGovernance {
     }
 }
 
-/// `message`, signed governance of `workspace_id`, wrapped for the host.
-fn governance_envelope(
+/// `message`, signed governance of `workspace_id`, wrapped for the server.
+pub(super) fn governance_envelope(
     device: [u8; 32],
     workspace_id: WorkspaceId,
     message: &neighbour_wire::NeighbourMsg,

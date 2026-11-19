@@ -75,6 +75,7 @@ impl Shared {
             asked_floats: Vec::new(),
             holders: HashMap::new(),
             opened_by: std::collections::BTreeMap::new(),
+            opened_for: std::collections::BTreeMap::new(),
             resources: std::collections::BTreeMap::new(),
             window_offers: Vec::new(),
             workspace_shares: None,
@@ -94,6 +95,7 @@ impl Shared {
             float_covers: Vec::new(),
             shown_strip: None,
             hint_places: ui::widget::HintPlaces::default(),
+            hint_reading: super::HintReading::Places,
             focused_presence: Vec::new(),
             rebuild: Vec::new(),
             search_request: None,
@@ -133,6 +135,8 @@ impl Shared {
             bars: super::window_bars::Bars::default(),
             sideways: Vec::new(),
             wake: crate::wake::Waker::default(),
+            publish: None,
+            published: 1,
         }
     }
 }

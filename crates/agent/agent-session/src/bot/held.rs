@@ -138,6 +138,7 @@ impl HeldDocuments {
                 record,
                 changes: vec![saved],
             },
+            false,
         )
         .map_err(|error| error.to_string())?;
         self.replicas.insert(route.clone(), replica);

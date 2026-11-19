@@ -121,6 +121,9 @@ pub struct Image {
     /// radius, and a box of another shape it is fitted into shows as a quiet tile around it.
     content_picture: bool,
     layout_scale: f32,
+    /// What its box was last laid out for: its picture's size, and whether it stands as the
+    /// icon of a picture that failed. A box laid out for what it shows asks for no layout.
+    laid_out: Option<((u32, u32), bool)>,
 }
 
 impl Image {
@@ -141,6 +144,7 @@ impl Image {
             corner_radius: None,
             content_picture: false,
             layout_scale: 1.0,
+            laid_out: None,
         }
     }
 
@@ -164,6 +168,7 @@ impl Image {
             corner_radius: None,
             content_picture: false,
             layout_scale: 1.0,
+            laid_out: None,
         }
     }
 
@@ -227,6 +232,7 @@ impl Image {
             corner_radius: None,
             content_picture: false,
             layout_scale: 1.0,
+            laid_out: None,
         })
     }
 
@@ -246,6 +252,7 @@ impl Image {
             corner_radius: None,
             content_picture: false,
             layout_scale: 1.0,
+            laid_out: None,
         }
     }
 
@@ -277,6 +284,12 @@ impl Image {
             Source::Loading { pictures, .. } => Some(pictures),
             _ => None,
         }
+    }
+
+    /// What its box's size follows from: the picture's size, and whether a failed picture shows
+    /// as an icon.
+    fn box_shown(&self) -> ((u32, u32), bool) {
+        (self.intrinsic_size, matches!(self.source, Source::Failed))
     }
 
     fn loading(&self) -> bool {
@@ -659,6 +672,10 @@ impl Widget for Image {
         self.cached.is_none() && self.loading()
     }
 
+    fn is_layout_dirty(&self) -> bool {
+        self.laid_out != Some(self.box_shown())
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -738,7 +755,14 @@ impl Widget for Image {
         }
     }
 
-    crate::rect_geometry!();
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.laid_out = Some(self.box_shown());
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn draw(
         &mut self,

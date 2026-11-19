@@ -445,6 +445,11 @@ impl Art {
 }
 
 impl Widget for Art {
+    /// The band it stands in places it: it asks for no layout of its own.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     /// The album art: a page's own picture where its address loads, its paint otherwise.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         let state = self.shared.state.borrow();
@@ -635,6 +640,11 @@ struct SongLines {
 }
 
 impl Widget for SongLines {
+    /// The band it stands in places it: it asks for no layout of its own.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     /// What is playing: its title over its artist.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         use crate::composition::TextLook;
@@ -1020,6 +1030,11 @@ struct TimeLabel {
 }
 
 impl Widget for TimeLabel {
+    /// The band it stands in places it: it asks for no layout of its own.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     /// Where playback is, either side of the scrubber.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         let label = self.shared.caption(self.side);

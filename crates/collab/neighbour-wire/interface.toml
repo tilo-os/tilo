@@ -435,6 +435,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "HelloAck2" = "struct"
 "HelloAck2.sig_over_server_nonce" = "#0 [u8; 64] with=serde_bytes"
 "HelloRefusal" = "enum external"
+"HelloRefusal::CertificateRejected" = "#1 unit"
 "HelloRefusal::DeviceRevoked" = "#0 unit"
 "HelloRefused" = "struct"
 "HelloRefused.cert" = "#1 DeviceCert"

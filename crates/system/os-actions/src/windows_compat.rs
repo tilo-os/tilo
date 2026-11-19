@@ -250,8 +250,8 @@ mod tests {
 
     fn disclosure() -> SizeDisclosure {
         SizeDisclosure {
-            download_bytes: 1_900_000_000,
-            installed_bytes: 3_100_000_000,
+            download_bytes: 3_400_000_000,
+            installed_bytes: 3_400_000_000,
         }
     }
 
@@ -262,8 +262,7 @@ mod tests {
         {
             let shipped = SizeDisclosure::parse(CATALOGUE).expect("size disclosure in the catalogue");
             assert_eq!(shipped, disclosure());
-            assert!(shipped.sentence().contains("about 1.9 GB"));
-            assert!(shipped.sentence().contains("about 3.1 GB"));
+            assert_eq!(shipped.sentence().matches("about 3.4 GB").count(), 2, "{}", shipped.sentence());
         }
 
         phase a_catalogue_without_sizes_discloses_nothing;
@@ -309,7 +308,7 @@ mod tests {
             assert_eq!(needs, Readiness::NeedsInstall(disclosure()));
             assert!(needs.can_install());
             assert!(needs.message().contains("not installed"));
-            assert!(needs.message().contains("about 3.1 GB"));
+            assert!(needs.message().contains("about 3.4 GB"));
             assert!(matches!(
                 Readiness::from_facts(false, offered, &status(r#"{"state":"installing"}"#)),
                 Readiness::Installing(None)

@@ -330,12 +330,14 @@ impl FrameHarness {
                 .and_then(|address| walk.innermost(*address))
                 .map(|(path, _)| path.clone())
         });
-        Composition {
+        let mut composition = Composition {
             viewport: [self.viewport.0, self.viewport.1],
             focus,
             root,
             layers,
-        }
+        };
+        composition.forget_semantics_children();
+        composition
     }
 
     /// The paint of the widget at `path` alone, at `scale` device pixels per

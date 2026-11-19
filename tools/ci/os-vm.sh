@@ -83,7 +83,11 @@ if ! os/dev/vm.sh wait; then
 fi
 echo "os-vm: up (user $TILO_USER, password $TILO_PASS): t vm console, t vm ssh, t vm display" >&2
 while kill -0 "$(cat "$TILO_RUN/qemu.pid")" 2>/dev/null; do sleep 5; done
-echo 'os-vm: QEMU exited' >&2
+# Ended by itself, not by its lifetime or `t vm stop` (those stop this script first): say why.
+echo 'os-vm: QEMU exited before its lifetime ended; its last words and the kernel'"'"'s kills:' >&2
+tail -n 20 "${TILO_DISK%/*}/qemu.log" >&2 || true
+dmesg | grep -i -E 'out of memory|killed process' >&2 || true
+exit 1
 EOF
 
 lifetime=${T_INPUT_LIFETIME:-3600}

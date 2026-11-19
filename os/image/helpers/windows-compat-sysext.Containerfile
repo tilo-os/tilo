@@ -16,7 +16,7 @@ COPY --from=virtio-win-media /out/installer/virtio-win-guest-tools.exe /tree/usr
 COPY --from=windows-compat-artifacts /out/proton/ /tree/usr/lib/tilo/windows-runners/proton/
 COPY --from=windows-compat-artifacts /out/steam-runtime/ /tree/usr/lib/tilo/windows-runners/steam-runtime/
 COPY --from=windows-provider /out/usr/share/tilo/windows/provider.json /provider.json
-COPY os/dev/windows_provider.py os/dev/build-windows-compat-sysext.sh /tilo/
+COPY os/dev/windows_provider.py os/dev/build-windows-compat-sysext.sh os/dev/sysext-image.py /tilo/
 # The native FEX binaries are checked against the hashes the provider record
 # pinned, and their dynamic-linker closure against the base plus this payload.
 # /out is made first: the shell opens the descriptor before the packer runs.

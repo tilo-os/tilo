@@ -57,7 +57,7 @@ impl Mount {
         // When the workspace admitted each of its people, and what it calls each, numbers the
         // namesakes among them: the roster's own rows, which this page's people lists read too.
         let tree = desktop.handle.read(Clone::clone);
-        let (joined, names) = tree
+        let (joined, called) = tree
             .workspaces
             .iter()
             .find(|held| held.id().to_string() == desktop.workspace)
@@ -65,7 +65,7 @@ impl Mount {
         let numbered = desktop
             .here
             .borrow_mut()
-            .set_workspace_people(&joined, &names);
+            .set_workspace_people(&joined, &called);
         let renamed = *desktop.shared.names.borrow() != self.presence.named;
         let members = desktop.shared.members.borrow().clone();
         let admitted = members != self.presence.members;
@@ -84,7 +84,7 @@ impl Mount {
         let host = self.peer.and_then(crate::peer_sync::local_person);
         let offered =
             |person: &str| host.as_deref() != Some(person) || own.as_deref() == Some(person);
-        let named = &self.presence.named;
+        let last_named = &self.presence.named;
         self.frame.update_presence(|presence| {
             // Who the workspace says is in it: its windows offer exactly these as its people,
             // and a device that named someone it never admitted is nobody's row.
@@ -100,7 +100,7 @@ impl Mount {
             // a window shows them as themselves after a reload too, not only once the board
             // says who is here.
             if let Some(own) = own.as_deref() {
-                let name = named
+                let name = last_named
                     .get(own)
                     .cloned()
                     .or_else(|| own_label.clone())
@@ -112,7 +112,7 @@ impl Mount {
             // Everyone the workspace lists is named as its governance calls them, here or not:
             // a change someone made while away reads as theirs, never as their key. Who is here
             // is then named as their presence says, as everywhere else.
-            for (person, name) in named {
+            for (person, name) in last_named {
                 if own.as_deref() != Some(person.as_str())
                     && offered(person)
                     && let Some(member) = MemberId::parsed_person(person)

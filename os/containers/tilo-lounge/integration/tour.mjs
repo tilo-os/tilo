@@ -122,7 +122,7 @@ const mcp = () => {
 };
 
 const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => {
-  const tab = await browser.tab({firstRun: true});
+  const tab = await browser.tab({firstScreen: true});
   await tab.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile});
   if (mobile) await tab.send('Emulation.setTouchEmulationEnabled', {enabled: true}).catch(() => {});
   await tab.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme', value: scheme}]});
@@ -331,10 +331,13 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
   // has the command, and else skips: either way the page opens their own
   // workspace.
   let agent = null;
-  if (agentEnv && name === 'shell' && await tab.evaluate(`!!document.getElementById('first-run-agent')?.offsetParent`).catch(() => false)) {
-    await tab.waitFor(`document.getElementById('first-run')?.dataset.setup === 'ready'`, {timeout: 60_000}).catch(() => {});
-    const prompt = await tab.evaluate(`document.getElementById('first-run-offer')?.textContent ?? ''`);
-    await tab.evaluate(`document.getElementById('first-run-agent').click()`);
+  if (agentEnv && name === 'shell' && await tab.evaluate(`!!document.getElementById('first-screen-agent')?.offsetParent`).catch(() => false)) {
+    // The press makes the prompt (a first visit makes nothing while the
+    // person is still deciding); the one after it copies.
+    await tab.evaluate(`document.getElementById('first-screen-agent').click()`);
+    await tab.waitFor(`document.getElementById('first-screen')?.dataset.setup === 'ready'`, {timeout: 60_000}).catch(() => {});
+    const prompt = await tab.evaluate(`document.getElementById('first-screen-offer')?.textContent ?? ''`);
+    await tab.evaluate(`document.getElementById('first-screen-agent').click()`);
     await sleep(1500);
     await shoot('agent-waiting');
     const match = prompt.match(/(?:tilo|sh -s) login (\S+)(?: --site (\S+?))?(?:,|\s|$)/);
@@ -344,7 +347,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
       console.log(`  tilo login -> ${login.code}: ${(login.stdout + login.stderr).replace(/\s+/g, ' ').slice(0, 800)}`);
       await sleep(1500);
       await shoot('agent-connected');
-      await tab.waitFor(`document.documentElement.dataset.firstRun === undefined`, {timeout: 90_000})
+      await tab.waitFor(`document.documentElement.dataset.firstScreen === undefined`, {timeout: 90_000})
         .catch(() => report.problems.push('shell: the entry never left after tilo login'));
       await tab.waitFor('!!globalThis.tiloMount?.state()?.frames', {timeout: 180_000}).catch(() => {});
       await quiet(4000);
@@ -362,8 +365,8 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
       await quiet(3000);
       await shoot('agent-wrote');
     }
-  } else if (await tab.evaluate(`!!document.getElementById('first-run-skip')?.offsetParent`).catch(() => false)) {
-    await tab.evaluate(`document.getElementById('first-run-skip').click()`);
+  } else if (await tab.evaluate(`!!document.getElementById('first-screen-skip')?.offsetParent`).catch(() => false)) {
+    await tab.evaluate(`document.getElementById('first-screen-skip').click()`);
     await sleep(2000);
     await shoot('skipped');
     await tab.waitFor('!!globalThis.tiloMount?.state()?.frames', {timeout: 180_000})

@@ -1150,7 +1150,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_hello_refused_for_anything_else_is_closed_with_nothing_said() {
+    async fn a_hello_refused_for_anything_but_its_certificate_is_closed_with_nothing_said() {
         let (identity, removed, _removed_key) = server_and_removed_device();
         // A stranger: a device of a person this endpoint does not admit.
         let (stranger_root, _) = UserIdentity::generate("Bob", 1);
@@ -1197,7 +1197,9 @@ mod tests {
             auth::HelloRefusal::DeviceRevoked
         );
 
-        // A certificate that does not verify is refused before any removal is looked at.
+        // A certificate that does not verify is refused before any removal is looked at, and its
+        // device is told: the certificate is the device's own, and the answer says nothing of the
+        // people this server serves.
         let mut forged = removed;
         forged.signature = [0; 64];
         let (error, said) = answered(&identity, trust(), &Hello::new(forged, [1; 32])).await;
@@ -1205,7 +1207,10 @@ mod tests {
             matches!(error, HandshakeError::Auth(AuthError::Cert(_))),
             "{error}"
         );
-        assert!(said.is_empty(), "a forged certificate was told something");
+        assert_eq!(
+            refusal_in(said).await.refusal,
+            auth::HelloRefusal::CertificateRejected
+        );
     }
 
     #[tokio::test(start_paused = true)]

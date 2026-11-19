@@ -49,7 +49,7 @@ tilo-net = { workspace = true, features = ["blocking"] }
 tilo-seal = { path = "../../system/tilo-seal" }
 tilo-handoff = { path = "../tilo-handoff" }
 tilo-rollback = { path = "../../system/tilo-rollback" }
-tilo-crypto = { path = "../../system/tilo-crypto", features = ["pcr-prediction"] }
+tilo-crypto = { path = "../../system/tilo-crypto", default-features = false, features = ["pcr-prediction"] }
 getrandom.workspace = true
 tilo-ntfs-protocol = { path = "../../session/tilo-ntfs-protocol" }
 tempfile.workspace = true

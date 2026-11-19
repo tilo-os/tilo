@@ -61,6 +61,9 @@ lazy-search-feed = []
 # (`activity::SAY_DOING`) is handed over by the bundling crate rather than
 # linked: the browser desktop fetches it as its own module.
 lazy-say-doing = []
+# The code that looks for the person's mentions and tells them (`mentions::STEP`) is handed over
+# by the bundling crate rather than linked: the browser desktop fetches it as its own module.
+lazy-mentions = []
 
 [dependencies]
 # The device's one store, which apps write and read their resources in.
@@ -480,6 +483,9 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+# Chat's own writers, which post a message into a part as its window does: what the person's
+# mentions are tested against is what Chat writes, not a hand-made stand-in.
+chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 # A Windows program that shows through X11, as a Proton program does: the stand-in draws its
 # window on the X11 display its keeper serves.
 x11rb = { version = "0.13", default-features = false }

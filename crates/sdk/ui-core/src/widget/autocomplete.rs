@@ -1090,6 +1090,11 @@ impl Widget for Autocomplete {
         self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
+    /// A field's band tall across the width it is given: placed once, it asks for no layout.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,

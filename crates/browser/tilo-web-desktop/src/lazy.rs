@@ -17,8 +17,9 @@
 //! notification centre,
 //! which opening it asks for, the people roster, which the bar's faces
 //! open, the server an invitation names, which the entry page fetches when it
-//! follows an invitation, what the page's person is doing, which the page
-//! fetches once its first frame is up, the HTML presenter, which a page mounted
+//! follows an invitation, what the page's person is doing and the code that
+//! tells them of their mentions, which the page fetches once its first frame
+//! is up, the HTML presenter, which a page mounted
 //! with `dom: true` asks for, the directory and invite sheets and the
 //! shortcut guide, which opening one asks for, a hosted window's page, which
 //! the first page to reach the shell asks for, the renderer's maker, which
@@ -275,6 +276,13 @@ split_code! {
 }
 
 split_code! {
+    /// The code that looks for the person's mentions and tells them: fetched once the first frame
+    /// is up, the first time the page looks.
+    mod mentions: tilo_session::mentions::StepMentions = tilo_session::mentions::builtin_step()
+        => tilo_session::mentions::STEP, module = "mentions", hash = "b37d0e95a2c4f618";
+}
+
+split_code! {
     /// The jobs band the shell's card shows: the first job that runs asks for it.
     mod jobs_band: ui::jobs::MakeBand = ui::jobs::builtin_band() => ui::jobs::BAND,
         module = "jobs_band", hash = "c1b8e04f7a2d9635";
@@ -435,6 +443,7 @@ pub(crate) fn register() {
     pdf_words::register();
     written_views::register();
     say_doing::register();
+    mentions::register();
     prepare_settings_keeper_after_first_frame();
     prepare_page_drops_after_first_frame();
     prepare_page_search_after_first_frame();

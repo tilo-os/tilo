@@ -11,7 +11,7 @@
 //! Where agents connect over MCP is the page's to say, when the host does
 //! not.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
@@ -69,7 +69,7 @@ impl PageApi {
             key: grant.grant,
             reason: "retired".to_owned(),
         });
-        self.woken.store(true, Ordering::Release);
+        crate::desktop::wake(&self.woken);
         Ok(InvocationReceipt {
             invocation: request.invocation,
             status: ReceiptStatus::Completed {

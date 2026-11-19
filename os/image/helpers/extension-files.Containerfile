@@ -20,6 +20,8 @@ COPY --chmod=0755 os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension \
 COPY \
     os/usr/lib/systemd/system/tilo-extension@.service \
     os/usr/lib/systemd/system/tilo-extension-activate.service \
+    os/usr/lib/systemd/system/tilo-extension-trial.service \
+    os/usr/lib/systemd/system/tilo-extension-booted.service \
     os/usr/lib/systemd/system/tilo-extension-refresh.timer \
     /usr/lib/systemd/system/
 COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf \

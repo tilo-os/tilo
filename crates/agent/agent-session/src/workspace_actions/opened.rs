@@ -151,7 +151,11 @@ impl Workspace {
 
     /// Ask for each of `routes` this member holds none of and has not asked for, and say
     /// whether an answer is still owed for any of them.
-    fn ask_routes(&mut self, workspace_id: WorkspaceId, routes: Vec<DocumentRoute>) -> bool {
+    pub(super) fn ask_routes(
+        &mut self,
+        workspace_id: WorkspaceId,
+        routes: Vec<DocumentRoute>,
+    ) -> bool {
         let mut owing = false;
         for route in routes {
             if !self.holds(&route)

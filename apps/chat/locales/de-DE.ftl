@@ -434,6 +434,7 @@ chat-messages-stop-sharing = Teilen beenden
 chat-messages-set-share-access = Ändern, was ein geteiltes Fenster erlaubt
 chat-messages-share-open = Geteiltes Fenster als offen oder geschlossen markieren
 chat-messages-deliver-message = Nachricht zustellen
+chat-messages-import-message = Nachricht importieren
 chat-messages-edit-message = Nachricht bearbeiten
 chat-messages-delete-message = Nachricht löschen
 chat-messages-remove-message = Nachricht entfernen

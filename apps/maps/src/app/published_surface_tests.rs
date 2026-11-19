@@ -48,12 +48,15 @@ fn a_places_row_is_an_address_of_the_published_surface() {
     cafe.saved = true;
     app.invoke(Workspace::ACCEPT_PLACES.with(vec![cafe]))
         .unwrap();
+    // A caller opens the place by the row the map publishes for it, which
+    // names the place with its kind: `maps.place:cafe-glueck`.
+    let row = "maps.place:cafe-glueck";
     let call = |app: &mut TestApp<MapsShell>, invoker: ActionInvoker| {
         app.call_by(
             invoker,
-            "maps.workspace",
+            row,
             verb["id"].as_str().unwrap(),
-            serde_json::json!({ "place": "cafe-glueck" }),
+            serde_json::json!({ "place": row }),
         )
     };
     // The agent opens the place in its own view of the map: the person's
@@ -75,8 +78,8 @@ fn a_places_row_is_an_address_of_the_published_surface() {
         .find(|shown| shown.presence == agent)
         .unwrap_or_else(|| panic!("the person sees the agent: {presences:?}"));
     assert!(
-        matches!(&shown.key, PresenceKey::Resource { id, .. } if id == "cafe-glueck"),
-        "the agent's view shows the place: {shown:?}"
+        matches!(&shown.key, PresenceKey::Resource { id, .. } if id == row),
+        "the agent's view shows the place's row: {shown:?}"
     );
     // An agent with no presence of its own is answered in its default
     // view, seen the same way.

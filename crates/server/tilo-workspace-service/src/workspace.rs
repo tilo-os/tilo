@@ -129,12 +129,24 @@ impl Session {
 /// The access of each member device of a workspace, by device key.
 pub type DeviceAccess = std::collections::BTreeMap<[u8; 32], tilo_action_policy::MemberAccess>;
 
+/// A write the server kept, for the workspace's governor to take into its copy.
+pub(crate) struct GovernorNotice {
+    pub(crate) author: [u8; 32],
+    pub(crate) body: Vec<u8>,
+    /// Answered once the governor's copy took the write in, or refused it.
+    pub(crate) taken: tokio::sync::oneshot::Sender<()>,
+}
+
 /// Per-workspace runtime.
 pub struct WorkspaceRuntime {
     /// The in-process workspace authority governing this workspace, told of each
     /// retained body a device's admitted delta carries. Bounded; a full queue
-    /// drops the notice.
-    pub(crate) governor_tap: Option<mpsc::Sender<([u8; 32], Vec<u8>)>>,
+    /// holds the sender back.
+    pub(crate) governor_tap: Option<mpsc::Sender<GovernorNotice>>,
+    /// Taken once the last commit admitted here was told to the governor: the next one is
+    /// told after it, so the governor takes each author's writes in the order they were
+    /// admitted.
+    pub(crate) governor_turn: Option<tokio::sync::oneshot::Receiver<()>>,
     /// The in-process authority serving this workspace, if any: it answers
     /// the workspace's calls.
     pub workspace_authority: Option<crate::workspaces::WorkspaceAuthority>,
@@ -451,6 +463,7 @@ impl WorkspaceRuntime {
             arriving: crate::peer::Arriving::default(),
             live_members: HashSet::new(),
             governor_tap: None,
+            governor_turn: None,
             workspace_authority: None,
             governs_here: false,
             device_access: None,

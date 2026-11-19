@@ -2252,3 +2252,39 @@ fn a_rows_trailing_cells_stay_inside_it_and_clear_of_the_name() {
     }
     assert!(inked, "the leading mark draws in its column");
 }
+
+#[test]
+fn a_struck_row_keeps_the_title_column_of_the_rows_it_stands_among() {
+    let theme = Theme::dark();
+    let m = RowMetrics::new(&theme);
+    let rect = Rect::new(0.0, 0.0, 400.0, 52.0);
+    let mut text = TextRenderer::new();
+    let checked = ListRowFace::new("Book the train").leading(RowLeading::Checkbox {
+        checked: false,
+        icon: None,
+    });
+    let struck = ListRowFace::new("Book the dentist")
+        .struck(true)
+        .leading_empty(true);
+    assert_eq!(
+        struck.text_x(rect, &m, &mut text, &theme),
+        checked.text_x(rect, &m, &mut text, &theme),
+        "the struck row keeps the title column the removed one's control left"
+    );
+}
+
+#[test]
+fn a_tree_rows_second_line_stands_at_the_compacts_double_height() {
+    let single = ListRowFace::new("Plan the trip").outline();
+    let twice = ListRowFace::new("Plan the trip")
+        .outline()
+        .secondary("Helper created it");
+    assert!(
+        (face_height(&single, 1.0) - f64::from(crate::widget::TREE_ROW_HEIGHT)).abs() < 0.5,
+        "a name alone stands at the tree's row height"
+    );
+    assert!(
+        (face_height(&twice, 1.0) - f64::from(crate::widget::TREE_ROW_DOUBLE_HEIGHT)).abs() < 0.5,
+        "a line under the name stands at the compact row's two-line height"
+    );
+}

@@ -24,7 +24,7 @@ use ui_core::vello::Scene;
 use ui_core::vello::kurbo::Affine;
 use ui_core::view::ThawError;
 use ui_core::widget::capability::{capability, capability_mut};
-use ui_core::widget::{AppKind, AppWidget, Decorator, Element, IconDescriptor, Widget};
+use ui_core::widget::{AppKind, AppWidget, Element, IconDescriptor, Widget};
 use ui_core::{LocalState, Theme};
 
 use super::dispatch::DispatchCore;
@@ -48,6 +48,8 @@ mod search;
 mod shared_tree;
 mod shown_item;
 mod typed;
+mod unopened;
+pub(crate) use unopened::Unopened;
 mod widget;
 use live_head::LiveHead;
 pub(crate) use read::READ_TYPE;
@@ -433,7 +435,7 @@ struct RowBindings {
     /// The reads each top-level collection item answers, by row id: the
     /// app's registered readers of its committed state, a launch replaying
     /// what it carries.
-    reads: std::collections::HashMap<String, Vec<tilo_actions::ActionSpec>>,
+    reads: std::collections::HashMap<String, Vec<tilo_resource::read::Declared>>,
 }
 
 impl ResourceRoot {
@@ -652,9 +654,17 @@ impl ResourceRoot {
         self.run
             .members()
             .iter()
-            .map(|(name, at)| {
-                let (key, payload) = at.presence_of(self.resource.kind, self.dispatch.app_id());
-                (name.clone(), key, payload)
+            .filter_map(|shown| match shown {
+                super::scenario::Shown::Member(name, at) => {
+                    let (key, payload) = at.presence_of(self.resource.kind, self.dispatch.app_id());
+                    Some((name.clone(), key, payload))
+                }
+                // An agent stands in its own view of the window, not in a
+                // presence frame its window would send.
+                super::scenario::Shown::Agent(landing) => {
+                    self.typed.stage_landing(landing.clone());
+                    None
+                }
             })
             .collect()
     }
@@ -913,6 +923,7 @@ impl ResourceRoot {
         }
         if let Some(reads) = bindings.reads.remove(row.id.as_str()) {
             for read in reads {
+                let read = read.into_spec();
                 if !row.actions.iter().any(|known| known.id == read.id) {
                     row.actions.push(read);
                 }
@@ -2469,7 +2480,6 @@ impl RootPublishes for ResourceRoot {
         doc: &AutoCommit,
         id: &str,
     ) -> Option<ResourceSpec> {
-        let _profile = tilo_resource::profiling::Phase::start("framework.resource_for");
         let _viewer = member
             .cloned()
             .map(ui_core::invocation_scope::ViewerScope::enter);
@@ -2491,6 +2501,10 @@ impl RootPublishes for ResourceRoot {
         }
         // A change from another window or member may not have reached
         // this view yet: an item it removed is gone, one it made is there.
+        // The chains above answer a resource at the cost it takes; only this
+        // builds the publication, which is what `framework.resource_for`
+        // measures.
+        let _profile = tilo_resource::profiling::Phase::start("framework.resource_for");
         if let Some(mut published) = find(&[self.current_publication(doc)], id) {
             // The publication's items are listed with the read each answers;
             // this one is built alone, so it carries the same
@@ -2548,6 +2562,28 @@ impl RootPublishes for ResourceRoot {
         // action: those are the resource's own.
         ui_core::resources::resource_for(self.app_view(), None, doc, id)
             .map(super::rows::resolved_outside_document)
+    }
+    fn published_action(
+        &self,
+        id: &str,
+        mut spec: tilo_actions::ActionSpec,
+    ) -> tilo_actions::ActionSpec {
+        // The resource's own actions take the effects whose status is about
+        // the resource; a row takes what the surfaces say of that row.
+        let own = id == self.dispatch.resource_id();
+        self.surfaces(&mut |surface| {
+            let statuses = if own {
+                surface.availability()
+            } else {
+                surface.row_status(id)
+            };
+            for status in &statuses {
+                if status.id() == spec.id && (!own || status.item().is_none()) {
+                    status.overlay(&mut spec);
+                }
+            }
+        });
+        spec
     }
     fn document_action_result(
         &self,
@@ -2880,88 +2916,6 @@ fn unreadable_state(reason: &str) -> ui_core::widget::EmptyState {
         .with_icon(ui_core::icons::Icon::CircleAlert)
         .with_message(ui_core::i18n::widget_text("framework-unreadable-hint"))
         .with_details(reason)
-}
-
-/// The window of a record that did not read as the resource when it was
-/// opened: why, instead of the app's view, and the resource's actions
-/// published as unavailable for that reason.
-pub(crate) struct Unopened {
-    title: &'static str,
-    icon: IconDescriptor,
-    /// What it publishes: the resource's declared actions, every document
-    /// one unavailable for the reason.
-    resource: ResourceSpec,
-    shown: ui_core::widget::EmptyState,
-}
-
-impl Unopened {
-    /// The window of a record that does not read as the resource of
-    /// `kind` and `label`, whose actions are `declarations`.
-    pub(crate) fn new(
-        title: &'static str,
-        icon: IconDescriptor,
-        (kind, label): (&'static str, &'static str),
-        declarations: &[tilo_resource::Declaration],
-        reason: &str,
-    ) -> Self {
-        let mut resource = ResourceSpec::new(
-            kind,
-            kind,
-            tilo_resource::label::localized(kind, label, None),
-        );
-        for decl in declarations {
-            resource = resource.with_action(tilo_resource::declaration_spec(decl));
-        }
-        tilo_resource::withhold_document_actions(&mut resource, reason);
-        Self {
-            title,
-            icon,
-            shown: unreadable_state(reason),
-            resource,
-        }
-    }
-}
-
-impl Unopened {
-    /// The window as a host mounts it, its widget table compiled once for
-    /// every app.
-    pub(crate) fn boxed(self) -> Box<dyn AppWidget> {
-        Box::new(self)
-    }
-}
-
-impl Decorator for Unopened {
-    ui_core::provides!(dyn ui_core::resources::PublishesResources);
-
-    type Inner = ui_core::widget::EmptyState;
-
-    fn inner(&self) -> &ui_core::widget::EmptyState {
-        &self.shown
-    }
-
-    fn inner_mut(&mut self) -> &mut ui_core::widget::EmptyState {
-        &mut self.shown
-    }
-}
-
-impl ui_core::resources::PublishesResources for Unopened {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
-        vec![self.resource.clone()]
-    }
-}
-
-impl AppWidget for Unopened {
-    fn app_kind(&self) -> AppKind {
-        AppKind::Editor
-    }
-
-    fn app_title(&self) -> &str {
-        self.title
-    }
-
-    fn app_icon(&self) -> IconDescriptor {
-        self.icon.clone()
-    }
 }
 
 #[cfg(test)]

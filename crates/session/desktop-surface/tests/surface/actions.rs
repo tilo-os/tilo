@@ -466,9 +466,13 @@ fn a_window_asks_another_app_for_an_action_through_the_desktop_s_session() {
     );
 }
 
-/// Windows opened with content: each content launch opens its app on what it was handed.
+/// One window opened with content: its app, the content's hash and the file's name.
+type Opened = (String, String, Option<String>);
+
+/// Windows opened with content: each content launch opens its app on what it was handed, as
+/// the file it was named.
 struct ContentWindows {
-    opened: Rc<std::cell::RefCell<Vec<(String, String)>>>,
+    opened: Rc<std::cell::RefCell<Vec<Opened>>>,
 }
 
 impl TileSource for ContentWindows {
@@ -480,10 +484,10 @@ impl TileSource for ContentWindows {
     }
 
     fn launch(&mut self, _: &Workspace, id: u64, app: &str, _: Option<u64>) -> Option<Tab> {
-        let (app, hash) = tilo_desktop_surface::session::launched_content(app)?;
+        let (app, hash, name) = tilo_desktop_surface::session::launched_file(app)?;
         self.opened
             .borrow_mut()
-            .push((app.to_owned(), hash.to_owned()));
+            .push((app.to_owned(), hash.to_owned(), name.map(str::to_owned)));
         Some(Tab {
             id,
             title: app.into(),
@@ -564,8 +568,38 @@ fn a_window_opens_content_in_another_app_through_the_desktop_s_session() {
     driver.relayout();
     assert_eq!(
         *opened.borrow(),
-        vec![("so.tilo.photos".to_owned(), hash)],
+        vec![("so.tilo.photos".to_owned(), hash.clone(), None)],
         "the app opens with the content"
+    );
+    // A file handed over by its name opens as that file: the name says what bytes cannot.
+    let named = launch.clone().named("sunset.png");
+    drop(session.invoke(&caller, ask(named.argument())));
+    assert!(openings.open(&handle, |_, _| Ok(()), |_, _| None));
+    driver.relayout();
+    assert_eq!(
+        opened.borrow().last(),
+        Some(&(
+            "so.tilo.photos".to_owned(),
+            hash.clone(),
+            Some("sunset.png".to_owned())
+        )),
+        "the app opens the file under its name"
+    );
+    // A name that is a path is no file's name: the content opens, named by nothing.
+    let mut pathed = launch.argument();
+    if let ui::tilo_actions::remote::InvokeArgument::Text(hash) = pathed {
+        pathed = ui::tilo_actions::remote::InvokeArgument::Json(serde_json::Map::from_iter([
+            ("content_hash".to_owned(), serde_json::json!(hash)),
+            ("name".to_owned(), serde_json::json!("../etc/passwd")),
+        ]));
+    }
+    drop(session.invoke(&caller, ask(pathed)));
+    assert!(openings.open(&handle, |_, _| Ok(()), |_, _| None));
+    driver.relayout();
+    assert_eq!(
+        opened.borrow().last(),
+        Some(&("so.tilo.photos".to_owned(), hash, None)),
+        "a path is never a file's name"
     );
 }
 

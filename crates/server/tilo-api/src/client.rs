@@ -348,28 +348,48 @@ impl Client {
         Ok(answer.json())
     }
 
-    /// The workspace `named`: an id as it is, or the account's workspace of
-    /// that name.
+    /// The workspace `named`: an id as it is, or the workspace of that name
+    /// this key reaches, as `GET /v1/workspaces` lists them. Every command
+    /// that takes `-w` resolves its name here, whatever the key is: a name
+    /// two of them share is refused, each named by its id, and so is one none
+    /// of them answers to, with the ones the key does reach.
     pub async fn workspace_id(&self, named: &str) -> Result<String> {
         if is_uuid(named) {
             return Ok(named.to_owned());
         }
         let listed = self.get("/v1/workspaces").await?;
-        let wanted = slug(named);
-        listed
+        let workspaces = listed
             .get("workspaces")
             .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|workspace| {
+            .map_or(&[] as &[Value], Vec::as_slice);
+        let wanted = slug(named);
+        let matched: Vec<&Value> = workspaces
+            .iter()
+            .filter(|workspace| {
                 workspace
                     .get("name")
                     .and_then(Value::as_str)
                     .is_some_and(|name| slug(name) == wanted)
             })
-            .and_then(|workspace| workspace.get("id").and_then(Value::as_str))
-            .map(str::to_owned)
-            .ok_or_else(|| anyhow!("no workspace called {named:?}: `tilo workspace ls` names them"))
+            .collect();
+        match matched.as_slice() {
+            [one] => one
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow!("the workspace called {named:?} has no id")),
+            [] if workspaces.is_empty() => Err(anyhow!(
+                "no workspace called {named:?}: this key reaches no workspaces"
+            )),
+            [] => Err(anyhow!(
+                "no workspace called {named:?}: this key reaches {}",
+                named_workspaces(workspaces)
+            )),
+            several => Err(anyhow!(
+                "more than one workspace is called {named:?}: {}; name one by its id",
+                named_workspaces(several.iter().copied())
+            )),
+        }
     }
 
     /// Run `action` on `resource` in `workspace`, titled `title` in History:
@@ -985,6 +1005,25 @@ pub fn slug(name: &str) -> String {
         .join("-")
 }
 
+/// The workspaces a listing names, each as `Name (id ID)`: what an error says
+/// a key reaches, so the person knows which name or id to type instead.
+fn named_workspaces<'a>(workspaces: impl IntoIterator<Item = &'a Value>) -> String {
+    workspaces
+        .into_iter()
+        .map(|workspace| {
+            let name = workspace
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("unnamed");
+            match workspace.get("id").and_then(Value::as_str) {
+                Some(id) => format!("{name} (id {id})"),
+                None => name.to_owned(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Whether `until` is still ahead: a call with no deadline never runs out.
 fn ahead(until: Option<Instant>) -> bool {
     until.is_none_or(|until| Instant::now() < until)
@@ -1276,5 +1315,112 @@ mod tests {
             drop(env);
             std::fs::remove_dir_all(&root).expect("the test's directory goes");
         }
+    }
+
+    /// An API server before a desktop holding `workspaces`, served on this
+    /// machine, and the client the `tilo` command opens with only a key:
+    /// over HTTP, as the key its person approved.
+    async fn api_key_client(workspaces: Vec<crate::session::Workspace>) -> Client {
+        struct Holding(Vec<crate::session::Workspace>);
+        impl crate::session::Here for Holding {
+            fn workspaces(&self) -> Vec<crate::session::Workspace> {
+                self.0.clone()
+            }
+            fn enter(
+                &self,
+                workspace: &str,
+                _session: &str,
+                _label: &str,
+            ) -> std::result::Result<Box<dyn crate::session::Answering>, String> {
+                Err(format!("no workspace {workspace} here"))
+            }
+        }
+        let server = crate::Server::here(std::sync::Arc::new(Holding(workspaces))).unwrap();
+        let person = crate::tests::Person::new(7);
+        let key = crate::grant_key::GrantKey::held(
+            person.device.clone(),
+            person.cert.clone(),
+            crate::now_ms().saturating_mul(1_000_000),
+        )
+        .unwrap();
+        let (_, token) = server
+            .store
+            .resource_key(
+                &key,
+                "A backend",
+                crate::store::GrantKind::Key,
+                None,
+                crate::now_ms(),
+            )
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(crate::serve(std::sync::Arc::clone(&server), listener));
+        Client {
+            transport: Transport::Http {
+                origin,
+                key: token,
+                http: tilo_net::Client::new(),
+            },
+        }
+    }
+
+    /// `-w <name>` resolves through the workspaces the key reaches: a name
+    /// two of them answer to is refused with each one's id, and one none
+    /// answers to names the ones the key reaches.
+    #[tokio::test]
+    async fn a_name_resolves_through_the_workspaces_an_api_key_reaches() {
+        let studio = uuid::Uuid::new_v4().to_string();
+        let lounge = uuid::Uuid::new_v4().to_string();
+        let namesake = uuid::Uuid::new_v4().to_string();
+        let client = api_key_client(vec![
+            crate::session::held(studio.clone(), "Studio".into()),
+            crate::session::held(lounge.clone(), "Lounge".into()),
+            crate::session::held(namesake.clone(), "lounge".into()),
+        ])
+        .await;
+        assert_eq!(
+            client.workspace_id("Studio").await.unwrap(),
+            studio,
+            "a name the key reaches resolves to its workspace"
+        );
+        assert_eq!(
+            client.workspace_id("studio").await.unwrap(),
+            studio,
+            "a name matches whatever its case and spacing"
+        );
+        assert_eq!(
+            client.workspace_id(&studio).await.unwrap(),
+            studio,
+            "an id is an id, with no listing asked"
+        );
+        assert_eq!(
+            client.workspace_id("Lounge").await.unwrap_err().to_string(),
+            format!(
+                "more than one workspace is called \"Lounge\": Lounge (id {lounge}), \
+                 lounge (id {namesake}); name one by its id"
+            ),
+            "a name two workspaces answer to is refused, each named by its id"
+        );
+        assert_eq!(
+            client
+                .workspace_id("Nowhere")
+                .await
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "no workspace called \"Nowhere\": this key reaches Studio (id {studio}), \
+                 Lounge (id {lounge}), lounge (id {namesake})"
+            ),
+            "a name none answers to names the workspaces the key reaches"
+        );
+
+        let empty = api_key_client(Vec::new()).await;
+        assert_eq!(
+            empty.workspace_id("Studio").await.unwrap_err().to_string(),
+            "no workspace called \"Studio\": this key reaches no workspaces"
+        );
     }
 }

@@ -612,20 +612,23 @@ test('an invitation from someone the workspace has not named reads their profile
     profiled = text(cards()[0].children[0].children[0]);
     close(cards()[0]);
     await first;
-    // A machine keeping no profile for them: the card says a person, in
-    // plain words. Who asked is their key, which is never read as a name.
+    // A machine keeping no profile for them: the card says the person is
+    // invited in plain words, with no face and no name made up for who
+    // asked. Who asked is their key, which is never read as a name.
     globalThis.fetch = async () => ({ok: false});
     const second = deps.confirmInvitation({workspaceName: 'Lounge', role: 'viewer', members: 2,
       inviter: {name: '', userPublicKey: USER}}, ORIGIN);
     await tick();
-    unnamed = text(cards()[0].children[0].children[0]);
+    const from = cards()[0].children[0].children[0];
+    unnamed = {from: text(from), face: from.children.length > 1 ? from.children[0].style : null};
     close(cards()[0]);
     await second;
     return page;
   }});
   assert.equal(failure, null);
   assert.equal(profiled, 'AAsli invited you to', 'their profile names them, their initial in their colour');
-  assert.equal(unnamed, 'SSomeone invited you to', 'plain words name them where no profile keeps a name');
+  assert.deepEqual(unnamed, {from: 'You’re invited to', face: null},
+    'plain words where nobody named who asked: no stand-in name, no face');
   assert.equal(new URL(asked[0]).pathname, '/peer/v1/profile/fetch', asked.join());
 });
 
@@ -754,7 +757,7 @@ test('creating a workspace remembers it and uses the existing save-and-close swi
 });
 
 
-test('the person’s own desktop writes as their root identity and shows them by their name', async () => {
+test('the person’s own desktop writes as their root identity and shows them unnamed until they give a name', async () => {
   let mountOwn;
   const {calls} = await fixture({own: true, boot: async (options, page) => { mountOwn = options.deps.mountDesktop; return page; }});
   // No workspace's peer certifies who writes there: the browser's root identity does.
@@ -764,7 +767,7 @@ test('the person’s own desktop writes as their root identity and shows them by
   const own = calls.find(call => call[0] === 'own');
   assert.ok(own, 'the desktop is told who its person is');
   assert.equal(own[1].user, USER);
-  assert.ok(own[1].label && own[1].label !== 'Guest', own[1].label);
+  assert.equal(own[1].label, '', 'a person without a name is shown as one, never by a made-up name');
 });
 
 test('the home workspace’s peer that carries reports from another workspace joins it without calls or a live session', async () => {
@@ -856,12 +859,12 @@ test('the page that loads after the gesture joins as this browser’s own person
   // The person the browser holds, not a visitor's key the page made up.
   assert.equal(joined[0].identity.userPublicKey, USER);
   assert.equal(joined[0].workspace, LOUNGE);
-  assert.match(joined[0].displayName, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
+  assert.equal(joined[0].displayName, null, 'no name given, none made up');
   assert.deepEqual(requests, [], 'no request was made for a visitor');
   assert.equal(session.has('tilo-embed-join'), false, 'the gesture is spent');
 });
 
-test('a person who joins through an invitation joins under the name their key draws', async () => {
+test('a person who joins through an invitation joins under no name until they give one', async () => {
   globalThis.window = globalThis;
   globalThis.parent = {postMessage: () => {}};
   const joined = [];
@@ -875,11 +878,8 @@ test('a person who joins through an invitation joins under the name their key dr
   assert.equal(failure, null);
   assert.equal(joined.length, 1);
   assert.equal(joined[0].identity.userPublicKey, USER);
-  // Never nameless, so nobody here sees them as a guest: the same name the
-  // page's own entry gives this person.
-  assert.match(joined[0].displayName, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
-  const {defaultDisplayName} = await import('./workspaces.mjs');
-  assert.equal(joined[0].displayName, defaultDisplayName(USER));
+  // A person who gave no name joins under none: never a made-up name.
+  assert.equal(joined[0].displayName, null);
 });
 
 test('an uncaught page error reaches the entry the site names', async () => {

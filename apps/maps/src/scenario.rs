@@ -14,6 +14,10 @@ use crate::workspace::{Workspace, workspace};
 pub(crate) const SCENARIOS: &[&str] = &[
     "directions",
     "explore",
+    "agent",
+    "agents",
+    "agents-together",
+    "follow",
     "search",
     "pois",
     "transit",
@@ -35,6 +39,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "empty",
     "directions-narrow",
     "explore-narrow",
+    "agents-narrow",
     "search-narrow",
     "pois-narrow",
     "transit-narrow",
@@ -67,7 +72,7 @@ impl Scenario {
     pub(crate) fn of(name: Option<&str>) -> Self {
         let name = name.unwrap_or_default();
         match name.strip_suffix("-narrow").unwrap_or(name) {
-            "explore" => Self::Explore,
+            "explore" | "agent" | "agents" | "agents-together" | "follow" => Self::Explore,
             "search" => Self::Search,
             "pois" => Self::Pois,
             "transit" => Self::Transit,
@@ -121,6 +126,13 @@ impl Sample {
 
 pub(crate) fn prepare(fixture: &mut Fixture<Workspace>) {
     let sample = Sample::of(fixture.scenario());
+    for (id, name, place) in agents(fixture.scenario()) {
+        fixture.agent(
+            id,
+            name,
+            ui::tilo_resource::Place::Item((*place).to_owned()),
+        );
+    }
     fixture.provide(sample);
 }
 
@@ -182,4 +194,31 @@ pub(crate) fn actions(name: Option<&str>) -> Vec<Invoke<Workspace>> {
         }));
     }
     actions
+}
+
+/// The agents a scenario shows, each with the place its own view of the map opened: its id, its
+/// name and the place.
+fn agents(name: Option<&str>) -> &'static [(&'static str, &'static str, &'static str)] {
+    match name.map(|name| name.strip_suffix("-narrow").unwrap_or(name)) {
+        Some("agent" | "follow") => &[("scout", "Scout", "cafe-glueck")],
+        Some("agents") => &[
+            ("scout", "Scout", "cafe-glueck"),
+            ("guide", "Guide", "cafe-luitpold"),
+        ],
+        Some("agents-together") => &[
+            ("scout", "Scout", "cafe-glueck"),
+            ("guide", "Guide", "cafe-glueck"),
+        ],
+        _ => &[],
+    }
+}
+
+/// What the person does in the scene: in `follow`, they follow Scout's view, as the session
+/// asks a window to.
+pub(crate) fn input(name: Option<&str>, input: &mut ui::headless::FrameHarness) {
+    if name == Some("follow") {
+        input.handle_collaboration_event(&ui::collaboration::CollabEvent::FollowChanged {
+            peer_id: Some(ui::tilo_actions::MemberId::agent("scout")),
+        });
+    }
 }

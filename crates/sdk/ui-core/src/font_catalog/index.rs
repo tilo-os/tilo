@@ -1,7 +1,8 @@
-//! The font database a launch builds, kept on disk so the next launch reads it instead of building it
-//! again. Building it verifies the product catalog (hashing every font of a catalog not on an immutable
-//! mount) and parses every face of the catalog and of the system's fonts: tens of milliseconds before a
-//! process could set any text.
+//! The system's fonts as a launch found them, kept on disk so the next launch reads them instead of
+//! finding them again. Finding them parses every face the system has: tens of milliseconds before a
+//! process could set any text. The product catalog is not in it: the manifest compiled into the build
+//! lists the catalog's faces, so the record holds across an update of Tilo as long as the system's
+//! fonts are unchanged.
 
 use cosmic_text::fontdb;
 use serde::{Deserialize, Serialize};
@@ -9,7 +10,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tilo_files::native::checked::Identity;
 
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 
 const MAX_INDEX_BYTES: u64 = 64 << 20;
 
@@ -38,8 +39,8 @@ fn system_inputs() -> Vec<PathBuf> {
 }
 
 /// Where this process keeps its index: the directory `TILO_FONT_INDEX` names — in a sandbox, one every
-/// app of the build shares, so the second app opened on the device reads the database the first one's
-/// launch recorded — else `tilo/font-index` under its cache directory.
+/// app shares, so the second app opened on the device reads the faces the first one's launch
+/// recorded — else `tilo/font-index` under its cache directory.
 #[cfg(not(test))]
 pub(crate) fn location() -> Option<PathBuf> {
     let paths = &crate::process::environment().paths;
@@ -47,7 +48,7 @@ pub(crate) fn location() -> Option<PathBuf> {
         Some(dir) => dir.clone(),
         None => paths.cache_dir()?.join("tilo").join("font-index"),
     };
-    Some(dir.join(format!("{}.json", tilo_font_catalog::manifest_sha256())))
+    Some(dir.join("system.json"))
 }
 
 /// This platform cannot identify files: no index is recorded or trusted.
@@ -94,51 +95,39 @@ struct Face {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Index {
     version: u32,
-    build: String,
-    roots: Vec<PathBuf>,
     files: Vec<Input>,
     inputs: Vec<Input>,
     faces: Vec<Face>,
-    generic: [String; 5],
 }
 
-const GENERIC: [fontdb::Family<'static>; 5] = [
-    fontdb::Family::SansSerif,
-    fontdb::Family::Serif,
-    fontdb::Family::Monospace,
-    fontdb::Family::Cursive,
-    fontdb::Family::Fantasy,
-];
-
-fn existing_roots(roots: &[PathBuf], chosen: &Path) -> Vec<PathBuf> {
-    let mut existing = Vec::new();
-    for root in roots.iter().filter(|root| root.is_dir()) {
-        let Ok(root) = root.canonicalize() else {
-            continue;
-        };
-        let same = root == chosen;
-        existing.push(root);
-        if same {
-            break;
+/// Add the system's fonts to `db`: the ones recorded at `path` when that
+/// record still holds, else found now and recorded there for the next launch.
+#[cfg(not(test))]
+pub(crate) fn add_system_fonts(path: Option<&Path>, db: &mut fontdb::Database) {
+    let found = path.and_then(|path| tilo_startup_metrics::span("font-index-read", || load(path)));
+    let system = found.unwrap_or_else(|| {
+        let mut system = fontdb::Database::new();
+        system.load_system_fonts();
+        if let Some(path) = path {
+            store(path, &system);
         }
+        system
+    });
+    for face in system.faces() {
+        db.push_face_info(face.clone());
     }
-    existing
 }
 
-/// The database recorded at `path`, when it is this build's and everything
-/// it was built from is as it was: the catalog roots, every font file, every
+/// The faces recorded at `path`, when the record is this version's and
+/// everything it was built from is as it was: every font file, every
 /// directory holding one and the system's font directories. An input that
 /// did not exist when the index was recorded is not one it named and cannot
 /// invalidate it; one that exists now and was not recorded is a font (or a
-/// font directory) the recorded database lacks.
-pub(crate) fn load(path: &Path, roots: &[PathBuf]) -> Option<fontdb::Database> {
+/// font directory) the record lacks.
+pub(crate) fn load(path: &Path) -> Option<fontdb::Database> {
     let bytes = tilo_files::native::bounded::read(path, MAX_INDEX_BYTES).ok()??;
     let index: Index = serde_json::from_slice(&bytes).ok()?;
-    if index.version != VERSION || index.build != tilo_font_catalog::manifest_sha256() {
-        return None;
-    }
-    let chosen = index.roots.last()?.canonicalize().ok()?;
-    if existing_roots(roots, &chosen) != index.roots {
+    if index.version != VERSION {
         return None;
     }
     if !index.inputs.iter().chain(&index.files).all(Input::holds) {
@@ -184,12 +173,6 @@ fn database(index: &Index) -> fontdb::Database {
             monospaced: face.monospaced,
         });
     }
-    let [sans, serif, mono, cursive, fantasy] = &index.generic;
-    db.set_sans_serif_family(sans.clone());
-    db.set_serif_family(serif.clone());
-    db.set_monospace_family(mono.clone());
-    db.set_cursive_family(cursive.clone());
-    db.set_fantasy_family(fantasy.clone());
     db
 }
 
@@ -207,13 +190,12 @@ fn stretch(number: u16) -> fontdb::Stretch {
     }
 }
 
-/// Record `db`, built from the catalog at `root` (canonical) and `roots`,
-/// at `path`, replacing what was there atomically. A database with a face
-/// that is not in a file is not recorded, nor one on a platform that cannot
-/// identify files. Failing to write leaves the next launch to build it
-/// again.
-pub(crate) fn store(path: &Path, roots: &[PathBuf], root: &Path, db: &fontdb::Database) {
-    let Some(index) = index_of(roots, root, db) else {
+/// Record the system's faces `db` at `path`, replacing what was there
+/// atomically. A database with a face that is not in a file is not recorded,
+/// nor one on a platform that cannot identify files. Failing to write leaves
+/// the next launch to find them again.
+pub(crate) fn store(path: &Path, db: &fontdb::Database) {
+    let Some(index) = index_of(db) else {
         return;
     };
     let Ok(bytes) = serde_json::to_vec(&index) else {
@@ -228,7 +210,7 @@ pub(crate) fn store(path: &Path, roots: &[PathBuf], root: &Path, db: &fontdb::Da
     }
 }
 
-fn index_of(roots: &[PathBuf], root: &Path, db: &fontdb::Database) -> Option<Index> {
+fn index_of(db: &fontdb::Database) -> Option<Index> {
     let mut files: Vec<Input> = Vec::new();
     let mut faces = Vec::new();
     for face in db.faces() {
@@ -275,12 +257,9 @@ fn index_of(roots: &[PathBuf], root: &Path, db: &fontdb::Database) -> Option<Ind
     }
     Some(Index {
         version: VERSION,
-        build: tilo_font_catalog::manifest_sha256(),
-        roots: existing_roots(roots, &root.canonicalize().ok()?),
         files,
         inputs,
         faces,
-        generic: GENERIC.map(|family| db.family_name(&family).to_owned()),
     })
 }
 
@@ -324,12 +303,9 @@ mod tests {
                 db.load_font_file(&path).unwrap();
             }
             assert!(db.faces().count() > 0, "the fixture holds faces");
-            db.set_sans_serif_family("Inter");
             let index_path = dir.path().join("index.json");
-            let roots = vec![fonts.clone()];
-            let root = fonts.canonicalize().unwrap();
-            store(&index_path, &roots, &root, &db);
-            let read = load(&index_path, &roots).expect("the index holds");
+            store(&index_path, &db);
+            let read = load(&index_path).expect("the index holds");
             let describe = |db: &fontdb::Database| {
                 db.faces()
                     .map(|face| {
@@ -349,10 +325,6 @@ mod tests {
                     .collect::<Vec<_>>()
             };
             assert_eq!(describe(&read), describe(&db));
-            assert_eq!(
-                read.family_name(&fontdb::Family::SansSerif),
-                db.family_name(&fontdb::Family::SansSerif)
-            );
             let id = read.faces().next().unwrap().id;
             let bytes = read.with_face_data(id, |data, _| data.len()).unwrap();
             assert!(bytes > 0, "a face's file is read when it is used");
@@ -373,56 +345,26 @@ mod tests {
             }
             let first = first.expect("a fixture font");
             let index_path = dir.path().join("index.json");
-            let roots = vec![fonts.clone()];
-            let root = fonts.canonicalize().unwrap();
-            store(&index_path, &roots, &root, &db);
-            assert!(load(&index_path, &roots).is_some());
+            store(&index_path, &db);
+            assert!(load(&index_path).is_some());
 
             let bytes = std::fs::read(&first).unwrap();
             std::fs::write(&first, &bytes).unwrap();
             a_second_later(&first);
-            assert!(load(&index_path, &roots).is_none(), "a rewritten font");
-            store(&index_path, &roots, &root, &db);
-            assert!(load(&index_path, &roots).is_some());
+            assert!(load(&index_path).is_none(), "a rewritten font");
+            store(&index_path, &db);
+            assert!(load(&index_path).is_some());
 
             std::fs::write(fonts.join("added.ttf"), &bytes).unwrap();
             a_second_later(&fonts);
-            assert!(load(&index_path, &roots).is_none(), "an added font");
-            store(&index_path, &roots, &root, &db);
-
-            let front = dir.path().join("front");
-            std::fs::create_dir_all(&front).unwrap();
-            let in_front = vec![front, fonts.clone()];
-            assert!(load(&index_path, &in_front).is_none(), "a root in front");
+            assert!(load(&index_path).is_none(), "an added font");
+            store(&index_path, &db);
 
             let mut other: Index =
                 serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
-            other.build = "another".into();
+            other.version = 0;
             std::fs::write(&index_path, serde_json::to_vec(&other).unwrap()).unwrap();
-            assert!(load(&index_path, &roots).is_none(), "another build");
-        }
-
-        phase a_catalog_reached_through_another_spelling_is_the_same_catalog;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let fonts = dir.path().join("fonts");
-            std::fs::create_dir_all(&fonts).unwrap();
-            let mut db = fontdb::Database::new();
-            for (name, bytes) in fixture_files() {
-                let path = fonts.join(name);
-                std::fs::write(&path, bytes).unwrap();
-                db.load_font_file(&path).unwrap();
-            }
-            let link = dir.path().join("fonts-link");
-            std::os::unix::fs::symlink(&fonts, &link).unwrap();
-            let index_path = dir.path().join("index.json");
-            store(&index_path, std::slice::from_ref(&link), &link, &db);
-            let recorded: Index = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
-            assert_eq!(recorded.roots, vec![fonts.canonicalize().unwrap()]);
-            assert!(
-                load(&index_path, std::slice::from_ref(&fonts)).is_some(),
-                "the same directory by another spelling"
-            );
+            assert!(load(&index_path).is_none(), "another version");
         }
     }
 

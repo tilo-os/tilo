@@ -364,6 +364,27 @@ fn physical(
 /// The window layer, front first: `stack` (the mapped windows, bottom first, reversed by the
 /// caller) and the windows that closed and are still drawn where they stood, each drawn at `scale`
 /// with `origin` at the top left of the area `bounds` .
+/// The part of the output `window` may draw on: all of it, or the part the policy cut it to (a
+/// strip's window shows on its own display, and in its own tab). A window whose own geometry
+/// already fits that part is not cut at all: nothing of it would be left out, and a window drawn
+/// whole keeps the scan-out path.
+fn drawable_area(
+    state: &State,
+    window: &Window,
+    location: Point<i32, Logical>,
+    origin: Point<f64, Logical>,
+    scale: f64,
+    bounds: Rectangle<i32, Physical>,
+) -> Option<Rectangle<i32, Physical>> {
+    match state.clip_of(window) {
+        None => Some(bounds),
+        Some(clip) if clip.contains_rect(Rectangle::new(location, window.geometry().size)) => {
+            Some(bounds)
+        }
+        Some(clip) => physical(clip, origin, scale).intersection(bounds),
+    }
+}
+
 fn window_elements<R>(
     renderer: &mut R,
     state: &State,
@@ -404,10 +425,7 @@ where
         let framing = state.framing(window);
         // The part of this output the window may draw on: all of it, or where the policy cut it to
         // (a strip's window shows on its own display only).
-        let area = match state.clip_of(window) {
-            None => Some(bounds),
-            Some(clip) => physical(clip, origin, scale).intersection(bounds),
-        };
+        let area = drawable_area(state, window, location, origin, scale, bounds);
         // What the shells draw over this window itself is over it and the windows behind it.
         if let Some(over) = state.over_of(window) {
             covers.push(physical(over, origin, scale));

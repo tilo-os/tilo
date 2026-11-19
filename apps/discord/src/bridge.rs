@@ -98,6 +98,12 @@ pub struct BridgePlan {
     pub posts: Vec<Value>,
     /// `fetch-asset`, then Chat `post` with the file, then `map`.
     pub files: Vec<Value>,
+    /// Chat `import-message` with the Discord author's appearance and where
+    /// it was written, then `map`: what Discord wrote before the newest
+    /// message its Tilo channel holds.
+    pub imports: Vec<Value>,
+    /// `fetch-asset`, then Chat `import-message` with the file, then `map`.
+    pub file_imports: Vec<Value>,
     pub chat_edits: Vec<Value>,
     pub chat_deletes: Vec<Value>,
     /// Chat `remove-message`, then `unmap`.
@@ -682,6 +688,31 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
     }
 }
 
+/// A Chat `import-message` of what `post` mirrors: its words in its place, by
+/// its author in Discord at the moment it was written there, after `fetch`
+/// copies the file it carries.
+fn imported(post: &inbound::PostItem, fetch: Option<&discord_wire::op::FetchAssetOp>) -> Value {
+    let origin = ui::tilo_resource::Origin {
+        author: post.appearance.name.clone(),
+        handle: Some(post.persona.clone()),
+        source: "Discord".to_owned(),
+        url: None,
+        reference: Some(post.discord.clone()),
+        created_ms: Some(discord_wire::snowflake_ms(&post.discord)),
+        updated_ms: None,
+    };
+    json!({
+        "channel": post.channel,
+        "text": post.text,
+        "parent": post.parent,
+        "appearance": post.appearance,
+        "discord": post.discord,
+        "persona": post.persona,
+        "origin": origin,
+        "fetch": fetch,
+    })
+}
+
 fn inbound_plan(plan: &mut BridgePlan, inbound: InboundPlan) {
     plan.avatars.extend(values(inbound.avatars));
     plan.posts.extend(inbound.posts.into_iter().map(|p| {
@@ -707,6 +738,14 @@ fn inbound_plan(plan: &mut BridgePlan, inbound: InboundPlan) {
             "written": f.post.written,
         })
     }));
+    plan.imports
+        .extend(inbound.imports.into_iter().map(|p| imported(&p, None)));
+    plan.file_imports.extend(
+        inbound
+            .file_imports
+            .into_iter()
+            .map(|f| imported(&f.post, Some(&f.fetch))),
+    );
     plan.chat_edits.extend(
         inbound
             .edits

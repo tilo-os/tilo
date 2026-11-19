@@ -697,10 +697,13 @@ fn a_surface_request_is_answered_from_the_app_the_service_mounts() {
         } => surface,
         other => panic!("the app's surface is answered: {other:?}"),
     };
+    let (_, kept) = collab_types::surface::SurfaceFile::kept(include_bytes!(
+        "../../../../../apps/pdf-viewer/surface.toml"
+    ))
+    .expect("the app's committed surface parses");
     assert_eq!(
-        surface,
-        include_str!("../../../../../apps/pdf-viewer/surface.toml"),
-        "the surface is the one the app's signed build names"
+        surface, kept,
+        "the surface is the app's signed build's, in the form it is kept by"
     );
     // An app the service mounts none of has no surface to decide a change
     // against: it answers none rather than another app's.

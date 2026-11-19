@@ -11,7 +11,8 @@
 - Vendored: 2026-11-10
 
 Local changes: a client may send right behind its answer to the relay's
-challenge (`ClientBuilder::send_before_confirmed`), and the `[lib]` builds an
-`rlib` only. Each change is marked `TILO PATCH` in the source;
+challenge (`ClientBuilder::send_before_confirmed`), the server closes the
+connection of any request that is not a relay WebSocket behind its answer,
+and the `[lib]` builds an `rlib` only. Each change is marked `TILO PATCH` in the source;
 `TILO-PATCH.md` has the details and an upstream-ready description. The
 archive's `Cargo.lock` is omitted.

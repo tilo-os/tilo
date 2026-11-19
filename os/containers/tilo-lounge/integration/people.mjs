@@ -205,7 +205,10 @@ const dump = async (tab, name) => {
   const states = (shown.chordStates ?? []);
   if (states.length) console.error(`--- ${name} chords as they arrived: ${states.slice(-6).map(state => JSON.stringify(state)).join(', ')}`);
   if (shown.call) console.error(`--- ${name} call: ${JSON.stringify(shown.call)}`);
-  const shot = await tab.screenshot();
+  // A picture is what the page showed where it could give one: a page whose GPU
+  // is minutes behind answers no frame within a screenshot's steps, and what
+  // this step reads (its state, its names, its console) is no less true for it.
+  const shot = await tab.screenshot().catch(() => null);
   if (shot) writeFileSync(`${out}/${name}.png`, shot);
   return shown;
 };
@@ -325,6 +328,96 @@ const drawn = (tab, by = 2) => waits.settle({
 // timing lines below print.
 const took = from => ((Date.now() - from) / 1000).toFixed(1);
 const presented = tab => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0').catch(() => 0);
+// What each page drew while a step ran, from the page's own clock: every
+// presented frame's time, every animation frame the page got, and the layout
+// revision and window count it read on each. A step that took long says
+// whether the page was drawing slowly (presented frames far apart while
+// animation frames kept coming), stalled (no animation frames either), or
+// waiting for a change that had not reached it (no revision move).
+//
+// The animation frames separate the two costs the numbers otherwise mix: a
+// page whose GPU is behind still gets animation frames on time, and one whose
+// main thread is inside a long task does not.
+const drawing = async (tab, ...others) => {
+  const read = one => one.evaluate('JSON.stringify(globalThis.__drawing ?? null)').catch(() => 'null');
+  for (const one of [tab, ...others]) {
+    await one.evaluate(`(async () => {
+      const w = globalThis.__drawing = {began: performance.now(), animation: 0, animationAt: [], presented: [], changes: []};
+      // The runtime's own stage timings, off by default: which stage of a slow
+      // frame took the time, or that the page drew nothing while it ran.
+      const glue = performance.getEntriesByType('resource').map(entry => entry.name)
+        .find(name => /pkg\\/tilo_browser_runtime\\.js$/.test(name));
+      w.runtime = glue ? await import(glue).catch(() => null) : null;
+      w.runtime?.configure_frame_metrics(true);
+      w.runtime?.take_frame_metrics();
+      const tick = () => {
+        const now = Math.round(performance.now() - w.began);
+        w.animation += 1;
+        w.animationAt.push(now);
+        const s = globalThis.tiloMount?.state?.() ?? {};
+        const frames = s.frames ?? 0;
+        if (frames !== (w.presented.at(-1)?.[1] ?? -1)) w.presented.push([now, frames]);
+        // The layout revision, the window count and the frames the GPU has
+        // left unreported: a change that reached the page, and a page whose
+        // GPU is behind rather than drawing nothing.
+        const seen = [s.desktopRevision ?? null, globalThis.tiloMount?.navigation?.getSnapshot?.().entries?.length ?? null, s.gpuStalls ?? null];
+        const last = w.changes.at(-1);
+        if (!last || last[1] !== seen[0] || last[2] !== seen[1] || last[3] !== seen[2]) w.changes.push([now, ...seen]);
+        if (now < 300000) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+      return true;
+    })()`).catch(() => {});
+  }
+  return async () => {
+    const [main, ...rest] = await Promise.all([tab, ...others].map(read));
+    const summary = raw => {
+      const w = raw && JSON.parse(raw);
+      if (!w) return null;
+      const at = w.presented.map(frame => frame[0]);
+      const gaps = at.slice(1).map((time, index) => time - at[index]).sort((a, b) => a - b);
+      const spaced = (w.animationAt ?? []);
+      const between = spaced.slice(1).map((time, index) => time - spaced[index]).sort((a, b) => a - b);
+      return {
+        frames: at.length,
+        // Animation frames the page got: what its main thread was free for,
+        // and the longest it went without one: where it was inside a task.
+        animation: w.animation,
+        longestBlockedMs: between.at(-1) ?? null,
+        meanGapMs: gaps.length ? Math.round(gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length) : null,
+        longestGapMs: gaps.at(-1) ?? null,
+        // Each frame's time and, oldest first, every layout revision and
+        // window count the page read: when the change reached it and when it
+        // drew are different answers.
+        presentedAtMs: at,
+        changes: w.changes,
+      };
+    };
+    const stages = async one => {
+      const raw = await one.evaluate(`(async () => {
+        const w = globalThis.__drawing;
+        return w?.runtime ? JSON.stringify(JSON.parse(w.runtime.take_frame_metrics())) : 'null';
+      })()`).catch(() => 'null');
+      const mounts = raw && JSON.parse(raw);
+      if (!mounts) return null;
+      // Each frame's stages end at its draw_total: the samples grouped that
+      // way say which stage a slow frame spent its time in.
+      return mounts.flatMap(mount => {
+        const frames = [];
+        let frame = [];
+        for (const sample of mount.samples ?? []) {
+          frame.push([sample.stage, Math.round(sample.ms)]);
+          if (sample.stage.startsWith('draw_')) {
+            frames.push({ms: Math.round(frame.reduce((sum, [, ms]) => sum + ms, 0)), stages: frame});
+            frame = [];
+          }
+        }
+        return frames.sort((a, b) => b.ms - a.ms).slice(0, 3);
+      });
+    };
+    return {page: summary(main), others: rest.map(summary), slowest: await stages(tab)};
+  };
+};
 // A person's search: the chord, the query, and Enter on the row the palette
 // offers for it.
 //
@@ -388,9 +481,14 @@ const search = async (tab, command, query, row, opens = null) => {
   }
   // A wait that runs out exits the flow from inside `until`: the chord and the
   // frames after it are read into its failure line there.
+  //
+  // The first search on a page fetches the palette's engine, a module of its
+  // own, and the page of a busy node spends the fetch and its compile on the
+  // very frames this waits for: six steps are what a page's join gets, and the
+  // opening measured here was 48 s of them (load 335).
   await until(tab, `(() => { const s = globalThis.tiloMount?.state?.() ?? null;
     return !!s?.searchOpen && ['workspace', 'everywhere'].includes(s.searchCard?.scope); })()`,
-    `the shell's search for "${query}"`, stepLimit(3), async () => {
+    `the shell's search for "${query}"`, stepLimit(6), async () => {
     const trail = await tab.evaluate('JSON.stringify((globalThis.__pressTrail ?? []).slice(0, 40))').catch(() => '[]');
     const chords = await tab.evaluate('JSON.stringify((globalThis.__chordStates ?? []).slice(-6))').catch(() => '[]');
     return `the chord opened nothing after ${Date.now() - chorded} ms: the chord as it arrived and after: ${chords}; frames after it [ms, phase, open, frames, revision, scope, focus, pending]: ${trail}`;
@@ -407,7 +505,7 @@ const search = async (tab, command, query, row, opens = null) => {
     const card = s?.searchCard ?? null;
     return card && s.searchSearching === false && card.query === ${asked} ? JSON.stringify(card) : '';
   })()`;
-  const card = JSON.parse(await until(tab, answered, `the shell answering "${query}"`, stepLimit(3)));
+  const card = JSON.parse(await until(tab, answered, `the shell answering "${query}"`, stepLimit(6)));
   if (card.rows[0]?.title !== row) {
     // The settled card is the shell's answer, not a frame of one still coming:
     // a palette that offers something else first is the failure.
@@ -613,6 +711,26 @@ const sheetCell = async tab => {
   const node = await maybePublished(tab, 'B2');
   return node ? centreOfNode(tab, node) : null;
 };
+// Where the sheet's grid stands, as the app publishes it: every cell it draws,
+// by its name and where it lies. A grid the fingers scrolled has moved its
+// cells or brought others on; one that took the wheel and drew the same cells
+// where they stood has not scrolled.
+const sheetGrid = async (tab, not = null) => {
+  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+  return tab.waitFor(`(() => {
+  const cells = {};
+  const node = n => {
+    const b = n.bounds ?? n.rect;
+    if (b && /^[A-Z]{1,3}[0-9]{1,7}$/.test(n.name ?? '')) cells[n.name] = b;
+    (n.children || []).forEach(node);
+  };
+  const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+  const root = globalThis.tiloMount?.state()?.semantics?.root;
+  if (root) walk(root);
+  const now = JSON.stringify(cells);
+  return now !== '{}' && now !== ${JSON.stringify(not)} ? now : '';
+})()`, {timeout: stepLimit(3)}).catch(() => '');
+};
 // The names of the nodes drawn at page point (x, y), innermost first.
 const namesAt = async (tab, x, y) => {
   const corner = JSON.parse(await canvasTopLeft(tab));
@@ -668,13 +786,13 @@ const boxOf = bounds => Array.isArray(bounds) ? bounds
 // Scroll the card's body, with the wheel a mouse sends over it, until the
 // control `name` stands within it: the row a person changes lies below what the
 // card shows when many people share the workspace, and a press beside the page
-// reaches nothing. A body already scrolled to its end shows every row before
-// that end, so a wheel that moves nothing leaves the row where a person could
-// reach it.
+// reaches nothing. The wheel goes over the row's own column, because a sheet
+// laid out beside the middle of the page does not scroll under the middle. A
+// body already scrolled to its end shows every row before that end, so a wheel
+// that moves nothing leaves the row where a person could reach it.
 const scrollIntoView = async (tab, name, what) => {
   const {width, height} = SHELL;
   const corner = JSON.parse(await canvasTopLeft(tab));
-  const at = {x: corner.x + width / 2, y: corner.y + height / 2};
   for (let scrolled = 0; scrolled < 16; scrolled += 1) {
     const here = await tab.evaluate(found(name)).catch(() => '');
     if (!here) await failed(`${what} left the card as it scrolled`, tab);
@@ -683,6 +801,7 @@ const scrollIntoView = async (tab, name, what) => {
     const onPage = centre.x >= 0 && centre.x <= width && centre.y >= 0 && centre.y <= height;
     // Its middle stands clear of the card's footer, which the wheel never scrolls.
     if (centre.y <= height / 2) return JSON.parse(here);
+    const at = {x: corner.x + (x0 + x1) / 2, y: corner.y + height / 2};
     await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', ...at});
     await tab.send('Input.dispatchMouseEvent', {type: 'mouseWheel', ...at, deltaX: 0, deltaY: 120});
     // The card answers the wheel on the frame it draws next: the row's place
@@ -993,14 +1112,20 @@ try {
   await dump(a.tab, '3-a-chat');
   await dump(b.tab, '3-b-chat');
 
-  // A window A opens is in B's strip: one shell, every member of it.
+  // A window A opens is in B's strip: one shell, every member of it. The
+  // workspace tells B of the window over the live session, and the wait measured
+  // 56 s of its four steps on a node at load 320: six, as a page's join gets.
   const beforeB = await dump(b.tab, '4-b-before-open');
+  const crossingBegan = Date.now();
+  const crossingDrawn = await drawing(b.tab, a.tab);
   await search(a.tab, a.command, 'notes', 'Notes');
   await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Notes')`,
     "A's own Notes window", stepLimit(3));
   await until(b.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Notes')`,
-    "A's Notes window in B", stepLimit(4));
-  report.shared = {bBefore: beforeB.windows, bAfter: (await snapshot(b.tab)).windows};
+    "A's Notes window in B", stepLimit(6));
+  report.shared = {bBefore: beforeB.windows, bAfter: (await snapshot(b.tab)).windows, seconds: (Date.now() - crossingBegan) / 1000,
+    drawn: await crossingDrawn()};
+  console.log(`TIMING crossing=${report.shared.seconds}s; B drew ${JSON.stringify(report.shared.drawn.page)}; A drew ${JSON.stringify(report.shared.drawn.others[0])}`);
   console.log('ok: the window A opened is in B\'s strip');
   mark('A\'s window in B\'s strip');
   await dump(a.tab, '5-a-open');
@@ -1293,7 +1418,6 @@ try {
     if (!name) return null;
     return await press(tab, name) ? name : null;
   };
-  const picture = async tab => (await tab.screenshot())?.toString('base64') ?? '';
   const wheel = (tab, x, y, {deltaX = 0, deltaY = 0, modifiers = 0} = {}) =>
     tab.send('Input.dispatchMouseEvent',
       {type: 'mouseWheel', x, y, deltaX, deltaY, ...(modifiers ? {modifiers} : {})});
@@ -1398,7 +1522,9 @@ try {
       const own = before.find(name => / \(you\): your profile$/.test(name));
       if (!own) await failed(`the bar shows no avatar of the person's own: shown ${JSON.stringify(before)}`, a.tab);
       if (!await press(a.tab, own)) await failed(`the bar's avatar "${own}" has no bounds to press`, a.tab);
-      await settle(a.tab, 2);
+      // A card opens on the frame after the press and that is all it draws: what
+      // is read next is where the shell publishes it, not a count of frames.
+      await drawn(a.tab, 1);
       const after = await namesOf(a.tab);
       const seen = new Set(before);
       console.log(`report a problem: pressed "${own}"; it brought ${JSON.stringify(after.filter(name => !seen.has(name)))}`);
@@ -1407,19 +1533,21 @@ try {
     let shown = await avatar();
     if (shown.includes('Not now')) {
       await press(a.tab, 'Not now');
-      await settle(a.tab, 2);
+      await drawn(a.tab, 1);
       shown = await avatar();
     }
+    // The row is there once the page holds the Lounge's feedback channel, which
+    // arrives on its own time: it is waited for where the shell publishes it.
+    await publishedName(a.tab, `name => /^Report a problem/.test(name)`, stepLimit(3));
     const reportRow = await choose(a.tab, /^Report a problem/);
     if (!reportRow) {
-      // The row is there once the page holds the Lounge's feedback channel:
-      // why it does not is in what the page said about feedback.
+      // Why the row is absent is in what the page said about feedback.
       const said = (a.tab.log ?? []).filter(line => /feedback/i.test(line)).slice(-10);
       await failed(`the profile card offers no Report a problem: shown ${JSON.stringify(await namesOf(a.tab))}; the page said of feedback: ${JSON.stringify(said)}`, a.tab);
     }
     // Picking what to report takes every event: nothing under the pointer
     // reacts to it, and the strip the shell shows stays where it was.
-    await settle(a.tab, 2);
+    await drawn(a.tab, 1);
     const pickingPan = await panOf(a.tab);
     await sidewaysSwipe(a.tab, centre.x, centre.y, true);
     if ((await panOf(a.tab))?.offset !== pickingPan?.offset) {
@@ -1466,6 +1594,7 @@ try {
     const started = Date.now();
     for (const application of applications) {
       const appBegan = Date.now();
+      const openDrawn = await drawing(a.tab);
       await search(a.tab, a.command, application.label.toLowerCase(), application.label, application.id);
       const searched = Date.now();
       await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(application.id)})`,
@@ -1488,13 +1617,13 @@ try {
         failed(`${application.label} opened, but Enter to its window was not measured (${JSON.stringify(marks)}); an unmeasured open is not a fast one`, a.tab);
       }
       timings.push({app: application.id, ...marks});
-      const shot = await a.tab.screenshot();
+      const shot = await a.tab.screenshot().catch(() => null);
       if (shot) writeFileSync(`${out}/app-${application.id.replace(/[^a-z0-9]+/gi, '-')}.png`, shot);
       opened.push(application.id);
       // Where one app's open went: the search for it, its window arriving, the
       // frame that showed it, and the picture kept of it.
       const at = Date.now();
-      console.log(`TIMING app=${application.id} search=${((searched - appBegan) / 1000).toFixed(1)} window=${((arrived - searched) / 1000).toFixed(1)} drawn=${((at - arrived) / 1000).toFixed(1)} shot=${((Date.now() - at) / 1000).toFixed(1)}`);
+      console.log(`TIMING app=${application.id} search=${((searched - appBegan) / 1000).toFixed(1)} window=${((arrived - searched) / 1000).toFixed(1)} drawn=${((at - arrived) / 1000).toFixed(1)} shot=${((Date.now() - at) / 1000).toFixed(1)}; drew ${JSON.stringify(await openDrawn())}`);
     }
     const spent = Math.round((Date.now() - started) / 1000);
     report.applications = {offered: applications.map(application => application.id), opened, seconds: spent, presented: timings};
@@ -1511,7 +1640,10 @@ try {
     // Two fingers sideways over Notes, which does not scroll that way: the
     // strip pans by the gesture and the windows stay as they were.
     centre = await centreOf(a.tab);
+    const afterOpenDrawn = await drawing(a.tab);
+    const afterOpenBegan = Date.now();
     await search(a.tab, a.command, 'notes', 'Notes');
+    console.log(`TIMING search-after-opens=${((Date.now() - afterOpenBegan) / 1000).toFixed(1)}s; drew ${JSON.stringify(await afterOpenDrawn())}`);
     // Where Notes' own window is once the strip is at rest: with a few windows
     // open the middle of the shell can be another window's, one whose content
     // scrolls sideways itself.
@@ -1526,9 +1658,9 @@ try {
     if (!panBefore) failed('the strip does not overflow, so nothing can pan');
     // The way the strip still has workspace: a gesture at its end pans nothing.
     const forward = panBefore.offset < panBefore.max / 2;
-    const frameBefore = await picture(a.tab);
+    const framesBefore = await presented(a.tab);
     await sidewaysSwipe(a.tab, overNotes.x, overNotes.y, forward, async () => {
-      const midScroll = await a.tab.screenshot();
+      const midScroll = await a.tab.screenshot().catch(() => null);
       if (midScroll) writeFileSync(`${out}/strip-mid-scroll.png`, midScroll);
     });
     // Where the swipe left the strip, once it has come to rest: a reveal still
@@ -1546,7 +1678,9 @@ try {
     if (windowsAfter.join() !== windowsBefore.join()) {
       failed(`a sideways pan changed the windows: ${JSON.stringify({before: windowsBefore, after: windowsAfter})}`);
     }
-    if (await picture(a.tab) === frameBefore) failed('the strip did not repaint as it panned');
+    // A strip that pans without drawing is no pan a person sees: the pan is
+    // drawn on the frames it stepped through, so it presented some.
+    if (await presented(a.tab) <= framesBefore) failed('the strip did not repaint as it panned');
     console.log(`ok: two fingers sideways pan the strip over Notes (${panBefore.offset} to ${panAfter.offset})`);
     mark('a sideways pan over Notes');
 
@@ -1562,7 +1696,8 @@ try {
     const keptPan = await restingPan(a.tab);
     const cell = await sheetCell(a.tab);
     if (!cell) failed('Sheets shows no cell B2 to swipe over');
-    const sheetBefore = await picture(a.tab);
+    const gridBefore = await sheetGrid(a.tab);
+    if (!gridBefore) failed('Sheets publishes no grid to scroll', a.tab);
     // Toward the later columns: a sheet opens on its first one, so that is where
     // its room is. Which way the strip has room says nothing about the grid —
     // a swipe the columns cannot follow is the strip's, and would pan it.
@@ -1572,7 +1707,8 @@ try {
     if ((sheetPan?.offset ?? 0) !== (keptPan?.offset ?? 0)) {
       failed(`the strip panned under a sideways wheel Sheets scrolled with: ${JSON.stringify(report.sheets)}`, a.tab);
     }
-    if (await picture(a.tab) === sheetBefore) failed('Sheets did not scroll sideways with the fingers', a.tab);
+    const gridAfter = await sheetGrid(a.tab, gridBefore);
+    if (!gridAfter) failed(`Sheets did not scroll sideways with the fingers: its cells stand where they did (${gridBefore})`, a.tab);
     console.log('ok: the same gesture scrolls Sheets and leaves the strip');
     mark('a sideways swipe over Sheets');
   }
@@ -1584,9 +1720,11 @@ try {
     // never a pan, with or without a sideways part.
     const beforePinch = await panOf(a.tab);
     for (let i = 0; i < 6; i++) await wheel(a.tab, centre.x, centre.y, {deltaY: -40, modifiers: 2});
-    await settle(a.tab, 2);
+    // A zoom the shell has reached the end of draws its one frame and stops, so
+    // what the gesture is worth is that frame, or a step with nothing left to draw.
+    await drawn(a.tab, 1);
     for (let i = 0; i < 6; i++) await wheel(a.tab, centre.x, centre.y, {deltaX: 10, deltaY: -20, modifiers: 2});
-    await settle(a.tab, 2);
+    await drawn(a.tab, 1);
     const afterPinch = await panOf(a.tab);
     report.pinch = {before: beforePinch, after: afterPinch};
     if ((afterPinch?.offset ?? 0) !== (beforePinch?.offset ?? 0)) {
@@ -1595,11 +1733,15 @@ try {
     console.log('ok: a pinch zooms and never pans the strip');
     mark('a pinch zoom');
 
-    // A right-click in the chat's composer is the text's menu.
+    // A right-click in the chat's composer is the text's menu. The composer is
+    // read where the shell publishes it, not after a count of frames: a shell
+    // that drew its window in one frame owes no second.
     await search(a.tab, a.command, 'chat', 'Chat');
-    await settle(a.tab, 2);
-    const composer = JSON.parse(await find(a.tab, 'Message composer'));
-    if (!composer) failed('the chat has no composer to right-click');
+    // The search slides the strip to the window: where its composer stands is read
+    // once the strip is at rest, not while it still moves (a strip that does not
+    // overflow has nowhere to slide and publishes no pan).
+    if (await panOf(a.tab)) await restingPan(a.tab);
+    const composer = await published(a.tab, 'Message composer', 'the chat composer');
     const [cx0, cy0, cx1, cy1] = Array.isArray(composer.bounds)
       ? composer.bounds
       : [composer.bounds.x0 ?? composer.bounds.x, composer.bounds.y0 ?? composer.bounds.y,
@@ -1659,6 +1801,7 @@ try {
   }
 
   if (runs('invite')) {
+    const givenName = 'Ada';
     // A person the workspace lets invite, from the page itself: made an owner
     // while their page stands open (the stack's own owner adds them with `tilo
     // members add`), and the bar offers inviting without a reload, as a
@@ -1667,6 +1810,18 @@ try {
     report.inviteBefore = offeredBefore.length;
     if (offeredBefore.length) await failed('the bar offered inviting before the workspace allowed it', a.tab);
     addOwner(keptA.userPublicKey);
+    // The person gives their name, as anyone does: the workspace names them by
+    // it, and the link they hand over says who made it.
+    await search(a.tab, a.command, 'set your name', 'Set your name');
+    await until(a.tab, `!!document.querySelector('input[name=display-name]')`, 'the name form', stepLimit(3));
+    await a.tab.evaluate(`(() => {
+      const input = document.querySelector('input[name=display-name]');
+      input.value = ${JSON.stringify(givenName)};
+      input.dispatchEvent(new Event('input', {bubbles: true}));
+      input.closest('form').querySelector('button[type=submit]').click();
+    })()`);
+    await until(a.tab, `!document.querySelector('input[name=display-name]')`, 'the name kept', stepLimit(6));
+    report.inviterName = givenName;
     const allowedAt = Date.now();
     await waitFor(a.tab, 'Invite', "the bar's invite button");
     report.inviteAfterMs = Date.now() - allowedAt;
@@ -1918,10 +2073,10 @@ try {
 
   // The shell one person arranged is the shell the other shows: neither of the
   // two people sharing it had a write of the shared desktop refused. The
-  // invitation's person keeps their view of the layout on their own page: the
-  // link brings them in as a Commenter and A makes them a Viewer, and neither
-  // role writes in the workspace, so their page sends nothing of its layout,
-  // which the workspace would refuse.
+  // invitation's person keeps their view of the layout as their own view of
+  // it, which the workspace admits whatever their role: the link brings them in
+  // as a Commenter and A makes them a Viewer, and their page writes none of the
+  // workspace's layout, which the workspace would refuse.
   const refused = both.filter(line => /the workspace refused a change/.test(line));
   report.refused = refused;
   const refusedOfTheSharing = [...a.tab.log, ...b.tab.log]

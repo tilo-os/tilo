@@ -119,14 +119,6 @@ enum Cmd {
         #[command(subcommand)]
         cmd: KeyCmd,
     },
-    /// Record the faces of the font catalog at `<catalog>` in it
-    /// (`face-index.json`), before the catalog is included in a bundle: every
-    /// process that sets text from the signed catalog then builds its font
-    /// database from the record instead of parsing each font.
-    FontIndex {
-        /// The catalog directory (holds `manifest.toml`).
-        catalog: PathBuf,
-    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -216,19 +208,6 @@ fn main() -> ExitCode {
         ),
         Cmd::Path { version, system } => cmd_path(&version, system),
         Cmd::Key { cmd } => cmd_key(cmd),
-        Cmd::FontIndex { catalog } => cmd_font_index(&catalog),
-    }
-}
-
-fn cmd_font_index(catalog: &Path) -> ExitCode {
-    let recorded =
-        tilo_font_catalog::faces::FaceIndex::build(catalog).and_then(|index| index.write(catalog));
-    match recorded {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("tilo-runtime-bundle font-index: {e}");
-            ExitCode::from(1)
-        }
     }
 }
 

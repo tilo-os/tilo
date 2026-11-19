@@ -364,12 +364,16 @@ pub(crate) fn message_row(id: &Id, message: &crate::chat::Message) -> Message {
         attachments: message.attachments.clone(),
         pinned: message.pinned,
         work: message.work.as_ref().and_then(work_row),
-        // A message moved from another chat shows as its author's there.
-        appearance: message
-            .appearance
-            .clone()
-            .map(Into::into)
-            .or_else(|| message.origin.as_ref().map(origin_appearance)),
+        // A message imported from elsewhere shows as its author's there, in
+        // the tool it came from; a bridge's own picture of them stays.
+        appearance: match (&message.appearance, &message.origin) {
+            (Some(shown), Some(origin)) => Some(tilo_actions::Appearance {
+                name: origin_name(&shown.name, &origin.source),
+                ..shown.clone().into()
+            }),
+            (Some(shown), None) => Some(shown.clone().into()),
+            (None, origin) => origin.as_ref().map(origin_appearance),
+        },
         acting: message.acting.clone(),
         author_name: message.author_name.clone(),
         share: message.share.clone(),
@@ -385,16 +389,19 @@ pub(crate) fn message_row(id: &Id, message: &crate::chat::Message) -> Message {
 /// in the tool it was written in (`Jane Doe in Slack`).
 fn origin_appearance(origin: &ui::tilo_resource::Origin) -> tilo_actions::Appearance {
     tilo_actions::Appearance {
-        name: crate::i18n::t_args(
-            "chat-origin-author",
-            &[
-                ("name", origin.author.clone().into()),
-                ("source", origin.source.clone().into()),
-            ],
-        ),
+        name: origin_name(&origin.author, &origin.source),
         avatar: None,
         persona: None,
     }
+}
+
+/// `name` as an imported message names its author: in the tool `source` it
+/// was written in.
+fn origin_name(name: &str, source: &str) -> String {
+    crate::i18n::t_args(
+        "chat-origin-author",
+        &[("name", name.into()), ("source", source.into())],
+    )
 }
 
 /// An agent's resource of its work, as the reply card draws it.

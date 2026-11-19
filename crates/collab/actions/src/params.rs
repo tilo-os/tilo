@@ -721,7 +721,9 @@ impl ActionParam {
         for choice in &self.choices {
             let valid = match self.ty {
                 ParamType::Text => true,
-                ParamType::Integer => choice.parse::<i64>().is_ok(),
+                // As wide as an integer argument carries: an id past `i64::MAX` is a
+                // choice like any other ([`ArgValue::Integer`]).
+                ParamType::Integer => choice.parse::<i128>().is_ok(),
                 ParamType::Number => choice.parse::<f64>().is_ok(),
                 ParamType::Boolean => matches!(choice.as_ref(), "true" | "false"),
                 ParamType::Object => {
@@ -904,15 +906,13 @@ pub enum ArgViolation {
 }
 
 impl std::fmt::Display for ArgViolation {
+    /// The bound as the schema spells it: a whole id reads as the id, not a rounded float.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (side, bound) = match self {
             Self::Minimum { bound } => ("least", bound),
             Self::Maximum { bound } => ("most", bound),
         };
-        match bound.as_f64() {
-            Some(bound) => write!(f, "must be at {side} {bound}"),
-            None => write!(f, "must be at {side} {bound}"),
-        }
+        write!(f, "must be at {side} {bound}")
     }
 }
 
@@ -1334,8 +1334,72 @@ impl ActionArgs {
     }
 }
 
+/// Whether `value` is an RFC 3339 date and time, as JSON Schema's `date-time` names one:
+/// `2026-01-31T09:00:00Z`, with `T`, `t` or ` ` between the date and the time, any fraction of a
+/// second, a leap second, and `Z` or an offset such as `+01:00`. Read field by field rather than through a date
+/// library, whose whole calendar and time-zone parser a browser page would download for this one
+/// check.
 fn looks_like_rfc3339(value: &str) -> bool {
-    value.parse::<jiff::Timestamp>().is_ok()
+    let bytes = value.as_bytes();
+    let at = |index: usize| bytes.get(index).copied();
+    // The number the `count` digits from `start` spell, if they all are digits.
+    let digits = |start: usize, count: usize| -> Option<u32> {
+        bytes
+            .get(start..start.checked_add(count)?)?
+            .iter()
+            .try_fold(0_u32, |sum, digit| {
+                let digit = char::from(*digit).to_digit(10)?;
+                sum.checked_mul(10)?.checked_add(digit)
+            })
+    };
+    let (Some(year), Some(month), Some(day), Some(hour), Some(minute), Some(second)) = (
+        digits(0, 4),
+        digits(5, 2),
+        digits(8, 2),
+        digits(11, 2),
+        digits(14, 2),
+        digits(17, 2),
+    ) else {
+        return false;
+    };
+    let leap = (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    let separated = at(4) == Some(b'-')
+        && at(7) == Some(b'-')
+        && matches!(at(10), Some(b'T' | b't' | b' '))
+        && at(13) == Some(b':')
+        && at(16) == Some(b':');
+    if !separated || !(1..=days).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+        return false;
+    }
+    // Where the offset starts: after the seconds, or after their fraction.
+    let mut zone = 19;
+    if at(zone) == Some(b'.') {
+        let fraction = bytes
+            .iter()
+            .skip(20)
+            .take_while(|digit| digit.is_ascii_digit())
+            .count();
+        if fraction == 0 {
+            return false;
+        }
+        zone = fraction.saturating_add(20);
+    }
+    let rest = bytes.get(zone..).unwrap_or_default();
+    match rest {
+        [b'Z' | b'z'] => true,
+        [b'+' | b'-', _, _, b':', _, _] => {
+            digits(zone.saturating_add(1), 2).is_some_and(|hours| hours <= 23)
+                && digits(zone.saturating_add(4), 2).is_some_and(|minutes| minutes <= 59)
+        }
+        _ => false,
+    }
 }
 
 /// Distinct schema patterns kept compiled. A directory publishes a handful;
@@ -1788,25 +1852,56 @@ fn validate_schema_number(
     value: &serde_json::Value,
     schema: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), ArgViolation> {
-    if let Some(number) = value.as_f64() {
-        if let Some(minimum) = schema
-            .get("minimum")
-            .filter(|minimum| minimum.as_f64().is_some_and(|minimum| number < minimum))
-        {
-            return Err(ArgViolation::Minimum {
-                bound: minimum.clone(),
-            });
-        }
-        if let Some(maximum) = schema
-            .get("maximum")
-            .filter(|maximum| maximum.as_f64().is_some_and(|maximum| number > maximum))
-        {
-            return Err(ArgViolation::Maximum {
-                bound: maximum.clone(),
-            });
-        }
+    if let Some(minimum) = schema
+        .get("minimum")
+        .filter(|minimum| past(value, minimum, Side::Below))
+    {
+        return Err(ArgViolation::Minimum {
+            bound: minimum.clone(),
+        });
+    }
+    if let Some(maximum) = schema
+        .get("maximum")
+        .filter(|maximum| past(value, maximum, Side::Above))
+    {
+        return Err(ArgViolation::Maximum {
+            bound: maximum.clone(),
+        });
     }
     Ok(())
+}
+
+/// Which side of a bound is out.
+#[derive(Clone, Copy)]
+enum Side {
+    Below,
+    Above,
+}
+
+/// Whether `value` lies past `bound` on `side`. Two whole numbers compare exactly: as floats,
+/// an id past 2^53 compares equal to its neighbour.
+fn past(value: &serde_json::Value, bound: &serde_json::Value, side: Side) -> bool {
+    if let (Some(value), Some(bound)) = (whole(value), whole(bound)) {
+        return match side {
+            Side::Below => value < bound,
+            Side::Above => value > bound,
+        };
+    }
+    let (Some(value), Some(bound)) = (value.as_f64(), bound.as_f64()) else {
+        return false;
+    };
+    match side {
+        Side::Below => value < bound,
+        Side::Above => value > bound,
+    }
+}
+
+/// A JSON number as the whole number it is, when it is one.
+fn whole(value: &serde_json::Value) -> Option<i128> {
+    value
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| value.as_u64().map(i128::from))
 }
 
 fn validate_schema_string(
@@ -2230,6 +2325,56 @@ mod declaration_reuse_tests {
             .expect("a negative integer binds too");
         assert_eq!(negative.to_json()["row"], json!(-48));
     }
+
+    /// A choice is a value the parameter takes, at the same width: a list of ids holds the ones a
+    /// device mints past `i64::MAX`, and binding one of them is a call the parameter allows.
+    #[test]
+    fn an_integers_choices_are_as_wide_as_its_values() {
+        for id in [u64::MAX - 7, 4_294_967_296, 7] {
+            let param = ActionParam::required("place", ParamType::Integer, "Place")
+                .with_choices([id.to_string()]);
+            assert!(
+                param.validate_declaration().is_empty(),
+                "`{id}` declares as a choice: {:?}",
+                param.validate_declaration()
+            );
+            let bound = ActionArgs::bind_json(
+                std::slice::from_ref(&param),
+                json!({"place": id}).as_object().unwrap(),
+            )
+            .expect("the id binds as its own choice");
+            assert_eq!(
+                bound.to_json()["place"],
+                json!(id),
+                "exactly what was given"
+            );
+            let other = ActionArgs::bind_json(
+                std::slice::from_ref(&param),
+                json!({"place": id - 1}).as_object().unwrap(),
+            );
+            assert!(
+                other.is_err_and(|error| matches!(error, super::ArgError::NotAllowed { .. })),
+                "an id not in the list is refused"
+            );
+        }
+    }
+
+    /// A refusal names the bound the schema holds, not a float that rounds it.
+    #[test]
+    fn a_bounds_refusal_names_the_whole_number() {
+        let id = u64::MAX - 7;
+        let param = ActionParam::required("place", ParamType::Integer, "Place")
+            .with_schema(json!({"type": "integer", "maximum": id}));
+        let refused = ActionArgs::bind_json(
+            std::slice::from_ref(&param),
+            json!({"place": id + 1}).as_object().unwrap(),
+        )
+        .expect_err("beyond the bound");
+        assert_eq!(
+            refused.to_string(),
+            format!("argument `place` must be at most {id}")
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2550,6 +2695,23 @@ mod rich_schema_tests {
         let bound = ActionArgs::bind_json(&params, &supplied).unwrap();
         assert_eq!(bound.text("resource"), Some("files.entry:abc"));
         assert_eq!(bound.to_json(), supplied);
+        for moment in [
+            "2028-02-29t23:59:60.123456789z",
+            "2026-09-01 08:30:00-07:00",
+            "2026-12-31T23:59:59.5+14:00",
+        ] {
+            assert!(looks_like_rfc3339(moment), "{moment} is RFC 3339");
+        }
+        for not_a_moment in [
+            "2026-02-29T00:00:00Z",
+            "2026-09-01T24:00:00Z",
+            "2026-09-01T00:00:00.Z",
+            "2026-09-01T00:00:00+0100",
+            "2026-09-01T00:00:00+01:00x",
+            "2026-09-01T00:00Z",
+        ] {
+            assert!(!looks_like_rfc3339(not_a_moment), "{not_a_moment} is not");
+        }
 
         for invalid in [
             json!({"resource": "label only", "at": "2026-09-01T00:00:00Z", "token": "x"}),

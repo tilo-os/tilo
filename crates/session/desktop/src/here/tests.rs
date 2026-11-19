@@ -482,8 +482,9 @@ tilo_test_env::scenario! {
             "people first, agents after, never this page"
         );
         assert_eq!(
-            people[0].label, "Framework 16",
-            "a member who has not named themselves goes by their device's name"
+            people[0].label,
+            unnamed_person_label(),
+            "a person who has not named themselves is unnamed, never their device's name"
         );
         assert!(people[1].agent);
         assert_eq!(

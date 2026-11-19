@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, defaultDisplayName, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, knownWorkspaces, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStatus, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, knownWorkspaces, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStatus, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {DeviceKeyError} from './device-key.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 import {PAIRING_SAME_PERSON} from './pairing.mjs';
@@ -49,7 +49,7 @@ function harness({person = identity(0x22), membership = null, entry = [null], co
     options: {
       workspace: commons,
       identity: person,
-      displayName: 'Brave Otter',
+      displayName: 'Ada Lovelace',
       memberships: {getItem: key => store.get(key) ?? null, setItem: (key, value) => store.set(key, value), removeItem: key => store.delete(key)},
       join: async options => {
         knock(options);
@@ -77,7 +77,7 @@ test('a person new to the host is pre-admitted by it and joins with the pre-admi
   const {calls, options, store} = harness();
   await joinViaHost(options);
   assert.equal(calls.posted[0].url, 'https://workspaces.example/join');
-  assert.deepEqual(calls.posted[0].body, {userPublicKey: '22'.repeat(32), displayName: 'Brave Otter'});
+  assert.deepEqual(calls.posted[0].body, {userPublicKey: '22'.repeat(32), displayName: 'Ada Lovelace'});
   assert.equal(calls.joined[0].entry, commons.admission, 'through the workspace\'s entry, by the shared entry');
   assert.equal(calls.joined[0].origin, 'https://workspaces.example');
   assert.equal(calls.joined[0].identity.userPublicKey, '22'.repeat(32));
@@ -207,12 +207,12 @@ test('the own desktop opens for a browser some host let in, and asks no entry', 
   assert.deepEqual(requests, [], 'no request of its own');
 });
 
-test('a person joins at once under a random adjective-animal name when none is given', async () => {
+test('a person who gave no name joins at once under none, never a made-up one', async () => {
   const {calls, options} = harness();
   delete options.displayName;
   await joinViaHost(options);
-  assert.match(calls.posted[0].body.displayName, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
-  assert.equal(calls.joined[0].displayName, calls.posted[0].body.displayName);
+  assert.equal(calls.posted[0].body.displayName, null);
+  assert.equal(calls.joined[0].displayName, null);
 });
 
 test('a person who joined the host before reconnects without asking it', async () => {
@@ -459,7 +459,7 @@ test('a second tab of a paired device pairs as a new device, approved on one of 
   assert.equal(calls.paired[0].userPublicKey, person);
   assert.equal(calls.paired[0].deviceKey, calls.deviceKeys[0]);
   assert.equal(typeof calls.paired[0].onPairingCode, 'function');
-  assert.deepEqual(calls.posted, [{url: 'https://workspaces.example/join', body: {userPublicKey: person, displayName: 'Brave Otter'}}],
+  assert.deepEqual(calls.posted, [{url: 'https://workspaces.example/join', body: {userPublicKey: person, displayName: 'Ada Lovelace'}}],
     'the new device joins the person\u2019s workspace through the entry once paired');
 });
 
@@ -551,54 +551,7 @@ test('an entry with no capacity is waited out as long as it asked, then the same
 test('the entry is asked for the browser’s own person, never for a visitor’s device key', async () => {
   const {calls, options} = harness();
   await joinViaHost(options);
-  assert.deepEqual(calls.posted[0].body, {userPublicKey: options.identity.userPublicKey, displayName: 'Brave Otter'});
-});
-
-test('display names are an adjective and an animal', () => {
-  assert.match(randomDisplayName(() => 0), /^[A-Z][a-z]+ [A-Z][a-z]+$/);
-});
-
-test('a person goes by the same name at every visit until they choose one', () => {
-  const key = 'a1'.repeat(32);
-  const name = defaultDisplayName(key, () => 0);
-  assert.match(name, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
-  assert.equal(defaultDisplayName(key, () => 0.99), name);
-  assert.notEqual(defaultDisplayName('07'.repeat(32)), name);
-  assert.match(defaultDisplayName(undefined, () => 0), /^[A-Z][a-z]+ [A-Z][a-z]+$/);
-});
-
-// Two keys whose first bytes draw the same name, as two visitors' did.
-const drawsAlike = rest => `0d000d${rest}`.padEnd(64, '0');
-const early = drawsAlike('00' + '01'.repeat(29));
-const late = drawsAlike('00' + 'f3'.repeat(29));
-
-test('a name someone in the workspace already goes by is drawn again from the key', () => {
-  const name = defaultDisplayName(early);
-  assert.equal(defaultDisplayName(late), name, 'the two keys draw alike');
-  const other = defaultDisplayName(late, Math.random, [name]);
-  assert.notEqual(other, name);
-  assert.match(other, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
-  assert.equal(defaultDisplayName(late, Math.random, [name]), other, 'the same workspace draws the same name again');
-  assert.equal(defaultDisplayName(late, Math.random, [name.toUpperCase()]), other, 'names collide whatever their case');
-});
-
-test('of two people who drew one name, the one with the greater key takes another', () => {
-  const name = defaultDisplayName(early);
-  const lines = [{user: early, label: name}, {user: late, label: name}];
-  assert.equal(redrawnDisplayName(early, name, lines), null, 'the lesser key keeps it');
-  const redrawn = redrawnDisplayName(late, name, lines);
-  assert.ok(redrawn && redrawn !== name);
-  // Once they differ, neither draws again; nor does a person alone, nor the
-  // same person's other device.
-  assert.equal(redrawnDisplayName(late, redrawn, [{user: early, label: name}, {user: late, label: redrawn}]), null);
-  assert.equal(redrawnDisplayName(late, name, [{user: late, label: name}, {user: late, label: name}]), null);
-});
-
-test('when every name a key draws is taken, the first is numbered', () => {
-  const key = '0a'.repeat(32);
-  const first = defaultDisplayName(key);
-  assert.equal(defaultDisplayName(key, Math.random, [first]), `${first} 2`);
-  assert.equal(defaultDisplayName(key, Math.random, [first, `${first} 2`]), `${first} 3`);
+  assert.deepEqual(calls.posted[0].body, {userPublicKey: options.identity.userPublicKey, displayName: 'Ada Lovelace'});
 });
 
 test('the home workspace is listed first, then the person\u2019s own, each host once', () => {
@@ -911,9 +864,9 @@ test('a join chosen in the directory enters through its entry on the session, th
   const entry = 'https://workspaces.example/peer/v1/directory/WORKSPACE/';
   const grant = await joinGranted(
     {origin: 'https://workspaces.example', entry, workspace: 'WORKSPACE', name: 'Gardeners'},
-    {join: async options => { joined.push(options); return {workspace: 'WORKSPACE'}; }, displayName: 'Brave Otter'},
+    {join: async options => { joined.push(options); return {workspace: 'WORKSPACE'}; }, displayName: 'Ada Lovelace'},
   );
-  assert.deepEqual(joined, [{origin: 'https://workspaces.example', entry, displayName: 'Brave Otter'}],
+  assert.deepEqual(joined, [{origin: 'https://workspaces.example', entry, displayName: 'Ada Lovelace'}],
     'the page enters through the entry itself, holding no invitation or token');
   assert.deepEqual(grant, {peer: {workspace: 'WORKSPACE'}, origin: 'https://workspaces.example', workspace: 'WORKSPACE', name: 'Gardeners'});
 });

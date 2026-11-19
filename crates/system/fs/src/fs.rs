@@ -277,89 +277,7 @@ fn check_staged_growth(staged: u64, growth: u64) -> Result<(), i32> {
 }
 
 #[cfg(test)]
-mod staging_limit_tests {
-    use super::*;
-    use crate::namespace::ROOT_INO;
-    use crate::store::ContentStore;
-    use iroh::endpoint::{Endpoint, presets};
-
-    async fn mount() -> (QuickFS, Endpoint, [u64; 3]) {
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let hydrator = Arc::new(Hydrator::new(
-            endpoint.clone(),
-            Arc::new(ContentStore::memory()),
-        ));
-        let namespace = Arc::new(Mutex::new(Namespace::new("staging-limits").unwrap()));
-        let inos = ["a.bin", "b.bin", "c.bin"].map(|name| {
-            namespace
-                .lock()
-                .unwrap()
-                .create_file(ROOT_INO, name, None, 0, 1)
-                .unwrap()
-        });
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        (
-            QuickFS::new(namespace, hydrator, heuristics),
-            endpoint,
-            inos,
-        )
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn memory_writes_and_truncates_enforce_limits_without_allocating_holes() {
-        let (fs, endpoint, [a, b, c]) = mount().await;
-        let huge = MAX_STAGED_FILE_BYTES.saturating_mul(1024);
-        assert_eq!(fs.write_buffer(a, huge, b"x"), Err(EFBIG));
-        assert_eq!(fs.staged_len(a), Some(0));
-        assert_eq!(fs.truncate_inode(a, huge), Err(EFBIG));
-        assert_eq!(fs.truncate_inode(b, huge), Err(EFBIG));
-        assert_eq!(fs.staged_len(b), None);
-        for ino in [a, b] {
-            fs.write_buffer(ino, 0, b"x").unwrap();
-            fs.truncate_inode(ino, MAX_STAGED_FILE_BYTES).unwrap();
-        }
-        fs.write_buffer(c, 0, b"").unwrap();
-        assert_eq!(fs.write_buffer(c, 0, b"x"), Err(ENOSPC));
-        assert_eq!(fs.truncate_inode(c, 1), Err(ENOSPC));
-        assert_eq!(fs.staged_len(c), Some(0));
-        assert_eq!(
-            fs.truncate_inode(a, MAX_STAGED_FILE_BYTES.saturating_add(1)),
-            Err(EFBIG)
-        );
-        assert_eq!(fs.staged_len(a), Some(MAX_STAGED_FILE_BYTES));
-        let retained = fs.stage(a).unwrap();
-        fs.drop_buffer(a);
-        assert_eq!(fs.truncate_inode(c, 1), Err(ENOSPC));
-        drop(retained);
-        fs.write_buffer(c, 0, b"x").unwrap();
-        assert_eq!(fs.staged_bytes(c).unwrap(), b"x");
-        endpoint.close().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn sparse_stages_are_not_subject_to_memory_limits_but_fallback_is() {
-        let (fs, endpoint, [a, b, c]) = mount().await;
-        let dir = tempfile::tempdir().unwrap();
-        let fs = fs.with_write_stage_dir(dir.path().join("stages"));
-        let offset = MAX_STAGED_TOTAL_BYTES.saturating_add(1);
-        fs.write_buffer(a, offset, b"x").unwrap();
-        assert_eq!(fs.staged_len(a), Some(offset.saturating_add(1)));
-        assert_eq!(
-            fs.read_stage_blocking(&fs.stage(a).unwrap(), offset, 1)
-                .unwrap(),
-            b"x"
-        );
-        fs.write_buffer(b, 0, b"b").unwrap();
-        fs.truncate_inode(b, offset).unwrap();
-        assert_eq!(fs.staged_len(b), Some(offset));
-        std::fs::remove_dir_all(fs.stage_dir.as_ref().unwrap()).unwrap();
-        fs.buffers().insert(c, fs.empty_stage().shared());
-        assert_eq!(fs.write_buffer(c, offset, b"x"), Err(EFBIG));
-        assert_eq!(fs.truncate_inode(c, offset), Err(EFBIG));
-        assert_eq!(fs.staged_len(c), Some(0));
-        endpoint.close().await;
-    }
-}
+mod staging_limit_tests;
 
 /// The record ids from `ino` up to the root, or `None` when one of them has no record id.
 fn document_ancestry(ns: &mut Namespace, ino: u64) -> Option<Vec<fs_protocol::FileDocumentId>> {
@@ -557,6 +475,7 @@ impl AclVisibleDocumentIndex {
     }
 }
 
+pub mod activity;
 pub mod native_ops;
 mod unavailable;
 mod write_stage;
@@ -641,6 +560,8 @@ pub struct QuickFS {
     /// Tells inotify of the changes the kernel did not make; `None` leaves watchers to
     /// poll.
     change_signal: Option<Arc<crate::change_signal::ChangeSignal>>,
+    /// The requests the mount is answering, for a process ending to wait for.
+    activity: Arc<activity::Activity>,
     #[cfg(test)]
     commit_fault: Mutex<Option<(u64, i32)>>,
     #[cfg(test)]
@@ -690,6 +611,7 @@ impl QuickFS {
             announce_held: AtomicBool::new(false),
 
             change_signal: None,
+            activity: Arc::default(),
             #[cfg(test)]
             commit_fault: Mutex::new(None),
             #[cfg(test)]
@@ -751,6 +673,12 @@ impl QuickFS {
             ),
         }
         self
+    }
+
+    /// The requests this mount is answering and when it last took one: what a process about to
+    /// end waits on, so it ends no request in the middle.
+    pub fn activity(&self) -> Arc<activity::Activity> {
+        Arc::clone(&self.activity)
     }
 
     fn ns(&self) -> NamespaceGuard<'_> {
@@ -1544,7 +1472,9 @@ impl QuickFS {
         // The kernel holds the page locked while the read waits, so the read fails at its
         // bound rather than waiting on a peer that went quiet; the file's record says it
         // is unavailable until bytes arrive, and stored once it is whole.
+        let answering = self.activity.begin();
         rt.spawn(async move {
+            let _answering = answering;
             let read = async move { hydrator.read(hash, offset, size).await };
             let bound = crate::hydration::BLOCKED_READ_BOUND;
             match unavailable::noted_bounded_read(bound, read, note).await {
@@ -1593,7 +1523,9 @@ impl QuickFS {
                 let hydrator = Arc::clone(&self.hydrator);
                 let rt = hydrator.runtime_handle.clone();
                 let note = self.unavailable_note(ino, None);
+                let answering = self.activity.begin();
                 rt.spawn(async move {
+                    let _answering = answering;
                     let read = async move { Ok(missing.finish(&hydrator).await?) };
                     let bound = crate::hydration::BLOCKED_READ_BOUND;
                     match unavailable::noted_bounded_read(bound, read, note).await {
@@ -2197,13 +2129,10 @@ impl QuickFS {
         let Some(document_id) = self.ns().document_id_for(ino) else {
             return;
         };
-        let mut registry = registry.lock_recover();
-        if let Some(mut record) = registry.get(document_id).cloned() {
-            record.current_hash = hash.map(|hash| fs_protocol::ContentHash(*hash.as_bytes()));
-            if let Err(error) = registry.put(record) {
-                eprintln!("could not note a file's new content in its availability: {error}");
-            }
-        }
+        registry.lock_recover().update_current_content(
+            document_id,
+            hash.map(|hash| fs_protocol::ContentHash(*hash.as_bytes())),
+        );
     }
 
     /// The namespace owns the record and path index. This only fingerprints its current
@@ -4153,6 +4082,7 @@ impl Filesystem for QuickFS {
     /// the same order, so a nonexistent name and a name hidden by the view cost the same work and
     /// return the same `ENOENT`.
     fn lookup(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+        let _answering = self.activity.begin();
         match self.lookup_entry(parent.0, name.as_bytes()) {
             Some((attr, ttl)) => {
                 let attr = self.presented_to(req, attr);
@@ -4163,6 +4093,7 @@ impl Filesystem for QuickFS {
     }
 
     fn getattr(&self, req: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
+        let _answering = self.activity.begin();
         match self.attr_for_request(ino.0, fh.map(|fh| fh.0)) {
             Ok(attr) => reply.attr(&self.attr_ttl(TTL), &self.presented_to(req, attr)),
             Err(e) => reply.error(to_errno(e)),
@@ -4177,6 +4108,7 @@ impl Filesystem for QuickFS {
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
+        let _answering = self.activity.begin();
         // Entries outside the view simply aren't in the directory; offsets
         // below index what the app can see, so paging never has a gap.
         if !self.ino_in_view(ino.0) {
@@ -4216,6 +4148,7 @@ impl Filesystem for QuickFS {
         offset: u64,
         mut reply: ReplyDirectoryPlus,
     ) {
+        let _answering = self.activity.begin();
         if !self.ino_in_view(ino.0) {
             reply.error(to_errno(ENOENT));
             return;
@@ -4251,6 +4184,7 @@ impl Filesystem for QuickFS {
     }
 
     fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+        let _answering = self.activity.begin();
         let _writer = if matches!(flags.acc_mode(), OpenAccMode::O_RDONLY) {
             None
         } else {
@@ -4331,6 +4265,7 @@ impl Filesystem for QuickFS {
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
+        let _answering = self.activity.begin();
         match self.plan_read(ino.0, fh.0, offset, size) {
             ReadPlan::Error(e) => reply.error(to_errno(e)),
             ReadPlan::Buffered(buffered) => self.reply_buffered(ino.0, buffered, reply),
@@ -4359,6 +4294,7 @@ impl Filesystem for QuickFS {
         flags: i32,
         reply: ReplyCreate,
     ) {
+        let _answering = self.activity.begin();
         let writer =
             match self.admit_writer(req.pid(), None, fs_protocol::file_action::verbs::NEW_FILE) {
                 Ok(writer) => writer,
@@ -4420,6 +4356,7 @@ impl Filesystem for QuickFS {
         _lock_owner: Option<LockOwner>,
         reply: ReplyWrite,
     ) {
+        let _answering = self.activity.begin();
         if let Err(e) = self.check_open_handle_access(ino.0, fh, Access::Write) {
             reply.error(to_errno(e));
             return;
@@ -4438,6 +4375,7 @@ impl Filesystem for QuickFS {
         _lock_owner: LockOwner,
         reply: ReplyEmpty,
     ) {
+        let _answering = self.activity.begin();
         let _writer = self.note_writer(req.pid());
         match self.flush_inode(ino.0) {
             Ok(()) => reply.ok(),
@@ -4453,6 +4391,7 @@ impl Filesystem for QuickFS {
         _datasync: bool,
         reply: ReplyEmpty,
     ) {
+        let _answering = self.activity.begin();
         let _writer = self.note_writer(req.pid());
         match self.fsync_inode(ino.0) {
             Ok(()) => reply.ok(),
@@ -4471,6 +4410,7 @@ impl Filesystem for QuickFS {
         _datasync: bool,
         reply: ReplyEmpty,
     ) {
+        let _answering = self.activity.begin();
         if !self.ino_in_view(ino.0) {
             reply.error(to_errno(ENOENT));
             return;
@@ -4491,6 +4431,7 @@ impl Filesystem for QuickFS {
         _flush: bool,
         reply: ReplyEmpty,
     ) {
+        let _answering = self.activity.begin();
         if let Some(passthrough) = &self.passthrough {
             passthrough.release(fh.0);
         }
@@ -4524,6 +4465,7 @@ impl Filesystem for QuickFS {
         _flags: Option<BsdFileFlags>,
         reply: ReplyAttr,
     ) {
+        let _answering = self.activity.begin();
         let _writer = if size.is_some() || mode.is_some() {
             match self.admit_writer(
                 req.pid(),
@@ -4583,6 +4525,7 @@ impl Filesystem for QuickFS {
         umask: u32,
         reply: ReplyEntry,
     ) {
+        let _answering = self.activity.begin();
         let _writer =
             match self.admit_writer(req.pid(), None, fs_protocol::file_action::verbs::NEW_FOLDER) {
                 Ok(writer) => writer,
@@ -4623,6 +4566,7 @@ impl Filesystem for QuickFS {
     }
 
     fn unlink(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        let _answering = self.activity.begin();
         let _writer = match self.admit_named(
             req.pid(),
             parent.0,
@@ -4639,6 +4583,7 @@ impl Filesystem for QuickFS {
     }
 
     fn rmdir(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        let _answering = self.activity.begin();
         let _writer = match self.admit_named(
             req.pid(),
             parent.0,
@@ -4664,6 +4609,7 @@ impl Filesystem for QuickFS {
         flags: RenameFlags,
         reply: ReplyEmpty,
     ) {
+        let _answering = self.activity.begin();
         let _writer = match self.admit_named(
             req.pid(),
             parent.0,
@@ -4721,6 +4667,7 @@ impl Filesystem for QuickFS {
         position: u32,
         reply: ReplyEmpty,
     ) {
+        let _answering = self.activity.begin();
         if position != 0 {
             reply.error(to_errno(EINVAL));
             return;
@@ -4777,6 +4724,7 @@ impl Filesystem for QuickFS {
         reason = "one dispatch point owns the bounded collaborative extended-attribute protocol"
     )]
     fn getxattr(&self, _req: &Request, ino: INodeNo, name: &OsStr, size: u32, reply: ReplyXattr) {
+        let _answering = self.activity.begin();
         // Outside the view the inode doesn't exist — checked before the
         // attribute name, so the sync state never reports on a hidden file.
         if !self.ino_in_view(ino.0) {
@@ -4955,6 +4903,7 @@ impl Filesystem for QuickFS {
     /// List the extended attributes on `ino`: just `user.tilo.sync` (NUL terminated), so
     /// `getfattr` and `listxattr` discover it.
     fn listxattr(&self, _req: &Request, ino: INodeNo, size: u32, reply: ReplyXattr) {
+        let _answering = self.activity.begin();
         if !self.ino_in_view(ino.0) {
             reply.error(to_errno(ENOENT));
             return;
@@ -5031,3 +4980,6 @@ mod durability_tests;
 
 #[cfg(test)]
 mod prediction_tests;
+
+#[cfg(test)]
+mod checkout_bench;

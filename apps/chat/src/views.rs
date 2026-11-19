@@ -1667,10 +1667,10 @@ mod tests {
                 "the placeholder never spells the key: {}",
                 person.name
             );
-            assert!(
-                person.name.contains("eed"),
-                "the placeholder names them by the last of their key: {}",
-                person.name
+            assert_eq!(
+                person.name,
+                crate::identity::unnamed_label(&MemberId::person(STRANGER)),
+                "a person without a name is someone without a name yet, as everywhere"
             );
             let cx = view_cx(&channel);
             let tree = page(&channel, &cx);

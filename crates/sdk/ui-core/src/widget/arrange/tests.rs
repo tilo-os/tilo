@@ -543,13 +543,21 @@ tilo_test_env::scenario! {
             kept,
             "the other child is the same widget"
         );
-        crate::retained_widgets::let_go_under(&[node], &mut tree, &mut nodes);
+        crate::retained_widgets::let_go_under(&[node], &tree, &mut nodes);
+        // Until its remount, the stack is still placed and handed input by the layout it was
+        // last given: what its parts stood in is let go of by the window, not taken out of the tree.
+        stack.apply_layout(&tree, node, vello::kurbo::Point::ZERO);
+        let built = tree.total_node_count();
         let mut remount = crate::widget::Remount::new(&mut tree, &theme, &mut nodes);
         assert!(stack.remount_children(&mut remount));
         let (mounted, _) = remount.finish();
         assert_eq!(mounted.len(), 2, "both parts are mounted under the stack");
         assert_eq!(stack.relaid_layout_node(), None);
         assert_eq!(tree.children(node).map(|children| children.len()).ok(), Some(2));
+        assert!(
+            tree.total_node_count() <= built,
+            "the remount takes out what the parts stood in before, and leaves nothing behind"
+        );
         let mut text = crate::font_catalog::fixture_renderer();
         // SAFETY: the stack and its maps are exclusively owned here.
         unsafe {

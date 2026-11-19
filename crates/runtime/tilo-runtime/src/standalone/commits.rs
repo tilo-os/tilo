@@ -25,7 +25,7 @@ use super::service::ServiceWorkspaces;
 pub(in crate::standalone) type DeclaredKinds =
     Box<dyn Fn(&str) -> Option<Vec<String>> + Send + Sync>;
 
-/// In which kinds an app may write a record the workspace does not hold yet.
+/// In which kinds an app may write a resource this device's own workspace does not hold yet.
 pub(in crate::standalone) struct RecordCreation {
     pub(in crate::standalone) declared_kinds: DeclaredKinds,
     /// Started with `--dev`: an app that is not installed is a build under
@@ -152,35 +152,34 @@ impl CommitParts {
             return Err("the desktop session's workspace is read only in the runtime".to_owned());
         }
         let copies = self.service.workspaces();
-        let peer = match copies.member_copy(workspace).await {
-            Some((_, peer)) => peer,
-            None => copies
-                .governed_copy(workspace)
-                .await
-                .map(|(_, peer)| peer)
-                .ok_or_else(|| "this device holds no such workspace".to_owned())?,
+        // What type a new resource may be is this device's rule only in the workspace it
+        // governs, where the apps installed here say it; a member copy's writes are the
+        // governing device's to admit.
+        let (peer, governs) = match copies.member_copy(workspace).await {
+            Some((_, peer)) => (peer, false),
+            None => (
+                copies
+                    .governed_copy(workspace)
+                    .await
+                    .map(|(_, peer)| peer)
+                    .ok_or_else(|| "this device holds no such workspace".to_owned())?,
+                true,
+            ),
         };
-        let (app, record, envelope, own, readers) = match &request.operation {
+        let (app, document, envelope) = match &request.operation {
             CommitOperation::Document {
                 app,
                 document,
                 envelope,
-                own,
-                readers,
-            } => (
-                app.clone(),
-                document.clone(),
-                envelope.clone(),
-                own.clone(),
-                readers.clone(),
-            ),
+                ..
+            } => (app.clone(), document.clone(), envelope.clone()),
             _ => return Err("an app writes documents to its workspace".into()),
         };
         if envelope.author.as_bytes() != &self.device {
             return Err("the document's signer differs from this device".into());
         }
         let now = SystemTime::now();
-        let held = peer.holds_document(&app, &record);
+        let held = peer.holds_document(&app, &document);
         let changes = peer.permissions(self.device, now).is_ok_and(|member| {
             member.allows(
                 &member.policy.node().app(&app),
@@ -188,7 +187,7 @@ impl CommitParts {
                 now,
             )
         });
-        if !held {
+        if !held && governs {
             let kind = resource_type
                 .as_deref()
                 .ok_or_else(|| format!("{app} named no kind for a new record"))?;
@@ -201,39 +200,8 @@ impl CommitParts {
                 "the person at this device may not change {app} in this workspace"
             ));
         }
-        let message = neighbour_wire::NeighbourMsg::AppDocument {
-            peer: neighbour_wire::peer_handle(&self.device),
-            app_id: app,
-            cluster_id: workspace.to_string(),
-            document_id: record,
-            envelope,
-            own,
-            readers,
-        };
-        let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
-        let binding = request.binding()?;
-        let aggregate_hash = *blake3::hash(&body).as_bytes();
-        if copies.is_member(&request.workspace).await.unwrap_or(false) {
-            let Some((channel, retention)) = neighbour_wire::retention(&message, false) else {
-                return Err("the write carries no retention route".into());
-            };
-            let order = copies
-                .commit_member_document(
-                    &request.workspace,
-                    tilo_workspace_service::workspace_documents::HostCommit {
-                        body,
-                        channel,
-                        checkpoint: retention == neighbour_wire::Retention::Checkpoint,
-                    },
-                )
-                .await?;
-            return Ok(OwnerCommitReceipt {
-                binding,
-                generation: order.max(1),
-                aggregate_hash,
-            });
-        }
-        let name = request.workspace.clone();
-        copies.commit_own_document(&name, request).await
+        drop(peer);
+        let workspace = request.workspace.clone();
+        copies.commit_local_document(&workspace, request).await
     }
 }

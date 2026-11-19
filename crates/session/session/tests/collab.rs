@@ -21,6 +21,7 @@ use std::time::Duration;
 use collab_types::presence::{Payload, Presence};
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
+use runtime_collab::CollabClient;
 use tilo_actions::ApiError;
 use tilo_actions::remote::RemoteActionTarget;
 use tilo_compositor::{InputEvent, OutputConfig};
@@ -31,9 +32,9 @@ use tilo_desktop_model::{
 };
 use tilo_desktop_search::SHOW_PEOPLE;
 use tilo_session::sync::{Client, Event, OwnPresence};
-use tilo_session::{AppActions, Options, Session};
+use tilo_session::{AppActions, AppSocket, Launches, Lists, Options, Session};
 
-use crate::common::{shot, until};
+use crate::common::{shot, until, wait_for};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
@@ -1052,6 +1053,147 @@ fn following_someone_brings_forward_the_window_of_the_app_they_work_in() {
     until(&mut session, "following ends when they leave", |_| {
         sync.own().following.is_none()
     });
+}
+
+/// The route the Notes window's app holds in the workspace.
+fn notes_route() -> String {
+    tilo_workspace_service::apps::route::CrdtRoute::app("so.tilo.notes", WORKSPACE).channel_key()
+}
+
+/// The app of the Notes window: it joins the workspace's route, and says whom each follow event
+/// names once it is on it.
+fn the_notes_app(
+    socket: &Path,
+    device: &ed25519_dalek::SigningKey,
+    cert: &tilo_user_identity::DeviceCert,
+    joined: std::sync::mpsc::Sender<()>,
+    told: std::sync::mpsc::Sender<Option<tilo_actions::MemberId>>,
+) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime for the app");
+    runtime.block_on(async {
+        let mut stream =
+            std::os::unix::net::UnixStream::connect(socket).expect("the app wire's socket");
+        launcher::services::write_collab_handoff(&mut stream, "so.tilo.notes", WORKSPACE)
+            .expect("the launcher names the app on the connection");
+        stream
+            .set_nonblocking(true)
+            .expect("the connection is ready for the runtime");
+        let stream = tokio::net::UnixStream::from_std(stream).expect("a runtime stream");
+        let (reader, writer) = stream.into_split();
+        let (client, carrying) = CollabClient::over(reader, writer);
+        tokio::spawn(carrying);
+        let handle = client
+            .join_channel(
+                &notes_route(),
+                &crate::common::held::presentation(device, cert),
+            )
+            .await
+            .expect("the app the session launched joins the workspace's route");
+        let context = handle
+            .subscribe_context()
+            .await
+            .expect("the app follows the session's context");
+        joined.send(()).expect("the test waits for the app");
+        while let Ok(change) = context.read().await {
+            let Some(peer) = change.follow_changed else {
+                continue;
+            };
+            if told.send(peer).is_err() {
+                return;
+            }
+        }
+    });
+}
+
+/// A session holding the fixture's workspace, its app wire on `socket`, taking part in the
+/// workspace through `sync`, showing `tree`: where an app of the workspace joins and hears the
+/// session's own word.
+fn app_session(
+    socket: &Path,
+    held: &crate::common::held::Fixture,
+    sync: &Rc<Client>,
+    tree: Layout,
+) -> Session {
+    // The app speaks from this test's own process, so the launch the session would have recorded
+    // for it names that process.
+    let launches = std::sync::Arc::new(Launches::default());
+    launches.started(std::process::id(), "so.tilo.notes", WORKSPACE, true);
+    let mut session = crate::common::headless(Options {
+        sync: Some(Rc::clone(sync)),
+        app_socket: AppSocket::At(socket.to_path_buf()),
+        launches,
+        lists: Lists::default(),
+        state: Some(held.state.clone()),
+        ..Options::default()
+    });
+    session.handle().replace_tree(tree);
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    session
+}
+
+/// Following someone reaches the window's app: the app of the workspace's window is told which
+/// member's view this person follows, and told when following ends.
+#[test]
+fn following_someone_tells_the_window_app_whose_view_is_theirs() {
+    let _settled = ui::motion::testing::settled();
+    let home = crate::common::private_home();
+    let socket = home.path().join("collab.sock");
+    let held = crate::common::held::fixture();
+    let own = OwnPresence {
+        label: "Quinten".to_owned(),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), own));
+    let mut session = app_session(&socket, &held, &sync, shell_of_two());
+
+    // The app of the Notes window is on the workspace's route.
+    let (joined, app_joined) = std::sync::mpsc::channel();
+    let (told, hears) = std::sync::mpsc::channel();
+    let app =
+        std::thread::spawn(move || the_notes_app(&socket, &held.device, &held.cert, joined, told));
+    until(&mut session, "the app joins the workspace's route", |_| {
+        app_joined.try_recv().is_ok()
+    });
+
+    // Ada is here, and her page says she works in Notes.
+    sync.hear(hello(0xaa, "Framework 16"));
+    arrived_as(&sync, 0xaa, "Ada");
+    page_working_in(&sync, 0xaa, "so.tilo.notes");
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+
+    // This device follows her: the app hears whose view the person at this device follows.
+    let mut own = sync.own();
+    own.following = Some(device(0xaa).to_string());
+    sync.set_own(own);
+    let followed = wait_for(
+        &mut session,
+        "the app hears whom the person follows",
+        |_| hears.try_recv().ok(),
+    );
+    assert_eq!(
+        followed,
+        tilo_actions::MemberId::parsed_person(&person(0xaa)),
+        "the app is told the member the person follows, not the device"
+    );
+
+    // The person stops following: the app hears that following ended.
+    let mut own = sync.own();
+    own.following = None;
+    sync.set_own(own);
+    let ended = wait_for(&mut session, "the app hears following end", |_| {
+        hears.try_recv().ok()
+    });
+    assert_eq!(ended, None, "the app is told nobody is followed");
+
+    drop(session);
+    app.join().expect("the app's thread");
 }
 
 /// `device`'s page says where its windows stand: `windows` on a screen `size` big, each window

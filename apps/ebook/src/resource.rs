@@ -63,6 +63,12 @@ pub struct Ebook {
     pub annotations: Collection<Mark>,
 }
 
+/// A book of the library, as the type its place is an entity of: search and
+/// the palette name the place by this type's words.
+#[derive(tilo_resource::Row)]
+#[row(kind = "ebook.book", label = "Book", effects = BooksEffect)]
+pub(crate) struct Book;
+
 impl Default for Ebook {
     /// A new library: an empty shelf with the built-in fonts and schemes.
     fn default() -> Self {
@@ -784,6 +790,7 @@ impl Ebook {
         };
         let mut place = Derived::new(entry.title.clone())
             .of_kind("book")
+            .typed::<Book>()
             .identified(book_place_id(&book))
             .with_effect(&BooksEffect::ReadBook { book: book.clone() })
             .with_effect(&BooksEffect::Open {

@@ -454,6 +454,23 @@ impl PeerCore {
         })
     }
 
+    /// The person whose own resource `app`'s `document` is, for a write the device `author`
+    /// signs: theirs whatever their role, as
+    /// [`tilo_desktop_model::shared_resource::guard::own_person`] says of a resource its write
+    /// names as their own or of their view of the layout.
+    pub(super) fn own_person(
+        &self,
+        app: &str,
+        document: &str,
+        author: &[u8; 32],
+    ) -> Option<String> {
+        let declared = self.own_of(app, document).or_else(|| {
+            let person = self.certificates.get(author)?.as_ref().user_public_key;
+            collab_types::OwnResource::recognise(app, document, person)
+        });
+        tilo_desktop_model::shared_resource::guard::own_person(app, document, declared.as_ref())
+    }
+
     /// Take `own` as what `app`'s `record` is, when it names that record.
     pub(super) fn learn_own(
         &mut self,

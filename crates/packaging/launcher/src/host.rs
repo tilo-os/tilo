@@ -126,22 +126,29 @@ fn spawn_with(
     scope_join_timeout: Duration,
     keep: Option<&Keep>,
 ) -> Result<ExitStatus, HostError> {
-    // Deliberately on stderr and unconditional: a launch that skips the sandbox says so where the
-    // compositor's log, journal and a developer's terminal will all see it.
-    eprintln!(
-        "tilo-launcher: running host application {} ({}) UNCONFINED — \
-         no Tilo sandbox, no workspace, no per-workspace state. {} {}",
-        launch.desktop_id,
-        launch.source.label(),
-        launch.program.display(),
-        launch.args.join(" "),
-    );
+    // A kept launch's streams carry its keeper's output alone: the desktop that follows reads a
+    // kept app's file by the count of bytes its launcher passed on, and a line of this process's
+    // own would be counted as the app's and hide the first bytes of it after a restart.
+    let kept = keep.is_some();
+    // Deliberately on stderr and otherwise unconditional: a launch that skips the sandbox says so
+    // where the compositor's log, journal and a developer's terminal will all see it.
+    if !kept {
+        eprintln!(
+            "tilo-launcher: running machine application {} ({}) UNCONFINED — \
+             no Tilo sandbox, no workspace, no per-workspace state. {} {}",
+            launch.desktop_id,
+            launch.source.label(),
+            launch.program.display(),
+            launch.args.join(" "),
+        );
+    }
     debug_assert!(
         !launch.is_confined(),
         "a host launch must never claim confinement"
     );
 
     if let Some(busctl) = busctl
+        && !kept
         && let Err(error) = scope::join_with(
             busctl,
             &launch.desktop_id,

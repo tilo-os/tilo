@@ -8,7 +8,7 @@
 //    workspace; Escape closes it.
 // 5. A reload restores the same window instead of the welcome.
 //
-// usage: node first-run.mjs BUNDLE_DIR
+// usage: node first-screen.mjs BUNDLE_DIR
 //   BUNDLE_DIR  build.sh --bundle desktop output
 // Writes screenshots to SHOTS_DIR when set. Exits non-zero on any failure.
 import {writeFileSync} from 'node:fs';
@@ -16,7 +16,7 @@ import {resolve} from 'node:path';
 import {launch, serve, sleep} from '../../../../tools/web/chrome.mjs';
 
 const [bundle] = process.argv.slice(2);
-if (!bundle) throw Error('usage: node first-run.mjs BUNDLE_DIR');
+if (!bundle) throw Error('usage: node first-screen.mjs BUNDLE_DIR');
 const shots = process.env.SHOTS_DIR;
 
 const server = await serve(resolve(bundle));
@@ -27,7 +27,7 @@ const check = (ok, what) => {
   console.log(`${ok ? 'ok' : 'FAIL'} ${what}`);
   if (!ok) failures.push(what);
 };
-const shot = async name => { if (shots) writeFileSync(`${shots}/first-run-${name}.png`, await tab.screenshot()); };
+const shot = async name => { if (shots) writeFileSync(`${shots}/first-screen-${name}.png`, await tab.screenshot()); };
 
 const state = () => tab.evaluate('globalThis.tiloMount?.state() ?? null');
 const windows = () => tab.evaluate('globalThis.tiloMount.navigation.getSnapshot().entries.map(e => e.label)');

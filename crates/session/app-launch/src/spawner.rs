@@ -27,8 +27,11 @@
 
 use std::collections::BTreeMap;
 use std::os::fd::AsFd as _;
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -145,6 +148,9 @@ pub struct Event {
     /// Its keeper was killed while no desktop was there, taking the app with it: the app's saved
     /// tab says it stopped working rather than a notice opening here.
     pub killed: bool,
+    /// The session asked this app to end, as the person's own Quit does: the end is theirs, so no
+    /// notice says it stopped working.
+    pub asked_to_end: bool,
     /// The last of what the app wrote, when this session read its streams.
     /// Empty for an ending reported by someone who started nothing.
     pub said: crate::output::OutputTail,
@@ -480,6 +486,10 @@ impl Spawner {
             .map(|(started, _)| started)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered launch: the command, its hold, its keeper and what it writes, each set before the process starts"
+    )]
     fn start_launch(
         &mut self,
         planned: &Planned,
@@ -492,6 +502,7 @@ impl Spawner {
     ) -> Result<(Started, Option<HeldLink>), SpawnError> {
         crate::name_surface(planned);
         let mut command = Command::new(&planned.program);
+        close_inherited(&mut command);
         command
             .args(&planned.args)
             .env_clear()
@@ -520,6 +531,15 @@ impl Spawner {
         };
         let (kept, handed_down) =
             self.kept_launch(planned, workspace, asked, &mut command, handed)?;
+        // A kept launch's keeper writes the same bytes it passes on here: what this desktop reads is
+        // kept beside them, and the desktop that follows reads on rather than logging it again.
+        #[cfg(target_os = "linux")]
+        if let Some(kept) = &kept {
+            output.keep_position_in(&kept.dir);
+            // What the launcher said on its stderr for a launch it did not keep: a kept launch's
+            // streams carry its app's output alone, so the log is told here instead.
+            tracing::info!(app = %planned.app, "a machine app is unconfined, kept across a desktop restart");
+        }
         let spawned = command.spawn();
         drop((command, handed_down));
         let mut child = match spawned {
@@ -550,6 +570,7 @@ impl Spawner {
         // Taken before the watcher can reap the child, so it names this
         // process and no later one with its pid.
         let (app_of, heard) = self.app_of(started.pid, &planned.app, kept.as_ref());
+        let asked_to_end = Arc::clone(&app_of.asked_to_end);
         running(&self.running).insert(id, app_of);
         write_down(started.pid);
         if let Some(hold) = hold {
@@ -594,6 +615,7 @@ impl Spawner {
                     title,
                     end,
                     killed: false,
+                    asked_to_end: asked_to_end.load(Ordering::Acquire),
                     said,
                 });
                 if let Some(wake) = wake {
@@ -953,6 +975,7 @@ impl Spawner {
             .unwrap_or(app.started);
         app.kept = Some(Arc::clone(&kept));
         let cgroup = app.cgroup_dir();
+        let asked_to_end = Arc::clone(&app.asked_to_end);
         running(&self.running).insert(id, app);
         // What the app wrote reached the desktop that started it; from here it is read from the
         // keeper's bounded file, from its start, and followed while the app has windows.
@@ -998,6 +1021,7 @@ impl Spawner {
                     title,
                     end,
                     killed: false,
+                    asked_to_end: asked_to_end.load(Ordering::Acquire),
                     said,
                 });
                 if let Some(wake) = wake {
@@ -1050,6 +1074,7 @@ impl Spawner {
             .checked_sub(launcher::priority::STARTUP_WINDOW)
             .unwrap_or(app.started);
         app.kept = Some(Arc::clone(&kept));
+        let asked_to_end = Arc::clone(&app.asked_to_end);
         running(&self.running).insert(id, app);
         let (events, wake, still_running) = (
             self.events.0.clone(),
@@ -1074,6 +1099,7 @@ impl Spawner {
                     title,
                     end,
                     killed: false,
+                    asked_to_end: asked_to_end.load(Ordering::Acquire),
                     said: crate::output::OutputTail::default(),
                 });
                 if let Some(wake) = wake {
@@ -1123,7 +1149,7 @@ impl Spawner {
             .as_ref()
             .map_or_else(crate::output::OutputTail::default, |launch| {
                 let output = Arc::new(AppOutput::new(launch.app.clone(), None));
-                output.follow(dir);
+                output.follow_whole(dir);
                 output.finish();
                 output.tail()
             });
@@ -1149,6 +1175,7 @@ impl Spawner {
             title: launch.title,
             end,
             killed,
+            asked_to_end: false,
             said,
         });
     }
@@ -1195,6 +1222,48 @@ impl Spawner {
         }
     }
 }
+
+/// Mark every descriptor this session holds beyond its standard streams close-on-exec in the
+/// process `command` starts, before it becomes the app: a launch gets only the descriptors it is
+/// deliberately handed (`launcher::inherit::hand_down` clears the flag on each of those).
+///
+/// The session's own descriptors are not the app's: a compositor's GPU node reached through a
+/// driver that left its descriptor open, a saved document, a socket — every one of them would otherwise
+/// reach every app the session starts, as an inherited handle on what the session holds. Added
+/// before the launcher's own `pre_exec` steps, which hand the app what it is given after this.
+#[cfg(target_os = "linux")]
+fn close_inherited(command: &mut Command) {
+    // SAFETY: only async-signal-safe calls happen between fork and exec: close_range, fcntl and
+    // sysconf; nothing is allocated.
+    unsafe {
+        command.pre_exec(|| {
+            let closed = libc::syscall(
+                libc::SYS_close_range,
+                3,
+                libc::c_uint::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            );
+            if closed == 0 {
+                return Ok(());
+            }
+            // A kernel without close_range: the same flag, one descriptor at a time.
+            let limit = libc::sysconf(libc::_SC_OPEN_MAX);
+            let limit = i32::try_from(limit).unwrap_or(1024).max(3);
+            for fd in 3..limit {
+                if libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) == -1 {
+                    let error = std::io::Error::last_os_error();
+                    if error.raw_os_error() != Some(libc::EBADF) {
+                        return Err(error);
+                    }
+                }
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn close_inherited(_: &mut Command) {}
 
 /// Tell the launcher `command` starts to start `keeper` in `dir`, keeping `launch`.
 #[cfg(target_os = "linux")]
@@ -1309,6 +1378,9 @@ pub(crate) struct App {
     /// When this launch started: a launch is served before everything else
     /// while it opens ([`crate::memory`]).
     started: Instant,
+    /// The session asked this app to end, as the person's own Quit does: its end is theirs, so no
+    /// notice says it stopped working ([`crate::Event::asked_to_end`]).
+    asked_to_end: Arc<AtomicBool>,
     #[cfg(target_os = "linux")]
     pidfd: Option<std::os::fd::OwnedFd>,
     /// The keeper this launch runs behind, when it is kept.
@@ -1327,6 +1399,7 @@ impl App {
                 pid,
                 name: app,
                 started: Instant::now(),
+                asked_to_end: Arc::new(AtomicBool::new(false)),
                 pidfd: None,
                 kept: None,
             };
@@ -1350,6 +1423,7 @@ impl App {
             pid,
             name: app,
             started: Instant::now(),
+            asked_to_end: Arc::new(AtomicBool::new(false)),
             pidfd,
             kept: None,
         }
@@ -1377,6 +1451,7 @@ impl App {
             pid,
             name: app.to_owned(),
             started: Instant::now(),
+            asked_to_end: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1409,6 +1484,9 @@ impl App {
     /// moment to remove those files itself. `session_ends` when nothing of the session is left to
     /// clear them later, so the wait for the keeper is here; otherwise it is off the loop.
     fn end(&self, session_ends: bool) {
+        // Whoever ends it here is the person or the session they asked: the end that follows is no
+        // crash, and the app's saved place closes quietly.
+        self.asked_to_end.store(true, Ordering::Release);
         self.stop();
         #[cfg(target_os = "linux")]
         if let Some(kept) = &self.kept {
@@ -1635,6 +1713,38 @@ mod tests {
                 "no process, no ending to report"
             );
         }
+    }
+
+    /// An app the session ends on the person's ask is reported as asked to end: the session
+    /// tells it apart from a crash, so the place its window was closes quietly.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_app_the_session_ends_is_reported_as_asked() {
+        let mut spawner = Spawner::default();
+        let quiet = spawner
+            .start(&shell("exit 0", BTreeMap::new()))
+            .expect("starts");
+        let asked = spawner
+            .start(&shell("exec sleep infinity", BTreeMap::new()))
+            .expect("starts");
+        spawner.end_one(asked.id);
+        let mut ended = events(&spawner, 2);
+        ended.sort_by_key(|event| event.id);
+        assert_eq!(ended[0].id, quiet.id);
+        assert!(
+            !ended[0].asked_to_end,
+            "an app that closed on its own was not asked"
+        );
+        assert_eq!(ended[1].id, asked.id);
+        assert!(
+            ended[1].asked_to_end,
+            "the end the session asked for is the person's"
+        );
+        assert!(
+            ended[1].end.crashed(),
+            "a signal is how the ask reaches the app: {:?}",
+            ended[1].end
+        );
     }
 
     #[cfg(target_os = "linux")]

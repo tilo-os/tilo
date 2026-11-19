@@ -2566,8 +2566,8 @@ mod tree_component;
 #[cfg(test)]
 pub(crate) use tree_component::items_tree;
 pub use tree_component::{
-    DescribedTreeView, RemovedNodes, TREE_ROW_HEIGHT, TreeTone, TreeViewNodeProps, TreeViewProps,
-    TreeViewRowProps,
+    DescribedTreeView, RemovedNodes, TREE_ROW_DOUBLE_HEIGHT, TREE_ROW_HEIGHT, TreeTone,
+    TreeViewNodeProps, TreeViewProps, TreeViewRowProps,
 };
 /// A box a widget paints text into, whose own box cannot hold that text: the height the text
 /// takes at the width of its box, the width the box gives it, and what it says. Rows a box lays

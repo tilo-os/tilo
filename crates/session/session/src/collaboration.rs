@@ -67,8 +67,13 @@ impl Session {
             }
         }
         // Whose view this device follows: their window here comes forward each time the place they
-        // work in moves, and their app where no window here shows it.
-        self.shared.follow_people();
+        // work in moves, and their app where no window here shows it. The apps of the workspace
+        // are told whom this person follows, so a window shows where that person works.
+        if let Some((workspace, member)) = self.shared.follow_people()
+            && let Some(app_wire) = &self.app_wire
+        {
+            app_wire.follow_dispatcher().set(&workspace, member);
+        }
         // Where this person is on this session, so a page here draws their pointer, follows them to the
         // record they work in and shows a mini view of their screen.
         self.say_where_i_am(sync);

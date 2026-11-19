@@ -246,6 +246,8 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// `device_agents` is the MCP server toward the person's other devices: answered on the endpoint
 /// over the devices the person's own store holds, and dialing theirs from it
 /// ([`crate::device_mcp`]).
+/// `service` is where this device's own workspace service is installed, from the session's start:
+/// the workspace it holds answers its reads, and a workspace it makes is founded there.
 pub(crate) fn start_collaboration(
     options: &Options,
     continuity: crate::platform::fabric::Continuity,
@@ -255,15 +257,16 @@ pub(crate) fn start_collaboration(
         &std::sync::Arc<crate::device_mcp::DeviceAgents>,
     ),
     documents: Option<sync::PeerDocuments>,
+    service: tilo_workspace_service::service::ServiceSlot,
 ) -> (
     Option<Rc<sync::Client>>,
-    crate::broker_services::BrokerService<
-        std::sync::Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>,
-    >,
+    crate::broker_services::HeldDocuments,
+    crate::broker_services::HeldResources,
 ) {
-    // Where this device's own workspace service is installed, and what the broker reads its
-    // workspaces' resources from.
-    let (service, reads) = crate::broker_services::workspace_service();
+    // What the broker reads its workspaces' resources from.
+    let reads = crate::broker_services::document_reads(service.clone());
+    // Where apps write and read their resources: the service's store, which alone holds them.
+    let resources = crate::broker_services::resources(service.clone());
     let founding = engine.clone();
     let sync = collaborating(
         options,
@@ -279,7 +282,7 @@ pub(crate) fn start_collaboration(
     if let Some(engine) = &founding {
         sync::found_alone(engine, service);
     }
-    (sync, reads)
+    (sync, reads, resources)
 }
 
 /// [`start_collaboration`]'s peer network: the one `options` hands, or this device's own.

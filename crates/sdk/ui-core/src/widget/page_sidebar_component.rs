@@ -60,6 +60,8 @@ pub struct DeclaredRail {
     current: usize,
     rect: Rect,
     cursor: Point,
+    /// How many pages it was last laid out for: its height where nothing gives it one.
+    laid_out: Option<usize>,
 }
 
 impl DeclaredRail {
@@ -83,6 +85,7 @@ impl DeclaredRail {
             current: usize::try_from(props.current.max(0)).unwrap_or(0),
             rect: Rect::ZERO,
             cursor: Point::ZERO,
+            laid_out: None,
         }
     }
 
@@ -203,6 +206,11 @@ impl crate::widget::Widget for DeclaredRail {
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.laid_out = Some(self.count);
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.laid_out != Some(self.count)
     }
 
     fn draw(

@@ -9,13 +9,15 @@
 #![cfg(target_os = "linux")]
 
 use std::cell::Cell;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write as _;
+use std::os::fd::AsRawFd as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tilo_app_launch::Teardown;
 use tilo_app_launch::kept::testing;
@@ -35,6 +37,10 @@ const APP: &str = "org.example.Kept";
 /// What makes this test binary the kept app: the directory it reads its windows from and reports
 /// in.
 const APP_DIR: &str = "TILO_TEST_KEPT_APP";
+
+/// A relay nobody answers at: an address of the block kept for documentation, which routes
+/// nowhere.
+const SILENT_RELAY: &str = "https://192.0.2.1/";
 
 /// Not a test: the keeper a kept launch starts, as `tilo-app-keeper` would run.
 #[test]
@@ -63,6 +69,25 @@ fn kept_app() {
         .lines()
         .map(str::to_owned)
         .collect();
+    // What this process holds beyond its own standard streams: a launch gets only the descriptors
+    // it is handed, so a test reads this and looks for what the desktop holds.
+    let mut fds = String::new();
+    let mut listed: Vec<(i32, String)> = fs::read_dir("/proc/self/fd")
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let fd: i32 = entry.file_name().to_string_lossy().parse().ok()?;
+            let target = fs::read_link(entry.path()).ok()?;
+            Some((fd, target.to_string_lossy().into_owned()))
+        })
+        .collect();
+    listed.sort();
+    for (fd, target) in listed {
+        let _ = writeln!(fds, "{fd} {target}");
+    }
+    fs::write(dir.join("fds"), fds).expect("the open descriptors");
     let mut started = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -128,6 +153,8 @@ struct Rig {
     x11: bool,
     /// The desktop entry the app is launched by.
     entry: String,
+    /// The relays the desktop's peer network is given, when a test gives it any.
+    relays: Option<tilo_endpoint_reachability::EndpointRelays>,
 }
 
 /// One run of the desktop: its session, its apps, and how it ends when dropped.
@@ -212,7 +239,19 @@ impl Rig {
             root,
             x11,
             entry: entry.to_owned(),
+            relays: None,
         }
+    }
+
+    /// This device's peer network given a relay that never answers: what a desktop away from its
+    /// home network, on a captive portal or offline, is given.
+    fn on_a_silent_relay(mut self) -> Self {
+        let silent: iroh::RelayUrl = SILENT_RELAY.parse().expect("a relay address");
+        self.relays = Some(tilo_endpoint_reachability::EndpointRelays {
+            relays: iroh::RelayMap::from(silent),
+            n0_dns: false,
+        });
+        self
     }
 
     /// A run of the desktop, taking up what the keepers hold as the session's `main` does:
@@ -231,6 +270,7 @@ impl Rig {
             apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
             launch: Some(Rc::clone(&apps)),
             state: Some(self.device.state.clone()),
+            relays: self.relays.clone(),
             teardown: Box::new(move || asked.get()),
             ..Options::default()
         });
@@ -471,6 +511,64 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
     assert!(!dir.exists(), "a logout removes the keeper's directory");
 }
 
+/// A desktop given a relay that never answers restarts in place and shows its kept windows at
+/// once: what it waits for is the layouts its own store holds, never the network.
+#[test]
+fn kept_windows_show_without_waiting_for_a_relay_that_never_answers() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]).on_a_silent_relay();
+    let mut first = rig.desktop(false);
+    rig.launch(&first);
+    let placed = shown_and_told(&rig, &mut first, &["Only"]);
+    first.end(Teardown::InPlaceRestart);
+
+    let started = Instant::now();
+    let mut second = rig.desktop(true);
+    let back = shown_and_told(&rig, &mut second, &["Only"]);
+    let waited = started.elapsed();
+    eprintln!(
+        "the kept window was shown {waited:?} after the desktop started, with no relay answering"
+    );
+    assert_eq!(back, placed, "the window is back in its saved tab");
+    assert!(
+        waited < tilo_endpoint_reachability::RELAY_WAIT,
+        "the kept window came after {waited:?}: it waited on the network"
+    );
+    second.end(Teardown::Logout);
+}
+
+/// A launch gets only the descriptors it is handed: a file the desktop holds without close-on-exec
+/// — a GPU node a driver opened, a saved document — does not reach the app behind its keeper.
+#[test]
+fn a_launched_app_inherits_no_descriptor_it_was_not_handed() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    // The desktop's own descriptor, left without close-on-exec as a driver's own is.
+    let leaked = rig.app.join("the-desktops-own");
+    let held = fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&leaked)
+        .expect("a file the desktop holds");
+    // SAFETY: the descriptor is this process's, open until `held` is dropped.
+    unsafe {
+        assert_eq!(libc::fcntl(held.as_raw_fd(), libc::F_SETFD, 0), 0);
+    }
+    let mut pass = rig.desktop(false);
+    rig.launch(&pass);
+    shown_and_told(&rig, &mut pass, &["Only"]);
+    let descriptors = fs::read_to_string(rig.app.join("fds")).expect("the app's descriptors");
+    assert!(
+        !descriptors.lines().any(|line| line
+            .split_once(' ')
+            .is_some_and(|(_, target)| target == leaked.to_string_lossy())),
+        "the app inherited a descriptor it was not handed:\n{descriptors}"
+    );
+    pass.end(Teardown::Logout);
+}
+
 /// A kept program's second window closes while it has the keyboard, the way Wine closes a dialog
 /// (its role goes, its surface stays): the keyboard goes back to the program's window that is still
 /// open, and the next key reaches it.
@@ -542,6 +640,14 @@ fn an_app_whose_keeper_stops_says_so_in_its_own_tab() {
             .collect::<Vec<_>>(),
         [tab],
         "the notice stands where the window was, and no other tab opens"
+    );
+    // The window went with its keeper: what the switcher walks and the overview pictures is the
+    // windows, and a card saying the app stopped is the tab's, not one of them.
+    let key = tab.to_string();
+    let windows = crate::common::windows(&pass.session);
+    assert!(
+        !windows.iter().any(|window| window.key == key),
+        "the window of the app that stopped is still one to walk to"
     );
     pass.end(Teardown::Logout);
 }

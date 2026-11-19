@@ -174,7 +174,10 @@ tilo_test_env::scenario! {
     {
         let kind = ResourceType::new("test.genesis-note");
         // The app's surface is named in the record's identity.
-        collab_types::app_surface::register_package("so.tilo.test-genesis", b"surface");
+        collab_types::app_surface::register_package(
+            "so.tilo.test-genesis",
+            b"[[resources]]\nkind = \"test.genesis-note\"\nlabel = \"Note\"\nversion = 1\n",
+        );
         collab_types::app_surface::register_kind(kind.as_str(), "so.tilo.test-genesis");
         let checkout = DocumentCheckout::new(DocumentId::for_tab(3), kind);
         let create = |actor: &[u8]| {

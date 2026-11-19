@@ -1126,7 +1126,8 @@ async fn owner_devices_join_and_forgeries_are_refused(
     .await;
 
     // A certificate that names the owner's root but carries a signature the
-    // root never made is no device of the owner's.
+    // root never made is no device of the owner's, and the page hears that its
+    // own certificate was refused.
     let (forged_key, forged_cert) = forged_owner_device();
     let forged = page(host.clone(), forged_key, forged_cert, server_cert);
     let forged_heard = forged.events();
@@ -1138,7 +1139,7 @@ async fn owner_devices_join_and_forgeries_are_refused(
                 .status()
                 .failures
                 .into_iter()
-                .find(|failure| failure.code == "not-admitted")
+                .find(|failure| failure.code == "certificate-rejected")
         },
         || format!("{:?}", forged.status()),
     )

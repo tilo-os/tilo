@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {
-  allowFields, denyFields, MAX_GRANT_LIFETIME_MS, readSignInRequest, requestWords, signInOrigin, startSignInPage,
+  allowFields, denyFields, MAX_GRANT_LIFETIME_MS, pageLocale, readSignInRequest, requestWords, serviceWords,
+  signInOrigin, siteHome, startSignInPage,
 } from './sign-in.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
@@ -147,10 +148,10 @@ test('the card says who asks, through which service, what it reaches and until w
     until: untilText(NOW + 7 * DAY, 'en-GB'),
     pages: 'It asks you before every page action.',
   });
-  // A workspace this browser knows no name for is named by its id, said as
-  // the workspace it is.
+  // A workspace the page knows no name for is said in plain words, never by
+  // its id.
   const one = requestWords(read({grant_scope: WORKSPACE}), {locale: 'en-GB'});
-  assert.equal(one.reaches, `Only the workspace with id ${WORKSPACE}`);
+  assert.equal(one.reaches, 'Only one of your workspaces');
   const proofOnly = requestWords(read({grant_key: null, grant_scope: null, grant_expires: null}));
   assert.deepEqual(proofOnly, {
     heading: 'Sign in to entry.example?',
@@ -159,6 +160,55 @@ test('the card says who asks, through which service, what it reaches and until w
     until: null,
     pages: null,
   });
+});
+
+test('a grant reaches a workspace by its name, never by its id', () => {
+  const one = requestWords(read({grant_scope: WORKSPACE}), {
+    locale: 'en', home: {workspace: WORKSPACE, name: 'Lounge'},
+  });
+  assert.equal(one.reaches, 'Only the workspace “Lounge”');
+  assert.doesNotMatch(one.reaches, new RegExp(WORKSPACE));
+  // The page's site names its home: entry.json's admission address spells the
+  // workspace, and home.name is the name people read it by.
+  assert.deepEqual(siteHome({home: {name: 'Lounge', admission: `https://eu1.tilo.example/peer/v1/directory/${WORKSPACE}/`}}),
+    {workspace: WORKSPACE, name: 'Lounge'});
+  assert.equal(siteHome({home: {name: 'Lounge'}}), null);
+  assert.equal(siteHome({home: {admission: 'https://eu1.tilo.example/peer/v1/directory/../../etc/'}}), null);
+});
+
+test('a grant whose workspace the page cannot name says so plainly', () => {
+  for (const words of [requestWords(read({grant_scope: WORKSPACE})),
+    requestWords(read({grant_scope: WORKSPACE}), {home: {workspace: 'another', name: 'Studio'}})]) {
+    assert.equal(words.reaches, 'Only one of your workspaces');
+    assert.doesNotMatch(words.reaches, new RegExp(WORKSPACE));
+  }
+});
+
+test('a service on this computer is said in plain words, not its address', () => {
+  const local = {audience: 'http://localhost:24610', return: 'http://localhost:24610/sign-in'};
+  assert.equal(requestWords(read(local)).service, 'From a terminal on this computer.');
+  assert.deepEqual(serviceWords('http://127.0.0.1:8787'), {name: null, local: true});
+  assert.equal(requestWords(read({...local, audience: 'http://127.0.0.1:8787', return: 'http://127.0.0.1:8787/sign-in'})).service,
+    'From a terminal on this computer.');
+  // A site people know says where the request comes from.
+  assert.equal(requestWords(read()).service, 'Through entry.example.');
+  // An address that names no site says nothing at all.
+  const address = {audience: 'https://203.0.113.7', return: 'https://203.0.113.7/sign-in'};
+  assert.equal(requestWords(read(address)).service, null);
+  assert.deepEqual(serviceWords('https://203.0.113.7'), {name: null, local: false});
+});
+
+test('the date reads in the page’s language, not the browser’s', () => {
+  const english = requestWords(read(), {locale: 'en'});
+  assert.equal(english.until, untilText(NOW + 7 * DAY, 'en'));
+  // The page is English whatever the browser was set to: no German month on it.
+  assert.doesNotMatch(english.until, /\b(?:Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\b/u);
+  assert.equal(pageLocale({documentElement: {lang: 'en'}}), 'en');
+  assert.equal(pageLocale({documentElement: {lang: 'de-DE'}}), 'de-DE');
+  assert.equal(pageLocale({documentElement: {}}), 'en');
+  assert.equal(pageLocale({documentElement: {lang: 'not a tag'}}), 'en');
+  // A German page would date it in German: the locale is the page's, not fixed.
+  assert.equal(requestWords(read(), {locale: 'de-DE'}).until, untilText(NOW + 7 * DAY, 'de-DE'));
 });
 
 test('a client name is the service’s text, never its markup', () => {
@@ -221,14 +271,14 @@ function page({
   search = link(), kept = {rootPublicKey: ROOT, held: 'browser'}, local = entered(),
   identity = {userPublicKey: ROOT, locked: false, sign: async () => new Uint8Array(64)},
   passkeys = true, signIn = async () => { throw Object.assign(new Error('no'), {code: 'passkey-cancelled'}); },
-  ownDeviceKeyStore = false,
+  ownDeviceKeyStore = false, siteEntry = null, documentLang = 'en',
 } = {}) {
   const store = {kept};
   const elements = Object.fromEntries(NAMES.map(name => [name, new Element()]));
   const posted = [];
   const formed = [];
   const document = {
-    documentElement: {dataset: {}},
+    documentElement: {dataset: {}, lang: documentLang},
     body: {append() {}},
     createElement(tag) {
       const element = new Element(tag);
@@ -244,6 +294,7 @@ function page({
   const listeners = new Map();
   const window = {
     document, location: {search, href: `https://web.example/sign-in${search}`},
+    fetch: siteEntry ? async () => ({ok: true, json: async () => siteEntry}) : undefined,
     PublicKeyCredential: passkeys ? function PublicKeyCredential() {} : undefined,
     navigator: {credentials: passkeys ? {get() {}} : undefined},
     addEventListener: (type, listener) => listeners.set(type, listener),
@@ -294,7 +345,7 @@ function page({
 
 const link_ = (over) => link(over);
 /** `grantExpiresMs` in the words the card shows it in. */
-const untilText = (expires, locale = undefined) =>
+const untilText = (expires, locale = 'en') =>
   new Date(expires).toLocaleDateString(locale, {year: 'numeric', month: 'long', day: 'numeric'});
 
 test('the page starts when nothing hands it a device key store', async () => {
@@ -442,6 +493,53 @@ test('an API key the person makes for one workspace is approved as that server k
     serverKey: true,
     operateBrowserPages: false,
   });
+});
+
+test('the card names the site’s home workspace a grant reaches', async () => {
+  const {elements, shown, mounted} = page({
+    search: link_({grant_scope: LOUNGE}),
+    siteEntry: {home: {name: 'Lounge', admission: `https://eu1.tilo.example/peer/v1/directory/${LOUNGE}/`}},
+  });
+  await mounted;
+  assert.equal(shown().state, 'asked');
+  assert.equal(shown().reaches, 'Only the workspace “Lounge”');
+  assert.doesNotMatch(elements.reaches.textContent, new RegExp(LOUNGE));
+});
+
+test('a workspace the page cannot name is said plainly, never by its id', async () => {
+  for (const siteEntry of [null,
+    {home: {name: 'Studio', admission: `https://eu1.tilo.example/peer/v1/directory/${STUDIO}/`}}]) {
+    const {elements, shown, mounted} = page({search: link_({grant_scope: LOUNGE}), siteEntry});
+    await mounted;
+    assert.equal(shown().reaches, 'Only one of your workspaces');
+    assert.doesNotMatch(elements.reaches.textContent, new RegExp(LOUNGE));
+  }
+});
+
+test('a service on this computer is said plainly on the card, not by its port', async () => {
+  const {elements, shown, mounted} = page({
+    search: link_({audience: 'http://localhost:24610', return: 'http://localhost:24610/sign-in'}),
+  });
+  await mounted;
+  assert.equal(shown().service, 'From a terminal on this computer.');
+  assert.equal(elements.service.hidden, false);
+  assert.doesNotMatch(elements.service.textContent, /localhost|24610/);
+});
+
+test('a card whose service is no name a person knows drops the line', async () => {
+  const {elements, shown, mounted} = page({
+    search: link_({audience: 'https://203.0.113.7', return: 'https://203.0.113.7/sign-in'}),
+  });
+  await mounted;
+  assert.equal(shown().service, '');
+  assert.equal(elements.service.hidden, true);
+});
+
+test('the card’s date is in the page’s language, not the browser’s', async () => {
+  const {shown, mounted} = page({search: link_({grant_scope: LOUNGE}), documentLang: 'en'});
+  await mounted;
+  assert.equal(shown().until, untilText(NOW + 7 * DAY, 'en'));
+  assert.doesNotMatch(shown().until, /\b(?:Januar|Februar|März|Mai|Juni|Juli|Oktober|Dezember)\b|\d{1,2}\.\s+\p{Lu}/u);
 });
 
 test('a browser that knows no workspaces is offered no choice', async () => {

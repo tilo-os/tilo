@@ -3051,10 +3051,12 @@ impl Widget for NavShell {
         dirty
     }
 
+    /// Its own invalidation and the parts it laid out; a part it hid is laid out when shown.
     fn is_layout_dirty(&self) -> bool {
-        let mut dirty = self.layout_dirty || self.invalidation.is_pending();
-        self.for_each_owned(|child| dirty |= child.is_layout_dirty());
-        dirty
+        let part_dirty = |part: &_| self.part(*part).is_some_and(|c| c.is_layout_dirty());
+        self.layout_dirty
+            || self.invalidation.is_pending()
+            || self.laid_out_parts.iter().any(part_dirty)
     }
 
     fn draw(

@@ -911,6 +911,11 @@ impl Widget for WebView {
         self.send_resize_if_needed();
     }
 
+    /// A page's shape across the width it is given: placed once, it asks for no layout.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,

@@ -1824,7 +1824,7 @@ async fn ask_key(asked: &KeyAsk<'_>) -> Result<Value> {
     // A computer that holds the person's root approves as their Tilo would.
     if let Some(person) = crate::identity::held()? {
         crate::identity::approve(&person, field("approve_url")).await?;
-        eprintln!("Approved here, as {}.", person.name);
+        eprintln!("Approved here, as {}.", person.who());
     } else {
         eprintln!(
             "Approve the key in your Tilo:\n\n  {}\n\nWaiting for you…",

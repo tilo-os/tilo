@@ -28,7 +28,7 @@ import {idbStorage, openDeviceKey} from './device-key.mjs';
  */
 export async function connectServerPeer({
   origin, userPublicKey, workspace, label = 'Browser', profile = `tilo-server:${workspace}`, device = 'server',
-  displayName = label, onPairingCode, onStatus, signal, fetch: fetcher, live = true,
+  displayName = '', onPairingCode, onStatus, signal, fetch: fetcher, live = true,
 }) {
   if (!origin || !userPublicKey || !workspace) throw new TypeError('origin, userPublicKey and workspace are required');
   signal?.throwIfAborted();

@@ -45,7 +45,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{DocumentAnswer, Events, Link};
-use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
+use ui::automerge::{AutoCommit, transaction::Transactable as _};
 use ui::collaboration::document_content::ContentLink;
 use ui::resource::{DocumentSync, WorkspaceAnswer};
 use ui::state::DocumentReplica;
@@ -94,6 +94,7 @@ pub(crate) fn install() {
         records,
         desktop_history_heads,
         layout_bytes,
+        publish_view,
     });
 }
 
@@ -146,6 +147,19 @@ pub(crate) struct Joined {
     /// This page's own desktop as it last wrote it into the record: a
     /// frame that changed nothing shared writes nothing.
     local_value: Option<serde_json::Value>,
+    /// The person's view of this workspace's layout as they left it
+    /// ([`tilo_desktop_model::person_view`]): theirs on every device of theirs.
+    view: DocumentReplica,
+    /// How this page sends its view to the workspace.
+    view_sending: DesktopSending,
+    /// The person's view of this workspace's layout as this page last showed it from the
+    /// workspace's copy: what the person changed here since is theirs, and stays over it.
+    view_shown: Option<tilo_desktop_model::person_view::PersonView>,
+    /// Whether `view` was read from the workspace: until it is, the page shows the view its
+    /// profile kept.
+    view_read: bool,
+    /// The person at this page, whose view of the layout `view` holds.
+    person: Option<String>,
     /// The heads of each record the workspace delivered that no mount had open, until a mount
     /// opens it. The workspace has everything up to them, so what the mount sends
     /// first is what it changed after them, not the whole document: a
@@ -249,6 +263,11 @@ pub(crate) fn open(
         desktop_sending: DesktopSending::Snapshot,
         desktop_value: None,
         local_value: None,
+        view: DocumentReplica::new(AutoCommit::new()),
+        view_sending: DesktopSending::Snapshot,
+        view_shown: None,
+        view_read: false,
+        person: None,
         delivered: HashMap::new(),
         read_heads: HashMap::new(),
         read_wanted: HashSet::new(),
@@ -415,10 +434,7 @@ pub(crate) fn record_since(
             .copied()
             .map(ui::automerge::ChangeHash)
             .collect::<Vec<_>>();
-        if base
-            .iter()
-            .all(|head| doc.get_change_by_hash(head).is_some())
-        {
+        if base.iter().all(|head| doc.has_change(head)) {
             let mut at = doc.get_heads();
             at.sort();
             if at == base {
@@ -697,6 +713,14 @@ pub(crate) fn permits_due(id: u32) -> Option<u64> {
     (!joined.mounts.is_empty()).then(|| joined.moderation_due_ms.load(Ordering::Relaxed))
 }
 
+/// Write `tree`, the layout a mount shows, as the person's view of the workspace's layout in their
+/// own view: every device of theirs reads it there.
+pub(crate) fn publish_view(id: u32, tree: &tilo_desktop_model::Layout) {
+    if let Some(joined) = replica_of(id) {
+        joined.borrow_mut().write_view(tree);
+    }
+}
+
 /// Attach mount `mount` to peer `id`'s workspace.
 pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
     let Some(joined) = replica_of(id) else {
@@ -709,6 +733,20 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
         {
             warn(&format!("shared desktop not applied: {error}"));
         }
+        if let Some((handle, _)) = &attachment.desktop {
+            if joined.view_read {
+                joined.show_view(handle);
+            } else if joined.view_shown.is_none()
+                && let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&joined.uuid)
+            {
+                // What this page shows before the person's view reaches it: a change they make
+                // from here is theirs over it.
+                joined.view_shown = Some(tilo_desktop_model::person_view::PersonView::of(
+                    &handle.read(Clone::clone),
+                    workspace,
+                ));
+            }
+        }
         if let Some((_, shared)) = &attachment.desktop {
             shared.members.replace(joined.members.clone());
             shared.names.replace(joined.names.clone());
@@ -720,6 +758,8 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
         joined.moderation_due_ms.store(0, Ordering::Relaxed);
         // The new mount's apps learn what the workspace answered.
         joined.followed = 0;
+        // Every mount of a page is the one person's, whose view of the layout is theirs.
+        joined.person = Some(attachment.author.clone());
         joined.mounts.insert(
             mount,
             Mounted {
@@ -1214,6 +1254,17 @@ impl Joined {
                     answer,
                     ..
                 } if workspace_id == self.workspace => {
+                    // A workspace that holds nothing of the person's view yet leaves this page's
+                    // view the one the person changes, so the page writes it from then on.
+                    if answered_without_frames(answer).is_some()
+                        && self.person.as_deref().is_some_and(|person| {
+                            tilo_desktop_model::person_view::person_of(&route.document)
+                                == Some(person)
+                        })
+                    {
+                        self.view_read = true;
+                        self.view_sending = DesktopSending::Snapshot;
+                    }
                     opened.extend(answered_without_frames(answer).map(|said| (route, said)));
                 }
                 _ => {}
@@ -1390,10 +1441,11 @@ impl Joined {
     /// Withdraw what the host refused of `route` from the open record that
     /// sent it, which tells its app, and move the record's replication
     /// frontier back to what it keeps. The raw `reason` is for the log; the
-    /// app shows a person its plain form. The layout is no open document and
-    /// nothing of it is withdrawn: what the person changed stays on their
-    /// page, which sends nothing their role does not allow
-    /// ([`Self::send_desktop`]).
+    /// app shows a person its plain form. The layout and each person's view of
+    /// it are no open document and nothing of theirs is withdrawn: what the
+    /// person changed is theirs, their own view ([`Self::write_view`]),
+    /// and what they change of the workspace's layout is sent only when their
+    /// role writes it ([`Self::send_desktop`]).
     fn withdraw(
         &mut self,
         route: &DocumentRoute,
@@ -1512,6 +1564,15 @@ impl Joined {
         woken: &mut HashSet<u64>,
     ) -> Result<(), String> {
         if route.app_id == DESKTOP_APP {
+            // The layout, and the person's view of it: another member's view of it is not this
+            // page's to show.
+            if let Some(owner) = tilo_desktop_model::person_view::person_of(&route.document) {
+                return if self.person.as_deref() == Some(owner) {
+                    self.apply_view(&bytes, woken)
+                } else {
+                    Ok(())
+                };
+            }
             return self.apply_desktop(&bytes, woken);
         }
         let app = route.app_id.clone();
@@ -1604,11 +1665,7 @@ impl Joined {
                 // stand before the heads this mount took in last.
                 let holds = store.read(&checkout.id, |doc| {
                     heads.iter().all(|head| {
-                        ui::automerge::ReadDoc::get_change_by_hash(
-                            doc,
-                            &ui::automerge::ChangeHash(*head),
-                        )
-                        .is_some()
+                        ui::automerge::ReadDoc::has_change(doc, &ui::automerge::ChangeHash(*head))
                     })
                 });
                 if holds != Some(true) || shared.is_some_and(|shared| shared != heads) {
@@ -1756,14 +1813,151 @@ impl Joined {
         if self.desktop_value.as_ref() == Some(&value) {
             return Ok(());
         }
+        let mut desktops = Vec::new();
         for (&id, mounted) in &self.mounts {
             if let Some((handle, shared)) = &mounted.attachment.desktop {
                 crate::desktop::apply_shared(handle, shared, &value)?;
-                woken.insert(id);
+                desktops.push((id, (*handle).clone()));
             }
+        }
+        for (id, handle) in desktops {
+            if self.view_read {
+                self.show_view(&handle);
+            }
+            woken.insert(id);
         }
         self.desktop_value = Some(value);
         Ok(())
+    }
+
+    /// Show the person's view of this workspace's layout, as this page holds it, over what the
+    /// person changed here since this page last showed that view: what they changed stays, and
+    /// everything else takes the view's. A page that showed none of it takes it whole. Whether the
+    /// shell changed.
+    fn show_view(&mut self, handle: &tilo_desktop_surface::DesktopHandle) -> bool {
+        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&self.uuid) else {
+            return false;
+        };
+        let read = tilo_desktop_model::person_view::PersonView::read(self.view.document());
+        let mut tree = handle.read(Clone::clone);
+        let here = tilo_desktop_model::person_view::PersonView::of(&tree, workspace);
+        let view = read.over(&here, self.view_shown.as_ref());
+        // What the view says the layout shows: a change the person makes after it is theirs over
+        // it.
+        read.applied(&mut tree, workspace);
+        self.view_shown = Some(tilo_desktop_model::person_view::PersonView::of(
+            &tree, workspace,
+        ));
+        handle.show_view(&view, workspace)
+    }
+
+    /// Merge `bytes`, the person's view of this workspace's layout as they left it, and show it
+    /// on every desktop of this page: the strip and group in front, the tab in front of
+    /// each group, and how wide each group is.
+    fn apply_view(&mut self, bytes: &[u8], woken: &mut HashSet<u64>) -> Result<(), String> {
+        self.view
+            .merge_snapshot(bytes)
+            .map_err(|error| format!("the view of the layout did not read: {error}"))?;
+        self.view_read = true;
+        self.view_sending = DesktopSending::Changes;
+        let desktops: Vec<(u64, tilo_desktop_surface::DesktopHandle)> = self
+            .mounts
+            .iter()
+            .filter_map(|(&id, mounted)| {
+                mounted
+                    .attachment
+                    .desktop
+                    .as_ref()
+                    .map(|(handle, _)| (id, (*handle).clone()))
+            })
+            .collect();
+        for (id, handle) in desktops {
+            if self.show_view(&handle) {
+                woken.insert(id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Read the person's view of the layout from this device's replica of it, when the
+    /// page holds it: a page that learned whose view it is after it arrived still shows
+    /// the view. Once it is read, the view's changes reach the page as they land.
+    fn read_view(&mut self) {
+        if self.view_read {
+            return;
+        }
+        let Some(person) = self.person.clone() else {
+            return;
+        };
+        let document = tilo_desktop_model::person_view::resource_of(&person);
+        let Some(bytes) = self
+            .peer
+            .engine()
+            .record(&self.uuid, DESKTOP_APP, &document)
+            .ok()
+            .flatten()
+        else {
+            return;
+        };
+        let mut woken = HashSet::new();
+        if self.apply_view(&bytes, &mut woken).is_ok() {
+            for id in woken {
+                if let Some(mounted) = self.mounts.get(&id) {
+                    mounted.attachment.changed.set(true);
+                    (mounted.attachment.notify)();
+                }
+            }
+        }
+    }
+
+    /// Write `tree`, the layout this page shows, as the person here's view of this workspace's
+    /// layout into their own view, as the native session does: every device of theirs shows it.
+    fn write_view(&mut self, tree: &tilo_desktop_model::Layout) {
+        // What the workspace holds is read before this page writes over it: a browser that just
+        // joined shows the view it kept until the person's view reaches it.
+        if !self.view_read {
+            return;
+        }
+        let Some(person) = self.person.clone() else {
+            return;
+        };
+        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&self.uuid) else {
+            return;
+        };
+        let view = tilo_desktop_model::person_view::PersonView::of(tree, workspace);
+        match view.write(self.view.document_mut()) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(error) => {
+                warn(&format!("the view of the layout was not written: {error}"));
+                return;
+            }
+        }
+        // What the view holds now: a change of it after this is the person's over it.
+        self.view_shown = Some(view);
+        tilo_desktop_surface::history_log::commit(
+            self.view.document_mut(),
+            &person,
+            ui::time::unix_now_i64(),
+        );
+        let route = self.route(
+            DESKTOP_APP,
+            &tilo_desktop_model::person_view::resource_of(&person),
+        );
+        let (mutation, heads) = if self.view_sending == DesktopSending::Changes {
+            let (delta, heads) = self.view.pending_outbound_delta();
+            if delta.is_empty() {
+                return;
+            }
+            (DocumentMutation::Incremental(delta), heads)
+        } else {
+            let doc = self.view.document_mut();
+            (DocumentMutation::Snapshot(doc.save()), doc.get_heads())
+        };
+        if self.peer.write(route, &mutation).is_ok() {
+            self.view.advance_outbound(heads);
+            self.view_sending = DesktopSending::Changes;
+        }
     }
 
     /// Put the views asked of this page's person's layout on the layout this page holds
@@ -1903,6 +2097,7 @@ impl Joined {
             }
         }
         self.send_desktop();
+        self.read_view();
     }
 
     /// Ask the workspace for each resource a reader on this page named that it was not asked
@@ -1953,6 +2148,20 @@ impl Joined {
     /// of it, and only then is it new.
     fn wanted_routes(&self) -> Vec<DocumentRoute> {
         let mut wanted = Vec::new();
+        // The person's view of the layout is their own, which a page showing the shell asks
+        // for as it asks for the resources its windows open: their other devices' changes reach it
+        // from then on.
+        if self
+            .mounts
+            .values()
+            .any(|mounted| mounted.attachment.desktop.is_some())
+            && let Some(person) = &self.person
+        {
+            wanted.push(self.route(
+                DESKTOP_APP,
+                &tilo_desktop_model::person_view::resource_of(person),
+            ));
+        }
         for mounted in self.mounts.values() {
             for store in mounted.attachment.stores.borrow().iter() {
                 let (app, home) = store.app_and_home();
@@ -1994,7 +2203,7 @@ impl Joined {
             .peer
             .status()
             .unanswerable(self.workspace)
-            .map(str::to_owned);
+            .map(|failure| crate::desktop::Unanswered::of(failure.code, failure.message.clone()));
         for mounted in self.mounts.values() {
             if let Some((handle, shared)) = &mounted.attachment.desktop {
                 shared.follow_unanswerable(cause.clone(), handle);
@@ -2029,9 +2238,9 @@ impl Joined {
 
     fn send_desktop(&mut self) {
         // A person who only looks at the workspace writes nothing of its layout: what they
-        // change of how they see it is their own view, kept on their page, and the workspace
-        // refuses every other write their role makes. A role not answered yet sends nothing
-        // either.
+        // change of how they see it is their own view ([`Self::write_view`]),
+        // and the workspace refuses every other write their role makes. A role not answered yet
+        // sends nothing either.
         if !tilo_desktop_model::commands::policy::writes(self.role.role()) {
             return;
         }
@@ -2057,11 +2266,18 @@ impl Joined {
             // springs back to where the workspace has it, nothing is sent, and
             // the person is told why.
             if let Some(before_value) = &self.desktop_value {
+                let view = self.view_read.then(|| {
+                    tilo_desktop_model::person_view::PersonView::read(self.view.document())
+                });
+                let workspace = tilo_desktop_model::WorkspaceId::parse(&self.uuid);
                 for mounted in self.mounts.values() {
                     if let Some((handle, shared)) = &mounted.attachment.desktop {
                         if let Err(error) = crate::desktop::return_to(handle, shared, before_value)
                         {
                             warn(&format!("shared desktop not restored: {error}"));
+                        }
+                        if let (Some(view), Some(workspace)) = (&view, &workspace) {
+                            handle.show_view(view, *workspace);
                         }
                         handle.acknowledge(refusal.clone());
                         (mounted.attachment.notify)();

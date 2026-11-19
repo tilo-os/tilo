@@ -84,6 +84,33 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase history_older_than_what_the_channel_holds_is_imported;
+    {
+        // Discord message 1150000000000000000 was written in mid 2023.
+        let written = discord_wire::snowflake_ms("1150000000000000000");
+        let holding = |ts: i64| {
+            crate::tilo::ChatRead::new(
+                json!({}),
+                vec![("m_here".into(), json!({"channel": "c1", "text": "here", "ts": ts}))],
+            )
+        };
+        let plan = plan_created(
+            &guild(),
+            &holding(written.saturating_add(1)),
+            &created("1150000000000000000", "from the history"),
+        );
+        assert!(plan.posts.is_empty(), "{plan:?}");
+        assert_eq!(plan.imports.len(), 1, "imported at its time: {plan:?}");
+        assert_eq!(plan.imports[0].text, "from the history");
+        let plan = plan_created(
+            &guild(),
+            &holding(written.saturating_sub(1)),
+            &created("1150000000000000000", "live"),
+        );
+        assert!(plan.imports.is_empty(), "newer than what is there: posted");
+        assert_eq!(plan.posts.len(), 1);
+    }
+
     phase a_linked_account_speaks_as_its_tilo_person;
     {
         let mut g = guild();

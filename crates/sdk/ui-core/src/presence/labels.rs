@@ -26,6 +26,22 @@ pub fn unnamed_person_label() -> String {
     crate::i18n::widget_text("person-unnamed")
 }
 
+/// [`unnamed_person_label`] where only a few words fit (a card's chips, a holder's pill): the
+/// same person, said shorter. A list wide enough says the whole phrase.
+#[must_use]
+pub fn unnamed_person_short_label() -> String {
+    crate::i18n::widget_text("person-unnamed-short")
+}
+
+/// Whether `name` is no name of a person's: blank, a key's hex, or the words that stand in for
+/// a person who gave none ([`unnamed_person_label`], [`unnamed_person_short_label`]). Their face
+/// is then the person glyph, never initials of those words.
+#[must_use]
+pub fn is_unnamed_person(name: &str) -> bool {
+    shown_name(name)
+        .is_none_or(|name| name == unnamed_person_label() || name == unnamed_person_short_label())
+}
+
 /// What `user` is called while nobody named them: a person is someone without a name yet, never
 /// their key; an agent or a bot goes by its id.
 #[must_use]

@@ -18,7 +18,7 @@ function harness() {
   const runtime = runtimeFake({
     desktop_say_doing: (id, now) => { said.push([id, now]); },
   });
-  const peer = {userPublicKey: OWN, seen: [], membersSeen(people) { this.seen.push(people); }};
+  const peer = {userPublicKey: OWN};
   return {
     said, timers, runtime, peer,
     now: () => clock,
@@ -78,7 +78,6 @@ test('the people here, this person included, are one entry each with their newes
     {user: ADA, label: 'Ada', profile_ms: 20},
   ];
   assert.deepEqual(seen, [expected], 'an agent is not a person with a picture; an uncertified device is nobody yet');
-  assert.deepEqual(h.peer.seen, [expected], 'the peer hears the same names');
 });
 
 test('a live session that cannot be reached is said once in the log, and joining is said when it comes back', () => {

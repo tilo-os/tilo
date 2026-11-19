@@ -6,6 +6,7 @@
 //! forward. Where the pointers are, and what arrives beside them, is the same for both hosts, so the
 //! page and the native shell draw the live session's members by one rule.
 
+use collab_types::MemberId;
 use collab_types::presence::Shown;
 use tilo_live::presence::{KEEPALIVE_MS, Tile, tile};
 use ui::presence::{CursorChats, PeerCursor, PlacedPointer, PresenceCtx};
@@ -136,9 +137,10 @@ pub struct Place<'a> {
 }
 
 /// What following owes the pass that asks.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Step {
     /// Nothing moved since it was last brought forward.
+    #[default]
     Rest,
     /// Bring this forward.
     Bring(Target),
@@ -146,14 +148,36 @@ pub enum Step {
     Gone,
 }
 
+/// What one pass of following owes the shell that shows it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Owed {
+    /// The view this pass brings forward, if any.
+    pub step: Step,
+    /// Following ended in this pass: the person's own word says nobody's view is theirs now.
+    pub ended: bool,
+    /// Whom the workspace's apps are to hear, where they heard something else: the workspace, and
+    /// the member (`None`: nobody).
+    pub tell: Option<(String, Option<MemberId>)>,
+}
+
 /// A view's following of one person, across passes.
 #[derive(Debug, Default)]
 pub struct Follow {
     followed: Option<String>,
     brought: Option<Target>,
+    /// Whom the workspace's apps were told this view follows (`None`: nobody), and in which
+    /// workspace: only a change is told again.
+    told: Option<(String, MemberId)>,
 }
 
 impl Follow {
+    /// Whether this pass owes nothing at all: the person follows nobody, and followed nobody
+    /// before, so nothing need be read of who is here.
+    #[must_use]
+    pub fn idle(&self, followed: Option<&str>) -> bool {
+        followed.is_none() && self.followed.is_none()
+    }
+
     /// Whose view this follows now (`None`: nobody's); a change of person forgets what was brought forward, so their
     /// place is brought too. Answers whether it changed.
     pub fn follow(&mut self, id: Option<String>) -> bool {
@@ -169,6 +193,66 @@ impl Follow {
     #[must_use]
     pub fn followed(&self) -> Option<&str> {
         self.followed.as_deref()
+    }
+
+    /// What following owes this pass, from the person's own word (`followed`): where the view goes
+    /// as `places` has everyone here (`member` is who they follow, as the apps name them), and whom
+    /// the apps of `workspace` are to hear. `working` says the person is doing something of their
+    /// own, which takes their view back, except the press that asked to follow (`follow_asked`);
+    /// that press owes nothing yet. `None` where the pass owes nothing, and the press' ask stands.
+    pub fn owe(
+        &mut self,
+        followed: Option<String>,
+        working: bool,
+        follow_asked: bool,
+        places: &[Place<'_>],
+        member: Option<MemberId>,
+        workspace: &str,
+    ) -> Option<Owed> {
+        if working {
+            if follow_asked {
+                return None;
+            }
+            self.follow(None);
+            return Some(Owed {
+                step: Step::Rest,
+                ended: true,
+                tell: self.told(workspace, None),
+            });
+        }
+        self.follow(followed);
+        let step = self.step(places);
+        Some(Owed {
+            ended: step == Step::Gone,
+            tell: self.told(workspace, member),
+            step,
+        })
+    }
+
+    /// Whom the apps of `workspace` are to hear this view follows, where that differs from what
+    /// they were last told. Following ended, the workspace it was told in hears it, wherever the
+    /// person looks now.
+    fn told(
+        &mut self,
+        workspace: &str,
+        member: Option<MemberId>,
+    ) -> Option<(String, Option<MemberId>)> {
+        let Some(member) = member else {
+            let (workspace, _) = self.told.take()?;
+            return Some((workspace, None));
+        };
+        if workspace.is_empty() {
+            return None;
+        }
+        if self
+            .told
+            .as_ref()
+            .is_some_and(|(was, who)| *was == workspace && *who == member)
+        {
+            return None;
+        }
+        self.told = Some((workspace.to_owned(), member.clone()));
+        Some((workspace.to_owned(), Some(member)))
     }
 
     /// What this pass owes, as `places` has everyone here: their place is brought forward the first time it is seen and
@@ -412,6 +496,87 @@ mod tests {
             follow.step(&[place("cy", Some(7), None)]),
             Step::Bring(Target::Window(7)),
             "a place the last person was also in is theirs now"
+        );
+    }
+
+    fn member(person: &str) -> MemberId {
+        MemberId::person(person)
+    }
+
+    /// Following someone brings their place forward and tells the workspace's apps whose view is
+    /// this person's, once; stopping tells the same workspace that it is nobody's.
+    #[test]
+    fn following_tells_the_apps_whose_view_is_theirs() {
+        let mut follow = Follow::default();
+        let here = [place("ada", Some(7), None), place("cy", Some(9), None)];
+        let ada = Some(member("ada-person"));
+        let owed = follow
+            .owe(Some("ada".into()), false, false, &here, ada.clone(), "work")
+            .expect("the pass owes following");
+        assert_eq!(owed.step, Step::Bring(Target::Window(7)));
+        assert_eq!(owed.tell, Some(("work".into(), ada.clone())));
+        assert!(!owed.ended);
+        let again = follow
+            .owe(Some("ada".into()), false, false, &here, ada, "work")
+            .expect("the pass owes following");
+        assert_eq!(again.step, Step::Rest);
+        assert_eq!(again.tell, None, "the apps were told, and nothing moved");
+        let stopped = follow
+            .owe(None, false, false, &here, None, "work")
+            .expect("stopping is owed");
+        assert_eq!(stopped.tell, Some(("work".into(), None)));
+        assert!(!stopped.ended, "the person's own word ended it");
+        assert_eq!(
+            follow
+                .owe(None, false, false, &here, None, "work")
+                .map(|owed| owed.tell),
+            Some(None),
+            "nothing more is told"
+        );
+    }
+
+    /// The person doing something of their own takes their view back, and the apps hear nobody is
+    /// followed; the press that asked to follow is not them working.
+    #[test]
+    fn the_persons_own_work_ends_following_and_the_press_that_asked_does_not() {
+        let mut follow = Follow::default();
+        let here = [place("ada", Some(7), None)];
+        let ada = Some(member("ada-person"));
+        follow.owe(Some("ada".into()), false, false, &here, ada, "work");
+        assert_eq!(
+            follow.owe(Some("ada".into()), true, true, &here, None, "work"),
+            None,
+            "the press that asked is still in flight"
+        );
+        let ended = follow
+            .owe(Some("ada".into()), true, false, &here, None, "work")
+            .expect("their work ends following");
+        assert!(ended.ended);
+        assert_eq!(ended.step, Step::Rest);
+        assert_eq!(ended.tell, Some(("work".into(), None)));
+    }
+
+    /// Following someone who left ends it, and the workspace the apps were told in hears that.
+    #[test]
+    fn a_person_who_left_tells_the_workspace_they_were_followed_in() {
+        let mut follow = Follow::default();
+        follow.owe(
+            Some("ada".into()),
+            false,
+            false,
+            &[place("ada", Some(7), None)],
+            Some(member("ada-person")),
+            "work",
+        );
+        let gone = follow
+            .owe(Some("ada".into()), false, false, &[], None, "elsewhere")
+            .expect("the pass owes it");
+        assert!(gone.ended);
+        assert_eq!(gone.step, Step::Gone);
+        assert_eq!(
+            gone.tell,
+            Some(("work".into(), None)),
+            "the workspace it was followed in hears it, not the one looked at now"
         );
     }
 }

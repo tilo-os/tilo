@@ -89,6 +89,9 @@ mod computer_agent;
 #[path = "workspace_actions/bulk_import.rs"]
 mod bulk_import;
 #[cfg(test)]
+#[path = "workspace_actions/chain_parts_restart.rs"]
+mod chain_parts_restart;
+#[cfg(test)]
 #[path = "workspace_actions/chat_group.rs"]
 mod chat_group;
 #[cfg(test)]
@@ -113,6 +116,9 @@ mod encrypted_resource;
 #[path = "workspace_actions/feedback_journey.rs"]
 mod feedback_journey;
 #[cfg(test)]
+#[path = "workspace_actions/files_window_view.rs"]
+mod files_window_view;
+#[cfg(test)]
 #[path = "workspace_actions/governed_agent.rs"]
 mod governed_agent;
 #[cfg(test)]
@@ -127,6 +133,9 @@ mod hosted_agent_questions;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_agent_sessions.rs"]
 mod hosted_agent_sessions;
+#[cfg(test)]
+#[path = "workspace_actions/hosted_agent_terminal.rs"]
+mod hosted_agent_terminal;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_agent_turns.rs"]
 mod hosted_agent_turns;
@@ -208,6 +217,9 @@ mod share_link;
 #[cfg(test)]
 #[path = "workspace_actions/throughput.rs"]
 mod throughput;
+#[cfg(test)]
+#[path = "workspace_actions/tracker_listing.rs"]
+mod tracker_listing;
 #[cfg(test)]
 #[path = "workspace_actions/workspace_find.rs"]
 mod workspace_find;
@@ -815,8 +827,9 @@ async fn after_a_marker(
     new_sheet: &ActionAddress,
     marker: &str,
 ) -> Vec<String> {
+    // A save still landing is answered accepted; it is followed until it ends, as a page does.
     let receipt = browser
-        .invoke(request(
+        .invoke_settled(request(
             &record_provider(record),
             new_sheet.clone(),
             sheet_named(marker),

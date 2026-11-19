@@ -1079,7 +1079,9 @@ pub fn command_entries<Row: SearchRow>(groups: &[KindGroup<Row>]) -> Vec<Command
 /// owns that pick.
 #[must_use]
 pub fn a_row_a_person_can_take(spec: &tilo_actions::ActionSpec) -> bool {
-    spec.reaches_people() && spec.contract.availability.is_available() && spec.takes_a_row_answer()
+    spec.contract.offered_to_people()
+        && spec.contract.availability.is_available()
+        && spec.takes_a_row_answer()
 }
 
 pub fn icon_for_kind(kind: &ResourceKind) -> crate::icons::Icon {

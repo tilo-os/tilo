@@ -33,7 +33,7 @@ aarch64 = "aarch64"
 [capabilities]
 # Paths are what it browses on a computer; a page has none and shows the
 # workspace's tree instead.
-optional = ["files.paths", "clipboard", "app-files", "secrets", "threads", "media.decode", "processes", "open-uri", "files.save"]
+optional = ["files.open", "files.paths", "clipboard", "app-files", "secrets", "threads", "media.decode", "processes", "open-uri", "files.save"]
 
 [resources]
 kinds = ["files.folder", "tilo.accounts", "files.recent", "files.tree", "files.workspace"]

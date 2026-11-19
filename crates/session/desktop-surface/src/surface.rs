@@ -208,6 +208,15 @@ pub trait TileSource {
     }
 }
 
+/// What a strip reads for control hints as it draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HintReading {
+    /// Where its windows' bars and edges are.
+    Places,
+    /// Those, and where its windows show text and controls: while a hint may show soon.
+    WithInk,
+}
+
 struct Shared {
     tree: Layout,
     /// The floating windows this device stands in the floating layer's column, and where the
@@ -221,6 +230,9 @@ struct Shared {
     /// The agent run that opened each window an agent opened, by tab
     /// ([`DesktopHandle::set_opened_by`]).
     opened_by: std::collections::BTreeMap<TabId, tilo_desktop_model::ownership::OpenedBy>,
+    /// The person each of those agents opened its window for, by tab, by the name its server knows
+    /// them by ([`DesktopHandle::set_opened_for`]).
+    opened_for: std::collections::BTreeMap<TabId, String>,
     /// The resource each window shows, by tab, as the workspace's layout keeps it
     /// ([`DesktopHandle::set_window_resources`]): what a window's bar carries when a person picks
     /// it up, on every device that reads the layout.
@@ -274,6 +286,8 @@ struct Shared {
     shown_strip: Option<(StripId, Rect, f64)>,
     /// Where the shown strip's controls are for control hints, as last drawn.
     hint_places: ui::widget::HintPlaces,
+    /// What the strip reads for control hints as it draws.
+    hint_reading: HintReading,
     /// Carets and selections of the focused window's editors, as last laid out
     /// ([`ui::presence::capability::subtree_presence`]).
     focused_presence: Vec<(PresenceKey, PresencePayload)>,
@@ -366,9 +380,13 @@ struct Shared {
     /// Sideways wheel travel the apps of these windows left to the shell,
     /// by tab, taken on the next pass ([`DesktopHandle::sideways_wheel`]).
     sideways: Vec<(TabId, f64)>,
-    /// What wakes the host holding this shell for a change queued on its handle
+    /// What asks for this shell's next pass when a change waits for it
     /// ([`DesktopHandle::set_wake`]).
     wake: crate::wake::Waker,
+    /// What saves and shares a changed tree ([`DesktopHandle::set_publish`]), and the revision
+    /// it last had.
+    publish: Option<crate::wake::Publish>,
+    published: u64,
 }
 
 /// The host's side of a mounted [`DesktopSurface`]: read the tree, publish navigation, queue
@@ -488,10 +506,18 @@ impl DesktopHandle {
         })
     }
 
-    /// Have `wake` run whenever what this handle commands or changes is waiting for the shell's next
-    /// pass: the host holding the shell asks for that frame, however little of the shell shows.
-    pub fn set_wake(&self, wake: Rc<dyn Fn()>) {
+    /// Call `wake` whenever what this handle commands or changes, or an answer to work the shell
+    /// started, waits for the shell's next pass: `wake` asks for the frame that takes it up, however
+    /// little of the shell shows.
+    pub fn set_wake(&self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
         self.shared.borrow_mut().wake.set(wake);
+    }
+
+    /// Have `publish` save and share the tree as soon as a pass changed it: right after the
+    /// commands of a pass applied, before the windows they opened are built and drawn, and once
+    /// more at the end of the pass.
+    pub fn set_publish(&self, publish: Rc<dyn Fn(&DesktopHandle)>) {
+        self.shared.borrow_mut().publish = Some(publish);
     }
 
     /// The apps whose windows keep what they show to themselves: a password manager's, an app that
@@ -521,6 +547,16 @@ impl DesktopHandle {
         self.shared.borrow().hint_places.clone()
     }
 
+    /// Whether the desktop's control hints may show soon: while they may, each frame also reads
+    /// where the shown windows show text and controls, which a hint's card keeps off.
+    pub fn read_hint_ink(&self, read: bool) {
+        self.shared.borrow_mut().hint_reading = if read {
+            HintReading::WithInk
+        } else {
+            HintReading::Places
+        };
+    }
+
     /// The caret or selection this desktop publishes as its presence, given the keyboard-focused
     /// widget's (`keyboard`): see [`published_selection`], with the focused window's editors as of
     /// the last layout.
@@ -542,17 +578,16 @@ impl DesktopHandle {
         navigation::snapshot_with(&shared.tree, generation, applications, &shared.presentation)
     }
 
-    /// Ask the host for the shell's next pass: something the shell was told to
-    /// do waits for it — a command, a search opening, a card chosen on the
-    /// empty shell, which the host carries out on that pass. A host that drew
-    /// the press and then went quiet would otherwise carry it out whenever
-    /// something else woke it.
+    /// Ask for the shell's next pass: something the shell was told to do waits
+    /// for it — a command, a search opening, a card chosen on the empty shell,
+    /// carried out on that pass. A page that drew the press and then went quiet
+    /// would otherwise carry it out whenever something else woke it.
     pub fn wake(&self) {
         self.shared.borrow().wake.wake();
     }
 
     /// Admit `command` against the current tree and queue it for the next
-    /// update pass. The host schedules a frame after an accepted command.
+    /// update pass, which an accepted command asks for.
     ///
     /// # Errors
     /// As [`navigation::admit`], and refuses a pan, scroll or history move
@@ -749,6 +784,22 @@ impl DesktopHandle {
         });
         self.replace_tree(tree);
         self.note_arrivals(opened, ui::time::now());
+    }
+
+    /// Show `view`, the person's view of `workspace`'s layout as they left it: the strip
+    /// and group in front, the tab in front of each group, and how wide each group is
+    /// ([`tilo_desktop_model::person_view`]). Whether the shell changed.
+    pub fn show_view(
+        &self,
+        view: &tilo_desktop_model::person_view::PersonView,
+        workspace: tilo_desktop_model::WorkspaceId,
+    ) -> bool {
+        let mut tree = self.read(Clone::clone);
+        if !view.applied(&mut tree, workspace) {
+            return false;
+        }
+        self.replace_tree(tree);
+        true
     }
 
     /// Ask the [`TileSource`] for `tab` 's content again on a coming update pass, as when the tab
@@ -1153,6 +1204,7 @@ impl DesktopSurface {
                 for tab in tabs {
                     changed |= group.set_tab_holder(tab, shared.holders.get(&tab).cloned());
                     changed |= group.set_tab_opened_by(tab, shared.opened_by.get(&tab).cloned());
+                    changed |= group.set_tab_opened_for(tab, shared.opened_for.get(&tab).cloned());
                     changed |= group.set_tab_attention(tab, shared.asking.contains(&tab));
                 }
                 runs.extend(group.take_opened_by_press().map(|(_, run)| run));
@@ -2075,6 +2127,7 @@ impl Widget for DesktopSurface {
     }
 
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        let _wake = self.shared.borrow().wake.enter();
         // Which apps stopped answering is the host's to report; a new report is a layout of its
         // own, so their cards are placed this frame.
         let unresponsive = self.shared.borrow().unresponsive_revision;
@@ -2141,6 +2194,7 @@ impl Widget for DesktopSurface {
         // appeared in.
         let artwork = self.sync_window_artwork();
         let drawn = self.sync_drawn();
+        self.publish();
         self.seen_search = self.shared.borrow().search_revision;
         changed
             || drawn
@@ -2332,9 +2386,10 @@ impl Widget for DesktopSurface {
     ) {
         self.draw_leaving_strip(scene, transform, text, theme, presence);
         self.draw_display_strips(scene, transform, text, theme, presence);
+        let read_ink = self.shared.borrow().hint_reading == HintReading::WithInk;
         let hint_places = self.shown_row().map(|row| {
             ui::widget::draw_child(row, scene, transform, text, theme, presence);
-            row.hint_places()
+            row.hint_places(read_ink)
         });
         // What the strips just drew of their floated windows whole over the windows under them,
         // the shown row's included: the compositor draws those around it rather than under it, so
@@ -2358,6 +2413,7 @@ impl Widget for DesktopSurface {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let _wake = self.shared.borrow().wake.enter();
         // A window brought into view for the person waits while their hands are busy here.
         self.note_input(event);
         // Where the pointer is, read before anything answers the event: the strip asks it which

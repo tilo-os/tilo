@@ -58,14 +58,16 @@ fn record(roots: Roots<'_>, walked: &mut Vec<(Identity, usize)>) {
     roots(&mut |root| descend(root, walked));
 }
 
-/// Remove every node under each of `relaid` from `taffy` and `nodes`: their widgets may be gone, and
-/// are laid out again in place under it. Returns the nodes removed, for the host's bindings to forget.
+/// Forget every node under each of `relaid`: their widgets may be gone, and are laid out again in
+/// place under it, which unmounts those nodes from `taffy`. They stay in `taffy` until that remount
+/// reaches them, so a node it has not reached yet still names these parts. Returns the nodes
+/// forgotten, for the host's bindings to forget.
 pub(crate) fn let_go_under(
     relaid: &[NodeId],
-    taffy: &mut taffy::TaffyTree<()>,
+    taffy: &taffy::TaffyTree<()>,
     nodes: &mut std::collections::HashMap<NodeId, *mut (dyn Widget + 'static)>,
 ) -> Vec<NodeId> {
-    let mut removed = Vec::new();
+    let mut forgotten = Vec::new();
     let mut pending: Vec<NodeId> = relaid
         .iter()
         .flat_map(|&node| taffy.children(node).unwrap_or_default())
@@ -73,10 +75,9 @@ pub(crate) fn let_go_under(
     while let Some(node) = pending.pop() {
         pending.extend(taffy.children(node).unwrap_or_default());
         nodes.remove(&node);
-        let _ = taffy.remove(node);
-        removed.push(node);
+        forgotten.push(node);
     }
-    removed
+    forgotten
 }
 
 /// The walk a layout map was admitted against.

@@ -280,7 +280,7 @@ tilo_test_env::scenario! {
         assert!(doc.commit().is_none());
         assert_ne!(new, target[0]);
         for hash in target.iter().chain(live.iter()) {
-            assert!(doc.get_change_by_hash(hash).is_some());
+            assert!(doc.has_change(hash));
         }
     }
 

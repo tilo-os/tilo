@@ -142,7 +142,7 @@ impl AppBrokerState {
             admitted,
             app_id,
             crate::apps::services::LaunchContent {
-                hash: launch_content_hash(argument),
+                hash: &launch_content_hash(argument),
                 caller: launch,
                 author,
             },

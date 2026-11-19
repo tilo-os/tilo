@@ -80,7 +80,6 @@ pub fn dependency_state(
     before: &AutoCommit,
     changes: &[Vec<u8>],
 ) -> Result<AutoCommit, MembershipRefusal> {
-    use automerge::ReadDoc as _;
     let decoded = changes
         .iter()
         .map(|bytes| automerge::Change::from_bytes(bytes.clone()))
@@ -94,14 +93,14 @@ pub fn dependency_state(
     let mut walked: std::collections::BTreeSet<_> = std::collections::BTreeSet::new();
     let mut pending: Vec<&automerge::Change> = decoded
         .iter()
-        .filter(|change| before.get_change_by_hash(&change.hash()).is_none())
+        .filter(|change| !before.has_change(&change.hash()))
         .collect();
     if pending.is_empty() {
         return Ok(before.clone());
     }
     while let Some(change) = pending.pop() {
         for dep in change.deps() {
-            if before.get_change_by_hash(dep).is_some() {
+            if before.has_change(dep) {
                 heads.push(*dep);
             } else if let Some(parent) = own.get(dep) {
                 if walked.insert(*dep) {

@@ -827,6 +827,27 @@ impl Desktop {
     /// opened, on a desktop shared through a workspace. Whether that changed
     /// anything.
     fn refresh_holders(&self, in_workspace: bool) -> bool {
+        // Whom each agent's window was opened for: by the name presence knows them by, else the
+        // one the workspace's governance keeps for them, so a person who is not here (or a page
+        // that cannot reach presence) still names them. Someone nobody named is named by no one
+        // rather than as a guest.
+        let opened_for = if in_workspace {
+            let here = self.here.borrow();
+            let people = self.people.borrow();
+            let shown = tilo_desktop_model::WorkspaceId::parse(&self.workspace);
+            self.handle.read(|tree| {
+                let workspace = tree.workspaces.iter().find(|held| Some(held.id()) == shown);
+                self.shared.opened_for(&mut |user: &str| {
+                    here.person(user)
+                        .or_else(|| people.get(user).cloned())
+                        .map(|(name, _)| name)
+                        .or_else(|| workspace?.person_name(user).map(str::to_owned))
+                })
+            })
+        } else {
+            std::collections::BTreeMap::new()
+        };
+        let named_for = self.handle.set_opened_for(opened_for);
         let holders = if in_workspace {
             let here = self.here.borrow();
             let mut people = self.people.borrow_mut();
@@ -865,7 +886,7 @@ impl Desktop {
         let opened = self.handle.set_opens(opens);
         let runs = in_workspace.then(|| self.shared.opened_by.borrow().clone());
         let named = self.handle.set_opened_by(runs.unwrap_or_default());
-        self.handle.set_holders(holders) | opened | named
+        self.handle.set_holders(holders) | opened | named | named_for
     }
 }
 
@@ -1408,17 +1429,13 @@ fn mount_search(
     // The workspace's host, over the session this page holds with it: what it finds in the
     // records this page never opened. Its answer arrives between the shell's passes, so it asks
     // for the shell's next pass, which lists it, as the shell's own wake does.
-    let shell = proxy()?;
     let woken = Arc::clone(woken);
     let host = config.peer.and_then(|peer| {
         let workspace = crate::peer::workspace_id(&config.workspace).ok()?;
         let search = tilo_actions::remote::ActionProvider::resource_search(
             &crate::peer_sync::actions_of(peer, workspace)?,
         )?;
-        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            woken.store(true, std::sync::atomic::Ordering::Release);
-            let _ = shell.send_event(id);
-        });
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || crate::desktop::wake(&woken));
         Some(crate::page_search::WorkspaceSearch {
             search,
             workspace: config.workspace.clone(),
@@ -1509,6 +1526,25 @@ fn present_desktop(
     )
     .map_err(error)?;
     let persistence = Rc::new(persistence);
+    // What a pass changed of the shell is saved and sent to the workspace as soon as the pass made
+    // it, before the windows it opened are built and drawn: another person's page shows a window
+    // opened here without waiting for the frame that builds it here.
+    handle.set_publish({
+        let persistence = Rc::downgrade(&persistence);
+        let peer = config.peer;
+        Rc::new(move |handle| {
+            if let Some(persistence) = persistence.upgrade()
+                && let Err(error) = persistence.save(handle)
+            {
+                web_sys::console::warn_1(&JsValue::from_str(&format!(
+                    "Browser runtime: desktop not saved: {error}"
+                )));
+            }
+            if let Some(peer) = peer {
+                crate::replicated::publish(peer);
+            }
+        })
+    });
     let here = tilo_desktop::here::Here::default();
     let people: Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>> = Rc::default();
     let activity = serve_history(
@@ -2709,6 +2745,14 @@ impl Mount {
         // Who is here, placed in the windows this frame lays out.
         self.place_here();
         self.place_presence();
+        // Whom this page's person follows, told to the windows' apps as a native shell's apps
+        // hear it: the window of theirs shows where they work.
+        if let Some(desktop) = &self.desktop {
+            crate::follow::tell(
+                &mut desktop.shared.follow_to_tell.borrow_mut(),
+                &mut self.frame,
+            );
+        }
         // A frame whose semantics will be built draws every window: one it
         // replayed instead (a pan frame may) would have to be drawn again
         // before its tree could be read.

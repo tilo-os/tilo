@@ -266,11 +266,14 @@ the window is exactly one peer version wide:
 
 ## Stored data
 
-Stored formats change with the code. A layout change deletes the reader of the
-one before it in the same change; a file in a layout this build does not read is
-refused, saying which version it holds, and nothing guesses at its bytes. Tilo
-is pre-alpha and every device runs the newest build, so no build but this one
-wrote those files, and dropping their readers costs nobody else's data.
+Stored formats change with the code. A layout change brings up the layout the
+build before it wrote, with one step ([`Format`'s steps](../../crates/platform/tilo-files/src/native/migration.rs)),
+and deletes the step that read the one before that: every device that updates
+holds files the build before wrote, and a build that refused them would leave
+the device without what it kept (a desktop that refused its own workspaces'
+entries opened none of them, and kept nothing from then on). No older reader is
+kept; a file in a layout this build does not read is refused, saying which
+version it holds, and nothing guesses at its bytes.
 
 - **A version number always means the same bytes.** A stored format names its
   version and keeps the bytes that version wrote beside it

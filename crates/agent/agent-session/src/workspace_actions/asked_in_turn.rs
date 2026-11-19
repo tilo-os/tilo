@@ -185,7 +185,7 @@ impl Worker {
     /// server holds that person's answer for this invocation as it would had
     /// they just allowed it: a token bound to the invocation, its target and
     /// its arguments. `None` where one of them does not stand.
-    fn stands_for(
+    pub(super) fn stands_for(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
@@ -228,7 +228,7 @@ impl Worker {
     /// An invocation a question could not show whole (a list or a text
     /// longer than a draft holds) is answered too: refused, with nobody
     /// asked.
-    fn ask_in_conversation(
+    pub(super) fn ask_in_conversation(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,

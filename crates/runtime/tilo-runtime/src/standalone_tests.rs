@@ -280,13 +280,19 @@ pub(super) fn isolated_root(test: &str) -> Option<PathBuf> {
 /// which [`isolated_root`] answers there.
 pub(super) fn isolated_command(test: &str, root: &Path) -> std::process::Command {
     let environment = root.join("environment");
+    let (config, data) = (environment.join("config"), environment.join("data"));
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    // The device this child serves relays through this machine's loopback
+    // relay: no test reaches a relay, or a directory, out on the internet.
+    test_server::relay_through_loopback_in(&config, &data);
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", test, "--nocapture"])
         .env(PROCESS_ROOT, root.join("profile"))
         .env("HOME", environment.join("home"))
-        .env("XDG_CONFIG_HOME", environment.join("config"))
-        .env("XDG_DATA_HOME", environment.join("data"))
+        .env("XDG_CONFIG_HOME", &config)
+        .env("XDG_DATA_HOME", &data)
         .env("XDG_CACHE_HOME", environment.join("cache"))
         .env("XDG_STATE_HOME", environment.join("state"))
         .env("TILO_IDENTITY_ROOT", environment.join("identity"))

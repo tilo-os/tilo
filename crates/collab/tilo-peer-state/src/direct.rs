@@ -1630,9 +1630,7 @@ impl DirectSync {
                 );
                 // A member's own record is its person's to start whatever
                 // their role.
-                let person = replica
-                    .own_write(app_id, document_id, &remote)
-                    .map(|own| own.person());
+                let person = replica.own_person(app_id, document_id, &remote);
                 let mut cx = tilo_action_policy::Context::at_time(now);
                 if let Some(person) = &person {
                     cx = cx.with_own_resource(document_id, person);

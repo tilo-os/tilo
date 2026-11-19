@@ -270,6 +270,14 @@ impl LateFeedback {
     }
 }
 
+/// Mark the desktop's next pass as work and ask the page's loop for the frame that draws it: the one
+/// way a change that reaches the desktop from outside a frame (an answer, a reply, a wake) asks to
+/// be shown. A flag alone waited for whatever drew next, seconds or a minute later.
+pub(crate) fn wake(woken: &AtomicBool) {
+    woken.store(true, Ordering::Release);
+    crate::browser::wake_desktops();
+}
+
 impl Shared {
     /// Install the feedback startup the page registered after the desktop
     /// mounted; whether it did just now.
@@ -350,7 +358,7 @@ pub(crate) struct Shared {
     /// ([`tilo_session_client::link::PeerStatus::unanswerable`]): a window whose resource is on its
     /// way shows that failure instead of waiting for an answer that cannot come, and waits again
     /// once the workspace can answer.
-    unanswerable: Rc<RefCell<Option<String>>>,
+    unanswerable: Rc<RefCell<Option<Unanswered>>>,
     /// The tabs whose window could not open what it names, with what the window says instead
     /// ([`crate::window_states`]).
     pub(crate) unopened: Rc<RefCell<HashMap<TabId, String>>>,
@@ -425,6 +433,9 @@ pub(crate) struct Shared {
     pub peer: Option<u32>,
     /// The workspace it shows: whose live session those windows' pages travel.
     pub workspace: String,
+    /// Whom this page's person follows, where the windows' apps have not heard it yet
+    /// ([`crate::follow::Told`]).
+    pub follow_to_tell: RefCell<Option<crate::follow::Told>>,
     /// The workspace's agents, as Chat's agents resource names each: an agent is a member of
     /// the workspace like a person is, so a page names it to its windows whether or not a
     /// device of its works here now. `None` until the code that reads them is in and the
@@ -459,13 +470,12 @@ impl Shared {
     /// an agent's "Open card" asked Console for could stay unopened on a page with nothing else
     /// to draw.
     pub fn wake(&self) {
-        self.woken.store(true, Ordering::Release);
-        crate::browser::wake_desktops();
+        wake(&self.woken);
     }
 
     /// The workspace cannot answer this page now, for `cause`, or can again (`None`): the windows
     /// waiting for a resource are built again, showing the failure or waiting once more.
-    pub fn follow_unanswerable(&self, cause: Option<String>, handle: &DesktopHandle) {
+    pub fn follow_unanswerable(&self, cause: Option<Unanswered>, handle: &DesktopHandle) {
         if *self.unanswerable.borrow() == cause {
             return;
         }
@@ -477,7 +487,10 @@ impl Shared {
     /// while the workspace cannot answer, why ([`Self::follow_unanswerable`]).
     fn awaiting_resource(&self) -> Unready {
         match self.unanswerable.borrow().clone() {
-            Some(cause) => Unready::Failed(cause),
+            Some(unanswered) => Unready::Failed {
+                cause: unanswered.cause,
+                technical: unanswered.technical,
+            },
             None => Unready::Arriving,
         }
     }
@@ -770,6 +783,21 @@ impl Shared {
                 };
                 (tab.id, ui::widget::TabHolder { name, rgb })
             })
+            .collect()
+    }
+
+    /// The person each window an agent opened was opened for, by tab, as `person` (by user root)
+    /// names them, when it does: the agent places a window as the person it acts for, so the window's
+    /// author is whom it works for. A window whose author is not known yet names no one.
+    pub fn opened_for(
+        &self,
+        person: &mut dyn FnMut(&str) -> Option<String>,
+    ) -> std::collections::BTreeMap<TabId, String> {
+        let authors = self.authors.borrow();
+        self.opened_by
+            .borrow()
+            .keys()
+            .filter_map(|tab| Some((*tab, person(authors.get(tab)?)?)))
             .collect()
     }
 
@@ -1075,7 +1103,10 @@ impl Tiles {
                     self.shared.waiting.borrow_mut().insert(tab.id);
                     self.shared.awaiting_resource()
                 }
-                Unbuilt::Failed(detail) => Unready::Failed(detail),
+                Unbuilt::Failed(technical) => Unready::Failed {
+                    cause: None,
+                    technical,
+                },
             })?;
         let record = component.record().clone();
         let previous = self
@@ -1240,14 +1271,37 @@ fn embed_instance(view: &ResourceView) -> TabId {
     hasher.finish() | (1 << 63)
 }
 
+/// Why the workspace cannot answer this page now, and what its link said about it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Unanswered {
+    /// The plain cause the link's failure code names, where it names one a person can act on.
+    pub(crate) cause: Option<ui::workspace_sync::WorkspaceUnanswered>,
+    /// What the link said, kept behind the card's Details.
+    pub(crate) technical: String,
+}
+
+impl Unanswered {
+    /// Why the link failure `code` leaves the workspace unanswered, with what it said.
+    pub(crate) fn of(code: &str, technical: String) -> Self {
+        Self {
+            cause: ui::workspace_sync::WorkspaceUnanswered::from_code(code),
+            technical,
+        }
+    }
+}
+
 /// Why a window cannot show its app yet.
 enum Unready {
     /// The app's code is still being fetched.
     Arriving,
     /// What the window says instead.
     Notice(String),
-    /// The app could not be built on the record the window shows; what the launch answered.
-    Failed(String),
+    /// The app could not be built on the record the window shows: what the launch answered, and,
+    /// where the link named one, why the workspace could not answer.
+    Failed {
+        cause: Option<ui::workspace_sync::WorkspaceUnanswered>,
+        technical: String,
+    },
 }
 
 impl From<String> for Unready {
@@ -1466,19 +1520,29 @@ impl TileSource for Tiles {
                 })
             }
             // The app was not built: the window says that it could not open and what to do, in
-            // the person's words, and tries again on their word. What the launch answered is for
-            // whoever looks into it: behind the card's Details, and in the console.
-            Err(Unready::Failed(detail)) => {
-                self.shared
-                    .unopened
-                    .borrow_mut()
-                    .insert(tab.id, detail.clone());
+            // the person's words, and tries again on their word. Where the link named the cause,
+            // the card leads with it; what the launch or the link answered is for whoever looks
+            // into it: behind the card's Details, and in the console.
+            Err(Unready::Failed { cause, technical }) => {
+                let said = cause.map_or_else(|| technical.clone(), |cause| cause.to_string());
+                self.shared.unopened.borrow_mut().insert(tab.id, said);
                 self.shared.landed.borrow_mut().remove(&tab.id);
                 if self.shared.records.borrow().contains_key(&tab.id) {
                     self.shared.waiting.borrow_mut().insert(tab.id);
                 }
-                web_sys::console::warn_1(&format!("{} could not open: {detail}", tab.title).into());
-                let outcome = tilo_desktop_surface::outcome::Outcome::not_built(&tab.title, detail);
+                web_sys::console::warn_1(
+                    &format!("{} could not open: {technical}", tab.title).into(),
+                );
+                let outcome = match cause {
+                    Some(cause) => tilo_desktop_surface::outcome::Outcome::not_built_because(
+                        &tab.title,
+                        cause.to_string(),
+                        &technical,
+                    ),
+                    None => {
+                        tilo_desktop_surface::outcome::Outcome::not_built(&tab.title, &technical)
+                    }
+                };
                 let shared = self.shared.clone();
                 let id = tab.id;
                 TileHost::new(ui::widget::TileContent::App(Box::new(
@@ -1492,7 +1556,14 @@ impl TileSource for Tiles {
 
     fn launch(&mut self, _: &Workspace, id: TabId, app: &str, _: Option<TabId>) -> Option<Tab> {
         let (app, record, content) =
-            if let Some((app, hash)) = tilo_desktop_surface::session::launched_content(app) {
+            if let Some((app, hash, name)) = tilo_desktop_surface::session::launched_file(app) {
+                // A window that handed over a file named it: the app opens it as that file.
+                if let Some(name) = name {
+                    self.shared
+                        .content_names
+                        .borrow_mut()
+                        .insert(hash.to_owned(), name.to_owned());
+                }
                 (app, None, Some(hash))
             } else if let Some((app, record)) = tilo_desktop_search::launched_record(app) {
                 (app, Some(record), None)
@@ -1663,18 +1734,19 @@ impl Persistence {
         if !mirrored && revision == self.saved_revision.get() && !self.records_changed.get() {
             return Ok(());
         }
-        // The document keeps how this device shows the shell — the widths, the
-        // workspace and the window in front — so a reload returns the shell as
-        // it was left, as native's own document does.
+        // A page in no workspace keeps how this device shows the shell — the widths, the
+        // workspace and the window in front — in the layout's own document, so a reload returns
+        // it as it was left; in a workspace that is the person's own view of the layout.
         let tree = handle.read(Clone::clone);
         let time = ui::time::unix_now_i64();
-        if self
+        if let Some(peer) = self
             .peer
-            .and_then(crate::replicated::desktop_history_heads)
-            .is_some()
+            .filter(|peer| crate::replicated::desktop_history_heads(*peer).is_some())
         {
-            // The workspace holds the shell itself; the copy keeps the view alone.
-            self.layout.record_view(&tree, time);
+            // The workspace holds the shell itself, and the person's view of it is theirs: it is
+            // kept as their own view of it, so every device of theirs shows the layout as they left
+            // it (`tilo_desktop_model::person_view`).
+            crate::replicated::publish_view(peer, &tree);
         } else {
             // No workspace holds this shell: what the person changed is this page's
             // change of its own document.
@@ -1713,7 +1785,7 @@ impl Persistence {
         };
         if heads
             .iter()
-            .all(|head| self.layout.document().get_change_by_hash(head).is_some())
+            .all(|head| self.layout.document().has_change(head))
         {
             return Ok(false);
         }

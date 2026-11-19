@@ -1709,10 +1709,7 @@ pub fn restore_paths(
             parts.get(1).map(|part| (*part).to_owned()),
         ));
     }
-    if target_heads
-        .iter()
-        .any(|head| doc.get_change_by_hash(head).is_none())
-    {
+    if target_heads.iter().any(|head| !doc.has_change(head)) {
         return Err("The target version contains an unknown change.".into());
     }
     let current = doc.get_heads();

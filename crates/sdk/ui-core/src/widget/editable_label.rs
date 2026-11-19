@@ -59,6 +59,11 @@ pub struct EditableLabel {
     blank_clears: bool,
     edits: Option<crate::component::Bound<String>>,
     seen: u64,
+    /// A new item's name, typed where the item will stand ([`Self::naming`]): the proposed name
+    /// is given as it stands, and a blank one lets the item be.
+    naming: bool,
+    /// What letting an edit go (Escape, or a new item's blank name) tells the caller.
+    on_cancel: Option<std::rc::Rc<dyn Fn()>>,
 
     dirty: bool,
 }
@@ -92,7 +97,39 @@ impl EditableLabel {
             blank_clears: false,
             edits: None,
             seen: 0,
+            naming: false,
+            on_cancel: None,
         }
+    }
+
+    /// A new item named where it will stand (a new file in a folder's list): the field is open
+    /// from the start on `draft`, the name proposed, which keeps what is typed however often the
+    /// view is built again. Enter, or leaving the field, gives the name, the proposed one too,
+    /// to [`Self::on_action`]; Escape or a blank name lets the item be ([`Self::on_cancel`]).
+    #[must_use]
+    pub fn naming(draft: &crate::LocalState<String>) -> Self {
+        let mut label = Self::new("");
+        label.input = TextInput::from_state(draft).with_kind(TextInputKind::Name);
+        label.input.set_focus(true);
+        label.input.request_focus();
+        label.editing = true;
+        label.naming = true;
+        label
+    }
+
+    /// Choose the characters from `start` to `end` of the value being typed, so the first
+    /// keystroke replaces them: a new file's name up to its extension.
+    #[must_use]
+    pub fn with_selection(mut self, start: usize, end: usize) -> Self {
+        self.input.set_selection(start, end);
+        self
+    }
+
+    /// Call `cancelled` when the edit is let go: Escape, or a new item's blank name.
+    #[must_use]
+    pub fn on_cancel(mut self, cancelled: impl Fn() + 'static) -> Self {
+        self.on_cancel = Some(std::rc::Rc::new(cancelled));
+        self
     }
 
     /// Report each committed name to the component binding `edits` as a described component
@@ -354,6 +391,11 @@ impl EditableLabel {
         }
         let trimmed = self.input.value().trim().to_string();
         let takes = !trimmed.is_empty() || self.blank_clears;
+        if self.naming && !takes {
+            // A new item with no name is not made.
+            self.cancel();
+            return;
+        }
         let changed = takes && trimmed != self.value;
         if takes {
             self.value = trimmed;
@@ -377,6 +419,9 @@ impl EditableLabel {
         self.editing = false;
         self.input.set_focus(false);
         self.outcome = EditOutcome::Cancelled;
+        if let Some(cancelled) = &self.on_cancel {
+            cancelled();
+        }
     }
 
     pub fn take_outcome(&mut self) -> EditOutcome {

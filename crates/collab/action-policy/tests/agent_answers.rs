@@ -261,3 +261,88 @@ tilo_test_env::scenario! {
         }
     }
 }
+
+/// What a person answered their agent for exactly one action is their own answer to it, given
+/// before it came: where they would be asked, the agent goes ahead. An answer for a whole app
+/// does not stand in for them, one somebody else gave does not, and what they may not do at all
+/// stays refused.
+#[test]
+fn an_answer_for_one_action_is_its_persons_answer_given_in_advance() {
+    use tilo_action_policy::Party;
+    const TERMINAL: &str = "so.tilo.terminal";
+    let command = TreePath::workspace(WORKSPACE)
+        .app(TERMINAL)
+        .kind("terminal.session")
+        .resource("session")
+        .action("run");
+    let verdict = |person: Answer, given: Vec<Grant>| {
+        let mut all = grants(given);
+        all.push(Grant::new(
+            "role:outside",
+            Grantee::person(PERSON),
+            TreePath::workspace(WORKSPACE),
+            KindSet::OUTSIDE,
+            person,
+            Grantee::person(PERSON),
+        ));
+        let authority = Authority::person(Party::new(vec![Grantee::person(PERSON)], &all))
+            .bounded_by(Party::new(vec![Grantee::agent(AGENT)], &all));
+        (
+            authority
+                .decide(&command, ActionKind::Outside, &cx())
+                .answer,
+            authority.answer(&command, ActionKind::Outside, false, &cx()),
+        )
+    };
+    let one = AnswerScope::action(TERMINAL, "terminal.session", "run");
+    let everything = AnswerScope::app(TERMINAL);
+    let allowed = |scope: &AnswerScope| vec![answer(scope, ActionKind::Outside, Answer::Allow)];
+    assert_eq!(verdict(Answer::Ask, Vec::new()), (Answer::Ask, Answer::Ask));
+    assert_eq!(
+        verdict(Answer::Ask, allowed(&one)),
+        (Answer::Allow, Answer::Allow)
+    );
+    assert_eq!(
+        verdict(Answer::Ask, allowed(&everything)),
+        (Answer::Ask, Answer::Ask)
+    );
+    assert_eq!(
+        verdict(Answer::Deny, allowed(&one)),
+        (Answer::Deny, Answer::Deny)
+    );
+    let by_somebody_else = agent_answers::grant(
+        WORKSPACE,
+        AGENT,
+        (&one, ActionKind::Outside),
+        Answer::Allow,
+        Grantee::person("b0b"),
+    );
+    assert_eq!(
+        verdict(Answer::Ask, vec![by_somebody_else]),
+        (Answer::Ask, Answer::Ask)
+    );
+}
+
+/// Allow for an outside effect may be given for one action of any app, and for a whole app
+/// only within the person's own account.
+#[test]
+fn allowing_an_outside_effect_takes_one_action_outside_the_persons_account() {
+    use agent_answers::{ACCOUNT_APP, may_give};
+    let outside = ActionKind::Outside;
+    let terminal = AnswerScope::action("so.tilo.terminal", "terminal.session", "run");
+    assert!(may_give(Some(&terminal), outside, Answer::Allow));
+    for wide in [
+        AnswerScope::app("so.tilo.terminal"),
+        AnswerScope::kind("so.tilo.terminal", "terminal.session"),
+    ] {
+        assert!(!may_give(Some(&wide), outside, Answer::Allow), "{wide:?}");
+        assert!(may_give(Some(&wide), outside, Answer::Ask), "{wide:?}");
+    }
+    assert!(!may_give(None, outside, Answer::Allow));
+    assert!(may_give(
+        Some(&AnswerScope::app(ACCOUNT_APP)),
+        outside,
+        Answer::Allow
+    ));
+    assert!(may_give(None, ActionKind::Undoable, Answer::Allow));
+}

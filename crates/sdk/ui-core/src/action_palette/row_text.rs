@@ -67,7 +67,7 @@ pub(crate) fn shows_a_hit(action: &tilo_actions::ActionSpec) -> bool {
 /// no second row for a search hit open.
 pub(crate) fn offers_a_person(fa: &tilo_actions::FlatAction<'_>) -> bool {
     fa.action.contract.availability.is_available()
-        && fa.action.reaches_people()
+        && fa.action.contract.offered_to_people()
         && tilo_actions::listed_for_people(&fa.resource_kind, &fa.resource_label)
         && !shows_a_hit(fa.action)
 }

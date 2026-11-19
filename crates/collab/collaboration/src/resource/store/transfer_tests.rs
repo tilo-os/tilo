@@ -119,7 +119,7 @@ tilo_test_env::scenario! {
         assert_eq!(installed.id, target);
         assert_eq!(provenance(&arrived), std::slice::from_ref(&checkout.id));
         assert!(
-            arrived.get_change_by_hash(&known[0]).is_some(),
+            arrived.has_change(&known[0]),
             "the source history travels"
         );
 
@@ -508,7 +508,7 @@ tilo_test_env::scenario! {
             copy.get_changes(&[]).len() > source.get_changes(&[]).len(),
             "the copy holds the source's history and the change that names the branch"
         );
-        assert!(copy.get_change_by_hash(&before[0]).is_some());
+        assert!(copy.has_change(&before[0]));
         assert_ne!(copy.get_actor(), source.get_actor(), "a writer of its own");
         copy.put(ROOT, "body", "branch").unwrap();
         copy.commit();

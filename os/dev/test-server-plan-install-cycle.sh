@@ -65,8 +65,8 @@ done
 [[ "$release_tag" =~ ^imager-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die '--release-tag must be imager-vMAJOR.MINOR.PATCH'
 [ -n "$fedora_sha256" ] || fedora_sha256="$default_fedora_sha256"
 [[ "$fedora_sha256" =~ ^[0-9a-f]{64}$ ]] || die '--fedora-sha256 must pin the Fedora Cloud Base image'
-[ -n "$fedora_image$fedora_url" ] && [ -z "$fedora_image" -o -z "$fedora_url" ] \
-  || die 'pass exactly one of --fedora-image or --fedora-url'
+[ -n "$fedora_image" ] && [ -n "$fedora_url" ] \
+  && die 'pass at most one of --fedora-image or --fedora-url'
 [ -n "$fedora_image" ] || fedora_url="${fedora_url:-$default_fedora_url}"
 
 export TILO_VM_ARCH="${TILO_VM_ARCH:-$(uname -m)}"
@@ -332,13 +332,23 @@ server 'test -e /var/lib/tilo-cycle-root-grown' || die 'cloud-init did not grow 
 server 'command -v podman >/dev/null' \
   || server 'sudo dnf install -y --setopt=install_weak_deps=False podman util-linux >/dev/null' \
   || die 'the retained Fedora has no podman for the privileged staging container'
-server "sudo sfdisk --json /dev/vdb" > "$evidence/04-target-empty.json" \
+# A disk nobody has partitioned yet carries no table at all, which `sfdisk
+# --json` answers as an error rather than an empty list: `lsblk` reads the
+# device either way.
+server "sudo lsblk -J -b -o NAME,TYPE,PARTN /dev/vdb" > "$evidence/04-target-empty.json" \
   || die 'the target disk cannot be read'
 python3 - "$evidence/04-target-empty.json" <<'PY' || die 'the target disk is not empty'
 import json, sys
-table = json.load(open(sys.argv[1]))['partitiontable']['partitions']
-assert table == [], table
+rows = json.load(open(sys.argv[1]))['blockdevices']
+assert len(rows) == 1 and rows[0]['type'] == 'disk', rows
+assert not rows[0].get('children'), rows
 PY
+# Staging writes where a disk's partition table says nothing is used yet, so a
+# disk the person has not prepared takes the empty GPT their other disks carry
+# before the request names it.
+printf 'label: gpt\n' | server "sudo sfdisk /dev/vdb" \
+  > "$evidence/04-target-labelled.txt" 2>&1 \
+  || die 'the target disk could not take a GPT'
 mark_step 04-retained ok
 
 # --- copy the imager, bundle, plan and token into the machine ----------------

@@ -35,6 +35,8 @@ pub(crate) enum Shown {
 pub(crate) struct Showing {
     pub(crate) at: PathBuf,
     pub(crate) shown: Shown,
+    /// The requests the folder's filesystem is answering: a holder ending waits on them.
+    pub(crate) activity: Arc<tilo_fs::fs::activity::Activity>,
     view: View,
 }
 
@@ -134,11 +136,14 @@ pub(crate) fn show(
             std::env::var_os("PATH").as_deref(),
         )
     {
-        match mounted(make()?, at) {
+        let fs = make()?;
+        let activity = fs.activity();
+        match mounted(fs, at) {
             Ok(session) => {
                 return Ok(Showing {
                     at: at.to_path_buf(),
                     shown: Shown::Mounted,
+                    activity,
                     view: View::Mount(Some(session)),
                 });
             }
@@ -150,11 +155,14 @@ pub(crate) fn show(
     #[cfg(not(target_os = "linux"))]
     let _ = mount;
     let commit = Box::new(|| Ok(()));
-    let watch = tilo_fs::sync_folder::SyncFolder::open(Arc::new(make()?), at, state, commit)?
+    let fs = make()?;
+    let activity = fs.activity();
+    let watch = tilo_fs::sync_folder::SyncFolder::open(Arc::new(fs), at, state, commit)?
         .watch(FOLDER_PASS)?;
     Ok(Showing {
         at: at.to_path_buf(),
         shown: Shown::Folder,
+        activity,
         view: View::Folder(watch),
     })
 }

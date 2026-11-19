@@ -244,6 +244,9 @@ pub struct ListRowFace<'a> {
     count: Option<usize>,
     leading: Option<RowLeading<'a>>,
     leading_column: Option<f64>,
+    /// The column a leading control takes, left empty: a row that takes the place of one whose
+    /// own control is gone (a struck row) keeps the title column of the rows around it.
+    leading_empty: bool,
     nested: bool,
     depth: u32,
     chevron_column: f64,
@@ -340,6 +343,7 @@ impl<'a> ListRowFace<'a> {
             count: None,
             leading: None,
             leading_column: None,
+            leading_empty: false,
             nested: false,
             depth: 0,
             chevron_column: 0.0,
@@ -618,6 +622,14 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn nested(mut self, nested: bool) -> Self {
         self.nested = nested;
+        self
+    }
+
+    /// Keep the column a leading control takes, and draw nothing in it: a row that takes the
+    /// place of one whose own control is gone keeps the title column of the rows it is among.
+    #[must_use]
+    pub fn leading_empty(mut self, empty: bool) -> Self {
+        self.leading_empty = empty;
         self
     }
 
@@ -1090,6 +1102,8 @@ pub struct ListRow {
     author: Option<AuthorCell>,
     leading: Option<Leading>,
     leading_column: Option<f64>,
+    /// The column a leading control takes, left empty ([`ListRowFace::leading_empty`]).
+    leading_empty: bool,
     nested: bool,
     depth: u32,
     chevron_column: f64,
@@ -1181,6 +1195,7 @@ impl ListRow {
             author: None,
             leading: None,
             leading_column: None,
+            leading_empty: false,
             nested: false,
             depth: 0,
             chevron_column: 0.0,
@@ -1640,6 +1655,13 @@ impl ListRow {
     #[must_use]
     pub fn nested(mut self) -> Self {
         self.nested = true;
+        self
+    }
+
+    /// See [`ListRowFace::leading_empty`].
+    #[must_use]
+    pub fn leading_empty(mut self, empty: bool) -> Self {
+        self.leading_empty = empty;
         self
     }
 
@@ -2322,6 +2344,7 @@ impl ListRow {
             face = face.leading_column(width);
         }
         face = face.nested(self.nested);
+        face = face.leading_empty(self.leading_empty);
         face = face.depth(self.depth);
         face = face.chevron_column(self.chevron_column);
         if let Some(avatar) = &self.avatar {

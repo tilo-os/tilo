@@ -719,6 +719,10 @@ impl Worker {
     /// `who`'s replica of the record at `route` (a part: of the record it is
     /// held beside), opened as them on their access now, or the one held
     /// for them while that access is unchanged.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one replica opened: its policy, its mount and what it takes up, in order"
+    )]
     pub(super) fn bounded_replica(
         &mut self,
         workspace_id: WorkspaceId,
@@ -781,6 +785,7 @@ impl Worker {
                     record: reads::document_id(&holder.document).map_err(unavailable)?,
                     changes: vec![bytes],
                 },
+                true,
             )
             .map_err(|error| unavailable(error.to_string()))?;
             let app = self.lend(app, &holder.cluster_id);
@@ -806,6 +811,10 @@ impl Worker {
         let untold =
             super::catch_up::kept_untold(&holder, self.bounded.get(&key).map(|held| &held.held));
         let kept = self.kept_held(untold);
+        let wanted = self.kept_held(super::catch_up::wanted_untold(
+            &holder,
+            self.bounded.get(&key).map(|held| &held.held),
+        ));
         let held = self
             .bounded
             .get_mut(&key)
@@ -820,8 +829,9 @@ impl Worker {
         } else if let Some(behind) = behind {
             super::catch_up::catch_up(&holder, &mut held.held, state, Some(&behind));
         }
-        super::catch_up::hold_parts(&holder, &mut held.held, state);
+        let missing = super::catch_up::hold_parts(&holder, &mut held.held, state);
         super::catch_up::tell_kept(&mut held.held, state, kept);
+        super::catch_up::tell_kept(&mut held.held, state, wanted);
         if holder != *route && !held.held.parts.contains_key(route) {
             let (part, heads) = state.document(route).map_err(unavailable)?;
             held.held
@@ -833,6 +843,7 @@ impl Worker {
                 .map_err(|error| unavailable(error.to_string()))?;
             held.held.parts.insert(route.clone(), Some(heads));
         }
+        self.ask_parts(&holder, missing);
         Ok(key)
     }
 

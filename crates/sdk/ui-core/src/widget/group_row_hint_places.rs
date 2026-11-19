@@ -17,6 +17,16 @@ pub struct HintPlaces {
     pub focused_bar: Option<Rect>,
     pub focused_edge: Option<(Line, WindowEdge)>,
     pub asking: bool,
+    /// The bar the move hint teaches (the hovered window's, else the one in front), whole: the
+    /// stretch its card may stand along.
+    pub bar_span: Option<Rect>,
+    /// Every window shown on the strip and every card over it, whole, bar included: a hint
+    /// stands outside them where it fits.
+    pub windows_on_strip: Vec<Rect>,
+    /// What a hint's card never covers: each shown window's bar, the text and controls its
+    /// content shows (all of it where the content cannot say), and every card over the strip.
+    /// `None` when the row was not asked to read them ([`GroupRow::hint_places`]).
+    pub ink: Option<Vec<Rect>>,
 }
 
 fn asking_for_input(window: &super::WindowGroup) -> bool {
@@ -26,9 +36,11 @@ fn asking_for_input(window: &super::WindowGroup) -> bool {
 }
 
 impl GroupRow {
-    /// Where this row's controls are for control hints.
+    /// Where this row's controls are for control hints. With `read_ink`, also where its windows
+    /// show text and controls ([`HintPlaces::ink`]): reading that walks each shown window's
+    /// content, so the shell asks only while a hint may show.
     #[must_use]
-    pub fn hint_places(&self) -> HintPlaces {
+    pub fn hint_places(&self, read_ink: bool) -> HintPlaces {
         let viewport = self.viewport();
         let (seen_from, seen_to) = self.visible_canvas_span();
         let beyond = self
@@ -60,6 +72,44 @@ impl GroupRow {
             .enumerate()
             .find(|(i, group)| group.focused && shown(*i, group) && !self.is_floating(group.id))
             .map(|(_, group)| group);
+        let bar_span = self
+            .groups
+            .iter()
+            .enumerate()
+            .find(|(i, group)| {
+                shown(*i, group)
+                    && !self.is_floating(group.id)
+                    && group.bar_grab_hit(self.last_cursor)
+            })
+            .map(|(_, group)| group)
+            .or(focused)
+            .map(super::WindowGroup::bar_rect);
+        let whole = |group: &super::WindowGroup| group.get_rect().union(group.bar_rect());
+        let on_screen: Vec<&super::WindowGroup> = self
+            .groups
+            .iter()
+            .enumerate()
+            .filter(|(i, group)| shown(*i, group))
+            .map(|(_, group)| group)
+            .collect();
+        let ink = read_ink.then(|| {
+            on_screen
+                .iter()
+                .flat_map(|group| {
+                    let content = (!self.is_floating(group.id))
+                        .then(|| group.active_host().and_then(super::TileHost::ink))
+                        .flatten();
+                    let mut ink = vec![group.bar_rect()];
+                    match content {
+                        Some(content) => ink.extend(content),
+                        // A card over the strip, or content that cannot say: all of it.
+                        None => ink.push(whole(group)),
+                    }
+                    ink
+                })
+                .filter(|rect| !rect.is_zero_area())
+                .collect()
+        });
         HintPlaces {
             viewport,
             windows: self
@@ -72,6 +122,9 @@ impl GroupRow {
             focused_bar: focused.and_then(title_grab),
             focused_edge: focused.and_then(|group| nearest_edge(group, viewport, self.last_cursor)),
             asking: focused.is_some_and(asking_for_input),
+            bar_span,
+            windows_on_strip: on_screen.iter().map(|group| whole(group)).collect(),
+            ink,
         }
     }
 
@@ -263,20 +316,20 @@ mod tests {
             row.set_floats(floats);
             row.groups[1].focused = true;
             let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-            let places = row.hint_places();
+            let places = row.hint_places(false);
             assert_eq!(places.windows, 1, "the strip holds one window, not two");
             assert_eq!(places.focused_bar, None, "a card's header takes no hint");
             assert_eq!(places.focused_edge, None, "a card's edge resizes nothing");
             let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
             row.groups[0].focused = true;
             let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-            assert!(row.hint_places().focused_edge.is_some());
+            assert!(row.hint_places(false).focused_edge.is_some());
         }
     }
 
     fn beside_the_title(row: &GroupRow) -> Rect {
         let group = &row.groups[0];
-        let anchor = row.hint_places().focused_bar.expect("a place to take");
+        let anchor = row.hint_places(false).focused_bar.expect("a place to take");
         let title = group.tab_rects()[0];
         let bar = group.bar_for_tests();
         let (_, _, _, actions) = bar.toolbar_rects();
@@ -369,11 +422,11 @@ mod asking_tests {
 
     #[test]
     fn a_window_a_person_is_typing_in_says_so_to_the_hints() {
-        assert!(row_whose_window_types(true).hint_places().asking);
-        assert!(!row_whose_window_types(false).hint_places().asking);
+        assert!(row_whose_window_types(true).hint_places(false).asking);
+        assert!(!row_whose_window_types(false).hint_places(false).asking);
         let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
         let host = row.groups[0].host_for_tab_mut(1).expect("a host");
         host.replace_content(TileContent::App(Box::new(Field(true))));
-        assert!(!row.hint_places().asking);
+        assert!(!row.hint_places(false).asking);
     }
 }

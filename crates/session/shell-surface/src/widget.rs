@@ -221,7 +221,7 @@ pub struct WidgetSurface {
     /// Something outside the tree asked for its next pass without holding the
     /// host to ask (a command queued on the shell's handle): the frame that
     /// answers it.
-    asked: Rc<std::cell::Cell<bool>>,
+    asked: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The toolkit's drag bus as the tree last ran with it ([`ui::widget::drag_bus::revision`]):
     /// a drag that moved since, with no input of this tree's, asks for its next pass too.
     drag_seen: u64,
@@ -286,7 +286,7 @@ impl WidgetSurface {
             wells: None,
             previews: None,
             name: None,
-            asked: Rc::new(std::cell::Cell::new(false)),
+            asked: std::sync::Arc::default(),
             drag_seen: ui::widget::drag_bus::revision(),
             cadence: Cadence::new(),
             dismissed: None,
@@ -297,8 +297,8 @@ impl WidgetSurface {
     /// wakes the host holding a shell another surface commands, without holding
     /// the host to ask.
     #[must_use]
-    pub fn asking(&self) -> Rc<std::cell::Cell<bool>> {
-        Rc::clone(&self.asked)
+    pub fn asking(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.asked)
     }
 
     /// Report the wells of a tree's places ([`ui::widget::WindowWell`]) to
@@ -591,14 +591,15 @@ impl WidgetSurface {
     /// hands out, or a drag on the toolkit's drag bus that moved since the tree last ran, which
     /// the drop targets it shows read.
     fn asked(&self) -> bool {
-        self.asked.get() || ui::widget::drag_bus::revision() != self.drag_seen
+        self.asked.load(std::sync::atomic::Ordering::Acquire)
+            || ui::widget::drag_bus::revision() != self.drag_seen
     }
 
     /// [`Self::asked`], answered by the pass about to run.
     fn take_asked(&mut self) -> bool {
         let drag = ui::widget::drag_bus::revision();
         let moved = std::mem::replace(&mut self.drag_seen, drag) != drag;
-        self.asked.replace(false) | moved
+        self.asked.swap(false, std::sync::atomic::Ordering::AcqRel) | moved
     }
 
     /// Where the tree stands among the desktop's trees, while it runs: a drag on the toolkit's

@@ -91,8 +91,9 @@ pub mod workspace_invocations;
 pub use session_actions::PROVIDER as SESSION_ACTIONS_PROVIDER;
 
 pub use application::{
-    APPLICATION_PROVIDER, ApplicationLaunch, application_action_target, application_open_target,
-    application_provider, application_provider_resource, application_resource_target,
+    APPLICATION_PROVIDER, ApplicationLaunch, CONTENT_HASH_ARGUMENT, NAME_ARGUMENT,
+    application_action_target, application_open_target, application_provider,
+    application_provider_resource, application_resource_target, valid_file_name,
 };
 pub use confirmation::{
     ASK, ASK_PROVIDER, ASK_RESOURCE, Confirmation, ConfirmationQuestion, ConfirmationReply,

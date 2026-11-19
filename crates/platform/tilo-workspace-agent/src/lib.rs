@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 use tilo_resource::items::item_resource_id;
 use tilo_resource::search_index::{IndexKind, IndexPerson};
 use tilo_resource::{
-    ActionCx, Atom, Id, Identified, JsonSchema, Keyed, Model, NonBlank, Refusal, SearchEntry,
-    resource,
+    ActionCx, Atom, Doc, Id, Identified, JsonSchema, Keyed, Model, ModelError, NonBlank, Refusal,
+    SearchEntry, resource, write_key,
 };
 
 pub mod coding;
@@ -160,24 +160,17 @@ impl Bound {
         Ok(tilo_action_policy::Rule::new(node, kinds, answer))
     }
 
-    /// Whether its person may give it: an outside effect is carried out unasked
-    /// only within their own account
+    /// Whether its person may give it: an outside effect is carried out unasked only within their
+    /// own account, or for one action they named
     /// ([`tilo_action_policy::agent_answers::may_give`]).
     fn may_be_given(&self) -> Result<bool, Refusal> {
         use tilo_action_policy::agent_answers::{AnswerScope, may_give};
         let rule = self.rule()?;
-        let app = match AnswerScope::of_node(&rule.node) {
-            Some(
-                AnswerScope::App { app }
-                | AnswerScope::Kind { app, .. }
-                | AnswerScope::Action { app, .. },
-            ) => app,
-            None => String::new(),
-        };
+        let scope = AnswerScope::of_node(&rule.node);
         Ok(rule
             .kinds
             .iter()
-            .all(|kind| may_give(&app, kind, rule.answer)))
+            .all(|kind| may_give(scope.as_ref(), kind, rule.answer)))
     }
 }
 
@@ -638,7 +631,8 @@ impl WorkspaceAgents {
         for rule in &bound {
             if !rule.may_be_given()? {
                 return Err(Refusal::new(
-                    "an agent acts unasked on an outside effect only within its person's own account",
+                    "an agent acts unasked on an outside effect only within its person's own account, \
+                     or for one action they name",
                 ));
             }
         }
@@ -856,7 +850,8 @@ impl WorkspaceAgents {
             for rule in &agent.bound {
                 if !rule.may_be_given()? {
                     return Err(Refusal::new(
-                        "an agent acts unasked on an outside effect only within its person's own account",
+                        "an agent acts unasked on an outside effect only within its person's own account, \
+                     or for one action they name",
                     ));
                 }
             }
@@ -876,6 +871,42 @@ impl WorkspaceAgents {
 
     pub fn active(&self) -> impl Iterator<Item = &Agent> {
         self.agents.iter().filter(|agent| agent.is_active())
+    }
+
+    /// The agents `keeper` keeps here that still work: every one of theirs that is
+    /// active, sub-agents included.
+    fn working_for<'a>(&'a self, keeper: &'a str) -> impl Iterator<Item = &'a Agent> + 'a {
+        self.active().filter(move |agent| agent.keeper == keeper)
+    }
+
+    /// End every agent `keeper` keeps in `doc` that still works, as the workspace's
+    /// governance does when they stop being a member: an agent acts for its keeper,
+    /// so it does not outlive their place. Each item comes to say what `retire-agent`
+    /// makes it say, and nothing else of it changes. Answers how many ended.
+    ///
+    /// The workspace's governor writes this, not the keeper: a person removed from
+    /// the workspace may not write its resources any more, and the change stands as
+    /// the governor's like any other of its own.
+    ///
+    /// # Errors
+    /// The document could not be read or written.
+    pub fn retire_kept_in(doc: &mut Doc, keeper: &str) -> Result<usize, ModelError> {
+        use automerge::{ROOT, ReadDoc as _};
+        use tilo_resource::Resource as _;
+        let Some((_, agents)) = doc.get(&ROOT, "agents")? else {
+            return Ok(0);
+        };
+        let ended: Vec<Id> = Self::read(doc)?
+            .working_for(keeper)
+            .map(|agent| Id::from_raw(agent.id.0.clone()))
+            .collect();
+        for id in &ended {
+            let (_, item) = doc.get(&agents, id.as_str())?.ok_or_else(|| {
+                ModelError::invalid(format!("no agent {:?} where it is listed", id.as_str()))
+            })?;
+            write_key(doc, &item, "state", &AgentState::Retired)?;
+        }
+        Ok(ended.len())
     }
 
     /// The agents people made that work here: every active agent that is no sub-agent. What

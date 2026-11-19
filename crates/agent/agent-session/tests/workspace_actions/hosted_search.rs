@@ -320,13 +320,42 @@ impl Served {
 
     /// `root`'s person said `text` in `conversation` at `when`, in seconds since the Unix
     /// epoch: the server writes it into the chat's messages as that person's own words of that
-    /// moment, which is what a message of an earlier day is to a search. The message's id.
+    /// moment. A live post reads after what the conversation already holds, so `when` is the
+    /// time of a post made in step with the others. The message's id.
     async fn said_at(
         &self,
         workspace: &str,
         root: &SigningKey,
         conversation: &Id,
         (text, when): (&str, i64),
+    ) -> Id {
+        let invoke = chat::demo::post(conversation.as_str(), text, None);
+        self.wrote(workspace, root, (text, Some(when * 1000)), invoke)
+            .await
+    }
+
+    /// `root`'s person imported into `conversation` what they wrote elsewhere at `when`, in
+    /// seconds since the Unix epoch: kept at that time whatever the conversation already holds,
+    /// which is what a message of an earlier day is to a search. The message's id.
+    async fn imported_at(
+        &self,
+        workspace: &str,
+        root: &SigningKey,
+        conversation: &Id,
+        (text, when): (&str, i64),
+    ) -> Id {
+        let invoke = chat::demo::import(conversation.as_str(), text, ("Ada", "Notes"), when * 1000);
+        self.wrote(workspace, root, (text, None), invoke).await
+    }
+
+    /// `root`'s person invoked `invoke` writing `text`, at `now_ms` when given: the id of the
+    /// message it wrote, once the server holds it.
+    async fn wrote(
+        &self,
+        workspace: &str,
+        root: &SigningKey,
+        (text, now_ms): (&str, Option<i64>),
+        invoke: ui::tilo_resource::Invoke<chat::parts::ChatMessages>,
     ) -> Id {
         let governor = self.workspaces.governor().clone();
         let held = self
@@ -349,8 +378,8 @@ impl Served {
                         part,
                         &chat,
                         |replica| replica.as_invoker(&person),
-                        Some(when * 1000),
-                        chat::demo::post(conversation.as_str(), text, None),
+                        now_ms,
+                        invoke,
                     )
                     .map_err(|error| error.to_string())
                 },
@@ -1049,7 +1078,7 @@ async fn a_turn_finds_what_was_said_in_its_conversation_by_words_and_by_time() {
     ] {
         let when = now - days_ago * DAY;
         let id = served
-            .said_at(&workspace, &served.ada, &conversation, (text, when))
+            .imported_at(&workspace, &served.ada, &conversation, (text, when))
             .await;
         said.push((id, when));
     }

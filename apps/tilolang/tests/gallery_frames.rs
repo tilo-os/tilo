@@ -2,7 +2,7 @@
 //! app as the shell shows it in-process): switching its page, dragging its sidebar's edge and
 //! turning the wheel over its content each do the work of what changed. What is held is counted,
 //! not timed, so the check reads the same on any machine at any load: a page switch rebuilds none of
-//! the window's structure, solves its layout a few times, measures its leaves a bounded
+//! the window's structure, lays it out once, measures its leaves a bounded
 //! number of times and costs no more time or memory after many switches than after one, a drag
 //! step of the sidebar's edge is
 //! one layout with no rebuild, no view evaluated and no sync, and a wheel step is one layout with
@@ -46,22 +46,32 @@ fn frame(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
     );
 }
 
-/// A click at `(x, y)` and the frames that settle it.
-fn click(tile: &mut EmbeddedApp, text: &mut TextRenderer, (x, y): (f64, f64)) {
+/// A click at `(x, y)` and the frames that settle it: how many of those frames solved the window's
+/// layout.
+fn click(tile: &mut EmbeddedApp, text: &mut TextRenderer, (x, y): (f64, f64)) -> usize {
+    let mut solved = 0_usize;
+    let mut settle = |tile: &mut EmbeddedApp, text: &mut TextRenderer| {
+        let before = ui::profiling::layout_counts::read().solves;
+        frame(tile, text);
+        if ui::profiling::layout_counts::read().solves > before {
+            solved = solved.saturating_add(1);
+        }
+    };
     tile.input_for_test(ui::synthetic_input::cursor_moved(x, y));
-    frame(tile, text);
+    settle(tile, text);
     tile.input_for_test(ui::synthetic_input::mouse_input(
         ElementState::Pressed,
         MouseButton::Left,
     ));
-    frame(tile, text);
+    settle(tile, text);
     tile.input_for_test(ui::synthetic_input::mouse_input(
         ElementState::Released,
         MouseButton::Left,
     ));
     for _ in 0..3 {
-        frame(tile, text);
+        settle(tile, text);
     }
+    solved
 }
 
 /// How often `scope` ran.
@@ -105,6 +115,23 @@ fn switching_pages_resizing_the_sidebar_and_scrolling_do_only_what_changed() {
     .expect("the gallery opens in a window");
 }
 
+#[test]
+fn the_gallery_s_first_frame_reads_only_the_interface_font() {
+    // Every catalog face is listed and mapped before the first frame; a file is read only when text
+    // needs one of its faces, and the gallery's first page is set in the interface face alone.
+    crate::support::installed("gallery");
+    ui::framework::testing::drive_live_embedded::<TlApp, _>(|tile| {
+        let mut text = TextRenderer::new();
+        frame(tile, &mut text);
+        let read: Vec<String> = ui::font_catalog::font_files_read()
+            .iter()
+            .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(read, ["TiloSans[wdth,wght].ttf"]);
+    })
+    .expect("the gallery opens in a window");
+}
+
 /// The process's resident memory in KiB, as the kernel counts it.
 fn resident_kib() -> u64 {
     std::fs::read_to_string("/proc/self/status")
@@ -132,7 +159,7 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
         let _ = ui::profiling::layout_counts::take();
         let mut callbacks = 0_usize;
         for y in ROWS {
-            let ((), scopes) = observe(|| click(tile, text, (120.0, y)));
+            let (frames, scopes) = observe(|| click(tile, text, (120.0, y)));
             // A page shown in the content takes the place of the one before under the content's
             // own node: the rest of the window keeps its layout tree.
             assert_eq!(
@@ -141,12 +168,22 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
                 "a page switch rebuilds none of the window's structure: {}",
                 said(&scopes)
             );
-            // The page is laid out where it stands; the frames after it solve nothing: no
-            // control left asking to be measured every frame.
+            // Pressing a row changes no size: the press is drawn, not laid out, and the page the
+            // release shows is laid out once. The frames after it solve nothing, and no control is
+            // left asking for layout, which would lay the window out again on every input.
+            // A list that measures its rows for the first time mounts the ones that fit in the
+            // same frame, and solves again for them there.
             assert!(
-                calls(&scopes, "ui.solve") <= 3,
-                "a page switch solves the window's layout at most three times: {}",
+                frames <= 1 && calls(&scopes, "ui.solve") <= 2,
+                "a page switch (the row at {y}) lays the window out in one frame: {frames} \
+                 frames, {}",
                 said(&scopes)
+            );
+            let asking =
+                ui::profiling::layout_counts::asking_for_layout(tile.app_mut().root_widget_mut());
+            assert!(
+                asking.is_empty(),
+                "a settled page asks for no layout: {asking:?}"
             );
             callbacks = callbacks.saturating_add(calls(&scopes, "ui.callback_scope"));
         }
@@ -183,7 +220,7 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
 
 /// A drag of the sidebar's edge: each step lays the window out once, nothing more.
 fn drags(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
-    click(tile, text, (120.0, ROWS[0]));
+    let _ = click(tile, text, (120.0, ROWS[0]));
     let before = placed(tile);
     tile.input_for_test(ui::synthetic_input::cursor_moved(EDGE, 400.0));
     frame(tile, text);

@@ -1094,10 +1094,16 @@ pub fn conversation_entry(id: &Id, name: &str, topic: &str) -> SearchEntry {
         .with_icon(CONVERSATION_ICON)
 }
 
-/// Distinguish unnamed members without exposing their complete routing id.
+/// What a member the workspace has no name for is called: a person is someone without a name
+/// yet, the one phrase every surface says for them (their face the person glyph), never a part
+/// of their key; any other member is told apart by the end of its id.
 #[must_use]
 pub fn unnamed_label(id: &MemberId) -> String {
-    tilo_resource::word!("chat-person-unnamed", tag = member_tag(id)).read()
+    if id.is_person() {
+        tilo_resource::word!("chat-person-unnamed").read()
+    } else {
+        tilo_resource::word!("chat-member-unnamed", tag = member_tag(id)).read()
+    }
 }
 
 /// What names a member whose workspace has no name for them: the end of their

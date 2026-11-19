@@ -156,9 +156,10 @@ tilo_test_env::scenario! {
             shown.starts_with("Someone"),
             "an unnamed peer should read as somebody unnamed, got `{shown}`"
         );
-        assert!(
-            shown.contains("2154"),
-            "two unnamed peers have to be distinguishable, got `{shown}`"
+        assert_eq!(
+            shown,
+            crate::identity::unnamed_label(&MemberId::person(stranger)),
+            "an unnamed person reads as on every other surface, got `{shown}`"
         );
     }
 

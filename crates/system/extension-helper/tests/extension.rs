@@ -130,7 +130,7 @@ tilo_test_env::scenario! {
         let out = Command::new(helper()).output_locked().unwrap();
         assert_eq!(
             String::from_utf8_lossy(&out.stderr),
-            "tilo-extension: expected exactly one argument: activate, refresh:all, live:<phase> or <verb>:<id>\n"
+            "tilo-extension: expected exactly one argument: activate, refresh:all, boot:<phase>, live:<phase> or <verb>:<id>\n"
         );
     }
 
@@ -240,6 +240,26 @@ tilo_test_env::scenario! {
             );
         }
         assert!(sources().contains(r#"OsStr::new("tilo-extension-activate.service")"#));
+    }
+
+    phase a_trial_starts_before_any_merge_and_ends_at_the_graphical_target;
+    {
+        let start = read("os/usr/lib/systemd/system/tilo-extension-trial.service");
+        assert!(start.contains("ExecStart=/usr/libexec/tilo-extension boot:start\n"));
+        assert!(start.contains("DefaultDependencies=no\n"));
+        assert!(start.contains(
+            "Before=systemd-sysext.service tilo-extension-activate.service sysinit.target\n"
+        ));
+        let done = read("os/usr/lib/systemd/system/tilo-extension-booted.service");
+        assert!(done.contains("ExecStart=/usr/libexec/tilo-extension boot:done\n"));
+        assert!(done.contains("After=graphical.target\n") && done.contains("WantedBy=graphical.target\n"));
+        for unit in [&start, &done] {
+            assert!(unit.contains("ConditionPathExistsGlob=/var/lib/tilo/extensions/*/trial\n"));
+        }
+        assert_eq!(
+            Layout::default().trial("windows-compat"),
+            std::path::Path::new("/var/lib/tilo/extensions/windows-compat/trial")
+        );
     }
 
     phase manifests_verify_only_against_the_extension_key;
@@ -388,7 +408,8 @@ tilo_test_env::scenario! {
             if entry.kind == "windows-compat" {
                 assert_eq!(entry.hosts.iter().collect::<Vec<_>>(), ["code.tilo.so"]);
                 assert!(entry.download_bytes > 0);
-                assert!(entry.installed_bytes > entry.download_bytes);
+                // The image is linked into the search path as it was downloaded.
+                assert!(entry.installed_bytes >= entry.download_bytes);
             } else {
                 assert!(
                     !entry.hosts.contains("code.tilo.so"),
@@ -1528,6 +1549,10 @@ fn raw_record(machine: &Machine) -> std::path::PathBuf {
         .join(format!(".{RAW_PART}.record.json"))
 }
 
+fn boot(machine: &Machine, phase: &str) -> i32 {
+    tilo_extension::main(&machine.host, &machine.layout, &[format!("boot:{phase}")])
+}
+
 fn raw_status(machine: &Machine) -> Value {
     serde_json::from_slice(&fs::read(machine.layout.status(RAW_ID)).unwrap()).unwrap()
 }
@@ -1624,6 +1649,85 @@ tilo_test_env::scenario! {
         machine.run_on("install", RAW_ID);
         assert!(!raw_live(&machine).exists());
         assert!(machine.host.unmerges.get() >= 1);
+    }
+
+    phase an_image_that_would_damage_usr_is_never_merged;
+    {
+        let machine = raw_machine();
+        let mut image = support::sound_image();
+        let usr = image.image.get_mut("/usr").unwrap();
+        (usr.uid, usr.gid) = (99, 65534);
+        *machine.host.image.borrow_mut() = Some(image);
+        publish_raw(&machine, &raw_image(), None);
+        assert_ne!(machine.run_on("install", RAW_ID), 0);
+        assert!(!raw_live(&machine).exists());
+        assert!(machine.host.merged.borrow().is_empty());
+        let status = raw_status(&machine);
+        assert_eq!(status["state"], "failed");
+        assert_eq!(
+            status["last_error"],
+            format!("{RAW_PART}: not turned on, it would damage the system: /usr is owned by 99:65534, not root")
+        );
+        assert_ne!(machine.run("activate"), 0, "and not at the next start either");
+        assert!(!raw_live(&machine).exists());
+        assert!(!machine.layout.trial(RAW_ID).exists());
+    }
+
+    phase an_unlabelled_image_is_never_merged_on_a_labelled_system;
+    {
+        let machine = raw_machine();
+        let mut image = support::sound_image();
+        for entry in image.image.values_mut() {
+            entry.label = Some("system_u:object_r:unlabeled_t:s0".to_owned());
+        }
+        *machine.host.image.borrow_mut() = Some(image);
+        publish_raw(&machine, &raw_image(), None);
+        assert_ne!(machine.run_on("install", RAW_ID), 0);
+        assert!(!raw_live(&machine).exists());
+        assert!(
+            raw_status(&machine)["last_error"]
+                .as_str()
+                .unwrap()
+                .ends_with(": /usr is labelled system_u:object_r:unlabeled_t:s0")
+        );
+    }
+
+    phase a_start_that_does_not_finish_turns_a_new_extension_off;
+    {
+        let machine = raw_machine();
+        publish_raw(&machine, &raw_image(), None);
+        assert_eq!(machine.run_on("install", RAW_ID), 0);
+        let trial = machine.layout.trial(RAW_ID);
+        assert_eq!(fs::read_to_string(&trial).unwrap(), "new\n");
+        assert_eq!(boot(&machine, "start"), 0);
+        assert_eq!(fs::read_to_string(&trial).unwrap(), "booting\n");
+        assert_eq!(machine.run("activate"), 0, "a start activates as usual");
+        assert_eq!(fs::read_to_string(&trial).unwrap(), "booting\n");
+        assert_eq!(boot(&machine, "start"), 0, "the next start finds it never finished");
+        assert!(!raw_live(&machine).exists());
+        assert!(!trial.exists());
+        assert!(!machine.layout.desired(RAW_ID).exists());
+        let status = raw_status(&machine);
+        assert_eq!(status["state"], "failed");
+        assert_eq!(status["parts"], json!({RAW_PART: "off"}));
+        assert!(status["last_error"].as_str().unwrap().starts_with("Turned off: this computer did not finish starting with it."));
+        assert_eq!(machine.run("activate"), 0);
+        assert!(!raw_live(&machine).exists(), "and it stays off");
+    }
+
+    phase a_start_that_finishes_keeps_the_extension;
+    {
+        let machine = raw_machine();
+        publish_raw(&machine, &raw_image(), None);
+        assert_eq!(machine.run_on("install", RAW_ID), 0);
+        assert_eq!(boot(&machine, "done"), 0, "the start that installed it proves nothing");
+        assert!(machine.layout.trial(RAW_ID).exists());
+        assert_eq!(boot(&machine, "start"), 0);
+        assert_eq!(boot(&machine, "done"), 0);
+        assert!(!machine.layout.trial(RAW_ID).exists());
+        assert_eq!(boot(&machine, "start"), 0);
+        assert_eq!(fs::read(raw_live(&machine)).unwrap(), raw_image());
+        assert_eq!(raw_status(&machine)["state"], "installed");
     }
 
     phase an_image_stays_across_an_update_that_keeps_the_release;

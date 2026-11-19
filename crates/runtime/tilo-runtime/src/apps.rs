@@ -214,11 +214,12 @@ impl Apps {
         package_store::integrity::signed_surface(&package)
     }
 
-    /// The surface (`surface.toml`) the installed package `app_id`
-    /// publishes, whether or not it runs here: what an agent reads its
-    /// types from, and what an app's records are decided against, before
-    /// the app first opens. The one it was launched with wins, since an
-    /// update the package store has not finished installing is not one.
+    /// The surface the installed package `app_id` publishes, in the form it
+    /// is kept and addressed by ([`collab_types::surface::canonical`]),
+    /// whether or not it runs here: what an agent reads its types from, and
+    /// what an app's resources are decided against, before the app first opens.
+    /// The one it was launched with wins, since an update the package store
+    /// has not finished installing is not one.
     #[must_use]
     pub fn installed_surface(&self, app_id: &str) -> Option<Vec<u8>> {
         if let Some(bytes) = ui::app_surface::bytes_of(app_id) {
@@ -230,7 +231,7 @@ impl Apps {
             .find(|app| app.app_id == app_id)?;
         let bytes = self.signed_surface_of(&app)?;
         tilo_workspace_service::apps::register_package_surface(app_id, &bytes);
-        Some(bytes)
+        ui::app_surface::bytes_of(app_id).map(<[u8]>::to_vec)
     }
 
     /// Name every installed package's signed surface now, so the app surfaces

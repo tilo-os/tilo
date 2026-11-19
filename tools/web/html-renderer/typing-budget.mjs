@@ -181,6 +181,10 @@ async function run({page, render}) {
     };
     await type(10);
     await tab.evaluate(LATENCIES);
+    // Each frame's own split, from here on: the runtime's frame in wasm
+    // (`layoutMs`: update and layout, with the scene a canvas would encode)
+    // against the page's building of the composition into elements (`lastMs`).
+    if (page === 'app.html') await tab.evaluate('window.renderMarks.domFrames = []');
     if (profileOut) {
       await tab.send('Profiler.enable', {});
       await tab.send('Profiler.setSamplingInterval', {interval: 100});
@@ -196,21 +200,54 @@ async function run({page, render}) {
     }
     if (metrics && page === 'app.html') await tab.evaluate(`(async () => { const r = ${RUNTIME}; r.configure_frame_metrics(true); r.take_frame_metrics(); return true; })()`);
     await type(keys * rounds);
+    if (page === 'app.html') {
+      // How many changes the page was shown in each key's hundred
+      // milliseconds: the commit that types it asks for one.
+      const perKey = await tab.evaluate(`(() => {
+        const clock = window.__typingClock;
+        return clock.keys.map(at => clock.changes.filter(([changed]) => changed >= at && changed < at + 100).length);
+      })()`);
+      result.framesPerKey = perKey.reduce((counts, n) => ((counts[n] = (counts[n] ?? 0) + 1), counts), {});
+    }
     if (metrics && page === 'app.html') {
       const taken = JSON.parse(await tab.evaluate(`(async () => { const r = ${RUNTIME}; const m = r.take_frame_metrics(); r.configure_frame_metrics(false); return m; })()`));
       result.metrics = taken.map(m => {
         const stages = {};
         for (const {stage, ms} of m.samples) (stages[stage] ??= []).push(ms);
+        // What one frame's passes spent, over the frames presented while the
+        // keys were typed: the app's view sync, the layout solved, the scene
+        // it drew, and the input it handled.
+        const us = pass => m.layoutPasses.map(frame => frame[pass]).filter(value => typeof value === 'number');
+        const meanMs = values => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) / 1000 : null;
         return {requesters: m.requesters, measuredBy: m.measuredBy, lastRelayout: m.lastRelayout,
+          frames: m.layoutPasses.length,
+          passes: Object.fromEntries(['sync_us', 'build_layout_us', 'apply_layout_us', 'draw_us', 'handle_event_us'].map(pass => [pass, meanMs(us(pass))])),
           stages: Object.fromEntries(Object.entries(stages).map(([k, v]) => [k, {n: v.length, p50: pct(v, 0.5), p90: pct(v, 0.9)}]))};
       });
     }
     const latencies = await tab.evaluate(LATENCIES);
     result.keys = latencies.length;
     result.changeP50 = pct(latencies.map(l => l[0]), 0.5);
+    result.changeP90 = pct(latencies.map(l => l[0]), 0.9);
     result.p50 = pct(latencies.map(l => l[1]), 0.5);
     result.p90 = pct(latencies.map(l => l[1]), 0.9);
     result.max = pct(latencies.map(l => l[1]), 1);
+    // From the change to the end of the rendering update that carries it: the
+    // wait for the browser's frame, plus whatever happens after the change in
+    // the same task.
+    result.postChange = {
+      p50: pct(latencies.map(l => l[1] - l[0]), 0.5),
+      p90: pct(latencies.map(l => l[1] - l[0]), 0.9)};
+    if (page === 'app.html') {
+      const frames = await tab.evaluate('window.renderMarks.domFrames ?? []');
+      const column = at => frames.map(row => row[at]).filter(ms => typeof ms === 'number');
+      result.frames = frames.length;
+      result.bytes = await tab.evaluate('window.renderMarks.dom?.meta?.bytes ?? null');
+      result.wasmFrame = {p50: pct(column(3), 0.5), p90: pct(column(3), 0.9)};
+      result.encode = {p50: pct(column(4), 0.5), p90: pct(column(4), 0.9)};
+      result.presenter = {p50: pct(column(2), 0.5), p90: pct(column(2), 0.9)};
+      result.writes = {p50: pct(column(0), 0.5), p90: pct(column(0), 0.9)};
+    }
     if (profileOut) {
       const {result: {profile}} = await tab.send('Profiler.stop', {});
       writeFileSync(`${profileOut}.${result.render}.cpuprofile`, JSON.stringify(profile));

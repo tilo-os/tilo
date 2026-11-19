@@ -92,6 +92,9 @@ pub(crate) enum Request {
         /// cannot describe.
         actor: String,
         seed: Option<(String, Vec<Vec<u8>>)>,
+        /// The held document's store asks its workspace for the documents the view opens and
+        /// does not hold ([`crate::Replica::ask_workspace_for_missing`]).
+        asks_workspace: bool,
     },
     /// The held record's member reads their member access as of a later time:
     /// JSON `ReplicaActor`, a member of the same access and sandbox.

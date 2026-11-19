@@ -137,20 +137,23 @@ fn items_offer_their_effects_and_open_and_labelled_items_are_published() {
 /// The action of a read that answers with the item's note, as an app's
 /// registered reader publishes it: the spec a view hands out for the item it
 /// knows, never an operation the app's handler answers.
-fn note_read(id: &str) -> tilo_actions::ActionSpec {
+fn note_read(id: &str) -> tilo_resource::read::Declared {
     let id = id.to_owned();
-    tilo_actions::ActionSpec::typed_operation(
-        "read-note",
-        "Read note",
-        "Read this query's note from its committed state",
-        tilo_actions::OperationKind::Effect,
-        "test.queries.read",
-        Vec::new(),
-        move |_args| tilo_actions::EncodedAction {
-            type_id: "test.queries.read".into(),
-            payload: id.as_bytes().to_vec(),
+    tilo_resource::read::read_action(
+        tilo_resource::read::ReadName {
+            id: "read-note",
+            label: "Read note",
+            description: "Read this query's note from its committed state",
         },
+        "test.queries.read",
+        note_schema,
+        move |_: tilo_resource::read::NoReadParams| serde_json::json!({ "note": id }),
     )
+}
+
+fn note_schema() -> &'static serde_json::Value {
+    static SCHEMA: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| serde_json::json!({ "type": "object" }))
 }
 
 struct QueriesReadApp;

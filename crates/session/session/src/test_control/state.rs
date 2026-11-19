@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::hash::Hash as _;
 
 use serde_json::{Value as Json, json};
-use tilo_desktop_model::Layout;
+use tilo_desktop_model::{Layout, TileContent};
 
 use super::{Audience, Context, Part, Scope, Session};
 
@@ -371,6 +371,14 @@ pub(super) fn window_rows(
             for group in &strip.window_groups {
                 let group_active = strip_active && active_group == Some(group.id);
                 for tab in &group.tabs {
+                    // A tab that shows no window is not one a tool aims at: a card where an app
+                    // stopped working, or a place a saved window stood in, belongs to the tab.
+                    if matches!(
+                        tab.tile,
+                        TileContent::AppPlaceholder { .. } | TileContent::Stub { .. }
+                    ) {
+                        continue;
+                    }
                     let (kind, app_id) = tile_kind(&tab.tile);
                     let window = window_of_tile(&tab.tile);
                     // What the window's bar carries, on a window that stands.

@@ -21,6 +21,10 @@ use iroh_blobs::Hash;
 use super::{ContentStore, Retention};
 use crate::content::{self, ChunkTier, Manifest};
 
+/// The largest file that is published by reading it into memory rather than chunking it as a
+/// stream: a version this size costs less held once than read from the disk twice.
+const IN_MEMORY_PUBLISH_MAX: u64 = 256 * 1024;
+
 impl ContentStore {
     /// Chunks `data` in the current format, stores it and returns its
     /// content id (`None` when empty). Unchanged chunks of earlier versions
@@ -62,7 +66,9 @@ impl ContentStore {
                 )?;
             }
         } else {
-            let chunks = manifest
+            // The chunks and the manifest that names them go in as one batch: a batch is one
+            // database commit and one sync, and a checkout writes one version per file.
+            let mut batch = manifest
                 .chunks()
                 .iter()
                 .enumerate()
@@ -73,8 +79,19 @@ impl ContentStore {
                     )?;
                     Some(Bytes::copy_from_slice(bytes))
                 })
-                .collect();
-            self.persist_owned_batch(chunks).await?;
+                .collect::<Vec<_>>();
+            let encoded = manifest.encode();
+            batch.push(Bytes::from(encoded));
+            let stored = self.persist_owned_batch(batch).await?;
+            let hash = stored
+                .last()
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("the stored manifest went missing"))?;
+            anyhow::ensure!(
+                hash.as_bytes() == &manifest.id(),
+                "stored manifest has another hash"
+            );
+            return Ok(Some(hash));
         }
         self.persist_manifest(&manifest).await.map(Some)
     }
@@ -99,6 +116,20 @@ impl ContentStore {
         let len = file.metadata()?.len();
         if len == 0 {
             return Ok(None);
+        }
+        // A file this size's bytes cost less to hold in memory once than to chunk from the disk
+        // and read again: a mount staging writes on disk hands every closed file through here.
+        if known.is_none() && len <= IN_MEMORY_PUBLISH_MAX {
+            let data = std::fs::read(path)?;
+            anyhow::ensure!(
+                data.len() as u64 == len,
+                "{} changed while it was published",
+                path.display()
+            );
+            return Ok(self
+                .write_content_after(&data, previous)
+                .await?
+                .map(|hash| (hash, len)));
         }
         let tier = self.tier_of(previous).await;
         let manifest = match known {

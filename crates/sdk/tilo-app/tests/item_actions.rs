@@ -108,7 +108,10 @@ fn item_actions_are_offered_on_the_item() {
         .iter()
         .find(|spec| spec.id == "remove")
         .unwrap();
-    assert!(!on_resource.reaches_people(), "no id prompt in the palette");
+    assert!(
+        on_resource.contract.needs_an_item() && !on_resource.contract.offered_to_people(),
+        "no id prompt in the palette"
+    );
 
     // The row's context menu offers them too: focus the row, open its menu
     // from the keyboard and choose "Remove a todo".

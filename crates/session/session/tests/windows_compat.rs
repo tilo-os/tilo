@@ -253,6 +253,22 @@ impl SandboxExecutor for Probe {
             step.to_owned(),
             "--nocapture".to_owned(),
         ]);
+        // The test harness prints its own report on the stream a launch's output is read from.
+        // The program gets that stream at descriptor 3 and the harness's on nothing, so what a
+        // program writes is all the launch says, as a real program's is.
+        let exe = args
+            .iter()
+            .position(|arg| !arg.contains('='))
+            .unwrap_or(args.len());
+        args.splice(
+            exe..exe,
+            [
+                "sh".to_owned(),
+                "-c".to_owned(),
+                "exec \"$@\" 3>&1 1>/dev/null".to_owned(),
+                "sh".to_owned(),
+            ],
+        );
         let memfd = rustix::fs::memfd_create("probe", rustix::fs::MemfdFlags::CLOEXEC)
             .map_err(|error| ExecutionError::Io(error.into()))?;
         rustix::io::write(&memfd, HANDED_DOWN).map_err(|error| ExecutionError::Io(error.into()))?;
@@ -394,6 +410,14 @@ fn probe_program() {
         return;
     };
     let dir = PathBuf::from(dir);
+    // The stream a launch's output is read from was given to this program at descriptor 3, the
+    // harness's own report on nothing: from here on this program's output is the launch's.
+    // SAFETY: `dup2` and `close` take plain descriptors, and descriptor 3 is the harness script's.
+    unsafe {
+        if libc::dup2(3, libc::STDOUT_FILENO) != -1 {
+            libc::close(3);
+        }
+    }
     let handed = fs::read(format!(
         "/proc/self/fd/{}",
         compat_service::SECCOMP_CHILD_FD
@@ -426,6 +450,9 @@ fn probe_program() {
             let _ = fs::remove_file(dir.join("exit"));
             if let Ok(said) = fs::read_to_string(dir.join("say")) {
                 eprint!("{said}");
+            }
+            if let Ok(said) = fs::read_to_string(dir.join("say-out")) {
+                print!("{said}");
             }
             std::process::exit(code.trim().parse().expect("an exit code"));
         }
@@ -1194,6 +1221,13 @@ impl KeptRig {
         fs::write(self.probe.join("say"), said).unwrap();
         self.exit(code);
     }
+
+    /// End the program with `code`, saying `said` on its normal output first: a console tool
+    /// that prints its usage and stops.
+    fn exit_saying_out(&self, code: i32, said: &str) {
+        fs::write(self.probe.join("say-out"), said).unwrap();
+        self.exit(code);
+    }
 }
 
 /// What the real launcher would do with `handed`, the command line the session started a launch
@@ -1406,6 +1440,33 @@ fn a_failed_windows_program_says_why_with_its_end() {
         );
     };
     assert_eq!(end["said"], Value::Null, "{end:?}");
+
+    // A console tool prints its usage on its normal output and stops: that is its reason when its
+    // error stream holds nothing.
+    let answers = desktop.manage(&rig, "fifth", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    desktop.shown();
+    rig.exit_saying_out(1, "Usage: plink [options] destination\n");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let end = loop {
+        let answers = desktop.manage(&rig, "sixth", &["ended"]);
+        let last = answers[0]["ended"]
+            .as_array()
+            .and_then(|ended| ended.last())
+            .cloned()
+            .unwrap_or_default();
+        if last["exit_code"] == 1 {
+            break last;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the usage was never its reason: {answers:?}"
+        );
+    };
+    assert_eq!(
+        end["said"], "Usage: plink [options] destination",
+        "the last of its normal output is its reason"
+    );
     desktop.end(tilo_app_launch::Teardown::Logout);
 }
 
@@ -2280,6 +2341,17 @@ impl SandboxExecutor for SetUp {
             fs::create_dir_all(program_files.join(folder))?;
             fs::write(program_files.join(folder).join(name), bytes)?;
         }
+        // The Start menu is what a person sees: the shortcut setup wrote for the program.
+        let start_menu = prefix.join(
+            "drive_c/users/root/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Example",
+        );
+        fs::create_dir_all(&start_menu)?;
+        let mut shortcut = vec![0_u8; 0x4c];
+        shortcut[0] = 0x4c;
+        shortcut[0x14..0x18].copy_from_slice(&1_u32.to_le_bytes()); // HasLinkTargetIDList
+        shortcut.extend_from_slice(&4_u16.to_le_bytes());
+        shortcut.extend_from_slice(&[0; 4]);
+        fs::write(start_menu.join("Example.lnk"), shortcut)?;
         Ok(SandboxCommand::new(
             PathBuf::from("/usr/bin/true"),
             Vec::<String>::new(),

@@ -529,7 +529,10 @@ async fn redeem_over_iroh(
                 debug_why("redeeming the invitation", &error);
                 anyhow!("{}", invitation_said(&error))
             })?;
-        name_person(&session, &admission.workspace, shown_as).await;
+        // A person without a name stays unnamed until they give one.
+        if !shown_as.is_empty() {
+            name_person(&session, &admission.workspace, shown_as).await;
+        }
         anyhow::Ok(admission)
     }
     .await;
@@ -596,7 +599,7 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
     if made {
         println!(
             "This computer now holds a Tilo identity for {}: `tilo login --new-identity` prints its key.",
-            person.name
+            person.who()
         );
     }
     let agent =
@@ -624,7 +627,7 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
     let shown_as = asked
         .or_else(|| Some(person.name.as_str()).filter(|name| !name.is_empty()))
         .or(grant.invitee_name.as_deref())
-        .unwrap_or("Tilo user")
+        .unwrap_or_default()
         .to_owned();
     let device = Device {
         site: format!("{DEFAULT_SITE}/"),
@@ -652,8 +655,8 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
     };
     store(&device_dir()?, &key, &device)?;
     println!(
-        "Joined: this computer is one of {}'s devices, \"{}\", in the workspace.\n{}",
-        person.name,
+        "Joined: this computer is one of {} devices, \"{}\", in the workspace.\n{}",
+        person.whose(),
         device.label,
         which_agent(&agent.name)
     );
@@ -712,7 +715,7 @@ async fn home_server(site: &Origin) -> Result<String> {
 ///
 /// A code the server does not know is asked about again for a moment: the server
 /// keeps a code from the moment the tab showing it follows it, which the tab
-/// does as soon as the prompt is on its screen (`web/first-run.mjs`,
+/// does as soon as the prompt is on its screen (`web/first-screen.mjs`,
 /// `watchShown`), so a person who hands the prompt to their agent at once can
 /// beat that request when their machine draws the page slowly. The server
 /// counts resolves that miss, so the asking is a few tries, not a wait.
@@ -1505,9 +1508,9 @@ pub fn login_held(
     let dir = device_dir()?;
     store(&dir, &key, &device)?;
     println!(
-        "Logged in: this computer holds {}'s identity, which made it \"{}\", one of their \
+        "Logged in: this computer holds {} identity, which made it \"{}\", one of its \
          devices.\n{}",
-        person.name,
+        person.whose(),
         device.label,
         which_agent(&agent.name)
     );

@@ -25,6 +25,8 @@ mod crafted_changes;
 mod diff_marks;
 #[path = "diff_walks_what_differs.rs"]
 mod diff_walks_what_differs;
+#[path = "has_change.rs"]
+mod has_change;
 #[path = "idle_sync.rs"]
 mod idle_sync;
 #[path = "known_hashes.rs"]

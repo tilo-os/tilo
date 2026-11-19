@@ -2144,6 +2144,62 @@ mod tests {
         }
     }
 
+    /// The packet relay sits behind a front that pools its connections (a
+    /// Caddy, as tilo.sh and a local stack run it), and every iroh endpoint
+    /// homed on it probes its latency there now and then. The relay keeps a
+    /// connection only once it is a relay WebSocket, aborting any other 30 s
+    /// after it opened, so a probe's connection the front kept for its next
+    /// request was aborted under it, logged as a connection that "did not
+    /// reach established state", every half minute or so. The relay now
+    /// closes a probe's connection behind its answer: the front pools nothing
+    /// for it to abort.
+    #[tokio::test]
+    async fn a_probe_leaves_the_packet_relay_no_connection_to_abort() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let (relay, _url) = spawn_packet_relay((std::net::Ipv4Addr::LOCALHOST, 0).into())
+            .await
+            .unwrap();
+        let addr = relay.http_addr().unwrap();
+        let mut front = tokio::net::TcpStream::connect(addr).await.unwrap();
+        front
+            .write_all(
+                format!(
+                    "GET {} HTTP/1.1\r\n{}: {addr}\r\nConnection: keep-alive\r\n\r\n",
+                    iroh_relay::http::RELAY_PROBE_PATH,
+                    hyper::header::HOST,
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        // The answer, and then the end of the connection: well before the
+        // 30 s at which an open one would be aborted.
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), front.read_to_end(&mut answer))
+            .await
+            .expect("the relay closes a probe's connection once it answered")
+            .unwrap();
+        let answer = String::from_utf8_lossy(&answer).to_ascii_lowercase();
+        assert!(answer.starts_with("http/1.1 200"), "{answer}");
+        assert!(answer.contains("connection: close"), "{answer}");
+
+        let metrics = &relay.metrics().server;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while metrics.http_connections_closed.get() < 1 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the relay counts the probe's connection closed");
+        assert_eq!(
+            metrics.http_connections_errored.get(),
+            0,
+            "a probe's connection ends cleanly"
+        );
+        relay.shutdown().await.unwrap();
+    }
+
     #[tokio::test]
     #[allow(
         clippy::too_many_lines,

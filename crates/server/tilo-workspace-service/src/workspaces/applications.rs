@@ -330,11 +330,7 @@ impl Workspaces {
             .ok()
             .flatten()
             .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
-            .is_some_and(|mut kept| {
-                wanted
-                    .iter()
-                    .all(|head| kept.get_change_by_hash(head).is_some())
-            });
+            .is_some_and(|kept| wanted.iter().all(|head| kept.has_change(head)));
         if !taken {
             return Err(CollaborationError::new(
                 "the workspace did not take the bot's change",
@@ -415,6 +411,7 @@ impl Workspaces {
                 &tilo_actions::MemberId::person(hex::encode(governor.user_public_key)),
                 &tilo_agent_session::ReplicaActor::Owner,
                 seed,
+                false,
             )
             .map_err(|error| CollaborationError::new(error.to_string()))?;
             if record.is_empty() != source.document_id().is_package_primary() {

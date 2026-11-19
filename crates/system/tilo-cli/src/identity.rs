@@ -44,11 +44,31 @@ pub struct Person {
     pub device: SigningKey,
     /// The member certificate the root signed for [`Self::device`].
     pub cert: DeviceCert,
-    /// How the person is named.
+    /// How the person is named: empty while they gave no name.
     pub name: String,
 }
 
 impl Person {
+    /// Who the person is in a sentence said to them: their name, or "you" while they gave none.
+    #[must_use]
+    pub fn who(&self) -> &str {
+        if self.name.is_empty() {
+            "you"
+        } else {
+            &self.name
+        }
+    }
+
+    /// Whose a thing of theirs is, in a sentence said to them: "Ada's", or "your".
+    #[must_use]
+    pub fn whose(&self) -> String {
+        if self.name.is_empty() {
+            "your".to_owned()
+        } else {
+            format!("{}'s", self.name)
+        }
+    }
+
     /// Their user public key, hex.
     pub fn user(&self) -> String {
         hex::encode(self.public_key())
@@ -124,12 +144,9 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
     let dir = dir()?;
     let paths = IdentityPaths::under(&dir);
     paths.ensure_directories()?;
-    let name = name
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
-        .or_else(|| std::env::var("USER").ok().filter(|name| !name.is_empty()))
-        .unwrap_or_else(|| "Tilo user".to_owned());
+    // A person goes by the name they give, else by none until they give one: never their
+    // computer's account name or a made-up one.
+    let name = name.map(str::trim).unwrap_or_default().to_owned();
     let root = SigningKey::from_bytes(&rand::random());
     let device = SigningKey::from_bytes(&rand::random());
     let mut cert = DeviceCert {
@@ -191,15 +208,15 @@ pub fn new_identity(name: Option<&str>, json: bool) -> Result<std::process::Exit
     }
     if made {
         eprintln!(
-            "Made {}'s Tilo identity on this computer ({}). Once a host's operator declares \
+            "Made {} Tilo identity on this computer ({}). Once a host's operator declares \
              this key an owner, `tilo keys create` approves its key here.",
-            person.name,
+            person.whose(),
             dir.display()
         );
     } else {
         eprintln!(
-            "This computer already holds {}'s Tilo identity ({}).",
-            person.name,
+            "This computer already holds {} Tilo identity ({}).",
+            person.whose(),
             dir.display()
         );
     }
@@ -389,7 +406,7 @@ async fn through_entry(person: &Person, site: &str) -> Result<()> {
                 "{site} takes people by invitation and has not let {} in yet. Open an invite \
                  link someone sent you in a browser, or have whoever runs {site} make you an \
                  owner (on the local stack: stack.sh owner {})",
-                person.name,
+                person.who(),
                 person.user()
             ),
             Err(refused) => bail!("{site} did not let you in: {}", refused.message),

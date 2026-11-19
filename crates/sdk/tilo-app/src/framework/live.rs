@@ -35,7 +35,7 @@ pub struct Live<R: Resource> {
 struct Places<R: Resource> {
     /// Applied for a presence, not yet placed: placed once the state
     /// holds what they did.
-    applied: Vec<(tilo_actions::PresenceId, R::Action)>,
+    applied: Vec<(Acting, R::Action)>,
     landed: Landings,
 }
 
@@ -48,12 +48,64 @@ impl<R: Resource> Default for Places<R> {
     }
 }
 
+/// Where a presence's last action left it, and the member acting as it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Landing {
+    pub presence: tilo_actions::PresenceId,
+    /// `None` when no invoker named one.
+    pub member: Option<tilo_actions::MemberId>,
+    /// The name the member goes by where its action was admitted.
+    pub name: Option<String>,
+    pub place: Place,
+}
+
+/// A presence and the member acting as it.
+#[derive(Clone)]
+struct Acting {
+    presence: tilo_actions::PresenceId,
+    member: Option<tilo_actions::MemberId>,
+    name: Option<String>,
+}
+
+impl Acting {
+    /// `presence`, and the member acting as it in the invocation running
+    /// now.
+    #[inline(never)]
+    fn now(presence: tilo_actions::PresenceId) -> Self {
+        let invoker = ui_core::invocation_scope::current_invoker()
+            .filter(|invoker| invoker.view().as_ref() == Some(&presence));
+        let member = invoker
+            .as_ref()
+            .and_then(|invoker| invoker.acting.by.member_id().cloned());
+        let name = invoker.and_then(|invoker| {
+            invoker
+                .appearance
+                .map(|appearance| appearance.name)
+                .or(invoker.name)
+        });
+        Self {
+            presence,
+            member,
+            name,
+        }
+    }
+
+    fn at(self, place: Place) -> Landing {
+        Landing {
+            presence: self.presence,
+            member: self.member,
+            name: self.name,
+            place,
+        }
+    }
+}
+
 /// Where each presence was placed, and the latest placings in order.
 /// Apart from [`Places`] because it does not name the resource type, so its
 /// bookkeeping is compiled once rather than for every resource.
 #[derive(Default)]
 struct Landings {
-    at: std::collections::HashMap<tilo_actions::PresenceId, Place>,
+    at: std::collections::HashMap<tilo_actions::PresenceId, Landing>,
     /// The latest landings in order, numbered, for surfaces to follow.
     log: std::collections::VecDeque<(u64, tilo_actions::PresenceId, Place)>,
     next: u64,
@@ -68,11 +120,12 @@ impl Landings {
     }
 
     #[inline(never)]
-    fn land(&mut self, presence: tilo_actions::PresenceId, place: Place) {
+    fn land(&mut self, landing: Landing) {
         let number = self.next;
         self.next = number.saturating_add(1);
-        self.at.insert(presence.clone(), place.clone());
-        self.log.push_back((number, presence, place));
+        self.log
+            .push_back((number, landing.presence.clone(), landing.place.clone()));
+        self.at.insert(landing.presence.clone(), landing);
         if self.log.len() > LANDINGS_KEPT {
             self.log.pop_front();
         }
@@ -170,7 +223,10 @@ impl<R: Resource> Live<R> {
     /// Note that `action` was applied for `presence`; where it left them
     /// is read once the state follows it ([`Self::place_landings`]).
     pub(crate) fn note_applied(&self, presence: tilo_actions::PresenceId, action: R::Action) {
-        self.places.borrow_mut().applied.push((presence, action));
+        self.places
+            .borrow_mut()
+            .applied
+            .push((Acting::now(presence), action));
     }
 
     /// Place every presence whose action the state now holds, where
@@ -182,9 +238,9 @@ impl<R: Resource> Live<R> {
             return;
         }
         let state = self.get();
-        for (presence, action) in applied {
+        for (acting, action) in applied {
             if let Some(place) = R::lands(&state, &action) {
-                self.land(presence, place);
+                self.places.borrow_mut().landed.land(acting.at(place));
             }
         }
     }
@@ -192,27 +248,30 @@ impl<R: Resource> Live<R> {
     /// Place `presence` at `place`: where an effect they told where to
     /// act acted ([`EffectCx::place`](super::EffectCx::place)).
     pub(crate) fn land(&self, presence: tilo_actions::PresenceId, place: Place) {
-        self.places.borrow_mut().landed.land(presence, place);
+        self.places
+            .borrow_mut()
+            .landed
+            .land(Acting::now(presence).at(place));
+    }
+
+    /// Place a presence where `landing` says.
+    pub(crate) fn place(&self, landing: Landing) {
+        self.places.borrow_mut().landed.land(landing);
     }
 
     /// Where `presence`'s last action left them, as the resource places
     /// it ([`Resource::lands`]): the paragraph an agent appended, the table
     /// it inserted. `None` before they did anything that lands somewhere.
     pub fn place_of(&self, presence: &tilo_actions::PresenceId) -> Option<Place> {
-        self.places.borrow().landed.at.get(presence).cloned()
+        let places = self.places.borrow();
+        Some(places.landed.at.get(presence)?.place.clone())
     }
 
-    /// Where each presence was last placed, by presence.
-    pub(crate) fn landed(&self) -> Vec<(tilo_actions::PresenceId, Place)> {
-        let mut landed: Vec<_> = self
-            .places
-            .borrow()
-            .landed
-            .at
-            .iter()
-            .map(|(presence, place)| (presence.clone(), place.clone()))
-            .collect();
-        landed.sort_by(|a, b| a.0.cmp(&b.0));
+    /// Where each presence was last placed, by presence: what a view draws
+    /// to show who is where.
+    pub fn landings(&self) -> Vec<Landing> {
+        let mut landed: Vec<_> = self.places.borrow().landed.at.values().cloned().collect();
+        landed.sort_by(|a, b| a.presence.cmp(&b.presence));
         landed
     }
 

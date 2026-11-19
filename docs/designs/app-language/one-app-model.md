@@ -30,8 +30,8 @@ does in the one model, by the names in the code.
 
 The builders the left column names exist only for the framework's own use: `LiveRow::new`,
 `LiveRow::operation`/`effect`, `ResourceSpec::new` and `ActionSpec::typed*` are hidden from the
-SDK's API, and the repository's live-row check (`check_live_rows.py`) fails on any occurrence
-under `apps/` and `crates/session/`, with no baseline to grow back. A declaration is the only
+SDK's API, and the repository's live-row check (`check_live_rows.py`) fails on any occurrence in
+every crate but the framework's own, with no baseline to grow back. A declaration is the only
 way an app publishes a row, a tree or a bound action.
 
 Example: Tube declares `Channel`, `Video`, `Playlist` and `Subscriptions` as `#[resource]` types.

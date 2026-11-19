@@ -558,5 +558,19 @@ tilo_test_env::scenario! {
             }
         );
         may_write(DESKTOP_APP, DESKTOP_DOCUMENT, BEN).expect("every member writes the layout");
+
+        assert_eq!(
+            own_person(DESKTOP_APP, &resource_of(ADA), None).as_deref(),
+            Some(ADA),
+            "a view of the layout is its person's own resource, whatever their role"
+        );
+        assert_eq!(own_person(DESKTOP_APP, DESKTOP_DOCUMENT, None), None);
+        assert_eq!(own_person("so.tilo.notes", &resource_of(ADA), None), None);
+        let mailbox = collab_types::OwnResource::new("mail.mailbox", [7; 32]).unwrap();
+        assert_eq!(
+            own_person("so.tilo.mail", &mailbox.document_id(), Some(&mailbox)).as_deref(),
+            Some(mailbox.person().as_str()),
+            "and so is a resource of a kind its app declares each member's own"
+        );
     }
 }

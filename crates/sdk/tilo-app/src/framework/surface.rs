@@ -366,7 +366,7 @@ pub(crate) trait SurfacePublication {
     /// published beside its effects, so a caller reads through the
     /// projection the app registered rather than through a row the view
     /// built.
-    fn item_reads(&self, _field: &str, _id: &str) -> Vec<tilo_actions::ActionSpec> {
+    fn item_reads(&self, _field: &str, _id: &str) -> Vec<tilo_resource::read::Declared> {
         Vec::new()
     }
     fn live_rows(&self) -> Vec<LiveRow>;
@@ -800,16 +800,16 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
 /// A hosted surface as mounted in the view: its [`SurfaceHost`] behind the
 /// one widget type every surface shares.
 pub(crate) struct HostedSurface {
-    host: Box<dyn SurfaceDriver>,
+    driver: Box<dyn SurfaceDriver>,
 }
 
 impl HostedSurface {
-    /// `host` mounted as a widget. The widget is made here, outside any
+    /// `driver` mounted as a widget. The widget is made here, outside any
     /// generic code, so its implementation of the widget contract is
     /// compiled once in the shared runtime rather than in every app.
     #[inline(never)]
-    pub(crate) fn element(host: Box<dyn SurfaceDriver>) -> ui_core::widget::Element {
-        Box::new(Self { host })
+    pub(crate) fn element(driver: Box<dyn SurfaceDriver>) -> ui_core::widget::Element {
+        Box::new(Self { driver })
     }
 }
 
@@ -831,7 +831,7 @@ impl Decorator for HostedSurface {
             request.provide::<dyn ResourceOperations>(self);
             return;
         }
-        self.host.surface().provide(request);
+        self.driver.surface().provide(request);
     }
 
     fn provide_mut<'a>(
@@ -850,56 +850,56 @@ impl Decorator for HostedSurface {
             request.provide::<dyn ResourceOperations>(self);
             return;
         }
-        self.host.surface_mut().provide_mut(request);
+        self.driver.surface_mut().provide_mut(request);
     }
 
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
-        self.host.surface()
+        self.driver.surface()
     }
 
     fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
-        self.host.surface_mut()
+        self.driver.surface_mut()
     }
 
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {
-        self.host.view_only_scroll(event)
+        self.driver.view_only_scroll(event)
     }
 
     /// The record moved since the surface showed it: the frame's sync presents it, and what the
     /// window reads of the record changes then, so the frame that finds no other reason to sync
     /// runs for this one.
     fn needs_idle_sync(&self) -> bool {
-        self.host.owes_presentation() || self.host.surface().needs_idle_sync()
+        self.driver.owes_presentation() || self.driver.surface().needs_idle_sync()
     }
 
     // The host adds no structure of its own: a change its surface can
     // describe stays described.
     fn take_structure_change(&mut self) -> ui_core::widget::StructureChange {
-        self.host.surface_mut().take_structure_change()
+        self.driver.surface_mut().take_structure_change()
     }
 
     // The host is invisible to whoever reaches the surface by its type (a
     // test driving it, a host that embeds it): it answers as the surface.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self.host.surface_any())
+        Some(self.driver.surface_any())
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self.host.surface_any_mut())
+        Some(self.driver.surface_any_mut())
     }
 
     fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ObjId) {
-        self.host.surface_mut().settle(edits, path);
+        self.driver.surface_mut().settle(edits, path);
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.host.sync(state, path);
+        self.driver.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.host.surface_mut().update(state, path)
+        self.driver.surface_mut().update(state, path)
     }
 
     fn handle_event(
@@ -908,7 +908,7 @@ impl Decorator for HostedSurface {
         ctx: &mut ui_core::widget::EventCtx<'_>,
     ) {
         let before = ctx.state.pending_ops();
-        self.host.surface_mut().handle_event(event, ctx);
+        self.driver.surface_mut().handle_event(event, ctx);
         refuse_raw_writes(ctx.state.doc(), before, "handle_event");
     }
 
@@ -919,7 +919,7 @@ impl Decorator for HostedSurface {
         state: &mut ui_core::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let surface = self.host.surface_mut();
+        let surface = self.driver.surface_mut();
         let mut performed = false;
         only_through_actions(state, path, "perform_semantic_action", |state, path| {
             performed = surface.perform_semantic_action(target, action, state, path);
@@ -930,7 +930,7 @@ impl Decorator for HostedSurface {
 
 impl ResourceOperations for HostedSurface {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        let surface = self.host.surface();
+        let surface = self.driver.surface();
         let mut handlers = ui_core::host_operation::resource_operation_handlers(surface);
         // A decorated container lists its own; the surface's children it
         // shows over it (a dialog) answer theirs too.
@@ -948,7 +948,7 @@ impl ResourceOperations for HostedSurface {
         doc: &mut ui_core::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        if let Some(started) = self.host.start_effect(op, doc.doc())? {
+        if let Some(started) = self.driver.start_effect(op, doc.doc())? {
             return Ok(Some(started));
         }
         // The surface answers its operations as its effect vocabulary; only
@@ -960,7 +960,7 @@ impl ResourceOperations for HostedSurface {
         // answer goes to the surface's own children: a dialog the surface
         // shows over its shell.
         let before = doc.pending_ops();
-        let surface = self.host.surface_mut();
+        let surface = self.driver.surface_mut();
         let started = if decorates_routing(surface) {
             match ui_core::host_operation::start_operation(surface, op, doc, path) {
                 Ok(None) => ui_core::host_operation::start_in_children(surface, op, doc, path),
@@ -980,10 +980,10 @@ impl ResourceOperations for HostedSurface {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
-        if let Some(update) = self.host.poll_effect(invocation, cancellation_requested) {
+        if let Some(update) = self.driver.poll_effect(invocation, cancellation_requested) {
             return Some(update);
         }
-        let surface = self.host.surface_mut();
+        let surface = self.driver.surface_mut();
         if decorates_routing(surface)
             && let Some(update) = ui_core::host_operation::poll_resource_operation(
                 surface,
@@ -1016,28 +1016,28 @@ fn decorates_routing(surface: &(impl Widget + ?Sized)) -> bool {
 
 impl SurfacePublication for HostedSurface {
     fn resource(&self) -> std::any::TypeId {
-        self.host.resource()
+        self.driver.resource()
     }
     fn live_rows(&self) -> Vec<LiveRow> {
-        self.host.live_rows()
+        self.driver.live_rows()
     }
     fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.host.live_row(id)
+        self.driver.live_row(id)
     }
     fn supports_device_shell(&self) -> bool {
-        self.host.supports_device_shell()
+        self.driver.supports_device_shell()
     }
     fn device_shell_operation(
         &mut self,
         operation: &ui_core::floating_surface::DeviceShellOperation,
     ) -> Result<serde_json::Value, String> {
-        self.host.device_shell_operation(operation)
+        self.driver.device_shell_operation(operation)
     }
     fn request_device_shell(&mut self) -> bool {
-        self.host.request_device_shell()
+        self.driver.request_device_shell()
     }
     fn take_process_intent(&mut self) -> Option<ui_core::widget::AppProcessIntent> {
-        self.host.take_process_intent()
+        self.driver.take_process_intent()
     }
 }
 
@@ -1078,14 +1078,14 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
 // document actions: those are the resource's, through its dispatcher.
 impl ui_core::resources::PublishesResources for HostedSurface {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        ui_core::resources::resources(self.host.surface(), doc)
+        ui_core::resources::resources(self.driver.surface(), doc)
             .into_iter()
             .map(outside_document)
             .collect()
     }
 
     fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        ui_core::resources::caller_view_resources(self.host.surface(), doc)
+        ui_core::resources::caller_view_resources(self.driver.surface(), doc)
             .into_iter()
             .map(outside_document)
             .collect()
@@ -1098,7 +1098,7 @@ impl ui_core::resources::PublishesResources for HostedSurface {
         max_results: usize,
     ) -> Option<ui_core::widget::ActionDirectoryResourcePage> {
         let mut page = ui_core::resources::action_directory_resource_page(
-            self.host.surface(),
+            self.driver.surface(),
             doc,
             cursor,
             max_results,
@@ -1108,18 +1108,18 @@ impl ui_core::resources::PublishesResources for HostedSurface {
     }
 
     fn action_directory_revision(&self, doc: &AutoCommit) -> Option<String> {
-        ui_core::resources::action_directory_revision(self.host.surface(), doc)
+        ui_core::resources::action_directory_revision(self.driver.surface(), doc)
     }
 
     fn action_directory_invocation_domain(
         &self,
         doc: &AutoCommit,
     ) -> ui_core::widget::ActionDirectoryInvocationDomain {
-        ui_core::resources::action_directory_invocation_domain(self.host.surface(), doc)
+        ui_core::resources::action_directory_invocation_domain(self.driver.surface(), doc)
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec> {
-        ui_core::resources::resource(self.host.surface(), doc, id).map(resolved_outside_document)
+        ui_core::resources::resource(self.driver.surface(), doc, id).map(resolved_outside_document)
     }
 
     fn resources_for(
@@ -1127,7 +1127,7 @@ impl ui_core::resources::PublishesResources for HostedSurface {
         presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::ResourceSpec> {
-        ui_core::resources::resources_for(self.host.surface(), presence, doc)
+        ui_core::resources::resources_for(self.driver.surface(), presence, doc)
             .into_iter()
             .map(outside_document)
             .collect()
@@ -1139,8 +1139,16 @@ impl ui_core::resources::PublishesResources for HostedSurface {
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::ResourceSpec> {
-        ui_core::resources::resource_for(self.host.surface(), presence, doc, id)
+        ui_core::resources::resource_for(self.driver.surface(), presence, doc, id)
             .map(resolved_outside_document)
+    }
+
+    fn published_action(
+        &self,
+        id: &str,
+        spec: tilo_actions::ActionSpec,
+    ) -> tilo_actions::ActionSpec {
+        ui_core::resources::published_action(self.driver.surface(), id, spec)
     }
 
     fn action_directory_visibility(
@@ -1148,7 +1156,7 @@ impl ui_core::resources::PublishesResources for HostedSurface {
         doc: &AutoCommit,
         resource_id: &str,
     ) -> Option<tilo_actions::ActionAddress> {
-        ui_core::resources::action_directory_visibility(self.host.surface(), doc, resource_id)
+        ui_core::resources::action_directory_visibility(self.driver.surface(), doc, resource_id)
     }
 
     fn document_action_result(
@@ -1157,7 +1165,7 @@ impl ui_core::resources::PublishesResources for HostedSurface {
         address: &tilo_actions::ActionAddress,
         changes: &[ui_core::automerge::Patch],
     ) -> Option<serde_json::Value> {
-        ui_core::resources::document_action_result(self.host.surface(), doc, address, changes)
+        ui_core::resources::document_action_result(self.driver.surface(), doc, address, changes)
     }
 }
 

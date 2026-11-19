@@ -1263,7 +1263,7 @@ doc = false
 "tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
 "tilo-firstboot-files" = { path = "../../../crates/system/firstboot-files", default-features = false, features = [] }
 "tilo-flight-log" = { path = "../../../crates/session/flight-log", default-features = false, features = [] }
-"tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
+"tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = [] }
 "tilo-formats" = { path = "../../../crates/sdk/tilo-formats", default-features = false, features = [] }
 "tilo-frame-metrics" = { path = "../../../crates/session/frame-metrics", default-features = false, features = [] }
 "tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = ["default", "document-media", "filesystem"] }
@@ -1290,6 +1290,7 @@ doc = false
 "tilo-locale" = { path = "../../../crates/platform/tilo-locale", default-features = false, features = [] }
 "tilo-location" = { path = "../../../crates/platform/tilo-location", default-features = false, features = [] }
 "tilo-lock" = { path = "../../../crates/platform/tilo-lock", default-features = false, features = [] }
+"tilo-mail-parts" = { path = "../../../crates/platform/mail-parts", default-features = false, features = ["fixture"] }
 "tilo-mail-session" = { path = "../../../crates/platform/mail-session", default-features = false, features = [] }
 "tilo-mcp" = { path = "../../../crates/runtime/tilo-mcp", default-features = false, features = ["test-support"] }
 "tilo-media" = { path = "../../../crates/platform/tilo-media", default-features = false, features = ["decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }
@@ -2503,7 +2504,6 @@ doc = false
 "tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-failure" = { path = "../../../crates/platform/tilo-failure", default-features = false, features = [] }
 "tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
-"tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
 "tilo-formats" = { path = "../../../crates/sdk/tilo-formats", default-features = false, features = [] }
 "tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = ["default", "document-media", "filesystem"] }
 "tilo-fs-client" = { path = "../../../crates/runtime/tilo-fs-client", default-features = false, features = [] }
@@ -3892,7 +3892,7 @@ doc = false
 "tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
 "tilo-firstboot-files" = { path = "../../../crates/system/firstboot-files", default-features = false, features = [] }
 "tilo-flight-log" = { path = "../../../crates/session/flight-log", default-features = false, features = [] }
-"tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
+"tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false }
 "tilo-formats" = { path = "../../../crates/sdk/tilo-formats", default-features = false, features = [] }
 "tilo-frame-metrics" = { path = "../../../crates/session/frame-metrics", default-features = false, features = [] }
 "tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = ["default", "document-media", "filesystem"] }
@@ -5168,7 +5168,7 @@ doc = false
 "tilo-feedback" = { path = "../../../crates/collab/feedback", default-features = false, features = [] }
 "tilo-feedback-review" = { path = "../../../crates/collab/feedback-review", default-features = false, features = [] }
 "tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
-"tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
+"tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false }
 "tilo-formats" = { path = "../../../crates/sdk/tilo-formats", default-features = false, features = [] }
 "tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = ["default", "document-media", "filesystem"] }
 "tilo-fs-client" = { path = "../../../crates/runtime/tilo-fs-client", default-features = false, features = [] }

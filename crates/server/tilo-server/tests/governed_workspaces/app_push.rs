@@ -23,7 +23,15 @@ const V2: &str = "[[resources]]\nkind = \"fixture\"\nlabel = \"Fixture\"\nversio
 static BOB_RUNS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
 
 fn surface_of(version: u8) -> [u8; 32] {
-    *blake3::hash(if version == 1 { V1 } else { V2 }.as_bytes()).as_bytes()
+    *blake3::hash(kept_of(version).as_bytes()).as_bytes()
+}
+
+/// A version's surface, in the form it is kept by.
+fn kept_of(version: u8) -> String {
+    let (_, kept) =
+        collab_types::surface::SurfaceFile::kept(if version == 1 { V1 } else { V2 }.as_bytes())
+            .expect("the fixture is a surface");
+    kept
 }
 
 /// The topic the workspace's host holds.
@@ -51,10 +59,11 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
     crate::common::install_process_surfaces(
         collab_types::Surfaces::from_source(std::sync::Arc::new(
             collab_types::surface::ContentSurfaces::new(|_, wanted| {
-                [V1, V2]
+                [1, 2]
                     .into_iter()
-                    .find(|surface| blake3::hash(surface.as_bytes()).to_hex().as_str() == wanted)
-                    .map(|surface| surface.as_bytes().to_vec())
+                    .map(kept_of)
+                    .find(|kept| blake3::hash(kept.as_bytes()).to_hex().as_str() == wanted)
+                    .map(String::into_bytes)
             }),
         )),
         |_| Some(surface_of(BOB_RUNS.load(Ordering::SeqCst))),

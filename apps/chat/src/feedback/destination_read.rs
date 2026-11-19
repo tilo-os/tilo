@@ -3,7 +3,7 @@ use crate::projection::ChatProjection as _;
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::{ActionSpec, ResourceSpec};
+use tilo_actions::ResourceSpec;
 use ui::semantic_document_read::{
     ReadPage, RegisteredSemanticReader, SemanticReadError, decode_request,
 };
@@ -34,7 +34,7 @@ fn validate(resource: &ResourceSpec, payload: &[u8]) -> Result<(), SemanticReadE
     Ok(())
 }
 
-pub(crate) fn spec(channel: &str) -> ActionSpec {
+pub(crate) fn spec(channel: &str) -> ui::semantic_document_read::Declared {
     let channel = channel.to_owned();
     ui::semantic_document_read::read_action(
         ui::semantic_document_read::ReadName {

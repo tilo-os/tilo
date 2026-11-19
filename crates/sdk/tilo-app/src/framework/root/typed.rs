@@ -131,6 +131,9 @@ pub(crate) trait TypedRoot {
     /// Forget where `presence` was: its view closed.
     fn forget(&self, presence: &tilo_actions::PresenceId);
 
+    /// Place a capture's agent where `landing` says.
+    fn stage_landing(&self, landing: crate::framework::Landing);
+
     /// [`Resource::publication_cache_epoch`] of `state`.
     fn cache_epoch(&self, state: &dyn Any) -> Option<String>;
 
@@ -425,14 +428,14 @@ impl<R: Resource> TypedRoot for Typed<R> {
 
     fn landed_presences(&self, app_id: &str) -> Vec<ui_core::widget::ViewPresence> {
         self.live
-            .landed()
+            .landings()
             .into_iter()
-            .map(|(presence, place)| {
-                let (key, payload) =
-                    crate::framework::ResourceSelection::from(place).presence_of(R::KIND, app_id);
+            .map(|landing| {
+                let (key, payload) = crate::framework::ResourceSelection::from(landing.place)
+                    .presence_of(R::KIND, app_id);
                 ui_core::widget::ViewPresence {
-                    presence,
-                    label: None,
+                    presence: landing.presence,
+                    label: landing.name,
                     key,
                     payload,
                 }
@@ -442,6 +445,10 @@ impl<R: Resource> TypedRoot for Typed<R> {
 
     fn forget(&self, presence: &tilo_actions::PresenceId) {
         self.live.forget(presence);
+    }
+
+    fn stage_landing(&self, landing: crate::framework::Landing) {
+        self.live.place(landing);
     }
 
     fn cache_epoch(&self, state: &dyn Any) -> Option<String> {

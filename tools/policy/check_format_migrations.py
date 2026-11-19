@@ -4,10 +4,9 @@
 Stored formats change with the code (docs/architecture/compatibility.md). A
 program that writes a file in a format of its own declares it as a
 ``tilo_files::native::migration::Format``: its version, the oldest version it
-still brings up, and one step per version in between. A build keeps no reader
-for what another build wrote, so the oldest version is the one this build
-writes unless a step is still there, and a layout change deletes its step with
-the layout it read:
+still brings up, and one step per version in between. A layout change keeps
+the step that brings up what the build before it wrote, and deletes the steps
+for anything older:
 
 ``check`` (the repository policy suite) fails when a declaration's
 ``oldest`` is not a plain number, which the comparison below needs, and when
@@ -22,9 +21,12 @@ only the first version's file and read a later one as it was refused a whole
 server's state at start.
 
 ``against BASE`` (run against main before landing) fails when the golden bytes
-of a version this build still declares changed. A format may bring up fewer
-versions, and one may be gone with its steps: that is a landing, not a
-regression.
+of a version this build still declares changed, and when a format no longer
+brings up the version BASE writes: every device that updates from BASE holds
+files of that version, and a build that refuses them leaves the device without
+what it kept (a desktop that refused its own workspaces' entries opened none and
+kept nothing). A format may bring up fewer versions than BASE did, and an older
+one may be gone with its step: that is a landing, not a regression.
 
 Each step is tested against a file its previous version wrote, and only that
 (``assert_step_reads_previous``, beside each declaration).
@@ -360,13 +362,58 @@ def changed_goldens(base: str, root: Path, declared: list[str]) -> list[str]:
     return problems
 
 
+def version_at(root: Path, base: str, path: str, expression: str) -> int | None:
+    """The number a declaration's `version:` was at `base`: written out, or a
+    `u32` constant of the crate `path` belongs to."""
+    expression = expression.strip()
+    if expression.isdigit():
+        return int(expression)
+    name = expression.rsplit("::", 1)[-1]
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
+        return None
+    crate = crate_of(root, path).relative_to(root).as_posix()
+    found = subprocess.run(
+        ["git", "grep", "-h", "-E", rf"\bconst\s+{name}\s*:\s*u32\s*=\s*[0-9]+", base, "--",
+         f"{crate}/*.rs"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    ).stdout
+    number = re.search(r"=\s*([0-9]+)", found)
+    return int(number.group(1)) if number else None
+
+
+def dropped_versions(root: Path, base: str, then: dict[str, str], now: dict[str, str]) -> list[str]:
+    """Each format that no longer brings up the version `base` writes."""
+    problems = []
+    declared_now = declarations({path: without_tests(path, text) for path, text in now.items()})
+    for path, text in then.items():
+        for match in VERSIONED.finditer(without_tests(path, text)):
+            name = match.group("name")
+            if name not in declared_now:
+                continue
+            written = version_at(root, base, path, match.group("version"))
+            now_path, oldest = declared_now[name]
+            if written is None or not oldest.isdigit() or int(oldest) <= written:
+                continue
+            problems.append(
+                f"{now_path}: format {name!r} no longer brings up version {written}, which "
+                f"{base} writes: every device that updates holds that version, and would refuse "
+                "what it kept. Keep the step that brings it up (`oldest` at most "
+                f"{written}), tested with `assert_step_reads_previous`"
+            )
+    return problems
+
+
 def against(base: str, root: Path = ROOT) -> list[str]:
-    """What a change may not do to the bytes of a stored layout: change those
-    of a version this build still declares. A format may bring up fewer
-    versions, and one may be gone with its steps."""
+    """What a change may not do to a stored layout: change the bytes of a
+    version this build still declares, or stop bringing up the version `base`
+    writes. A format may bring up fewer older versions, gone with their steps."""
     then = sources_at(root, base)
     now = sources_since(root, base, then)
-    return changed_goldens(base, root, declared_goldens(root, now))
+    return changed_goldens(base, root, declared_goldens(root, now)) + dropped_versions(
+        root, base, then, now
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

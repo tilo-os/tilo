@@ -42,7 +42,7 @@ pub enum WorkspaceUnavailable {
 }
 
 impl WorkspaceUnavailable {
-    const fn message_id(self) -> &'static str {
+    pub(crate) const fn message_id(self) -> &'static str {
         match self {
             Self::NoIdentity => "workspace-sync-no-identity",
             Self::NotRenewed => "workspace-sync-not-renewed",
@@ -54,6 +54,69 @@ impl WorkspaceUnavailable {
 }
 
 impl std::fmt::Display for WorkspaceUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::i18n::I18nManager::lookup_plain(self.message_id()))
+    }
+}
+
+/// Why a page's link to a workspace cannot answer what its windows wait for now, in the words a
+/// person reads: the causes the link's failure codes name
+/// (`tilo_session_client::link::Failure::code`). It is the same catalogue the shell's arrival
+/// causes come from ([`WorkspaceUnavailable`]): a cause both name reads the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkspaceUnanswered {
+    /// The workspace's server could not be dialled.
+    ServerUnreachable,
+    /// The connection to the workspace's server ended.
+    ConnectionEnded,
+    /// The workspace's server answered, but the workspace did not let this device in.
+    NotAdmitted,
+    /// This device's certificate expired or was refused, and renewing it failed.
+    NotRenewed,
+    /// This device was removed from its person's devices.
+    DeviceRevoked,
+    /// Another server answers for the workspace than the one this page pinned.
+    ServerChanged,
+    /// The workspace was deleted.
+    WorkspaceDeleted,
+    /// The workspace did not admit this device in time.
+    AdmissionTimedOut,
+}
+
+impl WorkspaceUnanswered {
+    /// The cause `code` names, in the link's failure-code vocabulary. `None` where the code does
+    /// not say why a window's data cannot come, which keeps the window's own words.
+    #[must_use]
+    pub fn from_code(code: &str) -> Option<Self> {
+        Some(match code {
+            "transport-unavailable" => Self::ServerUnreachable,
+            "transport-ended" => Self::ConnectionEnded,
+            "not-admitted" => Self::NotAdmitted,
+            "certificate-expired" | "certificate-rejected" => Self::NotRenewed,
+            "device-revoked" => Self::DeviceRevoked,
+            "host-changed" => Self::ServerChanged,
+            "workspace-deleted" => Self::WorkspaceDeleted,
+            "admission-timeout" => Self::AdmissionTimedOut,
+            _ => return None,
+        })
+    }
+
+    const fn message_id(self) -> &'static str {
+        match self {
+            Self::ServerUnreachable => "workspace-link-server-unreachable",
+            Self::ConnectionEnded => "workspace-link-connection-ended",
+            Self::NotAdmitted => "workspace-link-not-admitted",
+            // The same cause the shell names to an app, and so its words.
+            Self::NotRenewed => WorkspaceUnavailable::NotRenewed.message_id(),
+            Self::DeviceRevoked => "workspace-link-device-revoked",
+            Self::ServerChanged => "workspace-link-server-changed",
+            Self::WorkspaceDeleted => "workspace-link-workspace-deleted",
+            Self::AdmissionTimedOut => "workspace-link-admission-timeout",
+        }
+    }
+}
+
+impl std::fmt::Display for WorkspaceUnanswered {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&crate::i18n::I18nManager::lookup_plain(self.message_id()))
     }
@@ -742,5 +805,77 @@ mod tests {
             serde_json::json!({"state": "host_needs_update", "workspace": "Lounge"})
         );
         assert_eq!(serde_json::from_value::<WorkspaceSync>(json).unwrap(), sync);
+    }
+
+    /// Every failure the page's link can name that leaves a window's data unable to come reads
+    /// as the cause a person can act on, in one sentence of its own.
+    #[test]
+    fn each_link_failure_names_its_cause_in_the_persons_words() {
+        crate::i18n::I18nManager::init("en-US");
+        for (code, cause, said) in [
+            (
+                "transport-unavailable",
+                WorkspaceUnanswered::ServerUnreachable,
+                "Couldn’t reach the workspace’s server. It opens by itself once the server is back.",
+            ),
+            (
+                "transport-ended",
+                WorkspaceUnanswered::ConnectionEnded,
+                "The connection to the workspace’s server dropped. It opens by itself once it’s back.",
+            ),
+            (
+                "not-admitted",
+                WorkspaceUnanswered::NotAdmitted,
+                "This workspace hasn’t let you in. Ask whoever manages it for access, then try again.",
+            ),
+            (
+                "certificate-expired",
+                WorkspaceUnanswered::NotRenewed,
+                "This workspace no longer lets this device in, and renewing its access failed.",
+            ),
+            (
+                "certificate-rejected",
+                WorkspaceUnanswered::NotRenewed,
+                "This workspace no longer lets this device in, and renewing its access failed.",
+            ),
+            (
+                "device-revoked",
+                WorkspaceUnanswered::DeviceRevoked,
+                "This device was removed from your devices, so it can’t open the workspace.",
+            ),
+            (
+                "host-changed",
+                WorkspaceUnanswered::ServerChanged,
+                "The workspace’s server was set up again, so this page can’t reach it. Open the workspace again from its link.",
+            ),
+            (
+                "workspace-deleted",
+                WorkspaceUnanswered::WorkspaceDeleted,
+                "This workspace was deleted, so there’s nothing to open.",
+            ),
+            (
+                "admission-timeout",
+                WorkspaceUnanswered::AdmissionTimedOut,
+                "The workspace is taking a while to let this device in. It opens by itself once it does.",
+            ),
+        ] {
+            assert_eq!(WorkspaceUnanswered::from_code(code), Some(cause), "{code}");
+            assert_eq!(cause.to_string(), said, "{code}");
+        }
+    }
+
+    /// A failure about something else keeps the window's generic words: the link has no cause to
+    /// give, and its own reason stays behind Details.
+    #[test]
+    fn a_link_failure_about_something_else_names_no_cause() {
+        crate::i18n::I18nManager::init("en-US");
+        for code in [
+            "write-refused",
+            "protocol-rejected",
+            "storage-transaction-failed",
+            "admission-timeout-typo",
+        ] {
+            assert_eq!(WorkspaceUnanswered::from_code(code), None, "{code}");
+        }
     }
 }

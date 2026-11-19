@@ -788,6 +788,28 @@ impl TileHost {
         tile
     }
 
+    /// Where this window's content shows text or a control, in layout coordinates, read from what
+    /// it tells assistive technology: what a card laid over the window must not cover. `None` where
+    /// the content cannot say (a notice, an app that failed, one too large to read),
+    /// so the whole window counts.
+    #[must_use]
+    pub fn ink(&self) -> Option<Vec<Rect>> {
+        if self.resource_error.is_some() {
+            return None;
+        }
+        let TileContent::App(app) = &self.content else {
+            return None;
+        };
+        let shift = vello::kurbo::Vec2::new(self.content_shift, 0.0);
+        let ink = crate::control_hints::ink::of(&**app)?;
+        Some(
+            ink.into_iter()
+                .map(|rect| (rect + shift).intersect(self.rect))
+                .filter(|rect| !rect.is_zero_area())
+                .collect(),
+        )
+    }
+
     #[must_use]
     pub fn asking_for_input(&self) -> bool {
         match &self.content {

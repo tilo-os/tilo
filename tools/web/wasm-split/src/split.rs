@@ -79,6 +79,14 @@ pub struct Splitter<'a> {
     renumber: Option<crate::analysis::Renumber>,
     /// What the plan every module is taken from was made from (plan.rs).
     plan_key: String,
+    /// What an emission reads of the bound module that is not a body
+    /// (analysis.rs): its sections, the type section among them, and its
+    /// function counts. The start module's sections are read from it, so its
+    /// emission is keyed by it (`Splitter::start_key`).
+    structure: String,
+    /// The linked module's lazy exports, which its sections elsewhere do not
+    /// tell: which module answers which export (`lazy_exports`).
+    lazy_exports: Vec<(String, String)>,
     /// The main module's symbols that nothing it keeps reaches: read off the
     /// call graph when the plan is made, so an emission needs none.
     planned_unused: Option<HashSet<Node>>,
@@ -100,9 +108,9 @@ pub struct Splitter<'a> {
 
 /// What every emission's key starts from (`Splitter::emit_key_base`), and
 /// the bound module's function bodies, by defined index.
-struct KeyBase {
-    key: Key,
-    imported: usize,
+pub(crate) struct KeyBase {
+    pub(crate) key: Key,
+    pub(crate) imported: usize,
 }
 
 /// What one split module or shared chunk defines, imports and deletes (in
@@ -293,7 +301,8 @@ impl<'a> Splitter<'a> {
         structure.add(&imported).add(&hashes.len());
         let structure = structure.finish();
         assert_eq!(structure.len(), STRUCTURE_LEN);
-        let split_points = accumulate_split_points(&module, &lazy_exports(original)?)?;
+        let lazy_exports = lazy_exports(original)?;
+        let split_points = accumulate_split_points(&module, &lazy_exports)?;
         let entry_slots = split_points.iter().map(|split| split.entries.len()).sum();
 
         // Note that we can't trust the normal symbols - just the data symbols - and we can't use the data offset
@@ -320,6 +329,8 @@ impl<'a> Splitter<'a> {
             bodies_changed: Vec::new(),
             renumber: None,
             plan_key: String::new(),
+            structure: String::new(),
+            lazy_exports,
             planned_unused: None,
             symbol_ids: Vec::new(),
             content_hashes: Vec::new(),
@@ -374,10 +385,11 @@ impl<'a> Splitter<'a> {
 
         if let Some(cache) = cache {
             cache.store(&Analysis {
-                structure,
+                structure: structure.clone(),
                 bodies: module.bodies.clone(),
             })?;
         }
+        module.structure = structure;
         Ok(module)
     }
 
@@ -529,7 +541,7 @@ impl<'a> Splitter<'a> {
         let started = std::time::Instant::now();
         // With WASM_SPLIT_CACHE, a module emitted before from exactly what
         // this one is emitted from is read back instead (cache.rs).
-        let base = cache.map(|_| self.emit_key_base()).transpose()?;
+        let base = cache.map(|_| self.emit_key_base(&main.bytes)).transpose()?;
         let reused = std::sync::atomic::AtomicUsize::new(0);
         let cached = |key: Option<&Key>,
                       emit: &dyn Fn() -> Result<SplitModule>,
@@ -633,6 +645,22 @@ impl<'a> Splitter<'a> {
     fn start_key(&self) -> String {
         let mut key = Key::new();
         key.add(&"start");
+        // The bound module's structure, its types included, and the split
+        // points' table slots: what the start module's sections hold besides
+        // the bodies below.
+        key.add(&self.structure);
+        key.add(&self.lazy_exports);
+        for split in &self.split_points {
+            key.add(&split.module_name);
+            if let Some(point) = &split.point {
+                key.add(&point.hash_name).add(&point.component_name);
+            }
+            for entry in &split.entries {
+                key.add(&self.node_key(&Node::Function(entry.func)))
+                    .add(&entry.slot)
+                    .add(&entry.lazy_export.is_some());
+            }
+        }
         key.add_set(self.main_graph.iter().map(|node| self.node_key(node)));
         let mut sizes: Vec<((u8, u64), u64)> = self
             .data_sizes
@@ -669,11 +697,18 @@ impl<'a> Splitter<'a> {
         key.finish()
     }
 
-    /// What every module's emission reads alike (see cache.rs): the bound
-    /// module but for its function bodies, the table slots the entries and
-    /// the shared functions take, in order.
-    fn emit_key_base(&self) -> Result<KeyBase> {
+    /// What every module's emission reads alike (see cache.rs): the start
+    /// module's interface — what a module imports, the table's slots and the
+    /// entries it fills — the bound module but for its function bodies, and
+    /// the table slots the entries and the shared functions take, in order.
+    ///
+    /// A module is never read for one emitted beside another start module:
+    /// its imports, its table's slots and the entries it fills are that
+    /// module's as it was emitted. A start module whose code or static data
+    /// changed alone is the same interface, and a module is read back for it.
+    pub(crate) fn emit_key_base(&self, main: &[u8]) -> Result<KeyBase> {
         let mut key = Key::new();
+        interface(&mut key, main)?;
         // What a module's emission reads that is not the code or the data:
         // its own bodies are keyed by their content, and the data it writes
         // is the plan's ranges for it (which its key holds). The function,
@@ -2145,6 +2180,29 @@ fn push_leb(out: &mut Vec<u8>, mut value: usize) {
         }
         out.push(byte | 0x80);
     }
+}
+
+/// `key` over what another module reads of a module: its types, its imports,
+/// its functions' signatures, its tables, memories, globals, its exports and
+/// the element segments that place functions in the table. Its code, its
+/// static data and its custom sections are its own, and no module that
+/// imports it sees them.
+fn interface(key: &mut Key, bytes: &[u8]) -> Result<()> {
+    let mut skipped = Vec::new();
+    let mut at = 8;
+    while at < bytes.len() {
+        let start = at;
+        let id = bytes[at];
+        at += 1;
+        let size = read_leb(bytes, &mut at)?;
+        at = (at + size).min(bytes.len());
+        // Custom sections (0), the code (10), the data (11) and the data
+        // count (12).
+        if id == 0 || (10..=12).contains(&id) {
+            skipped.push(start..at);
+        }
+    }
+    key_sections(key, bytes, &skipped)
 }
 
 /// The sections a module's emission reads function by function or range by

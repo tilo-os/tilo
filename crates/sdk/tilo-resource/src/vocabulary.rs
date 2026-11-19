@@ -207,6 +207,11 @@ pub struct Declaration {
     /// declaration names one (`writes = issues`): what the step makes, so a
     /// surface says that collection's own noun ("Creating an issue in Issues").
     pub creates: Option<&'static str>,
+    /// The collection whose item it acts on, when it is an item verb
+    /// (`#[action(item = issues)]`): published on the resource itself, it
+    /// says it needs an item ([`tilo_actions::ActionContract::item`]), and
+    /// each item offers it with the item bound.
+    pub item: Option<&'static str>,
     /// The units the action writes ([`crate::footprint`]): `record`, an
     /// item's unit, declared fields'.
     pub writes: Vec<String>,
@@ -292,6 +297,7 @@ impl Declaration {
             refines: false,
             step: None,
             creates: None,
+            item: None,
             writes: vec![crate::footprint::RESOURCE_UNIT.to_owned()],
             resource: vocabulary.kind,
             action_type: vocabulary.action_type,

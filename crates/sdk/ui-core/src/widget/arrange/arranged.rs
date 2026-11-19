@@ -388,7 +388,11 @@ impl<L: Layout> Arranged<L> {
     /// its sizing. A change the frame's damage describes: the new child draws itself whole,
     /// and the host repaints where the boxes it moved were and are.
     pub fn replace(&mut self, index: usize, element: Element) -> Option<Element> {
-        let held = std::mem::replace(&mut self.parts.get_mut(index)?.element, element);
+        let part = self.parts.get_mut(index)?;
+        let held = std::mem::replace(&mut part.element, element);
+        // The new child has no layout until the parts are laid out again: nothing places it or
+        // hands it input through the node its predecessor stood in.
+        part.wrapper = None;
         self.parts_changed();
         Some(held)
     }
@@ -702,6 +706,9 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         self.resolved = Resolved::of(theme).with_target(self.interaction.minimum_target());
         self.layout.items(self.parts.len());
         self.relaid = false;
+        // A part changed while the parts below build belongs to this build, not to the node the
+        // container had in the tree it was last laid out in.
+        self.node = None;
         let mut wrappers = Vec::with_capacity(self.parts.len());
         for index in 0..self.parts.len() {
             let Some(part) = self.parts.get_mut(index) else {

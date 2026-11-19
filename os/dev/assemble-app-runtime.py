@@ -324,9 +324,6 @@ def assemble_inside(args):
     closure = native_dependencies([toolkit, *engines, *binaries], dependency_env)
     fonts = prepare_runtime_fonts(repo, stage / 'work')
     bundle = target / 'release/tilo-runtime-bundle'
-    # Every process that sets text from this catalog reads its faces from
-    # the record instead of parsing each font; the copies below carry it.
-    run([str(bundle), 'font-index', str(fonts)])
     publish_runtime_fonts(repo, fonts, stage / 'tree/usr/share/tilo/font-catalogs')
     includes = list(dict.fromkeys([toolkit, *engines, std[0], *closure, fonts]))
     model_runtime = target / 'app-models/app-model-runtime'

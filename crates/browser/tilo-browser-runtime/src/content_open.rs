@@ -94,13 +94,13 @@ pub(crate) fn opened_file(
         file_bytes(bytes, content, MAX_OPEN_FILE_BYTES as u64, workspace).ok_or_else(gone)?;
     let (extension, media_type) = tilo_content::opened_as(&bytes);
     // Bytes say a file is text, not which: its name says it is notes, and plain text reads as
-    // the Markdown it is.
+    // the Markdown it is. An empty file named so is a note not yet written.
     let written = name
         .and_then(|name| name.rsplit_once('.'))
         .is_some_and(|(_, extension)| {
             ["md", "markdown", "txt", "text"].contains(&extension.to_ascii_lowercase().as_str())
         });
-    let media_type = if media_type == "text/plain" && written {
+    let media_type = if (media_type == "text/plain" || bytes.is_empty()) && written {
         "text/markdown"
     } else {
         media_type
@@ -161,5 +161,16 @@ mod tests {
         assert_eq!(file.media_type(), "text/markdown");
         let (file, _) = opened_file(&note, &content, None, None).unwrap();
         assert_eq!(file.media_type(), "text/plain");
+        // A new file, made empty and named as notes, is a note not yet written.
+        let stream = fs_content::Streamed::new(0, None);
+        let mut keep = |_: &fs_content::ChunkRef, bytes: &[u8]| {
+            content.put_public(bytes).unwrap();
+        };
+        let (manifest, _) = stream.finish(&mut keep).unwrap();
+        let empty = content.put_public(&manifest.encode()).unwrap();
+        let (file, _) = opened_file(&empty, &content, Some("plan.txt")).unwrap();
+        assert_eq!(file.name(), "plan.txt");
+        assert_eq!(file.media_type(), "text/markdown");
+        assert!(file.bytes().is_empty());
     }
 }

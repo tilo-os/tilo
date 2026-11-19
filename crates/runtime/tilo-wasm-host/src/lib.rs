@@ -16,8 +16,9 @@
 //! waits inside a host function, nor one that executes on a runtime whose instructions are not
 //! counted the way the interpreter counts them. [`Limits::deadline`] bounds a call by the clock
 //! instead, where the engine can interrupt guest code: wasmtime's epoch interruption, driven by
-//! a ticker of this layer's own. wasmi has no interruption, so on it the deadline is unenforced
-//! and fuel is the only bound; a host that needs both executes on wasmtime.
+//! a ticker of this layer's own that advances only while a call is in flight. wasmi has no interruption, so
+//! on it the deadline is unenforced and fuel is the only bound; a host that needs both executes
+//! on wasmtime.
 
 mod failure;
 pub mod wasmi;

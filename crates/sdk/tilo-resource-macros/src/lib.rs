@@ -21,10 +21,9 @@ fn krate() -> Tokens {
     quote!(#name)
 }
 
-/// The app's committed `surface.toml` (the file its package ships) and that
-/// file as JSON, read while the crate that expands it is built:
-/// `Option<(&'static [u8], &'static str)>`, `Some` when it has a
-/// `surface.toml` at its root, else `None`.
+/// The app's committed `surface.toml` (the file its package ships) as JSON,
+/// read while the crate that expands it is built: `Option<&'static str>`,
+/// `Some` when it has a `surface.toml` at its root, else `None`.
 ///
 /// The JSON is the file's own content, so the shell's built-in apps and the
 /// web desktop read their surfaces without a TOML parser. A file that does not
@@ -37,8 +36,7 @@ pub fn committed_surface(_input: TokenStream) -> TokenStream {
         .map(|dir| dir.join("surface.toml"))
         .filter(|path| path.is_file());
     let Some(path) = path else {
-        return quote::quote! { ::core::option::Option::<(&'static [u8], &'static str)>::None }
-            .into();
+        return quote::quote! { ::core::option::Option::<&'static str>::None }.into();
     };
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -67,17 +65,7 @@ pub fn committed_surface(_input: TokenStream) -> TokenStream {
                 .into();
         }
     };
-    let Some(path) = path.to_str().map(str::to_owned) else {
-        return quote::quote! { ::core::option::Option::<(&'static [u8], &'static str)>::None }
-            .into();
-    };
-    quote::quote! {
-        ::core::option::Option::Some((
-            ::core::include_bytes!(#path) as &'static [u8],
-            #json,
-        ))
-    }
-    .into()
+    quote::quote! { ::core::option::Option::Some(#json) }.into()
 }
 
 /// What `tilo_resource::word!` expands to: the word `key` of the catalogue

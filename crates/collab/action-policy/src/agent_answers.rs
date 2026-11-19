@@ -226,23 +226,32 @@ pub const WORKSPACE_GOVERNANCE_APP: &str = "tilo.workspace";
 /// creating, listing, entering and deleting them.
 pub const ACCOUNT_APP: &str = "tilo.host";
 
-/// Whether an agent may be given `answer` for actions of `kind` in `app`.
+/// Whether an agent may be given `answer` for actions of `kind` at `scope`; `None` for a node no
+/// answer scope names, such as the whole workspace.
 ///
 /// What the person's own account holds is theirs to allow: their workspaces on
 /// a server ([`ACCOUNT_APP`]) and the governance of a workspace
 /// ([`WORKSPACE_GOVERNANCE_APP`]). The server holds every such call to what the
 /// person may do themselves, so their agent never reaches further than they
-/// do. Any other app's outside effect reaches other people's data or
-/// accounts (it sends, publishes or calls a service), so it is never carried
-/// out unasked: the agent asks first or is denied.
+/// do. Any other app's outside effect reaches other people's data, accounts or
+/// machines (it sends, publishes, calls a service or executes a command), so it is
+/// carried out unasked only where its person allowed that one action
+/// ([`AnswerScope::Action`], what "Always allow this" gives): never for a whole
+/// app or kind of resource, which would let actions they never looked at go
+/// unasked as well.
 ///
 /// What every list of an agent's answers offers, and what its keeper's bound
 /// is held to.
 #[must_use]
-pub fn may_give(app: &str, kind: ActionKind, answer: Answer) -> bool {
+pub fn may_give(scope: Option<&AnswerScope>, kind: ActionKind, answer: Answer) -> bool {
     kind != ActionKind::Outside
         || answer != Answer::Allow
-        || [ACCOUNT_APP, WORKSPACE_GOVERNANCE_APP].contains(&app)
+        || scope.is_some_and(|scope| match scope {
+            AnswerScope::Action { .. } => true,
+            AnswerScope::App { app } | AnswerScope::Kind { app, .. } => {
+                [ACCOUNT_APP, WORKSPACE_GOVERNANCE_APP].contains(&app.as_str())
+            }
+        })
 }
 
 /// The answer a delegate's `decision` gives an action, held to the action's

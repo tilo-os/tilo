@@ -45,3 +45,15 @@ one paragraph of a long text; skipping the runs before it built a run for
 every row above that paragraph on each query.
 
 Drop this once upstream can start the runs at a line.
+
+## Matching a run reads only the faces it considers
+
+Upstream's `FontMatchKey::new` (`src/font/system.rs`) read the `wght` axis of
+every face whose weight differs from the run's, for every new set of
+attributes, so the first text set read a page of every font the process knew
+about: on a cold disk, every font file before the first frame. The key no
+longer carries that answer; `FontSystem::weight_fits` reads a face's axis when
+the fallback iterator (`src/font/fallback/mod.rs`) has a face of the family it
+wants, and keeps it per face. Which face a run gets is unchanged.
+
+Drop this once upstream reads a face's axes only for a face it may use.

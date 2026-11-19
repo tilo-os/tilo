@@ -620,7 +620,9 @@ enum AppRequest {
     Show {
         /// The window whose application code was running.
         tab: Option<u64>,
-        notification: ui::notify::Notification,
+        /// Boxed, so a queued withdrawal, which is only a tag, is not as large as a
+        /// notification with its sender and app.
+        notification: Box<ui::notify::Notification>,
     },
     Withdraw {
         tab: Option<u64>,
@@ -729,7 +731,7 @@ impl ui::notify::Notifier for AppNotifier {
         }
         self.push(AppRequest::Show {
             tab: ui::widget::panic_scope::current(),
-            notification: notification.clone(),
+            notification: Box::new(notification.clone()),
         });
         Ok(())
     }
@@ -783,6 +785,7 @@ impl AppInbox {
             let app_id = app.as_ref().map(|(id, ..)| id.clone()).unwrap_or_default();
             match request {
                 AppRequest::Show { notification, .. } => {
+                    let notification = *notification;
                     let key = (app_id, notification.tag.clone());
                     if let Some(earlier) = self.shown.remove(&key) {
                         notifications.withdraw(earlier);
@@ -793,6 +796,16 @@ impl AppInbox {
                         shown.app_id = Some(id);
                         shown.app_name = Some(name);
                         shown.source_workspace = workspace;
+                    }
+                    if shown.app_name.is_none() {
+                        shown.app_name = notification.app;
+                    }
+                    if let Some(from) = notification.from {
+                        shown = if from.agent {
+                            shown.with_agent_from(from.name, from.id)
+                        } else {
+                            shown.with_from(from.name, from.id)
+                        };
                     }
                     shown.severity = match notification.severity {
                         ui::notify::Severity::Info => NotificationSeverity::Info,
@@ -1882,6 +1895,48 @@ mod tests {
             assert!(!ours.drain(&mine, &|_| None), "not a window of ours");
             assert!(theirs.drain(&other, &clocks));
             assert_eq!((mine.counts(), other.counts()), ((0, 0), (1, 0)));
+        }
+
+        phase what_no_window_sent_goes_by_its_app_or_agent_never_the_system;
+        {
+            use ui::notify::Notifier as _;
+            let (notifier, _, _) = notifier();
+            let mut inbox = notifier.inbox();
+            let notifications = DesktopNotifications::default();
+            notifier
+                .show(
+                    &ui::notify::Notification::new("mention", "Ada mentioned you", "@Quinten")
+                        .from_app("Chat"),
+                )
+                .unwrap();
+            notifier
+                .show(
+                    &ui::notify::Notification::new("ask", "Visa agent asks you", "Which consulate?")
+                        .from_agent("Visa agent", "agent-1"),
+                )
+                .unwrap();
+            assert!(inbox.drain(&notifications, &|_| None));
+            let log = notifications.log();
+            let senders: Vec<_> = log
+                .active()
+                .iter()
+                .map(|shown| (shown.title.clone(), shown.sender_name()))
+                .collect();
+            assert!(
+                senders.contains(&("Ada mentioned you".into(), "Chat".into())),
+                "{senders:?}"
+            );
+            assert!(
+                senders.contains(&("Visa agent asks you".into(), "Visa agent".into())),
+                "{senders:?}"
+            );
+            let asked = log
+                .active()
+                .iter()
+                .find(|shown| shown.title == "Visa agent asks you")
+                .and_then(|shown| shown.from.clone())
+                .expect("the agent's question is from the agent");
+            assert!(asked.agent, "the agent leads as an agent, not a person");
         }
 
         phase a_sender_withdraws_live_and_retained_notifications;

@@ -122,6 +122,11 @@ impl Widget for ZoomableImage {
         self.shown.waiting()
     }
 
+    /// One box at the aspect it was built at: placed once, it asks for no layout.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == crate::kurbo::Rect::ZERO
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,

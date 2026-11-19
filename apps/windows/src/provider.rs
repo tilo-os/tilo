@@ -67,6 +67,11 @@ pub trait CompatibilityProvider: Send {
     fn take_notice(&mut self) -> Option<String> {
         None
     }
+    /// Whether what the last notice said no longer applies: the state it described ended, and the
+    /// banner goes with it.
+    fn take_notice_cleared(&mut self) -> bool {
+        false
+    }
     /// Whether the notice [`Self::take_notice`] gave is about something that went wrong.
     fn notice_is_error(&self) -> bool {
         false
@@ -190,8 +195,18 @@ impl CompatibilityProvider for EmptyProvider {
 #[derive(Clone)]
 pub struct SampleProvider {
     catalogue: Catalogue,
+    /// Whether the sample stands for a live window, whose controls the session carries out: what a
+    /// test of the click path needs, since a sample usually answers in place.
+    native_controls: bool,
 }
 impl SampleProvider {
+    /// The sample as a live window's provider reports itself: its controls go to the session.
+    #[must_use]
+    pub fn offering_native_controls(mut self) -> Self {
+        self.native_controls = true;
+        self
+    }
+
     pub fn new() -> Self {
         let grants = |items: &[(&str, &str, bool)]| {
             items
@@ -203,7 +218,7 @@ impl SampleProvider {
                 })
                 .collect()
         };
-        Self { catalogue: Catalogue {
+        Self { native_controls: false, catalogue: Catalogue {
             apps: vec![
                 WindowsApp { id: "adobe-reader".into(), name: "Adobe Acrobat Reader".into(), publisher: "Adobe".into(), route: Route::Wine, recommended_route: Route::Wine, runner: "Wine 11.0".into(), capsule: "Adobe Reader".into(), catalogue_source: "Tilo compatibility catalogue".into(), confidence: Confidence::Verified, reason: "A verified recipe runs Reader in Wine, the lightest way to open it in isolation.".into(), status: AppStatus::Ready, grants: grants(&[("Downloads", "Read and write", true), ("Clipboard", "On demand", true), ("Camera", "Off", false)]), fallback_detail: "Reader sees only the folders and devices listed above.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for apps in the Windows appliance.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed 12 June 2026".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for apps in the Windows appliance.".into()) },
                 WindowsApp { id: "cyberpunk-2077".into(), name: "Cyberpunk 2077".into(), publisher: "CD PROJEKT RED".into(), route: Route::Proton, recommended_route: Route::Proton, runner: "Proton 10.0".into(), capsule: "Steam library".into(), catalogue_source: "Steam + ProtonDB recipe".into(), confidence: Confidence::Community, reason: "Games run best in Proton with the Steam Runtime, which includes the fixes this game is known to need.".into(), status: AppStatus::Running, grants: grants(&[("Games library", "Read and write", true), ("Controller", "Connected devices", true), ("Microphone", "Off", false)]), fallback_detail: "The game sees only its library and connected controllers.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for apps in the Windows appliance.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed 3 May 2026".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for apps in the Windows appliance.".into()) },
@@ -245,6 +260,9 @@ impl Default for SampleProvider {
 impl CompatibilityProvider for SampleProvider {
     fn operations_complete_on_return(&self) -> bool {
         true
+    }
+    fn action_native_controls(&self) -> bool {
+        self.native_controls
     }
     fn catalogue(&mut self) -> Catalogue {
         self.catalogue.clone()
@@ -459,6 +477,11 @@ pub struct LiveProvider {
     operation_result: Option<Result<String, String>>,
     pending_vm_install: Option<(File, String)>,
     pending_vm_install_confirmation: Option<VmInstallConfirmation>,
+    /// The entry whose launch this manager announced: what the "started" line was about, and gone
+    /// once that program is no longer open.
+    launched: Option<String>,
+    /// The last notice described a state that ended: the window drops the banner.
+    notice_cleared: bool,
 }
 
 impl LiveProvider {
@@ -513,6 +536,8 @@ impl LiveProvider {
             operation_result: None,
             pending_vm_install: None,
             pending_vm_install_confirmation: None,
+            launched: None,
+            notice_cleared: false,
         })
     }
 
@@ -544,6 +569,18 @@ impl LiveProvider {
                         .and_then(|stopping| ended.iter().find(|end| end.entry_id == stopping));
                     if asked.is_some() {
                         self.stopping = None;
+                    }
+                    // The program this manager announced ended: what "started" said is over,
+                    // whichever way it ended.
+                    if self
+                        .launched
+                        .as_deref()
+                        .is_some_and(|entry| ended.iter().any(|end| end.entry_id == entry))
+                    {
+                        self.launched = None;
+                        self.notice = None;
+                        self.notice_error = false;
+                        self.notice_cleared = true;
                     }
                     if let Some(end) = ended
                         .iter()
@@ -699,7 +736,9 @@ impl CompatibilityProvider for LiveProvider {
                 .clone()
                 .unwrap_or_else(|| "This launch route is unavailable.".to_string()));
         }
-        self.send(WorkerCommand::Launch(app_id.to_string()))
+        self.send(WorkerCommand::Launch(app_id.to_string()))?;
+        self.launched = Some(app_id.to_owned());
+        Ok(())
     }
 
     fn launch_vm_fallback(&mut self, app_id: &str) -> Result<(), String> {
@@ -804,6 +843,11 @@ impl CompatibilityProvider for LiveProvider {
     fn take_notice(&mut self) -> Option<String> {
         self.drain();
         self.notice.take()
+    }
+
+    fn take_notice_cleared(&mut self) -> bool {
+        self.drain();
+        std::mem::take(&mut self.notice_cleared)
     }
 
     fn notice_is_error(&self) -> bool {
@@ -1444,12 +1488,13 @@ fn app_from_installation(installation: &ManagedInstallation) -> WindowsApp {
 
 /// Mirror the server's coarse lifecycle check in the view model.
 fn can_escalate_install_to_vm(installation: &ManagedInstallation) -> bool {
+    // Only a setup that did not finish needs the appliance: one that installed offers nothing to
+    // continue there, and offering it on every app of the capsule lists the same operation once
+    // per program for a thing no program needs.
     matches!(installation.route, RouteKind::Wine | RouteKind::Proton)
-        && !matches!(
+        && matches!(
             installation.status,
-            InstallationStatus::Installing
-                | InstallationStatus::Uninstalling
-                | InstallationStatus::Uninstalled
+            InstallationStatus::NeedsAttention | InstallationStatus::Failed
         )
 }
 
@@ -1566,6 +1611,10 @@ mod tests {
             assert!(can_escalate_install_to_vm(&retained_installation(
                 InstallationStatus::NeedsAttention
             )));
+            assert!(
+                !can_escalate_install_to_vm(&retained_installation(InstallationStatus::Installed)),
+                "an installed app needs nothing continued in the appliance"
+            );
             assert!(!can_escalate_install_to_vm(&retained_installation(
                 InstallationStatus::Installing
             )));
@@ -1796,6 +1845,8 @@ mod tests {
                 operation_result: None,
                 pending_vm_install: None,
                 pending_vm_install_confirmation: None,
+                launched: None,
+                notice_cleared: false,
             };
             event_tx
                 .send(WorkerEvent::Unavailable("invalid response".into()))
@@ -1827,6 +1878,8 @@ mod tests {
                 detail: "Choose a destination.".into(),
                 recommended_route: Route::Vm,
             }),
+            launched: None,
+            notice_cleared: false,
         };
         event_tx
             .send(WorkerEvent::Listed(Box::new(Listed {

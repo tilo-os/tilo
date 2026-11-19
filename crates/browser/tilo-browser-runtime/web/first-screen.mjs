@@ -2,13 +2,13 @@
  * The first screen of a first visit: set Tilo up with your agent, skip for
  * now, or sign in again.
  *
- * It is plain HTML in the entry page (`#first-run` in index.html), shown
- * from the first paint by `first-run.inline.js`, while the runtime loads
+ * It is plain HTML in the entry page (`#first-screen` in index.html), shown
+ * from the first paint by `first-screen.inline.js`, while the runtime loads
  * behind it. This module only wires it up, and costs nothing until a
  * button is used.
  *
  * A visitor this browser knows nothing of is held back
- * (`first-run.inline.js`): a site that takes people by invitation only
+ * (`first-screen.inline.js`): a site that takes people by invitation only
  * turns them away to its wait list, and the setup is no way in there. The
  * page shows the screen once the site's entry let them in (`reveal`), and
  * the visitor it turned away sees the wait list instead.
@@ -21,11 +21,15 @@
  *
  * The page makes its codes as soon as it can (`offerSetup`,
  * `offerAgentSignIn`), before anyone asks, and keeps a fresh one ready,
- * renewed shortly before it expires. So what a button copies is already on
- * the screen: the click writes exactly that text, inside the click, and the
- * screen says it copied only once the clipboard took it. A code the page has
- * not made yet is never promised: the button says what it waits for, and a
- * wait that runs too long says why, with a way to try again.
+ * renewed shortly before it expires — but for a first visit's setup only
+ * once the person asks for it (`offerSetup({ahead: false})`): the workspace
+ * its code names is made on the server with it, and one made for a browser
+ * still deciding is left behind by everyone who signs in as someone else.
+ * So what a button copies is already on the screen: the click writes exactly
+ * that text, inside the click, and the screen says it copied only once the
+ * clipboard took it. A code the page has not made yet is never promised: the
+ * button says what it waits for, and a wait that takes too long says why, with
+ * a way to try again.
  *
  * A code on the screen has to work however it leaves the page, and the host
  * keeps a code only from its tab's first follow: a person who selects the
@@ -39,8 +43,9 @@
  * this page cannot follow any more is not looked at in silence either: after
  * a while the screen says so, and reloading makes a fresh code.
  *
- * - **Copy prompt** copies `setupPrompt`, shown above it. The code names a
- *   pairing link to this tab, which holds the person's new root: the
+ * - **Set up with your agent** (a first visit; **Copy prompt** once the
+ *   person asked for it) copies `setupPrompt`, shown above it. The code names
+ *   a pairing link to this tab, which holds the person's new root: the
  *   agent's `tilo` command becomes a device of the person with a key of its
  *   own, certified here (the root never leaves). Once the agent is in the
  *   person's workspace the screen says so and leaves (`whenDone` opens that
@@ -62,14 +67,14 @@
  * Where this browser keeps the person's setup (`readSetup`): the step the
  * first screen is at, the codes it shows and follows, and what the agent did
  * so far. The page decides from it alone whether a bare entry opens on the
- * first screen, and at which step (first-run.inline.js), so a reload, a
+ * first screen, and at which step (first-screen.inline.js), so a reload, a
  * closed and reopened tab, back and forward, or a second tab show the same
  * step; another tab's change reaches this one as a `storage` event.
  */
 export const SETUP = 'tilo-setup';
 /**
  * What the first screen shows (the prompts, the agent's steps, the heading),
- * kept apart from the setup for the next first paint (first-run.inline.js),
+ * kept apart from the setup for the next first paint (first-screen.inline.js),
  * with the code it was drawn for (`code`). A redraw writes only this: every
  * tab keeps its own cached copy of storage, so a tab rewriting the setup on a
  * redraw would put back the step another tab just left.
@@ -332,19 +337,19 @@ function bounded(promise, ms, later, clear) {
  * answers, then confirmed by it. A second tab follows the first (`sync`,
  * on another tab's change): it takes the code shown or followed there rather
  * than making a competing one. What the screen last drew is kept with it
- * (`shown`), which first-run.inline.js paints at the first frame.
+ * (`shown`), which first-screen.inline.js paints at the first frame.
  *
  * `clipboard.copy(text)` writes `text` inside the click and resolves once
- * the clipboard took it; `every(run, ms)` ticks; `later(run, ms)` and
+ * the clipboard took it; `every(callback, ms)` ticks; `later(callback, ms)` and
  * `clear(timer)` time one thing; `site` is the origin the commands name;
  * `reload()` loads the page again; `online()` says whether the browser
  * thinks it is online. `held`: the screen waits for the page's word before
  * it may show (`reveal`).
  */
-export function createFirstRun({view: drawn, clipboard, storage = null, now = () => Date.now(), site = HOME_SITE,
+export function createFirstScreen({view: drawn, clipboard, storage = null, now = () => Date.now(), site = HOME_SITE,
   held: heldAtPaint = false, signInOnly = false, onBack = () => {},
-  every = (run, ms) => { const timer = setInterval(run, ms); return () => clearInterval(timer); },
-  later = (run, ms) => setTimeout(run, ms), clear = timer => clearTimeout(timer),
+  every = (callback, ms) => { const timer = setInterval(callback, ms); return () => clearInterval(timer); },
+  later = (callback, ms) => setTimeout(callback, ms), clear = timer => clearTimeout(timer),
   reload = () => globalThis.location?.reload(), online = () => globalThis.navigator?.onLine !== false}) {
   // The codes the page makes ahead, per kind: `setup` and `signIn`. `made`
   // is the one a click copies now; `error` says why there is none;
@@ -418,13 +423,20 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   };
   const sameState = (a, b) => JSON.stringify({...onStart(a), shown: null, at: null})
     === JSON.stringify({...onStart(b), shown: null, at: null});
-  let passkeyRun = null;
+  let passkeyAction = null;
   const passkeyWaiting = [];
   let gone = null;
   let stop = () => {};
   let askNow = () => {};
   let attempt = 0;
   let manualShown = false;
+  // Whether the setup code is made before the person asks for it
+  // (`offerSetup`): a first visit's is not, since the workspace it names is
+  // made with it.
+  let ahead = true;
+  // Whether the person asked for a setup code before the page could make
+  // one: made once it can (`offerSetup`).
+  let asked = false;
   // The code the screen follows (or showed run out), so another tab's
   // change to the same code changes nothing here.
   let following = null;
@@ -453,7 +465,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   const openOwn = () => {
     if (!leaving || !onDone || opened || closed) return;
     opened = true;
-    Promise.resolve().then(onDone).catch(error => console.warn('first run: opening your workspace', error)).finally(() => {
+    Promise.resolve().then(() => onDone({signedIn: false})).catch(error => console.warn('first screen: opening your workspace', error)).finally(() => {
       // Opening loads the page anew; where it did not, the setup is over here.
       if (readSetup(storage)?.step !== 'done') setupDone(storage, now());
       close();
@@ -464,7 +476,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   const openSignedIn = () => {
     if (!signedIn || !onDone || closed) return;
     leaving = true;
-    onDone();
+    onDone({signedIn: true});
     close();
   };
   // Leave the screen for the person's own workspace (`whenDone`). Until it
@@ -517,9 +529,14 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     // button reloads it: the sign-in beside it waits on the same load.
     const unloaded = !at.make && at.error?.code === 'not-loaded';
     const note = at.note ? {note: at.note} : {};
+    // A setup the person has not asked for yet is not being got: the screen
+    // waits for them, and makes the code when they ask (`copy`, `manual`).
+    const asking = kind !== 'setup' || at.making || Boolean(at.made) || Boolean(at.error)
+      || asked || (ahead && Boolean(at.make));
     view.offer(kind, at.made ? {text, code: at.made.code, ...note}
       : unloaded && kind !== 'setup' ? {}
-      : at.error ? {problem: setupFailure(at.error, {site}), ...(unloaded ? {reload: true} : {})} : {note: at.note ?? codeWait(site)});
+      : at.error ? {problem: setupFailure(at.error, {site}), ...(unloaded ? {reload: true} : {})}
+      : asking ? {note: at.note ?? codeWait(site)} : {asking: false});
     if (kind === 'setup' && manualShown) showManual();
     if (expiredKind === kind) drawExpired();
     watchShown();
@@ -661,7 +678,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       renewIn(kind, made);
     }, error => {
       if (closed || round !== at.round) return;
-      console.warn('first run: making a code', error);
+      console.warn('first screen: making a code', error);
       at.made = null;
       at.error = error;
     }).finally(() => {
@@ -669,6 +686,13 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       at.making = false;
       if (!closed) show(kind);
     });
+  };
+  // The person asked for `kind`'s code, by copying it or opening the manual
+  // setup: made now, or, where the page can make none yet, as soon as it can
+  // (`offerSetup`). A code already on the screen is left as it is.
+  const askForCode = kind => {
+    if (kind === 'setup') asked = true;
+    if (!codes[kind].made) void prepare(kind);
   };
   // The page offered no codes in time: its runtime did not load, or it
   // failed in a way it did not say. Said instead of waiting on.
@@ -724,7 +748,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
         if (mine !== attempt || closed || finished) return;
         if (error?.status === 404) { forgotten(); return; }
         if (error?.code === 'not-loaded') return;
-        console.warn('first run: follow', error);
+        console.warn('first screen: follow', error);
         misses += 1;
         if (!online()) view.net('You’re offline.');
         else if (misses >= 2 || error?.code === 'timeout') view.net(`${host} isn’t answering.`);
@@ -770,7 +794,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
           connect(mode, null);
         }, error => {
           if (mine !== attempt || closed) return;
-          console.warn('first run: sign-in', error);
+          console.warn('first screen: sign-in', error);
           finished = true;
           stop();
           save({step: 'start', code: null, polled: null});
@@ -895,7 +919,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     if (closed) return Promise.resolve(false);
     const at = codes[kind];
     if (!at.made) {
-      if (at.error && at.make) void prepare(kind);
+      askForCode(kind);
       view.notReady(kind, at.error && !at.make ? setupFailure(at.error, {site}) : codeWait(site));
       return Promise.resolve(false);
     }
@@ -910,7 +934,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     follow(made, mode, ++attempt);
     let writing;
     try { writing = Promise.resolve(clipboard.copy(text)); } catch (error) { writing = Promise.reject(error); }
-    return writing.then(() => true, error => { console.warn('first run: copy', error); return false; }).then(copied => {
+    return writing.then(() => true, error => { console.warn('first screen: copy', error); return false; }).then(copied => {
       if (closed) return copied;
       use(kind, mode, made, text, {copied});
       return copied;
@@ -967,6 +991,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       manualShown = !manualShown;
       view.manual(manualShown);
       if (!manualShown) { ++attempt; stop(); }
+      else askForCode('setup');
       // The panel follows the setup code itself; the offer behind it is
       // watched again once the panel is closed.
       watchShown();
@@ -997,7 +1022,10 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       leave();
     },
     /** What leaving opens (the person's own workspace), run at once when
-     * the screen is leaving already. */
+     * the screen is leaving already. `open({signedIn})`: `false` for a
+     * screen the person left to stay where they are, `true` for one a
+     * sign-in left for another person's workspace, which the loaded page
+     * opens itself. */
     whenDone(open) {
       if (closed) return;
       onDone = open;
@@ -1011,24 +1039,33 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       if (closed) return;
       view.signingIn(true);
       try {
-        const run = passkeyRun ?? await bounded(new Promise((resolve, reject) => {
+        const action = passkeyAction ?? await bounded(new Promise((resolve, reject) => {
           if (gone) reject(gone); else passkeyWaiting.push({resolve, reject});
         }), PASSKEY_WAIT_MS, later, clear);
-        await run();
+        await action();
       } catch (error) {
-        console.warn('first run: sign-in', error);
+        console.warn('first screen: sign-in', error);
         // Closing the passkey prompt is the person's own answer.
         if (error?.code !== 'passkey-cancelled' && !['NotAllowedError', 'AbortError'].includes(error?.name)) view.signInFailed(error);
       } finally { view.signingIn(false); }
     },
-    /** The page can make setup codes: `make()` resolves to `{code, expiresAt,
+    /**
+     * The page can make setup codes: `make()` resolves to `{code, expiresAt,
      * follow(), saved}`, `saved` what the setup keeps of it, and
      * `resume(saved)` follows a kept one again (`null` when it is no longer
-     * this tab's to follow). */
-    offerSetup(make, resume = null) {
+     * this tab's to follow). A first visit's code names a workspace the
+     * server makes when it is asked for, so it is made when the person asks
+     * for it (`ahead: false`), never while they are still deciding — or at
+     * once, where they asked before the page could make one.
+     */
+    offerSetup(make, resume = null, {ahead: madeAhead = true} = {}) {
       codes.setup.make = make;
       codes.setup.resume = resume;
-      if (!adoptOffer()) void prepare('setup');
+      ahead = madeAhead;
+      if (!adoptOffer()) {
+        if (ahead || asked) void prepare('setup');
+        else show('setup');
+      }
       resumeFollow();
     },
     /** The page can make sign-in codes: as `offerSetup`, each also with
@@ -1057,13 +1094,13 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
         at.error = error;
         show(kind);
       }
-      if (!passkeyRun) for (const {reject} of passkeyWaiting.splice(0)) reject(error);
+      if (!passkeyAction) for (const {reject} of passkeyWaiting.splice(0)) reject(error);
       if (leaving) close();
     },
     /** The page can sign in with a passkey now. */
-    offerSignIn(run) {
-      passkeyRun = run;
-      for (const {resolve} of passkeyWaiting.splice(0)) resolve(run);
+    offerSignIn(signIn) {
+      passkeyAction = signIn;
+      for (const {resolve} of passkeyWaiting.splice(0)) resolve(signIn);
     },
     /** Another tab changed the setup: show what it keeps. */
     sync() {
@@ -1110,41 +1147,48 @@ export function showPrompt(element, text) {
   }));
 }
 
-/** The screen in `document` (index.html's `#first-run`): what each state
+/** The screen in `document` (index.html's `#first-screen`): what each state
  * shows, said once to screen readers through its status line. */
 export function domView(document) {
   const root = document.documentElement;
   const $ = id => document.getElementById(id);
-  const say = text => { $('first-run-status').textContent = text; };
-  const state = (name, mode) => { root.dataset.firstRun = name; if (mode) $('first-run').dataset.mode = mode; };
+  const say = text => { $('first-screen-status').textContent = text; };
+  const state = (name, mode) => { root.dataset.firstScreen = name; if (mode) $('first-screen').dataset.mode = mode; };
   const button = (id, ok) => {
     const target = $(id);
     target.textContent = ok ? 'Copied' : 'Copy';
     if (ok) setTimeout(() => { target.textContent = 'Copy'; }, 1500);
   };
-  const notes = {setup: 'first-run-offer-note', signIn: 'first-run-sign-in-note'};
+  const notes = {setup: 'first-screen-offer-note', signIn: 'first-screen-sign-in-note'};
   return {
     start() {
       state('');
       // The screen is the page's now: nothing is held back any more.
-      root.removeAttribute('data-first-run-hold');
+      root.removeAttribute('data-first-screen-hold');
       // The start is the setup: a screen reopened for a person who is already
       // set up shows the setup's column, never the one a past sign-in left.
-      $('first-run').dataset.mode = 'setup';
+      $('first-screen').dataset.mode = 'setup';
       this.manual(false);
-      $('first-run').dataset.handed = 'false';
-      $('first-run-heading').focus({preventScroll: true});
+      $('first-screen').dataset.handed = 'false';
+      $('first-screen-heading').focus({preventScroll: true});
     },
-    offer(kind, {text = null, note = null, problem = null, reload = false}) {
-      // Whether a code is ready, for tests and tools driving the page.
-      $('first-run').dataset[kind === 'setup' ? 'setup' : 'signIn'] = text ? 'ready' : problem ? 'failed' : 'waiting';
+    offer(kind, {text = null, note = null, problem = null, reload = false, asking = true}) {
+      // Whether a code is ready, for tests and tools driving the page; and
+      // for the styles, which the button and the box read: no attribute
+      // while the person has not asked for a setup code yet.
+      const marks = $('first-screen').dataset;
+      const code = kind === 'setup' ? 'setup' : 'signIn';
+      if (text) marks[code] = 'ready';
+      else if (problem) marks[code] = 'failed';
+      else if (asking) marks[code] = 'waiting';
+      else delete marks[code];
       if (kind === 'setup') {
-        showPrompt($('first-run-offer'), text);
-        $('first-run-offer-retry').hidden = !problem;
+        showPrompt($('first-screen-offer'), text);
+        $('first-screen-offer-retry').hidden = !problem;
         // Only reloading the page helps a page that did not load.
-        $('first-run-offer-retry').textContent = reload ? 'Reload' : 'Try again';
+        $('first-screen-offer-retry').textContent = reload ? 'Reload' : 'Try again';
         // Nothing to copy until there is a prompt again.
-        $('first-run-agent').disabled = Boolean(problem);
+        $('first-screen-agent').disabled = Boolean(problem);
       }
       const line = $(notes[kind]);
       line.textContent = problem ?? (kind === 'setup' ? note ?? '' : '');
@@ -1154,36 +1198,36 @@ export function domView(document) {
     notReady(kind, text) {
       // Said beside the button that was pressed: on the start, under it;
       // after a prompt expired or failed, where its problem shows.
-      $(root.dataset.firstRun ? 'first-run-problem' : notes[kind]).textContent = text;
+      $(root.dataset.firstScreen ? 'first-screen-problem' : notes[kind]).textContent = text;
       say(text);
     },
     waiting(mode, {text = null, copied = false, manual = false, handed = false, agent = null} = {}) {
       state('waiting', mode);
-      if (text !== null) showPrompt($('first-run-prompt'), text);
-      for (const id of ['first-run-problem', 'first-run-left', 'first-run-net']) $(id).textContent = '';
-      $('first-run-steps').replaceChildren();
-      $('first-run').dataset.agentFailed = 'false';
-      $('first-run').dataset.manual = String(manual);
-      $('first-run').dataset.copied = String(copied);
+      if (text !== null) showPrompt($('first-screen-prompt'), text);
+      for (const id of ['first-screen-problem', 'first-screen-left', 'first-screen-net']) $(id).textContent = '';
+      $('first-screen-steps').replaceChildren();
+      $('first-screen').dataset.agentFailed = 'false';
+      $('first-screen').dataset.manual = String(manual);
+      $('first-screen').dataset.copied = String(copied);
       // An agent took the code without a copy here: the screen says what it
       // is doing, in place of the paste instructions (index.html).
-      $('first-run').dataset.handed = String(handed);
+      $('first-screen').dataset.handed = String(handed);
       const who = agent || 'Your agent';
-      for (const span of $('first-run').querySelectorAll('.fr-hand-agent')) span.textContent = who;
+      for (const span of $('first-screen').querySelectorAll('.fr-hand-agent')) span.textContent = who;
       this.copied(false);
       say(manual ? 'Your computer is setting Tilo up…'
         : handed ? `${who} is ${mode === 'sign-in' ? 'signing this tab in' : 'setting up Tilo'}…`
         : copied ? 'Prompt copied. Paste it into your agent.' : 'Copy the prompt, then paste it into your agent.');
-      $(handed ? (mode === 'sign-in' ? 'first-run-heading-hand-sign-in' : 'first-run-heading-hand') : 'first-run-heading-wait')
+      $(handed ? (mode === 'sign-in' ? 'first-screen-heading-hand-sign-in' : 'first-screen-heading-hand') : 'first-screen-heading-wait')
         .focus({preventScroll: true});
     },
     copied(ok, which = 'prompt') {
-      if (which === 'prompt' && ok) $('first-run').dataset.copied = 'true';
-      button(which === 'prompt' ? 'first-run-again' : `first-run-copy-${which}`, ok);
+      if (which === 'prompt' && ok) $('first-screen').dataset.copied = 'true';
+      button(which === 'prompt' ? 'first-screen-again' : `first-screen-copy-${which}`, ok);
     },
-    left(text) { $('first-run-left').textContent = text ? `Works once, for ${text}.` : ''; },
+    left(text) { $('first-screen-left').textContent = text ? `Works once, for ${text}.` : ''; },
     steps(lines) {
-      $('first-run-steps').replaceChildren(...lines.map(({text, done, act, wait, failed}) => {
+      $('first-screen-steps').replaceChildren(...lines.map(({text, done, act, wait, failed}) => {
         const item = document.createElement('li');
         item.className = done ? 'done' : act ? 'act' : wait ? 'wait' : failed ? 'failed' : 'now';
         item.textContent = text;
@@ -1195,74 +1239,74 @@ export function domView(document) {
     // Why the screen has heard nothing new (offline, a host not answering,
     // an agent quiet for long), or `null` once it has.
     net(text) {
-      if ($('first-run-net').textContent === (text ?? '')) return;
-      $('first-run-net').textContent = text ?? '';
+      if ($('first-screen-net').textContent === (text ?? '')) return;
+      $('first-screen-net').textContent = text ?? '';
       if (text) say(text);
     },
     // The agent reported it failed, and why (`null`: it did not, or no longer).
     agentFailed(detail) {
-      const was = $('first-run').dataset.agentFailed === 'true';
-      $('first-run').dataset.agentFailed = String(Boolean(detail));
-      if (detail) { if ($('first-run-problem').textContent !== detail) { $('first-run-problem').textContent = detail; say(detail); } }
-      else if (was) $('first-run-problem').textContent = '';
+      const was = $('first-screen').dataset.agentFailed === 'true';
+      $('first-screen').dataset.agentFailed = String(Boolean(detail));
+      if (detail) { if ($('first-screen-problem').textContent !== detail) { $('first-screen-problem').textContent = detail; say(detail); } }
+      else if (was) $('first-screen-problem').textContent = '';
     },
     // The prompt ran out: the fresh one (`text`), or why there is none yet.
     expired(mode, {text = null, note = null} = {}) {
       state('expired', mode);
-      showPrompt($('first-run-prompt'), text);
-      $('first-run-problem').textContent = note ?? '';
-      $('first-run-net').textContent = '';
-      $('first-run').dataset.copied = 'false';
-      $('first-run').dataset.handed = 'false';
+      showPrompt($('first-screen-prompt'), text);
+      $('first-screen-problem').textContent = note ?? '';
+      $('first-screen-net').textContent = '';
+      $('first-screen').dataset.copied = 'false';
+      $('first-screen').dataset.handed = 'false';
       say(text ? 'That prompt ran out before an agent used it. Here is a fresh one: copy it to try again.' : note ?? '');
     },
-    problem(text) { $('first-run-problem').textContent = text; },
+    problem(text) { $('first-screen-problem').textContent = text; },
     // It did not work: the reason, alone, and one button that makes a fresh code.
     failed(text, mode) {
       state('failed', mode);
-      $('first-run').dataset.handed = 'false';
-      $('first-run-problem').textContent = text;
+      $('first-screen').dataset.handed = 'false';
+      $('first-screen-problem').textContent = text;
       say(text);
     },
     connected({mode, heading}) {
       state('connected', mode);
-      $('first-run').dataset.skipped = 'false';
-      $('first-run-connected').textContent = heading;
-      $('first-run-done-lead').textContent = 'Opening your workspace…';
+      $('first-screen').dataset.skipped = 'false';
+      $('first-screen-connected').textContent = heading;
+      $('first-screen-done-lead').textContent = 'Opening your workspace…';
       say(`${heading}. Opening your workspace…`);
     },
     // Opening the person's own workspace: under the agent's news when it is
     // in (`heading`), or alone after Skip; `note` says why it takes long.
     opening({heading = null, note = null} = {}) {
       state('connected');
-      $('first-run').dataset.skipped = String(!heading);
-      $('first-run-connected').textContent = heading ?? 'Opening your workspace';
-      $('first-run-done-lead').textContent = note ?? (heading ? 'Opening your workspace…' : '');
+      $('first-screen').dataset.skipped = String(!heading);
+      $('first-screen-connected').textContent = heading ?? 'Opening your workspace';
+      $('first-screen-done-lead').textContent = note ?? (heading ? 'Opening your workspace…' : '');
       say(note ?? 'Opening your workspace…');
     },
     manual(shown) {
-      $('first-run').dataset.open = shown ? 'manual' : '';
-      $('first-run-manual-toggle').setAttribute('aria-expanded', String(shown));
+      $('first-screen').dataset.open = shown ? 'manual' : '';
+      $('first-screen-manual-toggle').setAttribute('aria-expanded', String(shown));
     },
     commands(text, mcp, note) {
-      $('first-run-mcp').textContent = mcp;
-      $('first-run-commands').textContent = text ?? '';
-      $('first-run-commands').closest('.fr-well').hidden = !text;
-      $('first-run-manual-left').textContent = note ?? 'The code works once, for 10 minutes, only for this tab.';
+      $('first-screen-mcp').textContent = mcp;
+      $('first-screen-commands').textContent = text ?? '';
+      $('first-screen-commands').closest('.fr-well').hidden = !text;
+      $('first-screen-manual-left').textContent = note ?? 'The code works once, for 10 minutes, only for this tab.';
     },
-    signingIn(busy) { $('first-run-passkey').setAttribute('aria-busy', String(busy)); },
+    signingIn(busy) { $('first-screen-passkey').setAttribute('aria-busy', String(busy)); },
     signInFailed(error) { say(signInFailure(error)); },
     close() {
-      $('first-run').setAttribute('data-closing', '');
+      $('first-screen').setAttribute('data-closing', '');
       // The screen fades, then leaves the page: reduced motion skips the fade. It stays in the
       // document, hidden, so the person's card can show it again ("Connect an agent"): the
       // setup is one flow, wherever it is opened. Opened again during the fade (signing in
       // from the wait list the moment it shows), the screen is no longer closing, and the
       // fade's end leaves it on the page.
       const done = () => {
-        if ($('first-run')?.getAttribute('data-closing') === null) return;
-        root.removeAttribute('data-first-run');
-        $('first-run')?.removeAttribute('data-closing');
+        if ($('first-screen')?.getAttribute('data-closing') === null) return;
+        root.removeAttribute('data-first-screen');
+        $('first-screen')?.removeAttribute('data-closing');
       };
       if (globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches) done();
       else setTimeout(done, 280);
@@ -1300,17 +1344,17 @@ function copyBySelection(text, document) {
  * once it can (`offerSetup`, `offerAgentSignIn`, `offerSignIn`).
  *
  * A first visit this browser knows nothing of is held
- * (`data-first-run-hold`, first-run.inline.js) until the page says the site
+ * (`data-first-screen-hold`, first-screen.inline.js) until the page says the site
  * let the person in (`reveal`): a site taking people by invitation only may
  * send them to its wait list, and the setup is not what they see first. */
-export function startFirstRun(document = globalThis.document, {storage} = {}) {
+export function startFirstScreen(document = globalThis.document, {storage} = {}) {
   const root = document?.documentElement;
-  if (!document?.getElementById?.('first-run')) return null;
-  const held = root?.dataset?.firstRun === undefined && root?.dataset?.firstRunHold !== undefined;
-  if (root?.dataset?.firstRun === undefined && !held) return null;
+  if (!document?.getElementById?.('first-screen')) return null;
+  const held = root?.dataset?.firstScreen === undefined && root?.dataset?.firstScreenHold !== undefined;
+  if (root?.dataset?.firstScreen === undefined && !held) return null;
   // This screen is the first visit's, not a setup reopened later.
-  document.getElementById('first-run')?.removeAttribute('data-reopened');
-  return wireFirstRunScreen(document, storage, {held});
+  document.getElementById('first-screen')?.removeAttribute('data-reopened');
+  return wireFirstScreenScreen(document, storage, {held});
 }
 
 /**
@@ -1320,12 +1364,12 @@ export function startFirstRun(document = globalThis.document, {storage} = {}) {
  * time (`offerSetup`); Skip here only closes it, since there is nothing left
  * to open.
  */
-export function openFirstRun(document = globalThis.document, {storage} = {}) {
-  const screen = document?.getElementById?.('first-run');
+export function openFirstScreen(document = globalThis.document, {storage} = {}) {
+  const screen = document?.getElementById?.('first-screen');
   if (!screen) return null;
   const root = document.documentElement;
   // Hidden while the fresh screen is written into, so it appears at once and whole.
-  root.removeAttribute('data-first-run');
+  root.removeAttribute('data-first-screen');
   screen.removeAttribute('data-closing');
   // The person is set up already: the setup is what this reopens, without the
   // "Returning? Sign in" column they have no use for, and whichever column a
@@ -1337,10 +1381,10 @@ export function openFirstRun(document = globalThis.document, {storage} = {}) {
   // fresh one, as the card's "Connect an agent" says it does.
   const kept = readSetup(storage ?? globalThis.localStorage);
   if (kept?.offer) writeSetup({...kept, offer: null}, storage ?? globalThis.localStorage);
-  const run = wireFirstRunScreen(document, storage);
-  run?.whenDone(() => {});
-  root.setAttribute('data-first-run', '');
-  return run;
+  const controls = wireFirstScreenScreen(document, storage);
+  controls?.whenDone(() => {});
+  root.setAttribute('data-first-screen', '');
+  return controls;
 }
 
 /**
@@ -1351,62 +1395,62 @@ export function openFirstRun(document = globalThis.document, {storage} = {}) {
  * has none here, and its next visit opens on the wait list as this one did.
  */
 export function openSignIn(document = globalThis.document, {onBack = () => {}} = {}) {
-  const screen = document?.getElementById?.('first-run');
-  if (!screen) return null;
+  const element = document?.getElementById?.('first-screen');
+  if (!element) return null;
   const root = document.documentElement;
-  root.removeAttribute('data-first-run');
-  screen.removeAttribute('data-closing');
-  screen.dataset.reopened = 'true';
-  screen.dataset.mode = 'sign-in';
-  const run = wireFirstRunScreen(document, null, {signInOnly: true, onBack});
-  run?.whenDone(() => {});
-  root.setAttribute('data-first-run', '');
-  return run;
+  root.removeAttribute('data-first-screen');
+  element.removeAttribute('data-closing');
+  element.dataset.reopened = 'true';
+  element.dataset.mode = 'sign-in';
+  const screen = wireFirstScreenScreen(document, null, {signInOnly: true, onBack});
+  screen?.whenDone(() => {});
+  root.setAttribute('data-first-screen', '');
+  return screen;
 }
 
 /** The screen's buttons wired to a controller of its own. A sign-in from the
  * wait list (`signInOnly`) keeps nothing in `storage`. */
-function wireFirstRunScreen(document, storage, {held = false, signInOnly = false, onBack} = {}) {
-  const run = createFirstRun({view: domView(document), clipboard: pageClipboard(),
+function wireFirstScreenScreen(document, storage, {held = false, signInOnly = false, onBack} = {}) {
+  const screen = createFirstScreen({view: domView(document), clipboard: pageClipboard(),
     storage: signInOnly ? null : storage ?? globalThis.localStorage, site: globalThis.location?.origin, held, signInOnly, onBack});
   const on = (id, handler) => document.getElementById(id)?.addEventListener('click', handler);
   const text = id => document.getElementById(id).textContent;
-  on('first-run-agent', () => run.copy());
-  on('first-run-agent-sign-in', () => run.signInWithAgent());
-  on('first-run-offer-retry', () => run.retry('setup'));
-  on('first-run-retry', () => run.retry(document.getElementById('first-run').dataset.mode));
-  on('first-run-again', () => run.again(text('first-run-prompt')));
-  on('first-run-copy-mcp', () => run.again(text('first-run-mcp'), 'mcp'));
-  on('first-run-copy-commands', () => run.again(text('first-run-commands'), 'commands'));
-  on('first-run-manual-toggle', () => run.manual());
-  on('first-run-back', () => run.back());
-  for (const id of ['first-run-skip', 'first-run-skip-wait']) on(id, () => run.skip());
-  on('first-run-passkey', () => run.passkey());
+  on('first-screen-agent', () => screen.copy());
+  on('first-screen-agent-sign-in', () => screen.signInWithAgent());
+  on('first-screen-offer-retry', () => screen.retry('setup'));
+  on('first-screen-retry', () => screen.retry(document.getElementById('first-screen').dataset.mode));
+  on('first-screen-again', () => screen.again(text('first-screen-prompt')));
+  on('first-screen-copy-mcp', () => screen.again(text('first-screen-mcp'), 'mcp'));
+  on('first-screen-copy-commands', () => screen.again(text('first-screen-commands'), 'commands'));
+  on('first-screen-manual-toggle', () => screen.manual());
+  on('first-screen-back', () => screen.back());
+  for (const id of ['first-screen-skip', 'first-screen-skip-wait']) on(id, () => screen.skip());
+  on('first-screen-passkey', () => screen.passkey());
   // A prompt selected and copied by hand is copied all the same.
   document.addEventListener('copy', () => {
-    const offer = document.getElementById('first-run-offer');
+    const offer = document.getElementById('first-screen-offer');
     const selection = document.getSelection?.();
-    if (offer?.textContent && selection && !selection.isCollapsed && offer.contains(selection.anchorNode)) run.copiedByHand();
+    if (offer?.textContent && selection && !selection.isCollapsed && offer.contains(selection.anchorNode)) screen.copiedByHand();
   });
   // Another tab's step is this one's: the setup is one, whichever tab shows it.
-  globalThis.addEventListener?.('storage', event => { if (event.key === SETUP || event.key === null) run.sync(); });
-  globalThis.addEventListener?.('online', () => run.online());
+  globalThis.addEventListener?.('storage', event => { if (event.key === SETUP || event.key === null) screen.sync(); });
+  globalThis.addEventListener?.('online', () => screen.online());
   // A page back from the back/forward cache missed what other tabs did meanwhile.
-  globalThis.addEventListener?.('pageshow', event => { if (event.persisted) run.sync(); });
+  globalThis.addEventListener?.('pageshow', event => { if (event.persisted) screen.sync(); });
   pressEarly(document);
-  return run;
+  return screen;
 }
 
 /** The button a person pressed before this module could answer
- * (`first-run.inline.js` kept it), pressed again now: the last one only,
+ * (`first-screen.inline.js` kept it), pressed again now: the last one only,
  * since each press replaces what the one before asked for. */
 export function pressEarly(document, scope = globalThis) {
-  scope.__tiloFirstRunReady = true;
-  const early = scope.__tiloFirstRunEarly ?? [];
+  scope.__tiloFirstScreenReady = true;
+  const early = scope.__tiloFirstScreenEarly ?? [];
   const last = early.at(-1);
   early.length = 0;
   if (last) document.getElementById(last)?.click?.();
 }
 
 /** This page's screen, started once on first import. */
-export const firstRun = startFirstRun(globalThis.document);
+export const firstScreen = startFirstScreen(globalThis.document);

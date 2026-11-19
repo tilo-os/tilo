@@ -269,6 +269,9 @@ pub struct WindowsApp {
     pub(crate) mode: ui::framework::RunMode,
     pub(crate) route_notice: Rc<RefCell<Option<String>>>,
     opened: Rc<RefCell<Option<String>>>,
+    /// The revision of the last refusal this window said: a refusal is said once, not on every
+    /// pass, so the person reads why their click did nothing instead of watching it vanish.
+    refusal_shown: u64,
 }
 
 /// The [`WindowsApp`] as the window and the effect handler share it.
@@ -522,23 +525,8 @@ impl WindowsApp {
             mode: ui::framework::RunMode::Capture,
             route_notice: Rc::default(),
             opened: Rc::default(),
+            refusal_shown: 0,
         }
-    }
-
-    /// Ask the host for `effect` as the live row `row` offers it, or on the manager when
-    /// there is no row.
-    fn queue_live_control(&mut self, row: Option<&str>, effect: &actions::WindowsEffect) -> bool {
-        if !self.provider.borrow_mut().action_native_controls() {
-            return false;
-        }
-        if let Some(dispatcher) = &self.dispatcher {
-            match row {
-                Some(row) => dispatcher.effect_on(row, effect),
-                None => dispatcher.effect(effect),
-            }
-        }
-        self.notice = Some(Notice::info(strings::t("windows-request-sent")));
-        true
     }
 
     /// What a search hit or an agent's `open` runs: show the application its anchor names,
@@ -554,70 +542,6 @@ impl WindowsApp {
         }
     }
 
-    /// Turn a control's intent into the effect search and agents invoke.
-    fn queue_live_control_intent(&mut self, intent: Intent) -> bool {
-        use actions::WindowsEffect as E;
-        if !self.provider.borrow_mut().action_native_controls() {
-            return false;
-        }
-        let appliance = match intent {
-            Intent::ChooseIso => Some(E::ImportIso { path: None }),
-            Intent::Recovery => Some(E::Recovery),
-            Intent::Lifecycle(LifecycleAction::Start) => Some(E::Start),
-            Intent::Lifecycle(LifecycleAction::Restart) => Some(E::Restart),
-            Intent::Lifecycle(LifecycleAction::Suspend) => Some(E::Suspend),
-            Intent::Lifecycle(LifecycleAction::Resume) => Some(E::Resume),
-            Intent::Lifecycle(LifecycleAction::Shutdown) => Some(E::Shutdown),
-            Intent::ConnectActivation => Some(E::TemporaryNetwork),
-            Intent::ConnectUpdate => Some(E::UpdateNetwork),
-            Intent::RevokeConnection => Some(E::RevokeNetwork),
-            _ => None,
-        };
-        if let Some(effect) = appliance {
-            return self.queue_live_control(Some(actions::APPLIANCE_ROW), &effect);
-        }
-        match intent {
-            Intent::Install => return self.queue_live_control(None, &E::Install { path: None }),
-            Intent::ConfirmCapsule => {
-                return self.queue_live_control(
-                    Some(actions::PENDING_INSTALL_ROW),
-                    &E::InstallPrivateCapsule,
-                );
-            }
-            Intent::ConfirmVm => {
-                return self.queue_live_control(
-                    Some(actions::PENDING_INSTALL_ROW),
-                    &E::InstallWindowsAppliance,
-                );
-            }
-            Intent::InstallSupport => {
-                return self.queue_live_control(None, &E::InstallWindowsSupport);
-            }
-            _ => {}
-        }
-        let Some(app) = self.selected_app() else {
-            return false;
-        };
-        let row = crate::search::app_resource_id(&app.id);
-        let (id, capsule) = (app.id.clone(), app.capsule.clone());
-        let effect = match intent {
-            Intent::OpenFile => E::OpenFile {
-                app: id,
-                path: None,
-            },
-            Intent::Launch => E::Launch { app: id },
-            Intent::Stop => E::Stop { app: id },
-            Intent::VmFallback => E::LaunchVmFallback { app: id },
-            Intent::Publish => E::Publish { app: id },
-            Intent::Retry => E::RetryInstall { capsule },
-            Intent::Escalate => E::EscalateInstall { capsule },
-            Intent::RemoveLauncher => E::RemoveLauncher { app: id },
-            Intent::Uninstall => E::Uninstall { app: id },
-            Intent::DeleteData => E::DeleteData { capsule },
-            _ => return false,
-        };
-        self.queue_live_control(Some(&row), &effect)
-    }
     pub(crate) fn selected_app(&self) -> Option<&crate::model::WindowsApp> {
         self.catalogue.apps.get(self.selected)
     }
@@ -652,6 +576,9 @@ impl WindowsApp {
         cx: &mut ui::framework::EffectCx<crate::resource::Windows>,
     ) -> ui::framework::EffectAnswer {
         use actions::WindowsEffect as E;
+        // The request the last banner waited on is answered now: it goes, and whatever this
+        // effect does says its own thing in its place.
+        self.notice = None;
         if let E::Show { .. } = effect {
             self.perform_effect(effect)?;
             return Ok(ui::framework::Effected::done());
@@ -1138,6 +1065,9 @@ impl WindowsApp {
         if let Some(notice) = self.route_notice.borrow_mut().take() {
             self.notice = Some(Notice::error(notice));
         }
+        // A banner says what the state it describes is; once that state ended, the provider says
+        // so and the banner goes rather than remaining over something that already changed.
+        let cleared = self.provider.borrow_mut().take_notice_cleared();
         let provider_notice = {
             let mut provider = self.provider.borrow_mut();
             let notice = provider.take_notice();
@@ -1149,6 +1079,20 @@ impl WindowsApp {
             } else {
                 Notice::info(notice)
             });
+        } else if cleared {
+            self.notice = None;
+        }
+        // A click the session turned away (a permission it does not give, an action the app no
+        // longer publishes) is said here: the alternative is a click that does nothing at all.
+        if let Some(dispatcher) = &self.dispatcher {
+            let refusals = dispatcher.refused();
+            let revision = refusals.revision();
+            if revision != self.refusal_shown {
+                self.refusal_shown = revision;
+                if let Some(refused) = refusals.with(Clone::clone) {
+                    self.notice = Some(Notice::error(refused.reason));
+                }
+            }
         }
         let result = (self.resource_reply.is_some() && !self.resource_waits_for_appliance)
             .then(|| self.provider.borrow_mut().take_operation_result())
@@ -1215,6 +1159,9 @@ impl WindowsApp {
                 self.notice = None;
             }
             other => {
+                // A banner belongs to the action that showed it: the person's next one takes it
+                // down, so nothing stands over a state the action changed.
+                self.notice = None;
                 if !self.queue_live_control_intent(other) {
                     self.apply_appliance_intent(other);
                     self.apply_install_intent(other);
@@ -2453,6 +2400,7 @@ impl ui::widget::Decorator for WindowsWindow {
     }
 }
 
+mod controls;
 #[cfg(test)]
 mod dispatch_tests;
 

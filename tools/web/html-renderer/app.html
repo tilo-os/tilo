@@ -68,12 +68,13 @@ window.mount = await mountDesktop(document.getElementById('app'), {
     // has none, and the mount says so instead of failing.
     if (state.files) { marks.files = state.files; marks.filesError = state.filesError; }
   },
-  onDomFrame: stats => {
+  onDomFrame: ({meta, stats}) => {
     marks.presented.push(performance.now());
-    marks.dom = {...stats};
+    marks.dom = {...stats, meta};
     // writes, new elements, the presenter's own time, the frame's work in
-    // wasm (update, layout, draw) and its encoding to DOM operations.
-    (marks.domFrames ??= []).push([stats.writes, stats.created, stats.lastMs, stats.meta.layoutMs, stats.meta.encodeMs, stats.meta.draws, stats.meta.texts]);
+    // wasm (update and layout, with the scene a canvas would encode) and its
+    // encoding to elements.
+    (marks.domFrames ??= []).push([stats.writes, stats.created, stats.lastMs, meta.layoutMs, meta.encodeMs, meta.draws, meta.texts]);
   },
 });
 marks.mounted = performance.now();

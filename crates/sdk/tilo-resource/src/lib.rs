@@ -396,6 +396,9 @@ pub mod __private {
         /// The parameter the content it collects arrives as.
         pub content: Option<&'static str>,
         pub item_field: Option<&'static str>,
+        /// The collection whose item it acts on, when it is offered on items
+        /// (`#[action(item = field)]`, or an item id its first parameter).
+        pub item: Option<&'static str>,
         pub writes: &'static [&'static str],
         /// The kind of step it takes (`#[action(step = "create")]`): what
         /// presence says of it
@@ -581,6 +584,7 @@ pub mod __private {
         decl.did = verb.did.map(str::to_owned);
         decl.by_arguments = verb.by_arguments;
         decl.writes = crate::footprint::declared(verb.shape, verb.item_field, verb.writes);
+        decl.item = verb.item;
         // What the description says beyond its first line, the label.
         let description = verb
             .description

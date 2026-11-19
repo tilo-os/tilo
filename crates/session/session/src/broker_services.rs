@@ -155,26 +155,47 @@ broker_services! {
     resources: Arc<dyn tilo_workspace_service::apps::services::ResourceServices>,
 }
 
-/// Where this device's own workspace service is installed, and the broker's reads of the resources
-/// of the workspaces it holds.
-pub(crate) fn workspace_service() -> (
-    tilo_workspace_service::service::ServiceSlot,
-    BrokerService<Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>>,
-) {
-    let service = tilo_workspace_service::service::ServiceSlot::default();
-    let reads = document_reads(service.clone());
-    (service, reads)
-}
+/// The resources of the workspaces this device's own workspace service holds, as the broker reads
+/// them.
+pub(crate) type HeldDocuments =
+    BrokerService<Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>>;
+
+/// The one store of the workspaces this device's own workspace service holds, as apps write and
+/// read their resources in it.
+pub(crate) type HeldResources =
+    BrokerService<Arc<dyn tilo_workspace_service::apps::services::ResourceServices>>;
 
 /// The resources this session reads outside their apps, from this device's own workspace service:
 /// the one the workspaces it holds are governed on.
 pub(crate) fn document_reads(
     service: tilo_workspace_service::service::ServiceSlot,
-) -> BrokerService<Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>> {
+) -> HeldDocuments {
     BrokerService::served(Arc::new(
         tilo_workspace_service::apps::service_reads::ServiceReads::on(service),
     )
         as Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>)
+}
+
+/// Where this device's own workspace service is installed, and what the session's own roles read
+/// the workspaces it holds from.
+pub(crate) fn session_documents() -> (
+    tilo_workspace_service::service::ServiceSlot,
+    Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+) {
+    let service = tilo_workspace_service::service::ServiceSlot::default();
+    let reads = Arc::new(
+        tilo_workspace_service::apps::service_reads::ServiceDocuments::on(service.clone()),
+    ) as Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>;
+    (service, reads)
+}
+
+/// The one store of the workspaces this device's service holds, as apps write and read their
+/// resources in it: no app keeps a store of its own, and none is kept beside the service's.
+pub(crate) fn resources(service: tilo_workspace_service::service::ServiceSlot) -> HeldResources {
+    BrokerService::served(Arc::new(
+        tilo_workspace_service::apps::service_resources::ServiceResources::on(service),
+    )
+        as Arc<dyn tilo_workspace_service::apps::services::ResourceServices>)
 }
 
 /// What each installed app declared it may do on the action API, read from the lists search keeps:

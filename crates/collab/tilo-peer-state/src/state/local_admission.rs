@@ -311,6 +311,33 @@ impl StatePeer {
         Ok(())
     }
 
+    /// Take `write`, this device's, out of the document's sealed history: the renewal that
+    /// takes its place carries the same change, so the document holds one of the two. What its
+    /// admission decided stays decided.
+    pub fn replace_local_sealed(&mut self, app: &str, record: &str, write: &SignedOp) {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let Some(document) = self.core.documents.get_mut(&route) else {
+            return;
+        };
+        if document
+            .sealed
+            .iter()
+            .all(|held| held.signature != write.signature)
+        {
+            return;
+        }
+        document.sealed = document
+            .sealed
+            .iter()
+            .filter(|held| held.signature != write.signature)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into();
+    }
+
     /// Take `envelope`, this device's own write to `app`'s `record`, back out of the record:
     /// the workspace refused it, so the record holds what it would without it. A sealed write
     /// leaves the record's sealed history; a write in the clear takes the changes it brought

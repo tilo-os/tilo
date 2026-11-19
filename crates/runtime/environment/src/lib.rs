@@ -849,6 +849,21 @@ pub fn dir_grant(path: &Path, write: bool) -> Result<CapOverride, String> {
     .granted_by(MemberId::person("local")))
 }
 
+/// Every file on this machine its user may touch: what a shell sees whose programs already
+/// start on the machine itself, outside any guest, so nothing a program reaches is refused to
+/// the shell's own commands. Never for a guest, whose root [`dir_grant`] refuses.
+#[must_use]
+pub fn machine_grant() -> CapOverride {
+    CapOverride::grant(
+        Grantee::person("local"),
+        Scope::FsPath("/".to_owned()),
+        Access::Write,
+    )
+    .through(RUNTIME_APP_ID)
+    .with_id(grant_id(Path::new("/")))
+    .granted_by(MemberId::person("local"))
+}
+
 pub fn normalize_host(host: &str) -> Result<String, String> {
     collab_types::caps::NetHostPattern::parse(host)
         .map(|pattern| pattern.to_string())

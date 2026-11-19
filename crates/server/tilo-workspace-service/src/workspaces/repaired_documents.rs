@@ -813,7 +813,7 @@ fn merge_ready(document: &mut AutoCommit, changes: Vec<Change>) -> Result<Decide
     }
     let mut waiting: BTreeMap<ChangeHash, Change> = BTreeMap::new();
     for change in changes {
-        if document.get_change_by_hash(&change.hash()).is_some() {
+        if document.has_change(&change.hash()) {
             decided.held.insert(change.hash());
         } else {
             waiting.insert(change.hash(), change);
@@ -828,11 +828,7 @@ fn merge_ready(document: &mut AutoCommit, changes: Vec<Change>) -> Result<Decide
                     .copied()
                     .unwrap_or(0)
                     .saturating_add(1);
-                change.seq() == next
-                    && change
-                        .deps()
-                        .iter()
-                        .all(|dep| document.get_change_by_hash(dep).is_some())
+                change.seq() == next && change.deps().iter().all(|dep| document.has_change(dep))
             })
             .map(|(hash, _)| *hash)
             .collect();

@@ -5216,6 +5216,18 @@ impl BrowserWidget {
         if self.item_source.is_some() {
             bindings = bindings.offer(E::FILL_PAGE_ITEM);
         }
+        // Each form the page is known to ask is an action of its own; a
+        // permission the page waits on is one of its own actions, so a reader
+        // answers it beside its other buttons; and a departure it started on
+        // its own waits on the person.
+        for action in self
+            .form_actions()
+            .into_iter()
+            .chain(self.capabilities.permission_answers())
+            .chain(leaving)
+        {
+            bindings = bindings.spec(action);
+        }
         let mut page = LiveRow::typed_with::<crate::row_types::Page>(
             "browser.page",
             if site.is_empty() {
@@ -5224,14 +5236,7 @@ impl BrowserWidget {
                 site
             },
             &bindings,
-        )
-        // Each form the page is known to ask is an action of its own; a
-        // permission the page waits on is one of its own actions, so a reader
-        // answers it beside its other buttons; and a departure it started on
-        // its own waits on the person.
-        .specialized(self.form_actions())
-        .specialized(self.capabilities.permission_answers())
-        .specialized(leaving);
+        );
         if self.active_pip {
             page = page.labelled(
                 E::PICTURE_IN_PICTURE,
@@ -5355,14 +5360,18 @@ impl BrowserWidget {
             ));
         }
 
+        let mut extension_bindings =
+            ui::tilo_resource::RowBindings::new().offer(E::SHOW_EXTENSIONS);
+        // Adding the Web Store item in front: offered by a window that manages
+        // extensions, and saying why it cannot add the item while it cannot.
+        if let Some(add) = self.extensions.add_action() {
+            extension_bindings = extension_bindings.spec(add);
+        }
         let mut extensions = LiveRow::typed_with::<crate::row_types::Extensions>(
             "browser.extensions",
             CATALOG.t("browser-resource-extensions"),
-            &ui::tilo_resource::RowBindings::new().offer(E::SHOW_EXTENSIONS),
+            &extension_bindings,
         );
-        if let Some(add) = self.extensions.add_action() {
-            extensions = extensions.specialized([add]);
-        }
         // Each installed extension with what its Library row offers, and no disk
         // read per publication.
         for resource in self.extensions.resources() {

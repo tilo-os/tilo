@@ -205,7 +205,7 @@ impl FrameHarness {
         )
     }
 
-    pub(super) fn draw_caller_palette(&mut self) {
+    pub(super) fn draw_caller_palette(&mut self, paint: bool) {
         let transform = self.capture_draw_transform();
         if let Some(palette) = &mut self.caller_palette.palette {
             let window = vello::kurbo::Rect::new(
@@ -216,13 +216,15 @@ impl FrameHarness {
             );
             let (origin, width) = palette.place_in(window, &self.theme);
             palette.layout_with_text(&self.theme, origin, width, &mut self.text);
-            palette.draw_child(
-                &mut self.scene,
-                transform,
-                &mut self.text,
-                &self.theme,
-                &self.presence,
-            );
+            if paint {
+                palette.draw_child(
+                    &mut self.scene,
+                    transform,
+                    &mut self.text,
+                    &self.theme,
+                    &self.presence,
+                );
+            }
         }
     }
 

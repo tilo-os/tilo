@@ -150,8 +150,7 @@ impl PageWorkspaceSettings {
                 records.person.clone(),
                 Rc::new(records) as Rc<dyn AgentsSource>,
                 Arc::new(move || {
-                    woken.store(true, Ordering::Release);
-                    crate::browser::wake_desktops();
+                    crate::desktop::wake(&woken);
                 }),
             )
         });

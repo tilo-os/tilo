@@ -1076,7 +1076,9 @@ def check_hosted_here(session: Session, windows: dict, out: Path) -> dict:
     another device), so its apps wait on no host and each shows its own state at once."""
     state = session.state_dump()
     held = {row["workspace"] for row in state.get("held_workspaces") or []}
-    waiting = [w["name"] or w["id"] for w in state["workspace_tree"]["workspaces"]
+    # A workspace's name is its governance's, projected by the device showing it, so the layout's
+    # rows name none: a row waits on its id.
+    waiting = [w.get("name") or w["id"] for w in state["workspace_tree"]["workspaces"]
                if w["id"] not in held]
     if waiting:
         raise Failed(f"the session's own workspace is held by another device, so its apps wait "

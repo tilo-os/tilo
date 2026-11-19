@@ -33,7 +33,7 @@ impl StatePeer {
         self.core
             .workspace_doc
             .as_deref()
-            .is_some_and(|workspace| workspace.get_change_by_hash(hash).is_some())
+            .is_some_and(|workspace| workspace.has_change(hash))
     }
 
     /// Whether `candidate`, the workspace document an input made, holds a

@@ -345,7 +345,6 @@ pub struct Namespace {
     /// Stable-record catalogue for the mount's paged record projection, updated with
     /// structural mutations rather than rebuilt by every page request.
     document_index: BTreeMap<FileDocumentId, IndexedDocument>,
-    document_index_order: Vec<FileDocumentId>,
     document_index_revision: String,
     /// Stable record identities that are currently multiply bound; they stay absent from
     /// the public index until a full reconciliation proves the ambiguity gone.
@@ -493,7 +492,6 @@ impl Namespace {
             author,
             next_id,
             document_index: BTreeMap::new(),
-            document_index_order: Vec::new(),
             document_index_revision: String::new(),
             document_index_ambiguous: HashSet::new(),
             document_index_digest: DocumentIndexDigest::default(),

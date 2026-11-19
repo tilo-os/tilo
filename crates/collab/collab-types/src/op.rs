@@ -672,9 +672,8 @@ pub struct SignedOp {
     #[serde(with = "claims_wire")]
     pub claims: Vec<crate::claim::ChangeClaim>,
     /// The content hash (BLAKE3) of the app surface the op's changes are
-    /// decided against: the `surface.toml` of the package that made them,
-    /// as the launcher handed it to the app. A receiver fetches it by hash
-    /// and holds the op until it has it.
+    /// decided against: the version's `surface.toml` in the form it is kept
+    /// by. A receiver fetches it by hash and holds the op until it has it.
     pub surface: Option<[u8; 32]>,
     /// The heads of the workspace's governance its writer held when it wrote
     /// the op: the roles and grants it wrote under. A receiver that would

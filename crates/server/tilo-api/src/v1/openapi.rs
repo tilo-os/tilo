@@ -1,7 +1,7 @@
 //! The API's `OpenAPI` 3.1 description, written from what the API is made of:
 //! its operations ([`super::operations::OPERATIONS`]), the types its answers go
-//! out through ([`super::answers`]), and the apps' surfaces (`surface.toml`),
-//! whose actions' parameters and results are the schemas of
+//! out through ([`super::answers`]), and the apps' surfaces, in the form they
+//! are kept by, whose actions' parameters and results are the schemas of
 //! `runAction`'s body and answer, per app. Nothing in it is written by hand,
 //! so it cannot drift from the API; `tilo sdk gen --lang openapi --check`
 //! says whether the committed copy is current.
@@ -17,7 +17,8 @@ pub struct App {
     pub id: String,
     /// What people call it.
     pub title: String,
-    /// Its `surface.toml`.
+    /// Its surface, in the form it is kept by
+    /// (`collab_types::surface::canonical`).
     pub surface: String,
 }
 
@@ -35,7 +36,7 @@ pub fn document(apps: &[App]) -> Result<Value, String> {
     let mut schemas: Map<String, Value> = generator.take_definitions(true).into_iter().collect();
     let mut actions = Vec::new();
     for app in apps {
-        let surface = SurfaceFile::parse(app.surface.as_bytes())
+        let surface = SurfaceFile::from_json(&app.surface)
             .map_err(|error| format!("{}'s surface: {error}", app.id))?;
         for resource in &surface.resources {
             for verb in &resource.verbs {

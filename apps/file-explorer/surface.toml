@@ -290,7 +290,15 @@ params = [
 kind = "files.workspace"
 label = "Files window"
 version = 1
-fields = [
-  { path = "folder", type = "text" },
+
+[[resources.verbs]]
+id = "up"
+kind = "read"
+
+[[resources.verbs]]
+id = "download"
+kind = "read"
+params = [
+  { name = "node", type = "text", required = true, schema = { type = "string" } },
 ]
 

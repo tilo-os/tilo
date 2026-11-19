@@ -10,9 +10,24 @@ use super::WORKSPACE_VERSION;
 pub(crate) const FORMAT: Format = Format {
     name: "owner workspace document",
     version: WORKSPACE_VERSION,
-    oldest: 7,
-    steps: &[],
+    oldest: 6,
+    steps: &[without_join_log],
 };
+
+/// Version 6 to 7: the entry no longer keeps the device's join log, which the workspace's own
+/// service keeps. Everything else the device holds of the workspace reads as it was, so a device
+/// that updates across this keeps its workspaces.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a step takes the bytes it brings up, as every step of a format does"
+)]
+fn without_join_log(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut entry: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    entry.remove("join_ledger");
+    entry.insert("version".into(), 7.into());
+    serde_json::to_vec(&entry).map_err(|error| error.to_string())
+}
 
 /// The version an entry's bytes name.
 pub(crate) fn stored_version(bytes: &[u8]) -> Result<u32, String> {

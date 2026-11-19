@@ -274,7 +274,7 @@ tilo_test_env::scenario! {
         store
             .with(&want.id, |doc| {
                 for hash in &heads {
-                    assert!(doc.get_change_by_hash(hash).is_none());
+                    assert!(!doc.has_change(hash));
                     assert!(doc.get_change_meta_by_hash(hash).is_none());
                 }
             })

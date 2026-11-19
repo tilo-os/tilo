@@ -78,14 +78,40 @@ pub fn content_launch(app: &str, hash: &str) -> String {
     format!("{CONTENT_LAUNCH}{app}:{hash}")
 }
 
+/// [`content_launch`] for the file called `name`, where the one handing it over knows it:
+/// `{CONTENT_LAUNCH}{app}:{hash}:{name}`, so the window it opens names the file by it.
+#[must_use]
+pub fn named_content_launch(app: &str, hash: &str, name: Option<&str>) -> String {
+    match name {
+        Some(name) => format!("{CONTENT_LAUNCH}{app}:{hash}:{name}"),
+        None => content_launch(app, hash),
+    }
+}
+
 /// The app and content hash a [`content_launch`] names, or `None` for any other launch.
 #[must_use]
 pub fn launched_content(launch: &str) -> Option<(&str, &str)> {
-    launch
-        .strip_prefix(CONTENT_LAUNCH)?
-        .split_once(':')
-        .filter(|(app, hash)| !app.is_empty() && ui::content::valid_reference(hash))
+    launched_file(launch).map(|(app, hash, _)| (app, hash))
 }
+
+/// The app, the content hash and the file's name a [`named_content_launch`] names, or `None`
+/// for any other launch.
+#[must_use]
+pub fn launched_file(launch: &str) -> Option<(&str, &str, Option<&str>)> {
+    let (app, rest) = launch.strip_prefix(CONTENT_LAUNCH)?.split_once(':')?;
+    let (hash, name) = match rest.split_once(':') {
+        Some((hash, name)) => (hash, Some(name)),
+        None => (rest, None),
+    };
+    (!app.is_empty()
+        && ui::content::valid_reference(hash)
+        && name.is_none_or(tilo_actions::remote::valid_file_name))
+    .then_some((app, hash, name))
+}
+
+/// What an open asks of an app: the app, what of it it opens on (`None` for the app's own),
+/// and the content it opens by hash, with the name of the file it is where the open gives one.
+type ToOpen<'a> = (&'a str, Option<&'a str>, Option<(&'a str, Option<&'a str>)>);
 
 /// An app a window asked to open, on one of its records, with content, or on its own, waiting for
 /// the desktop.
@@ -94,6 +120,8 @@ struct Opening {
     record: Option<String>,
     /// The content the app opens, by hash, which the asking window holds.
     content: Option<String>,
+    /// The name of the file the content is, where the asking window knows it.
+    name: Option<String>,
     /// The resource the open names in the record, which the app's window is to show once it is
     /// open.
     resource: Option<String>,
@@ -431,6 +459,7 @@ impl DesktopSession {
             app,
             record: (!record.is_empty()).then_some(record),
             content: None,
+            name: None,
             resource: Some(request.target.address.resource),
             action: request.target.address.action,
             arguments,
@@ -479,7 +508,7 @@ impl DesktopSession {
 
     /// The app `request` opens in this desktop's workspace, the record it
     /// opens it on (`None` for the app's own), and the content it opens in
-    /// it, by hash.
+    /// it, by hash, with the name of the file it is where the request gives one.
     ///
     /// # Errors
     /// A request for another workspace, for something other than an app's
@@ -488,7 +517,7 @@ impl DesktopSession {
         &self,
         caller: &Caller,
         request: &'a InvokeRequest,
-    ) -> Result<(&'a str, Option<&'a str>, Option<&'a str>), ActionCallError> {
+    ) -> Result<ToOpen<'a>, ActionCallError> {
         let address = &request.target.address;
         if let Some((workspace, app)) = application_provider(&request.target.provider) {
             return self
@@ -511,10 +540,12 @@ impl DesktopSession {
         }
         // As the broker: the argument is the content to open, by hash
         // (`ApplicationLaunch::argument`).
-        match &request.argument {
-            InvokeArgument::None => Ok((app, None, None)),
-            InvokeArgument::Text(hash) if ui::content::valid_reference(hash) => {
-                Ok((app, None, Some(hash)))
+        if matches!(request.argument, InvokeArgument::None) {
+            return Ok((app, None, None));
+        }
+        match tilo_actions::remote::ApplicationLaunch::opened_content(&request.argument) {
+            Some((hash, name)) if ui::content::valid_reference(hash) => {
+                Ok((app, None, Some((hash, name))))
             }
             _ => Err(ActionCallError::Refused {
                 reason: "That isn't something an app can open".into(),
@@ -653,16 +684,19 @@ impl ActionProvider for DesktopSession {
             Ok((app, record, content)) => (
                 app.to_owned(),
                 record.map(str::to_owned),
-                content.map(str::to_owned),
+                content.map(|(hash, name)| (hash.to_owned(), name.map(str::to_owned))),
             ),
             Err(error) => return Pending::ready(Err(error)),
         };
+        let (content, name) = content.map_or((None, None), |(hash, name)| (Some(hash), name));
         // An action of an app's resource names the resource; an app's own open names the app.
         let resource = application_provider(&request.target.provider)
             .map(|_| request.target.address.resource.clone());
         let arguments = match request.argument {
             InvokeArgument::None => serde_json::Map::new(),
-            InvokeArgument::Text(_) if content.is_some() => serde_json::Map::new(),
+            InvokeArgument::Text(_) | InvokeArgument::Json(_) if content.is_some() => {
+                serde_json::Map::new()
+            }
             InvokeArgument::Json(arguments) => arguments,
             InvokeArgument::Text(_) => {
                 return Pending::ready(Err(ActionCallError::Refused {
@@ -675,6 +709,7 @@ impl ActionProvider for DesktopSession {
             app,
             record,
             content,
+            name,
             resource,
             action: request.target.address.action,
             arguments,
@@ -788,6 +823,7 @@ impl Openings {
             app,
             record,
             content,
+            name,
             resource,
             action,
             arguments,
@@ -824,7 +860,7 @@ impl Openings {
                 }
                 let launch = match (record, content) {
                     (Some(record), _) => record_launch(&app, &record),
-                    (None, Some(hash)) => content_launch(&app, &hash),
+                    (None, Some(hash)) => named_content_launch(&app, &hash, name.as_deref()),
                     (None, None) => app.clone(),
                 };
                 handle

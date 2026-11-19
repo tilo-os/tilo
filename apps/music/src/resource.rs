@@ -200,6 +200,7 @@ impl Library {
 fn view_place(id: &str, label: &str) -> Derived<Library> {
     Derived::new(label)
         .of_kind("music.view")
+        .typed::<crate::row_types::View>()
         .addressed(crate::actions::view_resource_id(id))
         .with_operation(crate::actions::bound(
             &MusicEffect::Open {
@@ -212,6 +213,7 @@ fn view_place(id: &str, label: &str) -> Derived<Library> {
 fn album_place(album: &Album) -> Derived<Library> {
     Derived::new(album.title.clone())
         .of_kind("music.album")
+        .typed::<crate::row_types::Album>()
         .addressed(crate::actions::album_resource_id(&album.id))
         .with_operation(crate::actions::bound(
             &MusicEffect::Open {

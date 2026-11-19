@@ -59,6 +59,46 @@ fn show_and_launch_effects_reach_the_selection_and_the_route() {
     }
 }
 
+/// A click with no session to take its request is performed in this window instead of waiting on an answer
+/// that never comes, and the banner says what happened rather than that a request is pending.
+#[test]
+fn a_click_with_nobody_to_ask_acts_where_it_is() {
+    let mut app = WindowsApp::new_offline();
+    app.use_provider(Box::new(
+        crate::provider::SampleProvider::new().offering_native_controls(),
+    ));
+    app.apply_intent(Intent::SelectApp(0));
+    app.notice = Some(Notice::info(strings::t("windows-request-sent")));
+    app.apply_intent(Intent::Launch);
+    assert_eq!(
+        app.provider
+            .borrow_mut()
+            .catalogue()
+            .app("adobe-reader")
+            .map(|app| app.status),
+        Some(AppStatus::Running),
+        "the launch happened here: there is no dispatcher to hand it to"
+    );
+    assert_ne!(
+        app.notice.as_ref().map(|notice| notice.text.clone()),
+        Some(strings::t("windows-request-sent")),
+        "and the banner is about what happened, not a request nobody takes"
+    );
+}
+
+/// A banner belongs to the state it describes: the person's next action takes an old one down,
+/// even when that action is refused.
+#[test]
+fn a_banner_goes_with_the_next_action() {
+    let mut app = WindowsApp::new_offline();
+    app.notice = Some(Notice::info(strings::t("windows-request-sent")));
+    app.apply_intent(Intent::ConfirmCapsule);
+    assert!(
+        app.notice.is_none(),
+        "nothing waits for approval once the next action is taken"
+    );
+}
+
 /// Maintenance effects reach the service with the id or private capsule they name, and
 /// leave the service to report the outcome.
 #[test]

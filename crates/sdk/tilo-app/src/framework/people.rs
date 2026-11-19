@@ -9,7 +9,9 @@
 //! correctly everywhere at once. Names are the workspace's labels: people who
 //! share a name carry the number presence tells them apart by
 //! ([`ui_core::presence::MemberLabels`]), and the member reading
-//! is shown their own name like anyone else's.
+//! is shown their own name like anyone else's. A view no window draws (an
+//! agent's) reads the members lent to the app's code
+//! ([`tilo_resource::members`]) where no presence roster named them.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -143,7 +145,18 @@ impl People {
         {
             return own.to_owned();
         }
+        drop(roster);
+        if let Some(name) = Self::lent(member) {
+            return name;
+        }
         member.id().to_owned()
+    }
+
+    /// What whoever lent this view its members calls `member`
+    /// ([`tilo_resource::members::name_of`]): the names the app's code reads, which a view no
+    /// window draws (an agent's) shows where no presence roster named them.
+    fn lent(member: &MemberId) -> Option<String> {
+        tilo_resource::members::name_of(member)
     }
 
     /// The hue `member` wears: the one the workspace announced for them, else
@@ -162,25 +175,54 @@ impl People {
     /// them, sorted by name: whom a picker of members offers
     /// ([`ViewCx::person_picker`]).
     pub fn members(&self) -> Vec<MentionCandidate> {
-        self.roster.borrow().members.clone()
+        let mut members = self.roster.borrow().members.clone();
+        for (member, name) in tilo_resource::members::named() {
+            if members.iter().any(|candidate| candidate.id == member) {
+                continue;
+            }
+            let hue = ui_core::tokens::PresenceHue::of_member(&member);
+            members.push(MentionCandidate {
+                is_self: self.is_me(&member),
+                id: member,
+                name,
+                hue,
+            });
+        }
+        members.sort_by(|a, b| a.name.cmp(&b.name));
+        members
     }
 
     /// The workspace's `member`, when it names them: their name, their hue
     /// and whether they are this window's own.
     pub fn member(&self, member: &MemberId) -> Option<MentionCandidate> {
-        self.roster
+        if let Some(found) = self
+            .roster
             .borrow()
             .members
             .iter()
             .find(|candidate| candidate.id == *member)
             .cloned()
+        {
+            return Some(found);
+        }
+        Some(MentionCandidate {
+            is_self: self.is_me(member),
+            id: member.clone(),
+            name: Self::lent(member)?,
+            hue: ui_core::tokens::PresenceHue::of_member(member),
+        })
     }
 
     /// The members as a history directory reads them: what a file
     /// version's person and device keys resolve through, and the hover that
     /// names the computer whose session vouched for the writer.
     pub fn registry(&self) -> ui_core::history_source::AuthorDirectory {
-        self.roster.borrow().registry.clone()
+        let mut registry = self.roster.borrow().registry.clone();
+        let named = tilo_resource::members::named();
+        if !named.is_empty() {
+            registry.register_roster(named.iter().map(|(member, name)| (member, name.as_str())));
+        }
+        registry
     }
 
     /// `member` as a view shows them.
@@ -206,7 +248,9 @@ impl People {
             |member| self.actor_of(member),
         );
         let named = actor.member.as_ref().is_some_and(|member| {
-            self.roster.borrow().names.contains_key(member) || self.is_me(member)
+            self.roster.borrow().names.contains_key(member)
+                || self.is_me(member)
+                || Self::lent(member).is_some()
         });
         if !named && !kept.trim().is_empty() {
             kept.trim().clone_into(&mut actor.name);
@@ -539,6 +583,44 @@ mod tests {
                 ui_core::history_source::agent_spoken_label("Planner"),
                 "Planner, agent",
                 "a reader hears the kind the mark shows"
+            );
+        }
+
+        // A view no window draws (an agent's) reads the members lent to the app's code: the
+        // names the workspace's governance gives, where no presence roster named them.
+        phase a_views_lent_members_are_named;
+        {
+            let me = MemberId::person("me-id");
+            let ada = MemberId::person("ada-key");
+            let planner = MemberId::agent("planner");
+            let people = People::new(Some(&me));
+            tilo_resource::members::know([
+                (ada.clone(), "Ada".to_owned()),
+                (planner.clone(), "Planner".to_owned()),
+            ]);
+            assert_eq!(
+                people.name(&ada),
+                "Ada",
+                "a lent member reads by the name lent to the app"
+            );
+            assert_eq!(people.name(&planner), "Planner");
+            assert!(
+                people
+                    .members()
+                    .iter()
+                    .any(|candidate| candidate.id == ada && candidate.name == "Ada"),
+                "a picker offers the lent members"
+            );
+            assert_eq!(
+                people.registry().resolve_entry(ada.id(), None).name,
+                "Ada",
+                "a change a lent member wrote reads as theirs"
+            );
+            tilo_resource::members::know([]);
+            assert_eq!(
+                people.name(&ada),
+                "ada-key",
+                "a view lent nothing leaves the id"
             );
         }
     }

@@ -86,7 +86,10 @@ impl Launch {
             });
         }
         if let Some(rest) = launch.strip_prefix(CONTENT_PREFIX) {
-            let (app, hash) = rest.split_once(':')?;
+            let (app, content) = rest.split_once(':')?;
+            // A window that handed over a file may name it after the hash (`:plan.txt`); the
+            // process opens the content by its hash alone.
+            let hash = content.split_once(':').map_or(content, |(hash, _)| hash);
             return (!app.is_empty() && !hash.is_empty()).then(|| Self::Content {
                 app: app.to_owned(),
                 hash: hash.to_owned(),
@@ -204,6 +207,14 @@ mod tests {
                     app: "so.tilo.photos".into(),
                     hash: "0".repeat(64)
                 })
+            );
+            assert_eq!(
+                Launch::parse(&format!("content:so.tilo.photos:{}:sunset.png", "0".repeat(64))),
+                Some(Launch::Content {
+                    app: "so.tilo.photos".into(),
+                    hash: "0".repeat(64)
+                }),
+                "a file handed over by its name opens by its hash"
             );
             assert_eq!(
                 Launch::crashed("so.tilo.canvas"),

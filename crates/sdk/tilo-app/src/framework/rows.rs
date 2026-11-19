@@ -63,10 +63,11 @@ impl ContentHandoff {
 
     /// An emitter opening whatever content hash it is handed, in this app:
     /// for bytes that arrive after the control that asked for them.
+    /// The emitter's launches are addressed to this app's row: a window that emits them
+    /// publishes [`Self::destination`] so each one resolves where it is dispatched.
     pub fn emitter(&self, id: &str) -> Option<ActionEmitter<String>> {
         let spec = ApplicationLaunch::content_spec(&self.app, id, &self.label, &self.description);
-        let row = LiveRow::typed::<Application>(format!("{}.app", self.app), self.label.clone())
-            .operation(spec.clone());
+        let row = self.row(spec.clone());
         ActionBinding::new(&row, &spec, |hash: String| {
             let mut arguments = serde_json::Map::new();
             arguments.insert("content_hash".into(), serde_json::Value::String(hash));
@@ -74,6 +75,39 @@ impl ContentHandoff {
         })
         .ok()
         .map(ActionEmitter::new)
+    }
+
+    /// [`Self::emitter`] for a file: what it is handed is the file's content hash and its
+    /// name, which says what its bytes cannot (that text is a note, or a table).
+    pub fn file_emitter(&self, id: &str) -> Option<ActionEmitter<(String, String)>> {
+        let spec = ApplicationLaunch::content_spec(&self.app, id, &self.label, &self.description);
+        let row = self.row(spec.clone());
+        ActionBinding::new(&row, &spec, |(hash, name): (String, String)| {
+            serde_json::Map::from_iter([
+                (
+                    tilo_actions::remote::CONTENT_HASH_ARGUMENT.to_owned(),
+                    serde_json::Value::String(hash),
+                ),
+                (
+                    tilo_actions::remote::NAME_ARGUMENT.to_owned(),
+                    serde_json::Value::String(name),
+                ),
+            ])
+        })
+        .ok()
+        .map(ActionEmitter::new)
+    }
+
+    /// The app's row [`Self::emitter`]'s launches name, offering its open as `id`.
+    #[must_use]
+    pub fn destination(&self, id: &str) -> ResourceSpec {
+        let spec = ApplicationLaunch::content_spec(&self.app, id, &self.label, &self.description);
+        self.row(spec).into_resource()
+    }
+
+    fn row(&self, open: ActionSpec) -> LiveRow {
+        LiveRow::typed::<Application>(format!("{}.app", self.app), self.label.clone())
+            .operation(open)
     }
 }
 

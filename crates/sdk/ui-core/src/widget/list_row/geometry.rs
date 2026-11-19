@@ -117,7 +117,7 @@ impl ListRowFace<'_> {
         let extra = self.extra_lines() > 0;
         let avatar = RowMetrics::avatar(theme, extra);
         let own = match self.leading {
-            None if self.nested => (m.icon, m.icon),
+            None if self.nested || self.leading_empty => (m.icon, m.icon),
             None => (0.0, 0.0),
             Some(RowLeading::Icon(_) | RowLeading::Swatch(_) | RowLeading::Signal(_)) => {
                 (m.icon, m.icon)
@@ -179,7 +179,14 @@ impl ListRowFace<'_> {
                     .map_or(0.0, |(_, height)| height),
             );
         if let Some(height) = self.row_height {
-            return held.max(height).max(self.min_target).ceil();
+            // The tree's own row token fits one name; a row carrying a line beside its name
+            // takes the compact row's two-line height, as tall as a list row's line.
+            let floor = if self.outline && self.extra_lines() > 0 {
+                f64::from(crate::widget::TREE_ROW_DOUBLE_HEIGHT)
+            } else {
+                height
+            };
+            return held.max(floor).max(self.min_target).ceil();
         }
         // A dense row is as tall as its own line and inset, never the list's row height.
         let min = if self.dense {

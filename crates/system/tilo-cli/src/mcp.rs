@@ -532,17 +532,33 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
         let asking = request
             .get("params")
             .and_then(|params| serde_json::from_value::<held::Claim>(params.clone()).ok());
-        let steps_down = connection
+        let takes_over = connection
             .shared
             .held_as
             .get()
             .zip(asking)
             .is_some_and(|(own, asking)| asking.takes_over(own));
+        // A holder whose folders are in use keeps the device until they are quiet: stepping
+        // down in the middle of a checkout answers its requests with I/O errors. The holder that
+        // asked asks again later (the user service's does, now and then), and meanwhile this one
+        // serves.
+        let busy = match held::PEER.get() {
+            Some(peer) if takes_over => peer.busy().await,
+            _ => None,
+        };
+        let steps_down = takes_over && busy.is_none();
+        if let Some(busy) = &busy {
+            tracing::warn!(
+                %busy,
+                "a holder of a newer Tilo, or the user service's, asked to take this device over; \
+                 this one keeps it until its folders are quiet"
+            );
+        }
         if steps_down {
             connection.shared.stepping_down.notify_one();
         }
         return Some(
-            json!({"jsonrpc": "2.0", "id": id, "result": {"stepping_down": steps_down, "pid": std::process::id()}})
+            json!({"jsonrpc": "2.0", "id": id, "result": {"stepping_down": steps_down, "busy": busy, "pid": std::process::id()}})
                 .to_string(),
         );
     }

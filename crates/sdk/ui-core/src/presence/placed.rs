@@ -4,8 +4,11 @@
 //! and colour a native shell draws them with, never by a second renderer.
 
 use super::{ChatBubble, PeerCursor, PresenceCtx, ReactionFloat};
+use crate::paint::PaintCtx;
 use crate::permissions::MemberId;
+use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::Color;
+use vello::peniko::Fill;
 
 /// One placed pointer as the host hands it over.
 #[derive(Clone, Debug, PartialEq)]
@@ -33,23 +36,7 @@ impl PresenceCtx {
     #[must_use]
     pub fn placed_cursor(&self, placed: PlacedPointer) -> PeerCursor {
         let is_agent = !placed.user.is_person();
-        // An agent's tag carries the agent mark, so its name stands alone.
-        let known = if is_agent {
-            self.names.get(&placed.user).cloned()
-        } else {
-            self.names
-                .contains_key(&placed.user)
-                .then(|| self.display_name(&placed.user))
-        };
-        let name = known
-            .or_else(|| {
-                placed
-                    .name
-                    .as_deref()
-                    .and_then(super::shown_name)
-                    .map(str::to_owned)
-            })
-            .unwrap_or_else(super::unnamed_person_label);
+        let name = self.placed_name(&placed.user, placed.name.as_deref());
         let label = match placed.activity.as_deref().map(str::trim) {
             Some(activity) if is_agent && !activity.is_empty() => format!("{name} · {activity}"),
             _ => name,
@@ -67,6 +54,144 @@ impl PresenceCtx {
         }
     }
 }
+
+impl PresenceCtx {
+    /// The name `user` is shown by where an app placed them: the one this presence knows them
+    /// by, else `given` (their own presence's), else a guest's; never their key. An agent's
+    /// tag carries the agent mark, so its name stands alone.
+    fn placed_name(&self, user: &MemberId, given: Option<&str>) -> String {
+        let known = if user.is_person() {
+            self.names
+                .contains_key(user)
+                .then(|| self.display_name(user))
+        } else {
+            self.names.get(user).cloned()
+        };
+        known
+            .or_else(|| given.and_then(super::shown_name).map(str::to_owned))
+            .unwrap_or_else(super::unnamed_person_label)
+    }
+
+    /// Members an app placed at one thing it shows (agents at a map's pin): the first one's face
+    /// in one pill in their colour that names them ("Scout", or "Scout +1"), and the others'
+    /// faces set left of it outside the pill's end, each under the one before, with the hindmost
+    /// one's centre at `dock`. A ring of `ground` (the surface under them) round the pill and
+    /// each face, and the contact shadow, lift them off any colour. `followed`: this person
+    /// follows the first one, and the pill wears a ring in their colour. Kept inside
+    /// `viewport`. Answers where it painted.
+    pub fn draw_placed_tag(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        (dock, viewport): (Point, Rect),
+        members: &[(MemberId, Option<String>)],
+        ground: Color,
+        followed: bool,
+    ) -> Rect {
+        let Some((first, given)) = members.first() else {
+            return Rect::ZERO;
+        };
+        let theme = ctx.theme;
+        let k = super::render::label_magnification(theme, ctx.text);
+        let side = FACE * k;
+        let step = side * FACE_STEP;
+        let pad = PAD * k;
+        let ring = 2.0 * f64::from(theme.tokens.metrics.chrome_rule_px);
+        let style = super::render::pill_label_style(theme);
+        let name = self.placed_name(first, given.as_deref());
+        let label = match members.len() {
+            1 => name,
+            many => format!("{name} +{}", many - 1),
+        };
+        let (text_w, text_h) = ctx.text.measure_style(&label, None, &style);
+        let height = side + 2.0 * pad;
+        let behind = step * (members.len() - 1) as f64;
+        let dock = dock + vello::kurbo::Vec2::new(behind, 0.0);
+        let mut pill = Rect::new(
+            dock.x - side / 2.0 - pad,
+            dock.y - height / 2.0,
+            dock.x + side / 2.0 + 2.0 * pad + f64::from(text_w) + LABEL_END * k,
+            dock.y + height / 2.0,
+        );
+        let hindmost = Rect::from_center_size((dock.x - behind, dock.y), (side, side));
+        let whole = pill.union(hindmost);
+        let inside = viewport.inset(-ring);
+        let shift = vello::kurbo::Vec2::new(
+            (inside.x1 - whole.x1).min(0.0).max(inside.x0 - whole.x0),
+            (inside.y1 - whole.y1).min(0.0).max(inside.y0 - whole.y0),
+        );
+        pill = pill + shift;
+        let dock = dock + shift;
+        let radius = height / 2.0;
+        let colour = super::render::color_for(self, first, theme);
+        let outer = pill.inflate(ring, ring);
+        crate::surface::shadow(
+            ctx.scene,
+            ctx.transform,
+            outer,
+            radius + ring,
+            &theme.tokens.elevation.contact,
+        );
+        ctx.scene.fill(
+            Fill::NonZero,
+            ctx.transform,
+            ground,
+            None,
+            &RoundedRect::from_rect(outer, radius + ring),
+        );
+        ctx.scene.fill(
+            Fill::NonZero,
+            ctx.transform,
+            colour,
+            None,
+            &RoundedRect::from_rect(pill, radius),
+        );
+        // The first face is drawn last, over the ones set behind it.
+        for (index, (member, given)) in members.iter().enumerate().rev() {
+            let name = self.placed_name(member, given.as_deref());
+            let face = crate::widget::AvatarFace::member(&name, member)
+                .presence(super::presence_colour(self.color_for(member)))
+                .ringed_on(ground);
+            let centre = Point::new(dock.x - step * index as f64, dock.y);
+            face.paint(ctx, Rect::from_center_size(centre, (side, side)));
+        }
+        let mut painted = outer.union((hindmost + shift).inflate(ring, ring));
+        let text_x = dock.x + side / 2.0 + 2.0 * pad;
+        let text_y = pill.center().y - f64::from(text_h) / 2.0;
+        ctx.text.draw_style(
+            ctx.scene,
+            &label,
+            super::render::contrast_ink(colour),
+            ctx.transform * vello::kurbo::Affine::translate((text_x, text_y)),
+            None,
+            &style,
+        );
+        if followed {
+            let around = outer.inflate(FOLLOW_GAP, FOLLOW_GAP);
+            ctx.scene.stroke(
+                &vello::kurbo::Stroke::new(FOLLOW_RING),
+                ctx.transform,
+                colour,
+                None,
+                &RoundedRect::from_rect(around, radius + ring + FOLLOW_GAP),
+            );
+            painted = painted.union(around.inflate(FOLLOW_RING, FOLLOW_RING));
+        }
+        painted
+    }
+}
+
+/// A placed tag's face, at 1x.
+const FACE: f64 = 18.0;
+/// How far each further face is set left of the one before, as a share of a face: past the
+/// pill's end, so three quarters of it shows.
+const FACE_STEP: f64 = 0.75;
+/// The pill round its faces, at 1x.
+const PAD: f64 = 3.0;
+/// Padding after the name, at 1x.
+const LABEL_END: f64 = 6.0;
+/// The ring round a followed member's pill, and the ground between them.
+const FOLLOW_RING: f64 = 2.0;
+const FOLLOW_GAP: f64 = 2.0;
 
 #[cfg(test)]
 mod tests {

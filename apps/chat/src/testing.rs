@@ -228,8 +228,8 @@ pub(crate) fn insert_channel(
 /// The published report `id`, carrying the reads a window offers on it.
 pub(crate) fn report_resource(id: &str, text: &str) -> ui::tilo_actions::ResourceSpec {
     ui::tilo_resource::typed_resource::<chat_model::rows::Report>(item("feedback", id), text)
-        .with_action(crate::feedback::receipt_read::spec(id))
-        .with_action(crate::feedback::status_read::spec(id))
+        .with_action(crate::feedback::receipt_read::spec(id).into_spec())
+        .with_action(crate::feedback::status_read::spec(id).into_spec())
 }
 
 /// `submit-feedback` of `submission` in the channel it names.

@@ -1,7 +1,8 @@
 ## What Chat's resources say in words.
 
 chat-draft-label = Draft
-chat-person-unnamed = Someone ({ $tag })
+chat-member-unnamed = Someone ({ $tag })
+chat-person-unnamed = Someone without a name yet
 
 ## The resource's resources, their actions and what it does.
 chat-effects-model-control = Ask about this message

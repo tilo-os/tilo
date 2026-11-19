@@ -2808,6 +2808,10 @@ impl Worker {
         clippy::result_large_err,
         reason = "the outcome becomes the receipt answered"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one app opened: its route, its genesis and its keys, in order"
+    )]
     fn open_new(
         &mut self,
         workspace_id: WorkspaceId,
@@ -2867,6 +2871,7 @@ impl Worker {
                 &MemberId::Person(creator),
                 &actor,
                 Seed::New,
+                true,
             )
             .map_err(|error| refused(error.to_string()))?;
             let hosted = self.lend(hosted, workspace);

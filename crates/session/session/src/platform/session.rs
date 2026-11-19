@@ -643,7 +643,9 @@ impl Session {
         published.add(Rc::clone(&lists_surface));
         // The chrome above the windows: its own tree, beside the shell's.
         let intents = Rc::new(RefCell::new(Vec::new()));
-        let engine = activity.open_engine(&options, &handle);
+        // Where this device's own workspace service is installed, and what its roles read from.
+        let (workspace_service, document_reads) = crate::broker_services::session_documents();
+        let engine = activity.open_engine(&options, &handle, document_reads.clone());
         // This device's channels of its workspaces' sealed records: its keys,
         // and the devices each one admits, which its window streams carry
         // between. The broker the apps reach is the one the channel service
@@ -658,16 +660,14 @@ impl Session {
         let channels_fanout =
             std::sync::Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
         let key_link = crate::workspace_keys::KeyLink::new();
-        // Search reads the workspaces' records off the records themselves,
-        // with no window of their app running: what this device holds is
-        // found before anything changes, and every change after it. The same
-        // changes are what the person's mentions and the activity follow
-        // (`crate::platform::records`): one stream of them here, read by both,
-        // and noted where every write lands — the records' store, and the
-        // index of what the broker receives from the apps and from peers.
         changes.waking(options.wake.handle());
         let resource_index = engine.as_ref().map(|engine| {
-            crate::resource_index::start_on_device(engine, &options.content, &changes)
+            crate::resource_index::install_read_policy(engine, &options.content);
+            crate::resource_index::start(
+                &document_reads,
+                std::sync::Arc::clone(&options.content),
+                changes.clone(),
+            )
         });
         let resource_changes = resource_index.clone().map(|index| {
             index as std::sync::Arc<dyn tilo_broker_core::services::DocumentIndexChanges>
@@ -709,27 +709,33 @@ impl Session {
             resource_changes.clone(),
             engine.as_ref().map(|engine| engine.arrivals()),
         );
-        let (sync, documents) = start_collaboration(
+        let (sync, documents, resources) = start_collaboration(
             &options,
             continuity.clone(),
             engine.clone(),
             (beside, &device_agents),
             Some(peer_documents.clone()),
+            workspace_service,
         );
         if let Some(personal) = sync.as_ref().and_then(|sync| sync.personal()) {
             conversations.use_personal_store(personal.sync().clone());
         }
         // The records the session itself writes are the workspaces' own, and its writes reach this
-        // device's apps as a member's do.
+        // device's apps as a member's do. Search finds the records the workspaces hold, and
+        // brings one here, through them.
         if let Some(engine) = &engine {
             records.attach(
                 std::sync::Arc::clone(engine),
+                document_reads.clone(),
                 &changes,
                 Some(peer_documents),
             );
-            // Search finds the records the workspaces hold, and brings one here, through them.
             if let Some(found) = &options.search.records {
-                found.read_from(engine, records.clone(), options.person.clone());
+                found.read_from(
+                    document_reads.clone(),
+                    records.clone(),
+                    options.person.clone(),
+                );
             }
         }
         // The content the workspaces' records reference: kept beside their
@@ -941,9 +947,8 @@ impl Session {
             std::sync::Arc::clone(&steps),
         ));
         session_services.keep_actions(std::sync::Arc::clone(&session_actions));
-        // What a watch of a whole workspace reads: the changes in this device's replica.
-        if let Some(engine) = &engine {
-            session_services.keep_records(std::sync::Arc::clone(engine));
+        if engine.is_some() {
+            session_services.keep_records(document_reads.clone(), changes.clone());
         }
         // The person's settings, answered under the provider Settings' window names for each
         // control it shows: the session keeps them in its settings service, and this is what the
@@ -1214,6 +1219,7 @@ impl Session {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
                 documents,
+                resources,
                 engine: engine.as_ref().map(std::sync::Arc::clone),
                 sealed: crate::app_wire::Sealed {
                     broker: std::sync::Arc::clone(&channels_broker),
@@ -1345,8 +1351,8 @@ impl Session {
             options.person.clone(),
             crate::automation::Feeds {
                 // What the workspaces hold, whose changes a shortcut can answer.
-                held: engine.as_ref().map(|engine| {
-                    let held = Held::over(Arc::clone(engine), changes.clone());
+                held: engine.as_ref().map(|_| {
+                    let held = Held::over(document_reads.clone(), changes.clone());
                     (Arc::new(held) as Source, changes.clone())
                 }),
                 // Which of the person's devices this one is, and which of
@@ -1540,11 +1546,11 @@ impl Session {
             crate::mentions::Mentions::over(crate::mentions::Given {
                 person: vec![options.person.clone()],
                 store: Some(store),
-                // The workspaces' records are the engine's: what their apps and the person's
-                // other devices write lands there, never in the session's own store.
-                records: engine.as_ref().map(|engine| {
-                    Rc::new(Held::over(Arc::clone(engine), changes.clone())) as Rc<_>
-                }),
+                // The workspaces' records are this device's service to answer: what their apps
+                // and the person's other devices write lands there, never in this store.
+                records: engine
+                    .as_ref()
+                    .map(|_| Rc::new(Held::over(document_reads.clone(), changes.clone())) as Rc<_>),
                 notices: Some(crate::notifications::RoleNotices::of(&notifications)),
                 name: crate::mentions::member_names(
                     handle.clone(),
@@ -1679,6 +1685,7 @@ impl Session {
             folder_import: RefCell::new(None),
             sync,
             engine,
+            document_reads,
             desktops,
             notes,
             membership_fed: std::cell::RefCell::new(None),

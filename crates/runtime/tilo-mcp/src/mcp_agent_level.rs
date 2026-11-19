@@ -55,40 +55,67 @@ impl Level {
         self.pages.marks.len() >= LEVEL_PAGES
     }
 
-    /// Where a read starting at the page holding `child`'s first row picks
-    /// up: that page, and how many resources that read meets before
-    /// `child`. `None` when that page is the directory's first.
-    pub(super) fn resume_at(&self, parent: &str, child: usize) -> Option<(PageMark, usize)> {
+    /// The provider's cursor for the row the resource at `child` among the
+    /// level's rows starts at, and the revision it was read at: where a
+    /// listing's next page asks for its first resource, so that page reads
+    /// from there and not from the level's first one. A resource past the
+    /// rows read starts at the page the level goes on from; `None` only when
+    /// the rows read cover the directory whole, so there is nowhere to go on
+    /// from.
+    pub(super) fn row_mark(&self, parent: &str, child: usize) -> Option<(Vec<u8>, String)> {
         let rows = &self.pages.rows;
         let mut seen: HashSet<&str> = HashSet::new();
-        let mut first = None;
-        for (at, row) in rows.iter().enumerate() {
+        let mut at = None;
+        for (index, row) in rows.iter().enumerate() {
             let id = row.resource.id.as_str();
             if (!parent.is_empty() && id == parent) || !seen.insert(id) {
                 continue;
             }
             if seen.len() == child.saturating_add(1) {
-                first = Some(at);
+                at = Some(index);
                 break;
             }
         }
-        let first = first?;
-        let mark = self
-            .pages
-            .marks
-            .iter()
-            .rev()
-            .find(|mark| mark.row <= first)?
-            .clone();
-        let mut met: HashSet<&str> = HashSet::new();
-        for row in rows.get(mark.row..first).unwrap_or_default() {
-            let id = row.resource.id.as_str();
-            if parent.is_empty() || id != parent {
-                met.insert(id);
+        let Some(at) = at else {
+            // The page asks for a resource past those read: it stands on the
+            // page the directory goes on from, if it does, and else after
+            // every row read, where the directory holds nothing more.
+            if let Some(rest) = self.pages.rest.as_ref() {
+                return Some((rest.cursor.clone(), rest.revision.clone()));
             }
-        }
-        Some((mark, met.len()))
+            let mark = self.pages.marks.last()?;
+            let offset =
+                row_offset(&mark.cursor).saturating_add(rows.len().saturating_sub(mark.row));
+            return Some((
+                u64::try_from(offset)
+                    .unwrap_or(u64::MAX)
+                    .to_le_bytes()
+                    .to_vec(),
+                mark.revision.clone(),
+            ));
+        };
+        let mark = self.pages.marks.iter().rev().find(|mark| mark.row <= at)?;
+        // The marks a level leaves are pages of it, each with the provider's
+        // row cursor it started at: the rows since move that on by one each.
+        let offset = row_offset(&mark.cursor).saturating_add(at.saturating_sub(mark.row));
+        Some((
+            u64::try_from(offset)
+                .unwrap_or(u64::MAX)
+                .to_le_bytes()
+                .to_vec(),
+            mark.revision.clone(),
+        ))
     }
+}
+
+/// The row a provider's cursor names: how many rows of the directory it
+/// stands at.
+fn row_offset(cursor: &[u8]) -> usize {
+    <[u8; 8]>::try_from(cursor)
+        .map(u64::from_le_bytes)
+        .ok()
+        .and_then(|offset| usize::try_from(offset).ok())
+        .unwrap_or(0)
 }
 
 /// Why a read of a level's pages gave no level.
@@ -168,7 +195,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     ) -> Result<Level, String> {
         while level.children.len() <= children && level.unread() {
             level = self
-                .read_level(provider, parent, Some(level))
+                .read_level(provider, parent, Some(level), children.saturating_add(1))
                 .await?
                 .ok_or("the app's directory kept changing while it was read; try again")?;
         }
@@ -192,7 +219,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let mut found = find(&level)?;
         while found.is_none() && level.unread() {
             level = self
-                .read_level(provider, parent, Some(level))
+                .read_level(provider, parent, Some(level), usize::MAX)
                 .await?
                 .ok_or("the app's directory kept changing while it was read; try again")?;
             levels.insert(parent.to_owned(), level.clone());
@@ -219,7 +246,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             ..Level::default()
         };
         while level.children.len() <= children && level.unread() {
-            let Some(read) = self.read_level_once(provider, parent, level).await? else {
+            let Some(read) = self
+                .read_level_once(provider, parent, level, children.saturating_add(1))
+                .await?
+            else {
                 return Ok(None);
             };
             level = read;
@@ -228,14 +258,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     /// Up to [`LEVEL_PAGES`] pages of the directory under `parent`, from
-    /// the start or on from where `from` stopped, starting again from the
-    /// first page while the directory moves on between pages or the app
-    /// cannot read it.
+    /// the start or on from where `from` stopped, and no page past the
+    /// `reach`th resource while fewer would not do: a listing asks for the
+    /// resources its page holds, not a fixed stretch of the directory. It
+    /// starts again from the first page while the directory moves on between
+    /// pages or the app cannot read it.
     pub(super) async fn read_level(
         &self,
         provider: &str,
         parent: &str,
         from: Option<Level>,
+        reach: usize,
     ) -> Result<Option<Level>, String> {
         // A level is one snapshot: every page of it at one revision. When the
         // app's directory moves on between pages (its document changed, or an
@@ -262,7 +295,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 tokio::time::sleep_until(until).await;
             }
             reads = reads.saturating_add(1);
-            let unread = match self.read_pages(provider, parent, from).await? {
+            let unread = match self.read_pages(provider, parent, from, reach).await? {
                 Ok(read) => return Ok(Some(read)),
                 Err(unread) => unread,
             };
@@ -286,17 +319,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         provider: &str,
         parent: &str,
         from: Level,
+        reach: usize,
     ) -> Result<Option<Level>, String> {
-        Ok(self.read_pages(provider, parent, from).await?.ok())
+        Ok(self.read_pages(provider, parent, from, reach).await?.ok())
     }
 
     /// The pages [`Self::read_level_once`] reads, saying why they gave no
-    /// level when they gave none.
+    /// level when they gave none, and stopping once the directory holds more
+    /// than `reach` resources.
     async fn read_pages(
         &self,
         provider: &str,
         parent: &str,
         from: Level,
+        reach: usize,
     ) -> Result<Result<Level, Unread>, String> {
         let LevelPages {
             mut rows,
@@ -346,6 +382,16 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             rows.extend(asked.rows);
             read_at.clone_from(&asked.revision);
             if asked.exhausted || asked.next_cursor.is_empty() {
+                break;
+            }
+            // Enough resources for the caller: where the directory goes on
+            // is kept, so reading the next page starts there.
+            if reach != usize::MAX && distinct_children(&rows, parent) > reach {
+                rest = Some(PageMark {
+                    row: rows.len(),
+                    cursor: asked.next_cursor,
+                    revision: asked.revision,
+                });
                 break;
             }
             if page.saturating_add(1) == LEVEL_PAGES {
@@ -435,4 +481,16 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .retain(|node| !all.iter().any(|owner| owner.beside(node)));
         Ok(root)
     }
+}
+
+/// How many resources of the level under `parent` `rows` name: each once,
+/// and never `parent` itself, whose own actions are the level's own.
+fn distinct_children(rows: &[CatalogueRow], parent: &str) -> usize {
+    let mut seen = HashSet::new();
+    for row in rows {
+        if row.resource.id != parent {
+            seen.insert(row.resource.id.as_str());
+        }
+    }
+    seen.len()
 }

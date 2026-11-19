@@ -412,7 +412,7 @@ pub use form::{Form, FormSubmit};
 pub use hosted_actions::{HostedActions, HostedActionsLink, HostedInvocation};
 pub use kinds::{hosted_kinds, resource_kind, seed_resource};
 pub use launch::{Command, Helper, LaunchInput, OpenHere};
-pub use live::Live;
+pub use live::{Landing, Live};
 pub use opening::Opened;
 pub use people::{Actor, People};
 pub use person::{PersonKind, PersonResource};

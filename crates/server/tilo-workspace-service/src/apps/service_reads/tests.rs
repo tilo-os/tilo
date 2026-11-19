@@ -13,7 +13,7 @@ use automerge::transaction::Transactable as _;
 
 use super::*;
 use crate::apps::route::CrdtRoute;
-use crate::workspaces::fixtures::{device_cert, governor, test_host_taking_part};
+use crate::workspaces::fixtures::{TestHost, device_cert, governor, test_host_taking_part};
 
 const APP: &str = "so.tilo.notes";
 const RESOURCE: &str = "note-1";
@@ -198,4 +198,172 @@ async fn a_chains_head_is_answered_with_its_newest_part_or_with_none() {
         "only a chain's head is answered so"
     );
     server.shutdown().await;
+}
+
+/// A service holding `RESOURCE` of `APP` in a new workspace it authorizes as its own device: the
+/// workspace, its governor's certificate, the revision and heads its first whole read names, and
+/// the document those bytes are.
+async fn authored(
+    scratch: &std::path::Path,
+) -> (
+    TestHost,
+    String,
+    tilo_user_identity::DeviceCert,
+    [u8; 32],
+    Vec<[u8; 32]>,
+    automerge::AutoCommit,
+) {
+    let (key, cert) = governor();
+    let server = test_host_taking_part(scratch, &key, &cert).await;
+    let created = server.workspaces().create("Own reads").await.unwrap();
+    let workspace = created.workspace;
+    server
+        .workspaces()
+        .author_workspace_document(&workspace, &cert, (APP, RESOURCE), |doc| {
+            doc.put(automerge::ROOT, "text", "the first line")
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap();
+    let DocumentRead::Whole {
+        revision,
+        heads,
+        bytes,
+    } = server
+        .workspaces()
+        .own_read(&workspace, (APP, RESOURCE), &[], MAXIMUM)
+        .await
+        .unwrap()
+    else {
+        panic!("the service holds the document whole");
+    };
+    let document = automerge::AutoCommit::load(&bytes).expect("the document loads");
+    (server, workspace, cert, revision, heads, document)
+}
+
+/// The session's own roles read a workspace's document from the service itself, whole, and are
+/// told it stands where they hold it when nothing was written since.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_reads_a_workspace_whole() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (server, workspace, _cert, base, read_at, mut document) = authored(scratch.path()).await;
+    assert_eq!(
+        document
+            .get(automerge::ROOT, "text")
+            .unwrap()
+            .unwrap()
+            .0
+            .into_string()
+            .ok()
+            .as_deref(),
+        Some("the first line")
+    );
+    assert_eq!(
+        document
+            .get_heads()
+            .iter()
+            .map(|head| head.0)
+            .collect::<Vec<_>>(),
+        read_at,
+        "the heads the read names are the document's"
+    );
+    assert_eq!(
+        server
+            .workspaces()
+            .own_read(&workspace, (APP, RESOURCE), &read_at, MAXIMUM)
+            .await
+            .unwrap(),
+        DocumentRead::Unchanged(base)
+    );
+    server.shutdown().await;
+}
+
+/// A write since the heads a reader holds reads as only its changes; heads the service does not
+/// hold read whole. What the workspace lists is the service's own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_reads_what_changed_since_its_heads() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (server, workspace, cert, base, read_at, mut document) = authored(scratch.path()).await;
+    server
+        .workspaces()
+        .author_workspace_document(&workspace, &cert, (APP, RESOURCE), |doc| {
+            doc.put(automerge::ROOT, "more", "the second line")
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap();
+    let DocumentRead::Changes {
+        revision,
+        heads,
+        bytes,
+    } = server
+        .workspaces()
+        .own_read(&workspace, (APP, RESOURCE), &read_at, MAXIMUM)
+        .await
+        .unwrap()
+    else {
+        panic!("the reader's heads are held, so only the changes are read");
+    };
+    assert_ne!(revision, base);
+    tilo_automerge::ApplyIncoming::load_incoming_whole(&mut document, &bytes)
+        .expect("the changes load");
+    assert_eq!(
+        document
+            .get(automerge::ROOT, "more")
+            .unwrap()
+            .unwrap()
+            .0
+            .into_string()
+            .ok()
+            .as_deref(),
+        Some("the second line")
+    );
+    assert_eq!(
+        document
+            .get_heads()
+            .iter()
+            .map(|head| head.0)
+            .collect::<Vec<_>>(),
+        heads
+    );
+    // A reader holding heads the service does not is handed the document whole.
+    assert!(matches!(
+        server
+            .workspaces()
+            .own_read(&workspace, (APP, RESOURCE), &[[0x5a; 32]], MAXIMUM)
+            .await
+            .unwrap(),
+        DocumentRead::Whole { .. }
+    ));
+    let workspaces = server.workspaces();
+    assert_eq!(
+        workspaces.own_listing(&workspace).await.unwrap(),
+        vec![(APP.to_owned(), RESOURCE.to_owned())]
+    );
+    assert!(workspaces.held_workspaces().await.contains(&workspace));
+    assert_eq!(
+        workspaces
+            .own_read(&workspace, (APP, "nothing-here"), &[], MAXIMUM)
+            .await
+            .unwrap(),
+        DocumentRead::Absent
+    );
+    server.shutdown().await;
+}
+
+/// A session whose service was not opened reads nothing, and says so.
+#[test]
+fn a_session_with_no_service_open_reads_nothing() {
+    let reads = ServiceDocuments::on(ServiceSlot::default());
+    assert!(reads.read(APP, APP, RESOURCE, None).is_err());
+    assert!(reads.listing(APP).is_err());
+    assert!(!reads.holds(APP, APP, RESOURCE));
+    assert!(reads.workspaces().is_empty());
+}
+
+/// A read asked for from a thread already driving a runtime waits on a thread of its own, rather
+/// than blocking the runtime that drives it.
+#[tokio::test]
+async fn a_read_inside_a_runtime_waits_off_it() {
+    assert_eq!(on_its_own(async { 7_u8 }), 7);
 }

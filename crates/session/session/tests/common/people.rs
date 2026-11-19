@@ -1488,9 +1488,7 @@ impl Device {
             Ok(false) | Err(_) => panic!(
                 "{}'s session never opened its control socket:\n{}",
                 self.label,
-                String::from_utf8_lossy(
-                    &std::fs::read(self.home.path().join("session.log")).unwrap_or_default()
-                )
+                self.log()
             ),
         }
     }

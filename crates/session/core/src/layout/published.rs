@@ -116,13 +116,13 @@ pub enum LayoutEffect {
         workspace: Option<String>,
         /// The row it stands in; the row in front when left out
         #[param("The row it stands in; the row in front when left out")]
-        row: Option<i64>,
+        row: Option<u64>,
         /// The strip it stands in; a new one when left out
         #[param("The strip it stands in; a new one when left out")]
-        strip: Option<i64>,
+        strip: Option<u64>,
         /// The id the new place takes; a new one when left out
         #[param("The id the new place takes; a new one when left out")]
-        place: Option<i64>,
+        place: Option<u64>,
         /// The resource it shows
         #[param(resource = "", "The resource it shows")]
         resource: String,
@@ -654,11 +654,9 @@ fn named(id: Option<&str>, item: Item) -> Option<u64> {
     })
 }
 
-/// A count `value` names, `0` where it is negative or absent.
-fn count(value: Option<i64>) -> u64 {
-    value
-        .and_then(|value| u64::try_from(value).ok())
-        .unwrap_or_default()
+/// The count `value` names, `0` where it is absent.
+fn count(value: Option<u64>) -> u64 {
+    value.unwrap_or_default()
 }
 
 /// The corner a `float` action names, the work area's bottom-right when it names none.

@@ -241,42 +241,46 @@ impl PersonView {
         changed
     }
 
-    /// This view, read from the record, laid over `here`, the device's own view, which showed
-    /// `written` before the person changed it here: what they changed, and what the record says
-    /// nothing of, stays; everything else takes the record's.
+    /// This view, the workspace's, laid over `here`, the view shown here, which showed `shown`
+    /// before the person changed it: what they changed, and what this view says nothing of, stays;
+    /// everything else takes this view's. Before this view was shown here at all (`None`), it is
+    /// the one.
     #[must_use]
-    pub fn over(&self, here: &Self, written: &Self) -> Self {
+    pub fn over(&self, here: &Self, shown: Option<&Self>) -> Self {
         fn each<K: Ord + Copy, V: Clone + PartialEq>(
-            record: &BTreeMap<K, V>,
+            theirs: &BTreeMap<K, V>,
             here: &BTreeMap<K, V>,
-            written: &BTreeMap<K, V>,
+            shown: &BTreeMap<K, V>,
         ) -> BTreeMap<K, V> {
-            let mut kept = record.clone();
+            let mut kept = theirs.clone();
             for (key, value) in here {
-                if written.get(key) != Some(value) || !record.contains_key(key) {
+                if shown.get(key) != Some(value) || !theirs.contains_key(key) {
                     kept.insert(*key, value.clone());
                 }
             }
             kept
         }
+        let Some(shown) = shown else {
+            return self.clone();
+        };
         let mut maximized = self.maximized.clone();
-        maximized.extend(here.maximized.difference(&written.maximized));
+        maximized.extend(here.maximized.difference(&shown.maximized));
         maximized
-            .retain(|group| here.maximized.contains(group) || !written.maximized.contains(group));
+            .retain(|group| here.maximized.contains(group) || !shown.maximized.contains(group));
         Self {
-            front_strip: if here.front_strip == written.front_strip {
+            front_strip: if here.front_strip == shown.front_strip {
                 self.front_strip
             } else {
                 here.front_strip
             },
-            front_group: each(&self.front_group, &here.front_group, &written.front_group),
-            front_tab: each(&self.front_tab, &here.front_tab, &written.front_tab),
-            widths: each(&self.widths, &here.widths, &written.widths),
+            front_group: each(&self.front_group, &here.front_group, &shown.front_group),
+            front_tab: each(&self.front_tab, &here.front_tab, &shown.front_tab),
+            widths: each(&self.widths, &here.widths, &shown.widths),
             maximized,
             own: {
-                // A window closed here is gone, whatever the record still says of it.
-                let mut own = each(&self.own, &here.own, &written.own);
-                own.retain(|tab, _| here.own.contains_key(tab) || !written.own.contains_key(tab));
+                // A window closed here is gone, whatever this view still says of it.
+                let mut own = each(&self.own, &here.own, &shown.own);
+                own.retain(|tab, _| here.own.contains_key(tab) || !shown.own.contains_key(tab));
                 own
             },
         }
@@ -555,7 +559,7 @@ mod tests {
 
         let closed = PersonView::of(&layout(), WorkspaceId::from_u128(1));
         assert!(
-            kept.over(&closed, &here).own.is_empty(),
+            kept.over(&closed, Some(&here)).own.is_empty(),
             "a window closed here does not come back"
         );
     }
@@ -574,27 +578,57 @@ mod tests {
         assert_eq!(PersonView::read(&doc), view);
     }
 
-    /// A tab the person brought to the front here, before this device wrote it, stays in front
-    /// when another device's view arrives; what this device did not change takes the record's.
-    #[test]
-    fn what_the_person_changed_here_stays_over_another_devices_view() {
-        let view = |tabs: &[(u64, u64)], strip: u64| PersonView {
+    /// A view of a layout: what is in front in the strip `strip`, and the tab in front of each
+    /// group by group and tab.
+    fn seen(tabs: &[(u64, u64)], strip: u64) -> PersonView {
+        PersonView {
             front_strip: Some(StripId(strip)),
             front_tab: tabs.iter().copied().collect(),
             ..PersonView::default()
-        };
-        let written = view(&[(1, 10), (2, 20)], 7);
-        let here = view(&[(1, 11), (2, 20)], 7);
-        let record = view(&[(1, 10), (2, 21)], 8);
+        }
+    }
+
+    /// A tab the person brought to the front here, before this device wrote it, stays in front
+    /// when another device's view arrives; what this device did not change takes that view's.
+    #[test]
+    fn what_the_person_changed_here_stays_over_another_devices_view() {
+        let shown = seen(&[(1, 10), (2, 20)], 7);
+        let here = seen(&[(1, 11), (2, 20)], 7);
+        let stored = seen(&[(1, 10), (2, 21)], 8);
         assert_eq!(
-            record.over(&here, &written),
-            view(&[(1, 11), (2, 21)], 8),
+            stored.over(&here, Some(&shown)),
+            seen(&[(1, 11), (2, 21)], 8),
             "the tab chosen here stays; the other device's choices and strip come in"
         );
         assert_eq!(
-            record.over(&written, &written),
-            record,
+            stored.over(&shown, Some(&shown)),
+            stored,
             "nothing changed here"
+        );
+    }
+
+    /// A change the person makes before the workspace's view is first read stays over it: a page
+    /// shows that view over what it showed before. One that showed none of it takes it whole.
+    #[test]
+    fn a_change_made_before_the_view_is_first_read_stays_over_it() {
+        let shown = seen(&[(1, 10)], 7);
+        let here = PersonView {
+            widths: [(21, WindowWidth::Fraction(480))].into_iter().collect(),
+            ..seen(&[(1, 11)], 7)
+        };
+        let stored = seen(&[(1, 10), (2, 20)], 8);
+        assert_eq!(
+            stored.over(&here, Some(&shown)),
+            PersonView {
+                widths: [(21, WindowWidth::Fraction(480))].into_iter().collect(),
+                ..seen(&[(1, 11), (2, 20)], 8)
+            },
+            "the tab switched here and the width set here stay; the rest is the view's"
+        );
+        assert_eq!(
+            stored.over(&here, None),
+            stored,
+            "a page that showed none of it takes it whole"
         );
     }
 }

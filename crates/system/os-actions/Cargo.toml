@@ -38,7 +38,7 @@ tilo-seal = { path = "../tilo-seal" }
 base64.workspace = true
 rand_core.workspace = true
 thiserror.workspace = true
-tilo-crypto = { path = "../tilo-crypto" }
+tilo-crypto = { path = "../tilo-crypto", default-features = false }
 # Bluetooth is the one control here that cannot be a shell-out: a scan lives
 # as long as its D-Bus connection, and pairing needs an agent object BlueZ
 # calls back into. See src/bluez.rs.

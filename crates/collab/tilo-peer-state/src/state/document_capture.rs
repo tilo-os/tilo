@@ -317,10 +317,20 @@ impl StatePeer {
     ) -> Result<&'a Automerge, PeerDocumentReadError> {
         let document = match self.readable(reader, (app, record), now, open.is_some()) {
             Ok(document) => document,
-            Err(error) => {
+            // A reader who may no longer read the resource keeps nothing of it. A history still
+            // arriving (the workspace's admissions not all here yet) keeps what opened: the next
+            // read goes on from it once the history continues it, where forgetting it made a
+            // page catching up on a large resource open every part from its first write again
+            // after each write it took in.
+            Err(
+                error @ (PeerDocumentReadError::Membership(_)
+                | PeerDocumentReadError::Denied
+                | PeerDocumentReadError::Missing),
+            ) => {
                 kept.forget();
                 return Err(error);
             }
+            Err(error) => return Err(error),
         };
         match (document.encryption_required, open) {
             (true, Some(open)) => open_history(document, open, maximum, kept),

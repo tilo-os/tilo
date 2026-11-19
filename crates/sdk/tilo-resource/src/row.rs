@@ -28,6 +28,9 @@ use crate::Effect;
 #[derive(Clone, Default)]
 pub struct RowBindings {
     arguments: BTreeMap<&'static str, Vec<serde_json::Map<String, serde_json::Value>>>,
+    /// The parameters of each effect a caller may give another value than the
+    /// row's own: offered as asked, with the row's value as their default.
+    defaults: BTreeMap<&'static str, Vec<&'static str>>,
     choices: BTreeMap<(&'static str, &'static str), Vec<String>>,
     specs: Vec<ActionSpec>,
 }
@@ -37,6 +40,7 @@ impl std::fmt::Debug for RowBindings {
         formatter
             .debug_struct("RowBindings")
             .field("arguments", &self.arguments)
+            .field("defaults", &self.defaults)
             .field("choices", &self.choices)
             .field(
                 "specs",
@@ -68,7 +72,7 @@ impl RowBindings {
         self.bind_id(effect.id, arguments)
     }
 
-    /// [`Self::bind`] of an effect known only when it invokes, by the id it
+    /// [`Self::bind_id`] of an effect known only when it invokes, by the id it
     /// answers to: the arguments its declaration takes, named as it names
     /// them. Names the effect does not take are dropped.
     #[must_use]
@@ -83,6 +87,48 @@ impl RowBindings {
                 .map(|(name, value)| (name.into(), value))
                 .collect(),
         );
+        self
+    }
+
+    /// Offer `effect` on the row with `arguments` as the values it would act
+    /// with, still asking the parameters `asking` names: what the row's own
+    /// state knows the effect would act with unless its caller gives another
+    /// (the model agents use now, the protocol this provider speaks). The
+    /// arguments `asking` does not name are bound and not asked.
+    #[must_use]
+    pub fn bind_asking<R, A, I, K>(
+        self,
+        effect: crate::ActionRef<R, A>,
+        arguments: I,
+        asking: &[&'static str],
+    ) -> Self
+    where
+        I: IntoIterator<Item = (K, serde_json::Value)>,
+        K: Into<String>,
+    {
+        self.bind_asking_id(effect.id, arguments, asking)
+    }
+
+    /// [`Self::bind_asking`] of an effect known only when it invokes, by its
+    /// id.
+    #[must_use]
+    pub fn bind_asking_id<I, K>(
+        mut self,
+        effect: &'static str,
+        arguments: I,
+        asking: &[&'static str],
+    ) -> Self
+    where
+        I: IntoIterator<Item = (K, serde_json::Value)>,
+        K: Into<String>,
+    {
+        self = self.bind_id(effect, arguments);
+        let asked = self.defaults.entry(effect).or_default();
+        for name in asking {
+            if !asked.contains(name) {
+                asked.push(name);
+            }
+        }
         self
     }
 
@@ -113,6 +159,14 @@ impl RowBindings {
                 .or_default()
                 .extend(arguments.iter().cloned());
         }
+        for (effect, asking) in &other.defaults {
+            let asked = self.defaults.entry(effect).or_default();
+            for name in asking {
+                if !asked.contains(name) {
+                    asked.push(*name);
+                }
+            }
+        }
         self.choices.extend(other.choices.clone());
         self.specs.extend(other.specs.iter().cloned());
         self
@@ -133,10 +187,11 @@ impl RowBindings {
         self
     }
 
-    /// Offer `spec` on the row: an action another resource declares, which
-    /// the row was given rather than declaring it itself (a settings
-    /// section's edit, the open of an installed app), published on the row
-    /// as that resource published it.
+    /// Offer `spec` on the row as it is: an action another resource declares,
+    /// which the row was given rather than declaring it itself (a settings
+    /// section's edit, the open of an installed app), or one the row's window
+    /// shapes from its own state for a single entity it names (a form the page
+    /// asks, the departure it holds).
     #[must_use]
     pub fn spec(mut self, spec: ActionSpec) -> Self {
         self.specs.push(spec);
@@ -158,6 +213,13 @@ impl RowBindings {
             .iter()
             .find(|((id, name), _)| *id == effect && *name == param)
             .map(|(_, values)| values.as_slice())
+    }
+
+    /// The parameters `effect` is offered with the row's value as their
+    /// default, still asked ([`Self::bind_asking`]).
+    #[must_use]
+    pub(crate) fn asks(&self, effect: &str) -> &[&'static str] {
+        self.defaults.get(effect).map_or(&[], Vec::as_slice)
     }
 
     /// The actions of another resource the row offers
@@ -240,16 +302,8 @@ impl LiveRow {
         label: impl Into<String>,
     ) -> Self {
         let id = id.into();
-        let mut row = Self {
-            resource: std::rc::Rc::new(
-                ResourceSpec::new(id.clone(), R::KIND, label).with_type(R::words()),
-            ),
-        };
-        let row_id = crate::Id::from_raw(id);
-        for operation in R::effects(&row_id) {
-            row = row.operation(operation);
-        }
-        row
+        let operations = R::effects(&crate::Id::from_raw(id.clone()));
+        Self::from_operations(id, label.into(), R::KIND, R::words(), operations)
     }
 
     /// A row of the declared type `R`, offering the effects `bindings`
@@ -265,17 +319,25 @@ impl LiveRow {
         bindings: &RowBindings,
     ) -> Self {
         let id = id.into();
+        let mut operations = R::effects_with(&crate::Id::from_raw(id.clone()), bindings);
+        operations.extend(bindings.declared().iter().cloned());
+        Self::from_operations(id, label.into(), R::KIND, R::words(), operations)
+    }
+
+    /// [`Self::typed_with`] once the type's words and effects are read, so the
+    /// row is built by one function rather than one per type every app uses.
+    fn from_operations(
+        id: String,
+        label: String,
+        kind: &'static str,
+        words: tilo_actions::ResourceType,
+        operations: Vec<tilo_actions::ActionSpec>,
+    ) -> Self {
         let mut row = Self {
-            resource: std::rc::Rc::new(
-                ResourceSpec::new(id.clone(), R::KIND, label).with_type(R::words()),
-            ),
+            resource: std::rc::Rc::new(ResourceSpec::new(id, kind, label).with_type(words)),
         };
-        let row_id = crate::Id::from_raw(id);
-        for operation in R::effects_with(&row_id, bindings) {
+        for operation in operations {
             row = row.operation(operation);
-        }
-        for operation in bindings.declared() {
-            row = row.operation(operation.clone());
         }
         row
     }
@@ -291,16 +353,25 @@ impl LiveRow {
         self
     }
 
-    /// `resource`, an entity the surface already describes as a resource
-    /// (a search hit, a catalogue entry), as a row: its presentation,
-    /// views, operations and children. Its document actions are dropped at
-    /// any depth: the resource's own publication carries them.
+    /// `resource`, an entity a declaration shaped — a document's child, a
+    /// search hit's place, a tree a declared type's verbs built — as a row:
+    /// its presentation, views, operations and children, its document
+    /// actions dropped at any depth (the resource's own publication carries
+    /// them). The entity says what it is (its type's words), so search names
+    /// it by that and its type's effects are the ones it offers.
     ///
-    /// Framework-internal, beside [`Self::new`]: the row takes whatever the
-    /// resource carries rather than a declared type's words and effects, so
-    /// nothing here says what it is to search.
-    #[doc(hidden)]
-    pub fn from_resource(resource: ResourceSpec) -> Self {
+    /// # Panics
+    /// When `resource` names no declared type: an entity no declaration
+    /// shaped has no words to be searched by and no type whose effects it
+    /// offers, so it is not a row. Publish it as one with
+    /// [`Self::typed`](Self::typed) instead.
+    #[must_use]
+    pub fn declared(resource: ResourceSpec) -> Self {
+        assert!(
+            resource.resource_type.is_some(),
+            "a row is an entity of a declared type, and `{}` names none",
+            resource.id.as_str()
+        );
         Self {
             resource: std::rc::Rc::new(crate::share::resolved_outside_document(resource)),
         }
@@ -316,23 +387,6 @@ impl LiveRow {
     pub fn vocabulary<E: crate::Effect>(mut self) -> Self {
         for spec in E::specs() {
             self = self.operation(spec);
-        }
-        self
-    }
-
-    /// Offer `operations` the row's type declares but only the row can shape,
-    /// each still the type's effect: a page's forms, one `answer-form` per
-    /// form, named after the form and asking its own questions. Everything a
-    /// type declares for its rows as they are goes through the declaration
-    /// (`#[derive(Row)]`'s `effects = E`), never through here.
-    ///
-    /// Framework-internal: an app's row offers effects through its type's
-    /// declaration and the bindings of [`Self::typed_with`].
-    #[doc(hidden)]
-    #[must_use]
-    pub fn specialized(mut self, operations: impl IntoIterator<Item = ActionSpec>) -> Self {
-        for operation in operations {
-            self = self.operation(operation);
         }
         self
     }
@@ -427,6 +481,35 @@ impl LiveRow {
     #[must_use]
     pub fn view(mut self, view: tilo_actions::ResourceViewSpec) -> Self {
         std::rc::Rc::make_mut(&mut self.resource).views.push(view);
+        self
+    }
+
+    /// Offer the row's operation `effect` as unavailable, with `code` a
+    /// program reads and `reason` a person reads.
+    #[must_use]
+    pub fn unavailable(
+        self,
+        effect: &str,
+        code: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        self.amend(effect, move |spec| spec.unavailable(code, reason))
+    }
+
+    /// Say what the row's operation `effect` does on this row, where only
+    /// the row can say it.
+    #[must_use]
+    pub fn describe(self, effect: &str, description: impl Into<String>) -> Self {
+        self.amend(effect, move |spec| spec.with_description(description))
+    }
+
+    /// Change the operation `effect` this row offers, when it offers it.
+    fn amend(mut self, effect: &str, change: impl FnOnce(ActionSpec) -> ActionSpec) -> Self {
+        let actions = &mut std::rc::Rc::make_mut(&mut self.resource).actions;
+        if let Some(at) = actions.iter().position(|action| action.id == effect) {
+            let spec = actions.remove(at);
+            actions.insert(at, change(spec));
+        }
         self
     }
 

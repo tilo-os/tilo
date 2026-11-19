@@ -2236,10 +2236,16 @@ impl Widget for Map {
 
     /// The map's motion steps here, as a scroll's glide does: the camera on its way and the pins
     /// gliding are laid out again on each frame they run, the one they land on included, so the
-    /// windows in the pins' wells stand where the pins are drawn.
+    /// windows in the pins' wells stand where the pins are drawn. A pin arriving or leaving is
+    /// drawn in its pose, which lays nothing out.
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let now = crate::motion::frame_now();
-        let moving = self.step_camera(now) | self.pins_moving(now);
+        let gliding = self
+            .placed
+            .borrow()
+            .values()
+            .any(|placed| placed.is_gliding(now));
+        let moving = self.step_camera(now) | gliding;
         if moving || self.moved {
             self.dirty = true;
             self.invalidation.invalidate();

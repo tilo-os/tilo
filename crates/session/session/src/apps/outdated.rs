@@ -140,7 +140,7 @@ impl Apps {
         let workspace = self.workspace_of(Some(tab));
         if let Err(error) = self.start_at(&launch, &workspace, Some(tab)) {
             tracing::warn!(asked = %shown.asked, %error, "an app restarted after the update did not start");
-            self.could_not_open(Some(tab), &shown.asked, &error.to_string());
+            self.could_not_open(Some(tab), &shown.asked, None, &error.to_string());
         }
         true
     }

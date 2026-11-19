@@ -1,14 +1,14 @@
 # Uses of each word docs/glossary.md does not use, while it is being renamed
 # (tools/policy/check_glossary_words.py). Counts only go down.
-room 3127
+room 3126
 space 4612
-channel 18751
+channel 16660
 subject 2848
-host 65563
-relay 2861
-run 56020
-seat 1007
-record 54443
-slot 11150
+host 65279
+relay 2785
+run 55240
+seat 1006
+record 54285
+slot 11083
 plane 15
 seam 7

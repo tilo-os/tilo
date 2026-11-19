@@ -1528,6 +1528,11 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         // naming an outbox (`item = ops`) acts on an entry of it, which is
         // no item resource. What only the app's own code applies is offered
         // to nobody, so on no item either.
+        // The collection whose item it acts on, as published on the resource
+        // itself: there it needs an item a caller names, and each item
+        // offers it bound. An outbox's entry is no item: `item_field` finds
+        // none for it.
+        let mut item = item_field.clone();
         if !verb.options.by_app && !verb.options.within.is_empty() {
             // An item of a collection inside items: the first parameters
             // name the enclosing items, outermost first, then the item.
@@ -1563,6 +1568,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 .as_ref()
                 .map(ToString::to_string)
                 .unwrap_or_default();
+            item = quote!(::core::option::Option::Some(#named));
             item_actions.push(quote!(#krate::items::ItemAction {
                 action: #id,
                 param: #item_param,
@@ -1736,6 +1742,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 collects: #collects,
                 content: #content,
                 item_field: #item_field,
+                item: #item,
                 writes: &[#(#declared_writes),*],
                 step: #step,
                 shape: <#self_ty as #krate::Model>::SHAPE,

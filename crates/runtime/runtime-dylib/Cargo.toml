@@ -99,6 +99,10 @@ tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs", default-features = false
 tilo-thumbnail = { path = "../../media/thumbnail" }
 roxmltree.workspace = true
 xattr = "1.6.1"
+# The SSH client's curve: Remote and Git Client verify P-384 host keys through
+# russh and ssh-key, so it is one copy here, with the primeorder and
+# crypto-bigint under it.
+p384 = { version = "0.14", default-features = false }
 # File types by extension, for the apps that name them (Files, Mail).
 tilo-mime = { path = "../../platform/tilo-mime" }
 registry-types = { path = "../../packaging/registry-types" }

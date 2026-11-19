@@ -62,7 +62,7 @@ pub(crate) fn keep(
     let shared: Vec<_> = before
         .iter()
         .copied()
-        .filter(|head| incoming.get_change_by_hash(head).is_some())
+        .filter(|head| incoming.has_change(head))
         .collect();
     doc.load_incoming(&incoming.save_after(&shared))
         .map_err(|error| error.to_string())?;

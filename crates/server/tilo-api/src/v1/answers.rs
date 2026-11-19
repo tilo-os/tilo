@@ -342,7 +342,8 @@ pub struct Resource {
     /// For an app: its id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
-    /// For an app: its surface (`surface.toml`), what types are generated from.
+    /// For an app: its surface in the form it is kept by
+    /// (`collab_types::surface::canonical`), what types are generated from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface: Option<String>,
     /// For an app: its surface's version, `<app>@<digest>`.

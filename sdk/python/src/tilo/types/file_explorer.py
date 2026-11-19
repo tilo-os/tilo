@@ -135,7 +135,7 @@ ForgetArgs = TypedDict("ForgetArgs", {
 
 class Folder(Resource):
     """Folder — `files.folder`."""
-    __surface__ = "so.tilo.file-explorer@4a65594ad1e3c0d3"
+    __surface__ = "so.tilo.file-explorer@f952b0008d9de267"
     places: list[Entry[Bookmark]]
 
     def add_bookmark(self,
@@ -357,7 +357,7 @@ class Folder(Resource):
 
 class Tree(Resource):
     """Files — `files.tree`."""
-    __surface__ = "so.tilo.file-explorer@4a65594ad1e3c0d3"
+    __surface__ = "so.tilo.file-explorer@f952b0008d9de267"
     def new_folder(self,
         *,
         parent: Any,
@@ -451,7 +451,7 @@ class Tree(Resource):
 
 class Recent(Resource):
     """Recent files — `files.recent`."""
-    __surface__ = "so.tilo.file-explorer@4a65594ad1e3c0d3"
+    __surface__ = "so.tilo.file-explorer@f952b0008d9de267"
     devices: dict[str, Any]
 
     def note(self,
@@ -504,7 +504,17 @@ class Recent(Resource):
 
 class Workspace(Resource):
     """Files window — `files.workspace`."""
-    __surface__ = "so.tilo.file-explorer@4a65594ad1e3c0d3"
-    folder: str
+    __surface__ = "so.tilo.file-explorer@f952b0008d9de267"
+    def up(self) -> None:
+        """Runs the app's action."""
+        return self.action("up")
+
+    def download(self, *, node: str) -> None:
+        """Runs the app's action."""
+        return self.action("download", node=node)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"up", "download"})
 
 

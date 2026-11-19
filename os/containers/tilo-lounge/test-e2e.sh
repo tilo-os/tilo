@@ -82,8 +82,8 @@
 # chromium, curl, bwrap, the stack's environment (TILO_SH_PROGRAMS,
 # TILO_SH_LOUNGE, TILO_SH_SITE, TILO_SH_CADDY naming what t built), and
 # TILO_SERVER_BIN, TILO_CRYPTO_BIN, TILO_FONTS_DIR and TILO_CLI_BIN for the wait
-# list's Lounge and the setups. E2E_FLOW_SECONDS bounds each flow (default
-# 480).
+# list's Lounge and the setups. E2E_FLOW_SECONDS bounds each flow (default: 40
+# steps).
 set -euo pipefail
 usage='usage: test-e2e.sh BUNDLE WORK [FLOW…]'
 lounge_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -183,7 +183,10 @@ tilo_bin=${TILO_CLI_BIN:-}
 # still fails within its few steps and names itself; each is set by its
 # variable.
 export TILO_STEP_SECONDS=${TILO_STEP_SECONDS:-20}
-limit=${E2E_FLOW_SECONDS:-480}
+# A flow's bound is its steps, as every wait in it is: 40 of them is 800 s at a
+# software-drawn node's 20 s step and three minutes' work on a machine with a
+# GPU. A flow that hangs is still stopped, and named, at its end.
+limit=${E2E_FLOW_SECONDS:-$((40 * TILO_STEP_SECONDS))}
 
 rm -rf "$work"
 mkdir -p "$work"

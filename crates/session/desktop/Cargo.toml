@@ -56,6 +56,8 @@ uuid.workspace = true
 tilo-app = { path = "../../sdk/tilo-app", default-features = false }
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-surface = { path = "../desktop-surface", default-features = false }
+# Where each person here stands, as following reads them.
+tilo-session-core = { path = "../core" }
 tilo-desktop-search = { path = "../desktop-search" }
 # A report's transport and the profile ownership a desktop installs.
 tilo-feedback-transport = { path = "../../collab/feedback-transport" }
@@ -102,7 +104,6 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 tilo-shell-surface = { path = "../shell-surface" }
 tilo-compositor = { path = "../compositor" }
-tilo-session-core = { path = "../core" }
 
 [lints]
 workspace = true

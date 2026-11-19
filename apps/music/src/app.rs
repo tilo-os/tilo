@@ -1028,7 +1028,7 @@ impl Music {
     fn row_for(&self, id: &str) -> Option<ui::framework::LiveRow> {
         self.music_rows().row(id).or_else(|| {
             <Library as ui::tilo_resource::Resource>::child(&self.lib, id)
-                .map(ui::framework::LiveRow::from_resource)
+                .map(ui::framework::LiveRow::declared)
         })
     }
 

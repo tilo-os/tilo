@@ -189,6 +189,13 @@ pub struct InboundPlan {
     pub avatars: Vec<AvatarFetch>,
     pub posts: Vec<PostItem>,
     pub files: Vec<FilePost>,
+    /// Chat `import-message`, then `map`: what Discord wrote before the
+    /// newest message its Tilo channel already holds (a server's history read
+    /// into a channel people have written in since). It keeps the time it was
+    /// written in Discord, where a post would read after what is there.
+    pub imports: Vec<PostItem>,
+    /// `fetch-asset`, then Chat `import-message` with the file, then `map`.
+    pub file_imports: Vec<FilePost>,
     pub edits: Vec<EditItem>,
     /// Chat `delete-message` (the bot is the author), then `unmap`.
     pub deletes: Vec<String>,
@@ -385,6 +392,11 @@ pub fn plan_created(
             files.push(file);
         }
     }
+    // Written before what the channel already holds: imported at its time,
+    // since a post reads after every message already there.
+    let older = chat
+        .newest_in(&channel)
+        .is_some_and(|newest| discord_wire::snowflake_ms(&event.message_id) < newest);
     let post = |text: String| PostItem {
         channel: channel.clone(),
         text,
@@ -398,7 +410,12 @@ pub fn plan_created(
     // Discord shows them; any further file is a message of its own.
     let mut text = Some(text).filter(|text| !text.trim().is_empty());
     if files.is_empty() {
-        plan.posts.extend(text.take().map(post));
+        let into = if older {
+            &mut plan.imports
+        } else {
+            &mut plan.posts
+        };
+        into.extend(text.take().map(post));
     }
     for file in files {
         // Chat lays an image out by its size, so one Discord gives no size
@@ -427,7 +444,12 @@ pub fn plan_created(
                     size: file.size,
                 }
             };
-        plan.files.push(FilePost {
+        let into = if older {
+            &mut plan.file_imports
+        } else {
+            &mut plan.files
+        };
+        into.push(FilePost {
             fetch: FetchAssetOp {
                 url: file.url.clone(),
                 max_bytes: MAX_FETCH_BYTES,

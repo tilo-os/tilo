@@ -182,6 +182,18 @@ impl ChatRead {
         }
     }
 
+    /// When the newest message `channel` holds was written, in milliseconds
+    /// since the epoch, among the parts read: the newest part holds the
+    /// newest messages. `None` for a channel holding none of them.
+    #[must_use]
+    pub fn newest_in(&self, channel: &str) -> Option<i64> {
+        self.messages
+            .iter()
+            .filter(|(_, value)| value.get("channel").and_then(Value::as_str) == Some(channel))
+            .filter_map(|(_, value)| value.get("ts").and_then(Value::as_i64))
+            .max()
+    }
+
     /// The same records, read with the workspace's members as its host binds them
     /// (`{"members": [{"member", "name"}]}`), those it removed among them.
     #[must_use]

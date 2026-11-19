@@ -141,7 +141,7 @@ fn changes_after(document: &Automerge, heads: &[[u8; 32]], maximum: usize) -> Op
         .collect::<Vec<_>>();
     if base
         .iter()
-        .any(|head| automerge::ReadDoc::get_change_by_hash(document, head).is_none())
+        .any(|head| !automerge::ReadDoc::has_change(document, head))
     {
         return None;
     }

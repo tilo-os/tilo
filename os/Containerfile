@@ -239,7 +239,7 @@ COPY --from=virtio-win-media /out/installer/virtio-win-guest-tools.exe /tree/usr
 COPY --from=windows-compat-artifacts /out/proton/ /tree/usr/lib/tilo/windows-runners/proton/
 COPY --from=windows-compat-artifacts /out/steam-runtime/ /tree/usr/lib/tilo/windows-runners/steam-runtime/
 COPY --from=windows-provider /out/usr/share/tilo/windows/provider.json /provider.json
-COPY os/dev/windows_provider.py os/dev/build-windows-compat-sysext.sh /tilo/
+COPY os/dev/windows_provider.py os/dev/build-windows-compat-sysext.sh os/dev/sysext-image.py /tilo/
 # The native FEX binaries are checked against the hashes the provider record
 # pinned, and their dynamic-linker closure against the base plus this payload.
 # /out is made first: the shell opens the descriptor before the packer runs.
@@ -1184,6 +1184,8 @@ COPY --chmod=0755 os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension \
 COPY \
     os/usr/lib/systemd/system/tilo-extension@.service \
     os/usr/lib/systemd/system/tilo-extension-activate.service \
+    os/usr/lib/systemd/system/tilo-extension-trial.service \
+    os/usr/lib/systemd/system/tilo-extension-booted.service \
     os/usr/lib/systemd/system/tilo-extension-refresh.timer \
     /usr/lib/systemd/system/
 COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf \
@@ -2817,6 +2819,7 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
     systemctl enable bootc-fetch-apply-updates.timer && \
     systemctl enable tilo-network-start.service && \
     systemctl enable tilo-extension-activate.service tilo-extension-refresh.timer && \
+    systemctl enable tilo-extension-trial.service tilo-extension-booted.service && \
     systemctl enable tilo-sandbox-view.service tilo-sandbox-view.path && \
     systemctl enable tilo-runtime-resident.service && \
     systemctl enable NetworkManager-dispatcher.service

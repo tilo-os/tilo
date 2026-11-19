@@ -41,9 +41,6 @@ SCOPES = {
 }
 
 AUTHORITATIVE = Path(__file__).resolve().parents[1] / "crates/sdk/ui-core/assets/fonts/manifest.toml"
-# What fontdb reads of each file, recorded by `tilo-runtime-bundle font-index`
-# when a catalog is laid out for a runtime (tilo_font_catalog::faces).
-FACE_INDEX = "face-index.json"
 
 def manifest(root):
     path = root / "manifest.toml"
@@ -102,11 +99,6 @@ def stage(source, dest, scope):
     files += ["manifest.toml", "PROVENANCE.md"]
     if (source / "LICENSES/UPSTREAM.md").is_file():
         files.append("LICENSES/UPSTREAM.md")
-    # The faces the build recorded for these files (tilo-runtime-bundle
-    # font-index) travel with them: every copy of the catalog is read
-    # without parsing its fonts.
-    if (source / FACE_INDEX).is_file():
-        files.append(FACE_INDEX)
     for name in files:
         target = dest / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -133,11 +125,6 @@ def link(source, dest, scope, extra=None):
     files += ["manifest.toml", "PROVENANCE.md"]
     if (source / "LICENSES/UPSTREAM.md").is_file():
         files.append("LICENSES/UPSTREAM.md")
-    # The faces the build recorded for these files (tilo-runtime-bundle
-    # font-index) travel with them: every copy of the catalog is read
-    # without parsing its fonts.
-    if (source / FACE_INDEX).is_file():
-        files.append(FACE_INDEX)
     for name in files:
         target = dest / name
         target.parent.mkdir(parents=True, exist_ok=True)

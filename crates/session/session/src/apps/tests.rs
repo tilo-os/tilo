@@ -244,6 +244,7 @@ tilo_test_env::scenario! {
             title: "Agent".to_owned(),
             end: End::exited(1),
             killed: false,
+            asked_to_end: false,
             said: OutputTail::default(),
         });
         apps.follow();
@@ -276,7 +277,7 @@ fn shell() -> ShellDesktop {
 
 /// Record that this session started launch `id` of `app` as process `pid`, `lived` ago, and
 /// how far it got: what [`Apps::spawn`] writes when it starts an app, without a process here.
-fn record_launch(
+fn note_launch(
     apps: &Apps,
     id: u64,
     app: &str,
@@ -305,12 +306,12 @@ fn record_launch(
 }
 
 /// What the desktop shows after `end` ended the app `asked` , which this session started with
-/// a window that came.
-fn showed_after(end: End) -> Vec<String> {
+/// a window that came; `asked_to_end` when the person's own Quit ended it.
+fn showed_after(end: End, asked_to_end: bool) -> Vec<String> {
     let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
     let desktop = shell();
     apps.attach(desktop.clone());
-    record_launch(
+    note_launch(
         &apps,
         1,
         "example.Canvas",
@@ -325,6 +326,7 @@ fn showed_after(end: End) -> Vec<String> {
         title: "Canvas".to_owned(),
         end,
         killed: false,
+        asked_to_end,
         said: OutputTail::default(),
     });
     apps.follow();
@@ -359,7 +361,7 @@ fn an_app_that_ends_cleanly_before_its_window_came_could_not_open() {
     assert_eq!(asked.len(), 1, "the person asked for Canvas");
     // The launch was asked for the tab the shell held for it, and ended before its window
     // came.
-    record_launch(
+    note_launch(
         &apps,
         1,
         "example.Canvas",
@@ -374,6 +376,7 @@ fn an_app_that_ends_cleanly_before_its_window_came_could_not_open() {
         title: "Canvas".to_owned(),
         end: End::exited(0),
         killed: false,
+        asked_to_end: false,
         said: OutputTail::default(),
     });
     apps.follow_ended();
@@ -413,15 +416,17 @@ fn a_refusal_names_the_app_as_the_shell_names_it() {
 /// `apps` started the app `example.Canvas` as process `id`, `lived` ago, and it ended as `end`
 /// saying `said` on stderr.
 fn canvas_ended(apps: &Apps, id: u64, lived: std::time::Duration, end: End, said: &str) {
-    record_launch(apps, id, "example.Canvas", None, None, lived, Got::Arriving);
+    note_launch(apps, id, "example.Canvas", None, None, lived, Got::Arriving);
     apps.state.borrow().spawner.report(Event {
         id,
         app: "example.Canvas".to_owned(),
         title: "Canvas".to_owned(),
         end,
         killed: false,
+        asked_to_end: false,
         said: OutputTail {
             stderr: vec![said.to_owned()],
+            stdout: Vec::new(),
             dropped: 0,
         },
     });
@@ -472,7 +477,7 @@ fn an_app_that_showed_a_window_and_ended_is_no_notice() {
     let lived = std::time::Duration::from_secs(30);
     // A process no longer running stands for the launch's: only its descent matters here.
     let pid = 4_242;
-    record_launch(
+    note_launch(
         &apps,
         1,
         "example.Canvas",
@@ -507,6 +512,7 @@ fn an_app_that_showed_a_window_and_ended_is_no_notice() {
         title: "Canvas".to_owned(),
         end: End::exited(0),
         killed: false,
+        asked_to_end: false,
         said: OutputTail::default(),
     });
     apps.follow_ended();
@@ -519,7 +525,7 @@ fn an_app_that_showed_a_window_and_ended_is_no_notice() {
 
 #[test]
 fn an_app_closed_for_memory_says_so_instead_of_crashing() {
-    let closed = showed_after(End::signalled(9).remembering(Cause::Kernel));
+    let closed = showed_after(End::signalled(9).remembering(Cause::Kernel), false);
     assert!(
         closed
             .iter()
@@ -535,7 +541,7 @@ fn an_app_closed_for_memory_says_so_instead_of_crashing() {
         "the notice offers a way back: {closed:?}"
     );
 
-    let runaway = showed_after(End::signalled(9).remembering(Cause::Runaway));
+    let runaway = showed_after(End::signalled(9).remembering(Cause::Runaway), false);
     assert!(
         runaway
             .iter()
@@ -543,11 +549,171 @@ fn an_app_closed_for_memory_says_so_instead_of_crashing() {
         "a runaway app is told apart: {runaway:?}"
     );
 
-    let crashed = showed_after(End::signalled(9));
+    let crashed = showed_after(End::signalled(9), false);
     assert!(
         crashed
             .iter()
             .any(|text| text.starts_with("Canvas stopped working")),
         "without a cause the same end is still a crash: {crashed:?}"
+    );
+}
+
+/// A stop the person asked for — Quit in the app's own place — is theirs, as closing the app's
+/// last window is: the tab closes quietly, and nothing says it stopped working.
+#[test]
+fn a_stop_the_person_asked_for_is_not_a_crash() {
+    let quit = showed_after(End::signalled(libc::SIGTERM), true);
+    assert!(
+        !quit.iter().any(|text| text.contains("stopped working")),
+        "the person's own Quit is no crash: {quit:?}"
+    );
+    assert!(
+        !quit.iter().any(|text| text == "Reopen"),
+        "and nothing offers to reopen what the person just closed: {quit:?}"
+    );
+    let crashed = showed_after(End::signalled(libc::SIGTERM), false);
+    assert!(
+        crashed
+            .iter()
+            .any(|text| text.starts_with("Canvas stopped working")),
+        "the same end the session did not ask for is still a crash: {crashed:?}"
+    );
+}
+
+/// A Windows program is asked by its entry in the manager's list, which is no name a person
+/// reads: the tab that answers for it names it as the manager does. One that never showed a
+/// window leaves no tab at all — the manager that started it says what became of it.
+#[test]
+fn a_windows_program_is_named_by_its_name_and_a_windowless_one_leaves_no_tab() {
+    const ENTRY: &str = "windows-1c8152bfbdd80870708389a79cf20728";
+    let started = |apps: &Apps, instance: Option<u64>| {
+        apps.state.borrow_mut().launched.insert(
+            1,
+            Launching {
+                asked: format!("{}{ENTRY}", crate::windows_compat::ASKED_PREFIX),
+                app: "app-1c8152bfbdd80870708389a79cf20728".to_owned(),
+                workspace: WORKSPACE.to_owned(),
+                pid: None,
+                instance,
+                window: None,
+                tab: None,
+                started: std::time::Instant::now(),
+                got: Got::Arriving,
+            },
+        );
+    };
+    let ended = |apps: &Apps| {
+        apps.state.borrow().spawner.report(Event {
+            id: 1,
+            app: "app-1c8152bfbdd80870708389a79cf20728".to_owned(),
+            title: "Plink".to_owned(),
+            end: End::exited(1),
+            killed: false,
+            asked_to_end: false,
+            said: OutputTail::default(),
+        });
+        apps.follow_ended();
+    };
+
+    // A program that never showed a window: no tab, and nothing that names an entry.
+    let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
+    let desktop = shell();
+    apps.attach(desktop.clone());
+    started(&apps, None);
+    ended(&apps);
+    let shown = texts(&desktop);
+    assert!(
+        !shown.iter().any(|text| text.contains("could not open")),
+        "a Windows program that never showed leaves no tab: {shown:?}"
+    );
+
+    // A tab the shell held for it says it did not open, naming the program as its manager does.
+    let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
+    let desktop = shell();
+    apps.attach(desktop.clone());
+    desktop
+        .with_policy(|policy| {
+            policy
+                .handle()
+                .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
+                    app: "example.Canvas".into(),
+                    beside: None,
+                    background: None,
+                    float: None,
+                })
+        })
+        .unwrap();
+    desktop.with_widgets(WidgetSurface::relayout);
+    let asked = desktop.take_launches();
+    assert_eq!(asked.len(), 1, "a tab is held");
+    started(&apps, asked[0].tab);
+    ended(&apps);
+    let shown = texts(&desktop);
+    assert!(
+        shown
+            .iter()
+            .any(|text| text.contains("Plink") && text.contains("could not open")),
+        "the tab names Plink, as its manager does: {shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|text| text.contains(ENTRY)),
+        "and never the entry it is asked by: {shown:?}"
+    );
+}
+
+/// A program the person quits before its window came leaves no tab behind: the tab the shell
+/// held for that window closes, rather than waiting forever or answering a quit it did not cause.
+#[test]
+fn a_stop_the_person_asked_for_before_the_window_came_closes_its_tab() {
+    let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
+    let desktop = shell();
+    apps.attach(desktop.clone());
+    desktop
+        .with_policy(|policy| {
+            policy
+                .handle()
+                .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
+                    app: "example.Canvas".into(),
+                    beside: None,
+                    background: None,
+                    float: None,
+                })
+        })
+        .unwrap();
+    desktop.with_widgets(WidgetSurface::relayout);
+    let asked = desktop.take_launches();
+    assert_eq!(asked.len(), 1, "the person asked for Canvas");
+    note_launch(
+        &apps,
+        1,
+        "example.Canvas",
+        None,
+        asked[0].tab,
+        std::time::Duration::ZERO,
+        Got::Arriving,
+    );
+    apps.state.borrow().spawner.report(Event {
+        id: 1,
+        app: "example.Canvas".to_owned(),
+        title: "Canvas".to_owned(),
+        end: End::signalled(libc::SIGTERM),
+        killed: false,
+        asked_to_end: true,
+        said: OutputTail::default(),
+    });
+    apps.follow_ended();
+    let shown = texts(&desktop);
+    assert!(
+        !shown.iter().any(|text| text.contains("could not open")),
+        "the person's Quit did not fail to open anything: {shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|text| text.contains("stopped working")),
+        "and it is no crash: {shown:?}"
+    );
+    let tab = asked[0].tab.expect("a tab was held");
+    assert!(
+        !desktop.with_policy(|policy| policy.handle().read(|tree| tree.tab(tab).is_some())),
+        "the tab held for the window is closed: {shown:?}"
     );
 }

@@ -296,9 +296,10 @@ impl Replicas {
     }
 
     /// Hold `workspace_id`'s workspace on the bootstrap the host sent (`bytes`,
-    /// a postcard membership answer); returns whether the replica is new.
-    /// A replica of the same workspace and authority stays: a resumed
-    /// subscription replays only what it has not received.
+    /// a postcard membership answer). A replica of the same workspace and
+    /// authority stays: a resumed subscription replays only what it has not
+    /// received, and the session follows what that replica's governance
+    /// already says right after the answer.
     ///
     /// # Errors
     /// The bootstrap is not a membership answer for this device and workspace,
@@ -308,9 +309,8 @@ impl Replicas {
         workspace_id: WorkspaceId,
         bytes: &[u8],
         now: SystemTime,
-    ) -> Result<bool, String> {
-        let installed = self
-            .owner
+    ) -> Result<(), String> {
+        self.owner
             .install_vouched(workspace_id, bytes, &self.device, now)?;
         if self
             .owner
@@ -320,7 +320,7 @@ impl Replicas {
         {
             self.workspaces.insert(workspace_id);
         }
-        Ok(installed)
+        Ok(())
     }
 
     /// Admit `message`, governance `author` sent to `workspace_id`, as of when

@@ -124,46 +124,32 @@ pub(super) fn step_name(step: Step) -> String {
     t(STEP_KEYS[index])
 }
 
-/// Apply each row's refusals to the row the tree publishes under that id.
+/// Apply each row's refusals to the row published under that id.
 fn apply_refusals(
-    resource: &mut ui::tilo_actions::ResourceSpec,
+    row: LiveRow,
     refusals: &[(String, Vec<(&'static str, &'static str, String)>)],
-) {
-    if let Some((_, for_row)) = refusals.iter().find(|(id, _)| *id == resource.id.as_str()) {
-        for (effect, code, reason) in for_row {
-            if let Some(at) = resource
-                .actions
-                .iter()
-                .position(|action| action.id == *effect)
-            {
-                let spec = resource.actions.remove(at);
-                resource
-                    .actions
-                    .insert(at, spec.unavailable(*code, reason.clone()));
-            }
-        }
-    }
-    for child in &mut resource.children {
-        apply_refusals(child, refusals);
-    }
+) -> LiveRow {
+    let Some((_, for_row)) = refusals.iter().find(|(id, _)| id.as_str() == row.id()) else {
+        return row;
+    };
+    for_row.iter().fold(row, |row, (effect, code, reason)| {
+        row.unavailable(effect, *code, reason.clone())
+    })
 }
 
 /// Say what each item's declared effect is for on this row (the review's own
 /// description of what it is about to do).
-fn apply_descriptions(resource: &mut ui::tilo_actions::ResourceSpec, items: &[Item]) {
-    if let Some(item) = items.iter().find(|item| item.id == resource.id.as_str())
-        && let Some(choice) = &item.choice
-        && let Some(description) = &choice.description
-    {
-        for action in &mut resource.actions {
-            if action.id == choice.effect.id() {
-                action.type_mut().description = Some(description.clone());
-            }
-        }
-    }
-    for child in &mut resource.children {
-        apply_descriptions(child, items);
-    }
+fn apply_descriptions(row: LiveRow, items: &[Item]) -> LiveRow {
+    let Some(item) = items.iter().find(|item| item.id == row.id()) else {
+        return row;
+    };
+    let Some(choice) = &item.choice else {
+        return row;
+    };
+    let Some(description) = &choice.description else {
+        return row;
+    };
+    row.describe(choice.effect.id(), description.clone())
 }
 
 fn with_guidance(row: LiveRow, guidance: &str) -> LiveRow {
@@ -370,13 +356,14 @@ impl InstallerApp {
                 root = root.labelled(reference(check.id), label.clone());
             }
         }
-        let mut root = root.into_resource();
-        for row in self.published_rows() {
-            root.children.push(row.into_resource());
-        }
-        apply_refusals(&mut root, &self.refusals());
-        apply_descriptions(&mut root, &self.items());
-        vec![LiveRow::from_resource(root)]
+        let refusals = self.refusals();
+        let items = self.items();
+        let root = apply_refusals(root, &refusals);
+        let root = apply_descriptions(root, &items);
+        let root = self.published_rows().into_iter().fold(root, |root, row| {
+            root.row(apply_descriptions(apply_refusals(row, &refusals), &items))
+        });
+        vec![root]
     }
 
     /// What each published row refuses now: its effect's id, the code a

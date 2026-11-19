@@ -311,7 +311,13 @@ pub struct Replica {
     /// with no page of theirs open. A view moves a window, which the host's
     /// own person has their own of.
     runs_views: bool,
+    /// What a plain listing of the app's resource has walked to, so its next
+    /// page starts where the last ended ([`Self::survey_page_of`]).
+    walked: std::cell::RefCell<Option<SurveyProgress>>,
 }
+
+/// The tree a view publishes, shared with what reads it.
+type PublishedTree = std::rc::Rc<Vec<tilo_actions::ResourceSpec>>;
 
 /// The parameter an effect is told where on a device to write by. An agent
 /// is never offered it, so what the effect makes is kept as content.
@@ -349,7 +355,7 @@ const fn answers(contract: &tilo_actions::ActionContract) -> bool {
 #[must_use]
 pub fn offered_to_agents(descriptor: &ActionDescriptor) -> bool {
     descriptor.kind != tilo_actions::OperationKind::Document
-        && descriptor.contract.reaches_agents()
+        && descriptor.contract.offered_to_agents()
         && !tagged(descriptor, tilo_actions::OWN_DEVICE_SCOPE)
         && !tagged(descriptor, tilo_actions::ATTENDED_TAG)
         && !tagged(descriptor, tilo_actions::HOST_RENDER_TAG)
@@ -365,7 +371,7 @@ pub fn offered_to_agents(descriptor: &ActionDescriptor) -> bool {
 pub fn offered_when_host_renders(descriptor: &ActionDescriptor) -> bool {
     descriptor.kind != tilo_actions::OperationKind::Document
         && tagged(descriptor, tilo_actions::HOST_RENDER_TAG)
-        && descriptor.contract.reaches_agents()
+        && descriptor.contract.offered_to_agents()
         && !tagged(descriptor, tilo_actions::OWN_DEVICE_SCOPE)
         && !tagged(descriptor, tilo_actions::ATTENDED_TAG)
         && answers(&descriptor.contract)
@@ -449,7 +455,9 @@ impl Replica {
         actor: ReplicaActor,
         seed: Seed,
     ) -> Result<Self, AppError> {
-        Self::open_lending(catalogue, app_id, workspace, member, actor, seed, None)
+        Self::open_lending(
+            catalogue, app_id, workspace, member, actor, seed, false, None,
+        )
     }
 
     /// [`Self::open`], lending the record's view `content`, as a host lends
@@ -467,6 +475,7 @@ impl Replica {
         member: &MemberId,
         actor: ReplicaActor,
         seed: Seed,
+        asks_workspace: bool,
         content: Option<tilo_content::ContentStore>,
     ) -> Result<Self, AppError> {
         let definition = catalogue
@@ -504,6 +513,11 @@ impl Replica {
             .for_invoker(&invoker)
             .with_permissions(permissions)
             .created(created);
+        let opening = if asks_workspace {
+            opening.asking_the_workspace()
+        } else {
+            opening
+        };
         let view = match content {
             Some(store) => opening.lending(store),
             None => opening,
@@ -518,6 +532,7 @@ impl Replica {
             runs_effects,
             automated,
             runs_views,
+            walked: std::cell::RefCell::new(None),
         })
     }
 
@@ -704,13 +719,14 @@ impl Replica {
         // lookup names is there already unless only that frame would add
         // it. A listing reads the view laid out.
         if (query.target.is_some() || query.resource_name.is_some()) && !self.view.laid_out() {
-            let without_layout =
-                self.survey_page_of(&self.view.published_without_layout(), true, query, window);
+            let tree = self.view.published_without_layout();
+            let without_layout = self.survey_page_of(tree.as_slice(), None, true, query, window);
             if without_layout.0 > 0 {
                 return without_layout;
             }
         }
-        self.survey_page_of(&self.view.published(), false, query, window)
+        let tree = self.view.published();
+        self.survey_page_of(tree.as_slice(), Some(&tree), false, query, window)
     }
 
     /// The page a lookup `query` asks for, answered from the one resource it
@@ -806,8 +822,10 @@ impl Replica {
     }
 
     /// [`Self::survey_page`] of `resources`, the tree the view publishes:
-    /// `without_layout` when the view has not laid out what changed, which then
-    /// reads past the published pages only the items a name finds.
+    /// `identity` the tree as the view keeps it, for a plain listing that
+    /// keeps its place in it ([`SurveyProgress`]); `without_layout` when the
+    /// view has not laid out what changed, which then reads past the
+    /// published pages only the items a name finds.
     #[expect(
         clippy::too_many_lines,
         reason = "one walk of a level: the tree as published, then the items it \
@@ -816,6 +834,7 @@ impl Replica {
     fn survey_page_of(
         &self,
         resources: &[tilo_actions::ResourceSpec],
+        identity: Option<&PublishedTree>,
         without_layout: bool,
         query: &tilo_actions::remote::CatalogueQuery,
         (can_render, (offset, take)): (bool, (usize, usize)),
@@ -828,13 +847,65 @@ impl Replica {
         let Some((level, level_in_chain)) = level_of(resources, parent) else {
             return (0, Vec::new());
         };
-        let mut in_chains: std::collections::HashSet<String> = level
-            .iter()
-            .filter(|child| {
-                level_in_chain || ui::resource::chain_of_resource_id(child.id.as_str()).is_some()
-            })
-            .map(|child| child.id.as_str().to_owned())
-            .collect();
+        // A level a chain keeps is all of its items, so no set of them is
+        // built; elsewhere only the chains among them are.
+        let mut in_chains: std::collections::HashSet<String> = if level_in_chain {
+            std::collections::HashSet::new()
+        } else {
+            level
+                .iter()
+                .filter(|child| ui::resource::chain_of_resource_id(child.id.as_str()).is_some())
+                .map(|child| child.id.as_str().to_owned())
+                .collect()
+        };
+        // A plain listing keeps its place: the rows each resource of the
+        // level admits are counted once, and a page starts at the resource
+        // its offset falls in, so a page deep in the listing costs its rows
+        // and not every resource before it.
+        let plain = identity.is_some() && plain_listing(query, self.app_id());
+        let mut kept = if plain { self.walked.take() } else { None };
+        if let (Some(progress), Some(tree)) = (&kept, identity)
+            && !(std::rc::Rc::ptr_eq(&progress.tree, tree)
+                && progress.parent == parent
+                && progress.can_render == can_render)
+        {
+            kept = None;
+        }
+        let mut start = 0usize;
+        let mut start_total = 0usize;
+        let mut level_complete = false;
+        let mut level_counts = Vec::new();
+        let mut past_at = 0usize;
+        let mut past_rows = 0usize;
+        let mut past_counts: Vec<usize> = Vec::new();
+        let mut past_containers: Vec<Vec<tilo_actions::remote::CatalogueRow>> = Vec::new();
+        let mut offering = std::collections::HashSet::new();
+        if let Some(progress) = kept.take() {
+            let level_rows = progress.rows_before;
+            offering = progress.offering;
+            level_counts = progress.counts;
+            past_at = progress.past_at;
+            past_rows = progress.past_rows;
+            past_counts = progress.past_counts;
+            past_containers = progress.past_containers;
+            if offset >= level_rows {
+                start = level_counts.len();
+                start_total = level_rows;
+                level_complete = start >= level.len();
+            } else {
+                // An earlier page asked again: where in the counted
+                // resources its offset falls.
+                let mut rows = 0usize;
+                for (at, count) in level_counts.iter().enumerate() {
+                    if rows.saturating_add(*count) > offset {
+                        start = at;
+                        start_total = rows;
+                        break;
+                    }
+                    rows = rows.saturating_add(*count);
+                }
+            }
+        }
         let mut walk = SurveyWalk {
             query,
             can_render,
@@ -844,10 +915,11 @@ impl Replica {
             // keeping its place needs, and a window with no room needs only
             // that.
             end: offset.saturating_add(take),
-            total: 0,
+            total: start_total,
             rows: Vec::new(),
-            offering: std::collections::HashSet::new(),
+            offering,
         };
+        let all_chained = level_in_chain;
         let visit = |placed: tilo_actions::api::PlacedAction,
                      walk: &mut SurveyWalk<'_>,
                      in_chains: &std::collections::HashSet<String>| {
@@ -856,24 +928,78 @@ impl Replica {
                 has_children,
                 action,
             } = placed;
-            let action = self.offered(action, in_chains);
-            let Some(action) = action else {
+            let Some(action) = self.offered_in(action, all_chained, in_chains) else {
                 return walk.total < walk.end;
             };
             walk.offering.insert(action.address.resource.clone());
-            walk.admit(tilo_actions::remote::CatalogueRow::for_placed_action(
-                "",
-                self.app_id(),
-                tilo_actions::api::PlacedAction {
-                    parent,
-                    has_children,
-                    action,
-                },
-            ))
+            if !plain {
+                return walk.admit(tilo_actions::remote::CatalogueRow::for_placed_action(
+                    "",
+                    self.app_id(),
+                    tilo_actions::api::PlacedAction {
+                        parent,
+                        has_children,
+                        action,
+                    },
+                ));
+            }
+            // Every row of the level is admitted to a plain listing: the ones
+            // before the window are counted, and only the window's built.
+            if !walk.can_render && crate::render::host_rendered(&action) {
+                return walk.total < walk.end;
+            }
+            walk.total = walk.total.saturating_add(1);
+            if walk.total > walk.offset && walk.rows.len() < walk.take {
+                walk.rows
+                    .push(tilo_actions::remote::CatalogueRow::for_placed_action(
+                        "",
+                        self.app_id(),
+                        tilo_actions::api::PlacedAction {
+                            parent,
+                            has_children,
+                            action,
+                        },
+                    ));
+            }
+            walk.total < walk.end
         };
-        let mut complete = tilo_actions::api::survey_placed_level(level, parent, &mut |placed| {
-            visit(placed, &mut walk, &in_chains)
-        });
+        let mut complete = level_complete;
+        let mut counted: Vec<usize> = Vec::new();
+        if !level_complete {
+            let items = level.get(start..).unwrap_or_default();
+            let mut item_rows = 0usize;
+            let mut previous: Option<usize> = None;
+            complete = tilo_actions::api::survey_placed_level_items(
+                items,
+                parent,
+                &mut |local, placed| {
+                    if previous != Some(local) {
+                        // The resources before this one admitted what they did;
+                        // those the walk skipped admitted nothing.
+                        if previous.is_some() {
+                            counted.push(item_rows);
+                        }
+                        counted.resize(local, 0);
+                        item_rows = 0;
+                        previous = Some(local);
+                    }
+                    let before = walk.total;
+                    let go = visit(placed, &mut walk, &in_chains);
+                    if walk.total > before {
+                        item_rows = item_rows.saturating_add(1);
+                    }
+                    go
+                },
+            );
+            // The resources walked to the end are counted whole; the one the
+            // page stopped in is walked again from its start by the next one.
+            if complete {
+                if previous.is_some() {
+                    counted.push(item_rows);
+                }
+                counted.resize(items.len(), 0);
+            }
+        }
         // The items past the published pages, built only as far as the page
         // reaches; `past_root` is the record's own resource, which holds them.
         let past_root = resources
@@ -898,6 +1024,20 @@ impl Replica {
         {
             // The tree on its own filled the page: the items past it are not
             // counted for nothing.
+            let level_rows = walk.total;
+            let mut next_child = 0usize;
+            if plain {
+                // The items before the last page's are not walked again: the
+                // page starts where that one ended.
+                if offset.saturating_sub(level_rows) < past_rows {
+                    past_at = 0;
+                    past_rows = 0;
+                    past_counts.clear();
+                    past_containers.clear();
+                }
+                next_child = past_at;
+                walk.total = level_rows.saturating_add(past_rows);
+            }
             // A query naming a resource is answered by the labels of the
             // items past the page, building only those that match: a note
             // named by its title costs its title, not the notebook.
@@ -919,29 +1059,52 @@ impl Replica {
             } else {
                 self.view.past_page_len()
             };
-            let mut at = 0usize;
-            while complete && walk.total < walk.end && at < past_len {
+            while complete && walk.total < walk.end && next_child < past_len {
                 // The rows the page still needs: each item may offer none, so
                 // the walk asks again from where this window ended.
                 let room = walk.end.saturating_sub(walk.total).max(1);
-                let children = self.view.past_page_range(at, room);
+                let children = self.view.past_page_range(next_child, room);
                 if children.is_empty() {
                     break;
                 }
-                at = at.saturating_add(room).min(past_len);
+                let mut met = 0usize;
                 for child in children {
                     // A chain part keeps what it offers an agent, whichever
                     // page of the record it is listed on.
                     in_chains.extend(chain_resources(std::slice::from_ref(&child)));
+                    let before = walk.total;
                     complete =
                         tilo_actions::api::survey_placed_under(&child, root, &mut |placed| {
                             visit(placed, &mut walk, &in_chains)
                         });
-                    past_built.push(child);
+                    if plain && complete {
+                        let admitted = walk.total.saturating_sub(before);
+                        past_counts.resize(next_child, 0);
+                        if past_counts.len() == next_child {
+                            past_counts.push(admitted);
+                            past_rows = past_rows.saturating_add(admitted);
+                        }
+                        while past_containers.len() <= next_child {
+                            past_containers.push(Vec::new());
+                        }
+                        if let Some(found) = past_containers.get_mut(next_child) {
+                            containers_into(&child, root, &walk.offering, self.app_id(), found);
+                        }
+                    } else {
+                        past_built.push(child);
+                    }
+                    next_child = next_child.saturating_add(1);
+                    met = met.saturating_add(1);
                     if !complete || walk.total >= walk.end {
                         break;
                     }
                 }
+                if met == 0 {
+                    break;
+                }
+            }
+            if plain {
+                past_at = next_child;
             }
         }
         if complete && walk.total < walk.end {
@@ -961,8 +1124,23 @@ impl Replica {
                 }
             }
             if let Some(root) = &past_root {
-                for child in &past_built {
-                    containers_into(child, root, &walk.offering, self.app_id(), &mut containers);
+                if plain {
+                    // The container rows each item past the page stands in,
+                    // decided when its item was walked: the earlier ones were
+                    // walked by earlier pages.
+                    for found in &past_containers {
+                        containers.extend(found.iter().cloned());
+                    }
+                } else {
+                    for child in &past_built {
+                        containers_into(
+                            child,
+                            root,
+                            &walk.offering,
+                            self.app_id(),
+                            &mut containers,
+                        );
+                    }
                 }
             }
             for row in containers {
@@ -970,6 +1148,24 @@ impl Replica {
                     break;
                 }
             }
+        }
+        if plain && let Some(tree) = identity {
+            let mut counts = level_counts;
+            counts.truncate(start);
+            counts.extend(counted.iter().copied());
+            let rows_before = start_total.saturating_add(counted.iter().copied().sum::<usize>());
+            *self.walked.borrow_mut() = Some(SurveyProgress {
+                tree: std::rc::Rc::clone(tree),
+                parent: parent.to_owned(),
+                can_render,
+                counts,
+                rows_before,
+                offering: walk.offering,
+                past_at,
+                past_rows,
+                past_counts,
+                past_containers,
+            });
         }
         (walk.total, walk.rows)
     }
@@ -1058,7 +1254,18 @@ impl Replica {
     /// not offered.
     fn offered(
         &self,
+        descriptor: ActionDescriptor,
+        in_chains: &std::collections::HashSet<String>,
+    ) -> Option<ActionDescriptor> {
+        self.offered_in(descriptor, false, in_chains)
+    }
+
+    /// [`Self::offered`] of a level whose every resource is kept by a chain
+    /// when `all_chained`: no set of their ids is built for it.
+    fn offered_in(
+        &self,
         mut descriptor: ActionDescriptor,
+        all_chained: bool,
         in_chains: &std::collections::HashSet<String>,
     ) -> Option<ActionDescriptor> {
         // An action for people only (copying a link to the clipboard) means
@@ -1067,7 +1274,7 @@ impl Replica {
         if self.automated() && !descriptor.contract.reaches_agents() {
             return None;
         }
-        if !(self.offers(&descriptor, in_chains)
+        if !(self.offers_in(&descriptor, all_chained, in_chains)
             || (self.runs_effects && self.automated && offered_when_host_renders(&descriptor)))
         {
             return None;
@@ -1085,6 +1292,17 @@ impl Replica {
         descriptor: &ActionDescriptor,
         in_chains: &std::collections::HashSet<String>,
     ) -> bool {
+        self.offers_in(descriptor, false, in_chains)
+    }
+
+    /// [`Self::offers`] where every resource is kept by a chain when
+    /// `all_chained`.
+    fn offers_in(
+        &self,
+        descriptor: &ActionDescriptor,
+        all_chained: bool,
+        in_chains: &std::collections::HashSet<String>,
+    ) -> bool {
         match descriptor.kind {
             tilo_actions::OperationKind::Document => true,
             // A chain the app keeps beside the record publishes its parts'
@@ -1093,7 +1311,8 @@ impl Replica {
             // So does what the app keeps for its whole workspace, carried out on that
             // document ([`Self::kept_for_workspace`]).
             tilo_actions::OperationKind::Effect
-                if in_chains.contains(descriptor.address.resource.as_str())
+                if all_chained
+                    || in_chains.contains(descriptor.address.resource.as_str())
                     || self.kept_for_workspace(descriptor) =>
             {
                 true
@@ -1515,6 +1734,46 @@ impl SurveyWalk<'_> {
         }
         self.total < self.end
     }
+}
+
+/// What a plain listing of one level has walked to: how many rows each
+/// resource before the page admitted, so the next page starts where the last
+/// ended instead of at the level's first resource. Kept for the published
+/// tree it counted; a change to that tree drops it.
+struct SurveyProgress {
+    /// The published tree the counts are of.
+    tree: PublishedTree,
+    /// The level listed: the resource whose children it holds (`""` the top).
+    parent: String,
+    /// Whether this device renders rows, which decides what is admitted.
+    can_render: bool,
+    /// Rows admitted by each counted resource of the level, in order.
+    counts: Vec<usize>,
+    /// Rows admitted by the counted resources, counted once.
+    rows_before: usize,
+    /// The resources a row was admitted for among the counted ones: what the
+    /// container rows are decided by.
+    offering: std::collections::HashSet<String>,
+    /// The resources past the page the tree publishes that were counted, in
+    /// order, and the rows they admitted.
+    past_at: usize,
+    past_rows: usize,
+    past_counts: Vec<usize>,
+    /// The container rows each item past the page stands in, decided when its
+    /// item was walked.
+    past_containers: Vec<Vec<tilo_actions::remote::CatalogueRow>>,
+}
+
+/// Whether `query` admits every row a level offers, so a listing of it can be
+/// counted a resource at a time and resumed where its last page ended: no
+/// name, action, target or view narrows it, and the app it names is this one.
+fn plain_listing(query: &tilo_actions::remote::CatalogueQuery, app_id: &str) -> bool {
+    query.target.is_none()
+        && query.action.is_none()
+        && query.resource_name.is_none()
+        && query.view_resource.is_none()
+        && query.needle.is_empty()
+        && query.app_id.as_deref().is_none_or(|app| app == app_id)
 }
 
 fn containers_into(

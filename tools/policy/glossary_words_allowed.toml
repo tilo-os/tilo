@@ -14,6 +14,11 @@ paths = [
 # of. A use of Tilo's own concept never goes here: rename it.
 
 [[allow]]
+reason = "The render service's existing name for whether a row is drawn on the device running the app rather than in its worker; code that asks it keeps that name."
+words = ["host"]
+identifiers = ["host_rendered"]
+
+[[allow]]
 reason = "The identity registry's field naming the file an identity is kept in."
 words = ["record"]
 identifiers = ["record_path"]
@@ -28,6 +33,12 @@ paths = ["crates/system/fs/tests/native_tier1.rs", "crates/system/fs/tests/nativ
 reason = "logind's seats a dev VM account's session sits on, and the running of commands in tilo-vm's command-line help."
 words = ["seat", "run"]
 paths = ["crates/dev/tilo-vm/src/cli.rs"]
+
+[[allow]]
+reason = "`tilo migrate`'s run of one source, as its journal (RunState) names it: the tests' helper that lands a review once."
+words = ["run"]
+identifiers = ["run_once"]
+paths = ["crates/system/tilo-cli/src/migrate/tests.rs"]
 
 [[allow]]
 reason = "The dev app assembly's subprocess helper, `run`, and a test's stand-in for it."
@@ -155,7 +166,7 @@ paths = ["apps/poker/*"]
 [[allow]]
 reason = "iroh's NAT and packet relay, and the live session's relaying device: iroh's own infrastructure, and the one Tilo role that keeps the word relay."
 words = ["relay"]
-identifiers = ["RelayMode", "RelayUrl", "RelayMap", "RelayNode", "RelayUrlParseError", "relay_mode", "ByRelay"]
+identifiers = ["RelayMode", "RelayUrl", "RelayMap", "RelayNode", "RelayUrlParseError", "relay_mode", "relay_url", "relay_urls", "ByRelay"]
 
 [[allow]]
 reason = "iroh's NAT and packet relay, and the live session's relaying device: iroh's own infrastructure, and the one Tilo role that keeps the word relay."
@@ -175,6 +186,7 @@ paths = [
     "crates/server/tilo-server-protocol/src/config.rs",
     "crates/server/tilo-server-protocol/tests/formats.rs",
     "crates/runtime/tilo-identity/src/enrollment/mod.rs",
+    "crates/runtime/tilo-runtime/src/standalone_tests.rs",
     "crates/server/tilo-server-client/src/host.rs",
     "crates/server/tilo-server/src/agents.rs",
     "crates/server/tilo-server/src/daemon.rs",
@@ -222,7 +234,7 @@ paths = [
 [[allow]]
 reason = "The name a device's store and a page's store keep a run of unpublished writes under: files and keys written under it, found by it for as long as stores keep runs this way."
 words = ["custody"]
-paths = ["crates/collab/tilo-peer-state/src/owner/publication.rs"]
+paths = ["crates/collab/tilo-peer-state/src/owner/publication.rs", "crates/collab/tilo-peer-state/src/owner/publication_tests.rs"]
 
 [[allow]]
 reason = "Taffy's layout constraint, an external API's type name."
@@ -257,6 +269,7 @@ paths = [
     "apps/mail/*",
     "apps/tl/mail/*",
     "crates/platform/mail-session/*",
+    "crates/platform/mail-parts/*",
     "crates/platform/tilolang-process/src/mail_recovery.rs",
     "crates/platform/tilolang-process/tests/own_resources.rs",
     "crates/server/tilo-workspace-service/src/workspaces/mail_watch.rs",
@@ -325,6 +338,11 @@ identifiers = ["channel"]
 paths = ["crates/session/app-keeper/*"]
 
 [[allow]]
+reason = "A Discord server's channels, and the Chat channels the bridge mirrors them into."
+words = ["channel"]
+paths = ["apps/discord/*"]
+
+[[allow]]
 reason = "Chat's channels, and the mentions read from a chat's messages."
 words = ["channel"]
 paths = [
@@ -337,6 +355,7 @@ paths = [
     "crates/agent/agent-session/tests/workspace_actions/held_roles.rs",
     "crates/sdk/ui-core/src/mentions.rs",
     "crates/session/session/src/mentions.rs",
+    "crates/session/session/src/mentions_tests.rs",
 ]
 
 [[allow]]
@@ -346,6 +365,12 @@ paths = [
     "crates/session/session/src/conversations.rs",
     "crates/session/session/src/dev_rust_views.rs",
 ]
+
+[[allow]]
+reason = "The mention role's tests hand it the page's store through the role's own `records` field, which the platform names."
+words = ["record"]
+identifiers = ["records", "Records"]
+paths = ["crates/session/session/src/mentions_tests.rs"]
 
 [[allow]]
 reason = "A test that opens Chat on the canvas names the conversation the way the session publishes it, `chat.workspace/channels/<id>`, as `canvas_point.rs` beside it does."
@@ -1289,6 +1314,9 @@ paths = [
     "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
     "crates/browser/tilo-browser-runtime/web/entry.mjs",
     "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
+    "crates/browser/tilo-browser-runtime/web/identity.mjs",
+    "crates/browser/tilo-browser-runtime/web/profile-photos.mjs",
+    "crates/browser/tilo-browser-runtime/web/profile-photos.test.mjs",
     "crates/browser/tilo-browser-runtime/web/site-host.mjs",
     "crates/browser/tilo-browser-runtime/web/site-host.test.mjs",
 ]
@@ -1481,6 +1509,7 @@ identifiers = [
 paths = [
     "crates/server/tilo-workspace-service/src/workspaces/member.rs",
     "crates/server/tilo-workspace-service/src/workspaces/member_tests.rs",
+    "crates/server/tilo-workspace-service/src/apps/service_reads/tests.rs",
     "crates/server/tilo-workspace-service/src/service.rs",
 ]
 
@@ -1583,3 +1612,68 @@ reason = "The membership a page keeps is stored under the key `host`, and the en
 words = ["host"]
 identifiers = ["host", "hostDevice", "pairViaHost", "HOST"]
 paths = ["crates/browser/tilo-browser-runtime/web/workspaces.mjs", "crates/browser/tilo-browser-runtime/web/workspaces.test.mjs", "crates/session/client/src/entered.rs"]
+
+[[allow]]
+reason = "iroh's packet relay: a test gives the desktop's peer network a relay address that never answers and shows the windows kept across a restart do not wait for it."
+words = ["relay"]
+paths = ["crates/session/session/tests/kept_apps.rs"]
+
+[[allow]]
+reason = "The session client's own-resource test starts a workspace server and holds the shared fixture's names for the device it runs workspaces on (`TestHost`, `start_workspace_host_relaying`, `host_device`)."
+words = ["host"]
+paths = ["crates/session/client/tests/own_record_open.rs"]
+
+[[allow]]
+reason = "An agent the workspace's governor works is the agent resource's own `on_host` field, set by its own action, and the test drives the workspace service through the fixture named `test_host`; none is prose."
+words = ["host"]
+identifiers = ["on_host", "SET_AGENT_ON_HOST", "SetAgentOnHost", "test_host"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/removed_keeper_tests.rs"]
+
+[[allow]]
+reason = "Terminal's own `run` action, by the name it publishes, which executes a command line; the server's agents and shells and tokio's mpsc constructor, as their crates name them."
+words = ["run", "host", "channel"]
+identifiers = ["run", "HostAgents", "host_shells", "unbounded_channel"]
+paths = [
+    "crates/agent/agent-session/tests/workspace_actions/hosted_agent_terminal.rs",
+    "crates/collab/action-policy/tests/agent_answers.rs",
+    "crates/platform/tilo-workspace-agent/src/tests.rs",
+]
+
+[[allow]]
+reason = "The link's `host-changed` failure code, the page's own wire vocabulary for the server a workspace's address pins: read here, never shown. The person's words for it name the server."
+words = ["host"]
+paths = ["crates/sdk/ui-core/src/workspace_sync.rs"]
+
+
+[[allow]]
+reason = "The WebAssembly function table's own slots, which a split module fills with its entries and with the shared functions whose code it carries."
+words = ["slot", "slots"]
+paths = ["tools/web/wasm-split/src/*"]
+
+[[allow]]
+reason = "The extension helper's interface to the operating system it changes (its `Host` trait, which runs systemd-sysext, rpm and mount, and the tests' fake of it) and its tests' helpers that start the helper with a command line."
+words = ["host", "run"]
+identifiers = ["host", "Host", "run", "run_on"]
+paths = ["crates/system/extension-helper/src/machine.rs", "crates/system/extension-helper/tests/extension.rs"]
+
+[[allow]]
+reason = "HTTP's own `Host` request header (`hyper::header::HOST`), which a test that speaks HTTP/1.1 to the packet relay by hand writes."
+words = ["host"]
+identifiers = ["HOST"]
+paths = ["crates/server/tilo-server/src/daemon.rs"]
+
+[[allow]]
+reason = "`join_ledger` is the field name version 6 of a device's owner entry was written with: the step that brings that version up removes it by that name."
+words = ["ledger"]
+identifiers = ["join_ledger"]
+paths = ["crates/collab/tilo-peer-state/src/owner/stored/format.rs"]
+
+[[allow]]
+reason = "Tokio's oneshot and mpsc constructors: the hand-off between a commit's answer and the workspace's governor taking the write in."
+words = ["channel"]
+identifiers = ["channel"]
+paths = [
+    "crates/server/tilo-workspace-service/src/peer/commit.rs",
+    "crates/server/tilo-workspace-service/src/peer/state.rs",
+    "crates/server/tilo-workspace-service/src/peer/state_tests/connections.rs",
+]

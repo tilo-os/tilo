@@ -14,7 +14,7 @@
 "apps/ebook/src/app/interaction_tests.rs" = 5500
 "apps/file-explorer/src/files_app.rs" = 8000
 "apps/file-explorer/src/files_app/tests.rs" = 6000
-"apps/imager/src/app.rs" = 5500
+"apps/imager/src/app.rs" = 3500
 "apps/imager/src/setup/destination/installer_app.rs" = 4000
 "apps/imager/src/setup/import_view.rs" = 5000
 "apps/imager/src/setup/journey/mod.rs" = 12000
@@ -73,7 +73,8 @@
 "crates/sdk/ui-core/src/widget/cartesian_plot.rs" = 4000
 "crates/sdk/ui-core/src/widget/data_table.rs" = 6000
 "crates/sdk/ui-core/src/widget/file_picker.rs" = 4435
-"crates/sdk/ui-core/src/widget/group_row.rs" = 10500
+"crates/sdk/ui-core/src/widget/group_row.rs" = 6000
+"crates/sdk/ui-core/src/widget/group_row_tests.rs" = 5000
 "crates/sdk/ui-core/src/widget/list_row.rs" = 3500
 "crates/sdk/ui-core/src/widget/nav_shell.rs" = 4000
 "crates/sdk/ui-core/src/widget/tabs.rs" = 10000

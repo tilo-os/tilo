@@ -31,9 +31,9 @@ def keep_golden(crate, reads=True):
         (crate / "tests/golden.rs").write_text(READS_GOLDEN)
 
 
-def declaration(oldest):
+def declaration(oldest, version=2):
     return f'''
-pub(crate) const STATE_VERSION: u32 = 2;
+pub(crate) const STATE_VERSION: u32 = {version};
 pub(crate) const STATE: tilo_files::native::migration::Format =
     tilo_files::native::migration::Format {{
         name: "fixture state",
@@ -80,6 +80,26 @@ class FormatMigrationTests(unittest.TestCase):
             path.write_text(declaration(2))
             self.assertEqual(formats.against("main", root), [])
             path.write_text("")
+            self.assertEqual(formats.against("main", root), [])
+
+    def test_a_format_brings_up_the_version_main_writes(self):
+        # Every device that updates holds what main wrote: a new layout that
+        # refuses it leaves the device without what it kept.
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            self.git(root, "init", "-q", "-b", "main")
+            self.git(root, "config", "user.email", "t@example.com")
+            self.git(root, "config", "user.name", "t")
+            path = root / "crates/x/src/lib.rs"
+            path.parent.mkdir(parents=True)
+            path.write_text(declaration(2))
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "base")
+            path.write_text(declaration(3, version=3))
+            found = formats.against("main", root)
+            self.assertEqual(len(found), 1, found)
+            self.assertIn("no longer brings up version 2", found[0])
+            path.write_text(declaration(2, version=3))
             self.assertEqual(formats.against("main", root), [])
 
     def loaded(self, files):

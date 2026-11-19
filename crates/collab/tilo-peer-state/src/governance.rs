@@ -198,7 +198,7 @@ pub(crate) fn admit_invited_member(
         .put(
             &names,
             &id,
-            name.unwrap_or_else(|| member_display_name(&grant, cert)),
+            name.unwrap_or_else(|| member_display_name(&grant)),
         )
         .map_err(|error| error.to_string())?;
     // The name the person gave as they joined is theirs on each of their
@@ -241,26 +241,17 @@ fn bounded_display_name(value: &str) -> Option<&str> {
     tilo_user_identity::display_name(value).ok()
 }
 
-/// The name other members see. A bearer invitation is redeemed by a person the
-/// issuer does not know yet, so the name that person chose (the label on their
-/// own signed device certificate) wins; the issuer's `invitee_name` is only a
-/// fallback. A recipient-bound invitation names a known person, so the issuer's
-/// name wins there. Either way the value is bounded display text; roles and
-/// access come only from the receipt and capability rows. With neither, the
-/// person has no name yet: nothing is stored, and every surface says so in its
-/// own words rather than reading a made-up name as theirs.
-fn member_display_name<'a>(
-    grant: &'a crate::join::InviteGrant,
-    cert: &'a tilo_user_identity::DeviceCert,
-) -> &'a str {
-    let chosen = bounded_display_name(&cert.device_label);
-    let issued = grant.invitee_name.as_deref().and_then(bounded_display_name);
-    let preferred = if grant.recipient_user_public_key.is_none() {
-        chosen.or(issued)
-    } else {
-        issued.or(chosen)
-    };
-    preferred.unwrap_or_default()
+/// The name other members see when the person gave none as they joined: the one the issuer
+/// named them by in the invitation, bounded display text, never authority (roles and access
+/// come only from the receipt and capability rows). A device's own label is never a person's
+/// name: it stays the device's, in its certificate. With no name from either, the person has
+/// none yet: nothing is stored, and every surface says so in its own words.
+fn member_display_name(grant: &crate::join::InviteGrant) -> &str {
+    grant
+        .invitee_name
+        .as_deref()
+        .and_then(bounded_display_name)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -301,37 +292,19 @@ mod display_name_tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_person_is_shown_by_a_bounded_name_from_their_invitation;
+        fn a_person_is_shown_by_the_bounded_name_their_invitation_gives;
 
-        phase bearer_redeemer_is_shown_by_the_name_they_chose;
+        phase a_device_label_is_never_the_persons_name;
         {
-            let guest = cert("  Gina Guest ");
-            assert_eq!(
-                member_display_name(&grant(None, Some("Guest Tester")), &guest),
-                "Gina Guest"
-            );
-            assert_eq!(
-                member_display_name(&grant(None, None), &guest),
-                "Gina Guest"
-            );
+            assert_eq!(member_display_name(&grant(None, Some("Gina"))), "Gina");
+            assert_eq!(member_display_name(&grant(Some([1; 32]), Some("Ada"))), "Ada");
+            assert_eq!(member_display_name(&grant(None, None)), "");
+            assert_eq!(member_display_name(&grant(Some([1; 32]), None)), "");
         }
 
-        phase recipient_bound_invitation_keeps_the_issuers_name;
+        phase unbounded_or_control_text_is_no_name;
         {
-            assert_eq!(
-                member_display_name(&grant(Some([1; 32]), Some("Ada")), &cert("MacBook")),
-                "Ada"
-            );
-            assert_eq!(
-                member_display_name(&grant(Some([1; 32]), None), &cert("Ada's laptop")),
-                "Ada's laptop"
-            );
-        }
-
-        phase unbounded_or_control_text_falls_back_and_never_widens_the_bound;
-        {
-            let issued = grant(None, Some("Guest Tester"));
-            for label in [
+            for name in [
                 String::new(),
                 "   ".to_owned(),
                 "x".repeat(129),
@@ -339,31 +312,16 @@ mod display_name_tests {
                 "Gina\nGuest".to_owned(),
                 "Gina\u{7}Guest".to_owned(),
             ] {
-                let redeemer = cert(&label);
-                assert_eq!(
-                    member_display_name(&issued, &redeemer),
-                    "Guest Tester",
-                    "{label:?}"
-                );
+                assert_eq!(member_display_name(&grant(None, Some(&name))), "", "{name:?}");
             }
-            let longest = cert(&"x".repeat(128));
-            assert_eq!(member_display_name(&issued, &longest), "x".repeat(128));
+            assert_eq!(member_display_name(&grant(None, Some(&"x".repeat(128)))), "x".repeat(128));
             // 100 bytes of UTF-8 is a name, whatever it is written in.
             for name in ["😀".repeat(25), "界".repeat(33), "x".repeat(100)] {
-                assert_eq!(member_display_name(&issued, &cert(&name)), name);
-                assert_eq!(
-                    member_display_name(&grant(Some([1; 32]), Some(&name)), &cert("MacBook")),
-                    name
-                );
+                assert_eq!(member_display_name(&grant(Some([1; 32]), Some(&name))), name);
             }
-            let unnamed = cert("");
-            assert_eq!(
-                member_display_name(&grant(None, Some(&"y".repeat(200))), &unnamed),
-                ""
-            );
         }
 
-        phase admitted_bearer_guest_is_listed_under_the_chosen_name;
+        phase admitted_bearer_guest_is_listed_under_the_issuers_name_not_their_device;
         {
             let (mut peer, authority_key, _, _, now) = crate::admission_tests::seeded();
             let now_ns: u64 = now
@@ -437,7 +395,7 @@ mod display_name_tests {
                 .into_iter()
                 .find(|member| member.root() == Some(guest_cert.user_public_key))
                 .expect("admitted guest is a governed member");
-            assert_eq!(member.name, "Gina Guest");
+            assert_eq!(member.name, "Guest Tester", "the invitation's name, never the device label");
             assert_eq!(member.role, Some(Role::Editor));
         }
     }

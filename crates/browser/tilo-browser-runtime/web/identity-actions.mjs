@@ -196,7 +196,7 @@ export async function saveRecoveryKey(recoveryKey, {userPublicKey, name = 'Tilo'
  * `{approved, label}`. Both return `{close()}`, called once the link is
  * spent or expired.
  * `connectAgent()` makes a pairing link for an agent the person sets up
- * from this tab (the first screen's prompt, `first-run.mjs`): the device
+ * from this tab (the first screen's prompt, `first-screen.mjs`): the device
  * that answers it (the agent's `tilo` command, with a key of its own) is
  * approved without asking, since the person copied the link here a moment
  * ago and it works once, for `INVITE_TTL_MS`, in this tab only. The root

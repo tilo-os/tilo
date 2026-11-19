@@ -234,3 +234,96 @@ fn a_refusal_is_quiet_but_a_protocol_failure_is_counted() {
     );
     assert_eq!(metrics.snapshot().subscriber_dropped, 1);
 }
+
+/// Commits become durable together and finish in any order, but the
+/// workspace's governor takes them in the order they were admitted, and an
+/// author hears that a commit is in only once the governor's copy holds it:
+/// a copy told of a later write first passed the earlier one over for good,
+/// and then refused the compaction that covered it.
+#[tokio::test]
+async fn the_governor_takes_commits_in_the_order_they_were_admitted() {
+    let fixture = Fixture::new();
+    let (tap, mut notices) = mpsc::channel(8);
+    fixture.workspace.lock().await.governor_tap = Some(tap);
+    let session = fixture.ctx(Side::Source, None);
+    let body = |kind: u8| governor_notice(&fixture.envelope(kind)).unwrap();
+    let mut first = Box::pin(
+        admitted(&fixture, &session, 1, [1; 16])
+            .await
+            .answer(&session),
+    );
+    let mut second = Box::pin(
+        admitted(&fixture, &session, 2, [2; 16])
+            .await
+            .answer(&session),
+    );
+
+    // The later commit, durable on its own, waits for the earlier one.
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(500), &mut second)
+            .await
+            .is_err(),
+        "a later commit was answered before an earlier one was told to the governor"
+    );
+    assert!(
+        notices.try_recv().is_err(),
+        "the governor was told of a later commit first"
+    );
+
+    let notice = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::select! {
+            _ = &mut first => panic!("a commit was answered before the governor took it"),
+            notice = notices.recv() => notice.unwrap(),
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(notice.body, body(1));
+    notice.taken.send(()).unwrap();
+    let first = tokio::time::timeout(std::time::Duration::from_secs(30), first)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(first, Some(Envelope::Committed { op, .. }) if op == [1; 16]));
+
+    let notice = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::select! {
+            _ = &mut second => panic!("a commit was answered before the governor took it"),
+            notice = notices.recv() => notice.unwrap(),
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(notice.body, body(2));
+    notice.taken.send(()).unwrap();
+    let second = tokio::time::timeout(std::time::Duration::from_secs(30), second)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(second, Some(Envelope::Committed { op, .. }) if op == [2; 16]));
+}
+
+/// The fixture's commit `kind`, admitted and not answered yet.
+async fn admitted(
+    fixture: &Fixture,
+    session: &SessionCtx<'_>,
+    kind: u8,
+    op: [u8; 16],
+) -> super::super::commit::CommitAdmission {
+    let admission = admit_commit(
+        &fixture.source.peer,
+        session,
+        &[WS],
+        fixture.commit(kind, op),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            admission,
+            super::super::commit::CommitAdmission::Admitted(_)
+        ),
+        "the commit was answered at admission"
+    );
+    admission
+}

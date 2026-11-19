@@ -368,17 +368,24 @@ impl<'g> Authority<'g> {
     }
 
     /// `min(decide(person), decide(each delegation))`: a delegation never does
-    /// more than the person, and the person's restrictions reach it.
+    /// more than the person, and the person's restrictions reach it. Where the
+    /// person's part would ask them, and the one delegation, their agent, holds
+    /// the answer they gave it for exactly this action, that answer is theirs,
+    /// given before the action came ([`Self::answered_in_advance`]).
     #[must_use]
     pub fn decide(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Verdict<'g> {
         let mut parts = Vec::with_capacity(self.bounds.len().saturating_add(1));
         parts.push(self.person.decide(node, kind, cx));
         parts.extend(self.bounds.iter().map(|bound| bound.decide(node, kind, cx)));
-        let mut answer = parts
-            .iter()
-            .map(|part| part.answer)
-            .min()
-            .unwrap_or(Answer::Deny);
+        let mut answer = if self.answered_in_advance(&parts) {
+            Answer::Allow
+        } else {
+            parts
+                .iter()
+                .map(|part| part.answer)
+                .min()
+                .unwrap_or(Answer::Deny)
+        };
         if let (Some(app), Some(kinds)) = (self.app, self.app_kinds)
             && node.id_at(Level::App) == Some(app.as_str())
             && !kinds
@@ -422,10 +429,49 @@ impl Authority<'_> {
         {
             return Answer::Deny;
         }
+        if person == Answer::Ask
+            && let [bound] = self.bounds.as_slice()
+        {
+            let parts = [
+                Decision {
+                    answer: person,
+                    basis: Basis::NoGrant,
+                },
+                bound.decide(node, kind, cx),
+            ];
+            if self.answered_in_advance(&parts) {
+                return Answer::Allow;
+            }
+        }
         self.bounds
             .iter()
             .map(|bound| bound.decide(node, kind, cx).answer)
             .fold(person, Answer::min)
+    }
+
+    /// Whether `parts` (the person's decision, then each delegation's) answer an
+    /// action the person would be asked about with the answer they gave in
+    /// advance: one person, one delegation (their agent), the person's part
+    /// asks, and the agent's allows by the answer that same person gave it for
+    /// exactly this action ([`crate::agent_answers::AnswerScope::Action`], what
+    /// "Always allow this" and the agent's settings give). Asking them would
+    /// put to them what they already answered. What the person may not do at
+    /// all stays refused, and no answer for a whole app or kind of resource
+    /// stands in for them.
+    fn answered_in_advance(&self, parts: &[Decision<'_>]) -> bool {
+        let [person, agent] = parts else {
+            return false;
+        };
+        self.people == 1
+            && person.answer == Answer::Ask
+            && agent.answer == Answer::Allow
+            && matches!(agent.basis, Basis::Grant(grant)
+            if set_by_its_person(grant)
+                && self.person.grantees.contains(&grant.granted_by)
+                && matches!(
+                    crate::agent_answers::AnswerScope::of_node(&grant.node),
+                    Some(crate::agent_answers::AnswerScope::Action { .. })
+                ))
     }
 }
 

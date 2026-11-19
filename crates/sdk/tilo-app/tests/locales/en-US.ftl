@@ -398,3 +398,9 @@ test-minutes-effect-wait-minute = The minute to wait out
 test-jobs-effect-wipe = Wipe this job
 test-colours-effect-recolour = Recolour this calendar
 test-speeds-effect-set-mode = Set the speed
+
+## crates/sdk/tilo-app/tests/screen_place.rs
+test-cards = Cards
+test-cards-rename = Rename the cards
+test-cards-effect-show = Show a card
+test-cards-effect-show-card = The card's name

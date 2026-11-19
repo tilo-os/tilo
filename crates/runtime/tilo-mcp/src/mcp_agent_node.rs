@@ -27,11 +27,19 @@ impl Node {
             "has_children": self.container,
             "reads": reads,
             "actions": self
-                .actions
-                .iter()
+                .listed_actions()
                 .map(|action| action.address.action.clone())
                 .collect::<Vec<_>>(),
         })
+    }
+
+    /// The actions a listing shows it offering: what acts on an item it
+    /// holds is listed on that item, bound to it, and found here only by a
+    /// call that names it.
+    pub(super) fn listed_actions(&self) -> impl Iterator<Item = &ActionDescriptor> {
+        self.actions
+            .iter()
+            .filter(|action| !action.contract.needs_an_item())
     }
 }
 

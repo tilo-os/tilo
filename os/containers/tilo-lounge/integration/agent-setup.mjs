@@ -172,7 +172,7 @@ const tilo = (args, {input} = {}) => new Promise(resolve => {
 const visit = async name => {
   const browser = await launch({args: browserArgs});
   browsers.push(browser);
-  const tab = await browser.tab({firstRun: true});
+  const tab = await browser.tab({firstScreen: true});
   tabs.push({name, tab, browser});
   // The tab's whole console and every request that failed, beside the
   // errors the harness keeps: a step that stops leaves what led to it.
@@ -233,7 +233,7 @@ const visit = async name => {
   await tab.send('Browser.grantPermissions', {origin: new URL(site).origin,
     permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});
   await tab.navigate(site);
-  await until(tab, `document.documentElement.dataset.firstRun !== undefined && !!document.getElementById('first-run-agent')`,
+  await until(tab, `document.documentElement.dataset.firstScreen !== undefined && !!document.getElementById('first-screen-agent')`,
     `${name}: the first screen`);
   return tab;
 };
@@ -292,7 +292,7 @@ const followSteps = async (tab, done) => {
   await tab.evaluate(`(() => {
     const seen = globalThis.__checkSteps ??= [];
     const read = () => {
-      for (const item of document.querySelectorAll('#first-run-steps li')) {
+      for (const item of document.querySelectorAll('#first-screen-steps li')) {
         const line = item.textContent.trim();
         if (line && !seen.includes(line)) seen.push(line);
       }
@@ -321,16 +321,20 @@ const person = tab => tab.evaluate(`JSON.stringify({
 // 1. Set up through the agent.
 const first = await visit('setup');
 mark('the first browser opened the site');
-// The prompt is on the screen before the click, made without waiting for the
-// workspace to let the tab in; the click copies exactly that text.
+// A browser the site knows nothing of makes nothing for the person while
+// they are still deciding: its button offers the prompt, and the press makes
+// the code — and with it, on the host, the workspace the code names. The
+// press after that copies exactly the text the screen shows.
 const visited = Date.now();
-await until(first, `document.getElementById('first-run')?.dataset.setup === 'ready'`, 'the setup prompt shown on the first screen');
+await until(first, `document.getElementById('first-screen')?.dataset.setup === undefined
+  && !!document.getElementById('first-screen-agent')`, 'the first screen offering to set up');
+await click(first, 'first-screen-agent');
+await until(first, `document.getElementById('first-screen')?.dataset.setup === 'ready'`, 'the press making the setup prompt');
 report.promptShownMs = Date.now() - visited;
-report.promptBeforeAdmission = await first.evaluate(`document.documentElement.dataset.entry !== 'open'`);
-const shown = await first.evaluate(`document.getElementById('first-run-offer').textContent`);
+const shown = await first.evaluate(`document.getElementById('first-screen-offer').textContent`);
 const beforeSetup = await clipboardNow(first);
-await click(first, 'first-run-agent');
-await until(first, `document.documentElement.dataset.firstRun === 'waiting'`, 'the first screen answering the click on Set up');
+await click(first, 'first-screen-agent');
+await until(first, `document.documentElement.dataset.firstScreen === 'waiting'`, 'the first screen answering the click on Set up');
 const prompt = await copied(first, 'the setup prompt', beforeSetup);
 if (prompt !== shown) await fail(`the click copied something else than the prompt shown: ${prompt} / ${shown}`);
 report.prompt = prompt;
@@ -342,7 +346,7 @@ if (!/^Set up Tilo for me: run curl -fsSL \S+ \| sh -s login /.test(prompt) || p
 }
 if (setup.site && new URL(setup.site).origin !== new URL(site).origin) await fail(`the prompt names another site: ${setup.site}`);
 const login = tilo(['login', setup.code, '--site', setup.site ?? site]);
-const steps = await followSteps(first, `document.documentElement.dataset.firstRun === undefined || document.documentElement.dataset.firstRun === 'connected'`);
+const steps = await followSteps(first, `document.documentElement.dataset.firstScreen === undefined || document.documentElement.dataset.firstScreen === 'connected'`);
 const loggedIn = await login;
 report.login = loggedIn;
 report.steps = steps;
@@ -388,7 +392,7 @@ if (!/is in .*\.claude\.json/.test(checked.stdout) || !/tilo_ls/.test(checked.st
 }
 
 // The screen leaves for the person's own workspace.
-await until(first, `document.documentElement.dataset.firstRun === undefined`, 'the first screen leaving', stepLimit(2));
+await until(first, `document.documentElement.dataset.firstScreen === undefined`, 'the first screen leaving', stepLimit(2));
 // The person's own workspace, drawn, as the page publishes it: the shell its
 // host admitted it to is presented, and the tab is titled after that
 // workspace, never the Lounge.
@@ -548,10 +552,10 @@ if (/lounge/i.test(after.title) || after.title !== signedUp.title) {
 // 2. Back on a browser that keeps nothing: signed in through the agent.
 const second = await visit('returning');
 mark('a browser that keeps nothing opened the site');
-await until(second, `document.getElementById('first-run')?.dataset.signIn === 'ready'`, 'the sign-in prompt made');
+await until(second, `document.getElementById('first-screen')?.dataset.signIn === 'ready'`, 'the sign-in prompt made');
 const beforeSignIn = await clipboardNow(second);
-await click(second, 'first-run-agent-sign-in');
-await until(second, `document.documentElement.dataset.firstRun === 'waiting'`, 'the first screen answering the click on Sign in with your agent');
+await click(second, 'first-screen-agent-sign-in');
+await until(second, `document.documentElement.dataset.firstScreen === 'waiting'`, 'the first screen answering the click on Sign in with your agent');
 const again = await copied(second, 'the sign-in prompt', beforeSignIn);
 report.signInPrompt = again;
 const signIn = commandOf(again);
@@ -564,7 +568,7 @@ if (approved.code !== 0) await fail(`tilo login did not approve the tab (${appro
 // link someone else made, is for a link handed to a device.
 const signedInOrAsked = await until(second, `(() => {
     if (document.querySelector('[data-card="pair-whose"]')) return 'asked';
-    return document.documentElement.dataset.firstRun === undefined && !!globalThis.tiloMount;
+    return document.documentElement.dataset.firstScreen === undefined && !!globalThis.tiloMount;
   })()`, 'the returning tab signed in', stepLimit(4));
 if (signedInOrAsked === 'asked') {
   await fail('the tab its person signed in with their agent asked whose device it becomes, as for a link someone else made');

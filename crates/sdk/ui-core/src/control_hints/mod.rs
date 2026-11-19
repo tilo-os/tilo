@@ -6,6 +6,7 @@
 mod art;
 mod card;
 pub mod coach;
+pub(crate) mod ink;
 mod layer;
 pub mod performed;
 

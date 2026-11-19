@@ -674,8 +674,15 @@ impl ChatApp {
     fn report_row(&self, id: &str) -> Option<LiveRow> {
         let (_, text) = self.reports.iter().find(|(report, _)| report == id)?;
         let message = crate::feedback::message_id(id);
-        let bindings = ui::tilo_resource::RowBindings::new()
-            .bind(ChatEffect::REVEAL_MESSAGE, [("message", message.into())]);
+        let mut bindings = ui::tilo_resource::RowBindings::new().bind(
+            ChatEffect::REVEAL_MESSAGE,
+            [("message", message.clone().into())],
+        );
+        // The launch replaying what a report recorded, an action its own
+        // resource declares and the report offers bound to this recording.
+        if let Some(recording) = self.report_recordings.get(message.as_str()) {
+            bindings = bindings.spec(crate::feedback::replay_spec(recording));
+        }
         Some(LiveRow::typed_with::<chat_model::rows::Report>(
             item_row_id("feedback", id),
             text,
@@ -685,22 +692,15 @@ impl ChatApp {
 
     /// The reads the window answers for one of its items, from the chat's
     /// committed state: a conversation's destination, a report's receipt and
-    /// status, the launch replaying what a report recorded. They are the
-    /// app's registered readers, published on the item the window knows.
-    pub(crate) fn item_reads(&self, field: &str, id: &str) -> Vec<ui::tilo_actions::ActionSpec> {
+    /// status. They are the app's registered readers, published on the item
+    /// the window knows.
+    pub(crate) fn item_reads(field: &str, id: &str) -> Vec<ui::semantic_document_read::Declared> {
         match field {
             "channels" => vec![crate::feedback::destination_read::spec(id)],
-            "feedback" => {
-                let message = crate::feedback::message_id(id);
-                let mut reads = vec![
-                    crate::feedback::receipt_read::spec(id),
-                    crate::feedback::status_read::spec(id),
-                ];
-                if let Some(recording) = self.report_recordings.get(message.as_str()) {
-                    reads.push(crate::feedback::replay_spec(recording));
-                }
-                reads
-            }
+            "feedback" => vec![
+                crate::feedback::receipt_read::spec(id),
+                crate::feedback::status_read::spec(id),
+            ],
             _ => Vec::new(),
         }
     }

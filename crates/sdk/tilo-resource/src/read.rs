@@ -188,6 +188,89 @@ pub fn fields<M: Model>(record: &M, item: Option<&Id>) -> Result<serde_json::Val
     Ok(record.to_json())
 }
 
+/// What a registered read's published action is called: its id, its label and the line
+/// that says what it takes.
+#[derive(Clone, Copy, Debug)]
+pub struct ReadName<'a> {
+    pub id: &'a str,
+    pub label: &'a str,
+    pub description: &'a str,
+}
+
+/// The parameters of a read that takes none.
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize, crate::JsonSchema)]
+pub struct NoReadParams {}
+
+/// A read an app declared: the published action of a registered reader, made
+/// by [`read_action`] from its name, parameters and result schema. What a
+/// surface publishes as the reads of its items (`Publishes::item_reads`) is
+/// one of these, so a row's reads are a declaration's and never a spec the
+/// app shaped.
+#[derive(Clone)]
+pub struct Declared(tilo_actions::ActionSpec);
+
+impl Declared {
+    /// The published action, for the framework that merges it into a row.
+    #[must_use]
+    pub fn into_spec(self) -> tilo_actions::ActionSpec {
+        self.0
+    }
+
+    /// The read takes the document as its input: the framework answers it from
+    /// the committed document a member may read.
+    #[must_use]
+    pub fn reads_document(mut self) -> Self {
+        self.0 = self.0.reads_document();
+        self
+    }
+}
+
+/// The published action of the registered read whose operation is `operation`. Its
+/// parameters are the fields of `P` as `P`'s JSON Schema describes them (doc comments,
+/// `#[schema(range(..))]` bounds, choices); a caller's arguments, bound strictly to them,
+/// become a `P` with serde, and `request` turns that into the reader's request.
+#[must_use]
+pub fn read_action<P, Q>(
+    name: ReadName<'_>,
+    operation: &'static str,
+    schema: fn() -> &'static serde_json::Value,
+    request: impl Fn(P) -> Q + Send + Sync + 'static,
+) -> Declared
+where
+    P: serde::de::DeserializeOwned + crate::JsonSchema,
+    Q: serde::Serialize,
+{
+    use tilo_actions::{ActionContract, EncodedAction, OperationKind, ResultSpec};
+    let params = crate::__private::flat_params(&P::json_schema());
+    Declared(
+        tilo_actions::ActionSpec::typed_operation(
+            name.id,
+            name.label,
+            name.description,
+            OperationKind::Effect,
+            operation,
+            params,
+            move |args| {
+                serde_json::from_value::<P>(serde_json::Value::Object(args.to_json()))
+                    .ok()
+                    .and_then(|params| {
+                        EncodedAction::encode_operation(operation, &request(params)).ok()
+                    })
+                    .unwrap_or_else(|| EncodedAction {
+                        type_id: operation.into(),
+                        payload: Vec::new(),
+                    })
+            },
+        )
+        .with_contract(ActionContract {
+            result: ResultSpec::Json {
+                schema: schema().clone(),
+            },
+            ..ActionContract::view()
+        }),
+    )
+}
+
 /// What `state`, an `R` in `doc`, holds, or the part of it `item` names:
 /// through `R`'s own [`Resource::read_content`] where it reads itself, else
 /// from the record's model tables. The one way `read` is answered, by the

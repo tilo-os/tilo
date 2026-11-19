@@ -214,7 +214,7 @@ pub trait Effect: Sized + 'static {
     /// effect to an item reads, so offering it on many items costs one
     /// declaration each, not the whole vocabulary.
     fn declaration(id: &str) -> Option<EffectDecl> {
-        Self::declarations().into_iter().find(|decl| decl.id == id)
+        first_declaration(Self::declarations(), id)
     }
 
     /// This effect's id among the declarations.
@@ -548,15 +548,29 @@ fn kept_specs(
     specs.to_vec()
 }
 
+/// The declaration `id` of `declarations`, as [`Effect::declaration`] reads
+/// one. Not generic over the vocabulary, so the search is compiled once rather
+/// than in every app that declares effects.
+#[inline(never)]
+fn first_declaration(declarations: Vec<EffectDecl>, id: &str) -> Option<EffectDecl> {
+    declarations.into_iter().find(|decl| decl.id == id)
+}
+
 fn offered_specs(check: Check, decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionSpec> {
     // Offered on an item or a row (`item = field`, `on = Row`) as well as
-    // here: the declaration's own audience, unchanged. Whether a listing
-    // shows the unbound action beside the bound ones is the listing's, never
-    // a silent change of who the action is for.
+    // here, where it acts on the item a caller names: its audience is the
+    // declaration's, and it says it needs an item, so a listing holding none
+    // leaves it to the items that offer it bound.
     decls
         .into_iter()
         .filter(|decl| !decl.row)
-        .map(|decl| decl.spec_checked(operation, check))
+        .map(|decl| {
+            let mut spec = decl.spec_checked(operation, check);
+            if let Some(target) = decl.items.first() {
+                spec.type_mut().contract.item = Some(target.key().to_owned());
+            }
+            spec
+        })
         .collect()
 }
 
@@ -570,7 +584,7 @@ fn bound_type(
 ) -> Arc<ActionType> {
     let build = encoder(check, operation, id, Bound::Only);
     let spec = match decl {
-        Some(decl) => decl.spec_with(operation, Vec::new(), build),
+        Some(decl) => decl.spec_with_boxed(operation, Vec::new(), Arc::new(build)),
         None => ActionSpec::typed_operation_on(
             id,
             id,
@@ -578,7 +592,7 @@ fn bound_type(
             OperationKind::Effect,
             operation,
             Vec::new(),
-            build,
+            Arc::new(build),
         ),
     };
     Arc::clone(spec.action_type())
@@ -599,7 +613,7 @@ fn asking_spec(
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
     let build = encoder(check, operation, decl.id, Bound::UnderCaller);
-    decl.spec_with(operation, params, build)
+    decl.spec_with_boxed(operation, params, Arc::new(build))
         .action_type()
         .bind(Target::new(args))
         .with_bound(fixed)
@@ -652,7 +666,10 @@ fn target_specs(
             let ty = kept_type((key, decl.id, Some(target.key())), || {
                 let rest = params_from(decl.params.get(1..).unwrap_or_default());
                 let build = encoder(check, operation, decl.id, Bound::OverCaller);
-                Arc::clone(decl.spec_with(operation, rest, build).action_type())
+                Arc::clone(
+                    decl.spec_with_boxed(operation, rest, Arc::new(build))
+                        .action_type(),
+                )
             });
             let fixed: Vec<(String, serde_json::Value)> = bound.clone().into_iter().collect();
             let arguments: serde_json::Map<String, serde_json::Value> =
@@ -692,21 +709,32 @@ fn target_specs_with(
                 .unwrap_or_default()
                 .iter()
                 .map(|given| {
+                    // A parameter the row offers with its own value as the
+                    // default is asked, not taken: the caller may give
+                    // another, and leaving it out takes the row's value.
+                    let asking = bindings.asks(decl.id);
+                    let asks = |name: &str| asking.contains(&name);
                     // An argument the row binds to null is the argument left
                     // unset, as a declaration's own binding leaves an optional
                     // one: it is taken, not asked, and travels as absent.
                     let mut bound = BoundArguments::new();
+                    let mut defaults: Vec<(&str, serde_json::Value)> = Vec::new();
                     let mut taken: Vec<&str> = Vec::new();
                     for (name, value) in given {
-                        if decl
+                        if !decl
                             .params
                             .iter()
                             .any(|param| param.name.as_ref() == name.as_str())
                         {
-                            taken.push(name.as_str());
-                            if !value.is_null() {
-                                bound.insert(name.clone(), value.clone());
-                            }
+                            continue;
+                        }
+                        if asks(name.as_str()) {
+                            defaults.push((name.as_str(), value.clone()));
+                            continue;
+                        }
+                        taken.push(name.as_str());
+                        if !value.is_null() {
+                            bound.insert(name.clone(), value.clone());
                         }
                     }
                     let mut asked = decl
@@ -715,26 +743,44 @@ fn target_specs_with(
                         .filter(|param| !taken.contains(&param.name.as_ref()))
                         .cloned()
                         .collect::<Vec<_>>();
-                    // The values the row's own state says this parameter
-                    // takes (a display's modes) stand where the
-                    // declaration's do.
                     for param in &mut asked {
+                        if let Some((_, value)) = defaults
+                            .iter()
+                            .find(|(name, _)| *name == param.name.as_ref())
+                            && !value.is_null()
+                        {
+                            *param = param.clone().with_default(value.clone());
+                        }
+                        // The values the row's own state says this parameter
+                        // takes (a display's modes) stand where the
+                        // declaration's do.
                         if let Some(choices) = bindings.chosen(decl.id, param.name.as_ref()) {
                             param.choices = choices.iter().cloned().map(Into::into).collect();
                         }
                     }
                     let asked = params_from(&asked);
-                    let build = encoder(check, operation, decl.id, Bound::OverCaller);
+                    let mode = if asking.is_empty() {
+                        Bound::OverCaller
+                    } else {
+                        Bound::UnderCaller
+                    };
+                    let build = encoder(check, operation, decl.id, mode);
                     let fixed: Vec<(String, serde_json::Value)> =
                         bound.clone().into_iter().collect();
+                    // The row's own values travel in the target too, so an
+                    // argument the caller leaves out takes them.
+                    let mut target = bound.clone();
+                    for (name, value) in &defaults {
+                        target.insert((*name).to_owned(), value.clone());
+                    }
                     let arguments: serde_json::Map<String, serde_json::Value> =
-                        fixed.iter().cloned().collect();
-                    let mut spec = decl.spec_with(operation, asked, build);
+                        target.clone().into_iter().collect();
+                    let mut spec = decl.spec_with_boxed(operation, asked, Arc::new(build));
                     if let Some(phrase) = decl.phrase {
                         spec = asking_phrase(spec, phrase(&arguments));
                     }
                     spec.action_type()
-                        .bind(Target::new(bound))
+                        .bind(Target::new(target))
                         .with_bound(fixed)
                 })
                 .collect::<Vec<_>>()
@@ -1062,7 +1108,7 @@ impl EffectDecl {
     /// [`Self::spec`] of a vocabulary that reads arguments back with `check`.
     fn spec_checked(&self, operation: &'static str, check: Check) -> ActionSpec {
         let build = encoder(check, operation, self.id, Bound::None);
-        let spec = self.spec_with(operation, params_from(&self.params), build);
+        let spec = self.spec_with_boxed(operation, params_from(&self.params), Arc::new(build));
         let asks_words = matches!(
             spec.input(),
             tilo_actions::ActionInput::Prompted {
@@ -1163,11 +1209,14 @@ impl EffectDecl {
         }
     }
 
-    fn spec_with(
+    /// The published action of this effect, taking `params` and encoding an
+    /// invocation with `build`. The builder is passed boxed: boxing at the
+    /// call site keeps this out of every app's vocabulary instance.
+    fn spec_with_boxed(
         &self,
         operation: &'static str,
         params: Vec<ActionParam>,
-        build: impl Fn(&Target, &tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static,
+        build: tilo_actions::resource::ArgsBuilder,
     ) -> ActionSpec {
         let view = self.kind == OperationKind::View;
         let label = self.label.read();
@@ -1882,6 +1931,55 @@ mod tests {
             path: crate::AbsolutePath,
             folder: Option<crate::AbsolutePath>,
         },
+    }
+
+    /// The ids a device mints: a desktop id carries its salt in the high 16
+    /// bits, so more than half of them outgrow an `i64`.
+    #[derive(Clone, Debug, PartialEq, Effect)]
+    #[effect(operation = "test.ids", catalogue = "tests/locales")]
+    enum Ids {
+        /// Stand a resource in a strip.
+        #[effect(kind = "undoable")]
+        Place {
+            #[param("The strip it stands in")]
+            strip: u64,
+            #[param("The place's own id; a new one when left out")]
+            place: Option<u64>,
+            #[param(resource = "", "The resource it shows")]
+            resource: String,
+        },
+    }
+
+    /// A caller encodes an invocation through the published spec and its
+    /// handler decodes it there: one declaration writes both sides, so what a
+    /// caller gives — an id past `i64::MAX` included — is what the effect reads.
+    #[test]
+    fn an_effects_named_arguments_round_trip_through_its_spec() {
+        let spec = Ids::specs().remove(0);
+        let salted = 0xB3A1_0000_0000_0001_u64;
+        let arguments = serde_json::json!({
+            "strip": salted,
+            "place": salted,
+            "resource": "notes:1",
+        })
+        .as_object()
+        .expect("arguments")
+        .clone();
+        let encoded = spec.build_json(&arguments).expect("the place encodes");
+        assert_eq!(
+            encoded.type_id,
+            Ids::OPERATION,
+            "the place is encoded as its own operation, not a refusal: {:?}",
+            String::from_utf8_lossy(&encoded.payload)
+        );
+        assert_eq!(
+            Ids::from_payload(&encoded.payload).expect("the place decodes"),
+            Ids::Place {
+                strip: salted,
+                place: Some(salted),
+                resource: "notes:1".into(),
+            }
+        );
     }
 
     /// A content transform whose inputs are the bytes themselves.

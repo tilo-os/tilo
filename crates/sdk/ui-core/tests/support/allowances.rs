@@ -211,6 +211,12 @@ pub const ALLOWANCES: &[Allowance] = &[
         "the chart is the person's content, in canvas units, not chrome",
     ),
     allowance(
+        "apps/maps/src/canvas.rs",
+        "DOCK_REACH",
+        Rule::PixelConst,
+        "a presence tag's reach round a pin's head, the picture of who is there, not spacing",
+    ),
+    allowance(
         "apps/settings/src/panes/speakers/room_canvas.rs",
         "VIEW_MARGIN_MM",
         Rule::PixelConst,

@@ -161,11 +161,14 @@ fn write_manifest() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("manifest.toml: no faces")?
         {
             faces.push(format!(
-                "({}, {}, {}, {}, {})",
+                "({}, {}, {}, {}, {}, {})",
                 field(face, "index")?,
                 field(face, "family")?,
                 field(face, "post_script_name")?,
                 field(face, "style")?,
+                face.get("weight")
+                    .and_then(Value::as_integer)
+                    .unwrap_or(400),
                 names(face, "tilo_families"),
             ));
         }

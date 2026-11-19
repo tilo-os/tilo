@@ -16,6 +16,8 @@
  * calls below that take an `identity` default to it.
  */
 
+import {isInvitedServer} from './site-host.mjs';
+
 const PRF_LABEL = new TextEncoder().encode('tilo-seal/v1/user-root-prf');
 /** Where this browser keeps its person (`{get, put, delete}`). */
 const BROWSER_RECORD = 'identity';
@@ -463,6 +465,8 @@ async function keepSigned({origin, identity, path, record, field, json, now, fet
 async function fetchKept(path, field, rootPublicKeyHex, origins, accept, fetcher) {
   let answered = false;
   for (const origin of origins) {
+    // A server only an invitation named answers no HTTP: its origin never resolves.
+    if (isInvitedServer(origin)) continue;
     try {
       const response = await fetcher(new URL(path, origin).href, {
         method: 'POST', headers: {'content-type': 'text/plain'}, body: rootPublicKeyHex, credentials: 'omit',

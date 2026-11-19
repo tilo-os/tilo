@@ -408,6 +408,11 @@ pub struct Hosted {
     pub documents: crate::broker_services::BrokerService<
         std::sync::Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>,
     >,
+    /// The one store of the workspaces this device's service holds, as apps write and read their
+    /// resources in it.
+    pub resources: crate::broker_services::BrokerService<
+        std::sync::Arc<dyn tilo_workspace_service::apps::services::ResourceServices>,
+    >,
     /// The content the workspaces' records reference: where an app keeps
     /// what its record names, and the route an app asks the workspace's other
     /// devices for what it lacks.
@@ -1112,6 +1117,7 @@ fn broker_services(
         engine,
         endpoint: _,
         documents,
+        resources,
         document_content,
         action_offload,
         journal_root,
@@ -1361,10 +1367,7 @@ fn broker_services(
         })),
         // Apps write and read their resources in this device's one store, which holds every
         // workspace's: no app keeps a store of its own.
-        resources: BrokerService::when(engine.clone().map(|engine| {
-            std::sync::Arc::new(crate::app_resources::AppResources(engine))
-                as std::sync::Arc<dyn tilo_workspace_service::apps::services::ResourceServices>
-        })),
+        resources,
         // The steps only this session may take for the person: the
         // workspace's activity the Activity app reads, pairing a nearby
         // device, administering their identities and the devices trusted
@@ -1567,9 +1570,9 @@ impl AppWire {
         self.broker.app_action_broker().map(std::sync::Arc::new)
     }
 
-    /// The route to one window's app, for the step of a move it is asked for:
-    /// what answers on the window's continuation channel.
-    pub(crate) fn handoff(
+    /// What the session tells the workspace's apps of its own session: whose view this person
+    /// follows, and the step of a move one window's app is asked for.
+    pub(crate) fn follow_dispatcher(
         &self,
     ) -> tilo_workspace_service::apps::collab_broker::SessionFollowDispatcher {
         self.broker.follow_dispatcher()
@@ -1772,6 +1775,9 @@ mod tests {
             fanout: std::sync::Arc::new(FanoutState::new()),
             endpoint: None,
             documents: crate::broker_services::document_reads(
+                tilo_workspace_service::service::ServiceSlot::default(),
+            ),
+            resources: crate::broker_services::resources(
                 tilo_workspace_service::service::ServiceSlot::default(),
             ),
         }

@@ -349,3 +349,54 @@ fn the_layout_actions_keep_their_audience_history_words_and_read_kind() {
     );
     assert!(drawn.reaches_agents());
 }
+
+/// A device's desktop id carries its salt in the high 16 bits, so more than
+/// half of them outgrow an `i64`. `place` reads the row, strip and place it is
+/// given as the ids they are, and the effect the published spec encodes is the
+/// one its handler decodes.
+#[test]
+fn a_place_takes_the_ids_a_device_mints() {
+    let words: super::Words = std::rc::Rc::new(|_, _, fallback| fallback.to_owned());
+    let layout = super::published::layout_resource(&words);
+    let spec = layout
+        .actions
+        .iter()
+        .find(|spec| spec.id == "place")
+        .expect("place");
+    let salted = 0xB3A1_0000_0000_0001_u64;
+    let arguments = serde_json::json!({
+        "workspace": "1",
+        "row": salted,
+        "strip": salted,
+        "place": salted,
+        "resource": "notes:1",
+        "x": 80,
+        "y": 60,
+        "width": 720,
+        "height": 620,
+    })
+    .as_object()
+    .expect("arguments")
+    .clone();
+    let encoded = spec.build_json(&arguments).expect("the place encodes");
+    assert_eq!(
+        encoded.type_id,
+        <super::published::LayoutEffect as tilo_resource::Effect>::OPERATION,
+        "the place is encoded as its own operation, not a refusal: {:?}",
+        String::from_utf8_lossy(&encoded.payload)
+    );
+    let decoded =
+        <super::published::LayoutEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
+            .expect("the place decodes");
+    let super::published::LayoutEffect::Place {
+        row, strip, place, ..
+    } = decoded
+    else {
+        panic!("a place, not {decoded:?}");
+    };
+    assert_eq!(
+        (row, strip, place),
+        (Some(salted), Some(salted), Some(salted)),
+        "the ids it was given, whole"
+    );
+}

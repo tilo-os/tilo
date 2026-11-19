@@ -1501,10 +1501,18 @@ impl Widget for RichTextLine {
             || self.inner.layout_needs_measure()
     }
 
-    /// A line's height follows its text and its inline marks, both of which
-    /// `measure` re-applies; the childless default would dirty every line.
+    /// A wrapping line's height follows its text and its inline marks, both of which `measure`
+    /// re-applies; a line that scrolls stands one line tall whatever its marks.
     fn is_layout_dirty(&self) -> bool {
-        self.dirty.styled_layout || self.emoji_moved() || self.inner.is_layout_dirty()
+        (self.wrap && (self.dirty.styled_layout || self.emoji_moved()))
+            || self.inner.is_layout_dirty()
+    }
+
+    /// The solve read the size it asked for: a line one line tall is never measured, and its
+    /// request is met all the same.
+    fn layout_measured(&mut self) {
+        self.dirty.styled_layout = false;
+        self.inner.acknowledge_layout_measure();
     }
 
     /// Where the field's text stands in it, as the field paints it: an audit of a window reads

@@ -786,9 +786,11 @@ impl App {
             // active-index state without setting a descendant leaf's
             // `dirty` flag, so recursive `needs_redraw` misses it.
             // Only pointer MOVES (the hot 60+ Hz stream) skip a
-            // redraw when nothing's dirty.
+            // redraw when nothing's dirty. Layout is another matter:
+            // a widget says when its size moved, so a press that only
+            // repaints (a button held, a row lit) is drawn, not laid out.
             let is_pointer_move = matches!(&event, WindowEvent::CursorMoved { .. });
-            if !is_pointer_move || app.root_widget.is_layout_dirty() {
+            if app.root_widget.is_layout_dirty() {
                 app.layout.layout_dirty = true;
             }
             if !is_pointer_move

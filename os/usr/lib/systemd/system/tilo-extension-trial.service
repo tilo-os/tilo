@@ -1,0 +1,22 @@
+[Unit]
+Description=Turn off a Tilo extension the last start did not finish with
+Documentation=file:///usr/share/tilo/system-extensions/README.md
+# An extension turned on or changed is on trial until a start with it reaches
+# the graphical target (tilo-extension-booted.service). A start that finds it
+# still on trial from the previous start, which never got there, takes it out
+# of the sysext search path before systemd-sysext merges anything and turns it
+# off, so a bad extension costs one failed start and can never keep the
+# computer from starting.
+DefaultDependencies=no
+After=local-fs.target
+Before=systemd-sysext.service tilo-extension-activate.service sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
+ConditionPathExistsGlob=/var/lib/tilo/extensions/*/trial
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-extension boot:start
+
+[Install]
+WantedBy=sysinit.target

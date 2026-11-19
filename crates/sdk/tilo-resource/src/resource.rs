@@ -2580,10 +2580,16 @@ fn publish_own(
         if let Some(availability) = own.availability {
             spec.type_mut().contract.availability = availability(decl.id);
         }
-        // Offered on the items it acts on, with some of its arguments bound
-        // ([`items::bound`](crate::items::bound)), it stays published here
-        // for scripts that name the item, out of the palette's way.
-        resource = resource.with_action(if offered_bound(decl) {
+        // An item verb stays published here for a caller that names the
+        // item, saying it needs one: a listing holding no item leaves it to
+        // the items, which offer it bound. Another declaration a child offers
+        // with some of its arguments bound
+        // ([`items::bound`](crate::items::bound)) needs nothing in hand, and
+        // stays here for scripts, out of the palette's way.
+        resource = resource.with_action(if let Some(item) = decl.item {
+            spec.type_mut().contract.item = Some(item.to_owned());
+            spec
+        } else if offered_bound(decl) {
             spec.for_audience(tilo_actions::Audience::Agents)
         } else {
             spec

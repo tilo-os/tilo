@@ -3,9 +3,10 @@
 //! The workspaces' records are written by their apps, by the person's other devices and by this
 //! session's own services. Whoever writes one notes it in the one [`Changes`] stream of this host,
 //! and the roles that follow records — the activity, the person's mentions and search — read that
-//! stream and keep no watcher of their own. On a Linux desktop the records are the engine's
-//! ([`Held`]), and the record index notes what the broker receives from the apps and what the
-//! session writes; on the web the page's replication notes what it takes in ([`Kept`]).
+//! stream and keep no watcher of their own. On a Linux desktop the records are this device's
+//! workspace service's ([`Held`]), and the record index notes what the broker receives from the
+//! apps and what the session writes; on the web the page's replication notes what it takes in
+//! ([`Kept`]).
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,6 +35,10 @@ pub struct Changed {
     pub replayed: bool,
 }
 
+/// Whether this device holds a workspace, as the stream is told: a change of one it does not hold
+/// is nothing any role following the stream can read.
+type Holds = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// The one stream of record changes: every write that lands in the workspaces' records is noted
 /// here, and every role that follows records takes it.
 #[derive(Clone, Default)]
@@ -52,15 +57,73 @@ struct Inner {
     wake: Mutex<Option<tilo_service::Wake>>,
     /// The workers following the records, told each change as it is noted.
     readers: Mutex<Vec<mpsc::Sender<Changed>>>,
+    /// Whether this device holds a workspace, where the session knows: what [`Changes::holding`]
+    /// was told.
+    holds: Mutex<Option<Holds>>,
+    /// What `holds` answered for each workspace, so a change of one asks it nothing until the keys
+    /// settle.
+    answered: Mutex<BTreeMap<String, bool>>,
 }
 
 impl Changes {
-    /// Note that `record` of `app` changed in `workspace` (an empty record: the workspace's list
-    /// of `app`'s records moved), as `replayed` where it is what this device already held, and
-    /// wake what follows it.
-    pub fn note(&self, workspace: &str, app: &str, record: &str, replayed: bool) {
-        if app.is_empty() {
-            return;
+    /// Note only what `holds` holds: a change of a workspace this device's service does not hold
+    /// is no news here, and is taken when the workspace becomes held.
+    pub fn holding(&self, holds: Holds) {
+        *self.0.holds.lock().unwrap_or_else(PoisonError::into_inner) = Some(holds);
+        self.0
+            .answered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+    }
+
+    /// The keys settled: a workspace this device held nothing of may be held now, so what
+    /// [`Self::holding`] answered of one it does not hold is asked again.
+    pub fn settling(&self) {
+        self.0
+            .answered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|_, held| *held);
+    }
+
+    /// Whether this device holds `workspace`, as [`Self::holding`] says: true where the session
+    /// told the stream nothing, as a page's does, which notes only what it keeps.
+    fn holds(&self, workspace: &str) -> bool {
+        let asked = self
+            .0
+            .holds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let Some(asked) = asked else {
+            return true;
+        };
+        if let Some(held) = self
+            .0
+            .answered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(workspace)
+        {
+            return *held;
+        }
+        let held = asked(workspace);
+        self.0
+            .answered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(workspace.to_owned(), held);
+        held
+    }
+
+    /// Note that `record` of `app` changed in `workspace` (an empty route: the workspace's list
+    /// of `app`'s moved), as `replayed` where it is what this device already held, and wake what
+    /// follows it. Whether it is news here: a change of a workspace this device does not hold is
+    /// not, and nothing that follows the stream is told of it.
+    pub fn note(&self, workspace: &str, app: &str, record: &str, replayed: bool) -> bool {
+        if app.is_empty() || !self.holds(workspace) {
+            return false;
         }
         // A record noted twice before it is read is read once, and a live change of it is news even
         // where the replay reached it first.
@@ -105,6 +168,7 @@ impl Changes {
         {
             wake();
         }
+        true
     }
 
     /// Wake the session's loop through `wake` whenever a record changed.
@@ -898,40 +962,42 @@ mod loaded {
     }
 }
 
-/// What each workspace holds, as this device's engine keeps it: what its apps write, what the
-/// person's other devices replicate and what search reads, with the changes noted as they land.
+/// What each workspace holds, as this device's workspace service keeps it: what its apps write,
+/// what the person's other devices replicate and what search reads, with the changes noted as
+/// they land.
 #[cfg(target_os = "linux")]
 pub struct Held {
-    engine: Arc<crate::engine::Engine>,
+    reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
     changes: Changes,
 }
 
 #[cfg(target_os = "linux")]
 impl Held {
-    /// What `engine` holds, with `changes` saying what moved in it.
+    /// What `reads` answers, with `changes` saying what moved in it.
     #[must_use]
-    pub fn over(engine: Arc<crate::engine::Engine>, changes: Changes) -> Self {
-        Self { engine, changes }
+    pub fn over(
+        reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+        changes: Changes,
+    ) -> Self {
+        Self { reads, changes }
     }
 
     /// What `app`'s document at `route` in `workspace` holds since `heads`: all of it without
-    /// heads. Nothing while its keys are not here yet, and nothing of a workspace the engine does
-    /// not hold: this device's own, where an app launched outside every workspace keeps what it
-    /// writes, stays with that app.
+    /// heads. Nothing while its keys are not here yet, and nothing of a workspace this device's
+    /// service does not hold: this device's own, where an app launched outside every workspace
+    /// keeps what it writes, stays with that app.
     fn read(
         &self,
         (app, workspace, route): (&str, &str, &str),
         heads: Option<&[automerge::ChangeHash]>,
-    ) -> Option<crate::engine::ResourceReading> {
-        if !tilo_desktop_model::WorkspaceId::parse(workspace)
-            .is_some_and(|id| self.engine.holds(id))
-        {
+    ) -> Option<tilo_workspace_service::workspace_documents::DocumentRead> {
+        if !self.reads.workspaces().iter().any(|held| held == workspace) {
             return None;
         }
         let heads: Option<Vec<[u8; 32]>> =
             heads.map(|heads| heads.iter().map(|head| head.0).collect());
-        self.engine
-            .record_update(workspace, app, route, heads.as_deref())
+        self.reads
+            .read(workspace, app, route, heads.as_deref())
             .inspect_err(
                 |error| tracing::warn!(%error, %app, %workspace, %route, "a document is not read"),
             )
@@ -946,8 +1012,9 @@ impl Records for Held {
     }
 
     fn document(&self, app: &str, workspace: &str, route: &str) -> Option<AutoCommit> {
-        let Some(crate::engine::ResourceReading::Captured { bytes, .. }) =
-            self.read((app, workspace, route), None)
+        let Some(tilo_workspace_service::workspace_documents::DocumentRead::Whole {
+            bytes, ..
+        }) = self.read((app, workspace, route), None)
         else {
             return None;
         };
@@ -963,9 +1030,10 @@ impl Records for Held {
         route: &str,
         heads: &[automerge::ChangeHash],
     ) -> Since {
+        use tilo_workspace_service::workspace_documents::DocumentRead;
         match self.read((app, workspace, route), Some(heads)) {
-            Some(crate::engine::ResourceReading::Unchanged(_)) => Since::Unchanged,
-            Some(crate::engine::ResourceReading::Changes { heads, bytes, .. }) => Since::Changes {
+            Some(DocumentRead::Unchanged(_)) => Since::Unchanged,
+            Some(DocumentRead::Changes { heads, bytes, .. }) => Since::Changes {
                 heads: heads.into_iter().map(automerge::ChangeHash).collect(),
                 bytes,
             },
@@ -974,17 +1042,71 @@ impl Records for Held {
     }
 
     fn held(&self, workspace: &str) -> Vec<(String, String)> {
-        self.engine
-            .documents(workspace)
+        self.reads
+            .listing(workspace)
             .inspect_err(|error| tracing::warn!(%error, %workspace, "a workspace is not listed"))
             .unwrap_or_default()
     }
 
     fn workspaces(&self) -> Vec<String> {
-        self.engine
-            .workspaces()
-            .into_iter()
-            .map(|workspace| workspace.to_string())
-            .collect()
+        self.reads.workspaces()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A change of a workspace this device's service does not hold is nothing a role that
+    /// follows records can read: it is not noted, moves nothing, tells no reader and wakes no
+    /// loop. The workspaces the service holds are noted as before.
+    #[test]
+    fn a_change_of_a_workspace_this_device_does_not_hold_is_noted_to_nobody() {
+        let changes = Changes::default();
+        let asked = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&asked);
+        changes.holding(Arc::new(move |workspace: &str| {
+            flag.store(true, Ordering::SeqCst);
+            workspace == "held"
+        }));
+        let woke = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&woke);
+        changes.waking(Arc::new(move || flag.store(true, Ordering::SeqCst)));
+        #[cfg(target_os = "linux")]
+        let reader = changes.reader();
+
+        assert!(
+            !changes.note("unheld", "so.tilo.chat", "messages", false),
+            "a change of an unheld workspace is no news here"
+        );
+        assert!(asked.load(Ordering::SeqCst), "the stream asks what is held");
+        assert_eq!(changes.moved(), 0, "nothing moved");
+        assert_eq!(changes.moved_in("unheld"), 0);
+        assert!(changes.take().is_empty(), "no role has anything to take");
+        assert!(
+            !woke.load(Ordering::SeqCst),
+            "the session's loop is not woken"
+        );
+        #[cfg(target_os = "linux")]
+        assert!(
+            reader.try_recv().is_err(),
+            "no reader following the records is told"
+        );
+
+        assert!(changes.note("held", "so.tilo.chat", "messages", false));
+        assert_eq!(changes.moved(), 1);
+        assert_eq!(changes.moved_in("held"), 1);
+        assert!(woke.load(Ordering::SeqCst), "the loop reads the change");
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            reader
+                .recv()
+                .map(|changed| changed.workspace)
+                .ok()
+                .as_deref(),
+            Some("held")
+        );
     }
 }

@@ -27,6 +27,8 @@ mod closed_tab;
 mod control_hints;
 #[path = "emoji.rs"]
 mod emoji;
+#[path = "hint_app.rs"]
+mod hint_app;
 #[path = "page_top_bar.rs"]
 mod page_top_bar;
 #[path = "palette_above_windows.rs"]

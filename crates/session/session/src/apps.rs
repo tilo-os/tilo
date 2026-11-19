@@ -45,9 +45,21 @@ use crate::search::AppActions;
 use ui::apps::AGENT as AGENT_PACKAGE;
 
 /// The answer for `asked` that did not open, and `why`, with trying again as its button.
-fn not_opened(policy: &tilo_desktop_policy::DesktopPolicy, asked: &str, why: &str) -> Outcome {
+/// `title` names the launch when the asked string is an internal one (a Windows program's entry):
+/// a person reads the name the manager started it by, never an id.
+fn not_opened(
+    policy: &tilo_desktop_policy::DesktopPolicy,
+    asked: &str,
+    title: Option<&str>,
+    why: &str,
+) -> Outcome {
     use tilo_desktop_surface::i18n::{t, t_args};
-    let name = policy.name_of(asked);
+    // The name its launch was started with is what a person knows it by; the shell's own name
+    // for an asked string can be derived from an internal id.
+    let name = match title {
+        Some(title) => title.to_owned(),
+        None => policy.name_of(asked),
+    };
     Outcome::new(t_args("answer-app-not-opened", &[("app", name.into())]))
         .saying(why)
         .retryable(t("answer-try-again"))
@@ -1042,6 +1054,7 @@ impl Apps {
                 self.could_not_open(
                     asked.tab,
                     &asked.app,
+                    None,
                     &tilo_desktop_surface::i18n::t("answer-why-unknown-app"),
                 );
                 continue;
@@ -1068,7 +1081,7 @@ impl Apps {
                 Ok(false) => self.release_tab(asked.tab),
                 Err(error) => {
                     tracing::warn!(asked = %asked.app, %error, "an app did not start");
-                    self.could_not_open(asked.tab, &asked.app, &error.to_string());
+                    self.could_not_open(asked.tab, &asked.app, None, &error.to_string());
                 }
             }
         }
@@ -1115,7 +1128,7 @@ impl Apps {
             // The tab keeps the place the launch held for it and says why the window did not come,
             // with the button that asks for it again: a tab that vanished left the person with
             // nothing to see and nothing to do.
-            self.could_not_open(Some(tab), app, &error.to_string());
+            self.could_not_open(Some(tab), app, None, &error.to_string());
         }
     }
 
@@ -1251,13 +1264,25 @@ impl Apps {
     /// What the person asked for in `tab` did not happen, `why` says why: the tab keeps its place
     /// and shows the answer, with the button that asks for the app again. A launch no tab holds is
     /// answered by whoever asked for it.
-    fn could_not_open(&self, tab: Option<u64>, asked: &str, why: &str) {
+    fn could_not_open(&self, tab: Option<u64>, asked: &str, title: Option<&str>, why: &str) {
         let Some(tab) = tab else {
             return;
         };
         self.answer_in_tabs(|policy| {
-            let outcome = not_opened(policy, asked, why);
+            let outcome = not_opened(policy, asked, title, why);
             policy.failed_at(tab, asked, outcome);
+        });
+    }
+
+    /// Close `tab`, the place the shell held for a launch that ended without the window it was
+    /// asked for and without anything to say: nothing comes into it.
+    fn close_tab(&self, tab: u64) {
+        self.answer_in_tabs(|policy| {
+            let _ = policy.handle().dispatch(
+                tilo_desktop_surface::navigation::LayoutEffect::CloseTab {
+                    tab: tab.to_string(),
+                },
+            );
         });
     }
 

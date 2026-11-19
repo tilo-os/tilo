@@ -94,11 +94,7 @@ impl LayoutActions {
             return self.step(address);
         }
         let published = self.layout.borrow().resources();
-        let built = tilo_actions::api::spec_of(&published, &address.resource, &address.action)
-            .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
-        let encoded = built
-            .build_json(arguments)
-            .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))?;
+        let encoded = tilo_actions::api::encode_json(&published, address, arguments)?;
         let effect = LayoutEffect::from_payload(&encoded.payload)
             .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))?;
         let Some(mut action) = effect.layout() else {

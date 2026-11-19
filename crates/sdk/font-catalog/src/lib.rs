@@ -9,9 +9,10 @@
 //! text find the same bytes. This crate owns the manifest's schema and the
 //! checks that tie an installed directory to the build that reads it: the
 //! installed manifest must be byte-identical to the one compiled in here, and
-//! every file a reader uses must match its pinned size and hash — read and
-//! hashed, unless the file is on read-only storage this user cannot change
-//! ([`Trust`]), where the image's own integrity already pins its bytes.
+//! every file a reader uses must have its pinned size. The manifest also
+//! states each face's family, style and weight, so a reader lists the faces
+//! without opening a file; the SHA-256 pins are checked where a catalog is
+//! prepared and where a browser delivers bytes.
 
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -19,8 +20,6 @@ use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
 
-#[cfg(feature = "faces")]
-pub mod faces;
 #[cfg(test)]
 mod tests;
 
@@ -210,6 +209,10 @@ pub struct Face {
     pub family: String,
     pub post_script_name: String,
     pub style: String,
+    /// The weight class the file gives the face (its `OS/2` table), so a
+    /// reader can list the face without opening the file: 400 unless the
+    /// manifest says otherwise.
+    pub weight: u16,
     /// The families Tilo sets this face under, in place of the file's own,
     /// when that name cannot tell the face apart from its siblings: every
     /// New Computer Modern file says `NewComputerModern` at weight 400,
@@ -218,13 +221,14 @@ pub struct Face {
     pub tilo_families: Vec<String>,
 }
 
-/// One face as the build writes it: index, family, PostScript name, style
-/// and Tilo's families.
+/// One face as the build writes it: index, family, PostScript name, style,
+/// weight and Tilo's families.
 type FaceRow = (
     u32,
     &'static str,
     &'static str,
     &'static str,
+    u16,
     &'static [&'static str],
 );
 /// One font as the build writes it: scope, startup, file, bytes, SHA-256,
@@ -264,13 +268,16 @@ pub fn manifest() -> Result<&'static Manifest, Error> {
                     reserved_aliases: strings(aliases),
                     faces: faces
                         .iter()
-                        .map(|&(index, family, post_script_name, style, families)| Face {
-                            index,
-                            family: family.to_owned(),
-                            post_script_name: post_script_name.to_owned(),
-                            style: style.to_owned(),
-                            tilo_families: strings(families),
-                        })
+                        .map(
+                            |&(index, family, post_script_name, style, weight, families)| Face {
+                                index,
+                                family: family.to_owned(),
+                                post_script_name: post_script_name.to_owned(),
+                                style: style.to_owned(),
+                                weight,
+                                tilo_families: strings(families),
+                            },
+                        )
                         .collect(),
                 },
             )
@@ -295,128 +302,6 @@ pub fn check_manifest(root: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// How much of a catalog file a reader must check before using it.
-///
-/// Hashing the whole catalog (36 files, 54.9 MB, 32.7 MB of it one CJK
-/// collection) costs every process 22 ms on a CPU with SHA instructions and
-/// about 140 ms without. That proof is redundant when the bytes cannot have
-/// changed since the image was built and checked: the Tilo image is a bootc
-/// deployment whose `/usr` is a read-only composefs mount, every object of
-/// which the kernel checks against its fs-verity digest as it is read, and
-/// `tools/font-catalog.py` checked each file against this same manifest when
-/// the image was assembled. The launcher binds a runtime's catalog into an
-/// app's sandbox read-only, and a system runtime lives in that same `/usr`.
-///
-/// [`Trust::of_root`] grants [`Trust::Immutable`] only from what the
-/// filesystem reports about the open directory, never from a path name, and
-/// [`Asset::verify_with`] checks the same property again for each file before
-/// it skips the read, so a file that is not provably immutable is hashed
-/// regardless. That property is [`file_is_immutable`]: root-owned, writable
-/// by nobody else, on a read-only mount. Every byte used then comes from a
-/// file only root could have written, listed in a directory only root could
-/// have changed, under a manifest byte-identical to this build's. No
-/// ancestor walk is needed, and none would work: inside an app's sandbox
-/// every directory above a bind is the sandbox's own tmpfs, which belongs to
-/// the user. Renaming a root-owned directory over another only substitutes
-/// one root-made catalog for another, and only one with this build's exact
-/// manifest is accepted at all.
-///
-/// A user-installed catalog, a per-user runtime's (the user owns those
-/// files, so a read-only bind only hides writes inside the sandbox), a
-/// checkout and any directory on writable storage are hashed in full, as is
-/// everything on hosts without `fstatvfs`. A process running as root hashes
-/// too: inside a user namespace a "root" can be an ordinary user whose own
-/// files appear root-owned.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Trust {
-    /// The root and its manifest, and (per [`Asset::verify_with`]) each
-    /// file, are [immutable](file_is_immutable): size and manifest identity
-    /// are checked, the bytes are not read.
-    Immutable,
-    /// Every file is read and its SHA-256 compared with the pin.
-    Verify,
-}
-
-impl Trust {
-    /// The trust a catalog at `root` earns from where it is stored:
-    /// [`Trust::Immutable`] when the directory and its `manifest.toml` are
-    /// [immutable](file_is_immutable), [`Trust::Verify`] otherwise.
-    #[must_use]
-    pub fn of_root(root: &Path) -> Self {
-        let immutable = root.canonicalize().is_ok_and(|root| {
-            file_is_immutable(&root) && file_is_immutable(&root.join("manifest.toml"))
-        });
-        if immutable {
-            Self::Immutable
-        } else {
-            Self::Verify
-        }
-    }
-}
-
-/// Whether `path` names a file or directory only root can change: it is not
-/// a symlink, it is owned by root (as this user namespace sees it), neither
-/// group nor others may write it, and it lives on a read-only mount. Always
-/// `false` in a process running as root and on hosts without `fstatvfs`
-/// (see [`Trust`]). Opening the path reads none of its content.
-#[must_use]
-pub fn file_is_immutable(path: &Path) -> bool {
-    immutable::file(path)
-}
-
-#[cfg(unix)]
-mod immutable {
-    use std::fs::{File, OpenOptions};
-    use std::os::fd::AsRawFd;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-    use std::path::Path;
-
-    /// The kernel's default `overflowuid`: how a user namespace that maps
-    /// only the user (an app's bubblewrap sandbox) shows root's files.
-    const OVERFLOW_UID: u32 = 65_534;
-
-    pub(super) fn file(path: &Path) -> bool {
-        let euid = rustix::process::geteuid().as_raw();
-        if euid == 0 {
-            return false;
-        }
-        let Ok(file) = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path)
-        else {
-            return false;
-        };
-        let Ok(metadata) = file.metadata() else {
-            return false;
-        };
-        matches!(metadata.uid(), 0 | OVERFLOW_UID)
-            && metadata.uid() != euid
-            && metadata.mode() & 0o022 == 0
-            && read_only_mount(&file)
-    }
-
-    fn read_only_mount(file: &File) -> bool {
-        let mut filesystem = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-        // SAFETY: the descriptor is live for this call and fstatvfs writes
-        // exactly one statvfs into the buffer.
-        if unsafe { libc::fstatvfs(file.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
-            return false;
-        }
-        // SAFETY: fstatvfs succeeded, so it initialised every field.
-        unsafe { filesystem.assume_init() }.f_flag & libc::ST_RDONLY != 0
-    }
-}
-
-#[cfg(not(unix))]
-mod immutable {
-    use std::path::Path;
-
-    pub(super) fn file(_path: &Path) -> bool {
-        false
-    }
-}
-
 impl Asset {
     /// The file's path under `root`, refusing a manifest entry that would
     /// leave the catalog directory.
@@ -435,27 +320,18 @@ impl Asset {
     }
 
     /// Check the file under `root` against its pinned size and SHA-256 and
-    /// return its path.
+    /// return its path: what preparing a catalog proves of every file. A
+    /// process that sets text checks only the size ([`Asset::sized_in`]).
     pub fn verify(&self, root: &Path) -> Result<PathBuf, Error> {
-        self.verify_with(root, Trust::Verify)
+        let path = self.sized_in(root)?;
+        let actual = sha256_file(&path).map_err(|e| Error::at(&path, e))?;
+        self.check_digest(&path, &actual)?;
+        Ok(path)
     }
 
-    /// Check the file under `root` as `trust` (from [`Trust::of_root`])
-    /// allows and return its path. Under [`Trust::Immutable`] a file that is
-    /// itself [immutable](file_is_immutable) is checked by type and size and
-    /// not read; any other file is hashed as under [`Trust::Verify`].
-    pub fn verify_with(&self, root: &Path, trust: Trust) -> Result<PathBuf, Error> {
-        self.verify_probed(root, trust, file_is_immutable)
-    }
-
-    /// [`Asset::verify_with`] with its immutability probe passed in, so a
-    /// test can show what a file the probe accepts is spared.
-    fn verify_probed(
-        &self,
-        root: &Path,
-        trust: Trust,
-        immutable: impl Fn(&Path) -> bool,
-    ) -> Result<PathBuf, Error> {
+    /// The file's path under `root` when it is a regular file of the pinned
+    /// size, read from its metadata alone.
+    pub fn sized_in(&self, root: &Path) -> Result<PathBuf, Error> {
         let path = self.path_in(root)?;
         let metadata = std::fs::metadata(&path).map_err(|e| Error::at(&path, e))?;
         if !metadata.is_file() || metadata.len() != self.bytes {
@@ -464,11 +340,6 @@ impl Asset {
                 format!("expected regular file of {} bytes", self.bytes),
             ));
         }
-        if trust == Trust::Immutable && immutable(&path) {
-            return Ok(path);
-        }
-        let actual = sha256_file(&path).map_err(|e| Error::at(&path, e))?;
-        self.check_digest(&path, &actual)?;
         Ok(path)
     }
 

@@ -62,6 +62,13 @@ use tilo_server_protocol::WorkspaceId;
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Keep-alive interval on an idle session.
 const PING_INTERVAL: Duration = Duration::from_secs(15);
+/// How long the server may leave the keep-alive unanswered before this session takes the connection
+/// as gone. The server answers every `Ping` with a `Pong` (and sends its own frames besides), so
+/// three intervals without a frame back is a connection whose other end is gone — a stopped
+/// server, or a relay or proxy still holding a connection nothing answers on. The transport under
+/// it cannot be relied on to close one: a silent path stays open, and a window waiting on it would
+/// wait for ever.
+const SILENCE_BEFORE_LOST: Duration = Duration::from_secs(45);
 /// Envelopes the session takes from the host before it settles what they changed.
 const MAX_TAKEN_AT_ONCE: usize = 256;
 /// How often overdue channel access requests are sent again.
@@ -213,6 +220,13 @@ fn admission_state(status: &PeerStatus, since_ms: Option<u64>, now_ms: u64) -> A
         Some(since) if now_ms.saturating_sub(since) >= ADMISSION_TIMEOUT_MS => Admission::Overdue,
         _ => Admission::Waiting,
     }
+}
+
+/// Whether `now_ms` is within [`SILENCE_BEFORE_LOST`] of the last frame heard from the server: what
+/// says a connection is still alive where its transport reports nothing.
+fn silence_is_short(last_contact_at_ms: Option<u64>, now_ms: u64) -> bool {
+    let allowed = u64::try_from(SILENCE_BEFORE_LOST.as_millis()).unwrap_or(u64::MAX);
+    last_contact_at_ms.is_none_or(|last| now_ms.saturating_sub(last) < allowed)
 }
 
 /// Start a certified server session with `config`'s host. It connects in the background; observe it
@@ -920,6 +934,14 @@ impl Task {
         sent_ok
     }
 
+    /// Whether the server said anything within [`SILENCE_BEFORE_LOST`]. The session pings it every
+    /// [`PING_INTERVAL`] and it answers, so silence that long is a connection to redial even where
+    /// its transport never says it closed.
+    fn heard_recently(&self) -> bool {
+        let last = self.reports.read(|status| status.last_contact_at_ms);
+        silence_is_short(last, tilo_clock::unix_now_ms())
+    }
+
     /// Report `admission-timeout` once the workspaces subscribed at
     /// `admission_since` are still not admitted, and clear it once they are.
     /// A timeout is reported once per subscription.
@@ -1289,6 +1311,9 @@ impl Task {
                             |error| Exit::Unproved(connect::link_error(error)),
                         );
                     };
+                    // The server answered: what keeps a connection alive is read from this, not from
+                    // the transport, which a stopped server or a relay holding it may leave open.
+                    self.reports.note_contact(tilo_clock::unix_now_ms());
                     // What else the host sent is read in the same pass, so
                     // governance it replayed as many frames is admitted at
                     // once ([`Self::admit_governance`]), before anything else
@@ -1318,6 +1343,9 @@ impl Task {
                     self.admit_governance();
                 },
                 _ = ping.tick() => {
+                    if !self.heard_recently() {
+                        return Exit::Lost("the server stopped answering".into());
+                    }
                     if client.send(Envelope::Ping).is_err() {
                         return Exit::Lost("host session saturated".into());
                     }
@@ -2444,6 +2472,23 @@ fn places_workspaces(cert: &DeviceCert, host: &DeviceCert) -> bool {
 mod tests {
     use super::*;
 
+    /// Three keep-alive intervals without a frame from the server end the connection; anything it
+    /// said within them, a `Pong` included, keeps it.
+    #[test]
+    fn three_keepalives_without_an_answer_end_the_connection() {
+        assert!(silence_is_short(Some(0), 44_999));
+        assert!(!silence_is_short(Some(0), 45_000), "three pings unanswered");
+        assert!(
+            silence_is_short(Some(30_000), 74_999),
+            "the last answer counts"
+        );
+        assert!(!silence_is_short(Some(30_000), 75_000));
+        assert!(
+            silence_is_short(None, u64::MAX),
+            "nothing heard yet is the handshake's own deadline to decide"
+        );
+    }
+
     /// A visitor's page joins a workspace of another person's host without
     /// asking that host to place it, which the host refuses to anyone but its
     /// own person; a page of the host's person still asks.
@@ -2580,3 +2625,5 @@ mod iroh_connect_tests;
 mod late_admission_tests;
 #[cfg(test)]
 mod opened_records_tests;
+#[cfg(test)]
+mod resumed_governance_tests;

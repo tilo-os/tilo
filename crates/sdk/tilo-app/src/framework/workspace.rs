@@ -378,24 +378,12 @@ impl<P: Resource> WorkspaceResource<P> {
         wake: Option<WakeHandle>,
         me: tilo_resource::MemberId,
     ) -> Result<Self, Unopened> {
-        let record = match opened {
-            Ok(record) => record,
-            // Nothing is wrong: the store wakes the window once it is here.
-            Err(ui_core::resource::ResourceOpenError::Arriving) => return Err(Unopened::Arriving),
-            Err(error) => {
-                tracing::warn!(kind = P::KIND, %error, "workspace record unavailable");
-                return Err(Unopened::Failed);
-            }
-        };
-        if record
-            .read(tilo_resource::evolution::needs_migrate::<P>)
-            .ok_or(Unopened::Failed)?
-            && let Err(error) = record.edit(false, |doc| {
-                tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
-            })
-        {
-            tracing::warn!(kind = P::KIND, %error, "workspace record not migrated");
-        }
+        let record = opened_at_version(
+            opened,
+            P::KIND,
+            tilo_resource::evolution::needs_migrate::<P>,
+            tilo_resource::evolution::migrate::<P>,
+        )?;
         let reader = record
             .read(tilo_resource::Reader::<P>::read)
             .ok_or(Unopened::Failed)?
@@ -739,15 +727,42 @@ impl<P: Resource> WorkspaceResource<P> {
     }
 }
 
-/// What `shared` holds as the keeping app's window offers it to callers from outside, beside
-/// the app's own resource: its read, and each action once the workspace's grants admit it
-/// ([`WorkspaceResource::admitted`]), applied as whoever asked.
-fn offered<P: Resource>(shared: &Rc<Shared<P>>) -> Held<P> {
+/// The stored resource `opened`, brought to the resource of `kind`'s
+/// stored version: what every kind does before it reads what it holds, so
+/// it is compiled once rather than once per kind.
+fn opened_at_version(
+    opened: Result<StoredResource, ui_core::resource::ResourceOpenError>,
+    kind: &'static str,
+    needs_migrate: fn(&tilo_resource::Doc) -> bool,
+    migrate: fn(&mut tilo_resource::Doc) -> Result<bool, tilo_resource::ModelError>,
+) -> Result<StoredResource, Unopened> {
+    let stored = match opened {
+        Ok(stored) => stored,
+        // Nothing is wrong: the store wakes the window once it is here.
+        Err(ui_core::resource::ResourceOpenError::Arriving) => return Err(Unopened::Arriving),
+        Err(error) => {
+            tracing::warn!(kind, %error, "the workspace's resource is unavailable");
+            return Err(Unopened::Failed);
+        }
+    };
+    if stored.read(needs_migrate).ok_or(Unopened::Failed)?
+        && let Err(error) =
+            stored.edit(false, |doc| migrate(doc).map_err(|error| error.to_string()))
+    {
+        tracing::warn!(kind, %error, "the workspace's resource did not migrate");
+    }
+    Ok(stored)
+}
+
+/// What `shared` holds as the keeping app's window offers it to callers from outside, under
+/// `id`, beside the app's own resource: its read, and each action once the workspace's grants
+/// admit it ([`WorkspaceResource::admitted`]), applied as whoever asked.
+fn offered<P: Resource>(shared: &Rc<Shared<P>>, id: String) -> Held<P> {
     let following = Rc::downgrade(shared);
     let applying = Rc::downgrade(shared);
     let reading = Rc::downgrade(shared);
     Held::new(
-        P::KIND.to_owned(),
+        id,
         P::LABEL.to_owned(),
         true,
         shared.live.clone(),
@@ -1107,7 +1122,9 @@ impl WorkspaceState {
         key: OpenKey,
         opened: Option<WorkspaceResource<P>>,
     ) -> Option<WorkspaceResource<P>> {
-        let WorkspaceResource { shared } = opened?;
+        let opened = opened?;
+        let document = opened.id().to_string();
+        let WorkspaceResource { shared } = opened;
         self.owners.borrow_mut().push(shared.record.history_owner());
         let weak = Rc::downgrade(&shared);
         self.refreshers.borrow_mut().push(Box::new(move || {
@@ -1115,14 +1132,27 @@ impl WorkspaceState {
         }));
         // The keeping app's own window offers it to callers from outside, beside its own
         // resource; every other app's window only opens it.
+        // The first resource of a kind is offered as the kind; each further one (a part of a
+        // resource kept in several documents, as a workspace's tree is) as its own document, so
+        // that no two share an address: two that do withdraw the window's every action.
         if key.0 == self.app_id {
+            let kind_taken = self
+                .published
+                .borrow()
+                .iter()
+                .any(|entry| entry.api.id() == P::KIND);
+            let id = if kind_taken {
+                document
+            } else {
+                P::KIND.to_owned()
+            };
             let resource = WorkspaceResource {
                 shared: Rc::clone(&shared),
             };
             self.published
                 .borrow_mut()
                 .push(PublishedWorkspaceResource {
-                    api: Rc::new(offered(&shared)),
+                    api: Rc::new(offered(&shared, id)),
                     readable: Box::new(move || {
                         !resource.independently_sealed() || resource.may_read()
                     }),

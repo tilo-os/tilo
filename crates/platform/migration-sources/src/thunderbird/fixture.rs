@@ -228,6 +228,45 @@ pub fn write_stale_mail_directories(home: &Path) {
     std::fs::write(&prefs, text).expect("write the fixture's prefs.js");
 }
 
+/// The files the large message [`append_large_message`] writes carries: each one's name and
+/// how many bytes it holds (their bytes are [`tilo_mail_parts::fixture::attachment_bytes`]).
+pub const LARGE_FILES: [(&str, usize); 2] = [
+    ("site-survey.pdf", 24 * 1024 * 1024),
+    ("floor-plan.png", 6 * 1024 * 1024),
+];
+/// The large message's `Message-ID`, without its angle brackets.
+pub const LARGE_MESSAGE_ID: &str = "work-large@example.test";
+
+/// Add to the work Inbox of the profile [`write_sample_profile`] wrote below `home` one message
+/// of about 40 MiB, [`LARGE_FILES`] attached, as a mail program sends one: larger than one
+/// upload or piece of content carries. Answers the message as the mbox holds it.
+///
+/// # Panics
+/// The Inbox could not be written.
+#[expect(
+    clippy::expect_used,
+    reason = "a fixture that cannot write its files panics with the path"
+)]
+pub fn append_large_message(home: &Path) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut message = b"From - Mon Jan 05 09:00:00 2026\r\nX-Mozilla-Status: 0001\r\nX-Mozilla-Status2: 00000000\r\n".to_vec();
+    message.extend(tilo_mail_parts::fixture::message_with_attachments(
+        LARGE_MESSAGE_ID,
+        "Site survey",
+        &LARGE_FILES,
+    ));
+    let inbox = home
+        .join(".thunderbird/fx8r2l9p.default-release/ImapMail")
+        .join(WORK_SERVER)
+        .join("INBOX");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&inbox)
+        .and_then(|mut file| file.write_all(&message))
+        .expect("append to the work Inbox");
+    message
+}
+
 #[expect(
     clippy::expect_used,
     reason = "a fixture that cannot write its files panics with the path"

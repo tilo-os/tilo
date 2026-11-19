@@ -185,7 +185,7 @@ pub fn changes_beyond(doc: &mut AutoCommit, payload: &[u8]) -> Vec<ChangeHash> {
     changes
         .into_iter()
         .map(|change| change.hash())
-        .filter(|hash| doc.get_change_by_hash(hash).is_none())
+        .filter(|hash| !doc.has_change(hash))
         .collect()
 }
 

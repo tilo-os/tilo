@@ -299,21 +299,34 @@ tilo_test_env::scenario! {
             "but Undo takes it back, so it asks nothing"
         );
 
-        // The record keeps the id-taking action for scripts and agents, but a
-        // person picks it on the card, so it is no palette row of its own.
+        // The board keeps the id-taking action for a caller that names the
+        // card, saying it needs one: a listing holding no card leaves it to
+        // the cards, which offer it bound.
         let on_resource = published
             .actions
             .iter()
             .find(|spec| spec.id == "advance")
             .unwrap();
-        assert!(!on_resource.reaches_people());
+        assert_eq!(on_resource.contract.item.as_deref(), Some("cards"));
+        assert!(!on_resource.contract.offered_to_people() && !on_resource.contract.offered_to_agents());
+        assert!(
+            on_resource.reaches_people(),
+            "who it is for is the declaration's"
+        );
+        assert!(
+            card.actions
+                .iter()
+                .all(|spec| !spec.contract.needs_an_item()),
+            "on the card it holds its item"
+        );
         assert!(
             published
                 .actions
                 .iter()
                 .find(|spec| spec.id == "rename")
                 .unwrap()
-                .reaches_people()
+                .contract
+                .offered_to_people()
         );
     }
 

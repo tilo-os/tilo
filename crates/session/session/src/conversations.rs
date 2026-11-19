@@ -718,6 +718,15 @@ impl tilo_resource::words::RowType for TurnRow {
     const KIND: &'static str = chat::views::TURN_KIND;
     const LABEL: &'static str = "Answer";
 
+    /// Chat's own words for a message's item, as its window publishes it.
+    fn words() -> tilo_actions::ResourceType {
+        tilo_actions::ResourceType {
+            noun: tilo_actions::Noun::new("answer", "answers"),
+            app: tilo_actions::Noun::new("Chat", "Chat"),
+            root: false,
+        }
+    }
+
     fn effects(id: &tilo_resource::Id) -> Vec<tilo_actions::ActionSpec> {
         <TurnEffect as tilo_resource::Effect>::row_specs(Self::KIND, id)
     }

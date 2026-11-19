@@ -433,6 +433,7 @@ chat-messages-stop-sharing = Stop sharing
 chat-messages-set-share-access = Change what a shared window lets people do
 chat-messages-share-open = Mark a shared window open or closed
 chat-messages-deliver-message = Deliver message
+chat-messages-import-message = Import message
 chat-messages-edit-message = Edit message
 chat-messages-delete-message = Delete message
 chat-messages-remove-message = Remove message

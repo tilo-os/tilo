@@ -286,6 +286,28 @@ impl RemoteRows {
         self.rows.get(key)
     }
 
+    /// Whether a rendered row holds a control that would take the other path now that the window
+    /// offers the actions `after` where it offered `before`: each such row is named changed, so
+    /// its list builds it again from the action it is bound to now.
+    pub fn rebind(
+        &mut self,
+        before: &crate::adapter::Published,
+        after: &crate::adapter::Adapter,
+    ) -> bool {
+        let changed: Vec<String> = self
+            .rows
+            .iter()
+            .filter(|(_, row)| crate::window::rebind::rebinding(before, after, row).is_some())
+            .map(|(key, _)| key.clone())
+            .collect();
+        if changed.is_empty() {
+            return false;
+        }
+        self.changes
+            .push(ListModelChange::RowsChanged { keys: changed });
+        true
+    }
+
     /// Show again what each rendered row's bound controls hold. A row a control of which was given
     /// a value other than the one it showed is a row that changed: the list builds it again, so it
     /// reads what it is bound to now.

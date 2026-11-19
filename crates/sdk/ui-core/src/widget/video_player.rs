@@ -2326,6 +2326,11 @@ impl Widget for VideoPlayer {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
+    /// A video's shape across the width it is given: placed once, it asks for no layout.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,

@@ -1231,6 +1231,15 @@ impl HostAgents {
         else {
             return Ok(BTreeMap::new());
         };
+        // An agent acts for its keeper: one whose keeper is no longer a member works
+        // here no more, whatever the workspace's list of its agents still says, and is
+        // ended where the workspace is governed
+        // ([`crate::workspaces::Workspaces::remove_member`]).
+        let (_, members) = self
+            .workspaces
+            .membership(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
         Ok(agents
             .agents
             .iter()
@@ -1240,6 +1249,9 @@ impl HostAgents {
                 agent.is_active()
                     && agent.on_host
                     && agent.mcp_client.is_none()
+                    && members
+                        .get(&agent.keeper)
+                        .is_some_and(|member| !member.removed)
                     && (sub_agents::worked_here(agent) || self.codes(agent))
             })
             .map(|agent| (agent.id.0.clone(), agent.clone()))

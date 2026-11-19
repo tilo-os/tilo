@@ -56,7 +56,8 @@ impl Notices for Toolkit {
 /// The notification the toolkit's notifier shows for `notice`: what the person clicks carries the
 /// place's activation.
 fn notification(notice: &Notice) -> ui::notify::Notification {
-    let notification = ui::notify::Notification::new(&notice.tag, &notice.title, &notice.body);
+    let notification = ui::notify::Notification::new(&notice.tag, &notice.title, &notice.body)
+        .from_app(&notice.app);
     match &notice.place {
         Some(place) => notification.with_activation(place.activation()),
         None => notification,

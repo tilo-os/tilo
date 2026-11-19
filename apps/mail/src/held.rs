@@ -11,7 +11,12 @@
 //! ([`HeldMessage::original`], its MIME bytes in the resource's content), so its
 //! HTML, attachments and headers are what the window shows, read through the
 //! same parser fetched mail goes through; the text fields stay the message's
-//! words for whoever reads the resource without its content.
+//! words for whoever reads the resource without its content. A message's large
+//! parts (its attachments, a big body) are kept apart from it
+//! ([`HeldMessage::parts`], each in pieces of content of its own), so however
+//! large the message, no one piece of it is: what is shown reads the message
+//! with its bodies put back, and an attachment kept apart is read when it is
+//! opened.
 
 use std::fmt::Write as _;
 use tilo_sort::CompactSort as _;
@@ -63,8 +68,46 @@ pub struct HeldMessage {
     /// conversation's first message, or a key its author gave
     pub conversation: String,
     /// The message as it was sent, MIME whole: its HTML, attachments and
-    /// headers. None for one delivered as text
+    /// headers, without the bodies of the parts kept apart in `parts`. None
+    /// for one delivered as text
     pub original: Option<Bytes>,
+    /// The bodies of its large parts, kept apart from `original`, in the
+    /// order they go back into it
+    pub parts: Vec<HeldPart>,
+}
+
+/// The body of one large part of a held message, kept apart from it.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct HeldPart {
+    /// Where its body goes back into the message kept: an offset in its bytes
+    pub at: u64,
+    /// The size of its content once decoded: what its file holds
+    pub size: u64,
+    /// Its body as it was sent, in its transfer encoding, in pieces in order
+    pub pieces: Vec<Bytes>,
+}
+
+impl HeldPart {
+    /// Its body, read from `store`: `None` while a piece is not here. Every
+    /// piece is read even after one is missing, so a store that asks for what
+    /// it lacks asks for all of it at once.
+    fn body(&self, store: &tilo_content::ContentStore) -> Option<Vec<u8>> {
+        every(self.pieces.iter().map(|piece| piece.read(store))).map(|pieces| pieces.concat())
+    }
+}
+
+/// Every item, or `None` when one is missing. Unlike collecting into an
+/// `Option`, it goes on through the rest after one is missing, so each read
+/// of content that is not here asks for it.
+fn every<T>(items: impl IntoIterator<Item = Option<T>>) -> Option<Vec<T>> {
+    let mut all = Some(Vec::new());
+    for item in items {
+        match (&mut all, item) {
+            (Some(all), Some(item)) => all.push(item),
+            _ => all = None,
+        }
+    }
+    all
 }
 
 impl HeldMessage {
@@ -83,7 +126,71 @@ impl HeldMessage {
         if self.from.trim().is_empty() || self.message_id.is_empty() {
             return Err(Refusal::new("a message has a sender and a Message-ID"));
         }
-        Ok(())
+        parts_fit(
+            self.original.as_ref(),
+            self.parts
+                .iter()
+                .map(|part| (part.at, part.pieces.as_slice())),
+        )
+    }
+
+    /// The message as it was sent, its parts kept apart put back: `None`
+    /// while it or one of them is not in `store`, or for one delivered as
+    /// text.
+    fn sent(&self, store: &tilo_content::ContentStore) -> Option<Vec<u8>> {
+        let rest = self.original.as_ref()?.read(store);
+        // Every part is read even when the rest or a part is missing, so all
+        // that is lacking is asked for at once.
+        let bodies = every(
+            self.parts
+                .iter()
+                .map(|part| Some((part.at, part.body(store)?))),
+        );
+        let rest = rest?;
+        if self.parts.is_empty() {
+            return Some(rest);
+        }
+        let bodies = bodies?;
+        let bodies: Vec<(u64, &[u8])> = bodies
+            .iter()
+            .map(|(at, body)| (*at, body.as_slice()))
+            .collect();
+        tilo_mail_parts::join(&rest, &bodies)
+    }
+
+    /// The message as it was sent, parsed as fetched mail is, in `folder`:
+    /// its words and the parts shown in place put back, each attachment kept
+    /// apart named by its size and read from its part when it is opened.
+    /// `None` while what it shows is not in `store`.
+    fn readable(&self, store: &tilo_content::ContentStore, folder: Folder) -> Option<Message> {
+        let rest = self.original.as_ref()?.read(store)?;
+        if self.parts.is_empty() {
+            return crate::transport::parse_eml(&rest, self.minutes, folder);
+        }
+        let shown = shown_in_place(&rest);
+        // Every part shown in place is read even after one is missing, so all
+        // that is lacking is asked for at once.
+        let bodies = every(self.parts.iter().map(|part| {
+            Some((
+                part.at,
+                if shown.contains(&part.at) {
+                    Some(part.body(store)?)
+                } else {
+                    None
+                },
+            ))
+        }))?;
+        let bodies: Vec<(u64, Option<&[u8]>)> = bodies
+            .iter()
+            .map(|(at, body)| (*at, body.as_deref()))
+            .collect();
+        let (raw, left) = tilo_mail_parts::join_some(&rest, &bodies)?;
+        let apart: Vec<(u64, u64)> = left
+            .iter()
+            .zip(&self.parts)
+            .filter_map(|(at, part)| Some(((*at)?, part.size)))
+            .collect();
+        crate::transport::parse_eml_apart(&raw, self.minutes, folder, &apart)
     }
 
     /// The sender as an address.
@@ -126,8 +233,7 @@ impl HeldMessage {
         state: &MessageState,
         store: &tilo_content::ContentStore,
     ) -> Option<Message> {
-        let bytes = self.original.as_ref()?.read(store)?;
-        let mut message = crate::transport::parse_eml(&bytes, self.minutes, state.folder)?;
+        let mut message = self.readable(store, state.folder)?;
         message.id = id;
         message.timestamp_min = self.minutes;
         message.read = state.read;
@@ -149,14 +255,7 @@ impl HeldMessage {
         let Some(store) = tilo_resource::content::current() else {
             return Vec::new();
         };
-        let Some(bytes) = self
-            .original
-            .as_ref()
-            .and_then(|original| original.read(&store))
-        else {
-            return Vec::new();
-        };
-        crate::transport::parse_eml(&bytes, self.minutes, Folder::Inbox)
+        self.readable(&store, Folder::Inbox)
             .map(|message| {
                 message
                     .attachments
@@ -239,10 +338,96 @@ pub struct Delivery {
     /// the mailbox shows
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original: Option<Bytes>,
+    /// The bodies of its large parts, kept apart from `original`: each
+    /// where it goes back into it, the size of its content, and its body as
+    /// sent in pieces of content, in order. A message of any size is
+    /// delivered so, no one piece of it larger than one upload
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<DeliveredPart>,
     /// Filled in where it is delivered; leave it out: the `Message-ID` of
     /// the held message it answers (`reply_to`), wherever it is kept
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answers: Option<String>,
+}
+
+/// The body of one large part of a delivered message, kept apart from its
+/// `original`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DeliveredPart {
+    /// Where its body goes back into the original: an offset in its bytes
+    pub at: u64,
+    /// The size of its content once decoded
+    pub size: u64,
+    /// Its body as sent, in its transfer encoding: pieces of content in order
+    pub pieces: Vec<Bytes>,
+}
+
+/// Whether the parts kept apart (each where it goes back, and its pieces)
+/// go back into `original`: each at or after the one before, within its
+/// bytes, and none without its body.
+fn parts_fit<'a>(
+    original: Option<&Bytes>,
+    parts: impl IntoIterator<Item = (u64, &'a [Bytes])>,
+) -> Result<(), Refusal> {
+    let length = original.map_or(0, Bytes::len);
+    let mut after = 0_u64;
+    for (at, pieces) in parts {
+        if original.is_none() || at < after || at > length {
+            return Err(Refusal::new(
+                "a part kept apart goes back into the message, in order",
+            ));
+        }
+        if pieces.is_empty() || pieces.iter().any(Bytes::is_empty) {
+            return Err(Refusal::new("a part kept apart has its body"));
+        }
+        after = at;
+    }
+    Ok(())
+}
+
+/// The parts kept apart of a message delivered with `original`, as they
+/// are kept; refused when they do not go back into it.
+fn held_parts(
+    original: Option<&Bytes>,
+    delivered: &[DeliveredPart],
+) -> Result<Vec<HeldPart>, Refusal> {
+    parts_fit(
+        original,
+        delivered
+            .iter()
+            .map(|part| (part.at, part.pieces.as_slice())),
+    )?;
+    Ok(delivered
+        .iter()
+        .map(|part| HeldPart {
+            at: part.at,
+            size: part.size,
+            pieces: part.pieces.clone(),
+        })
+        .collect())
+}
+
+/// Where in the message `rest` the parts shown in place begin: its text and
+/// HTML bodies, and what its HTML shows by `cid:`. The other parts are its
+/// attachments.
+fn shown_in_place(rest: &[u8]) -> Vec<u64> {
+    use mail_parser::MimeHeaders as _;
+    let Some(parsed) = mail_parser::MessageParser::default().parse(rest) else {
+        return Vec::new();
+    };
+    let bodies = parsed.text_body.iter().chain(&parsed.html_body);
+    let mut shown: Vec<u64> = bodies
+        .filter_map(|index| parsed.parts.get(usize::try_from(*index).ok()?))
+        .map(|part| u64::from(part.offset_body))
+        .collect();
+    shown.extend(
+        parsed
+            .parts
+            .iter()
+            .filter(|part| part.content_id().is_some())
+            .map(|part| u64::from(part.offset_body)),
+    );
+    shown
 }
 
 /// Fill in, where a delivery is invoked, what it reads of every part: the
@@ -461,13 +646,7 @@ impl MessageStates {
             .original
             .clone()
             .filter(|original| !original.is_empty());
-        if original.as_ref().is_some_and(|original| {
-            original.len() > u64::try_from(crate::copies::MAX_COPY_BYTES).unwrap_or(u64::MAX)
-        }) {
-            return Err(Refusal::new(
-                "the message is larger than a mailbox keeps whole (16 MiB)",
-            ));
-        }
+        let parts = held_parts(original.as_ref(), &delivery.parts)?;
         let key = Id::from_raw(id.to_string());
         if self.held.contains(&key) || self.messages.contains(&key) {
             return Err(Refusal::coded(
@@ -508,6 +687,7 @@ impl MessageStates {
                 in_reply_to: answered,
                 conversation,
                 original,
+                parts,
             },
         );
         self.messages.push(
@@ -523,6 +703,24 @@ impl MessageStates {
             },
         );
         Ok(key)
+    }
+
+    /// The content of attachment `index` of the held message `item`, its
+    /// parts kept apart put back: `None` while it is not all in `store`.
+    pub(crate) fn held_attachment(
+        &self,
+        item: &str,
+        index: usize,
+        store: &tilo_content::ContentStore,
+    ) -> Option<Vec<u8>> {
+        let (_, held) = self.held_message(item)?;
+        let sent = held.sent(store)?;
+        let message = crate::transport::parse_eml(&sent, held.minutes, Folder::Inbox)?;
+        message
+            .attachments
+            .into_iter()
+            .nth(index)
+            .map(|attachment| attachment.content)
     }
 
     /// The conversation of a held message about `subject` (its reply and
@@ -566,7 +764,14 @@ impl MessageStates {
     pub(crate) fn held_shown(&self, item: &str) -> Option<Message> {
         let (id, held) = self.held_message(item)?;
         let state = self.message(id.as_str())?;
-        Some(held.shown(id.as_str().parse().ok()?, state))
+        let id = id.as_str().parse().ok()?;
+        // Kept whole, it is shown whole, with its attachments, once its
+        // original is here.
+        Some(
+            tilo_resource::content::current()
+                .and_then(|store| held.shown_whole(id, state, &store))
+                .unwrap_or_else(|| held.shown(id, state)),
+        )
     }
 
     /// What a part of the mailbox holds, for a caller with no screen: with
@@ -1069,13 +1274,15 @@ fn eml(held: &HeldMessage) -> Result<Vec<u8>, String> {
             .map(|addr| mail_builder::headers::address::Address::new_address(addr.name, addr.email))
             .collect()
     }
-    // A message kept whole exports as it was sent.
-    if let Some(original) = held
-        .original
-        .as_ref()
-        .and_then(|original| original.read(&tilo_resource::content::current()?))
+    // A message kept whole exports as it was sent, never as a copy rebuilt
+    // without its attachments: while a part of it is not here, the export
+    // fails, having asked for what it lacks, and is answered once it is here.
+    if held.original.is_some()
+        && let Some(store) = tilo_resource::content::current()
     {
-        return Ok(original);
+        return held
+            .sent(&store)
+            .ok_or_else(|| "the message's parts are not all here yet; try again".to_owned());
     }
     let sender = held.sender();
     let mut builder = mail_builder::MessageBuilder::new()

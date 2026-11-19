@@ -1,8 +1,8 @@
 (()=>{
-// Whether the entry page opens on its first screen (first-run.mjs), and at
+// Whether the entry page opens on its first screen (first-screen.mjs), and at
 // which step, inlined verbatim after the link scrubber so the screen is there
 // at the first paint, before any module loads. It is decided by the person's
-// setup this browser keeps (`tilo-setup`, first-run.mjs `SETUP`), and by
+// setup this browser keeps (`tilo-setup`, first-screen.mjs `SETUP`), and by
 // nothing else: a setup under way opens on its step whatever else the page
 // did meanwhile (joining the site's home workspace behind the screen, say),
 // and one that is done never shows the screen again. That holds whatever
@@ -21,7 +21,7 @@
 // the setup ahead of its entry's answer: a site that takes people by
 // invitation only may send them to its wait list, and the setup is no way
 // in where they hold no invitation. The page shows the screen itself once
-// the entry let them in (first-run.mjs `reveal`). Without storage the page
+// the entry let them in (first-screen.mjs `reveal`). Without storage the page
 // opens as it always did.
 var root=document.documentElement,secrets=globalThis.__tiloLinkSecrets||{};
 var fresh=function(){
@@ -45,7 +45,7 @@ try{
   // workspace it entered. Whether the setup is even theirs to take up is
   // the site's entry's to say (it may keep a wait list instead), so the
   // screen is wired but held, and the page shows it once it is in.
-  root.setAttribute('data-first-run-hold','');
+  root.setAttribute('data-first-screen-hold','');
   return;
  }else if(setup.step==='later'){
   // Shown on the site itself, and kept for later still: until they take
@@ -63,35 +63,35 @@ var now=Date.now(),code=setup.code,offer=setup.offer,step=setup.step;
 // A code that ran out while nobody looked has run out now.
 if(step==='waiting'&&code&&!(setup.polled&&setup.polled.resolved)&&code.expiresAt<=now)step='expired';
 if(step!=='waiting'&&step!=='expired'&&step!=='connected'&&step!=='opening')step='';
-root.setAttribute('data-first-run',step==='opening'?'connected':step);
+root.setAttribute('data-first-screen',step==='opening'?'connected':step);
 // What the screen showed last, painted once its markup is parsed
 // (index.html calls this right after it), so a resumed setup shows its
-// step at the first frame; first-run.mjs takes over and asks the host.
+// step at the first frame; first-screen.mjs takes over and asks the host.
 globalThis.__tiloSetupPaint=function(){
- var $=function(id){return document.getElementById(id);},screen=$('first-run'),shown={};
- // What the screen showed last, kept apart from the setup (first-run.mjs `SHOWN`), for the code it was drawn for.
+ var $=function(id){return document.getElementById(id);},screen=$('first-screen'),shown={};
+ // What the screen showed last, kept apart from the setup (first-screen.mjs `SHOWN`), for the code it was drawn for.
  try{var drawn=JSON.parse(localStorage.getItem('tilo-setup-shown')||'null');if(drawn&&typeof drawn==='object'&&(drawn.code||null)===((code&&code.code)||null))shown=drawn;}catch(e){}
- // The prompt breaks only between its words, as first-run.mjs `showPrompt` writes it.
+ // The prompt breaks only between its words, as first-screen.mjs `showPrompt` writes it.
  var put=function(id,text){var at=$(id);at.textContent='';String(text||'').split(/( +)/).forEach(function(part){if(!part)return;if(/^ +$/.test(part)){at.appendChild(document.createTextNode(part));return;}var word=document.createElement('span');word.className='fr-word';word.textContent=part;at.appendChild(word);});};
  if(!screen)return;
  var fresh=offer&&offer.expiresAt-now>60000&&shown.offer?shown.offer:'';
  screen.dataset.mode=shown.mode==='sign-in'?'sign-in':'setup';
- if(step===''){if(fresh){put('first-run-offer',fresh);$('first-run-offer-note').textContent='';}return;}
+ if(step===''){if(fresh){put('first-screen-offer',fresh);$('first-screen-offer-note').textContent='';screen.dataset.setup='ready';}return;}
  if(step==='connected'||step==='opening'){
   screen.dataset.skipped=String(!shown.heading);
-  $('first-run-connected').textContent=shown.heading||'Opening your workspace';
-  if(!shown.heading)$('first-run-done-lead').textContent='';
+  $('first-screen-connected').textContent=shown.heading||'Opening your workspace';
+  if(!shown.heading)$('first-screen-done-lead').textContent='';
   return;
  }
  screen.dataset.manual=String(setup.manual===true);
- if(step==='expired'){put('first-run-prompt',fresh);return;}
- put('first-run-prompt',shown.prompt);
+ if(step==='expired'){put('first-screen-prompt',fresh);return;}
+ put('first-screen-prompt',shown.prompt);
  screen.dataset.copied=String(setup.copied===true);
  // An agent took the code without a copy: the heading says what it is doing.
  screen.dataset.handed=String(setup.handed===true);
  var who=(setup.polled&&setup.polled.agent)||'Your agent',names=screen.querySelectorAll('.fr-hand-agent');
  for(var j=0;j<names.length;j++)names[j].textContent=who;
- var lines=shown.lines||[],list=$('first-run-steps');
+ var lines=shown.lines||[],list=$('first-screen-steps');
  for(var i=0;i<lines.length;i++){
   var line=lines[i],item=document.createElement('li');
   item.className=line.done?'done':line.act?'act':line.wait?'wait':line.failed?'failed':'now';
@@ -99,17 +99,17 @@ globalThis.__tiloSetupPaint=function(){
  }
  if(code&&!(setup.polled&&setup.polled.resolved)){
   var minutes=Math.max(1,Math.ceil((code.expiresAt-now)/60000));
-  $('first-run-left').textContent='Works once, for '+(minutes===1?'1 more minute':minutes+' more minutes')+'.';
+  $('first-screen-left').textContent='Works once, for '+(minutes===1?'1 more minute':minutes+' more minutes')+'.';
  }
- $('first-run-net').textContent='Checking with '+location.host+'…';
+ $('first-screen-net').textContent='Checking with '+location.host+'…';
 };
 // The screen is here before its module is: a press on one of its buttons
 // before then is kept, and the module presses it again once it can answer,
 // so a person who clicks at once is not ignored.
-var early=globalThis.__tiloFirstRunEarly=[];
+var early=globalThis.__tiloFirstScreenEarly=[];
 document.addEventListener('click',function(e){
- if(globalThis.__tiloFirstRunReady)return;
- var b=e.target&&e.target.closest&&e.target.closest('#first-run button[id]');
+ if(globalThis.__tiloFirstScreenReady)return;
+ var b=e.target&&e.target.closest&&e.target.closest('#first-screen button[id]');
  if(b)early.push(b.id);
 },true);
 })();

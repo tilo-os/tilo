@@ -219,19 +219,18 @@ impl PeerStatus {
         }
     }
 
-    /// Why the workspace `ws` cannot answer what this session asks of it now, in the words of what
-    /// failed: while the session is not connected, its newest failure; while it is but the
-    /// workspace has not let this device in, the workspace's refusal. `None` while the workspace
-    /// can answer, and while no failure was heard (a first connection still under way is slow, not
-    /// broken).
+    /// Why the workspace `ws` cannot answer what this session asks of it now: while the session
+    /// is not connected, its newest failure; while it is but the workspace has not let this
+    /// device in, the workspace's refusal. The failure's code says the cause a person is told;
+    /// its message stays the technical side. `None` while the workspace can answer, and while no
+    /// failure was heard (a first connection still under way is slow, not broken).
     #[must_use]
-    pub fn unanswerable(&self, ws: WorkspaceId) -> Option<&str> {
+    pub fn unanswerable(&self, ws: WorkspaceId) -> Option<&Failure> {
         let newest = |of: FailureKind| {
             self.failures
                 .iter()
                 .rev()
                 .find(|failure| failure.kind == of)
-                .map(|failure| failure.message.as_str())
         };
         match self.phase {
             TransportPhase::Connected if self.workspaces.get(&ws) == Some(&true) => None,
@@ -356,6 +355,13 @@ impl Reports {
     /// What `read` reads of the status, without copying the rest of it.
     pub fn read<R>(&self, read: impl FnOnce(&PeerStatus) -> R) -> R {
         read(&self.lock().status)
+    }
+
+    /// Note that the server said something at `at_ms`. What a connection's liveness is read from
+    /// (the session's keep-alive): kept here without publishing a status change for every frame
+    /// the server sends.
+    pub(crate) fn note_contact(&self, at_ms: u64) {
+        self.lock().status.last_contact_at_ms = Some(at_ms);
     }
 
     /// Apply `change` to the status, bump its generation, publish the states it moved
@@ -1036,10 +1042,9 @@ mod tests {
             FailureKind::Session,
         ));
         status.phase = TransportPhase::Offline;
-        assert_eq!(
-            status.unanswerable(ws),
-            Some("Couldn't reach the workspace's server")
-        );
+        let cause = status.unanswerable(ws).expect("the newest session failure");
+        assert_eq!(cause.code, "transport-unavailable");
+        assert_eq!(cause.message, "Couldn't reach the workspace's server");
         status.phase = TransportPhase::Connected;
         assert_eq!(
             status.unanswerable(ws),
@@ -1051,10 +1056,9 @@ mod tests {
             "This workspace hasn't let this device in",
             FailureKind::Admission,
         ));
-        assert_eq!(
-            status.unanswerable(ws),
-            Some("This workspace hasn't let this device in")
-        );
+        let refusal = status.unanswerable(ws).expect("the workspace's refusal");
+        assert_eq!(refusal.code, "not-admitted");
+        assert_eq!(refusal.message, "This workspace hasn't let this device in");
         status.workspaces.insert(ws, true);
         assert_eq!(status.unanswerable(ws), None, "the workspace is ready");
     }

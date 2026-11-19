@@ -503,7 +503,7 @@ pub(super) async fn handle_delta(
     let governor = governor_tap.and_then(|tap| Some((tap, governor_notice(&env)?)));
     enqueue_state(&ws, env, Some(source), session.metrics.clone()).await?;
     if let Some((tap, body)) = governor {
-        tell_governor(&ws, &tap, peer.device_public_key, body).await;
+        drop(tell_governor(&ws, &tap, peer.device_public_key, body).await);
     }
     if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
         compactor.note(&ws, workspace_id, observed);
@@ -692,20 +692,29 @@ pub(super) async fn file_refusal_of(ws: &SharedWorkspace, env: &Envelope, reason
 /// of the workspace's records, and a replica that skipped a change would hold
 /// a different record than everyone else. A governor that has fallen
 /// behind holds the author back until it takes the change in. Nothing is
-/// sent once the governor stopped following (the workspace closed).
+/// sent once the governor stopped following (the workspace closed). Answers
+/// once the governor's copy took the change in or refused it, or stopped
+/// following.
 pub(crate) async fn tell_governor(
     ws: &SharedWorkspace,
-    tap: &tokio::sync::mpsc::Sender<([u8; 32], Vec<u8>)>,
+    tap: &tokio::sync::mpsc::Sender<crate::workspace::GovernorNotice>,
     author: [u8; 32],
     body: Vec<u8>,
-) {
+) -> tokio::sync::oneshot::Receiver<()> {
     // The workspace's link carries the write as it is admitted, not on the
     // governor's own schedule: a linked device reads it live, and one that
     // joins reads the history as it stands then.
     crate::workspaces::carry_admitted(ws, author, &body).await;
-    if tap.send((author, body)).await.is_err() {
+    let (taken, answer) = tokio::sync::oneshot::channel();
+    let notice = crate::workspace::GovernorNotice {
+        author,
+        body,
+        taken,
+    };
+    if tap.send(notice).await.is_err() {
         tracing::debug!("the workspace's governor no longer follows it");
     }
+    answer
 }
 
 /// Whose access decides `claimed`'s change that came over `peer`'s
@@ -853,7 +862,7 @@ pub(super) async fn handle_delta_prefix(
     }
     if let Some(tap) = governor_tap {
         for body in notices {
-            tell_governor(&workspace, &tap, peer.device_public_key, body).await;
+            drop(tell_governor(&workspace, &tap, peer.device_public_key, body).await);
         }
     }
     Ok(None)

@@ -12,7 +12,7 @@
 
 use std::cell::RefCell;
 mod page;
-mod rebind;
+pub(crate) mod rebind;
 
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
@@ -741,19 +741,33 @@ impl AppWindow {
         // events would now take the other path are built again, and they alone, so a press and
         // anyone else running the action take the one path while the rest of the window stays as
         // it stands. The app publishing the same actions again binds nothing anew.
-        let rebound = {
+        let (rebound, rows_changed) = {
             let reconciler = self.reconciler.borrow();
             let adapter = reconciler.adapter();
-            adapter.published(published.to_vec()).and_then(|shown| {
-                self.built
-                    .as_ref()
-                    .and_then(|built| rebind::rebinding(&shown, adapter, built))
-            })
+            match adapter.published(published.to_vec()) {
+                None => (None, false),
+                Some(shown) => {
+                    // A list builds its rows from the nodes the app rendered them as, which are
+                    // not in the window's tree: a row whose control would take the other path is
+                    // named changed, so its list builds it again.
+                    let mut rows_changed = false;
+                    for rows in self.rows.borrow().values() {
+                        rows_changed |= rows.borrow_mut().rebind(&shown, adapter);
+                    }
+                    let rebound = self
+                        .built
+                        .as_ref()
+                        .and_then(|built| rebind::rebinding(&shown, adapter, built));
+                    (rebound, rows_changed)
+                }
+            }
         };
-        if let Some(rebound) = rebound {
+        if rebound.is_some() || rows_changed {
             // Reconciled against the window as built with those controls named as another
-            // kind: each is built again in its place.
-            self.built = Some(rebound);
+            // kind: each is built again in its place, and a list rebuilds the rows named changed.
+            if let Some(rebound) = rebound {
+                self.built = Some(rebound);
+            }
             self.compose();
         }
     }

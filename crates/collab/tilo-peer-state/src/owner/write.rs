@@ -5,7 +5,8 @@
 
 use crate::AdmissionError;
 use crate::owner::{
-    NativeCommittedView, NativeWorkspaceOwner, NeighbourMsg, SystemTime, WorkspaceId, publication,
+    NativeCommittedView, NativeWorkspaceOwner, NeighbourMsg, SystemTime, WorkspaceId, answers,
+    publication,
 };
 use crate::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 
@@ -567,6 +568,7 @@ impl NativeWorkspaceOwner {
                     live.workspace_mut()
                         .clear_landed_write(&own, &landed, signed, now)?;
                 }
+                answers::note_unanswered(stored, envelope)?;
                 taken.push(request);
                 fresh = true;
             }

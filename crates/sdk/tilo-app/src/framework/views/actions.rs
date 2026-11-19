@@ -103,7 +103,7 @@ impl ActionHit {
 /// the app declares the control (`declared`), which asks itself (New
 /// playlist asks for its name).
 fn controllable(spec: &ActionSpec, declared: bool) -> bool {
-    spec.audience().reaches_people()
+    spec.contract.offered_to_people()
         && matches!(
             spec.contract.availability,
             tilo_actions::Availability::Available

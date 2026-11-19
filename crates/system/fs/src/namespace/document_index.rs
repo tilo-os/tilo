@@ -76,7 +76,6 @@ impl Namespace {
             self.document_index_digest.add(record);
         }
         self.document_index = record_index;
-        self.document_index_order = self.document_index.keys().copied().collect();
         self.document_index_ambiguous = occurrences
             .into_iter()
             .filter_map(|(document_id, count)| (count > 1).then_some(document_id))
@@ -267,27 +266,24 @@ impl Namespace {
         self.tree.bind_document(id, document_id);
     }
 
-    /// Snapshot one bounded canonical page, ordered by stable record UUID, cloning at most
-    /// `limit` entries.
+    /// Snapshot one bounded canonical page, ordered by stable row id, cloning at most `limit`
+    /// entries. A page walks the ids before its offset, which is what a reader asks for rarely;
+    /// admitting one row costs a lookup, so a checkout stays flat however full the catalogue is.
     pub fn indexed_document_page(&self, offset: usize, limit: usize) -> Vec<IndexedDocument> {
         #[cfg(test)]
         self.document_index_page_reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let end = offset
-            .saturating_add(limit)
-            .min(self.document_index_order.len());
-        self.document_index_order
-            .get(offset..end)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|document_id| self.document_index.get(document_id))
+        self.document_index
+            .values()
+            .skip(offset)
+            .take(limit)
             .cloned()
             .collect()
     }
 
     #[must_use]
     pub fn indexed_document_count(&self) -> usize {
-        self.document_index_order.len()
+        self.document_index.len()
     }
 
     #[must_use]
@@ -307,7 +303,7 @@ impl Namespace {
     pub(super) fn update_document_index_revision(&mut self) {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"tilo.fs.namespace-record-index.v2\0");
-        hasher.update(&(self.document_index_order.len() as u64).to_be_bytes());
+        hasher.update(&(self.document_index.len() as u64).to_be_bytes());
         for limb in self.document_index_digest.0 {
             hasher.update(&limb.to_le_bytes());
         }
@@ -379,18 +375,10 @@ impl Namespace {
     pub(super) fn index_drop_row(&mut self, row: &IndexedDocument) {
         self.document_index.remove(&row.document_id);
         self.document_index_digest.remove(row);
-        if let Ok(position) = self.document_index_order.binary_search(&row.document_id) {
-            self.document_index_order.remove(position);
-        }
     }
 
     pub(super) fn index_admit_row(&mut self, row: IndexedDocument) {
         self.document_index_digest.add(&row);
-        let position = self
-            .document_index_order
-            .binary_search(&row.document_id)
-            .unwrap_or_else(|position| position);
-        self.document_index_order.insert(position, row.document_id);
         self.document_index.insert(row.document_id, row);
     }
 

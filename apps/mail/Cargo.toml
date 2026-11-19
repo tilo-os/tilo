@@ -39,6 +39,8 @@ tilo-webview = { version = "0.1.0", path = "../../crates/sdk/tilo-webview" }
 # Mail names every Message-ID itself.
 mail-builder = { version = "0.4.4", default-features = false }
 tilo-mime = { path = "../../crates/platform/tilo-mime" }
+# A message too large to keep in one piece keeps its large parts apart.
+tilo-mail-parts = { path = "../../crates/platform/mail-parts" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-sort = { path = "../../crates/platform/tilo-sort" }
 fnv.workspace = true
@@ -171,6 +173,8 @@ tilo-seal = { path = "../../crates/system/tilo-seal" }
 # The session a host carries for an account it keeps, proved against the
 # fake IMAP and SMTP servers above.
 tilo-mail-session = { path = "../../crates/platform/mail-session" }
+# Messages with large attachments, delivered with their parts kept apart.
+tilo-mail-parts = { path = "../../crates/platform/mail-parts", features = ["fixture"] }
 
 [lints]
 workspace = true

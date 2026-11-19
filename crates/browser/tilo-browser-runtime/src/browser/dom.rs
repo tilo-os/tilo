@@ -277,6 +277,9 @@ impl Mount {
         self.place_here();
         self.place_presence();
         self.frame.set_pan_replay(false);
+        // The page builds its elements from this frame's composition; the
+        // scene a canvas mount would paint is never read here.
+        self.frame.set_scene_drawn(false);
         ui::scene_parts::begin_frame();
         let polled = match self.frame.poll_frame() {
             Ok(polled) => polled,
@@ -419,8 +422,10 @@ impl Mount {
         let layout_ms = started.elapsed().as_secs_f64() * 1000.0;
         let background = self.frame.frame_render_input().background;
         let theme_generation = self.theme_seen;
+        let encoded = web_time::Instant::now();
         let composition =
             serde_json::to_string(&self.frame.composition()).map_err(|error| error.to_string())?;
+        let encode_ms = encoded.elapsed().as_secs_f64() * 1000.0;
         let presented = MOUNTS.with_borrow_mut(|mounts| {
             let shown = mounts.get_mut(&self.id)?;
             let publish_theme = shown.theme_published != Some(theme_generation);
@@ -434,6 +439,7 @@ impl Mount {
                     composition,
                     background,
                     layout_ms,
+                    encode_ms,
                     theme: publish_theme.then(|| self.frame.theme()),
                 });
             Some(())
@@ -446,9 +452,11 @@ impl Mount {
         self.pending = false;
         self.frames = self.frames.saturating_add(1);
         self.metrics.borrow_mut().presented(want.reasons);
+        let stage = self.metric_start();
         self.presentation.set(true);
         self.publish_frame(0, FrameChange::Other, true);
         self.presentation.set(false);
+        self.metric_end("publish_status", stage);
         Ok(())
     }
 }

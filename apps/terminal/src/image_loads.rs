@@ -14,7 +14,7 @@ const MAX_ENTRIES: usize = 128;
 
 enum Entry {
     Loading,
-    Ready(Image),
+    Ready(Box<Image>),
     Unavailable,
 }
 
@@ -78,7 +78,7 @@ impl ImageLoads {
             self.entries.insert(key.clone(), entry);
         }
         match self.entries.get_mut(&key) {
-            Some(Entry::Ready(image)) => Some(image),
+            Some(Entry::Ready(image)) => Some(&mut **image),
             _ => None,
         }
     }
@@ -90,7 +90,7 @@ impl ImageLoads {
             let entry = match image {
                 Some(image) => {
                     arrived = true;
-                    Entry::Ready(image)
+                    Entry::Ready(Box::new(image))
                 }
                 None => Entry::Unavailable,
             };

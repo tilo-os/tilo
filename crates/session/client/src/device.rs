@@ -169,7 +169,8 @@ impl Device {
             device.connected().await?;
         }
         let entered = device
-            .enter_workspace(&workspace, &sign_in.label)
+            // The person's name is theirs to give; the device's label never stands in for it.
+            .enter_workspace(&workspace, "")
             .await
             .map_err(CertifyError::from)?;
         unentered.entered();

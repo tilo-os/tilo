@@ -231,64 +231,6 @@ and reach each other's MCP server there, with no internet.
 Check it from a guest: `tilo-vm vm ssh <vm> -- ip -4 addr show dev tilolan0`,
 and `ping 198.18.x.y` for another VM.
 
-## Linux: on the build machine
-
-The x86_64 build machine (`rcargo-x86` in `~/.ssh/config`, the machine
-`rcargo builder ssh` opens) gives its build user `/dev/kvm` with nested KVM
-and has far more memory than a laptop, so a dev VM with 10 GiB fits there
-without taking anything from the laptop. The machine has no QEMU of its
-own: QEMU lives in a podman container, started by this tree's `tilo-vm qemu
-boot`, and the laptop reaches the VM's SSH and display through one SSH
-tunnel. The VM is then a device (`vm add`, `tilo-vm guide devices`), so `vm
-upgrade`, `account`, `swap`, `shot` and `input` work as on a local VM. Check
-`rcargo builder status` for free memory first.
-
-Keep everything in one directory of your own under `/srv/rcargo/scratch`,
-and pick an SSH port nothing listens on there (`ss -ltn`). From the laptop,
-with `D` naming that directory:
-
-```sh
-rcargo build --locked -p tilo-vm --bin tilo-vm   # copy the builder's target/debug/tilo-vm into $D
-# the published disk; the forge token goes over stdin, never into a file or a command line
-fgj auth token | ssh rcargo-x86 "mkdir -p $D && curl -fsSL -H \"Authorization: token \$(cat)\" \
-  -o $D/base.qcow2 https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk/main-7997e2d-ci/tilo-vm-main-7997e2d-ci-x86_64.qcow2"
-ssh-keygen -q -t ed25519 -N '' -f vm-key && ssh rcargo-x86 "cat > $D/root.pub" < vm-key.pub
-```
-
-On the build machine, in `$D`, a `Containerfile` of two lines:
-
-```
-FROM registry.fedoraproject.org/fedora-toolbox:44
-RUN dnf install -y --setopt=install_weak_deps=False edk2-ovmf qemu-system-x86-core qemu-device-display-virtio-vga qemu-img ipxe-roms-qemu socat swtpm swtpm-tools
-```
-
-then:
-
-```sh
-podman build -t localhost/vm-qemu-$USER . && mkdir -p vm
-podman run -d --name vm-$USER --network host --device /dev/kvm -v $D:/w:z localhost/vm-qemu-$USER \
-  sh -c '/w/tilo-vm qemu boot --run /w/vm --memory 10240 --smp 8 --display 2d --resolution 1600x900 \
-           --disk /w/vm.qcow2,backing=/w/base.qcow2 --ssh-port 46222 --console \
-           --root-key /w/root.pub --vnc /w/vm/vnc.sock \
-         && while kill -0 $(cat /w/vm/qemu.pid) 2>/dev/null; do sleep 10; done'
-```
-
-It boots in about a minute. On the laptop:
-
-```sh
-ssh -N -L 46222:127.0.0.1:46222 -L 5957:$D/vm/vnc.sock rcargo-x86 &   # SSH and the display
-tilo-vm vm add bvm --ssh root@127.0.0.1:46222   # makes the device's root key; install it with vm-key:
-ssh -i vm-key -p 46222 root@127.0.0.1 'cat >> /root/.ssh/authorized_keys' < ~/.config/tilo-vm/keys/bvm_ed25519.pub
-tilo-vm vm upgrade bvm --from sha:<commit>      # the published disk is old: onto main's image
-tilo-vm account create --account <name> --headful --identity
-tilo-vm swap --account <name> userspace --builder remote
-```
-
-The VM's own screen is VNC on `127.0.0.1:5957`; a headful account's own
-display is seen with `tilo-vm shot` and driven with `tilo-vm input`. When done:
-`tilo-vm vm rm bvm` here, and on the build machine `podman rm -f vm-$USER`,
-`podman rmi localhost/vm-qemu-$USER` and `rm -rf $D`.
-
 ## Windows ARM64 Home: QEMU with WHPX
 
 Install the MSYS2 CLANGARM64 QEMU package and enable **Windows Hypervisor

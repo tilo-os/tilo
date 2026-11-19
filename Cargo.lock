@@ -10003,6 +10003,7 @@ dependencies = [
  "tilo-document",
  "tilo-files",
  "tilo-mail-engine",
+ "tilo-mail-parts",
  "tilo-mail-session",
  "tilo-mime",
  "tilo-net",
@@ -10254,6 +10255,7 @@ dependencies = [
  "tempfile",
  "test-http",
  "tilo-files",
+ "tilo-mail-parts",
  "tilo-net",
  "tilo-paths",
  "tilo-process",
@@ -14765,7 +14767,6 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-clock",
  "tilo-files",
- "tilo-font-catalog",
  "tilo-lock",
  "tilo-paths",
  "tilo-test-env",
@@ -14814,6 +14815,7 @@ dependencies = [
  "collab-types",
  "desktop-policy",
  "os-actions",
+ "p384 0.14.0",
  "registry-types",
  "roxmltree 0.21.1",
  "settings-store",
@@ -17884,6 +17886,7 @@ dependencies = [
  "tilo-fs",
  "tilo-live",
  "tilo-lock",
+ "tilo-mail-parts",
  "tilo-mcp",
  "tilo-model-engine",
  "tilo-model-gateway",
@@ -17987,6 +17990,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tilo-actions",
+ "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-device-mcp",
@@ -18061,6 +18065,7 @@ dependencies = [
  "blake3",
  "bounded-command",
  "clap",
+ "collab-types",
  "fluent",
  "fluent-syntax",
  "getrandom 0.4.3",
@@ -18875,6 +18880,7 @@ dependencies = [
  "tilo-identity",
  "tilo-identity-client",
  "tilo-lock",
+ "tilo-mail-parts",
  "tilo-mcp",
  "tilo-net",
  "tilo-paths",
@@ -20007,12 +20013,7 @@ dependencies = [
 name = "tilo-font-catalog"
 version = "0.1.0"
 dependencies = [
- "fontdb",
  "hex",
- "libc",
- "rustix 1.1.6",
- "serde",
- "serde_json",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
@@ -20559,6 +20560,14 @@ dependencies = [
  "mail-builder",
  "mail-parser",
  "runtime-dylib",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-mail-parts"
+version = "0.1.0"
+dependencies = [
+ "mail-parser",
  "workspace-hack",
 ]
 
@@ -23389,6 +23398,7 @@ dependencies = [
  "tilo-mime",
  "tilo-paint-stream",
  "tilo-paths",
+ "tilo-platform-caps",
  "tilo-presentation",
  "tilo-process",
  "tilo-process-services",
@@ -29956,6 +29966,7 @@ dependencies = [
  "tilo-locale",
  "tilo-location",
  "tilo-lock",
+ "tilo-mail-parts",
  "tilo-mail-session",
  "tilo-mcp",
  "tilo-media",

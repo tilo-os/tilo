@@ -56,6 +56,16 @@ impl Learned {
         *count = count.saturating_add(1);
     }
 
+    /// Take back the last showing of `id`: it was begun but never reached the screen.
+    pub fn withdraw_shown(&mut self, id: &str) {
+        if let Some(count) = self.shown.get_mut(id) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.shown.remove(id);
+            }
+        }
+    }
+
     /// Fold in the record as another device left it: what either knows is
     /// known and the higher count of showings stands. Whether hints show is
     /// the other record's: the newer one is folded in.

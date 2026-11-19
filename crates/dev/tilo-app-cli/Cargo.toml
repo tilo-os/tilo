@@ -39,6 +39,8 @@ tilo-caps = { path = "../../sdk/tilo-caps" }
 # History's message convention, which `check` lists missing messages by.
 tilo-history = { path = "../../sdk/tilo-history" }
 tilo-actions = { path = "../../collab/actions" }
+# The form a surface is kept by, whose hash `install-app` names.
+collab-types = { path = "../../collab/collab-types" }
 sha2.workspace = true
 registry-types = { path = "../../packaging/registry-types" }
 app-registry = { path = "../../packaging/app-registry" }

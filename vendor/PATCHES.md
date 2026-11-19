@@ -19,6 +19,14 @@ on for its relay actor. A page entering a workspace reaches its host a round
 trip sooner. `vendor/iroh-relay/TILO-PATCH.md` has the details and an
 upstream-ready description. Remove it once upstream releases the change.
 
+The relay server also closes the connection of any request that is not a relay
+WebSocket behind its answer (`Connection: close`). Every endpoint homed on a
+relay probes its latency there over HTTP keep-alive, and the proxy in front of
+tilo.sh's relay kept each probe's connection for its next request; the relay
+aborted it 30 s after accepting it, as it does any connection that never
+became a WebSocket, and logged an error each time. Remove this once upstream
+releases an equivalent.
+
 ## iroh relay receive queue under a connection burst
 
 In `vendor/iroh`, the relay actor no longer drops datagrams when the

@@ -58,6 +58,21 @@ pub struct Notification {
     /// download's progress), which would otherwise sound at every step. macOS plays no
     /// sound for any.
     pub silent: bool,
+    /// The app it is from, by the name the person knows it by, when no window of that app sent
+    /// it (a mention the session found in Chat's messages).
+    pub app: Option<String>,
+    /// The person or agent it is from: the notification names them and leads with their face,
+    /// where the platform draws one.
+    pub from: Option<NotificationSender>,
+}
+
+/// Who a notification is from: their name, the stable id their face is drawn from, and whether
+/// they are an agent rather than a person.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationSender {
+    pub name: String,
+    pub id: String,
+    pub agent: bool,
 }
 
 pub const MAX_BUTTONS: usize = 3;
@@ -89,7 +104,28 @@ impl Notification {
             severity: Severity::Info,
             buttons: Vec::new(),
             silent: false,
+            app: None,
+            from: None,
         }
+    }
+
+    /// From the app called `name`; a blank name says nothing.
+    #[must_use]
+    pub fn from_app(mut self, name: &str) -> Self {
+        let name = name.trim();
+        self.app = (!name.is_empty()).then(|| name.to_owned());
+        self
+    }
+
+    /// From the agent `name`, whose stable id is `id`.
+    #[must_use]
+    pub fn from_agent(mut self, name: impl Into<String>, id: impl Into<String>) -> Self {
+        self.from = Some(NotificationSender {
+            name: name.into(),
+            id: id.into(),
+            agent: true,
+        });
+        self
     }
 
     #[must_use]

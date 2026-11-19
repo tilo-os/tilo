@@ -1048,6 +1048,9 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo build --locked -p tilo-app-cli --bin tilo-app\ncargo test --locked --manifest-path tools/web/wasm-split/Cargo.toml\napp=$CARGO_TARGET_DIR/debug/tilo-app\n# model-providers-web builds the same bundle path in the dev profile, possibly\n# at the same time in the same build directory, so the release bundle has its own.\nexport CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web\nbundle=$CARGO_TARGET_DIR/tilo-app/web/calculator/bundle\n\"$app\" build --target web --bundle desktop --release apps/calculator\npython3 -I tools/web/wasm_size_ratchet.py measure desktop \"$bundle\"\n"
 needs = ["test-assets"]
 env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
+# The splitter's record of what the start module was made of: `parts desktop BUNDLE` writes
+# tools/web/wasm-size-budget/parts/desktop.json from it.
+outputs = ["/target/release-web/tilo-app/web/calculator/bundle/pkg/split.json"]
 
 # The same bundle qualified in Chromium: when dispatched, and when there is room.
 [[check]]
@@ -4769,7 +4772,9 @@ name = "publish-os-dev-{arch}"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/os-dev-publish.sh image {arch} /target/os/{arch}/image /target/publish/os-dev/{arch}"
-needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-check-{arch}", "sign-dev-os-{arch}", "signing-tools"]
+# The Windows compatibility extension is published for the same commit first: a dev image whose
+# commit has no payload has no Windows support until one is published for it.
+needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-check-{arch}", "sign-dev-os-{arch}", "signing-tools", "publish-windows-compat-{arch}"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 requires = ["disk-100g"]
 isolation = "vm"
@@ -6159,7 +6164,7 @@ isolation = "nested"
 outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/boot/**", "/target/e2e/people-call/**", "/target/e2e/people-shell/**", "/target/e2e/people-menus/**", "/target/e2e/people-invite/**", "/target/e2e/share-link/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/passkey/**", "/target/e2e/wait-list/**", "/target/e2e/onboarding/**", "/target/e2e/restart/**"]
 # What a failure keeps of why: every service's log, which says which of them did not answer.
 evidence = ["/target/e2e/state/logs/**"]
-timeout_secs = 1200
+timeout_secs = 1800
 
 # A fresh tilo.sh stack admits a page: the site's own page, in a headless Chromium, reaches the
 # host over the browser's WebTransport and is let into the Lounge through its entry, on a stack
@@ -6346,6 +6351,33 @@ outputs = ["/target/peer-kill-midwrite/state/logs/*.log", "/target/peer-kill-mid
 # What a failure keeps of why: every service's log and the write's.
 evidence = ["/target/peer-kill-midwrite/state/logs/**"]
 timeout_secs = 1800
+
+# A git checkout of this repository into a mounted folder runs at the files a second it must
+# and survives its holder ending halfway: on a fresh stack from tilo-sh-programs' one build
+# (test-peer-kill-midwrite.sh git), the whole checkout is timed from git's progress, then
+# checkouts of part of it are under way when the holder gets SIGKILL, is asked to step down by a
+# newer program's holder, and gets SIGTERM; each time the folder is shown again, never stale, and
+# `git fsck --full` finds the repository whole, and a holder with nothing kept reads the server's
+# whole tree back. The figures are in throughput.txt among its outputs.
+[[check]]
+name = "peer-git-midwrite"
+# Not a default check: a checkout of twenty thousand files and its convergence take minutes.
+default = false
+# No egress: the holders and the stack meet on loopback alone.
+run = "bash os/containers/tilo-sh/test-peer-kill-midwrite.sh /target/peer-git-midwrite git"
+needs = ["tilo-sh-programs", "lounge-fonts", "tilo-sh-caddy"]
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl git-core && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh-programs", TILO_SH_FONTS = "/target/publish/lounge/fonts", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy" }
+requires = ["arch=x86_64", "/dev/fuse"]
+isolation = "nested"
+# The repository it checks out is this one, from its history.
+git = true
+outputs = ["/target/peer-git-midwrite/state/logs/*.log", "/target/peer-git-midwrite/state/logs/kill-midwrite/*"]
+# What a failure keeps of why: every service's log and the checkout's.
+evidence = ["/target/peer-git-midwrite/state/logs/**"]
+timeout_secs = 3600
 
 # Production's Caddy, which serves the local stack's server and site as its tls container and web
 # entry image do: the one pinned release (os/containers/tilo-sh/caddy.env), fetched and checked

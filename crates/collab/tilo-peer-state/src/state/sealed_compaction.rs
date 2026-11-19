@@ -80,9 +80,9 @@ impl<'peer> PeerPublication<'peer> {
         )
     }
 
-    /// Draft the compaction of `history`, the record's history as its server holds it, under
-    /// `seq`, the place this device's ownership keeps for it: as
-    /// [`Self::draft_sealed_compaction`] drafts the history this replica holds.
+    /// Draft the compaction of `history`, a document's history as its server holds it, numbered
+    /// as the last of `author`'s writes `history` holds, as [`Self::draft_sealed_compaction`]
+    /// drafts the history this replica holds under its own.
     ///
     /// # Errors
     /// As [`Self::draft_sealed_compaction`].
@@ -973,9 +973,7 @@ fn missing_of(record: &AutoCommit, mutation: &DocumentMutation) -> Vec<String> {
     let mut missing: Vec<String> = changes
         .iter()
         .flat_map(|change| change.deps().iter().copied())
-        .filter(|dep| {
-            !own.contains(dep) && automerge::ReadDoc::get_change_by_hash(document, dep).is_none()
-        })
+        .filter(|dep| !own.contains(dep) && !automerge::ReadDoc::has_change(document, dep))
         .map(|dep| dep.to_string())
         .collect();
     missing.dedup();

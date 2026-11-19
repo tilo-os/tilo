@@ -58,7 +58,7 @@ mod view;
 #[path = "mcp_watch.rs"]
 pub(super) mod watch;
 use answer::{action_named, action_row, actions_named, answer_of, outcome, text_result};
-use level::{LevelPages, LsCursor};
+use level::{LevelPages, LsCursor, PageMark};
 use render::{
     action_line, action_page, block_line, parse_read_cursor, read_answer, restart_pause,
     strip_blank,
@@ -731,7 +731,29 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             return Ok(read.clone());
         }
         let read = self
-            .read_level(provider, parent, None)
+            .read_level(provider, parent, None, usize::MAX)
+            .await?
+            .ok_or("the app's directory kept changing while it was read; try again")?;
+        levels.insert(parent.to_owned(), read.clone());
+        Ok(read)
+    }
+
+    /// One directory level, read as far as one page of a listing holds:
+    /// enough to name a resource and what it holds on its first page, and
+    /// extended by whoever pages past it ([`Self::level_reaching`],
+    /// [`Self::level_holding`]). A listing reads one page of a directory of
+    /// thousands per call, not a fixed stretch of it.
+    async fn level_near(
+        &self,
+        provider: &str,
+        parent: &str,
+        levels: &mut Levels,
+    ) -> Result<Level, String> {
+        if let Some(read) = levels.get(parent) {
+            return Ok(read.clone());
+        }
+        let read = self
+            .read_level(provider, parent, None, LS_LINES)
             .await?
             .ok_or("the app's directory kept changing while it was read; try again")?;
         levels.insert(parent.to_owned(), read.clone());
@@ -1382,7 +1404,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         let mut here = match chain.last() {
             Some(_) if !list => Level::default(),
-            Some(node) => self.level(&provider, &node.id, &mut levels).await?,
+            Some(node) => self.level_near(&provider, &node.id, &mut levels).await?,
             None => {
                 // What the app's containers hold (a notebook's notes) is read for a listing.
                 // An action named on the app is found on the app's own level first
@@ -1822,8 +1844,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 if shared.contains(&name.trim().to_lowercase()) {
                     let _ = write!(line, "  {}", child.id);
                 }
-                if !child.actions.is_empty() {
-                    let _ = write!(line, "  {}", actions_note(&child.actions, &called));
+                let listed: Vec<ActionDescriptor> = child.listed_actions().cloned().collect();
+                if !listed.is_empty() {
+                    let called = |action| forms.called(action, &resolved.app_id);
+                    let _ = write!(line, "  {}", actions_note(&listed, &called));
                 }
                 let row = child.listing_row(
                     &resolved.path,
@@ -1837,11 +1861,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             (self.other_resources(&parsed, &resolved, (&mut lines, &mut rows))).await;
             entries.extend(lines.into_iter().zip(rows.into_iter().map(Some)));
         }
+        // What acts on an item this resource holds is listed on that item,
+        // bound to it; a call naming the item still finds it here.
+        let own: Vec<ActionDescriptor> = resolved
+            .actions
+            .iter()
+            .filter(|action| !action.contract.needs_an_item())
+            .cloned()
+            .collect();
         if want_actions {
             entries.extend(
-                resolved
-                    .actions
-                    .iter()
+                own.iter()
                     .map(|action| (action_line(action, called(action)), None)),
             );
         }
@@ -1858,7 +1888,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             let kind = forms.kind(&child.kind).unwrap_or(&child.kind).to_owned();
             let listed = kinds.entry(kind).or_insert_with(|| json!([]));
             if let Value::Array(listed) = listed {
-                for action in &child.actions {
+                for action in child.listed_actions() {
                     if !listed
                         .iter()
                         .any(|row| row["id"] == action.address.action.as_str())
@@ -1886,7 +1916,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let next = (end < total || unread).then(|| {
             let resume = read.as_ref().and_then(|(level, first)| {
                 let node = resolved.node.as_ref()?;
-                level.resume_at(&node.id, end.checked_sub(*first)?)
+                level
+                    .row_mark(&node.id, end.checked_sub(*first)?)
+                    .map(|(cursor, revision)| {
+                        (
+                            PageMark {
+                                row: 0,
+                                cursor,
+                                revision,
+                            },
+                            0,
+                        )
+                    })
             });
             LsCursor {
                 offset: end,
@@ -1920,7 +1961,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 "path": resolved.path,
                 "kind": kind,
                 "rows": rows,
-                "actions": actions_named(&resolved.actions),
+                "actions": actions_named(&own),
                 "kinds": kinds,
             });
             if let (Some(fields), Some(next)) = (answer.as_object_mut(), next) {
@@ -1931,8 +1972,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         Ok(reply)
     }
 
-    /// The surface `app_id` publishes: the one this process runs it with, or
-    /// the signed package the workspace has installed.
+    /// The surface `app_id` publishes, in the form it is kept by
+    /// ([`collab_types::surface::canonical`]): the one this process runs it
+    /// with, or the signed package the workspace has installed.
     async fn surface_bytes(&self, app_id: &str) -> Option<Vec<u8>> {
         if let Some(bytes) = collab_types::app_surface::bytes_of(app_id) {
             return Some(bytes.to_vec());
@@ -1941,7 +1983,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             && let Some(surface) = installed
                 .iter()
                 .find(|app| app.app_id == app_id)
-                .and_then(|app| app.surface.clone())
+                .and_then(|app| app.surface.as_deref())
+                .and_then(collab_types::surface::canonical_json)
         {
             return Some(surface.into_bytes());
         }
@@ -1949,8 +1992,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // when this computer has neither started it nor kept its package: the
         // fleet compiles each app's surface in, so every installed app's types
         // are readable on a fresh workspace.
-        if let Some(surface) = app_fleet::surface(app_id) {
-            return Some(surface.as_bytes().to_vec());
+        if let Some(surface) = app_fleet::surface(app_id)
+            && let Ok((_, kept)) = collab_types::surface::SurfaceFile::kept(surface.as_bytes())
+        {
+            return Some(kept.into_bytes());
         }
         self.host.installed_surface(app_id).await.flatten()
     }

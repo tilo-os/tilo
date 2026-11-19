@@ -1,4 +1,5 @@
-//! The surface an app's signed package publishes, as a provider answers for it.
+//! The surface an app's signed package publishes, in the form it is kept by, as a
+//! provider answers for it.
 
 use super::{ActionProvider, Pending, RemoteActionMessage};
 

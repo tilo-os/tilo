@@ -125,6 +125,30 @@ fn a_server_on_its_own_machine_starts_programs_in_the_workspace_files() {
 }
 
 #[test]
+fn a_shell_on_its_own_machine_reaches_its_files_outside_the_workspace() {
+    let state = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::fs::write(elsewhere.path().join("brief.md"), "the plan\n").unwrap();
+    let place = elsewhere.path().to_string_lossy().into_owned();
+    let on_machine = WorkspaceShells::new(state.path(), None).on_machine(true);
+    let read = on_machine
+        .run("w1", "s1", &format!("cd {place} && cat brief.md"), true)
+        .unwrap();
+    assert_eq!(read.exit, 0, "{}", text(&read));
+    assert!(text(&read).contains("the plan"), "{}", text(&read));
+    // The directory carries over to the next command, whose program starts there.
+    let here = on_machine.run("w1", "s1", "sh -c pwd", true).unwrap();
+    assert!(text(&here).contains(&place), "{}", text(&here));
+
+    let confined = WorkspaceShells::new(state.path(), None);
+    let refused = confined
+        .run("w2", "s1", &format!("cd {place} && cat brief.md"), true)
+        .unwrap();
+    assert_ne!(refused.exit, 0, "{}", text(&refused));
+    assert!(!text(&refused).contains("the plan"), "{}", text(&refused));
+}
+
+#[test]
 fn a_server_without_programs_starts_none() {
     let state = tempfile::tempdir().unwrap();
     let shells = WorkspaceShells::new(state.path(), None);

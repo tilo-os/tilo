@@ -300,6 +300,11 @@ pub trait ReadDoc {
     /// Get a change by its hash.
     fn get_change_by_hash(&self, hash: &ChangeHash) -> Option<Change>;
 
+    /// TILO(has-change): whether this document holds the change `hash` names, as
+    /// [`Self::get_change_by_hash`] being `Some` answers, from the change graph alone and without
+    /// rebuilding the change.
+    fn has_change(&self, hash: &ChangeHash) -> bool;
+
     /// Return some statistics about the document
     fn stats(&self) -> Stats;
 

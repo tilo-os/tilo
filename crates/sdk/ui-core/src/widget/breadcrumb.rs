@@ -764,6 +764,12 @@ impl Widget for Breadcrumb {
     fn needs_redraw(&self) -> bool {
         crate::widget::redraw_or_children(self.dirty, self)
     }
+
+    /// Its box is the width it is given and one line tall: what it shows truncates to it as it
+    /// is drawn, so once placed it asks for no layout.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
     fn mark_drawn(&mut self) {
         self.dirty = false;
         crate::widget::Widget::mark_children_drawn(self);

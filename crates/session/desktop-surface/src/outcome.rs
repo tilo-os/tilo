@@ -52,18 +52,32 @@ impl Outcome {
         self
     }
 
-    /// The outcome for the app `app` whose window could not be built: it could not open, what to
-    /// do about it, and Try again. `technical_details` is what the launch answered.
+    /// The outcome for the app `app` whose window could not be built for no known cause: it
+    /// could not open, what to do about it, and Try again. `technical_details` is what the launch
+    /// answered.
     #[must_use]
     pub fn not_built(app: &str, technical_details: impl Into<String>) -> Self {
+        Self::not_built_because(
+            app,
+            crate::i18n::t_args("answer-why-not-built", &[("app", app.into())]),
+            technical_details,
+        )
+    }
+
+    /// The outcome for the app `app` whose window could not be built for `cause`, the plain
+    /// sentence that names it: it could not open, that is why, and Try again.
+    /// `technical_details` is what the launch answered, kept behind Details.
+    #[must_use]
+    pub fn not_built_because(
+        app: &str,
+        cause: impl Into<String>,
+        technical_details: impl Into<String>,
+    ) -> Self {
         Self::new(crate::i18n::t_args(
             "answer-app-not-opened",
             &[("app", app.into())],
         ))
-        .saying(crate::i18n::t_args(
-            "answer-why-not-built",
-            &[("app", app.into())],
-        ))
+        .saying(cause)
         .retryable(crate::i18n::t("answer-try-again"))
         .with_technical_details(technical_details)
     }
@@ -361,6 +375,40 @@ mod tests {
             .perform_named(RETRY_ID, &ui::a11y::Action::Activate)
             .unwrap();
         assert_eq!(asked.get(), 1, "Try again asked for it once");
+    }
+
+    /// A window whose app could not be built for a cause the link named leads with it, in the
+    /// person's words, and keeps what the link answered behind Details.
+    #[test]
+    fn a_window_that_could_not_be_built_for_a_cause_leads_with_it() {
+        let cause =
+            "Couldn't reach the workspace's server. It opens by itself once the server is back.";
+        let reason = "the server could not be reached: the server did not answer the dial in time";
+        let outcome = Outcome::not_built_because("Tasks", cause, reason);
+        assert_eq!(outcome.what, "Tasks could not open");
+        assert_eq!(outcome.why, cause);
+        assert_eq!(outcome.technical_details, reason);
+        let card = OutcomeCard::new(&outcome, || {});
+        let mut frame =
+            ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(card), (640, 420));
+        frame.relayout();
+        let texts = ui::a11y::texts(frame.root_widget());
+        let described = descriptions_under(frame.root_widget());
+        // The card is described by its cause: the generic words are for a window whose cause is
+        // unknown, and what the link answered stays behind Details.
+        assert!(described.iter().any(|said| said == cause), "{described:?}");
+        assert!(
+            !texts
+                .iter()
+                .chain(described.iter())
+                .any(|said| said.contains("ran into a problem while opening")),
+            "the generic words are for a window whose cause is unknown: {texts:?} {described:?}"
+        );
+        assert!(
+            !texts.iter().any(|shown| shown.contains("dial")),
+            "{texts:?}"
+        );
+        assert!(described.iter().any(|kept| kept == reason), "{described:?}");
     }
 
     /// The middle of the control named `name` under `root`, where it is drawn.

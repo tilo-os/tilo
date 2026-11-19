@@ -215,6 +215,7 @@ test-transforms-copy = Copy an image
 test-rows-open = Open an item
 test-rows-connect = Connect to an item
 test-rows-search = Search
+test-ids-place = Stand a resource in a strip
 test-exports-export-book = Export the address book
 test-secrets-pair = Pair a device
 test-files-save-copy = Save a copy
