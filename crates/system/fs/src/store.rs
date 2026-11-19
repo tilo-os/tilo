@@ -462,6 +462,7 @@ impl ContentStore {
 
     /// Read-only bytes of a whole blob `hash`: inline, or a complete whole-blob entry's file. Partial
     /// file-backed versions are not blobs and never answer here.
+    #[cfg(feature = "filesystem")]
     async fn blob_of_bytes(&self, hash: Hash) -> Option<Vec<u8>> {
         let files = Arc::clone(&self.files);
         let key = *hash.as_bytes();
