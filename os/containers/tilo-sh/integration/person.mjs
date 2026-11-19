@@ -198,8 +198,14 @@ if (pairLink) {
     await finish(1, `the page stopped arriving: ${await text()}`);
   }
   report.arrivedMs = Date.now() - began;
+  // The page keeps the membership under the origin it joined (`keepJoinedHost`): the site's own
+  // when a link carried the invitation to a site that names no other server, the server's when it
+  // did, one an invitation named for a server reached over iroh.
+  const siteOrigin = new URL(site).origin;
   membership = JSON.parse(await until(`(() => {
-    const kept = ${memberships}[${JSON.stringify(new URL(server).origin)}];
+    const kept = ${memberships}[${JSON.stringify(new URL(server).origin)}]
+      ?? ${memberships}[${JSON.stringify(siteOrigin)}]
+      ?? Object.values(${memberships}).find(entry => entry?.workspace);
     return kept?.workspace ? JSON.stringify(kept) : '';
   })()`, 'joining the Lounge'));
   report.joinedMs = Date.now() - began;
