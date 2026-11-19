@@ -313,8 +313,6 @@ pub struct TerminalWidget {
     deferred_output: std::cell::Cell<Option<Vec<u8>>>,
     /// Set for good when the PTY closes, its reader fails or a write fails: a terminal is not revived.
     session_disconnected: Arc<AtomicBool>,
-    #[cfg(windows)]
-    child_killer: Option<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
     session_status_message: Arc<Mutex<String>>,
     grid: Vec<String>,
     grid_attrs: Vec<Vec<Attr>>,
@@ -530,8 +528,6 @@ impl TerminalWidget {
             output_rx,
             deferred_output: std::cell::Cell::new(None),
             session_disconnected: Arc::new(AtomicBool::new(false)),
-            #[cfg(windows)]
-            child_killer: None,
             session_status_message: Arc::new(Mutex::new(session_ended_message())),
             grid: vec![" ".repeat(width); height],
             grid_attrs: vec![vec![Attr::default(); width]; height],
@@ -4873,15 +4869,15 @@ impl MasterPty for NullMaster {
     fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
         Ok(Box::new(std::io::empty()))
     }
-    #[cfg(unix)]
+    #[cfg(feature = "desktop")]
     fn process_group_leader(&self) -> Option<i32> {
         None
     }
-    #[cfg(unix)]
+    #[cfg(feature = "desktop")]
     fn as_raw_fd(&self) -> Option<i32> {
         None
     }
-    #[cfg(unix)]
+    #[cfg(feature = "desktop")]
     fn tty_name(&self) -> Option<std::path::PathBuf> {
         None
     }
@@ -4897,12 +4893,10 @@ pub struct TerminalBackend {
     pub commands: Option<String>,
     native_editor: Option<crate::native_editor::Socket>,
     service_lifetime: Option<runtime_portal::pending_connection::SessionLifetime>,
-    #[cfg(windows)]
-    pub child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 impl TerminalBackend {
     #[cfg(test)]
-    #[cfg(unix)]
+    #[cfg(feature = "desktop")]
     pub(crate) fn for_test() -> Self {
         Self {
             writer: Box::new(std::io::sink()),
@@ -4918,7 +4912,7 @@ impl TerminalBackend {
     }
 
     #[cfg(test)]
-    #[cfg(unix)]
+    #[cfg(feature = "desktop")]
     pub(crate) fn for_test_remote(
         output: std::os::unix::net::UnixStream,
         lease: std::os::unix::net::UnixStream,
@@ -4931,7 +4925,7 @@ impl TerminalBackend {
     }
 
     #[cfg(test)]
-    #[cfg(unix)]
+    #[cfg(feature = "desktop")]
     pub(crate) fn for_test_leased(
         output: std::os::unix::net::UnixStream,
         lease: std::os::unix::net::UnixStream,
@@ -5030,7 +5024,6 @@ impl TerminalBackend {
         let writer = pair.master.take_writer()?;
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
-        #[cfg(unix)]
         drop(child);
         Ok(Self {
             writer,
@@ -5042,8 +5035,6 @@ impl TerminalBackend {
             commands: None,
             native_editor: None,
             service_lifetime: None,
-            #[cfg(windows)]
-            child,
         })
     }
 }
@@ -5166,18 +5157,6 @@ pub enum ConfineRoute {
 
 /// Choose how to reach `target` from a capability probe, security first.
 pub fn confinement_route(target: &crate::target::SessionTarget) -> ConfineRoute {
-    #[cfg(windows)]
-    {
-        // A claimed hosted grant must fail closed until native service
-        // transport exists; never silently replace it with a local shell.
-        decide_route(
-            target,
-            std::env::var_os(USH_SERVICE_FD_ENV).is_some(),
-            false,
-            None,
-        )
-    }
-    #[cfg(unix)]
     decide_route(
         target,
         USH_SERVICE.was_taken() || ush_service_fd().is_some(),
@@ -5221,66 +5200,29 @@ pub fn decide_route(
 
 /// The supervisor's descriptor, if the launcher opened one and it is still live: a spoofed number
 /// pointing at nothing does not select the service path.
-#[cfg(unix)]
+#[cfg(feature = "desktop")]
 pub(crate) fn ush_service_fd() -> Option<i32> {
     let raw: i32 = std::env::var(USH_SERVICE_FD_ENV).ok()?.parse().ok()?;
-    if raw < 0 {
-        return None;
-    }
-    // SAFETY: `F_GETFD` only reads the descriptor's flags and never mutates or
-    // closes it. `rc == -1` (EBADF) means the slot is empty → no service.
-    let rc = unsafe { libc::fcntl(raw, libc::F_GETFD) };
-    (rc != -1).then_some(raw)
+    tilo_process::descriptor::open(raw)
 }
 
 /// Whether this process could build the user and mount namespace a self-hosted guest needs: false
 /// under a seccomp filter, without unprivileged user namespaces, or without `bwrap`.
-#[cfg(unix)]
+#[cfg(feature = "desktop")]
 fn can_build_namespace() -> bool {
-    !seccomp_filtered() && unprivileged_userns_enabled() && bwrap_present()
+    !tilo_process::confinement::seccomp_filtered()
+        && tilo_process::confinement::unprivileged_userns_enabled()
+        && bwrap_present()
 }
 
-/// Whether a seccomp filter confines this process.
-#[cfg(unix)]
-fn seccomp_filtered() -> bool {
-    std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|status| {
-            status
-                .lines()
-                .find_map(|l| l.strip_prefix("Seccomp:").map(|v| v.trim().to_string()))
-        })
-        .and_then(|v| v.parse::<u32>().ok())
-        .is_some_and(|mode| mode >= 2)
-}
-
-/// Whether the kernel allows unprivileged user namespaces. An absent sysctl means the kernel default,
-/// so only an explicit disable reports false.
-#[cfg(unix)]
-fn unprivileged_userns_enabled() -> bool {
-    // Debian/Ubuntu knob: `0` disables unprivileged user namespaces entirely.
-    if let Ok(v) = std::fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone")
-        && v.trim() == "0"
-    {
-        return false;
-    }
-    // Upstream cap on how many user namespaces may exist: `0` means none.
-    if let Ok(v) = std::fs::read_to_string("/proc/sys/user/max_user_namespaces")
-        && v.trim() == "0"
-    {
-        return false;
-    }
-    true
-}
-
-#[cfg(unix)]
+#[cfg(feature = "desktop")]
 fn bwrap_present() -> bool {
     std::env::var_os("PATH")
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("bwrap").exists()))
 }
 
 /// Where the runtime binary is: `$TILO_USH_BIN`, then the installed location, then `PATH`.
-#[cfg(unix)]
+#[cfg(feature = "desktop")]
 pub fn ush_binary() -> Option<std::path::PathBuf> {
     if let Some(explicit) = std::env::var_os("TILO_USH_BIN") {
         let path = std::path::PathBuf::from(explicit);
@@ -5300,7 +5242,7 @@ pub fn ush_binary() -> Option<std::path::PathBuf> {
 
 /// Ask the supervisor for a session on `target` and wrap the pty it hands back: a terminal crosses
 /// the sandbox boundary, not a namespace.
-#[cfg(unix)]
+#[cfg(feature = "desktop")]
 fn ush_service_backend(
     program: &[String],
     target: &crate::target::SessionTarget,
@@ -5314,8 +5256,12 @@ fn ush_service_backend(
     // negotiates protocol two and returns only its independent session lease.
     unsafe {
         USH_SERVICE.with_control(|stream| {
+            let socket = stream
+                .try_clone()
+                .map(tilo_process::local_socket::ServiceSocket::from)
+                .map_err(|error| OpenError::Failed(error.to_string()))?;
             ush_backend_on(
-                stream,
+                &socket,
                 program,
                 target,
                 requested_by,
@@ -5373,19 +5319,6 @@ pub(crate) fn ush_service_ask(
         ) => "environments are managed through Tilo's shell runtime".to_owned(),
         other => other.to_string(),
     })?
-}
-
-#[cfg(windows)]
-fn ush_service_backend(
-    _program: &[String],
-    _target: &crate::target::SessionTarget,
-    _requested_by: Requester,
-    _relay_session: Option<&str>,
-    _workspace: Option<&str>,
-) -> Result<TerminalBackend, OpenError> {
-    Err(OpenError::Unavailable(
-        "Tilo hosted terminal service transport is unavailable on Windows".into(),
-    ))
 }
 
 /// The `open-session` line for the supervisor; `workspace` is left out when the terminal does not
@@ -5483,9 +5416,9 @@ impl UshSessionReply {
     }
 }
 
-#[cfg(unix)]
+#[cfg(feature = "desktop")]
 pub(crate) fn ush_backend_on(
-    stream: &std::os::unix::net::UnixStream,
+    stream: &tilo_process::local_socket::ServiceSocket,
     program: &[String],
     target: &crate::target::SessionTarget,
     requested_by: Requester,
@@ -5580,7 +5513,9 @@ pub(crate) fn ush_backend_on(
     Ok(TerminalBackend {
         writer,
         reader,
-        master: Box::new(FdMaster { file: master }),
+        master: Box::new(FdMaster {
+            master: tilo_process::pty::Master::new(master),
+        }),
         shell_name: if target.is_host() { "host" } else { "ush" }.into(),
         relay_session: response.relay_session,
         supervisor_session: Some(response.session),
@@ -5682,65 +5617,47 @@ pub(crate) fn refusal(payload: &[u8]) -> OpenError {
 
 /// A [`MasterPty`] over a descriptor someone else opened. Resizing is a real `TIOCSWINSZ`: the grid
 /// reflows on every window change.
-#[cfg(unix)]
+#[cfg(feature = "desktop")]
 struct FdMaster {
-    file: std::fs::File,
+    master: tilo_process::pty::Master,
 }
 
-#[cfg(unix)]
+#[cfg(feature = "desktop")]
 impl MasterPty for FdMaster {
     fn get_size(&self) -> Result<PtySize, anyhow::Error> {
-        use std::os::fd::AsRawFd;
-        // SAFETY: `winsize` is fully written by the ioctl; `self.file` is a
-        // live pty master.
-        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), libc::TIOCGWINSZ, &mut ws) };
-        if rc != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
+        let size = self.master.get_size()?;
         Ok(PtySize {
-            rows: ws.ws_row,
-            cols: ws.ws_col,
-            pixel_width: ws.ws_xpixel,
-            pixel_height: ws.ws_ypixel,
+            rows: size.rows,
+            cols: size.cols,
+            pixel_width: size.pixel_width,
+            pixel_height: size.pixel_height,
         })
     }
 
     fn resize(&self, size: PtySize) -> Result<(), anyhow::Error> {
-        use std::os::fd::AsRawFd;
-        let ws = libc::winsize {
-            ws_row: size.rows,
-            ws_col: size.cols,
-            ws_xpixel: size.pixel_width,
-            ws_ypixel: size.pixel_height,
-        };
-        // SAFETY: as above.
-        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), libc::TIOCSWINSZ, &ws) };
-        if rc != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
+        self.master.resize(tilo_process::pty::WinSize {
+            rows: size.rows,
+            cols: size.cols,
+            pixel_width: size.pixel_width,
+            pixel_height: size.pixel_height,
+        })?;
         Ok(())
     }
 
     fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
-        Ok(Box::new(self.file.try_clone()?))
+        Ok(Box::new(self.master.try_clone()?))
     }
 
     fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
-        Ok(Box::new(self.file.try_clone()?))
+        Ok(Box::new(self.master.try_clone()?))
     }
 
     fn process_group_leader(&self) -> Option<i32> {
-        use std::os::fd::AsRawFd;
-        let mut pgrp: i32 = -1;
-        // SAFETY: `TIOCGPGRP` writes one `pid_t`; the file is a pty master.
-        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), libc::TIOCGPGRP, &mut pgrp) };
-        (rc == 0 && pgrp > 0).then_some(pgrp)
+        self.master.process_group_leader()
     }
 
     fn as_raw_fd(&self) -> Option<i32> {
-        use std::os::fd::AsRawFd;
-        Some(self.file.as_raw_fd())
+        Some(self.master.raw_fd())
     }
 
     fn tty_name(&self) -> Option<std::path::PathBuf> {
@@ -5781,42 +5698,6 @@ impl TerminalWidget {
         });
     }
 
-    /// ConPTY keeps its output pipe open while the pseudoconsole exists, so
-    /// the child handle is watched too: its exit is the session's.
-    #[cfg(windows)]
-    fn watch_child_exit(
-        &mut self,
-        mut child: Box<dyn portable_pty::Child + Send + Sync>,
-        child_exit: SessionExit,
-    ) {
-        // Keep a killer for normal window teardown.
-        self.child_killer = Some(child.clone_killer());
-        let disconnected = self.session_disconnected.clone();
-        let status = self.session_status_message.clone();
-        let waker = self.waker.clone();
-        if std::thread::Builder::new()
-            .name("tilo-terminal-child-wait".into())
-            .spawn(move || {
-                let message = if child.wait().is_ok() {
-                    session_ended_message()
-                } else {
-                    crate::i18n::t("terminal-session-exit-unknown")
-                };
-                set_terminal_disconnected(&disconnected, &status, &message);
-                child_exit.ended(SessionEnd::Exited);
-                request_terminal_wake(&waker);
-            })
-            .is_err()
-        {
-            if let Some(killer) = &mut self.child_killer {
-                let _ = killer.kill();
-            }
-            self.mark_disconnected(
-                "Session unavailable. The terminal could not watch the shell for exit.",
-            );
-        }
-    }
-
     /// What the reader asks whether the session is still open: the lifetime socket the supervisor closes
     /// when the guest ends, which tells a hosted start-up `EIO` from an exit.
     fn reader_lease(&self) -> ReaderLease {
@@ -5845,8 +5726,6 @@ impl TerminalWidget {
         let widget = self;
         widget.attach_native_editor(backend.native_editor);
         widget.service_lifetime = backend.service_lifetime;
-        #[cfg(windows)]
-        widget.watch_child_exit(backend.child, exit.clone());
         let waker = widget.waker.clone();
         let session_disconnected = widget.session_disconnected.clone();
         let session_status_message = widget.session_status_message.clone();
@@ -5975,10 +5854,6 @@ impl TerminalWidget {
 impl Drop for TerminalWidget {
     fn drop(&mut self) {
         self.end_session_exit();
-        #[cfg(windows)]
-        if let Some(killer) = &mut self.child_killer {
-            let _ = killer.kill();
-        }
     }
 }
 

@@ -239,6 +239,26 @@ tilo_test_env::scenario! {
         assert!(received(&op, &person(&policy(None), "ada").on_foreign_device()).is_err());
     }
 
+    phase a_server_signs_a_members_change_as_the_member_it_names;
+    {
+        // The owner's server signs what it carries out for others: each change
+        // is decided as the one it names, whom the owner's grants neither
+        // widen nor narrow. Who is no member gets nothing through it.
+        let server = person(&policy(Some(Answer::Allow)), "owner");
+        let agent_device = Acting::agent(AGENT).acting_for(Acting::person("ada"));
+        for (invoker, admitted) in [
+            (Acting::person("ada"), true),
+            (mount_agent().acting_for(Acting::person("ada")), true),
+            (agent_device, true),
+            (Acting::person("vic"), false),
+            (Acting::person("stranger"), false),
+            (mount_agent().acting_for(Acting::person("stranger")), false),
+        ] {
+            let receipt = received(&write_by(Some(&invoker)), &server);
+            assert_eq!(receipt.is_ok(), admitted, "{invoker:?}: {receipt:?}");
+        }
+    }
+
     phase a_keys_agent_is_decided_by_the_grant_its_person_signed;
     {
         let key = tilo_action_policy::key_agent_id(&[9; 32]);

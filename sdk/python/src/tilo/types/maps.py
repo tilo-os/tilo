@@ -40,7 +40,7 @@ __all__ = [
     "ClearRouteArgs",
     "AcceptTransitArgs",
     "ClearTransitArgs",
-    "RecordArgs",
+    "RememberArgs",
     "ForgetArgs",
     "ClearArgs",
 ]
@@ -153,11 +153,11 @@ ClearTransitArgs = TypedDict("ClearTransitArgs", {
 })
 """The arguments of `clear-transit`."""
 
-RecordArgs = TypedDict("RecordArgs", {
+RememberArgs = TypedDict("RememberArgs", {
     "device": "str",
     "region": "DownloadedRegion",
 })
-"""The arguments of `record`."""
+"""The arguments of `remember`."""
 
 ForgetArgs = TypedDict("ForgetArgs", {
     "device": "str",
@@ -172,7 +172,7 @@ ClearArgs = TypedDict("ClearArgs", {
 
 class Workspace(Resource):
     """Maps — `maps.workspace`."""
-    __surface__ = "so.tilo.maps@bff2580c0be19545"
+    __surface__ = "so.tilo.maps@41f20a9deca55fef"
     places: list[Entry[Place]]
     @property
     def recents(self) -> Any:
@@ -328,20 +328,20 @@ class Workspace(Resource):
 
 class OfflineAreas(Resource):
     """Offline areas — `maps.offline-areas`."""
-    __surface__ = "so.tilo.maps@bff2580c0be19545"
+    __surface__ = "so.tilo.maps@41f20a9deca55fef"
     devices: dict[str, Any]
 
-    def record(self,
+    def remember(self,
         *,
         device: str,
         region: DownloadedRegion,
     ) -> None:
         """Runs the app's action."""
-        return self.action("record", device=device, region=region)
+        return self.action("remember", device=device, region=region)
 
-    def record_many(self, items: list[RecordArgs]) -> list[dict[str, Any]]:
-        """Runs `record` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("record", items)
+    def remember_many(self, items: list[RememberArgs]) -> list[dict[str, Any]]:
+        """Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remember", items)
 
     def forget(self,
         *,
@@ -365,6 +365,6 @@ class OfflineAreas(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"record", "record_many", "forget", "forget_many", "clear", "clear_many"})
+    __actions__ = frozenset({"remember", "remember_many", "forget", "forget_many", "clear", "clear_many"})
 
 

@@ -6,7 +6,7 @@
 //! The plan and its single-use token come from [`install_plan`], the same code
 //! the command writes, so the window and `tilo machine add` write one document.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use install_profile_model::plan::{self, DiskRule, Network, Plan};
 
@@ -415,18 +415,25 @@ fn destination_label(destination: &str) -> String {
     }
 }
 
+/// The file a plan's token is kept in on the other computer, as that computer's own home
+/// directory names it: an example, naming no path this one has.
+fn example_token_file(plan: &str) -> PathBuf {
+    Path::new("/home/ada")
+        .join([".local", "state", "tilo", "identity", "install-plans"].join("/"))
+        .join(format!("{plan}.token"))
+}
+
 /// The example plan the screenshot scenarios show; it is never kept and its
 /// token names nothing.
 pub(super) fn example() -> Created {
     let plan = example_plan("0123456789abcdef0123456789abcdef");
     Created {
-        token_file: PathBuf::from(format!(
-            "/home/ada/.local/state/tilo/identity/install-plans/{}.token",
-            plan.plan
-        )),
+        token_file: example_token_file(&plan.plan),
         commands: commands_for(
             &plan,
-            "/home/ada/.local/state/tilo/identity/install-plans/0123456789abcdef0123456789abcdef.token",
+            &example_token_file("0123456789abcdef0123456789abcdef")
+                .display()
+                .to_string(),
         ),
         plan,
     }
@@ -482,7 +489,9 @@ pub(super) fn examples() -> Vec<Waiting> {
             expires_in_hours: 18,
             commands: commands_for(
                 &plan,
-                "/home/ada/.local/state/tilo/identity/install-plans/0123456789abcdef0123456789abcdef.token",
+                &example_token_file("0123456789abcdef0123456789abcdef")
+                    .display()
+                    .to_string(),
             ),
         })
         .collect()

@@ -306,10 +306,9 @@ impl crate::Shared {
     }
 
     /// Take the machine `machine` the person approved into its waiting entry in their Servers
-    /// workspace, through this device's own workspace service: the entry becomes the machine's
-    /// under its device key, and the device that governs the workspace hands it over from there.
-    /// A machine that came with no token is no planned machine, and one this device does not hold
-    /// the workspace of is admitted by the device that does.
+    /// workspace, through the workspace's holder: the entry becomes the machine's under its device
+    /// key, and the holder hands it over from there. A machine that came with no token is no
+    /// planned machine.
     fn admit_planned(&self, machine: &crate::enrollment::Waiting) {
         if machine.nonce.is_empty() {
             return;
@@ -326,9 +325,9 @@ impl crate::Shared {
         let mut arguments = serde_json::Map::new();
         arguments.insert("device".to_owned(), machine.device.clone().into());
         arguments.insert("nonce".to_owned(), machine.nonce.clone().into());
-        let Some(asked) = engine.ask_own_service(workspace, "machine.admit", arguments) else {
+        let Some(asked) = engine.ask_holder(workspace, "machine.admit", arguments) else {
             tracing::info!(
-                "this device holds no Servers workspace, so the machine waits to be taken in where it is held"
+                "this device reaches no holder of the Servers workspace, so the machine waits to be taken in there"
             );
             return;
         };

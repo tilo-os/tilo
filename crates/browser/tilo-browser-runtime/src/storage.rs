@@ -241,6 +241,42 @@ pub fn provide_settings(profile: &str, device: &str, settings: &str) -> Result<b
     crate::settings::provide(&cached(profile, device)?, settings).map_err(error)
 }
 
+/// The certificate and server pin (JSON) the saved peer entry in
+/// `(profile, device)` for `user_public_key_hex` is bound to, if any.
+///
+/// # Errors
+///
+/// Rejects an unknown namespace or an unreadable store.
+#[wasm_bindgen(js_name = savedPeerCertificate)]
+pub fn saved_peer_certificate(
+    profile: &str,
+    device: &str,
+    user_public_key_hex: &str,
+) -> Result<Option<String>, JsValue> {
+    let normalized = user_public_key_hex.to_ascii_lowercase();
+    let stored = cached(profile, device)?
+        .read(&StorageKey::document(
+            "so.tilo.browser-peer",
+            PROFILE_WORKSPACE,
+            &normalized,
+        ))
+        .map_err(error)?;
+    let Some(stored) = stored else {
+        return Ok(None);
+    };
+    let Ok(entry) = postcard::from_bytes::<tilo_session_client::PeerEntry>(&stored.bytes) else {
+        return Ok(None);
+    };
+    let Some(cert) = entry.cert else {
+        return Ok(None);
+    };
+    let held = tilo_session_client::device::Held {
+        cert,
+        server_cert: entry.server_cert,
+    };
+    serde_json::to_string(&held).map(Some).map_err(error)
+}
+
 /// Take every accepted write as `[{key, bytes, actor, revision}]` with the
 /// key's whole current value.
 pub(crate) fn drain(store: &MemoryStore) -> Result<JsValue, JsValue> {

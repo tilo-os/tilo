@@ -84,7 +84,6 @@ fn history_lists_calculations_and_choosing_one_recalls_it() {
         "the calculator keeps no list beside History: {targets:?}"
     );
 
-    app.serve_history();
     app.harness()
         .open_history()
         .expect("the window's History opens");
@@ -148,7 +147,6 @@ fn a_second_window_lists_the_first_windows_calculations() {
         Some("5"),
         "the expression being typed is the first window's own"
     );
-    beside.serve_history();
     beside
         .harness()
         .open_history()
@@ -174,7 +172,6 @@ fn the_history_button_opens_history() {
         Some(ui::widget::HistoryControl::of(false)),
         "the window bar offers History"
     );
-    app.serve_history();
     app.harness()
         .press_window_history()
         .expect("the window bar's History button opens History");
@@ -201,7 +198,6 @@ fn a_long_formula_reaches_history_whole() {
     app.harness().type_text(&formula);
     app.settle();
     app.flush().unwrap();
-    app.serve_history();
     app.harness()
         .open_history()
         .expect("the window's History opens");
@@ -226,7 +222,6 @@ fn a_long_formula_passed_to_an_action_reaches_history_whole() {
         .unwrap();
     app.settle();
     app.flush().unwrap();
-    app.serve_history();
     app.harness()
         .open_history()
         .expect("the window's History opens");
@@ -284,7 +279,6 @@ fn a_past_version_previews_the_graph_the_window_shows() {
     app.harness().type_text("x+1");
     app.settle();
     app.flush().unwrap();
-    app.serve_history();
     app.harness()
         .open_history()
         .expect("the window's History opens");
@@ -328,7 +322,6 @@ fn typing_a_formula_is_one_change() {
     app.harness().type_text("3*x+sin(x)");
     app.settle();
     app.flush().unwrap();
-    app.serve_history();
     app.harness()
         .open_history()
         .expect("the window's History opens");

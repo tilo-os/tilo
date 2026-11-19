@@ -2234,10 +2234,10 @@ struct GovernanceCall<'a> {
 /// The workspaces' governance as an action host, attached once the workspaces open.
 #[derive(Clone)]
 pub(crate) struct ServiceWorkspaceActions {
-    shared: Arc<Shared>,
+    pub(crate) shared: Arc<Shared>,
 }
 
-struct Shared {
+pub(crate) struct Shared {
     workspaces: OnceLock<Workspaces>,
     runtime: tokio::runtime::Handle,
     /// What each admitted invocation came to.
@@ -2271,8 +2271,10 @@ impl ServiceWorkspaceActions {
         }
     }
 
-    /// Serve `workspaces`; only the first workspaces attached are served.
+    /// Serve `workspaces`; only the first workspaces attached are served. Their members' devices
+    /// ask this governance on the device action service too.
     pub(crate) fn attach(&self, workspaces: Workspaces) {
+        workspaces.govern_device_actions_with(Arc::downgrade(&self.shared));
         let _ = self.shared.workspaces.set(workspaces);
     }
 

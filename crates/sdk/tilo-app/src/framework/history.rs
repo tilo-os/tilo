@@ -116,6 +116,19 @@ pub(crate) struct ChainHistory {
 }
 
 impl ui_core::history_mode::HistoryParts for ChainHistory {
+    fn heads(&self) -> Vec<ChangeHash> {
+        self.storage
+            .upgrade()
+            .map(|storage| {
+                storage
+                    .read_chain_parts(&ui_core::automerge::transaction::Transactable::base_heads)
+                    .into_iter()
+                    .flat_map(|(_, heads)| heads)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn documents(&self) -> Vec<(ui_core::history_mode::HistoryPart, AutoCommit)> {
         self.storage
             .upgrade()

@@ -72,6 +72,8 @@ pub(crate) struct Admission {
     pub save_waiting: bool,
     pub save_result: Option<Result<(), String>>,
     pub leaving: Leaving,
+    /// The commits a close's save started, and the wake for their end.
+    pub saving: Option<(durable_store::waiting::Started, durable_store::ReadyWake)>,
     session: uuid::Uuid,
     choices: Vec<Choice>,
 }
@@ -90,6 +92,7 @@ impl Default for Admission {
             save_waiting: false,
             save_result: None,
             leaving: Leaving::Staying,
+            saving: None,
             session: uuid::Uuid::new_v4(),
             choices: Vec::new(),
         }
@@ -109,6 +112,9 @@ impl Admission {
     ) {
         self.session = uuid::Uuid::new_v4();
         self.choices = choices.to_vec();
+        // A decision stops the close: going on saves again.
+        self.ready = false;
+        self.saving = None;
         let resource = resource_for(self.session, choices);
         let mut content = Column::new()
             .with_intrinsic_height()
@@ -162,6 +168,7 @@ impl Admission {
         self.reviewed.clear();
         self.discarded.clear();
         self.ready = false;
+        self.saving = None;
         self.save_waiting = false;
         self.save_local = None;
         self.save_broker_request = None;

@@ -166,23 +166,30 @@ impl App {
             .interfaces
             .get(tilo_vm_protocol::RUNTIME)
             .copied();
-        let mut services = Vec::new();
+        // A service the VM account never swapped is the image's own, built
+        // for the image's runtime version: the daemon refuses the cohort
+        // while it differs from the tree's, so it moves with the cohort too.
+        let mut image_runtime = None;
+        let mut served = std::collections::BTreeMap::new();
         for service in VM_RUNTIME_SERVICES.iter().copied() {
-            let Some(layer) = plan.services.get(service) else {
-                continue;
+            let version = if let Some(layer) = plan.services.get(service) {
+                remote
+                    .call(LayerVerify {
+                        hash: layer.clone(),
+                    })?
+                    .provenance
+                    .interfaces
+                    .get(tilo_vm_protocol::RUNTIME)
+                    .copied()
+            } else {
+                if image_runtime.is_none() {
+                    image_runtime = Some(self.image_runtime(plan.vm));
+                }
+                image_runtime.flatten()
             };
-            let served = remote
-                .call(LayerVerify {
-                    hash: layer.clone(),
-                })?
-                .provenance
-                .interfaces
-                .get(tilo_vm_protocol::RUNTIME)
-                .copied();
-            if declared.is_some() && served != declared {
-                services.push(service);
-            }
+            served.insert(service, version);
         }
+        let services = services_to_move(declared, &served);
         if services.is_empty() {
             return Ok(());
         }
@@ -233,6 +240,42 @@ impl App {
     }
 }
 
+impl App {
+    /// The runtime interface version the VM's image serves, read from its
+    /// `system-interfaces.toml` over SSH; `None` when it cannot be read.
+    fn image_runtime(&mut self, vm: &super::Resolved) -> Option<u32> {
+        let endpoint = self.endpoint(vm).ok()?;
+        let line = crate::remote::ssh_command(
+            &endpoint,
+            vm.entry.key.as_deref(),
+            &[format!("cat {}", tilo_vm_protocol::SYSTEM_INTERFACES)],
+            false,
+        );
+        let output = crate::hypervisor::Runner::output(&mut self.runner, &line).ok()?;
+        output.success.then_some(())?;
+        tilo_vm_protocol::system_interfaces(&output.stdout)
+            .get(tilo_vm_protocol::RUNTIME)
+            .copied()
+    }
+}
+
+/// The VM runtime services to rebuild from the cohort's tree: each that
+/// serves another runtime version than the tree declares, or whose version
+/// is unknown (rebuilding it from the same tree is what the daemon asks).
+fn services_to_move<'a>(
+    declared: Option<u32>,
+    served: &std::collections::BTreeMap<&'a str, Option<u32>>,
+) -> Vec<&'a str> {
+    let Some(declared) = declared else {
+        return Vec::new();
+    };
+    served
+        .iter()
+        .filter(|(_, version)| **version != Some(declared))
+        .map(|(service, _)| *service)
+        .collect()
+}
+
 struct CohortState {
     generation: u64,
     session: tilo_vm_protocol::UserspaceSession,
@@ -279,6 +322,17 @@ mod tests {
             build: tilo_vm_protocol::Provenance::local(component),
             source_inventory: "digest".into(),
         }
+    }
+
+    #[test]
+    fn the_images_own_runtime_services_move_with_a_cohort_built_for_another_runtime() {
+        let served = |fs: Option<u32>| [("fs", fs)].into_iter().collect::<BTreeMap<_, _>>();
+        // The image's fs built for runtime 31, the tree declares 32: the real
+        // refusal a cohort met when only swapped services were compared.
+        assert_eq!(services_to_move(Some(32), &served(Some(31))), vec!["fs"]);
+        assert_eq!(services_to_move(Some(32), &served(None)), vec!["fs"]);
+        assert!(services_to_move(Some(32), &served(Some(32))).is_empty());
+        assert!(services_to_move(None, &served(Some(31))).is_empty());
     }
 
     #[test]

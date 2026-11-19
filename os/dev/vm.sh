@@ -3,7 +3,7 @@
 # screenshots, pull logs, and shut down. Designed for machines where qemu lives
 # in a distrobox and the host is immutable (see os/dev/_common.sh for config).
 #
-#   ./os/dev/vm.sh boot [--gl] [--disk PATH] [--serial ID] [--tpm] [--secboot] [--attach PATH]
+#   ./os/dev/vm.sh boot [--gl|--vulkan] [--disk PATH] [--serial ID] [--tpm] [--secboot] [--attach PATH]
 #                       [--validation-sysext PATH]
 #                                              start the VM (detached); --serial gives
 #                                              the boot disk a stable hardware serial
@@ -75,6 +75,7 @@
 #   --gl: the corresponding virtio GL device with egl-headless. Gives
 #       the guest hardware GL (virgl) so the compositor can run — BUT screendump
 #       only captures GL scanouts, so the 2D greeter/console show "no surface".
+#   --vulkan: --gl plus Vulkan on the same GPU through virtio-gpu Venus.
 #   There is no single headless mode that screenshots both the 2D greeter and the
 #   GL compositor; pick per task. Serial logging (below) works in both.
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
@@ -142,7 +143,7 @@ cmd_boot() {
   local mode=2d disk="$TILO_DISK" attach="" disk_serial=""
   local validation="${TILO_VM_VALIDATION_SYSEXT:-}"
   while [ $# -gt 0 ]; do case "$1" in
-    --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;; --disk) disk="$2"; shift;;
+    --gl) mode=gl;; --vulkan) mode=vulkan;; --2d) mode=2d;; --window) mode=window;; --disk) disk="$2"; shift;;
     # The installer binds a destructive target to WWN or serial; a virtio disk
     # has neither unless QEMU is given one.
     --serial) disk_serial="$2"; shift;;

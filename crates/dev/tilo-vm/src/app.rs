@@ -1372,6 +1372,24 @@ impl App {
                     json!({ "vm": vm.name, "path": output }),
                 ))
             }
+            VmCommand::Sound { name, window } => {
+                let vm = self.resolve_vm(name.as_deref())?;
+                if !vm.entry.sound {
+                    return Err(CliError::Unsupported {
+                        what: format!("measuring {}'s sound: it has no sound card", vm.name),
+                        alternative:
+                            "create a VM with one: tilo-vm vm create <name> --sound (libvirt or qemu)"
+                                .into(),
+                    });
+                }
+                let disk = vm.entry.disk.as_deref().unwrap_or_default();
+                let path = std::path::PathBuf::from(crate::sound::wav_path(disk));
+                let measured = crate::sound::measure_file(&vm.name, &path, window)?;
+                Ok(Outcome::new(
+                    crate::sound::describe(&path, &measured),
+                    json!({ "vm": vm.name, "path": path, "sound": measured }),
+                ))
+            }
             VmCommand::Reset { name } => {
                 let vm = self.resolve_vm(name.as_deref())?;
                 let adapter = Self::adapter(&vm)?;
@@ -1926,6 +1944,12 @@ impl App {
                 alternative: "use --hypervisor libvirt or qemu, or omit them".into(),
             });
         }
+        if (args.sound || args.vulkan) && !matches!(adapter, "libvirt" | "qemu") {
+            return Err(CliError::Unsupported {
+                what: format!("--sound or --vulkan with the {adapter} adapter"),
+                alternative: "use --hypervisor libvirt or qemu, or omit them".into(),
+            });
+        }
         if args.direct_boot_bundle.is_some() && adapter != "whpx" {
             return Err(CliError::Unsupported {
                 what: format!("--direct-boot-bundle with the {adapter} adapter"),
@@ -2121,6 +2145,8 @@ impl App {
             heads: args.heads,
             gl: args.gl,
             render_node: render_node.as_ref().map(|node| node.path.clone()),
+            vulkan: args.vulkan,
+            sound: args.sound,
             resolution: args.resolution,
             cpus: args.cpus,
             ssh_port: plan.ssh_port,
@@ -2145,6 +2171,14 @@ impl App {
             &root_key,
         )?;
         run_all(&mut self.runner, &commands)?;
+        let (vulkan, sound_wav) = (
+            entry.vulkan,
+            entry
+                .disk
+                .as_deref()
+                .filter(|_| entry.sound)
+                .map(crate::sound::wav_path),
+        );
         registry.vms.insert(args.name.clone(), entry);
         if registry.default.is_none() {
             registry.default = Some(args.name.clone());
@@ -2179,7 +2213,19 @@ impl App {
             );
         }
         if let Some(node) = &render_node {
-            let _ = write!(text, "\n  GL renders on {} ({})", node.path, node.reason);
+            let api = if vulkan {
+                "GL and Vulkan render"
+            } else {
+                "GL renders"
+            };
+            let _ = write!(text, "\n  {api} on {} ({})", node.path, node.reason);
+        }
+        if let Some(wav) = &sound_wav {
+            let _ = write!(
+                text,
+                "\n  its sound card plays into {wav} (tilo-vm vm sound {} measures it)",
+                args.name
+            );
         }
         if plan.choice.adapter == "libvirt" {
             let _ = write!(text, "\n  {}", host::VIRT_MANAGER_TIP);
@@ -3528,8 +3574,8 @@ impl App {
                 command: "tilo-deployment entries".into(),
                 status,
                 stderr: format!(
-                    "{detail}\nthe next boot would have no boot loader try counter, so a deployment that fails to boot would be chosen again instead of the previous one; fix this before rebooting VM {}",
-                    vm.name
+                    "{detail}\nthe next boot would have no boot loader try counter, so a deployment that fails to boot would be chosen again instead of the previous one. The deployment is staged: to boot it without that protection, `tilo-vm vm restart {name}` (if it does not come up, `tilo-vm vm serial {name}` shows the boot menu, where the previous entry boots the old image); the image it boots maintains its entries from then on",
+                    name = vm.name
                 ),
             })
         };
@@ -7336,6 +7382,17 @@ mod tests {
             for adapter in ["whpx", "utm", "hyperv"] {
                 assert!(App::validate_create_options(adapter, &args).is_err());
             }
+            args.sound = true;
+            args.vulkan = true;
+            assert!(App::validate_create_options("qemu", &args).is_ok());
+            assert!(App::validate_create_options("libvirt", &args).is_ok());
+            assert!(App::validate_create_options("utm", &args).is_err());
+            assert!(
+                <crate::cli::Cli as clap::Parser>::try_parse_from(["tilo-vm", "vm", "create", "v", "--vulkan"]).is_err(),
+                "--vulkan without --gl has no GPU to render on"
+            );
+            args.sound = false;
+            args.vulkan = false;
             args.heads = Some(2);
             assert!(App::validate_create_options("qemu", &args).is_err());
             assert!(App::validate_create_options("libvirt", &args).is_ok());
@@ -8870,6 +8927,8 @@ mod tests {
             heads: None,
             gl: false,
             render_node: None,
+            vulkan: false,
+            sound: false,
             resolution: None,
             cpus: None,
             ssh: None,

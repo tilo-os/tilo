@@ -55,7 +55,7 @@ impl PendingOpen {
 }
 
 #[cfg(test)]
-#[cfg(unix)]
+#[cfg(feature = "desktop")]
 mod tests {
     use super::*;
     use std::io::{BufRead, Read, Write};
@@ -99,7 +99,10 @@ mod tests {
     }
 
     fn tab(socket: UnixStream) -> crate::TerminalWidget {
-        crate::TerminalWidget::spawn_hosted(HostedProcessServices { ush: Some(socket) }).unwrap()
+        crate::TerminalWidget::spawn_hosted(HostedProcessServices {
+            ush: Some(tilo_process::local_socket::ServiceSocket::from(socket)),
+        })
+        .unwrap()
     }
 
     fn finish(widget: &mut crate::TerminalWidget, doc: &automerge::AutoCommit) {
@@ -240,7 +243,7 @@ mod tests {
                 assert_eq!(lease.read(&mut [0]).unwrap(), 0);
             });
             let pending = PendingOpen::start(
-                Some(HostedProcessServices { ush: Some(client) }),
+                Some(HostedProcessServices { ush: Some(tilo_process::local_socket::ServiceSocket::from(client)) }),
                 SessionTarget::default_environment(),
                 Requester::Person,
                 None,
@@ -299,8 +302,9 @@ mod tests {
         let (client, mut server) = UnixStream::pair().unwrap();
         server.set_read_timeout(Some(hang_bound())).unwrap();
         let waker = Arc::new(Mutex::new(ui::WakeHandle::new()));
-        let mut sessions =
-            crate::sessions::Sessions::hosted(HostedProcessServices { ush: Some(client) });
+        let mut sessions = crate::sessions::Sessions::hosted(HostedProcessServices {
+            ush: Some(tilo_process::local_socket::ServiceSocket::from(client)),
+        });
         let target = SessionTarget::default_environment();
         assert!(
             sessions
@@ -341,7 +345,7 @@ mod tests {
                 );
             }));
             widget.set_sessions(crate::sessions::Sessions::hosted(HostedProcessServices {
-                ush: Some(client),
+                ush: Some(tilo_process::local_socket::ServiceSocket::from(client)),
             }));
             widget
                 .switch_target(&SessionTarget::default_environment(), Requester::Person)

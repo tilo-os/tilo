@@ -6,6 +6,7 @@ exclude = [
     "vendor/hexane",
     "vendor/iroh-blobs",
     "vendor/buffa-build",
+    "vendor/swarm-discovery",
     "tools/web/wasm-split",
     "fuzz",
     # A wasm32 library `tilolang bench --library` runs; built by its own build.sh.
@@ -1662,6 +1663,10 @@ hexane = { path = "vendor/hexane" }
 iroh-blobs = { path = "vendor/iroh-blobs" }
 # Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
 buffa-build = { path = "vendor/buffa-build" }
+# A multicast send failure is said once, and again only when its cause
+# changes, so a network that refuses multicast does not bury the log. See
+# vendor/swarm-discovery/PROVENANCE.md.
+swarm-discovery = { path = "vendor/swarm-discovery" }
 # Verify Cast TLS handshake signatures and bound cancellation; identity
 # authentication remains a separate explicit trust decision. See provenance.
 fcast-sender-sdk = { path = "vendor/fcast-sender-sdk" }

@@ -13,6 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 scratchpad-model = { path = "../scratchpad-model" }
 tilo-model-guest = { path = "../../crates/sdk/tilo-model-guest" }
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

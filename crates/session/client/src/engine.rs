@@ -214,6 +214,9 @@ pub struct Engine {
     /// The layout's workspaces being founded now: a pass that comes while one is signed founds it
     /// no second time.
     founding: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
+    /// Ticks whenever a founding ends, founded or not: what an ask of a workspace being founded
+    /// waits on ([`Self::ask_holder`]).
+    founded: tokio::sync::watch::Sender<u64>,
     /// What lands here from the workspaces' other devices: what a read waiting for a record it
     /// holds none of wakes on.
     arrivals: Arc<crate::arrivals::Arrivals>,
@@ -234,6 +237,9 @@ pub struct Engine {
     /// Where a workspace this device makes is founded: its own workspace service, once it is open
     /// ([`Self::serve_founding`]).
     founder: std::sync::OnceLock<Arc<dyn Founder>>,
+    /// When the links out of each workspace lapse, as its holder lists them: a joiner redeeming
+    /// one dials this device, which stays dialable while one is open ([`Self::invitations_open`]).
+    open_links: std::sync::Mutex<std::collections::BTreeMap<WorkspaceId, Vec<u64>>>,
 }
 
 /// One holder of a workspace, as a member's device reads it off the holder's
@@ -277,13 +283,19 @@ pub struct Delegation {
     pub revocable: bool,
 }
 
-/// What this device's own workspace service answers an ask, once it has.
+/// What a workspace's holder answers an ask of its governance, once it has.
+#[cfg(not(target_arch = "wasm32"))]
 pub type ServiceAnswer =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>;
 
-/// What this device asks its own workspace service, once it is open: founding a workspace this
-/// device made there, and asking a workspace held there one of its governance actions as this
-/// device, a member of it.
+/// What a workspace's holder answers an ask of its governance, once it has.
+#[cfg(target_arch = "wasm32")]
+pub type ServiceAnswer =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>>>>;
+
+/// What this device asks of the workspace services, once its own is open: founding a workspace
+/// this device made there, and asking a workspace one of its governance actions as this device,
+/// a member of it, of whichever service holds it.
 pub trait Founder: Send + Sync {
     /// Found `workspace` under `name`, answered once this device holds it.
     fn found(
@@ -292,8 +304,9 @@ pub trait Founder: Send + Sync {
         name: String,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
 
-    /// Ask `workspace`'s governance action `action` with `arguments`, when the service holds
-    /// `workspace`; `None` when it does not.
+    /// Ask `workspace`'s governance action `action` with `arguments` of its holder: this
+    /// device's own service when it holds `workspace`, else the holder its enrollment names, on
+    /// the device action service. `None` when this device reaches no holder of it.
     fn ask(
         &self,
         workspace: WorkspaceId,
@@ -503,6 +516,7 @@ impl Engine {
             link: std::sync::Mutex::new(None),
             unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             founding: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            founded: tokio::sync::watch::Sender::new(0),
             arrivals: Arc::new(crate::arrivals::Arrivals::default()),
             handed,
             group_keys: std::sync::Mutex::default(),
@@ -510,6 +524,7 @@ impl Engine {
             kept: std::sync::Mutex::default(),
             service_root: None,
             founder: std::sync::OnceLock::new(),
+            open_links: std::sync::Mutex::default(),
         }
     }
 
@@ -1134,9 +1149,9 @@ impl Engine {
     /// Whether `workspace` is held on this device, by its own workspace service: everything the
     /// workspace retains is here, and no other device replays any of it.
     #[must_use]
-    pub fn hosts_itself(&self, workspace: &str) -> bool {
+    pub fn is_holder(&self, workspace: &str) -> bool {
         WorkspaceId::parse(workspace).is_some_and(|workspace| {
-            self.host_of(workspace) == Some(self.identity.device_cert.device_public_key)
+            self.holder_of(workspace) == Some(self.identity.device_cert.device_public_key)
         })
     }
 
@@ -1651,19 +1666,19 @@ impl Engine {
         &self.owner
     }
 
-    /// Where `workspace` 's host is reached and the device its enrollment pins: the address its
+    /// Where `workspace`'s holder is reached and the device its enrollment pins: the address its
     /// live session is dialled at.
     #[cfg(target_os = "linux")]
-    pub fn workspace_host(
+    pub fn holder_address(
         &self,
         workspace: WorkspaceId,
     ) -> Option<([u8; 32], iroh_base::EndpointAddr)> {
         self.owner.host_addr(workspace)
     }
 
-    /// The device hosting `workspace`: the one whose workspace service orders its commits,
+    /// The device holding `workspace`: the one whose workspace service orders its commits,
     /// which is where the person's other devices enter it.
-    pub fn host_of(&self, workspace: WorkspaceId) -> Option<[u8; 32]> {
+    pub fn holder_of(&self, workspace: WorkspaceId) -> Option<[u8; 32]> {
         self.owner
             .with_current(workspace, |view| {
                 let host = view.workspace_host();
@@ -1821,6 +1836,8 @@ impl Engine {
         }
         self.found_here(workspace, name).await;
         self.founding.lock_recover().remove(&workspace);
+        self.founded
+            .send_modify(|ended| *ended = ended.wrapping_add(1));
     }
 
     /// [`Self::found`] once nothing else founds `workspace`.
@@ -1860,28 +1877,85 @@ impl Engine {
         let _ = self.founder.set(founder);
     }
 
-    /// Ask `workspace`'s governance action `action` with `arguments` of this device's own
-    /// workspace service, when it holds `workspace`.
+    /// Ask `workspace`'s governance action `action` with `arguments` of its holder, as this
+    /// device ([`Founder::ask`]). A workspace this device is founding now is asked once the
+    /// founding ended: until then it has no holder.
     #[must_use]
-    pub fn ask_own_service(
-        &self,
+    pub fn ask_holder(
+        self: &Arc<Self>,
         workspace: WorkspaceId,
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer> {
-        self.founder.get()?.ask(workspace, action, arguments)
+        let mut ended = self.founded.subscribe();
+        if !self.founding.lock_recover().contains(&workspace) {
+            return self.founder.get()?.ask(workspace, action, arguments);
+        }
+        let (engine, action) = (Arc::clone(self), action.to_owned());
+        Some(Box::pin(async move {
+            while engine.founding.lock_recover().contains(&workspace) {
+                if ended.changed().await.is_err() {
+                    break;
+                }
+            }
+            match engine
+                .founder
+                .get()
+                .and_then(|founder| founder.ask(workspace, &action, arguments))
+            {
+                Some(asked) => asked.await,
+                None => Err("this device reaches no holder of the workspace".to_owned()),
+            }
+        }))
     }
 
-    /// Whether this device holds a link into a workspace that still admits someone: a person who
-    /// redeems it dials this device, so its relays stay up until the link is taken back or lapses.
+    /// Whether this device holds a workspace whose link still admits someone: a person who
+    /// redeems it dials this device, which stays dialable until the link is taken back or lapses.
     #[must_use]
-    #[cfg(target_os = "linux")]
     pub fn invitations_open(&self, now: SystemTime) -> bool {
-        self.workspaces().into_iter().any(|workspace| {
-            self.owner
-                .pending_invitations(workspace, now)
-                .is_ok_and(|pending| !pending.is_empty())
-        })
+        let now = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        #[expect(
+            clippy::needless_collect,
+            reason = "the open links are taken out so their lock is released before each \
+                      workspace's holder is read under the owner's"
+        )]
+        let open: Vec<WorkspaceId> = self
+            .open_links
+            .lock_recover()
+            .iter()
+            .filter(|(_, lapses)| lapses.iter().any(|lapses| u128::from(*lapses) > now))
+            .map(|(workspace, _)| *workspace)
+            .collect();
+        let own = self.identity.device_cert.device_public_key;
+        open.into_iter()
+            .any(|workspace| self.holder_of(workspace) == Some(own))
+    }
+
+    /// Note the links into `workspace` its holder's list names, each open until it lapses: in
+    /// place of what was noted before.
+    pub fn note_invitations(&self, workspace: WorkspaceId, listed: &serde_json::Value) {
+        let lapses = listed
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|link| {
+                link.get("expires_at_ns")
+                    .and_then(serde_json::Value::as_u64)
+            })
+            .collect();
+        self.open_links.lock_recover().insert(workspace, lapses);
+    }
+
+    /// Note the link into `workspace` that is open until `until`: one more beside the ones its
+    /// holder listed.
+    pub fn note_link(&self, workspace: WorkspaceId, until: u64) {
+        self.open_links
+            .lock_recover()
+            .entry(workspace)
+            .or_default()
+            .push(until);
     }
 
     /// Put the workspace a join is installing into on this device's layout: an enrollment only
@@ -2129,6 +2203,29 @@ mod tests {
 
             assert!(!engine.may_delete(WorkspaceId::new()));
         }
+    }
+
+    /// A link out of a workspace this device holds keeps it dialable for whoever redeems it, and
+    /// only until the link lapses.
+    #[test]
+    fn a_link_out_of_a_held_workspace_keeps_this_device_dialable_until_it_lapses() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, _) = identity(DeviceCapabilities::member());
+        let engine = engine(state.path(), identity);
+        let workspace = founded(&engine);
+        let now = tilo_clock::wall();
+        assert!(!engine.invitations_open(now), "no link is out");
+
+        let lapses = tilo_clock::unix_now_ns().saturating_add(60_000_000_000);
+        engine.note_link(workspace, lapses);
+        assert!(engine.invitations_open(now), "one is");
+        assert!(!engine.invitations_open(now + std::time::Duration::from_secs(120)));
+
+        let listed = serde_json::json!([{ "expires_at_ns": lapses }]);
+        engine.note_invitations(workspace, &listed);
+        assert!(engine.invitations_open(now), "its holder lists it too");
+        engine.note_invitations(workspace, &serde_json::json!([]));
+        assert!(!engine.invitations_open(now), "the holder lists none");
     }
 
     /// A machine copied from a device, before the workspace admits it, reads what the copy holds,

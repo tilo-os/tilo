@@ -11382,6 +11382,12 @@
               "array",
               "null"
             ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -13026,7 +13032,7 @@
               "null"
             ]
           },
-          "run": {
+          "id": {
             "type": "string"
           }
         },
@@ -13040,7 +13046,7 @@
           "tool",
           "undoable",
           "items",
-          "run"
+          "id"
         ],
         "description": ""
       },
@@ -17081,15 +17087,9 @@
       "files.tree.new-folder.Arguments": {
         "type": "object",
         "properties": {
-          "parent": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "document": {
-            "type": "string"
-          }
+          "parent": {},
+          "name": {},
+          "document": {}
         },
         "required": [
           "parent",
@@ -17100,15 +17100,9 @@
       "files.tree.new-file.Arguments": {
         "type": "object",
         "properties": {
-          "parent": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "document": {
-            "type": "string"
-          }
+          "parent": {},
+          "name": {},
+          "document": {}
         },
         "required": [
           "parent",
@@ -17119,15 +17113,9 @@
       "files.tree.move.Arguments": {
         "type": "object",
         "properties": {
-          "node": {
-            "type": "string"
-          },
-          "parent": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          }
+          "node": {},
+          "parent": {},
+          "name": {}
         },
         "required": [
           "node",
@@ -17139,15 +17127,9 @@
       "files.tree.write.Arguments": {
         "type": "object",
         "properties": {
-          "node": {
-            "type": "string"
-          },
-          "content": {
-            "type": "string"
-          },
-          "size": {
-            "type": "integer"
-          }
+          "node": {},
+          "content": {},
+          "size": {}
         },
         "required": [
           "node",
@@ -17159,9 +17141,7 @@
       "files.tree.trash.Arguments": {
         "type": "object",
         "properties": {
-          "node": {
-            "type": "string"
-          }
+          "node": {}
         },
         "required": [
           "node"
@@ -17171,9 +17151,7 @@
       "files.tree.restore.Arguments": {
         "type": "object",
         "properties": {
-          "node": {
-            "type": "string"
-          }
+          "node": {}
         },
         "required": [
           "node"
@@ -17328,7 +17306,7 @@
         ],
         "description": ""
       },
-      "git_client.repo.record-repository.Arguments": {
+      "git_client.repo.store-repository.Arguments": {
         "type": "object",
         "properties": {
           "shared": {
@@ -19906,7 +19884,7 @@
         "required": [],
         "description": ""
       },
-      "maps.offline-areas.record.Arguments": {
+      "maps.offline-areas.remember.Arguments": {
         "type": "object",
         "properties": {
           "device": {
@@ -21403,6 +21381,9 @@
           "markdown"
         ],
         "description": ""
+      },
+      "notes.pages.write-note.Result": {
+        "type": "object"
       },
       "osk.keyboard.set-layout.Arguments": {
         "type": "object",
@@ -28635,7 +28616,7 @@
               "null"
             ]
           },
-          "run": {
+          "id": {
             "type": "string"
           }
         },
@@ -28649,7 +28630,7 @@
           "tool",
           "undoable",
           "items",
-          "run"
+          "id"
         ],
         "description": ""
       },
@@ -33361,8 +33342,8 @@
     {
       "app": "so.tilo.git-client",
       "resource": "git_client.repo",
-      "action": "record-repository",
-      "arguments": "#/components/schemas/git_client.repo.record-repository.Arguments"
+      "action": "store-repository",
+      "arguments": "#/components/schemas/git_client.repo.store-repository.Arguments"
     },
     {
       "app": "so.tilo.git-client",
@@ -33811,8 +33792,8 @@
     {
       "app": "so.tilo.maps",
       "resource": "maps.offline-areas",
-      "action": "record",
-      "arguments": "#/components/schemas/maps.offline-areas.record.Arguments"
+      "action": "remember",
+      "arguments": "#/components/schemas/maps.offline-areas.remember.Arguments"
     },
     {
       "app": "so.tilo.maps",

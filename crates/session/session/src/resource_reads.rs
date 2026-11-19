@@ -112,7 +112,7 @@ impl NativeDocumentReads for Records {
         // replayed to it and no other device sends its records, so a record it holds nothing of is
         // new.
         if !self.engine.reaches_host()
-            || self.engine.hosts_itself(&route.cluster_id)
+            || self.engine.is_holder(&route.cluster_id)
             || self
                 .engine
                 .holds_resource(&route.cluster_id, &route.app_id, &route.document_id)
@@ -518,7 +518,7 @@ mod tests {
             let records = Records::new(Arc::clone(&engine));
             assert!(engine.reaches_host(), "a peer network is running");
             assert!(
-                engine.hosts_itself(&workspace.to_string()),
+                engine.is_holder(&workspace.to_string()),
                 "it was founded here"
             );
             assert!(
@@ -575,7 +575,7 @@ mod tests {
             let (link, mut said) = networked(&engine);
             let records = Records::new(Arc::clone(&engine));
             let id = workspace.to_string();
-            assert!(!engine.hosts_itself(&id), "another device hosts it");
+            assert!(!engine.is_holder(&id), "another device hosts it");
             link.host_ready(topic_of(workspace), true);
             assert!(!engine.holds_resource(&id, APP, RECORD));
 

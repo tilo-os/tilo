@@ -458,10 +458,25 @@ impl PageList {
         Some(self.row(index)?.page)
     }
 
-    /// Whether the hierarchy is `other`'s: the rows, their titles and their
+    /// Whether the rows stand as `other`'s: the same notes, in the same
     /// places.
-    fn same_shape(&self, other: &Self) -> bool {
-        self.rows == other.rows
+    fn same_notes(&self, other: &Self) -> bool {
+        self.rows.len() == other.rows.len()
+            && self
+                .rows
+                .iter()
+                .zip(&other.rows)
+                .all(|(row, next)| row.page == next.page && row.parent == next.parent)
+    }
+
+    /// The notes whose row reads differently in `other`: a renamed note.
+    fn renamed(&self, other: &Self) -> Vec<PageId> {
+        self.rows
+            .iter()
+            .zip(&other.rows)
+            .filter(|(row, next)| row.page == next.page && row.title != next.title)
+            .map(|(row, _)| row.page)
+            .collect()
     }
 
     /// The note `page` stands under; `None` for a top-level note.
@@ -844,10 +859,19 @@ impl PageSidebar {
 
     /// Mirror the workspace into the tree. Cheap when nothing changed; a
     /// changed hierarchy rebuilds the snapshot and the list reconciles it
-    /// against the notes' stable keys.
+    /// against the notes' stable keys, while a rename reads again in the
+    /// rows that show it.
     pub fn sync_from_workspace(&mut self, workspace: &Workspace) {
         let next = PageList::build(workspace);
-        if !next.same_shape(self.tree.model()) {
+        if next.same_notes(self.tree.model()) {
+            let renamed = self.tree.model().renamed(&next);
+            if !renamed.is_empty() {
+                self.tree.update_model_changes(
+                    &[ui::widget::virtual_list::ListModelChange::RowsChanged { keys: renamed }],
+                    |model| *model = next,
+                );
+            }
+        } else {
             self.tree.update_model(|model| *model = next);
         }
         let mut reveal = None;

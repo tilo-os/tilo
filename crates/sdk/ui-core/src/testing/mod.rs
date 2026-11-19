@@ -24,15 +24,6 @@ pub(crate) use own_process::{in_own_process, test_path};
 #[cfg(test)]
 pub(crate) use owned_text::OwnedText;
 pub use tilo_test_env::{hang_bound, hang_deadline, wait_for, wait_until};
-
-/// Serve the history of the resources a window keeps — `own` and every part of a chain `store`
-/// holds — to every History the tests on this thread open, as the session serves them.
-pub fn serve_history(store: &crate::resource::ResourceStore, own: &crate::DocumentId) {
-    let held = store.held_resources();
-    let kept = std::iter::once(own).chain(held.iter().filter(|id| *id != own));
-    let docs: Vec<_> = kept.filter_map(|id| store.read(id, Clone::clone)).collect();
-    crate::history_mode::feed::tests::serve_all(&docs);
-}
 #[cfg(test)]
 pub(crate) use widgets::{
     TwoWindows, delegate_widget_methods, inert_widget_methods, test_app_widget,

@@ -110,11 +110,6 @@ pub(crate) struct StoredWorkspace {
     /// Content-addressed cold UUID index, also anchored in signed public workspace history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect_history_root: Option<[u8; 32]>,
-    /// The invitations this device issued for the workspace, the challenges it is
-    /// answering and the joins it admitted: what another device's join is
-    /// decided against, held by every key holder that answers one.
-    #[serde(default, rename = "join_ledger")]
-    pub join_log: crate::join_log::JoinLog,
     /// The join admissions committed here, by the digest of their binding:
     /// the workspace delta that carried each one is published under its receipt.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -141,7 +136,6 @@ impl StoredWorkspace {
                 &record.workspace_memberships,
                 &record.effect_receipts,
                 &record.shortcut_change,
-                &record.join_log,
                 &record.join_admissions,
             ))
             .ok()

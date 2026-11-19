@@ -2749,10 +2749,10 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Tomorrow",
             "Next week",
             "Pick date…",
+            "Set time…",
             "No date",
             "Remind me…",
             "Remind",
-            "Low",
         ],
         "the window's palette"
     );
@@ -2798,7 +2798,7 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
     }
     // A task is made by an action whose title the list's entry takes, and one more that pins it
     // to today; their rows, and the task's date and reminder picks, fill the room at this height,
-    // so of what the task says of itself below them (its priorities) the first alone is in sight.
+    // so none of what the task says of itself below them (its priorities) is in sight.
     // The commands a task opens with run in the task's own window, which the
     // live session covers; this window offers the ones above.
     session

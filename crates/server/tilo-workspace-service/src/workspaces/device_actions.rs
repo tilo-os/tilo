@@ -14,7 +14,10 @@
 //!
 //! An action whose declaration says it is a transform ([`HostJobs`]) is work
 //! this host can take: it says so, and it runs the invocation that comes back
-//! on the same action service as a compute job over content it keeps. Every other app
+//! on the same action service as a compute job over content it keeps. A
+//! workspace's governance actions (inviting someone, listing and cancelling
+//! invitations) are answered here too, as the workspace's governance decides
+//! them for the asking device's certificate in its roster. Every other app
 //! action is not answered here: those reach the host through the session its
 //! members run, where the caller's certificate and the workspace's policy
 //! decide them ([`AppActionServer`](crate::app_serving::AppActionServer)).
@@ -32,7 +35,7 @@ use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ActionService, Offering, ReadFuture, Workspaces};
-use tilo_server_protocol::{Machine, Whose, WorkSetting};
+use tilo_server_protocol::{Machine, Whose, WorkSetting, WorkspaceId};
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::GovernedWorkspace;
@@ -152,7 +155,7 @@ const MAX_OFFERED: usize = 256;
 /// The action service is built before any embedder hands the host a job runner, so
 /// [`Self::serve`] fills it in. A host without one says it runs no app
 /// actions, as it always did.
-pub(crate) struct HostWork {
+pub(crate) struct DeviceWork {
     jobs: std::sync::RwLock<Option<Arc<dyn HostJobs>>>,
     /// What this host offers, as its person's entry for it says
     /// ([`Workspaces::set_offer`]); it takes no work until one is set.
@@ -162,10 +165,65 @@ pub(crate) struct HostWork {
     workspaces: Arc<WorkspacesMap>,
     offered: std::sync::Mutex<Vec<Offered>>,
     log: std::sync::Mutex<InvocationLog<InvocationState>>,
+    /// The workspaces' governance, once they open: what a member device asks of it here.
+    governance: std::sync::OnceLock<std::sync::Weak<super::actions::Shared>>,
     runtime: tokio::runtime::Handle,
 }
 
-impl HostWork {
+impl DeviceWork {
+    /// Answer the workspaces' governance actions through `governance` from now on.
+    pub(crate) fn govern_with(&self, governance: std::sync::Weak<super::actions::Shared>) {
+        let _ = self.governance.set(governance);
+    }
+
+    /// The workspaces' governance, while it serves: held weakly, as it holds the workspaces.
+    fn governance(&self) -> Option<super::ServiceWorkspaceActions> {
+        let shared = self.governance.get()?.upgrade()?;
+        Some(super::ServiceWorkspaceActions { shared })
+    }
+
+    /// `request`, an invocation of a workspace's governance by a device of its roster, decided
+    /// as the workspace's governance decides it for that device's certificate.
+    fn govern(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let (Some(governance), Some(device), Some(workspace)) = (
+            self.governance(),
+            caller.device_public_key().copied(),
+            caller.workspace().and_then(WorkspaceId::parse),
+        ) else {
+            return Pending::ready(Err(ActionCallError::UnknownAction));
+        };
+        let workspaces = Arc::clone(&self.workspaces);
+        let caller = caller.clone();
+        let (completer, answer) = tilo_actions::remote::pending();
+        self.runtime.spawn(async move {
+            let held = workspaces.lock().await.get(&workspace.to_string()).cloned();
+            let certificate = match held {
+                Some(held) => held
+                    .lock()
+                    .await
+                    .peer()
+                    .certificates()
+                    .into_iter()
+                    .find(|certificate| certificate.device_public_key == device),
+                None => None,
+            };
+            let Some(certificate) = certificate else {
+                completer.complete(Err(ActionCallError::NotPermitted));
+                return;
+            };
+            let receipt = governance
+                .in_workspace_as(workspace, &certificate)
+                .invoke(&caller, request)
+                .await;
+            completer.complete(receipt.unwrap_or(Err(ActionCallError::Unanswered)));
+        });
+        answer
+    }
+
     /// Set what this host offers its workspaces.
     pub(crate) fn set_offer(&self, offer: Offer) {
         *self.offer.write_recover() = offer;
@@ -241,7 +299,7 @@ impl HostWork {
     }
 }
 
-impl HostWork {
+impl DeviceWork {
     /// Run the work offered here through `jobs`.
     pub(super) fn serve(&self, jobs: Arc<dyn HostJobs>) {
         *self.jobs.write_recover() = Some(jobs);
@@ -259,6 +317,7 @@ impl HostWork {
             workspaces,
             offered: std::sync::Mutex::default(),
             log: std::sync::Mutex::default(),
+            governance: std::sync::OnceLock::new(),
             runtime: tokio::runtime::Handle::current(),
         })
     }
@@ -274,11 +333,11 @@ pub(crate) fn action_service(
     workspaces: Arc<WorkspacesMap>,
     device: SigningKey,
     setting: WorkSetting,
-) -> (ActionService, Arc<HostWork>) {
-    let work = HostWork::new(Arc::clone(&workspaces));
+) -> (ActionService, Arc<DeviceWork>) {
+    let work = DeviceWork::new(Arc::clone(&workspaces));
     let action_service = ActionService::over(
         device,
-        Arc::new(HostActions(Arc::clone(&work))),
+        Arc::new(Answers(Arc::clone(&work))),
         Arc::new(GovernedWorkspaces(workspaces)),
     );
     action_service.offering(HostOffering {
@@ -321,7 +380,7 @@ impl Workspaces for GovernedWorkspaces {
 /// of the inputs it already keeps, so the device that asks weighs moving them
 /// against the run where the job was asked.
 struct HostOffering {
-    work: Arc<HostWork>,
+    work: Arc<DeviceWork>,
     setting: WorkSetting,
 }
 
@@ -357,14 +416,14 @@ impl Offering for HostOffering {
 }
 
 /// The host's answers on the device action service: the work it was offered, run as a
-/// compute job, and nothing else.
+/// compute job, and its workspaces' governance actions.
 ///
 /// An app action reaches the host through the session its members run, which
 /// carries the caller's certificate for the workspace's policy to decide. A
 /// request that arrives here is run only for work this host answered an offer
-/// for; anything else is refused as one this device does not serve, so its
-/// caller learns at once instead of waiting.
-struct HostActions(Arc<HostWork>);
+/// for, or for the workspace's governance; anything else is refused as one this
+/// device does not serve, so its caller learns at once instead of waiting.
+pub(crate) struct Answers(pub(crate) Arc<DeviceWork>);
 
 fn not_served() -> ActionCallError {
     ActionCallError::Unavailable {
@@ -372,7 +431,7 @@ fn not_served() -> ActionCallError {
     }
 }
 
-impl ActionProvider for HostActions {
+impl ActionProvider for Answers {
     fn query(
         &self,
         _caller: &Caller,
@@ -386,6 +445,9 @@ impl ActionProvider for HostActions {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if request.target.provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER {
+            return self.0.govern(caller, request);
+        }
         let Some(requester) = caller.device_public_key().copied() else {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         };
@@ -475,7 +537,15 @@ impl ActionProvider for HostActions {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.0.log.lock_recover().get(caller, id).cloned()
+        let logged = self.0.log.lock_recover().get(caller, id).cloned();
+        if logged.is_some() {
+            return logged;
+        }
+        let workspace = caller.workspace().and_then(WorkspaceId::parse)?;
+        self.0
+            .governance()?
+            .in_workspace(workspace)
+            .observe(caller, id)
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {

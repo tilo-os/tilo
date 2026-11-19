@@ -16,8 +16,14 @@ use std::time::Duration;
 
 use crate::engine::Engine;
 use neighbour_wire::NeighbourMsg;
+use tilo_actions::InvocationUpdate;
+use tilo_actions::remote::{
+    ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_resource,
+};
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_network_actor::own_service::{OwnService, workspace_service};
+use tilo_peer_state::actions::{ActionService, FOLLOW_DEADLINE};
 use tilo_workspace_keys::KeyProvider;
 use tilo_workspace_service::workspaces::{DeviceKeyGroups, GroupKeys, KeySink};
 
@@ -71,6 +77,31 @@ pub(super) async fn open(
     .await
     .map_err(|error| error.to_string())?;
     Ok(own.install(Arc::new(service)))
+}
+
+/// Note the links out of the workspaces this device holds, as its own service lists them: they
+/// were made before this session, and whoever redeems one dials this device
+/// ([`Engine::invitations_open`]).
+pub(super) async fn note_open_links(engine: &Arc<Engine>) {
+    for workspace in engine.workspaces() {
+        let named = workspace.to_string();
+        if !engine.is_holder(&named) {
+            continue;
+        }
+        let Some(asked) = engine.ask_holder(
+            workspace,
+            tilo_workspace_service::workspaces::INVITATIONS,
+            serde_json::Map::new(),
+        ) else {
+            return;
+        };
+        match asked.await {
+            Ok(listed) => engine.note_invitations(workspace, &listed),
+            Err(error) => {
+                tracing::warn!(%error, %named, "the links out of a workspace were not listed");
+            }
+        }
+    }
 }
 
 /// This device's key service, as its workspace service asks it for a workspace's keys.
@@ -150,6 +181,7 @@ pub(crate) fn found_alone(engine: &Arc<Engine>) {
             identity,
             engine: Arc::downgrade(engine),
             network: None,
+            actions: None,
         })),
         Err(error) => {
             tracing::warn!(%error, "this device's workspace service did not open, so it founds no workspace");
@@ -171,6 +203,9 @@ pub(super) struct Founding {
         tokio::sync::mpsc::Sender<tilo_network_actor::NetEvent>,
     )>,
     pub(super) link: Option<Arc<crate::workspace_keys::KeyLink>>,
+    /// The session's device action service, which asks a workspace held elsewhere of its holder:
+    /// `None` while this device takes part in no peer network.
+    pub(super) actions: Option<ActionService>,
 }
 
 impl tilo_session_client::engine::Founder for Founding {
@@ -217,18 +252,86 @@ impl tilo_session_client::engine::Founder for Founding {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<tilo_session_client::engine::ServiceAnswer> {
         let engine = self.engine.upgrade()?;
-        let workspace = workspace.to_string();
-        // The service holds a workspace this device is the holder of: it shares this device's key.
-        if !engine.hosts_itself(&workspace) {
-            return None;
+        let named = workspace.to_string();
+        let request = governance_request(&named, action, arguments);
+        // The service holds a workspace this device is the holder of: it shares this device's key,
+        // and answers it here as it answers every other member's device.
+        if engine.is_holder(&named) {
+            let cert = &self.identity.device_cert;
+            let caller = Caller::authenticated(cert.user_public_key, cert.device_public_key)
+                .in_workspace(named);
+            let invoked = self
+                .service
+                .get()?
+                .workspaces()
+                .device_actions()
+                .invoke(&caller, request);
+            return Some(Box::pin(async move {
+                match invoked.await {
+                    Some(Ok(receipt)) => settled(receipt.status),
+                    Some(Err(error)) => Err(error.to_string()),
+                    None => Err(UNANSWERED.to_owned()),
+                }
+            }));
         }
-        let service = self.service.get()?;
-        let caller = self.identity.device_cert.clone();
-        let action = action.to_owned();
+        // Held elsewhere: its holder is asked at the address its enrollment names, as the device
+        // that holder is (a desktop's workspace service is its desktop's).
+        let (_, addr) = engine.holder_address(workspace)?;
+        let holder = engine.holder_of(workspace)?;
+        let actions = self.actions.as_ref()?;
+        actions.reach_device_at(holder, *addr.id.as_bytes());
+        let followed = std::sync::Arc::new(actions.remote(&self.endpoint, &addr, &named))
+            .invoke_until_settled(request, FOLLOW_DEADLINE);
         Some(Box::pin(async move {
-            service
-                .ask_workspace(&caller, &workspace, &action, arguments)
-                .await
+            match followed.await {
+                Some(Ok(InvocationUpdate::Succeeded { output, .. })) => {
+                    Ok(output.value.unwrap_or_default())
+                }
+                Some(Ok(InvocationUpdate::Failed { error, .. })) => Err(error.message),
+                Some(Ok(_)) => Err("the workspace's holder cancelled the request".to_owned()),
+                Some(Err(error)) => Err(error.to_string()),
+                None => Err(UNANSWERED.to_owned()),
+            }
         }))
+    }
+}
+
+/// What a request no holder answered says.
+const UNANSWERED: &str = "the workspace's holder dropped the request";
+
+/// `workspace`'s governance action `action` with `arguments`, as an invocation of it.
+fn governance_request(
+    workspace: &str,
+    action: &str,
+    arguments: serde_json::Map<String, serde_json::Value>,
+) -> InvokeRequest {
+    InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(
+                workspace_governance_resource(workspace),
+                action,
+            ),
+        },
+        argument: InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    }
+}
+
+/// What a receipt the governance answered at once comes to.
+fn settled(status: ReceiptStatus) -> Result<serde_json::Value, String> {
+    match status {
+        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
+        ReceiptStatus::Rejected { error } => Err(error.to_string()),
+        ReceiptStatus::Failed { error } => Err(error.message),
+        ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
+            Err("the request did not finish".to_owned())
+        }
     }
 }

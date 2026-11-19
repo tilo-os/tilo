@@ -992,7 +992,7 @@ struct WorkspacesInner {
     action_service: tilo_peer_state::actions::ActionService,
     /// The work this host runs for its workspaces' devices: none until an
     /// embedder hands it a job runner ([`Workspaces::run_jobs`]).
-    jobs: Arc<device_actions::HostWork>,
+    jobs: Arc<device_actions::DeviceWork>,
     /// Who waits for whom while workspaces are created ([`Creating`]).
     creating: creating::Creating,
     calls: Arc<voice::Calls>,
@@ -1628,6 +1628,20 @@ impl Workspaces {
     /// runs the invocations it won through it ([`HostJobs`]).
     pub fn run_jobs(&self, jobs: Arc<dyn HostJobs>) {
         self.inner.jobs.serve(jobs);
+    }
+
+    /// Answer the workspaces' governance actions their member devices ask on the device action
+    /// service through `governance`.
+    pub(crate) fn govern_device_actions_with(&self, governance: std::sync::Weak<actions::Shared>) {
+        self.inner.jobs.govern_with(governance);
+    }
+
+    /// What this host answers a device of its workspaces on the device action service: the work
+    /// it was offered, and the workspaces' governance. A device whose session answers that
+    /// service in the host's place hands these requests here.
+    #[must_use]
+    pub fn device_actions(&self) -> Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> {
+        Arc::new(device_actions::Answers(Arc::clone(&self.inner.jobs)))
     }
 
     /// The current role of `device` only when workspace Write permission is allowed,

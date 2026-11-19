@@ -360,7 +360,6 @@ fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effec
     let mut state = State::new();
     state.doc.put(ROOT, "body", "first").unwrap();
     state.commit_action(None, None);
-    crate::history_mode::feed::tests::serve(&state.doc);
     let mut driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(owner), registration()),

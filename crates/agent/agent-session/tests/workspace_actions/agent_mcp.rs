@@ -178,9 +178,8 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
                     })
                     .unwrap();
                 assert!(
-                    groups
-                        .iter()
-                        .any(|run| run.id.starts_with("agent-session:") && run.label.is_none()),
+                    groups.iter().any(|run| run.id.starts_with("agent-session:")
+                        && run.label.as_deref() == Some("Claude Code")),
                     "the change names the agent's session: {groups:?}"
                 );
                 edited = true;
@@ -668,9 +667,8 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
                 })
                 .collect();
             assert!(
-                groups
-                    .iter()
-                    .any(|run| run.id.starts_with("agent-session:") && run.label.is_none()),
+                groups.iter().any(|run| run.id.starts_with("agent-session:")
+                    && run.label.as_deref() == Some("Claude Code")),
                 "History keeps the runs as the agent's: {groups:?}"
             );
             assert!(commands.iter().any(

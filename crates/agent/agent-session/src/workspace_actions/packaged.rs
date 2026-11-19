@@ -123,13 +123,13 @@ impl Worker {
                 Answer::Deny => return Err(Outcome::Rejected(ActionCallError::NotPermitted)),
                 Answer::Ask if confirmed => {}
                 Answer::Ask => {
-                    // What it carries is read by the names its resource offers.
+                    // What it carries is read by the names its resource offers this caller.
                     let carries = super::carried::read(&descriptor, &arguments, |action| {
-                        resource
-                            .verbs
-                            .iter()
-                            .find(|verb| verb.id == action)
-                            .map(|verb| super::packaged::descriptor(resource, verb))
+                        find(
+                            &surface,
+                            &ActionAddress::new(resource.kind.as_str(), action),
+                        )
+                        .map(|(resource, verb)| self::descriptor(resource, verb))
                     });
                     let about = self.about(workspace_id, route, &descriptor, arguments, carries);
                     return Err(self.waits_for_person(request.invocation, about));

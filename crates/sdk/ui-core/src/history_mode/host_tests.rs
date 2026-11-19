@@ -314,7 +314,6 @@ tilo_test_env::scenario! {
         state.doc.put(ROOT, "body", "second").unwrap();
         state.commit_action(None, None);
         let before = state.doc.get_heads();
-        crate::history_mode::feed::tests::serve(&state.doc);
         let mut driver = FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(Box::new(root), registration()),
@@ -534,7 +533,6 @@ fn versioned_driver(viewport: (u32, u32)) -> (FrameHarness, String, Vec<automerg
     let root = Column::new().push(Box::new(
         Button::new("live-effect", "Send").on_effect(crate::testing::record_click("effect")),
     ));
-    crate::history_mode::feed::tests::serve(&state.doc);
     let driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(root), registration()),
@@ -906,7 +904,6 @@ fn header_history_control_opens_the_registered_history() {
     let shell = crate::widget::NavShell::new()
         .content_header("Notes", vec![])
         .content(Box::new(crate::widget::Text::new("Body")));
-    crate::history_mode::feed::tests::serve(&state.doc);
     let mut driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(shell), registration()),
@@ -1003,7 +1000,6 @@ fn opening_history_lays_the_shell_out_at_its_narrower_width() {
         .overview_header("All snippets", overview)
         .content_header("Multi-stage build", content)
         .content(Box::new(crate::widget::Text::new("Body")));
-    crate::history_mode::feed::tests::serve(&state.doc);
     let mut driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(shell), registration()),
@@ -1052,7 +1048,6 @@ fn history_is_a_side_panel_whose_change_previews_in_place_and_restores_on_its_ow
     state.doc.put(ROOT, "status", "done").unwrap();
     state.commit_action(None, None);
     let root = Column::new().push(Box::new(Button::new("live-effect", "Send")));
-    crate::history_mode::feed::tests::serve(&state.doc);
     let mut driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(root), registration()),
@@ -1153,7 +1148,6 @@ fn the_side_panel_names_the_selected_changes_and_bands_them_under_the_name() {
         Some("second"),
         "naming moves no content"
     );
-    crate::history_mode::feed::tests::sync(&driver.state_mut().doc);
     driver.relayout();
     fn band(node: &crate::a11y::AccessNode, name: &str) -> bool {
         (node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some(name))

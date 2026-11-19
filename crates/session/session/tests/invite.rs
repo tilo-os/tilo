@@ -28,9 +28,7 @@ use tilo_sheets::invite::InviteApp;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use ui::a11y::Action as A11yAction;
 
-use crate::common::held::{
-    WORKSPACE, certified, hosted_session, this_computer, workspace_founded_on_own_service,
-};
+use crate::common::held::{certified, this_computer_with_an_identity};
 use crate::common::{HEIGHT, WIDTH};
 
 /// The identity of `cert` 's device, with no identity root of its own: what redeems a link is a
@@ -137,20 +135,16 @@ fn press(session: &mut Session, (x, y, width, height): (f64, f64, f64, f64)) {
     }
 }
 
-/// The invitations the shell's own action lists for the workspace in front.
-fn invitations_at_the_shell(session: &mut Session) -> Vec<serde_json::Value> {
-    let listed = session
-        .invoke(
-            tilo_actions::remote::session_actions::INVITE_RESOURCE,
-            "invitations",
-            &serde_json::Map::new(),
-        )
-        .expect("the shell lists the invitations it made")
-        .completed()
-        .expect("listing finishes on return")
-        .value
-        .expect("the listing's invitations");
-    serde_json::from_value(listed).expect("a list of invitations")
+/// The invitations the invite sheet lists for the workspace in front, once there are `count`.
+fn invitations_on_the_sheet(session: &mut Session, count: usize) -> usize {
+    let mut listed = 0;
+    crate::common::until(session, "the sheet lists the links made", |session| {
+        listed = session
+            .invite_sheet()
+            .map_or(0, |state| state.invite().pending.len());
+        listed == count
+    });
+    listed
 }
 
 /// What a QR scanner reads from the sheet's code, `code` , drawn as the sheet draws it — at the
@@ -222,26 +216,37 @@ fn redeemed(link: &str, kept: &Mutex<HashMap<String, String>>) -> String {
     tilo_workspace_join::encode_invitation_text(&bytes)
 }
 
-/// A session on a shell that holds [`WORKSPACE`], with the invite sheet up as the person who may
-/// invite there sees it: everything either test does before it can make a link.
+/// A session on a shell showing the workspace it made, placed on this device's own workspace
+/// service, with the invite sheet up as the person who may invite there sees it: everything either
+/// test does before it can make a link.
 struct Hosted {
-    /// The identity root and the state directory the session reads from.
+    /// The state directory the session reads from.
     _kept: Vec<tempfile::TempDir>,
     session: Session,
     state: tilo_sheets::invite::InviteState,
-    cert: DeviceCert,
+    /// This computer's person, by their key.
+    person: [u8; 32],
+    workspace: WorkspaceId,
 }
 
-/// [`Hosted`] — this computer holding the workspace, its bar offering Invite,
+/// [`Hosted`] — this computer holding the workspace its session made, its bar offering Invite,
 /// and the sheet the person's press puts up.
 fn hosted(home: &mut tilo_test_env::TestHome) -> Hosted {
-    let (identity, key, cert) = this_computer(home.env());
+    let (_root, person) = this_computer_with_an_identity(home);
     let state = tempfile::tempdir().expect("a state directory");
-    // The workspace is this computer's own: it is founded on the device's own workspace service,
-    // as the session founds every workspace the person makes here, and this device holds it as a
-    // member. The session asks that service for the invitations into it.
-    workspace_founded_on_own_service(state.path(), WORKSPACE, "Shell", &cert, &key);
-    let mut session = hosted_session(state.path(), &cert.user_public_key);
+    let mut session = crate::common::headless_on(
+        &[tilo_compositor::OutputConfig::new(
+            "HEADLESS-1",
+            WIDTH,
+            HEIGHT,
+        )],
+        tilo_session::Options {
+            collab: true,
+            person: "Ada".to_owned(),
+            state: Some(state.path().to_path_buf()),
+            ..tilo_session::Options::default()
+        },
+    );
     settle(&mut session);
 
     // The person the workspace lets invite finds Invite on the bar, and
@@ -267,11 +272,19 @@ fn hosted(home: &mut tilo_test_env::TestHome) -> Hosted {
         "the bar's Invite puts the invite sheet up"
     );
     assert!(sheet.invite().may_invite, "the person may invite here");
+    let workspace = session
+        .handle()
+        .read(|tree| {
+            tree.active_workspace()
+                .map(tilo_desktop_model::Workspace::id)
+        })
+        .expect("the workspace the session made");
     Hosted {
-        _kept: vec![identity, state],
+        _kept: vec![state],
         session,
         state: sheet,
-        cert,
+        person,
+        workspace,
     }
 }
 
@@ -338,14 +351,14 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     settings_store::relay::RELAY
         .set(settings_store::relay::Relays::None)
         .expect("the relay setting is kept");
-    let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let Hosted {
         _kept,
         mut session,
         state,
-        cert,
+        person,
+        workspace,
     } = hosted(&mut home);
-    let person = hex::encode(cert.user_public_key);
+    let person = hex::encode(person);
 
     // They make a link at the part the sheet opens on: the sheet asks, the session makes it through
     // the shell, and the sheet shows the link back.
@@ -356,9 +369,9 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
         "the link the sheet shows is the site's short one: {link:?}"
     );
     assert_eq!(
-        invitations_at_the_shell(&mut session).len(),
+        invitations_on_the_sheet(&mut session, 1),
         1,
-        "the link is the shell's own invitation"
+        "the link is the workspace's invitation the person made"
     );
     crate::common::app_shot(&mut app, "invite-sheet");
 

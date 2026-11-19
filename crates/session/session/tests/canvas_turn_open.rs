@@ -110,9 +110,9 @@ fn turns(session: &Session) -> Vec<Turn> {
         .filter_map(|place| {
             let strip = strip(session, number(&place.strip))?;
             Some((
-                place.resource.clone(),
-                place.shown_as.clone(),
-                place.title.clone(),
+                place.resource,
+                place.shown_as,
+                place.title,
                 place.name,
                 (
                     strip.canvas_x,

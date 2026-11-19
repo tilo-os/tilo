@@ -391,7 +391,11 @@ pub fn overlay_disk(vm: &Vm<'_>) -> Result<Option<CommandLine>, CliError> {
 
 #[must_use]
 pub fn vm_files(disk: &str) -> Vec<String> {
-    let mut files = vec![disk.to_owned(), domain_xml_path(disk)];
+    let mut files = vec![
+        disk.to_owned(),
+        domain_xml_path(disk),
+        crate::sound::wav_path(disk),
+    ];
     files.extend(
         ["vars.fd", "pid", "ttyS0.log", "uart.log"]
             .iter()
@@ -543,10 +547,22 @@ pub fn domain_xml_with_uuid(
     } else {
         String::new()
     };
+    // QEMU's wav backend writes what the guest plays to a file beside the
+    // disk, so nothing reaches this computer's own audio and `vm sound` can
+    // measure it. virtio-snd: the guest kernel's driver needs no codec quirks.
+    let sound = vm.entry.disk.as_deref().filter(|_| vm.entry.sound).map_or_else(String::new, |disk| {
+        let wav = crate::sound::wav_path(disk);
+        format!(
+            "\n    <sound model='virtio'><audio id='1'/></sound>\n    <audio id='1' type='file' path='{}'/>",
+            quick_xml::escape::escape(wav.as_str())
+        )
+    });
+    let venus = vm.entry.gl && vm.entry.vulkan;
+    let qemu_namespace = lan.is_some() || venus;
     Ok(format!(
         "<domain type='{domain_type}'{namespace}>
   <name>{name}</name>{uuid}
-  <memory unit='MiB'>{memory}</memory>
+  <memory unit='MiB'>{memory}</memory>{memory_backing}
   <vcpu>{cpus}</vcpu>
   <os firmware='efi'>
     <type arch='{arch}' machine='{machine}'>hvm</type>
@@ -580,13 +596,22 @@ pub fn domain_xml_with_uuid(
     <input type='tablet' bus='usb'/>
     <input type='keyboard' bus='usb'/>
     <graphics type='spice' autoport='yes'/>{gl}
-    <video>{video}</video>
+    <video>{video}</video>{sound}
     <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
-  </devices>{lan}
+  </devices>{lan}{venus}
 </domain>
 ",
-        namespace = if lan.is_some() { crate::lan::QEMU_NAMESPACE } else { "" },
+        namespace = if qemu_namespace { crate::lan::QEMU_NAMESPACE } else { "" },
         lan = lan.map_or_else(String::new, crate::lan::domain_commandline),
+        // Venus (Vulkan over virtio-gpu) maps host GPU memory into the guest
+        // as blob resources; libvirt has no attribute for venus or hostmem,
+        // so the video device gets them as QEMU properties.
+        venus = if venus { VENUS_OVERRIDE } else { "" },
+        memory_backing = if venus {
+            "\n  <memoryBacking><source type='memfd'/><access mode='shared'/></memoryBacking>"
+        } else {
+            ""
+        },
         name = e(vm.name),
         uuid = uuid.map_or_else(String::new, |u| format!("\n  <uuid>{}</uuid>", e(u))),
         system = uuid.map_or_else(String::new, |u| format!(
@@ -627,6 +652,63 @@ pub fn domain_xml_with_uuid(
     ))
 }
 
+/// 4 GiB: the guest-visible window of host GPU memory Venus maps blobs
+/// into, as `qemu::VENUS_HOSTMEM` for the QEMU adapter.
+const VENUS_OVERRIDE: &str = "
+  <qemu:override>
+    <qemu:device alias='video0'>
+      <qemu:frontend>
+        <qemu:property name='venus' type='bool' value='true'/>
+        <qemu:property name='hostmem' type='unsigned' value='4294967296'/>
+      </qemu:frontend>
+    </qemu:device>
+  </qemu:override>";
+
+/// Venus starts virglrenderer's render server as a child of QEMU, which
+/// libvirt's default seccomp sandbox (`spawn=deny`) forbids: the guest then
+/// sees no Vulkan device at all. Read the setting from the qemu.conf of the
+/// libvirt daemon the VM uses and refuse with the fix while it is on.
+///
+/// # Errors
+/// `seccomp_sandbox` is not 0 in that qemu.conf.
+pub fn venus_sandbox_check(uri: &str) -> Result<(), CliError> {
+    let path = if uri.contains("/session") {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".config")))
+            .unwrap_or_default()
+            .join("libvirt/qemu.conf")
+    } else {
+        std::path::PathBuf::from("/etc/libvirt/qemu.conf")
+    };
+    venus_sandbox_check_at(&path, uri)
+}
+
+fn venus_sandbox_check_at(path: &Path, uri: &str) -> Result<(), CliError> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    if seccomp_sandbox_off(&text) {
+        return Ok(());
+    }
+    Err(CliError::Unsupported {
+        what: format!(
+            "--vulkan with libvirt: {} does not set seccomp_sandbox = 0, so libvirt starts QEMU with -sandbox spawn=deny and QEMU may not start virglrenderer's Vulkan render server",
+            path.display()
+        ),
+        alternative: format!(
+            "add the line `seccomp_sandbox = 0` to {} and let libvirt's daemon restart (it reads the file when it starts: stop every VM of {uri}, or `systemctl --user restart virtqemud` once none is up), or use --hypervisor qemu, which starts QEMU without that sandbox",
+            path.display()
+        ),
+    })
+}
+
+fn seccomp_sandbox_off(qemu_conf: &str) -> bool {
+    qemu_conf.lines().any(|line| {
+        let line = line.split('#').next().unwrap_or_default();
+        line.split_once('=')
+            .is_some_and(|(key, value)| key.trim() == "seccomp_sandbox" && value.trim() == "0")
+    })
+}
+
 fn video_model(entry: &VmEntry) -> String {
     let heads = entry
         .heads
@@ -634,6 +716,11 @@ fn video_model(entry: &VmEntry) -> String {
         .map_or_else(String::new, |n| format!(" heads='{n}'"));
     let accel = if entry.gl {
         "<acceleration accel3d='yes'/>"
+    } else {
+        ""
+    };
+    let blob = if entry.gl && entry.vulkan {
+        " blob='on'"
     } else {
         ""
     };
@@ -649,9 +736,9 @@ fn video_model(entry: &VmEntry) -> String {
             )
         });
     if accel.is_empty() && resolution.is_empty() {
-        format!("<model type='virtio'{heads}/>")
+        format!("<model type='virtio'{heads}{blob}/>")
     } else {
-        format!("<model type='virtio'{heads}>{accel}{resolution}</model>")
+        format!("<model type='virtio'{heads}{blob}>{accel}{resolution}</model>")
     }
 }
 
@@ -669,6 +756,9 @@ impl Hypervisor for Libvirt {
     }
 
     fn create(&self, vm: &Vm<'_>, root_key: &str) -> Result<Vec<CommandLine>, CliError> {
+        if vm.entry.gl && vm.entry.vulkan {
+            venus_sandbox_check(vm.entry.uri.as_deref().unwrap_or("qemu:///session"))?;
+        }
         let mut commands: Vec<CommandLine> = overlay_disk(vm)?.into_iter().collect();
         commands.push(Self::define(vm, root_key, None)?);
         Ok(commands)
@@ -806,7 +896,11 @@ impl Hypervisor for Qemu {
 
     fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
         let disk = vm.entry.disk.clone().unwrap_or_default();
-        let display = if vm.entry.gl { "--gl" } else { "--2d" };
+        let display = match (vm.entry.gl, vm.entry.vulkan) {
+            (true, true) => "--vulkan",
+            (true, false) => "--gl",
+            _ => "--2d",
+        };
         let mut args = vec!["boot", display, "--disk", disk.as_str()];
         if let (true, Some(node)) = (vm.entry.gl, vm.entry.render_node.as_deref()) {
             args.extend(["--rendernode", node]);
@@ -814,6 +908,9 @@ impl Hypervisor for Qemu {
         let mut command = Self::script(vm, &args)
             .env("TILO_MEM", vm.memory().to_string())
             .env("TILO_SMP", vm.cpus().to_string());
+        if vm.entry.sound {
+            command = command.env("TILO_VM_AUDIO_WAV", crate::sound::wav_path(&disk));
+        }
         if let Some(key) = &vm.entry.key {
             command = command.env(
                 "TILO_VM_ROOT_KEY_FILE",
@@ -2485,6 +2582,55 @@ mod tests {
                 ),
                 "{xml}"
             );
+        }
+
+        phase sound_goes_to_a_file_and_vulkan_to_the_same_gpu;
+        {
+            let plain = vm_xml(&entry());
+            for absent in ["<sound", "<audio", "venus", "memoryBacking", "blob="] {
+                assert!(!plain.contains(absent), "{absent} in\n{plain}");
+            }
+            let full = VmEntry {
+                gl: true,
+                vulkan: true,
+                sound: true,
+                render_node: Some("/dev/dri/renderD128".into()),
+                ..entry()
+            };
+            let xml = vm_xml(&full);
+            for part in [
+                "<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>",
+                "<memoryBacking><source type='memfd'/><access mode='shared'/></memoryBacking>",
+                "<model type='virtio' blob='on'><acceleration accel3d='yes'/></model>",
+                "<sound model='virtio'><audio id='1'/></sound>",
+                "<audio id='1' type='file' path='/vms/dev.qcow2.wav'/>",
+                "<qemu:device alias='video0'>",
+                "<qemu:property name='venus' type='bool' value='true'/>",
+                "<qemu:property name='hostmem' type='unsigned' value='4294967296'/>",
+            ] {
+                assert!(xml.contains(part), "no {part} in\n{xml}");
+            }
+            assert!(vm_files("/vms/dev.qcow2").contains(&"/vms/dev.qcow2.wav".to_owned()));
+            let start = Qemu.start(&Vm { name: "dev", entry: &full })[0].display();
+            assert!(start.contains("TILO_VM_AUDIO_WAV=/vms/dev.qcow2.wav"), "{start}");
+            assert!(start.contains("vm.sh boot --vulkan --disk"), "{start}");
+        }
+
+        phase vulkan_under_libvirt_needs_the_sandbox_that_forbids_its_render_server_off;
+        {
+            assert!(seccomp_sandbox_off("seccomp_sandbox = 0\n"));
+            assert!(seccomp_sandbox_off("# x\n  seccomp_sandbox=0 # for Venus\n"));
+            for on in ["", "#seccomp_sandbox = 0", "seccomp_sandbox = 1", "seccomp_sandbox_x = 0"] {
+                assert!(!seccomp_sandbox_off(on), "{on}");
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let conf = dir.path().join("qemu.conf");
+            let error = venus_sandbox_check_at(&conf, "qemu:///session").unwrap_err();
+            let text = format!("{error} {}", error.hint());
+            assert!(text.contains("seccomp_sandbox = 0"), "{text}");
+            assert!(text.contains("--hypervisor qemu"), "{text}");
+            std::fs::write(&conf, "seccomp_sandbox = 0\n").unwrap();
+            venus_sandbox_check_at(&conf, "qemu:///session").unwrap();
         }
     }
 

@@ -4593,10 +4593,10 @@ arch = ["x86_64", "aarch64"]
 [[check]]
 name = "server-installer-medium-x86_64"
 # dnf installs from Fedora's mirrors, which are no fixed host list; the server image itself
-# comes from image-host's archive.
+# comes from seal-host's archive, the image with its UKI sealed.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "export TILO_INSTALLER_TARGET_OCI=/target/publish/host/image.oci.tar\nexport TILO_INSTALLER_TARGET_REPOSITORY=registry.tilo.so/tilo/tilo-host\nexport TILO_INSTALLER_TARGET_DIGEST=$(cat /target/publish/host/digest)\nexport TILO_INSTALLER_TARGET_ARCHITECTURE=x86_64\nexport TILO_INSTALLER_TARGET_PROFILE=generic\nexport TILO_INSTALLER_TARGET_UPDATE_ORIGIN=registry.tilo.so/tilo/tilo-host:dev-$(git rev-parse --short=12 HEAD)\nbash tools/ci/publish/installer-medium.sh x86_64 /target/os/x86_64/image /target/publish/server-installer-medium/x86_64"
-needs = ["os-image-x86_64", "image-host"]
+run = "export TILO_INSTALLER_TARGET_OCI=/target/publish/host-sealed/image.oci.tar\nexport TILO_INSTALLER_TARGET_REPOSITORY=registry.tilo.so/tilo/tilo-host\nexport TILO_INSTALLER_TARGET_DIGEST=$(cat /target/publish/host-sealed/digest)\nexport TILO_INSTALLER_TARGET_ARCHITECTURE=x86_64\nexport TILO_INSTALLER_TARGET_PROFILE=generic\nexport TILO_INSTALLER_TARGET_UPDATE_ORIGIN=registry.tilo.so/tilo/tilo-host:dev-$(git rev-parse --short=12 HEAD)\nbash tools/ci/publish/installer-medium.sh x86_64 /target/os/x86_64/image /target/publish/server-installer-medium/x86_64"
+needs = ["os-image-x86_64", "seal-host"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/server-installer-medium/x86_64/disk.qcow2", "/target/publish/server-installer-medium/x86_64/disk.qcow2.sha256", "/target/publish/server-installer-medium/x86_64/disk.qcow2.hardware.json", "/target/publish/server-installer-medium/x86_64/source.json"]
@@ -4608,8 +4608,8 @@ default = false
 name = "test-server-installer-medium-x86_64"
 # QEMU and its firmware come from the packages below, which dnf fetches from Fedora's mirrors.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/install-packages.sh tools/ci/packages/signin-e2e.txt tools/ci/packages/qemu-x86_64.txt && bash tools/ci/server-installer-smoke.sh /target/publish/server-installer-medium/x86_64 $(cat /target/publish/host/digest) /target/server-installer-smoke"
-needs = ["server-installer-medium-x86_64", "image-host", "tilo-vm-binary-x86_64"]
+run = "bash tools/ci/install-packages.sh tools/ci/packages/signin-e2e.txt tools/ci/packages/qemu-x86_64.txt && bash tools/ci/server-installer-smoke.sh /target/publish/server-installer-medium/x86_64 $(cat /target/publish/host-sealed/digest) /target/server-installer-smoke"
+needs = ["server-installer-medium-x86_64", "seal-host", "tilo-vm-binary-x86_64"]
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["/dev/kvm", "disk-100g"]
 isolation = "vm"
@@ -6394,11 +6394,12 @@ default = false
 
 # The server OS's base and the layer above it (os/Containerfile.host-base, Containerfile.host).
 # Splitting them is what makes a server change cheap: the base is the mirrored bootc base and the
-# frozen package set, which change only when those do, and t serves it to every commit that keeps
-# them; the image is the server's programs and the files that name them, one copying layer.
+# frozen package set, with the tools that seal its UKI, which change only when those do, and t
+# serves it to every commit that keeps them; the image is the server's programs and the files that
+# name them, one copying layer, sealed by the desktop's own stages into one UKI.
 # Together they are the dev loop: `t test test-image-host host-assurance-x86_64` builds the
-# changed programs, lays them on the cached base, and boots the result in a VM without signing or
-# publishing anything.
+# changed programs, lays them on the cached base, seals the result and boots it in a VM, signed
+# with throwaway keys, without publishing anything.
 #
 # The date each is built at, oci-build.sh's SOURCE_DATE_EPOCH: the commit time of the newest
 # commit that changed a file the image is built from (source-date.sh). Only these read Git, so
@@ -6406,16 +6407,33 @@ default = false
 # commit, so a commit that changes none of their files builds the same image again.
 [[check]]
 name = "source-date-host-base"
-run = "bash tools/ci/publish/source-date.sh /target/source-date/host-base os/Containerfile.host-base os/base-snapshot.env os/external-assets/github-assets.tsv os/dev/cache-github-assets.sh tools/ci/publish/host-base.sh tools/ci/publish/lib.sh"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/host-base os/Containerfile.host-base os/image/helpers/uki-tools.Containerfile os/dev/uki-tools.packages os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py os/base-snapshot.env os/external-assets/github-assets.tsv os/dev/cache-github-assets.sh tools/ci/publish/host-base.sh tools/ci/publish/lib.sh"
 git = true
 outputs = ["/target/source-date/host-base"]
 default = false
 
 [[check]]
 name = "source-date-host"
-run = "bash tools/ci/publish/source-date.sh /target/source-date/host os/Containerfile.host os/containers/tilo-vm-host/hosted-jail.json os/etc/containers os/etc/modules-load.d/tilo-hosted.conf os/usr/libexec os/usr/lib/systemd/system os/usr/lib/systemd/system-generators os/usr/lib/dracut/modules.d os/usr/lib/sysusers.d os/usr/lib/tmpfiles.d os/scripts/build-initramfs.sh os/scripts/verify-board-initramfs.py keys/cosign.pub keys/release keys/tpm2-pcr-signing.public.pem docs/recovery.md docs/app-model/environments.md tools/ci/publish/host-build.sh tools/ci/publish/lib.sh"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/host os/Containerfile.host os/image/boot.Containerfile os/containers/tilo-vm-host/hosted-jail.json os/etc/containers os/etc/modules-load.d/tilo-hosted.conf os/usr/libexec os/usr/lib/bootc os/usr/lib/systemd/system os/usr/lib/systemd/system-generators os/usr/lib/dracut/modules.d os/usr/lib/sysusers.d os/usr/lib/tmpfiles.d os/scripts/build-initramfs.sh os/scripts/verify-board-initramfs.py keys/cosign.pub keys/release keys/tpm2-pcr-signing.public.pem docs/recovery.md docs/app-model/environments.md tools/ci/publish/host-build.sh tools/ci/publish/lib.sh"
 git = true
 outputs = ["/target/source-date/host"]
+default = false
+
+# The generation the server image carries: the next of the server's own dense series, the gen<N>
+# tags of registry.tilo.so/tilo/tilo-host, each verified by its signature and its provenance
+# (os/dev/next-generation.sh). Read afresh in every run, so the image a release builds carries the
+# number after the last one published.
+[[check]]
+name = "generation-host"
+# Reads the series from the registry and installs jq and skopeo from Fedora's mirrors, which are
+# no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "set -euo pipefail\n. tools/ci/publish/lib.sh\nuse_cosign\nrpm -q jq skopeo >/dev/null 2>&1 || dnf install -y --setopt=install_weak_deps=False jq skopeo >/dev/null\nmkdir -p /target/generation-host\nTILO_PUBLISH_REPO=registry.tilo.so/tilo/tilo-host TILO_ALLOW_EMPTY_SERIES=1 bash os/dev/next-generation.sh > /target/generation-host/generation\nprintf 'generation %s\\n' \"$(cat /target/generation-host/generation)\""
+needs = ["signing-tools"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+outputs = ["/target/generation-host/generation"]
+cache = false
 default = false
 
 [[check]]
@@ -6429,7 +6447,7 @@ needs = ["source-date-host-base", "rpm-snapshot-x86_64", "image-rpms-x86_64", "o
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
-outputs = ["/target/publish/host-base/image.oci.tar", "/target/publish/host-base/digest", "/target/publish/host-base/rpms-source"]
+outputs = ["/target/publish/host-base/image.oci.tar", "/target/publish/host-base/digest", "/target/publish/host-base/rpms-source", "/target/publish/host-base/uki-tools/image.oci.tar", "/target/publish/host-base/uki-tools/digest"]
 timeout_secs = 7200
 default = false
 
@@ -6448,15 +6466,15 @@ default = false
 
 [[check]]
 name = "image-host"
-# No network: the base comes from host-base's archive, loaded into this step's store, and the
-# layer copies programs and files the tree holds. A commit that changes none of them is served
-# from t's cache.
-run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/host)\nexport SOURCE_DATE_EPOCH\nbash tools/ci/publish/host-build.sh /target/publish/host/binaries /target/publish/host-base /target/publish/host"
-needs = ["source-date-host", "host-base", "host-binaries"]
+# No network: the base and the sealing tools come from host-base's archives, loaded into this
+# step's store, and the layer copies programs and files the tree holds. A commit that changes none
+# of them, and a series that has not moved on, is served from t's cache.
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/host)\nexport SOURCE_DATE_EPOCH\nbash tools/ci/publish/host-build.sh /target/publish/host/binaries /target/publish/host-base /target/generation-host/generation /target/publish/host"
+needs = ["source-date-host", "host-base", "host-binaries", "generation-host"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
-outputs = ["/target/publish/host/image.oci.tar", "/target/publish/host/digest", "/target/publish/host/rpms-source"]
+outputs = ["/target/publish/host/image.oci.tar", "/target/publish/host/digest", "/target/publish/host/rpms-source", "/target/publish/host/generation"]
 timeout_secs = 3600
 default = false
 
@@ -6471,27 +6489,73 @@ isolation = "vm"
 timeout_secs = 1800
 default = false
 
+# The image sealed: its UKI's composefs digest the one `bootc install` computes from its layers,
+# by the resealing bootc a sealed dev image takes it from (tools/ci/seal-dev-image.sh), and what
+# its boot signing signs prepared beside it (host-seal.sh seal). Everything after signs, boots or
+# publishes this image.
+[[check]]
+name = "seal-host"
+# dnf installs from Fedora's mirrors and the resealing bootc comes from registry.tilo.so, or is
+# built from Fedora's: no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/publish/host-seal.sh seal /target/publish/host /target/publish/host-sealed"
+needs = ["image-host"]
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/host-sealed/**"]
+timeout_secs = 3600
+default = false
+
 # The server image's release, asked for and never run by a tag or a change: build it (host-base,
-# host-binaries, image-host), prove it (test-image-host in a container, host-assurance-x86_64 by
-# installing and booting it), sign it with the release key and publish it as
-# registry.tilo.so/tilo/tilo-host. As the desktop's OS release, someone runs it on a release tag,
-# one step at a time: a release builds a commit whose server checks passed, and the boot proof is
-# a need, not a step someone remembers.
+# host-binaries, image-host), seal it (seal-host), prove it (test-image-host in a container,
+# host-assurance-x86_64 by installing and booting it under Secure Boot), sign its boot chain with
+# the EFI and PCR keys (sign-host-boot, apply-host-boot, the desktop release's own steps), sign it
+# with the release key and publish it as registry.tilo.so/tilo/tilo-host. As the desktop's OS
+# release, someone runs it on a release tag, one step at a time: a release builds a commit whose
+# server checks passed, and the boot proof is a need, not a step someone remembers.
 #
 # `t dispatch publish-host --ref tag:vX.Y.Z --publish` is the whole release, and one step may be
 # dispatched alone on a tag whose own run stopped there. The tags never move a published image:
-# sha-<commit> names the build once, <version> the release, and latest follows only a final
-# version (oci-publish.sh). A dispatch elsewhere signs and publishes nothing: the release key's
-# role trusts v* tags, and oci-sign.sh refuses an image built from an RPM set no release published.
+# sha-<commit> names the build once, gen<N> its place in the server's generation series once,
+# <version> the release, and latest follows only a final version (oci-publish.sh). A dispatch
+# elsewhere signs and publishes nothing: the release keys' roles trust v* tags, and oci-sign.sh
+# refuses an image built from an RPM set no release published.
+[[check]]
+name = "sign-host-boot"
+# Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/publish/os-release.sh sign-boot /target/publish/host-sealed /target/publish/host-boot-signed"
+needs = ["seal-host", "os-assets", "signing-tools"]
+env = { AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_EFI_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-efi-signing", TILO_PCR_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-pcr-prediction" }
+requires = ["arch=x86_64"]
+isolation = "vm"
+outputs = ["/target/publish/host-boot-signed/**"]
+on = ["dispatch"]
+id_token = ["sts.amazonaws.com"]
+
+[[check]]
+name = "apply-host-boot"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/publish/host-seal.sh apply /target/publish/host-sealed /target/publish/host-boot-signed /target/publish/host-release"
+needs = ["seal-host", "sign-host-boot", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/host-release/image.oci.tar", "/target/publish/host-release/digest", "/target/publish/host-release/generation", "/target/publish/host-release/rpms-source", "/target/publish/host-release/provenance.json", "/target/publish/host-release/install.log"]
+git = true
+timeout_secs = 3600
+on = ["dispatch"]
+
 [[check]]
 name = "sign-host"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-host /target/publish/host"
-needs = ["image-host", "test-image-host", "host-assurance-x86_64", "signing-tools"]
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-host /target/publish/host-release\nbash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/tilo-host /target/publish/host-release"
+needs = ["apply-host-boot", "test-image-host", "host-assurance-x86_64", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
-outputs = ["/target/publish/host/payload.json", "/target/publish/host/signature", "/target/publish/host/dry-run.pub", "/target/publish/host/bundle.json"]
+outputs = ["/target/publish/host-release/payload.json", "/target/publish/host-release/signature", "/target/publish/host-release/dry-run.pub", "/target/publish/host-release/bundle.json", "/target/publish/host-release/certified/**", "/target/publish/host-release/attestation.json", "/target/publish/host-release/attestation.bundle.json"]
 on = ["dispatch"]
 heavy = true
 id_token = ["sts.amazonaws.com"]
@@ -6500,41 +6564,47 @@ id_token = ["sts.amazonaws.com"]
 name = "publish-host"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-host /target/publish/host '{version}' 'sha-{commit}' 'final:latest'"
-needs = ["image-host", "sign-host", "signing-tools"]
+run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-host /target/publish/host-release '{version}' 'sha-{commit}' 'once:gen{generation}' 'final:latest'"
+needs = ["apply-host-boot", "sign-host", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-outputs = ["/target/publish/host/receipt.json"]
+outputs = ["/target/publish/host-release/receipt.json"]
 on = ["dispatch"]
 heavy = true
 id_token = ["registry.tilo.so"]
 
-# The release path rehearsed with no credentials: the image is signed with a throwaway key and
-# published into a local OCI layout as a release tag of this tree would, and the published image
-# is verified as its consumers verify it (oci-sign.sh's and oci-publish.sh's dry runs). It reads
-# the tree's T_REF as the tag the run pretends to be, so it also runs from a branch.
+# The release path rehearsed with no credentials: the boot chain is signed with throwaway EFI and
+# PCR keys and the image with a throwaway release key, then published into a local OCI layout as a
+# release tag of this tree would, and the published image is verified as its consumers verify it
+# (os-release.sh sign-boot's, oci-sign.sh's and oci-publish.sh's dry runs). It reads the tree's
+# T_REF as the tag the run pretends to be, so it also runs from a branch.
 [[check]]
 name = "host-release-rehearsal"
-run = "set -euo pipefail\nwork=/target/host-release-rehearsal\nrm -rf \"$work\"\nmkdir -p \"$work/image\" \"$work/registry\"\ncp /target/publish/host/image.oci.tar /target/publish/host/digest /target/publish/host/rpms-source \"$work/image/\"\nexport T_REF=tag:v0.0.0\nexport TILO_PUBLISH_DRY_RUN=$work/registry\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-host \"$work/image\"\nbash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-host \"$work/image\" '0.0.0' 'sha-{commit}' 'final:latest'\n"
-needs = ["image-host", "test-image-host", "signing-tools"]
-image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-requires = ["arch=x86_64"]
-outputs = ["/target/host-release-rehearsal/**"]
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "set -euo pipefail\nwork=/target/host-release-rehearsal\nrm -rf \"$work\"\nmkdir -p \"$work/registry\"\nexport T_REF=tag:v0.0.0 T_COMMIT=$(git rev-parse --verify HEAD)\nexport TILO_PUBLISH_DRY_RUN=$work/registry TILO_BOOT_SIGNER_DRY_RUN=$work/boot-keys TILO_BOOT_SIGNING_DRY_RUN=1\nbash tools/ci/publish/os-release.sh sign-boot /target/publish/host-sealed \"$work/boot-signed\"\nbash tools/ci/publish/host-seal.sh apply /target/publish/host-sealed \"$work/boot-signed\" \"$work/image\"\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-host \"$work/image\"\nbash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/tilo-host \"$work/image\"\nbash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-host \"$work/image\" '0.0.0' 'sha-{commit}' 'once:gen{generation}' 'final:latest'\n"
+needs = ["seal-host", "test-image-host", "os-assets", "signing-tools", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/host-release-rehearsal/image/receipt.json"]
+git = true
 on = ["dispatch"]
 heavy = true
 
 
-# The server image proves itself by booting: it installs onto an encrypted disk
-# in a guest of its own (this check's micro-VM cannot open a volume), the machine
-# boots that disk serving (the hosted-VM service binds its socket, the boot judges
-# itself by the server probe, updates stage through the verified path), and an
-# update that breaks the server spends its tries and the boot loader goes back by
-# itself. Driven at the serial console, which is the only console the image has.
+# The server image proves itself by booting: sealed and signed with throwaway EFI and PCR keys, it
+# installs onto an encrypted disk in a guest of its own (this check's micro-VM cannot open a
+# volume), and the machine boots that disk under firmware that trusts those keys alone, so only
+# from the signed UKI. It serves (the hosted-VM service binds its socket, the boot judges itself
+# by the server probe, updates stage through the verified path), an update that breaks the server
+# spends its tries and the boot loader goes back by itself, and a registry update is verified
+# before it stages. Driven at the serial console, which is the only console the image has.
 [[check]]
 name = "host-assurance-x86_64"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/host-assurance.sh"
-needs = ["image-host", "os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
+needs = ["seal-host", "os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64", "os-assets"]
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"

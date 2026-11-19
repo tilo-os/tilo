@@ -210,6 +210,7 @@ on:
       - "vendor/pulldown-cmark/**"
       - "vendor/regex-syntax/**"
       - "vendor/serde_json/**"
+      - "vendor/swarm-discovery/**"
       - "vendor/taffy/**"
       - "vendor/vello/**"
       - "vendor/vello_encoding/**"

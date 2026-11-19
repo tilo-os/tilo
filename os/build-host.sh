@@ -9,8 +9,9 @@
 # It takes the same steps CI takes (tools/ci/publish/host-base.sh, then
 # host-build.sh over the programs server-binaries.sh host compiles) rather than
 # a second recipe of its own, so a local build and a published one are the same
-# image. The disk step is os/dev/disk-image.sh, which the installer and every
-# other Tilo disk uses.
+# image. The disk step is os/dev/build-image.sh's install, which seals the UKI's
+# composefs digest as CI's seal-host does. The generation is the next of the
+# server's published series, or TILO_GENERATION.
 #
 # usage: see above.
 set -euo pipefail
@@ -41,7 +42,13 @@ echo "--- Step 2: the base ---"
 bash "$PROJECT_DIR/tools/ci/publish/host-base.sh" "$snapshot" "$OUT/rpms" "$OUT/base"
 
 echo "--- Step 3: the image ---"
-bash "$PROJECT_DIR/tools/ci/publish/host-build.sh" "$OUT/binaries" "$OUT/base" "$OUT/image"
+if [ -n "${TILO_GENERATION:-}" ]; then
+  printf '%s\n' "$TILO_GENERATION" > "$OUT/generation"
+else
+  TILO_PUBLISH_REPO=registry.tilo.so/tilo/tilo-host TILO_ALLOW_EMPTY_SERIES=1 \
+    "$SCRIPT_DIR/dev/next-generation.sh" > "$OUT/generation"
+fi
+bash "$PROJECT_DIR/tools/ci/publish/host-build.sh" "$OUT/binaries" "$OUT/base" "$OUT/generation" "$OUT/image"
 
 if [ "$container_only" = 1 ]; then
   echo "=== Image only: $OUT/image/image.oci.tar ==="
@@ -49,10 +56,8 @@ if [ "$container_only" = 1 ]; then
 fi
 
 echo "--- Step 4: the disk image ---"
-# shellcheck disable=SC1091
-. "$SCRIPT_DIR/account.env"
 image=$(podman pull -q "oci-archive:$OUT/image/image.oci.tar")
 podman tag "$image" localhost/tilo-host:latest
-"$SCRIPT_DIR/dev/disk-image.sh" localhost/tilo-host:latest \
-    "$OUT/qcow2" --user "$TILO_ACCOUNT"
+TILO_IMAGE=localhost/tilo-host:latest TILO_SKIP_BUILD=1 TILO_OUTPUT="$OUT" \
+  "$SCRIPT_DIR/dev/build-image.sh"
 echo "=== Build complete: $OUT/qcow2/disk.qcow2 ==="

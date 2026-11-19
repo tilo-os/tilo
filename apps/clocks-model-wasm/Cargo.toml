@@ -13,6 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 clocks-model = { path = "../clocks-model" }
 tilo-model-guest = { path = "../../crates/sdk/tilo-model-guest" }
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

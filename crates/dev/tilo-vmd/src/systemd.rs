@@ -853,7 +853,11 @@ impl Apply for SystemdApply {
         run(
             "systemd-sysext refresh",
             Command::new("systemd-sysext").arg("refresh"),
-        )?;
+        )
+        .map_err(|error| {
+            let mountinfo = fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+            transient_usr_overlay(error, &mountinfo)
+        })?;
         // A layer may bring a system account (a sysusers.d entry, as the
         // server's does): create it as the image build would.
         run("systemd-sysusers", &mut Command::new("systemd-sysusers")).map(drop)
@@ -1272,11 +1276,7 @@ impl Apply for SystemdApply {
     ) -> Result<PathBuf, DaemonError> {
         crate::session_view::prepare(
             &self.views_dir,
-            &format!(
-                "{}-cohort-{}",
-                session.account,
-                if prior { "prior" } else { "candidate" }
-            ),
+            &cohort_view_name(&session.account, prior),
             layers,
         )
     }
@@ -1788,8 +1788,107 @@ fn control_command(
     crate::exec::in_session(pid, user, &env, &command)
 }
 
+/// A transient overlay on `/usr` (`dnf install --transient`, `bootc
+/// usr-overlay`, or tilo-vm's own package installs) stacks one overlay on the
+/// composefs root, and the system-wide layers would stack another: the kernel
+/// refuses that depth, and systemd-sysext reports only a failed mount. Name
+/// that cause and its fix when `/usr` is such a mount.
+fn transient_usr_overlay(error: DaemonError, mountinfo: &str) -> DaemonError {
+    let overlaid = mountinfo.lines().any(|line| {
+        let mut fields = line.split(' ');
+        let point = fields.nth(4);
+        let fstype = line
+            .split(" - ")
+            .nth(1)
+            .and_then(|rest| rest.split(' ').next());
+        point == Some("/usr") && fstype == Some("overlay")
+    });
+    if !overlaid {
+        return error;
+    }
+    DaemonError::Apply {
+        step: "systemd-sysext refresh".into(),
+        detail: format!(
+            "{error}\n/usr carries a transient overlay (packages installed with dnf --transient, or bootc usr-overlay), and the VM-wide layers would stack another overlay on it, deeper than the kernel allows; reboot the VM to drop the transient packages (tilo-vm vm restart), swap, then install them again"
+        ),
+    }
+}
+
+/// The name of an account's cohort view, which a view name's rules bound to
+/// 28 characters like an account's: `<account>-cohort-candidate` while it
+/// fits, else the account's first letters and a hash of the whole name, so
+/// a long account name (up to the 28 an account may have) still gets a view
+/// of its own instead of an unrelated refusal.
+fn cohort_view_name(account: &str, prior: bool) -> String {
+    use sha2::Digest as _;
+    let suffix = if prior {
+        "-cohort-prior"
+    } else {
+        "-cohort-candidate"
+    };
+    let full = format!("{account}{suffix}");
+    if full.len() <= 28 {
+        return full;
+    }
+    let digest = hex::encode(sha2::Sha256::digest(account.as_bytes()));
+    let kept = 28usize.saturating_sub(suffix.len().saturating_add(9));
+    let head = account
+        .get(..kept.min(account.len()))
+        .unwrap_or_default()
+        .trim_end_matches('-');
+    format!("{head}-{}{suffix}", digest.get(..8).unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_transient_usr_overlay_is_named_when_the_system_layers_cannot_merge() {
+        let failed = || super::DaemonError::Apply {
+            step: "systemd-sysext refresh".into(),
+            detail: "exit status: 1: Failed to mount overlay".into(),
+        };
+        let plain = "22 1 0:21 / / ro,relatime shared:1 - overlay composefs ro\n";
+        assert!(
+            !super::transient_usr_overlay(failed(), plain)
+                .to_string()
+                .contains("transient")
+        );
+        let transient = format!(
+            "{plain}95 22 0:44 / /usr rw,relatime shared:50 - overlay overlay rw,lowerdir=/usr\n"
+        );
+        let named = super::transient_usr_overlay(failed(), &transient).to_string();
+        assert!(
+            named.contains("dnf --transient") && named.contains("tilo-vm vm restart"),
+            "{named}"
+        );
+    }
+
+    #[test]
+    fn a_long_account_name_still_gets_a_valid_cohort_view_of_its_own() {
+        assert_eq!(
+            super::cohort_view_name("kr3", false),
+            "kr3-cohort-candidate"
+        );
+        assert_eq!(super::cohort_view_name("kr3", true), "kr3-cohort-prior");
+        let long = "windows-real-app3";
+        let names = [
+            super::cohort_view_name(long, false),
+            super::cohort_view_name(long, true),
+            super::cohort_view_name("windows-real-app4", false),
+            super::cohort_view_name(&"a".repeat(28), false),
+        ];
+        for name in &names {
+            assert!(tilo_vm_protocol::valid_account_name(name), "{name}");
+        }
+        assert_ne!(names[0], names[1]);
+        assert_ne!(names[0], names[2]);
+        assert!(
+            names[0].starts_with("wi-") && names[0].ends_with("-cohort-candidate"),
+            "{}",
+            names[0]
+        );
+    }
+
     /// A login's compositor shares the wrapper's process name, so only its
     /// being the wrapper's child and running a binary of that name tells it
     /// apart: found through the parent each process reports, which every

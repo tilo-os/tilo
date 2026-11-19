@@ -586,7 +586,7 @@ mod tests {
             Some(uuid::Uuid::from_u128(9)),
             Some(CommitGroup {
                 id: "run-1".to_owned(),
-                // An agent session asked nothing has no label.
+                // A group may be unnamed.
                 label: None,
                 kind: "agent-session".to_owned(),
             }),

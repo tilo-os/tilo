@@ -4,7 +4,7 @@
 # in SNAPSHOT (the published one, or the build's own image-rpms-x86_64 in RPMS where it is
 # not published yet), and the checksum-verified Firecracker release, into OUT (oci-build.sh), with
 # snapshot it came from in OUT/rpms-source, which oci-sign.sh refuses unless it is the published
-# one.
+# one; and the tools that seal the server's UKI, from the same base and snapshot, in OUT/uki-tools.
 #
 # Nothing here compiles, and nothing here is a program of this tree: the package set and the
 # Firecracker release change only when the snapshot or the base does, so t serves this to every
@@ -38,14 +38,24 @@ fi
 # is checksum-verified here; nothing downloads it.
 assets=$(pinned_assets firecracker-v1.17.0-x86_64.tgz)
 mkdir -p "$out"
-# The context is empty: the base reads the snapshot by digest and the Firecracker assets by the
-# named context, so no file of the checkout reaches the build.
+# The context is the sealing tools' files and nothing else: the base reads the snapshot by digest
+# and the Firecracker assets by the named context.
 context=$scratch/host-base-context
 rm -rf "$context"
-mkdir -p "$context"
-bash tools/ci/publish/oci-build.sh "$context" os/Containerfile.host-base "$out" \
-  --platform linux/amd64 \
-  --build-context "github-assets=$assets" \
-  --build-arg "BASE_REF=$BASE_REF" \
-  --build-arg "RPMS_REF=$rpms_ref"
+mkdir -p "$context/os/dev"
+cp os/dev/uki-tools.packages os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py \
+  os/dev/make-boot-splash.py "$context/os/dev/"
+# The base and, from the same file, the desktop's own `uki-tools` stage: the tools that seal the
+# server's UKI (os/Containerfile.host), from the same base and snapshot, into OUT/uki-tools.
+cat os/Containerfile.host-base os/image/helpers/uki-tools.Containerfile > "$context/Containerfile"
+for stage in host-base uki-tools; do
+  dest=$out
+  [[ $stage == host-base ]] || dest=$out/$stage
+  bash tools/ci/publish/oci-build.sh "$context" "$context/Containerfile" "$dest" \
+    --platform linux/amd64 \
+    --target "$stage" \
+    --build-context "github-assets=$assets" \
+    --build-arg "BASE_REF=$BASE_REF" \
+    --build-arg "RPMS_REF=$rpms_ref"
+done
 printf '%s\n' "$rpms_source" > "$out/rpms-source"

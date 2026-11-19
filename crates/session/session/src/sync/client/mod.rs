@@ -895,7 +895,7 @@ impl Local {
     }
 
     /// Why what this session takes part in needs this device reachable, if it does: a workspace it
-    /// shows has someone else here, or it holds a link into one that still admits someone. A host
+    /// shows has someone else here, or a link is out of a workspace it holds as its holder. A host
     /// is dialled at start and on every reconnect, and the peer actor holds the relays up for every
     /// remote party it is connected to or keeps dialling
     /// ([`tilo_endpoint_reachability::Need::Transport`]).
@@ -1218,7 +1218,7 @@ impl Host for Hosting {
 
     fn workspace_host(&self, workspace: &str) -> Option<[u8; 32]> {
         let engine = self.local.engine.as_ref()?;
-        engine.host_of(tilo_desktop_model::WorkspaceId::parse(workspace)?)
+        engine.holder_of(tilo_desktop_model::WorkspaceId::parse(workspace)?)
     }
 
     fn joined(&self, workspace: &str) {

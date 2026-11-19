@@ -376,7 +376,9 @@ impl LaunchDisplay {
                 !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
             })
         {
-            return Err(PlanError::UnsafeRenderNode);
+            return Err(PlanError::UnsafeRenderNode(
+                self.render_node.display().to_string(),
+            ));
         }
         Ok(())
     }
@@ -1175,8 +1177,12 @@ pub enum PlanError {
     UnsafeWaylandSocket,
     #[error("the program has no display to show its windows on: {0}")]
     NoDisplay(String),
-    #[error("GPU device is not a DRM render node")]
-    UnsafeRenderNode,
+    #[error(
+        "the session's GPU device {0} is not a DRM render node (/dev/dri/renderD*): its display \
+         device has no GPU for programs to render on; start the session on a display whose \
+         device has a render node"
+    )]
+    UnsafeRenderNode(String),
     #[error("capsule does not match resolved route")]
     CapsuleRouteMismatch,
     #[error("derived capsule path escaped its configured root")]

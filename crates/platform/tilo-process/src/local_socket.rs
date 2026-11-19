@@ -6,15 +6,80 @@
 //! have planted it. The connect has a deadline.
 
 use std::io;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
+/// A stream to a session service, connected by [`connect_owner_only`]. An app holds one of
+/// these rather than the OS stream, so nothing it writes names a platform socket type.
+#[derive(Debug)]
+pub struct ServiceSocket(UnixStream);
+
+impl ServiceSocket {
+    /// The longest a read or write on this socket may wait, both at once.
+    pub fn set_timeout(&self, timeout: Duration) -> io::Result<()> {
+        self.0.set_read_timeout(Some(timeout))?;
+        self.0.set_write_timeout(Some(timeout))
+    }
+
+    /// The longest a read on this socket may wait, when one is set.
+    pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
+        self.0.read_timeout()
+    }
+
+    /// Another handle on the same connection, for a caller whose API names the OS stream.
+    ///
+    /// # Errors
+    ///
+    /// The OS refused to duplicate the descriptor.
+    pub fn try_clone_stream(&self) -> io::Result<UnixStream> {
+        self.0.try_clone()
+    }
+
+    /// The longest a read on this socket may wait.
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.0.set_read_timeout(timeout)
+    }
+}
+
+impl From<UnixStream> for ServiceSocket {
+    fn from(stream: UnixStream) -> Self {
+        Self(stream)
+    }
+}
+
+impl AsFd for ServiceSocket {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
+impl io::Read for &ServiceSocket {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        (&self.0).read(buffer)
+    }
+}
+
+impl io::Write for &ServiceSocket {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        (&self.0).write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        (&self.0).flush()
+    }
+}
+
 /// Connect to `socket`, which lies below `root`, once every directory from `root` down to
 /// `socket`, and the socket itself, are owned by this process's user and closed to group
 /// and others.
-pub fn connect_owner_only(root: &Path, socket: &Path, timeout: Duration) -> io::Result<UnixStream> {
+pub fn connect_owner_only(
+    root: &Path,
+    socket: &Path,
+    timeout: Duration,
+) -> io::Result<ServiceSocket> {
     let invalid = |why| io::Error::new(io::ErrorKind::InvalidInput, why);
     if !root.is_absolute() {
         return Err(invalid("the service root is not absolute"));
@@ -46,7 +111,7 @@ pub fn connect_owner_only(root: &Path, socket: &Path, timeout: Duration) -> io::
     let address = socket2::SockAddr::unix(socket)?;
     let stream = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?;
     stream.connect_timeout(&address, timeout)?;
-    Ok(stream.into())
+    Ok(UnixStream::from(stream).into())
 }
 
 #[cfg(test)]

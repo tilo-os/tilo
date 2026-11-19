@@ -896,6 +896,7 @@ params = [
   { name = "channel", type = "text", required = true, schema = { type = "string" } },
   { name = "cause", type = { named = "Starting" }, required = true, schema = { type = "object", additionalProperties = false, properties = { key = { type = "string" }, kind = { type = "string" }, label = { type = "string" } }, required = ["kind", "key"] } },
   { name = "members", type = { option = { list = "any" } }, required = false, schema = { type = ["array", "null"], items = { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] } } },
+  { name = "message", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]

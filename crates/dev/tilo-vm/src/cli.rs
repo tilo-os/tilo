@@ -1015,6 +1015,17 @@ pub enum VmCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Measure what the VM's sound card played (a VM created with --sound): seconds written and the loudness of the newest stretch.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm sound dev                 # total seconds and the last 2 s\n  tilo-vm vm sound dev --window 5\n\nQEMU writes the guest's sound output to <disk>.wav while a stream plays.\nSound kept playing across a restart when a second measurement shows more\nseconds than the first and its newest stretch is not silent. tilo-vm guide devices."
+    )]
+    Sound {
+        /// The VM (default: the one this worktree uses).
+        name: Option<String>,
+        /// Seconds at the end of the recording whose loudness to report.
+        #[arg(long, default_value_t = 2.0)]
+        window: f64,
+    },
     /// Hard-reset the VM.
     #[command(after_help = "Examples:\n  tilo-vm vm reset")]
     Reset {
@@ -1158,6 +1169,16 @@ pub struct CreateArgs {
     /// --rendernode.
     #[arg(long, requires = "gl")]
     pub render_node: Option<String>,
+    /// libvirt or QEMU with --gl: Vulkan on that same GPU in the guest
+    /// (virtio-gpu Venus), so vkcube and DXVK render on the host GPU instead
+    /// of the guest's CPU Vulkan driver. tilo-vm guide devices.
+    #[arg(long, requires = "gl")]
+    pub vulkan: bool,
+    /// libvirt or QEMU: a sound card whose output QEMU writes to
+    /// `<disk>.wav` next to the VM's disk, never to this computer's speakers;
+    /// `tilo-vm vm sound` measures it.
+    #[arg(long)]
+    pub sound: bool,
     /// libvirt or QEMU: the first output's preferred mode, `WIDTHxHEIGHT` (e.g. `5120x2880`).
     #[arg(long, value_parser = parse_resolution)]
     pub resolution: Option<String>,
@@ -1300,7 +1321,7 @@ pub struct UpgradeArgs {
 pub enum AccountCommand {
     /// Create an account (default: named after your branch) and start its session.
     #[command(
-        after_help = "Examples:\n  tilo-vm account create --headless\n  tilo-vm account create review-a --headful\n  tilo-vm account create apps --headful --identity\n  tilo-vm account create me --headful --identity device\n  tilo-vm account create dual --headful --outputs 2560x1600@2,1920x1080@1\n\n--identity mints a throwaway test identity inside the new session, through\na control op only dev-image shells carry, and restarts the session with no\ndesktop layout, so apps open at once. It never replaces a real identity.\n--identity device makes the account's user this VM's person instead: its\nsession runs on the machine's identity tree and its own onboarding creates\nthe identity, certifying the machine, which starts fs (as a first boot does).\nOne account per VM, refused once the VM holds an identity.\n\n--outputs gives a headful account one virtual monitor per entry, left to right,\ntop-aligned, the first one primary. Each is WIDTHxHEIGHT[@SCALE]. Like a\nmonitor without an EDID, a vkms output offers the standard VESA (DMT) 60 Hz\nmodes, e.g. 1280x800, 1920x1080, 1920x1200, 2560x1600, 4096x2160; a size it\ndoes not offer fails with the list it does. SCALE is 0.5 to 4 (default 1). The mode and scale go\nthrough the display settings exactly as a confirmed change in Settings does,\nand are remembered for that set of monitors. Outputs are fixed when the account\nis created; rerunning the same create applies the layout again.\n\ntilo-vm input move X Y then takes desktop coordinates in logical pixels:\nwith 2560x1600@2,1920x1080 the first monitor is x 0-1279, the second\nx 1280-3199."
+        after_help = "Examples:\n  tilo-vm account create --headless\n  tilo-vm account create review-a --headful\n  tilo-vm account create apps --headful --identity\n  tilo-vm account create me --headful --identity device\n  tilo-vm account create dual --headful --outputs 2560x1600@2,1920x1080@1\n\n--identity mints a throwaway test identity inside the new session, through\na control op only dev-image shells carry, and restarts the session with no\ndesktop layout, so apps open at once. It never replaces a real identity.\n--identity device makes the account's user this VM's person instead: its\nsession runs on the machine's identity tree and its own onboarding creates\nthe identity, certifying the machine, which starts fs (as a first boot does).\nOne account per VM, refused once the VM holds an identity.\n\n--outputs gives a headful account one virtual monitor per entry, left to right,\ntop-aligned, the first one primary. Each is WIDTHxHEIGHT[@SCALE]. Like a\nmonitor without an EDID, a vkms output offers the standard VESA (DMT) 60 Hz\nmodes, e.g. 1280x800, 1920x1080, 1920x1200, 2560x1600, 4096x2160; a size it\ndoes not offer fails with the list it does. SCALE is 0.5 to 4 (default 1). The mode and scale go\nthrough the display settings exactly as a confirmed change in Settings does,\nand are remembered for that set of monitors. Outputs are fixed when the account\nis created; rerunning the same create applies the layout again.\n\ntilo-vm input move X Y then takes desktop coordinates in logical pixels:\nwith 2560x1600@2,1920x1080 the first monitor is x 0-1279, the second\nx 1280-3199.\n\nA vkms seat is a display without a GPU: the account's session renders in\nsoftware and its programs get no render node, so Windows programs and Vulkan\nrefuse to start there. Move the account to the VM's real display, whose\nvirtio GPU has one (virgl with vm create --gl): tilo-vm seat claim <account>."
     )]
     Create {
         /// The account (default: your account).

@@ -5,6 +5,22 @@
 # of. A use of Tilo's own concept never goes here: rename it.
 
 [[allow]]
+reason = "logind's seats a dev VM account's session sits on, and the running of commands in tilo-vm's command-line help."
+words = ["seat", "run"]
+paths = ["crates/dev/tilo-vm/src/cli.rs"]
+
+[[allow]]
+reason = "The dev app assembly's subprocess helper, `run`, and a test's stand-in for it."
+words = ["run"]
+identifiers = ["run", "fake_run"]
+paths = ["os/dev/assemble-app-runtime.py", "tools/tests/test_assemble_app_runtime_models.py"]
+
+[[allow]]
+reason = "A WAV recording's audio channels (left, right), not a Tilo channel."
+words = ["channel"]
+paths = ["crates/dev/tilo-vm/src/sound.rs"]
+
+[[allow]]
 reason = "The peer-state and workspace service APIs' own names a test that drives them calls: a device's own workspace service (`OwnHost`, `own_host`), the holders of a workspace (`hosts`) and a holder address's `host` field, the action that hands a workspace to another holder (`HOST_WORKSPACE`), and a link's `run`."
 words = ["host", "run"]
 identifiers = ["OwnHost", "own_host", "hosts", "host", "HOST_WORKSPACE", "run"]
@@ -441,11 +457,6 @@ paths = [
 ]
 
 [[allow]]
-reason = "The name a device's stored workspace entry of version 5 gives its join log: bytes devices hold, read and written by that name until the entry has a new version."
-words = ["ledger"]
-identifiers = ["join_ledger"]
-
-[[allow]]
 reason = "A size raise names the t run that measured it."
 words = ["run"]
 paths = ["tools/perf/tapp-size-budget/raises/*", "tools/perf/runtime-size-budget/raises/*"]
@@ -830,6 +841,10 @@ paths = [
     "crates/system/board-successor/src/profile.rs",
     "tools/ci/publish/host-base.sh",
     "tools/ci/publish/host-build.sh",
+    "tools/ci/publish/host-seal.sh",
+    "tools/ci/publish/lib.sh",
+    "docs/security/boot-chain.md",
+    "os/tests/registry_update_check.sh",
     "tools/signing/release_trust.py",
 ]
 
@@ -842,6 +857,11 @@ paths = [
     "tools/ci/publish/installer-medium.sh",
     "tools/ci/server-installer-smoke.sh",
 ]
+
+[[allow]]
+reason = "The VM harness's run directory (TILO_RUN, boot-run), `podman run` and the system's /run: names those tools give them, not Tilo concepts."
+words = ["run"]
+paths = ["tools/ci/publish/host-seal.sh", "tools/ci/publish/lib.sh", "os/tests/registry_update_check.sh"]
 
 [[allow]]
 reason = "The wasm engine's names for what answers a module's imports (`Host`) and what one of them answers (`HostFail`): an ABI the engine crate fixes, not Tilo's concept."

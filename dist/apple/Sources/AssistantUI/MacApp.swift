@@ -204,6 +204,7 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
         add(W.about.said, #selector(NSApplication.orderFrontStandardAboutPanel(_:)), to: own, target: NSApp)
         own.addItem(.separator())
         add("\(W.assistantView.said)…", #selector(showAssistantView(_:)), key: ",", to: own, target: self)
+        add(W.signOut.said, #selector(signOut(_:)), to: own, target: self)
         own.addItem(.separator())
         add(W.hideApp.said, #selector(NSApplication.hide(_:)), key: "h", to: own, target: NSApp)
         add(W.hideOthers.said, #selector(NSApplication.hideOtherApplications(_:)), key: "h", [.command, .option], to: own, target: NSApp)
@@ -269,6 +270,10 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
             add((model.supervision.isOn ? W.pauseAssistant : W.resumeAssistant).said, #selector(pauseOrResume(_:)),
                 to: menu, target: self)
         }
+        if model.session != .signedOut {
+            menu.addItem(.separator())
+            add(W.signOut.said, #selector(signOut(_:)), to: menu, target: self)
+        }
         menu.addItem(.separator())
         add(W.quit.said, #selector(NSApplication.terminate(_:)), key: "q", to: menu, target: NSApp)
     }
@@ -287,6 +292,8 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
             model.person != nil
         case #selector(toggleTasks(_:)):
             model.person != nil && model.chat != nil
+        case #selector(signOut(_:)):
+            model.session != .signedOut
         default:
             true
         }
@@ -328,6 +335,10 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
 
     @objc public func pauseOrResume(_ sender: Any?) {
         model.setAssistantOn(!model.supervision.isOn)
+    }
+
+    @objc public func signOut(_ sender: Any?) {
+        model.signOut()
     }
 
     /// Open the window at something that waits for the person: its piece in the main chat, or

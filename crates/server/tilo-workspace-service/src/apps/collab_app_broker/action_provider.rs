@@ -2009,7 +2009,7 @@ impl AppBrokerState {
     /// offers is then only known once it publishes, and the delivery admits
     /// the invocation against that. Returns the workspace to launch into and
     /// the application.
-    fn admit_launchable(
+    pub(super) fn admit_launchable(
         &self,
         caller: &Caller,
         request: &InvokeRequest,
@@ -2173,6 +2173,28 @@ impl AppBrokerState {
         self.start_job(caller, origin, &delivered, request).await
     }
 
+    /// Deliver `request` to `picked`, the connection found ready for it in `destination` and the
+    /// address it takes it at. `None` when that connection stopped taking invocations before the
+    /// admission, as a window that closed ends its stream: a change like any other, after which
+    /// the caller looks again and passes it over.
+    pub(super) async fn deliver_picked(
+        self: &Arc<Self>,
+        (peer_id, published): (u64, tilo_actions::ActionAddress),
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        (request, destination): (&InvokeRequest, &LaunchDestination),
+    ) -> Option<Result<u64, ActionCallError>> {
+        let delivered = self
+            .deliver_to(peer_id, caller, origin, (request, &published))
+            .await;
+        let address = current_address(destination.resource.as_deref(), request);
+        let still_picked = || {
+            self.ready_for(destination, false, &address)
+                .is_some_and(|(again, _)| again == peer_id)
+        };
+        (delivered.is_ok() || still_picked()).then_some(delivered)
+    }
+
     /// The connection ready to take `address` in `destination`, and the address it takes it
     /// at: an instance of the app for a `start` (`starts`), else the app's ready publisher of it.
     fn ready_for(
@@ -2267,17 +2289,19 @@ impl AppBrokerState {
             if tokio::time::Instant::now() >= deadline.deadline() {
                 return Err(expired());
             }
-            if let Some((peer_id, published)) =
-                self.ready_for(destination, started.is_some(), address)
-            {
+            if let Some(picked) = self.ready_for(destination, started.is_some(), address) {
                 if let Some(started) = started {
                     return self
-                        .answer_started(caller, origin, request, started, peer_id)
+                        .answer_started(caller, origin, request, started, picked.0)
                         .await;
                 }
-                return self
-                    .deliver_to(peer_id, caller, origin, (request, &published))
-                    .await;
+                if let Some(delivered) = self
+                    .deliver_picked(picked, caller, origin, (request, destination))
+                    .await
+                {
+                    return delivered;
+                }
+                continue;
             }
             // An action that shows nothing runs in an instance of the app
             // with no window, where the host runs one: it publishes, and the
@@ -2707,7 +2731,7 @@ impl AppBrokerState {
                     surface.peer_id,
                     surface.route.document_id,
                     if surface.live { "" } else { "closed, " },
-                    if subscribers.contains_key(&surface.peer_id) {
+                    if super::open_stream(&subscribers, surface.peer_id).is_some() {
                         ""
                     } else {
                         "takes no invocations, "
@@ -2756,7 +2780,7 @@ impl AppBrokerState {
                     && surface.app_id == app_id
                     && surface.route.cluster_id == workspace
                     && record.is_none_or(|record| surface.route.document_id == record)
-                    && subscribers.contains_key(&surface.peer_id)
+                    && super::open_stream(&subscribers, surface.peer_id).is_some()
             })
             .filter_map(|surface| {
                 let resource = if aliases {

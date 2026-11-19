@@ -364,7 +364,7 @@ final class MacDriveTests: XCTestCase {
             return (item.title, item.submenu?.items.map(said) ?? [])
         }
         XCTAssertEqual(menus.map(\.0), [W.appName, W.fileMenu.said, W.editMenu.said, W.viewMenu.said, W.windowMenu.said])
-        XCTAssertEqual(menus[0].1, [W.about.said, "-", "\(W.assistantView.said)… ⌘,", "-", "\(W.hideApp.said) ⌘H", "\(W.hideOthers.said) ⌥⌘H",
+        XCTAssertEqual(menus[0].1, [W.about.said, "-", "\(W.assistantView.said)… ⌘,", W.signOut.said, "-", "\(W.hideApp.said) ⌘H", "\(W.hideOthers.said) ⌥⌘H",
                                     W.showAll.said, "-", "\(W.quit.said) ⌘Q"])
         XCTAssertEqual(menus[1].1, ["\(W.newSubAgent.said) ⌘N", "-", "\(W.closeWindow.said) ⌘W"])
         XCTAssertEqual(menus[2].1, ["\(W.undo.said) ⌘Z", "\(W.redo.said) ⇧⌘Z", "-", "\(W.cut.said) ⌘X", "\(W.copy.said) ⌘C",
@@ -498,7 +498,7 @@ final class MacDriveTests: XCTestCase {
         }
         XCTAssertEqual(lines(), [W.openApp.said, "-", W.counted(3, one: .waitsOne, many: .waitsMany), "Find the Q3 board deck",
                                  "Reply to Maya at Northwind", "Board deck for Friday: first draft", "-", W.pauseAssistant.said, "-",
-                                 "\(W.quit.said) ⌘Q"])
+                                 W.signOut.said, "-", "\(W.quit.said) ⌘Q"])
         XCTAssertNil(menu.items[2].action, "how many things wait is said, not pressed")
         XCTAssertEqual(menu.items.last?.action, #selector(NSApplication.terminate(_:)))
         XCTAssertTrue(menu.items.last?.target === NSApp)

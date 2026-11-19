@@ -149,12 +149,47 @@ tilo_test_env::scenario! {
                 op.name()
             );
         }
-        // Every op the protocol answers is in the list, each once.
+        // Every op the protocol answers is in the list, each once, under its own name.
         let mut names: Vec<&str> = Op::ALL.iter().map(|op| op.name()).collect();
-        assert_eq!(names.len(), 32, "the protocol's ops");
         names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), Op::ALL.len(), "{names:?}");
+        assert_eq!(
+            names,
+            [
+                "actions_cancel",
+                "actions_enumerate",
+                "actions_invoke",
+                "actions_status",
+                "click_at",
+                "click_named",
+                "drag",
+                "keeping_devices",
+                "key",
+                "key_down",
+                "key_up",
+                "list_targets",
+                "modifiers",
+                "pinch",
+                "pointer_button",
+                "pointer_move",
+                "process_memory",
+                "profile_start",
+                "profile_status",
+                "profile_stop",
+                "provision_test_identity",
+                "questions",
+                "resource_read",
+                "scroll",
+                "search_rows",
+                "snapshot",
+                "state_dump",
+                "swipe",
+                "type",
+                "unlock",
+                "watch",
+                "windows",
+            ],
+            "the protocol's ops"
+        );
         assert_eq!(Op::of(&json!({"op": "nonsense"})), None);
     }
 

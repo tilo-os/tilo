@@ -68,40 +68,40 @@ RemoveBookmarkArgs = TypedDict("RemoveBookmarkArgs", {
 """The arguments of `remove-bookmark`."""
 
 NewFolderArgs = TypedDict("NewFolderArgs", {
-    "parent": "str",
-    "name": "str",
-    "document": NotRequired["str | None"],
+    "parent": "Any",
+    "name": "Any",
+    "document": NotRequired["Any | None"],
 })
 """The arguments of `new-folder`."""
 
 NewFileArgs = TypedDict("NewFileArgs", {
-    "parent": "str",
-    "name": "str",
-    "document": NotRequired["str | None"],
+    "parent": "Any",
+    "name": "Any",
+    "document": NotRequired["Any | None"],
 })
 """The arguments of `new-file`."""
 
 MoveArgs = TypedDict("MoveArgs", {
-    "node": "str",
-    "parent": "str",
-    "name": "str",
+    "node": "Any",
+    "parent": "Any",
+    "name": "Any",
 })
 """The arguments of `move`."""
 
 WriteArgs = TypedDict("WriteArgs", {
-    "node": "str",
-    "content": "str",
-    "size": "int",
+    "node": "Any",
+    "content": "Any",
+    "size": "Any",
 })
 """The arguments of `write`."""
 
 TrashArgs = TypedDict("TrashArgs", {
-    "node": "str",
+    "node": "Any",
 })
 """The arguments of `trash`."""
 
 RestoreArgs = TypedDict("RestoreArgs", {
-    "node": "str",
+    "node": "Any",
 })
 """The arguments of `restore`."""
 
@@ -128,7 +128,7 @@ ForgetArgs = TypedDict("ForgetArgs", {
 
 class Folder(Resource):
     """Folder — `files.folder`."""
-    __surface__ = "so.tilo.file-explorer@d93c18922e3b20c1"
+    __surface__ = "so.tilo.file-explorer@299a08b659d0b42a"
     places: list[Entry[Bookmark]]
 
     def add_bookmark(self,
@@ -350,12 +350,12 @@ class Folder(Resource):
 
 class Tree(Resource):
     """Files — `files.tree`."""
-    __surface__ = "so.tilo.file-explorer@d93c18922e3b20c1"
+    __surface__ = "so.tilo.file-explorer@299a08b659d0b42a"
     def new_folder(self,
         *,
-        parent: str,
-        name: str,
-        document: str | None = None,
+        parent: Any,
+        name: Any,
+        document: Any | None = None,
     ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
@@ -371,9 +371,9 @@ class Tree(Resource):
 
     def new_file(self,
         *,
-        parent: str,
-        name: str,
-        document: str | None = None,
+        parent: Any,
+        name: Any,
+        document: Any | None = None,
     ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
@@ -389,9 +389,9 @@ class Tree(Resource):
 
     def move(self,
         *,
-        node: str,
-        parent: str,
-        name: str,
+        node: Any,
+        parent: Any,
+        name: Any,
     ) -> None:
         """Runs the app's action."""
         return self.action("move", node=node, parent=parent, name=name)
@@ -402,9 +402,9 @@ class Tree(Resource):
 
     def write(self,
         *,
-        node: str,
-        content: str,
-        size: int,
+        node: Any,
+        content: Any,
+        size: Any,
     ) -> None:
         """Runs the app's action."""
         return self.action("write", node=node, content=content, size=size)
@@ -413,7 +413,7 @@ class Tree(Resource):
         """Runs `write` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("write", items)
 
-    def trash(self, *, node: str) -> None:
+    def trash(self, *, node: Any) -> None:
         """Runs the app's action."""
         return self.action("trash", node=node)
 
@@ -421,7 +421,7 @@ class Tree(Resource):
         """Runs `trash` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("trash", items)
 
-    def restore(self, *, node: str) -> None:
+    def restore(self, *, node: Any) -> None:
         """Runs the app's action."""
         return self.action("restore", node=node)
 
@@ -436,7 +436,7 @@ class Tree(Resource):
 
 class Recent(Resource):
     """Recent files — `files.recent`."""
-    __surface__ = "so.tilo.file-explorer@d93c18922e3b20c1"
+    __surface__ = "so.tilo.file-explorer@299a08b659d0b42a"
     devices: dict[str, Any]
 
     def note(self,

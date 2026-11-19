@@ -2800,6 +2800,9 @@ pub struct AppBrokerState {
     thread_restarts: AtomicU64,
     /// Work another thread hands the broker's turn (see [`TurnWork`]).
     turn_work: std::sync::Arc<TurnWork>,
+    /// Told once this state is dropped and its journal's lock let go.
+    #[cfg(any(test, feature = "test-support"))]
+    gone: BrokerGone,
 }
 
 /// Work another thread handed the broker's turn, run with the state.
@@ -2822,6 +2825,55 @@ impl TurnWork {
     pub(super) fn hand(&self, work: TurnTask) {
         self.handed.lock_recover().push(work);
         self.turn.notify_one();
+    }
+}
+
+/// Told when a broker is dropped, after its journal let the store's lock go.
+///
+/// A state's strong count reaches zero before its fields are dropped, so a
+/// count does not say the store is free: the journal's writer may still be
+/// finishing the last write it was handed. Whoever opens the store again
+/// waits here.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Default)]
+pub struct BrokerGone(std::sync::Arc<BrokerGoneTold>);
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+struct BrokerGoneTold {
+    told: std::sync::atomic::AtomicBool,
+    waiters: tokio::sync::Notify,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl BrokerGone {
+    fn tell(&self) {
+        self.0.told.store(true, Ordering::Release);
+        self.0.waiters.notify_waiters();
+    }
+
+    /// Wait for the broker to be dropped and its store's lock let go.
+    pub async fn wait(&self) {
+        loop {
+            let told = self.0.waiters.notified();
+            tokio::pin!(told);
+            told.as_mut().enable();
+            if self.0.told.load(Ordering::Acquire) {
+                return;
+            }
+            told.await;
+        }
+    }
+}
+
+/// A broker a caller never stopped is closed by its drop: the journal goes,
+/// and its writer with it, so the store's lock is let go before [`BrokerGone`]
+/// is told. The other fields drop after that tell.
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for AppBrokerState {
+    fn drop(&mut self) {
+        self.let_go_of_journal();
+        self.gone.tell();
     }
 }
 
@@ -2925,6 +2977,12 @@ impl AppBrokerState {
         std::mem::take(&mut *self.turn_work.handed.lock_recover());
         self.refresh_action_directory_root_snapshot();
 
+        self.let_go_of_journal();
+    }
+
+    /// Drop the journal now: its writer finishes what it was handed and the
+    /// store's lock is released before this returns.
+    fn let_go_of_journal(&self) {
         let journal = {
             let mut slot = match self.journal.lock() {
                 Ok(slot) => slot,
@@ -2933,6 +2991,13 @@ impl AppBrokerState {
             std::mem::replace(&mut *slot, Ok(None))
         };
         drop(journal);
+    }
+
+    /// A handle told once this broker is dropped and its journal's lock let
+    /// go, whichever thread drops it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn gone(&self) -> BrokerGone {
+        self.gone.clone()
     }
 
     /// Allocate a private connected descriptor for an actual host-mounted worker.
@@ -3535,6 +3600,8 @@ impl AppBrokerState {
                     handed: Mutex::new(Vec::new()),
                     turn: std::sync::Arc::clone(&local_turn),
                 }),
+                #[cfg(any(test, feature = "test-support"))]
+                gone: BrokerGone::default(),
             }),
             bridge_rx,
         )
@@ -3836,6 +3903,12 @@ impl AppBrokerState {
     /// the generation stays.
     fn invocation_streams_changed(&self) {
         self.surface_changes.send_modify(|_| {});
+    }
+
+    /// `peer_id`'s invocation stream while it takes invocations: opened, not
+    /// ended by its app, and still read.
+    fn invocation_stream(&self, peer_id: u64) -> Option<mpsc::UnboundedSender<InvocationEnvelope>> {
+        open_stream(&*self.invocation_subscribers.lock().ok()?, peer_id).cloned()
     }
 
     /// A receiver that sees every later surface or invocation-stream change;
@@ -5176,16 +5249,7 @@ impl AppBrokerState {
         }
         // A stream the app has dropped takes nothing: refuse before the
         // journal admits what could never be delivered.
-        let sender = self
-            .invocation_subscribers
-            .lock()
-            .ok()
-            .and_then(|subscribers| {
-                subscribers
-                    .get(&peer_id)
-                    .filter(|sender| !sender.is_closed())
-                    .cloned()
-            });
+        let sender = self.invocation_stream(peer_id);
         if local_report.is_none() && sender.is_none() {
             return Err("the application has no invocation stream".into());
         }
@@ -6156,24 +6220,26 @@ impl AppBrokerState {
             checkouts.remove(&peer_id);
         }
         self.refresh_action_directory_root_snapshot();
-        if let Ok(mut capabilities) = self.stable_invocation_subscribers.lock() {
-            capabilities.remove(&peer_id);
-        }
-        if let Ok(mut subscribers) = self.invocation_subscribers.lock()
-            && subscribers.remove(&peer_id).is_some()
-        {
-            drop(subscribers);
-            self.invocation_streams_changed();
-        }
         self.turns.forget(peer_id);
-        self.fail_pending_invocations_of(peer_id);
+        self.end_invocations(peer_id);
         self.catalogue_changed();
     }
 
-    /// Fail every invocation still pending on `peer_id`, which went away
-    /// before completing it: an unjournaled one fails, a journaled one's
-    /// outcome is unknown.
-    fn fail_pending_invocations_of(&self, peer_id: u64) {
+    /// `peer_id` went away: its invocation stream ends, and each invocation
+    /// still pending on it fails, or its outcome is unknown where it was
+    /// journaled.
+    fn end_invocations(&self, peer_id: u64) {
+        if let Ok(mut capabilities) = self.stable_invocation_subscribers.lock() {
+            capabilities.remove(&peer_id);
+        }
+        // Gone already when its app ended the stream as it closed.
+        let ended_by_app = !self
+            .invocation_subscribers
+            .lock()
+            .is_ok_and(|mut subscribers| subscribers.remove(&peer_id).is_some());
+        if !ended_by_app {
+            self.invocation_streams_changed();
+        }
         let unfinished: Vec<(u64, PendingInvocation)> = {
             let Ok(mut pending) = self.pending_invocations.lock() else {
                 return;
@@ -6189,6 +6255,13 @@ impl AppBrokerState {
                 .collect()
         };
         for (id, invocation) in unfinished {
+            tracing::warn!(
+                peer_id,
+                id,
+                ended_by_app,
+                update = ?invocation.update,
+                "collaboration broker: an application went away holding an invocation it never answered"
+            );
             self.answer_unfinished(
                 id,
                 &invocation,
@@ -8697,6 +8770,17 @@ pub(crate) fn unread_invocations(peer: u64) -> usize {
         .try_lock()
         .unwrap_or_else(|_| panic!("a read of peer {peer}'s invocations is outstanding"));
     queue.len()
+}
+
+/// `peer_id`'s stream among `subscribers` while it takes invocations: one its
+/// app ended is gone from them, and one nobody reads any more is closed.
+fn open_stream(
+    subscribers: &HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>,
+    peer_id: u64,
+) -> Option<&mpsc::UnboundedSender<InvocationEnvelope>> {
+    subscribers
+        .get(&peer_id)
+        .filter(|sender| !sender.is_closed())
 }
 
 struct InvocationStreamServer {
@@ -14803,15 +14887,11 @@ fn wire_client(
 }
 
 /// Wait for a dropped broker to go: its channels let go of it once their
-/// wire connections, closing with their clients, have wound down.
+/// wire connections, closing with their clients, have wound down, and its
+/// journal's writer has let the store's lock go.
 #[cfg(test)]
-async fn broker_gone(state: std::sync::Weak<AppBrokerState>) {
-    tilo_test_env::within("the dropped broker's connections close", async {
-        while state.strong_count() > 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await;
+async fn broker_gone(gone: BrokerGone) {
+    tilo_test_env::within("the dropped broker lets its journal go", gone.wait()).await;
 }
 
 /// An app answering the host's asks of its published action directory from

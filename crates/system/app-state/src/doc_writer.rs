@@ -986,10 +986,14 @@ impl DocWriter {
         }
         self.settle();
         let progress = self.progress.borrow();
-        if let Some(error) = &progress.error {
+        let started_only = durable_store::waiting::forbidden();
+        // Where the store commits on its own, a replacement still under way may clear the failure.
+        let replacing = started_only && progress.inflight.iter().any(|write| write.replace);
+        if let Some(error) = &progress.error
+            && !replacing
+        {
             return Err(error.clone());
         }
-        let started_only = durable_store::waiting::forbidden();
         // The store took the writes and commits them itself: nothing a
         // caller does makes it wait, so this is "written", not "failed".
         let mut on_its_way = false;
