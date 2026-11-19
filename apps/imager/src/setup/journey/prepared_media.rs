@@ -3052,7 +3052,6 @@ mod tests {
                 .to_bytes(),
             authenticated.device_public_key()
         );
-        assert!(!paths.user_privkey.exists());
         let record = tilo_identity::store::load_from_path(imported.identity_record).unwrap();
         assert_eq!(record.group_public_key(), authenticated.public_key());
         assert!(!record.is_single_device());

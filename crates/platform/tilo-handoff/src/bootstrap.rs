@@ -343,7 +343,7 @@ pub(crate) fn install(
         return Err(invalid("This computer already has an identity"));
     }
     let paths = IdentityPaths::under(identity_root);
-    if paths.user_privkey.exists() || paths.user_pubkey.exists() || paths.device_cert.exists() {
+    if paths.user_pubkey.exists() || paths.device_cert.exists() {
         return Err(invalid("This computer already has an identity"));
     }
     let record = decode_b64(&projection.identity_record)?;

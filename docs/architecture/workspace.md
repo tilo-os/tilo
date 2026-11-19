@@ -261,14 +261,11 @@ machine id and its SSH host keys. A setting such as accepting agents from the
 person's other devices is on the disk and comes along.
 
 **Certification adds no trust.** Only the person's root signs a device
-certificate:
+certificate, and the root lives only in the person's identity store, so
+nothing at boot signs:
 
-- A machine whose system identity tree holds the root
-  (`user-identity/privkey.bin`) certifies its branch at boot, granting exactly
-  what the source's certificate granted, and no expiry the source did not
-  have. It could sign any certificate for that person already.
-- A person whose root is in their own identity document (the usual primary
-  device) has it issued at their next sign-in, the same provisioning that
+- A person whose identity store holds the root (the usual primary device) has
+  it issued when their identity service starts, the same provisioning that
   issues a certificate to any of their devices that holds none; it carries the
   branch's name (`device/branch-label`).
 - A device that joined without the root holds nothing that signs. It waits,

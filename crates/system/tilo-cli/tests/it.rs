@@ -92,7 +92,7 @@ fn every_old_name_runs_its_help_through_the_alias() {
 }
 
 /// `tilo login --new-identity` makes one identity whose root this computer
-/// holds, in Tilo's own layout, and keeps it: a second run says so and
+/// holds, in its identity store, and keeps it: a second run says so and
 /// prints the same user public key.
 #[test]
 fn a_new_identity_is_made_once() {
@@ -101,6 +101,7 @@ fn a_new_identity_is_made_once() {
         let out = Command::new(tilo_test_env::package_binary!("tilo"))
             .args(args)
             .env("TILO_IDENTITY_DIR", scratch.path())
+            .env("TILO_IDENTITY_FILE_SECRETS", "1")
             .output_locked()
             .unwrap();
         assert!(out.status.success(), "tilo {args:?}: {out:?}");
@@ -112,7 +113,10 @@ fn a_new_identity_is_made_once() {
     let (key, said) = run(&["login", "--new-identity", "--name", "Ada"]);
     assert_eq!(key.len(), 64, "{key}");
     assert!(said.contains("Made Ada's Tilo identity"), "{said}");
-    assert!(scratch.path().join("user-identity/privkey.bin").exists());
+    assert!(
+        tilo_identity_client::resolve_active_identity(&scratch.path().join("person")).is_some(),
+        "the root is kept in the identity store"
+    );
     let (again, said) = run(&["login", "--new-identity", "--name", "Someone else"]);
     assert_eq!(again, key);
     assert!(said.contains("already holds Ada's"), "{said}");

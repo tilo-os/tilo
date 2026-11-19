@@ -80,33 +80,27 @@ pub(super) fn inspect(cache: &Path) -> Result<WorkspaceStatus> {
     })
 }
 
-/// Reuse a validated, signed authority even when root ownership is outside the daemon. A missing
-/// authority still requires the explicit signer; no policy is synthesized during recovery.
+/// Reuse the validated, signed authority the person's identity published (`tilo-server
+/// files-workspace-initialize` or `publish-authority`): the person's root is never here, so no
+/// policy is signed or synthesized by the daemon.
 pub(super) fn owner_authority(
     cache: &Path,
     workspace: uuid::Uuid,
     person: [u8; 32],
     members: Vec<tilo_action_policy::MemberId>,
-    bootstrap: Option<(Vec<collab_types::CapOverride>, &ed25519_dalek::SigningKey)>,
 ) -> Result<Option<std::sync::Arc<fs::workspace_authority::WorkspaceAuthority>>> {
-    use fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
+    use fs::workspace_authority::WorkspaceAuthority;
     let path = cache.join("workspace-authority.bin");
-    if !regular_file(&path)? && bootstrap.is_none() {
+    if !regular_file(&path)? {
         return Ok(None);
     }
     let authority = std::sync::Arc::new(WorkspaceAuthority::open(
         path, workspace, person, person, members,
     )?);
-    if authority.current().is_none() {
-        let (capabilities, signer) = bootstrap.context("saved Files authority is unavailable")?;
-        authority.apply(WorkspaceAuthorityEnvelope::sign(
-            workspace,
-            1,
-            capabilities,
-            false,
-            signer,
-        )?)?;
-    }
+    anyhow::ensure!(
+        authority.current().is_some(),
+        "saved Files authority is unavailable"
+    );
     Ok(Some(authority))
 }
 
@@ -137,7 +131,7 @@ mod tests {
             .unwrap();
             existing.apply(envelope.clone()).unwrap();
             drop(existing);
-            let resumed = owner_authority(dir.path(), workspace, person, Vec::new(), None)
+            let resumed = owner_authority(dir.path(), workspace, person, Vec::new())
                 .unwrap()
                 .unwrap();
             assert_eq!(resumed.current(), Some(envelope));
@@ -147,15 +141,14 @@ mod tests {
                     dir.path(),
                     ticket(3).workspace_id(),
                     person,
-                    Vec::new(),
-                    None
+                    Vec::new()
                 )
                 .is_err()
             );
             let other = ed25519_dalek::SigningKey::from_bytes(&[43; 32])
                 .verifying_key()
                 .to_bytes();
-            assert!(owner_authority(dir.path(), workspace, other, Vec::new(), None).is_err());
+            assert!(owner_authority(dir.path(), workspace, other, Vec::new()).is_err());
         }
 
         phase missing_or_invalid_authority_cannot_be_replaced_without_a_signer;
@@ -169,8 +162,7 @@ mod tests {
                     dir.path(),
                     ticket(2).workspace_id(),
                     person,
-                    Vec::new(),
-                    None
+                    Vec::new()
                 )
                 .unwrap()
                 .is_none()
@@ -186,8 +178,7 @@ mod tests {
                     dir.path(),
                     ticket(2).workspace_id(),
                     person,
-                    Vec::new(),
-                    None
+                    Vec::new()
                 )
                 .is_err()
             );

@@ -287,9 +287,6 @@ impl EnrolledDevice {
             .ok_or_else(invalid)?
             .to_owned();
         let user = system.child("user-identity", false)?;
-        if user.optional("privkey.bin", true, 32)?.is_some() {
-            return Err(invalid());
-        }
         let root = user.file("pubkey.bin", false, 32)?;
         if root.as_slice() != expected_root {
             return Err(invalid());
@@ -383,8 +380,7 @@ impl EnrolledDevice {
         self.system.validate()?;
         self.identity.validate()?;
         let user = self.system.child("user-identity", false)?;
-        if user.optional("privkey.bin", true, 32)?.is_some()
-            || user.file("pubkey.bin", false, 32)?.as_slice() != self.public_key()
+        if user.file("pubkey.bin", false, 32)?.as_slice() != self.public_key()
             || read_source_device_seed(&self.system, &self.system_directory)?.as_slice()
                 != self.payload.device_seed.as_slice()
             || self
@@ -697,7 +693,6 @@ impl AuthenticatedEnrolledDevice {
         if system.overlaps(&identity) {
             return Err(invalid());
         }
-        refuse_human_root(&system)?;
         let files = self.target_files()?;
         for file in &files {
             file.check(&system, &identity)?;
@@ -760,19 +755,6 @@ impl AuthenticatedEnrolledDevice {
         })
     }
 }
-fn refuse_human_root(system: &fs::Directory) -> io::Result<()> {
-    match system.child("user-identity", false) {
-        Ok(user) => {
-            if user.optional("privkey.bin", true, 32)?.is_some() {
-                return Err(invalid());
-            }
-            Ok(())
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
-}
-
 fn normalize_public_projection(system: &fs::Directory, root: [u8; 32]) -> io::Result<()> {
     let user = system.child("user-identity", false)?;
     user.normalize_public_file("pubkey.bin")?;
@@ -800,7 +782,6 @@ impl AuthenticatedEnrolledDevice {
             tilo_clock::try_unix_now_ns().ok_or_else(invalid)?,
         )?;
         let system = fs::Directory::open_system_namespace(system_root)?;
-        refuse_human_root(&system)?;
         let files: Vec<_> = self
             .target_files()?
             .into_iter()

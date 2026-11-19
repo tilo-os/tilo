@@ -124,6 +124,9 @@ zeroize.workspace = true
 mail-parser = "0.11.4"
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
+# The person's root, kept in their identity store.
+tilo-identity = { path = "../../runtime/tilo-identity" }
+tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser.workspace = true

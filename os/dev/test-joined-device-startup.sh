@@ -135,7 +135,7 @@ GUEST
 record="$("$vm" ssh "bash /tmp/tilo-join.sh $(printf '%q' "$TILO_PASS"); rm -f /tmp/tilo-join.sh")" \
   || die "the device could not be joined to an identity"
 note "joined record $record"
-"$vm" ssh "test ! -e $identity_dir/primary.json && test ! -e /var/lib/tilo/user-identity/privkey.bin" \
+"$vm" ssh "test ! -e $identity_dir/primary.json && test ! -e $identity_dir/secrets" \
   || die "joining left a root identity on the device"
 # The person reads the device certificate as themselves, as their session
 # does to verify the device: it is public, whatever umask joining ran under.
@@ -169,7 +169,7 @@ if "$vm" ssh 'journalctl -b --no-pager -o cat _UID=$(id -u)' \
     | grep -E 'needs recovery|identity secret has an invalid size|pre-enrolled device identity is not usable|refusing authored launch'; then
   die "the session treated the joined identity as one that needs recovery"
 fi
-"$vm" ssh "test ! -e $identity_dir/primary.json && test ! -e /var/lib/tilo/user-identity/privkey.bin" \
+"$vm" ssh "test ! -e $identity_dir/primary.json && test ! -e $identity_dir/secrets" \
   || die "startup minted a root identity on a joined device"
 [ "$("$vm" ssh 'sha256sum /var/lib/tilo/device/cert.bin')" = "$cert_before" ] \
   || die "startup replaced the joined device's certificate"

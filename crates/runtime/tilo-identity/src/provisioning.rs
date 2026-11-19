@@ -148,6 +148,8 @@ pub fn login_account_display_name() -> String {
 /// what the runtime identity broker migrates and what `DiskIdentityStore`
 /// writes via the UI's identity-flow ceremony.
 pub const PRIMARY_IDENTITY_FILE: &str = "primary.json";
+/// The id of [`PRIMARY_IDENTITY_FILE`] in the store.
+const PRIMARY_IDENTITY_ID: &str = "primary";
 
 /// Sequence for same-directory temporary owner-claim files.  The final claim
 /// is a hard link, not this name; `create_new` simply prevents a stale temp
@@ -276,8 +278,47 @@ fn create_named_primary_identity(
     let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let pubkey_hex = hex::encode(identity.group_public_key().as_bytes());
-    let mut record = IdentityRecord::from_threshold_identity(
+    import_whole_identity(identity_dir, &identity, display_name, avatar_color, storage)?;
+    Ok(ProvisionOutcome::Created { pubkey_hex })
+}
+
+/// Keep a person's whole root, opened elsewhere (a page's root envelope, a
+/// person made by the command line), as this account's single-device
+/// identity: `<identity_dir>/primary.json`, made active, its secret in
+/// `storage`. The store is the one home of a root: nothing else keeps it.
+///
+/// # Errors
+///
+/// The directory is not private to this account, an identity is already
+/// there, or the identity cannot be written and secured.
+pub fn import_single_device_root(
+    identity_dir: &Path,
+    root: &ed25519_dalek::SigningKey,
+    display_name: &str,
+    storage: IdentityStorage,
+) -> io::Result<PathBuf> {
+    prepare_identity_directory(identity_dir)?;
+    let identity = ThresholdIdentity::from_single_device_seed(&Zeroizing::new(root.to_bytes()));
+    let path = import_whole_identity(
+        identity_dir,
         &identity,
+        display_name,
+        crate::store::DEFAULT_AVATAR_COLOR,
+        storage,
+    )?;
+    crate::store::set_active_identity(identity_dir, PRIMARY_IDENTITY_ID)?;
+    Ok(path)
+}
+
+fn import_whole_identity(
+    identity_dir: &Path,
+    identity: &ThresholdIdentity,
+    display_name: &str,
+    avatar_color: [u8; 3],
+    storage: IdentityStorage,
+) -> io::Result<PathBuf> {
+    let mut record = IdentityRecord::from_threshold_identity(
+        identity,
         display_name,
         avatar_color,
         std::time::SystemTime::now(),
@@ -288,8 +329,7 @@ fn create_named_primary_identity(
     let bytes = Zeroizing::new(
         encoded.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?,
     );
-    import_primary_identity(identity_dir, &bytes, storage)?;
-    Ok(ProvisionOutcome::Created { pubkey_hex })
+    import_primary_identity(identity_dir, &bytes, storage)
 }
 
 fn ensure_primary_identity_in_context(
@@ -862,7 +902,6 @@ fn validate_throwaway_identity_paths(paths: &IdentityPaths) -> io::Result<()> {
         .unwrap_or_else(|_| shared.to_path_buf());
     for path in [
         &paths.user_pubkey,
-        &paths.user_privkey,
         &paths.device_privkey,
         &paths.device_cert,
     ] {
@@ -1448,9 +1487,16 @@ fn import_primary_identity(
     match storage {
         IdentityStorage::Files => {
             let provider = crate::store::BrokerFileProvider::new(identity_dir);
-            crate::store::import_identity_with_provider(identity_dir, "primary", bytes, &provider)
+            crate::store::import_identity_with_provider(
+                identity_dir,
+                PRIMARY_IDENTITY_ID,
+                bytes,
+                &provider,
+            )
         }
-        IdentityStorage::Platform => crate::store::import_identity(identity_dir, "primary", bytes),
+        IdentityStorage::Platform => {
+            crate::store::import_identity(identity_dir, PRIMARY_IDENTITY_ID, bytes)
+        }
     }
 }
 
@@ -1688,7 +1734,6 @@ mod tests {
             assert_eq!(outcome, ProvisionOutcome::Existing);
             assert_eq!(held_by_account(), root.verifying_key().to_bytes());
             assert!(!identity_dir.join(PRIMARY_IDENTITY_FILE).exists());
-            assert!(!paths.user_privkey.exists());
             assert!(persist::joined_device_is_ready(&paths, tilo_clock::unix_now_ns()).unwrap());
 
             // The account's config is reset while the system-wide enrollment
@@ -1697,7 +1742,6 @@ mod tests {
             let outcome = ensure_collaboration_identity(&identity_dir, &paths).unwrap();
             assert_eq!(outcome, ProvisionOutcome::Existing);
             assert_eq!(held_by_account(), root.verifying_key().to_bytes());
-            assert!(!paths.user_privkey.exists());
         }
 
         phase only_the_identity_that_claimed_the_device_owns_it;
@@ -1808,11 +1852,10 @@ mod tests {
                 .load_reconciled()
                 .unwrap();
             assert_eq!(registry.default_identity, Some(hex::encode(user)));
-            let fleet = crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths.clone())
+            let fleet = crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
                 .load(&hex::encode(user))
                 .unwrap();
             assert!(fleet.certificates.contains(&cert));
-            assert!(!paths.user_privkey.exists());
         }
     }
 
@@ -1919,7 +1962,12 @@ mod tests {
         assert!(
             persist::joined_device_is_ready(&target_system, tilo_clock::unix_now_ns()).unwrap()
         );
-        assert!(!target_system.user_privkey.exists());
+        assert!(
+            !dir.path()
+                .join("var/home/quser/.config/tilo/identity/secrets")
+                .exists(),
+            "the joined device holds no root secret"
+        );
         let identity_dir = dir.path().join("var/home/quser/.config/tilo/identity");
         let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
             .load_reconciled()
@@ -2087,7 +2135,12 @@ mod tests {
         assert!(
             persist::joined_device_is_ready(&target_system, tilo_clock::unix_now_ns()).unwrap()
         );
-        assert!(!target_system.user_privkey.exists());
+        assert!(
+            !dir.path()
+                .join("var/home/quser/.config/tilo/identity/secrets")
+                .exists(),
+            "the joined device holds no root secret"
+        );
         let target_identity = dir.path().join("var/home/quser/.config/tilo/identity");
         let target_record =
             tilo_identity_client::resolve_active_identity(&target_identity).unwrap();
@@ -2464,10 +2517,6 @@ mod tests {
             let device = persist::read_device_key(&paths.device_privkey).unwrap();
             let cert = persist::read_device_cert(&paths.device_cert).unwrap();
 
-            assert!(
-                !paths.user_privkey.exists(),
-                "new installs must not duplicate the user-root private key"
-            );
             assert_eq!(cert.user_public_key, signer.group_public_key());
             assert_eq!(cert.device_public_key, device.verifying_key().to_bytes());
             tilo_user_identity::verify_device_cert(&cert).unwrap();

@@ -1210,7 +1210,7 @@ fn preflight_join_identity(identity: &ReceiverIdentity) -> io::Result<()> {
         return Err(invalid("This computer already has an identity"));
     }
     let paths = tilo_device_identity::IdentityPaths::under(&identity.identity_root);
-    if paths.user_privkey.exists() || paths.user_pubkey.exists() || paths.device_cert.exists() {
+    if paths.user_pubkey.exists() || paths.device_cert.exists() {
         return Err(invalid("This computer already has an identity"));
     }
     Ok(())

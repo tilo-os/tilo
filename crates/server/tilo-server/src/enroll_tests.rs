@@ -72,7 +72,6 @@ tilo_test_env::scenario! {
             tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
-        assert!(!paths.user_privkey.exists());
         let options = ApprovalOptions {
             identity_root: &root,
             identity_dir: Some(&identities),
@@ -147,7 +146,6 @@ tilo_test_env::scenario! {
             load_approval_identity(&options).err().unwrap(),
             "not authorised",
         );
-        assert!(!paths.user_privkey.exists());
     }
 
     phase a_held_root_certifies_an_administrator_into_the_fleet;
@@ -160,7 +158,13 @@ tilo_test_env::scenario! {
         let paths = IdentityPaths::under(identity_root.path());
         paths.ensure_directories().unwrap();
         let root = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
-        tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
+        tilo_identity::provisioning::import_single_device_root(
+            identity_dir.path(),
+            &root,
+            "",
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
         let admin = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
         let device = hex::encode(admin.verifying_key().to_bytes());
         let out = identity_dir.path().join("admin.cert");
@@ -1150,7 +1154,13 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     paths.ensure_directories().unwrap();
     let root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
     let issuer = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
-    tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
+    tilo_identity::provisioning::import_single_device_root(
+        approver_identities.path(),
+        &root,
+        "",
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .unwrap();
     tilo_device_identity::persist::write_public_key(
         &paths.user_pubkey,
         &root.verifying_key().to_bytes(),
@@ -1274,7 +1284,6 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     verify_device_cert_at(&cert, finished_ns - ISSUANCE_CLOCK_ALLOWANCE_NS)
         .expect("a device whose clock trails the approver's accepts its certificate");
     assert!(cert.issued_at_ns >= started_ns - ISSUANCE_CLOCK_ALLOWANCE_NS);
-    assert!(!enrolled_paths.user_privkey.exists());
     let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
         &std::fs::read(tilo_server::home_peer_registry_path(new_root.path())).unwrap(),
     )
@@ -1365,7 +1374,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
         .remember_certificate(&hex::encode(user), member_cert)
         .unwrap();
     assert!(
-        tilo_enrollment::load_root(member_root.path(), Some(member_identities.path())).is_err(),
+        tilo_enrollment::load_root(Some(member_identities.path())).is_err(),
         "the member holds none of the key"
     );
 

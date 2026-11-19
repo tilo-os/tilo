@@ -266,9 +266,9 @@ enum OutOfBand {
     /// Certify a device's key with a root key kept in a file, for delivery
     /// out of band. Writes the canonical certificate to OUT.
     /// Without --root-key the root this device holds signs, as when it
-    /// approves a nearby device: IDENTITY_ROOT/user-identity/privkey.bin, or
-    /// the active identity record in --identity-dir (run as the account that
-    /// owns it, in a session that reaches its secret store).
+    /// approves a nearby device: the active identity record in
+    /// --identity-dir (run as the account that owns it, in a session that
+    /// reaches its secret store).
     Certify {
         /// The user root signing key (32 bytes, owner-only).
         #[arg(long)]
@@ -1758,7 +1758,7 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
             tilo_device_identity::persist::read_owned_signing_key(path)
                 .with_context(|| format!("read {}", path.display()))?,
         ),
-        None => load_root(identity_root, identity_dir)?,
+        None => load_root(identity_dir)?,
     };
     let device_public_key: [u8; 32] = hex::decode(device.trim())
         .ok()

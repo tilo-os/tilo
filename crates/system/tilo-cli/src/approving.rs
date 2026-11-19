@@ -65,13 +65,10 @@ pub(crate) fn serve() -> anyhow::Result<ExitCode> {
     let user: Option<[u8; 32]> = hex::decode(&device.user)
         .ok()
         .and_then(|bytes| bytes.try_into().ok());
-    if user != Some(person.root.verifying_key().to_bytes()) {
+    if user != Some(person.public_key()) {
         return Ok(ExitCode::SUCCESS);
     }
-    let agent = tilo_actions::remote::device_agent_id(
-        &person.root.verifying_key().to_bytes(),
-        &device.agent,
-    );
+    let agent = tilo_actions::remote::device_agent_id(&person.public_key(), &device.agent);
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?

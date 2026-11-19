@@ -165,10 +165,16 @@ for disk in "${candidates[@]}"; do
   rm -rf "$unpack"
   mkdir -p "$unpack"
   "$staging_handoff" unpack-setup-handoff "$payload" "$unpack" || continue
-  # The human root secret never leaves the setup machine. A payload that
-  # carries it is refused whole, not filtered.
-  if [ -e "$unpack/var/lib/tilo/user-identity/privkey.bin" ] \
-     || [ -L "$unpack/var/lib/tilo/user-identity/privkey.bin" ]; then
+  # The human root secret never leaves the setup machine: it lives in the
+  # person's identity store, whose file provider keeps it in secrets/. A
+  # payload that carries one is refused whole, not filtered.
+  carries_root=0
+  for secrets in "$unpack"/var/home/*/.config/tilo/identity/secrets; do
+    if [ -e "$secrets" ] || [ -L "$secrets" ]; then
+      carries_root=1
+    fi
+  done
+  if [ "$carries_root" = 1 ]; then
     rm -rf "$unpack"
     report_error "The setup handoff contains the human root secret and was not used."
     continue

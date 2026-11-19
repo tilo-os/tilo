@@ -89,41 +89,6 @@ pub struct PeerCredentials {
     signing: std::sync::Arc<dyn collab_types::signer::DeviceSigner>,
 }
 
-#[derive(Debug, Error)]
-pub enum WorkspaceShareIssuerError {
-    #[error("workspace share issuer could not be loaded: {0}")]
-    RootKey(#[from] PersistError),
-    /// The private key does not match the human root that certified this device;
-    /// treating it as an issuer would create an unrelated authority.
-    #[error("workspace share issuer does not match the certified human identity")]
-    RootKeyMismatch,
-}
-
-/// Load the human-root signing authority for owner share operations.
-///
-/// `Ok(None)` is an intentional, fail-closed result: this certified device may not
-/// own workspaces, or it is a secondary device where the root private key is
-/// correctly absent. Callers must not substitute the device key.
-pub fn load_workspace_share_issuer(
-    paths: &IdentityPaths,
-    credentials: &PeerCredentials,
-) -> std::result::Result<Option<ed25519_dalek::SigningKey>, WorkspaceShareIssuerError> {
-    if !credentials.cert.capabilities.can_own_workspaces {
-        return Ok(None);
-    }
-    let issuer = match tilo_device_identity::persist::read_owned_signing_key(&paths.user_privkey) {
-        Ok(issuer) => issuer,
-        Err(PersistError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(None);
-        }
-        Err(error) => return Err(error.into()),
-    };
-    if issuer.verifying_key().to_bytes() != credentials.user_public_key() {
-        return Err(WorkspaceShareIssuerError::RootKeyMismatch);
-    }
-    Ok(Some(issuer))
-}
-
 impl PeerCredentials {
     /// The credentials of a device whose key another service keeps: `cert` must
     /// verify at `now_ns` and name `signing`'s key.
@@ -534,59 +499,6 @@ mod tests {
                 certified_error(&paths),
                 CertifiedIdentityError::DeviceKeyMismatch
             ));
-        }
-    }
-
-    #[test]
-    fn workspace_share_issuers_load_only_for_the_certified_owner() {
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let paths = IdentityPaths::under(tmp.path());
-            let device = install_fixed_device(&paths);
-            let root = ed25519_dalek::SigningKey::from_bytes(&ROOT_SEED);
-            let cert = signed_cert(device.verifying_key().to_bytes(), NOW_NS - 1, None);
-            write_device_cert(&paths.device_cert, &cert).unwrap();
-            let certified = load_certified_mount_identity(&paths, NOW_NS).unwrap();
-
-            assert!(
-                load_workspace_share_issuer(&paths, &certified.credentials)
-                    .unwrap()
-                    .is_none(),
-                "a secondary device must not fall back to its device key"
-            );
-            tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
-            let issuer = load_workspace_share_issuer(&paths, &certified.credentials)
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                issuer.verifying_key().to_bytes(),
-                certified.credentials.user_public_key()
-            );
-
-            let unrelated = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
-            tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &unrelated)
-                .unwrap();
-            assert!(matches!(
-                load_workspace_share_issuer(&paths, &certified.credentials),
-                Err(WorkspaceShareIssuerError::RootKeyMismatch)
-            ));
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let paths = IdentityPaths::under(tmp.path());
-            let device = install_fixed_device(&paths);
-            let root = ed25519_dalek::SigningKey::from_bytes(&ROOT_SEED);
-            let mut cert = signed_cert(device.verifying_key().to_bytes(), NOW_NS - 1, None);
-            cert.capabilities.can_own_workspaces = false;
-            sign_device_cert(&mut cert, &root).unwrap();
-            write_device_cert(&paths.device_cert, &cert).unwrap();
-            tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
-            let certified = load_certified_mount_identity(&paths, NOW_NS).unwrap();
-            assert!(
-                load_workspace_share_issuer(&paths, &certified.credentials)
-                    .unwrap()
-                    .is_none()
-            );
         }
     }
 

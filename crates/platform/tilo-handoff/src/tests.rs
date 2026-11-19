@@ -464,7 +464,7 @@ fn a_fresh_destination_joins_its_person_before_the_package_is_released() {
     let receiver = Receiver::join(
         handoff,
         ReceiverIdentity {
-            identity_root: target_system.clone(),
+            identity_root: target_system,
             identity_dir: target_identity.clone(),
         },
         home.join(".local/state/tilo/prepared-setup"),
@@ -491,10 +491,9 @@ fn a_fresh_destination_joins_its_person_before_the_package_is_released() {
             .group_public_key,
         person
     );
-    assert!(
-        !tilo_device_identity::persist::IdentityPaths::under(&target_system)
-            .user_privkey
-            .exists(),
+    assert_eq!(
+        tilo_identity::store::list_identities(&target_identity).unwrap()[0].protection,
+        tilo_identity_client::KeyProtection::DeviceCertificate,
         "the destination joins as a member, never with the source root"
     );
     receiver.acknowledge(&delivered).unwrap();

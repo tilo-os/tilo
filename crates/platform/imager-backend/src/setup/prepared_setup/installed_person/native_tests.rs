@@ -145,10 +145,6 @@ fn fixture() -> Fixture {
         std::fs::metadata(&certificate_path).unwrap().mode() & 0o7777,
         0o644
     );
-    assert!(
-        !installed_paths.user_privkey.exists(),
-        "no human root key may be imported"
-    );
     publish_namespace(&authenticated, &installed_root).unwrap();
     assert!(
         installed_root

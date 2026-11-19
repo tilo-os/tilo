@@ -68,7 +68,13 @@ impl Keeper {
         paths.ensure_directories().unwrap();
         let root_key = SigningKey::from_bytes(&[seed; 32]);
         let device = SigningKey::from_bytes(&[seed.wrapping_add(100); 32]);
-        tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &root_key).unwrap();
+        tilo_identity::provisioning::import_single_device_root(
+            identities.path(),
+            &root_key,
+            "",
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
         tilo_device_identity::persist::write_public_key(
             &paths.user_pubkey,
             &root_key.verifying_key().to_bytes(),

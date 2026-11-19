@@ -331,8 +331,6 @@ if [ "$mode" = runtime ]; then
     /var/lib/tilo/device/cert.bin; do
     [ -s "$identity_file" ] || die "identity artifact is absent or empty: $identity_file"
   done
-  [ ! -e /var/lib/tilo/user-identity/privkey.bin ] \
-    || die "personal root private key is duplicated into shared system identity storage"
   /usr/bin/tilo-session --verify-collaboration-identity >/dev/null \
     || die "installed collaboration identity chain does not verify"
 

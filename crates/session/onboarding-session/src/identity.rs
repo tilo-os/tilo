@@ -668,7 +668,10 @@ mod tests {
                 .expect("the surviving enrollment brings its person back");
             assert_eq!(again.fingerprint, hex::encode(person));
             assert!(again.path.is_file());
-            assert!(!system.user_privkey.exists(), "no root is minted beside it");
+            assert!(
+                !identity_dir.join("secrets").exists(),
+                "no root is minted beside it"
+            );
         }
 
         phase identity_problems_name_the_step_that_fixes_them;

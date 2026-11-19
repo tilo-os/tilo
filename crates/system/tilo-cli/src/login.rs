@@ -627,7 +627,7 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
         host_origin: format!("{IROH_ONLY}{}", server.endpoint_addr.id),
         workspace: grant.workspace_id.to_string(),
         workspace_name: None,
-        user: hex::encode(person.root.verifying_key().to_bytes()),
+        user: hex::encode(person.public_key()),
         agent: agent.name.clone(),
         label,
         cert: hex::encode(postcard::to_allocvec(&cert)?),
@@ -856,7 +856,7 @@ const TAB_ASKS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 async fn certify_tab(
     server: &dyn HttpClient,
     report: &str,
-    root: &SigningKey,
+    root: &(dyn tilo_user_identity::StatementSigner + Sync),
     until_ms: u64,
 ) -> Result<()> {
     let request = loop {
@@ -883,7 +883,7 @@ async fn certify_tab(
         .ok()
         .and_then(|bytes| postcard::from_bytes(&bytes).ok())
         .ok_or_else(|| anyhow!("The server sent the tab's request garbled. Try again."))?;
-    if request.user_public_key != root.verifying_key().to_bytes() {
+    if request.user_public_key != root.public_key() {
         bail!("The tab asked to be signed in as someone else. Ask it for a new code (Try again).");
     }
     let cert = tilo_user_identity::issue_device_cert(
@@ -1350,7 +1350,7 @@ async fn vouch(reporter: &Reporter<'_>, server: &dyn HttpClient) -> Result<ExitC
 fn admitting_cert(person: &crate::identity::Person) -> Result<tilo_user_identity::DeviceCert> {
     let now = tilo_clock::unix_now_ns();
     let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: person.root.verifying_key().to_bytes(),
+        user_public_key: person.public_key(),
         device_public_key: person.device.verifying_key().to_bytes(),
         device_label: person.cert.device_label.clone(),
         capabilities: tilo_user_identity::DeviceCapabilities {
@@ -1537,7 +1537,7 @@ fn held_device_cert(
     label: &str,
 ) -> Result<tilo_user_identity::DeviceCert> {
     let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: person.root.verifying_key().to_bytes(),
+        user_public_key: person.public_key(),
         device_public_key: key.verifying_key().to_bytes(),
         device_label: label.to_owned(),
         capabilities: tilo_user_identity::DeviceCapabilities::member(),

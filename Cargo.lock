@@ -18883,6 +18883,8 @@ dependencies = [
  "tilo-device-identity",
  "tilo-files",
  "tilo-fs",
+ "tilo-identity",
+ "tilo-identity-client",
  "tilo-lock",
  "tilo-mcp",
  "tilo-net",

@@ -2,9 +2,11 @@
 //! and what that root lets this computer do without a browser: approve the
 //! key `tilo keys create` asks for, as the person's Tilo on the web does.
 //!
-//! The identity is kept in Tilo's own layout ([`IdentityPaths`]) under
-//! `$XDG_STATE_HOME/tilo/identity`: the user root, this computer's device
-//! key, and the member certificate the root signed for it. `tilo-enroll
+//! The identity is kept under `$XDG_STATE_HOME/tilo/identity`: the person's
+//! root in an identity store of its own (`person/`, its secret where the
+//! session keeps identity secrets), and in Tilo's own layout ([`IdentityPaths`])
+//! this computer's device key and the member certificate the root signed for it.
+//! With `--identity-dir` naming that store, `tilo-enroll
 //! certify --identity-root` reads the same files. A host lets the person in
 //! once its operator declares their user public key an owner (the local
 //! stack's `stack.sh owner KEY`), or it joins with an invitation.
@@ -20,8 +22,10 @@ use tilo_device_identity::persist::{
     read_device_cert, read_public_key, read_signing_key, write_device_cert, write_public_key,
     write_signing_key,
 };
+use tilo_identity::certification_ceremony::PersonSigner;
 use tilo_server_client::https::{self, Origin};
 use tilo_session_client::device::{self, Entering, Held};
+use tilo_user_identity::StatementSigner as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, SignInProof};
 
 use crate::login;
@@ -35,7 +39,8 @@ const ENTRY_WAIT: Duration = Duration::from_secs(60);
 
 /// The person this computer holds the root of.
 pub struct Person {
-    pub root: SigningKey,
+    /// Their root, from the identity store it is kept in.
+    pub root: PersonSigner,
     pub device: SigningKey,
     /// The member certificate the root signed for [`Self::device`].
     pub cert: DeviceCert,
@@ -46,7 +51,12 @@ pub struct Person {
 impl Person {
     /// Their user public key, hex.
     pub fn user(&self) -> String {
-        hex::encode(self.root.verifying_key().to_bytes())
+        hex::encode(self.public_key())
+    }
+
+    /// Their user public key.
+    pub fn public_key(&self) -> [u8; 32] {
+        self.root.public_key()
     }
 }
 
@@ -61,21 +71,28 @@ pub fn dir() -> Result<PathBuf> {
         .join("tilo/identity"))
 }
 
+/// The identity store the person's root is kept in, under [`dir`].
+fn store(dir: &std::path::Path) -> PathBuf {
+    dir.join("person")
+}
+
 /// Whether this computer keeps a person's root, without reading it: a process
 /// that reads it makes itself undumpable ([`held`]).
 pub fn holds_root() -> bool {
-    dir().is_ok_and(|dir| IdentityPaths::under(&dir).user_privkey.exists())
+    dir().is_ok_and(|dir| tilo_identity_client::resolve_active_identity(&store(&dir)).is_some())
 }
 
 /// The person kept here, if this computer holds one.
 pub fn held() -> Result<Option<Person>> {
     let dir = dir()?;
     let paths = IdentityPaths::under(&dir);
-    if !paths.user_privkey.exists() {
+    let Some(active) = tilo_identity_client::resolve_active_identity(&store(&dir)) else {
         return Ok(None);
-    }
-    let root = read_signing_key(&paths.user_privkey)?;
-    if read_public_key(&paths.user_pubkey)? != root.verifying_key().to_bytes() {
+    };
+    let identity = tilo_identity::store::load_from_path(active)
+        .map_err(|error| anyhow!("{} cannot be opened: {error}", dir.display()))?;
+    let root = PersonSigner::new(Box::new(identity));
+    if read_public_key(&paths.user_pubkey)? != root.public_key() {
         bail!("{} is damaged: its keys disagree", dir.display());
     }
     Ok(Some(Person {
@@ -123,16 +140,15 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
     write_device_cert(&paths.device_cert, &cert)?;
     write_public_key(&paths.user_pubkey, &root.verifying_key().to_bytes())?;
     // Last: the identity is there once its root is.
-    write_signing_key(&paths.user_privkey, &root)?;
-    Ok((
-        Person {
-            root,
-            device,
-            cert,
-            name,
-        },
-        true,
-    ))
+    tilo_identity::provisioning::import_single_device_root(
+        &store(&dir),
+        &root,
+        &name,
+        tilo_identity::provisioning::IdentityStorage::for_session(),
+    )
+    .with_context(|| format!("keep the root in {}", store(&dir).display()))?;
+    let person = held()?.context("the identity just made is not there")?;
+    Ok((person, true))
 }
 
 /// Name the person kept here `name`, when they go by none yet: how a person who joins a
@@ -271,7 +287,7 @@ pub fn answer(person: &Person, asked: &Asked) -> Result<Vec<(&'static str, Strin
     }
     .with_browser_pages(asked.pages);
     let mut grant = DeviceCert {
-        user_public_key: person.root.verifying_key().to_bytes(),
+        user_public_key: person.public_key(),
         device_public_key: asked.grant_key,
         device_label: tilo_server_client::sign_in::grant_label(&asked.client, &asked.audience),
         capabilities,
@@ -434,8 +450,18 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let kept = tilo_identity::provisioning::import_single_device_root(
+            store.path(),
+            &root,
+            "Ada",
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
         let person = Person {
-            root,
+            root: PersonSigner::new(Box::new(
+                tilo_identity::store::load_from_path(kept).unwrap(),
+            )),
             device: device_key,
             cert,
             name: "Ada".into(),
@@ -464,7 +490,7 @@ mod tests {
                 &tilo_user_identity::RevocationList::new(),
                 tilo_clock::unix_now_ns()
             ),
-            Ok(person.root.verifying_key().to_bytes())
+            Ok(person.public_key())
         );
         let grant: DeviceCert = decoded(&form[2].1);
         tilo_user_identity::verify_device_cert(&grant).unwrap();

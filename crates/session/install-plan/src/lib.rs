@@ -417,7 +417,6 @@ mod tests {
         paths.ensure_directories().unwrap();
         let user = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
-        write_signing_key(&paths.user_privkey, &user).unwrap();
         write_public_key(&paths.user_pubkey, &user.verifying_key().to_bytes()).unwrap();
         write_signing_key(&paths.device_privkey, &device).unwrap();
         let mut cert = tilo_user_identity::DeviceCert {

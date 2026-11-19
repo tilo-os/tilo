@@ -14,6 +14,17 @@ paths = [
 # of. A use of Tilo's own concept never goes here: rename it.
 
 [[allow]]
+reason = "The identity registry's field naming the file an identity is kept in."
+words = ["record"]
+identifiers = ["record_path"]
+paths = ["crates/runtime/tilo-runtime/src/standalone/mcp_admission_tests.rs"]
+
+[[allow]]
+reason = "The native test pair's serving daemon runs under the profile `host`, which names its cache and identity directories."
+words = ["host"]
+paths = ["crates/system/fs/tests/native_tier1.rs", "crates/system/fs/tests/native_sync_bench.rs"]
+
+[[allow]]
 reason = "logind's seats a dev VM account's session sits on, and the running of commands in tilo-vm's command-line help."
 words = ["seat", "run"]
 paths = ["crates/dev/tilo-vm/src/cli.rs"]

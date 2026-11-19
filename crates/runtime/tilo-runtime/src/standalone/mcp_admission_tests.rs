@@ -84,7 +84,7 @@ impl Fixture {
             tilo_identity::registry::IdentityProfile {
                 id: id.clone(),
                 display_name: "Synthetic runtime".into(),
-                record_path: paths.user_privkey.clone(),
+                record_path: store.identity_dir().join("primary.json"),
                 user_public_key: cert.user_public_key,
             },
         );
@@ -139,7 +139,6 @@ fn identity_paths(root: &std::path::Path) -> IdentityPaths {
     std::fs::create_dir_all(key.parent().unwrap()).unwrap();
     IdentityPaths {
         user_pubkey: root.join("user-identity").join("pubkey.bin"),
-        user_privkey: root.join("user-identity").join("privkey.bin"),
         device_privkey: key,
         device_cert: root.join("device").join("cert.bin"),
         device_key_ownership: tilo_device_identity::persist::DeviceKeyOwnership::File,

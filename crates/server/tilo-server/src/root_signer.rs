@@ -4,9 +4,6 @@ use anyhow::Context;
 
 pub use tilo_enrollment::root::{RootSigner, load_root};
 
-#[cfg(test)]
-use tilo_device_identity::IdentityPaths;
-
 /// Sign a revocation of `device` with `root` and append it to the server
 /// state's revocation log at `state_root`, where every start of the host reads
 /// it. Returns the entry as signed, and whether the log changed.
@@ -42,29 +39,46 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_host_record_is_signed_only_by_a_usable_root;
 
-        phase host_record_does_not_bypass_an_unusable_root_file;
+        phase the_root_in_the_identity_store_revokes_a_device;
+        // The person's root is kept only in their identity store; a
+        // revocation it signs reaches the log every server start reads.
         {
             let temp = tempfile::tempdir().unwrap();
             let identities = temp.path().join("identities");
-            let root = temp.path().join("tilo");
-            let paths = IdentityPaths::under(&root);
-            tilo_identity::provisioning::ensure_collaboration_identity(
+            let person = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
+            tilo_identity::provisioning::import_single_device_root(
                 &identities,
-                &paths,
+                &person,
+                "",
                 tilo_identity::provisioning::IdentityStorage::Files,
             )
             .unwrap();
-            assert!(load_root(&root, Some(&identities)).is_ok());
-            std::fs::write(&paths.user_privkey, b"not a signing key").unwrap();
-            assert!(load_root(&root, Some(&identities)).is_err());
+            assert!(load_root(None).is_err(), "no store named, no root");
+            let root = load_root(Some(&identities)).unwrap();
+            assert_eq!(root.public_key(), person.verifying_key().to_bytes());
+            let state = temp.path().join("state");
+            std::fs::create_dir_all(&state).unwrap();
+            let (entry, appended) = revoke_device(
+                &state,
+                root.as_ref(),
+                [62; 32],
+                tilo_user_identity::RevocationReason::Lost,
+            )
+            .unwrap();
+            assert!(appended);
+            tilo_user_identity::verify_revocation_entry(&entry).unwrap();
+            assert_eq!(entry.user_public_key, person.verifying_key().to_bytes());
+            assert_eq!(
+                crate::store::load_revocations(&state).unwrap(),
+                vec![entry]
+            );
         }
 
         phase host_record_unavailable_provider_does_not_create_a_root_file;
         {
             let temp = tempfile::tempdir().unwrap();
             let identities = temp.path().join("identities");
-            let root = temp.path().join("tilo");
-            let paths = IdentityPaths::under(&root);
+            let paths = tilo_device_identity::IdentityPaths::under(temp.path().join("tilo"));
             tilo_identity::provisioning::ensure_collaboration_identity(
                 &identities,
                 &paths,
@@ -76,14 +90,12 @@ mod tests {
                 serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
             metadata["secret_ref"]["backend"] = "fixture-unavailable-provider".into();
             std::fs::write(&record, serde_json::to_vec(&metadata).unwrap()).unwrap();
-            assert!(load_root(&root, Some(&identities)).is_err());
-            assert!(!paths.user_privkey.exists());
+            assert!(load_root(Some(&identities)).is_err());
         }
 
         phase host_record_public_projection_cannot_sign;
         {
             let temp = tempfile::tempdir().unwrap();
-            let root = temp.path().join("tilo");
             let identities = temp.path().join("identities");
             std::fs::create_dir_all(&identities).unwrap();
             let key = ed25519_dalek::SigningKey::from_bytes(&[75; 32])
@@ -104,8 +116,7 @@ mod tests {
                 tilo_identity_client::resolve_active_identity(&identities),
                 Some(record)
             );
-            assert!(load_root(&root, Some(&identities)).is_err());
-            assert!(!IdentityPaths::under(&root).user_privkey.exists());
+            assert!(load_root(Some(&identities)).is_err());
         }
     }
 }

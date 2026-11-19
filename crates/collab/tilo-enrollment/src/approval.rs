@@ -145,7 +145,7 @@ pub fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<A
         }
         (None, approved.user_public_key)
     } else {
-        let root = load_root(options.identity_root, options.identity_dir)?;
+        let root = load_root(options.identity_dir)?;
         let user_public_key = root.public_key();
         (Some(root), user_public_key)
     };
