@@ -24,6 +24,11 @@ use crate::capture_broker::{
 use crate::session::Sessions;
 
 const CAPTURE_PREFIX: &str = "portal:capture:";
+
+/// One app's screen or window capture, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "portal.capture", label = "Capture")]
+pub struct CaptureRow;
 /// The target a portal session's leases are bound to: this device.
 const PORTAL_TARGET: &str = "portal";
 
@@ -188,9 +193,8 @@ impl crate::Published for Captures {
             .live()
             .into_iter()
             .map(|capture| {
-                offer::<CaptureEffect>(ResourceSpec::new(
+                offer::<CaptureEffect>(tilo_resource::typed_resource::<CaptureRow>(
                     format!("{CAPTURE_PREFIX}{}", capture.lease_id.to_opaque()),
-                    "portal.capture",
                     capture.app_id,
                 ))
                 .with_presentation(ResourcePresentation {

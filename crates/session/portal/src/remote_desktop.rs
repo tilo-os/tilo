@@ -112,6 +112,11 @@ impl InputInjector for NoInput {
     }
 }
 
+/// One app's remote control of this computer, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "portal.remote-control", label = "Remote control")]
+pub struct ControlRow;
+
 /// What ending a remote desktop offers.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.portal.remote-control")]
@@ -301,9 +306,8 @@ impl crate::Published for Controls {
         self.all()
             .into_iter()
             .map(|(path, app_id, what)| {
-                offer::<ControlEffect>(ResourceSpec::new(
+                offer::<ControlEffect>(tilo_resource::typed_resource::<ControlRow>(
                     format!("{CONTROL_PREFIX}{path}"),
-                    "portal.remote-control",
                     app_id,
                 ))
                 .with_presentation(ResourcePresentation {

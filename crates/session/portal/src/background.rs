@@ -181,6 +181,11 @@ impl Autostart {
 /// The resource prefix of an app's autostart entry.
 const AUTOSTART_PREFIX: &str = "portal:autostart:";
 
+/// One app's autostart entry, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "portal.autostart", label = "Autostart entry")]
+pub struct AutostartRow;
+
 /// What an autostart entry an app asked for offers.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.portal.autostart")]
@@ -196,9 +201,8 @@ impl crate::Published for Autostart {
         self.apps()
             .into_iter()
             .map(|app| {
-                offer::<AutostartEffect>(ResourceSpec::new(
+                offer::<AutostartEffect>(tilo_resource::typed_resource::<AutostartRow>(
                     format!("{AUTOSTART_PREFIX}{app}"),
-                    "portal.autostart",
                     app,
                 ))
             })

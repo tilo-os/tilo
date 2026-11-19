@@ -98,6 +98,16 @@ pub const OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
 pub const PORTAL_RESOURCE: &str = "portal";
 const CONSENT_PREFIX: &str = "portal:consent:";
 
+/// The portal itself, as a declared type: everything it holds.
+#[derive(tilo_resource::Row)]
+#[row(kind = "portal", label = "Portal")]
+pub struct PortalRoot;
+
+/// One app's kept answer, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "portal.consent", label = "Consent")]
+pub struct ConsentRow;
+
 /// What a kept device answer offers.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.portal.consent")]
@@ -776,9 +786,8 @@ impl Published for Consents {
         self.kept()
             .into_iter()
             .map(|kept| {
-                offer::<ConsentEffect>(ResourceSpec::new(
+                offer::<ConsentEffect>(tilo_resource::typed_resource::<ConsentRow>(
                     consent_resource(&kept.answer),
-                    "portal.consent",
                     kept.answer.app.clone(),
                 ))
                 .with_presentation(ResourcePresentation {
@@ -843,12 +852,15 @@ impl Service for Portal {
     fn resources(&self) -> Vec<ResourceSpec> {
         let controls = self.controls();
         vec![
-            ResourceSpec::new(PORTAL_RESOURCE, "portal", crate::i18n::t("portal-resource"))
-                .with_children(
-                    self.parts(&controls)
-                        .into_iter()
-                        .flat_map(Published::resources),
-                ),
+            tilo_resource::typed_resource::<PortalRoot>(
+                PORTAL_RESOURCE,
+                crate::i18n::t("portal-resource"),
+            )
+            .with_children(
+                self.parts(&controls)
+                    .into_iter()
+                    .flat_map(Published::resources),
+            ),
         ]
     }
 
