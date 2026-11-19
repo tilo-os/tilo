@@ -709,6 +709,73 @@ impl Workspaces {
         })
     }
 
+    /// Commit `request`, a document write this device makes to `workspace`: admitted into the
+    /// workspace's own persistence when this service governs it, else taken into the member copy
+    /// and carried to the device serving the workspace. Answers the receipt that binds it.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not held here, the request is not a document write of this device's, or
+    /// the write could not be kept.
+    pub async fn commit_local_document(
+        &self,
+        workspace: &str,
+        request: OwnerCommitRequest,
+    ) -> Result<OwnerCommitReceipt, String> {
+        let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
+        let device = self.member_identity()?;
+        let CommitOperation::Document {
+            app,
+            document,
+            envelope,
+            own,
+            readers,
+        } = &request.operation
+        else {
+            return Err("a local commit is a document write".into());
+        };
+        if envelope.author.as_bytes() != &device.device() {
+            return Err("the document's signer differs from this device".into());
+        }
+        let member = self.is_member(workspace).await?;
+        if !member && self.governed_copy(workspace_id).await.is_none() {
+            return Err("this device holds no such workspace".into());
+        }
+        let message = NeighbourMsg::AppDocument {
+            peer: neighbour_wire::peer_handle(&device.device()),
+            app_id: app.clone(),
+            cluster_id: workspace_id.to_string(),
+            document_id: document.clone(),
+            envelope: envelope.clone(),
+            own: own.clone(),
+            readers: readers.clone(),
+        };
+        let binding = request.binding()?;
+        if !member {
+            return self.commit_own_document(workspace, request).await;
+        }
+        let Some((channel, retention)) = neighbour_wire::retention(&message, false) else {
+            return Err("the write carries no retention route".into());
+        };
+        let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
+        let aggregate_hash = *blake3::hash(&body).as_bytes();
+        let order = self
+            .commit_member_document(
+                workspace,
+                HostCommit {
+                    body,
+                    channel,
+                    checkpoint: retention == neighbour_wire::Retention::Checkpoint,
+                },
+            )
+            .await?;
+        Ok(OwnerCommitReceipt {
+            binding,
+            generation: order.max(1),
+            aggregate_hash,
+        })
+    }
+
     /// Admit `request`, an app's signed write this device makes to
     /// `workspace`, the profile's own workspace this service holds and
     /// governs: into its ordered persistence, answered with the receipt that

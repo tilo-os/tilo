@@ -45,8 +45,6 @@ use crate::identity;
 use crate::membership_check::MembershipCheck;
 use crate::workspace_keys;
 
-mod resources;
-
 /// The engine's record, under this device's state directory: the name an earlier build kept it
 /// under, so the state it wrote is still read.
 const FILE: &str = "workspaces.json";
@@ -242,8 +240,6 @@ pub struct Engine {
     /// When the links out of each workspace lapse, as its holder lists them: a joiner redeeming
     /// one dials this device, which stays dialable while one is open ([`Self::invitations_open`]).
     open_links: std::sync::Mutex<std::collections::BTreeMap<WorkspaceId, Vec<u64>>>,
-    /// Each workspace's resources, as the store holds them ([`resources`]).
-    stores: resources::Stores,
 }
 
 /// One holder of a workspace, as a member's device reads it off the holder's
@@ -567,7 +563,6 @@ impl Engine {
             service_root: None,
             founders,
             open_links: std::sync::Mutex::default(),
-            stores: std::sync::Mutex::default(),
         }
     }
 
@@ -2345,122 +2340,6 @@ mod tests {
         assert!(
             !copy.invitations_open(now),
             "a joiner dials the holder, not this copy"
-        );
-    }
-
-    /// A workspace's store judges a peer's change by the types and verbs of every app surface this
-    /// process knows, including one named after the store first opened.
-    #[test]
-    fn a_workspace_store_declares_every_surface_this_process_knows() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (laptop, _) = identity(DeviceCapabilities::member());
-        let engine = engine(state.path(), laptop);
-        let workspace = founded(&engine);
-        let verbs = |engine: &Engine| {
-            engine.read_resources(workspace, |store, _| {
-                store
-                    .schema()
-                    .verb("rename-area")
-                    .map(|verb| verb.writes.keys().cloned().collect::<Vec<_>>())
-            })
-        };
-        assert!(verbs(&engine).is_none(), "no surface is named yet");
-        collab_types::app_surface::register_package(
-            "so.tilo.tasks",
-            include_bytes!("../../../../apps/tasks/surface.toml"),
-        );
-        let writes = verbs(&engine).expect("the tasks app's verb is declared");
-        assert!(!writes.is_empty(), "it writes the kinds its type holds");
-    }
-
-    /// A resource written through the store is this device's signed write of the document the store
-    /// placed it in, read back from the store at once, and by the next session from what the
-    /// replica kept.
-    #[test]
-    fn a_resource_written_through_the_store_is_kept_and_read_back() {
-        use tilo_resource_store::{Cell, Query, Resource, Stamp};
-        let state = tempfile::tempdir().expect("a state directory");
-        let (laptop, _) = identity(DeviceCapabilities::member());
-        let workspace = {
-            let engine = engine(state.path(), laptop.clone());
-            founded(&engine)
-        };
-        let keys = key_group::KeyGroup::create(
-            collab_types::WorkspaceId::parse(&workspace.to_string()).expect("a workspace id"),
-            key_group::MemberKey::generate("laptop").expect("a member key"),
-        )
-        .and_then(|group| group.content_keys())
-        .expect("the group's keys");
-        let stamp = Stamp {
-            verb: "add".to_owned(),
-            invoker: "ada".to_owned(),
-            invocation: "i1".to_owned(),
-            ..Stamp::default()
-        };
-        let issue = |title: &str, readers: &str| Resource {
-            readers: readers.to_owned(),
-            parent: Some("board".to_owned()),
-            order: Some("a0".to_owned()),
-            fields: [("title".to_owned(), Cell::One(title.into()))].into(),
-        };
-        let titles = |engine: &Engine| {
-            engine.read_resources(workspace, |store, may_read| {
-                store
-                    .query(&Query::of("tasks.issue", 10), may_read)
-                    .resources
-                    .into_iter()
-                    .map(|(_, held)| held.scalar("title"))
-                    .collect::<Vec<_>>()
-            })
-        };
-        {
-            let engine = engine(state.path(), laptop.clone());
-            engine.hand_keys(workspace, keys.clone());
-            for title in ["First", "Renamed"] {
-                pollster::block_on(engine.put_resource(
-                    workspace,
-                    "so.tilo.tasks",
-                    ("tasks.issue", "i-1"),
-                    issue(title, "*"),
-                    &stamp,
-                ))
-                .expect("the laptop writes the issue");
-            }
-            assert_eq!(titles(&engine), ["Renamed".into()]);
-            let ((), writes) = pollster::block_on(engine.edit_resource_content(
-                workspace,
-                "so.tilo.tasks",
-                ("tasks.issue", "i-1"),
-                &stamp,
-                |tx, root| {
-                    automerge::transaction::Transactable::put(tx, root, "body", "Steps")?;
-                    Ok(())
-                },
-            ))
-            .expect("the laptop writes the issue's body");
-            assert_eq!(writes.len(), 1, "one content document written");
-            let private = pollster::block_on(engine.put_resource(
-                workspace,
-                "so.tilo.tasks",
-                ("tasks.issue", "i-2"),
-                issue("Mine", "someone"),
-                &stamp,
-            ));
-            assert!(
-                matches!(
-                    private,
-                    Err(tilo_peer_state::owner::WriteRefusal::Refused(_))
-                ),
-                "a reader set whose keys are not here is written nowhere"
-            );
-        }
-
-        let engine = engine(state.path(), laptop);
-        engine.hand_keys(workspace, keys);
-        assert_eq!(
-            titles(&engine),
-            ["Renamed".into()],
-            "the next session reads it back"
         );
     }
 

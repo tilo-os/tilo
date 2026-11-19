@@ -15,7 +15,7 @@ use collab_types::{ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
 use key_group::ContentKeys;
 use neighbour_wire::NeighbourMsg;
-use tilo_resource_store::{Cell, Resource, Stamp, Store, Value};
+use tilo_resource_store::{Cell, Query, Resource, Stamp, Store, Value};
 
 use super::super::Workspaces;
 use super::super::fixtures::{TestGroupKeys, governor_with, test_host_holding};
@@ -130,6 +130,115 @@ async fn title(workspaces: &Workspaces, workspace: &str, id: &str) -> Option<Val
         .store()
         .get(KIND, id, &|readers| readers == "*")
         .map(|held| held.scalar("title"))
+}
+
+/// The service writes its device's resources through its own store, as the device's signed and
+/// sealed document writes the workspace's other members follow, and reads them back at once.
+#[tokio::test]
+async fn a_device_writes_its_resources_through_the_service_and_reads_them_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(TestGroupKeys::default());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
+    let workspaces = server.workspaces().clone();
+    // The service acts as this device, as a desktop's does: what it writes is the device's.
+    workspaces.set_member_device(Arc::new(super::super::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let created = workspaces.create("Tasks").await.unwrap();
+    let workspace = created.workspace;
+    // The workspace's content keys are here before an app writes in it.
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: APP.into(),
+        cluster_id: workspace.clone(),
+        document: String::new(),
+    };
+    let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+
+    let stamp = Stamp {
+        verb: "add".to_owned(),
+        invoker: "ada".to_owned(),
+        invocation: "i1".to_owned(),
+        ..Stamp::default()
+    };
+    let issue = |title: &str| Resource {
+        readers: "*".into(),
+        parent: None,
+        order: None,
+        fields: BTreeMap::from([("title".to_owned(), Cell::One(Value::Text(title.into())))]),
+    };
+    let read = |workspaces: &Workspaces, workspace: &str, id: &str| {
+        let workspaces = workspaces.clone();
+        let workspace = workspace.to_owned();
+        let id = id.to_owned();
+        async move {
+            workspaces
+                .resource_get(&workspace, KIND, &id)
+                .await
+                .unwrap()
+                .map(|held| held.scalar("title"))
+        }
+    };
+    for title in ["First", "Renamed"] {
+        workspaces
+            .write_resources(&workspace, APP, |store| {
+                store.put(KIND, "i-1", issue(title), &stamp)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            read(&workspaces, &workspace, "i-1").await,
+            Some(Value::Text(title.into())),
+            "the write is read back at once"
+        );
+    }
+    // The workspace's replica follows the document its store holds: its next change is drafted
+    // after it, and the workspace's other members hear the write as they hear any.
+    {
+        let governed = workspaces.workspace(&workspace).await.unwrap();
+        let governed = governed.lock().await;
+        let held = {
+            let store = governed.resources.store();
+            let doc = store
+                .index()
+                .documents()
+                .next()
+                .map(str::to_owned)
+                .expect("the store placed a document");
+            (
+                doc,
+                store
+                    .index()
+                    .len(&Query::of(KIND, 10), &|readers| readers == "*"),
+            )
+        };
+        assert_eq!(held.1, 1, "the store indexes the issue");
+        assert!(
+            governed.peer().holds_document(APP, &held.0),
+            "the workspace's replica holds the document the store placed"
+        );
+    }
+    // A reader the issue's set leaves out reads nothing of it.
+    assert!(
+        read(&workspaces, &workspace, "i-2").await.is_none(),
+        "an issue nobody wrote is not there"
+    );
+    drop(workspaces);
+    server.shutdown().await;
+    let server = test_host_holding(dir.path(), &key, &cert, keys).await;
+    let workspaces = server.workspaces().clone();
+    workspaces.set_member_device(Arc::new(super::super::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key),
+    }));
+    assert_eq!(
+        read(&workspaces, &workspace, "i-1").await,
+        Some(Value::Text("Renamed".into())),
+        "a restart reads the store back"
+    );
+    drop(workspaces);
+    server.shutdown().await;
 }
 
 #[tokio::test]

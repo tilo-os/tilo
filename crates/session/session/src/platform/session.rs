@@ -708,7 +708,7 @@ impl Session {
             resource_changes.clone(),
             engine.as_ref().map(|engine| engine.arrivals()),
         );
-        let (sync, documents) = start_collaboration(
+        let (sync, documents, resources) = start_collaboration(
             &options,
             continuity.clone(),
             engine.clone(),
@@ -1215,6 +1215,7 @@ impl Session {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
                 documents,
+                resources,
                 engine: engine.as_ref().map(std::sync::Arc::clone),
                 sealed: crate::app_wire::Sealed {
                     broker: std::sync::Arc::clone(&channels_broker),

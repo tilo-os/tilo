@@ -22,7 +22,11 @@ use std::time::{Duration, Instant};
 
 use automerge::{Automerge, Change as AmChange, ChangeHash, ROOT, ReadDoc as _};
 use collab_types::is_store_document;
+#[cfg(feature = "apps")]
+use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_resource_store::{Admit, Received, Refusal, Store};
+#[cfg(feature = "apps")]
+use tilo_resource_store::{Indexed, Schema, StoreError, Written};
 
 use super::{GovernedWorkspace, Workspaces};
 
@@ -63,6 +67,10 @@ pub(super) struct Resources {
     used: BTreeMap<String, Instant>,
     /// The documents whose kept snapshot is older than they are.
     unsnapshotted: BTreeSet<String>,
+    /// How many surfaces this process had named when the store last declared them
+    /// ([`collab_types::app_surface::registered`]).
+    #[cfg(feature = "apps")]
+    declared: u64,
 }
 
 impl Resources {
@@ -108,6 +116,8 @@ impl Resources {
             root,
             used,
             unsnapshotted,
+            #[cfg(feature = "apps")]
+            declared: 0,
         }
     }
 
@@ -285,6 +295,24 @@ fn changes_of(
 }
 
 impl GovernedWorkspace {
+    /// The workspace's store, with the types and verbs of every app surface this process knows
+    /// declared: what this device's writes and the members' are judged by.
+    #[cfg(feature = "apps")]
+    fn store_with_surfaces(&mut self) -> &mut Store {
+        let named = collab_types::app_surface::registered();
+        if self.resources.declared != named {
+            self.resources.declared = named;
+            for file in collab_types::app_surface::every() {
+                for surface in &file.resources {
+                    self.resources
+                        .store_mut()
+                        .declare(Schema::from_surface(surface));
+                }
+            }
+        }
+        self.resources.store_mut()
+    }
+
     /// Takes `author`'s write `envelope` of the store document `doc` of `app` into the
     /// workspace's store, `named` the reader set the write names in the clear. A sealed write is
     /// read with its reader set's keys, under the scope the document's id derives; a device that
@@ -366,15 +394,103 @@ impl GovernedWorkspace {
         }
         Ok(applied)
     }
+
+    /// Writes `write` through the store as `device`, and answers each document's change prepared
+    /// to commit as this device's signed write: sealed for the document's reader set, the whole
+    /// document where the replica holds none of it yet.
+    ///
+    /// # Errors
+    /// The store refused the write, this device holds no keys of a document's readers, or a
+    /// document's write could not be drafted.
+    #[cfg(feature = "apps")]
+    pub(super) async fn prepare_resource_write(
+        &mut self,
+        device: &super::MemberDevice,
+        app: &str,
+        write: impl FnOnce(&mut Store) -> Result<Vec<Written>, StoreError>,
+    ) -> Result<Vec<OwnerCommitRequest>, String> {
+        let written = {
+            let store = self.store_with_surfaces();
+            write(store).map_err(|error| error.to_string())?
+        };
+        // What the store took is kept before it answers: a document nobody's later change
+        // reaches again would otherwise leave memory with nothing of it on disk.
+        for write in &written {
+            self.resources.kept(&write.doc, write.change.deps())?;
+        }
+        let now = tilo_clock::wall();
+        let mut requests = Vec::with_capacity(written.len());
+        for write in written {
+            let readers = write.readers.clone();
+            let keys = match self.reader_keys(&readers).await {
+                Some(Ok(keys)) => keys,
+                Some(Err(error)) => return Err(error),
+                None => {
+                    return Err(
+                        "this device holds no keys of the document's readers yet".to_owned()
+                    );
+                }
+            };
+            // The store placed the document; the replica holds it only once a write was followed
+            // there, and a change needs the document it changes.
+            let founding = !self.peer().holds_document(app, &write.doc);
+            let bytes = if founding {
+                self.store_with_surfaces()
+                    .document(&write.doc)
+                    .map(Automerge::save)
+                    .ok_or_else(|| format!("the store holds no document of {}", write.doc))?
+            } else {
+                write.change.raw_bytes().to_vec()
+            };
+            let frame = if founding {
+                collab_types::DocumentMutation::Snapshot(bytes)
+            } else {
+                collab_types::DocumentMutation::Incremental(bytes)
+            }
+            .encode()
+            .map_err(|error| error.to_string())?;
+            let artifact = collab_types::document_artifact_id(app, self.workspace(), &write.doc);
+            let mut seal = |plaintext: &[u8]| {
+                keys.seal_content(
+                    artifact,
+                    collab_types::ContentRetention::of_frame(plaintext),
+                    plaintext,
+                )
+                .map_err(|error| error.to_string())
+            };
+            let mut envelope = self.peer().draft_write(
+                (app, &write.doc),
+                &frame,
+                Some(&mut seal),
+                device.device(),
+                0,
+                now,
+            )?;
+            collab_types::sign_op(&mut envelope, &*device.signer)
+                .map_err(|error| error.to_string())?;
+            let own = self.peer().own_write(app, &write.doc, &device.device());
+            let named = (collab_types::is_store_document(&write.doc)
+                && readers != collab_types::EVERY_MEMBER)
+                .then_some(readers);
+            requests.push(OwnerCommitRequest {
+                workspace: self.workspace().to_owned(),
+                operation: CommitOperation::Document {
+                    app: app.to_owned(),
+                    document: write.doc,
+                    envelope: Box::new(envelope),
+                    own,
+                    readers: named,
+                },
+            });
+        }
+        Ok(requests)
+    }
 }
 
 impl Workspaces {
     /// Takes `message`, `author`'s write, into `workspace`'s store when it writes a document the
-    /// store placed; hands any other write back.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays held until its followers are told, so they read the write"
-    )]
+    /// store placed, and hands it back so the workspace's replica keeps it; any other write is
+    /// handed back untaken.
     pub(super) async fn absorb_resources(
         &self,
         workspace: &str,
@@ -408,8 +524,138 @@ impl Workspaces {
             let written = (app_id.clone(), document_id.clone());
             self.tell_followers(&governed, written, &message).await;
         }
-        Ok(None)
+        drop(governed);
+        // A write by a device of no editor changes nothing here, and is no document write
+        // either: it was dropped as any write the workspace refuses is.
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let permitted = {
+            let governed = state.lock().await;
+            governed
+                .may_start(author, (app_id, document_id), tilo_clock::wall())
+                .is_ok()
+        };
+        // The workspace's own replica keeps the document the store indexed, as it keeps every
+        // document a member wrote: a change of it is drafted after it, and the workspace's other
+        // members follow it as they follow any.
+        Ok(permitted.then_some(message))
     }
+
+    /// The person key the store's reader sets name for this device's person.
+    #[cfg(feature = "apps")]
+    fn resource_reader(&self) -> Result<String, String> {
+        Ok(hex::encode(self.member_identity()?.cert.user_public_key))
+    }
+
+    /// `app`'s document `document` of `workspace`, written through its store as this device, and
+    /// committed as this device's signed write in every document it changed.
+    ///
+    /// # Errors
+    /// The workspace is not held here, the store refused the write, or the workspace refused a
+    /// document's write.
+    #[cfg(feature = "apps")]
+    pub(crate) async fn write_resources(
+        &self,
+        workspace: &str,
+        app: &str,
+        write: impl FnOnce(&mut Store) -> Result<Vec<Written>, StoreError>,
+    ) -> Result<(), String> {
+        let device = self.member_identity()?;
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let requests = {
+            let mut governed = state.lock().await;
+            governed.prepare_resource_write(&device, app, write).await?
+        };
+        for request in requests {
+            self.commit_local_document(workspace, request).await?;
+        }
+        Ok(())
+    }
+
+    /// The resource `kind`'s `id` of `workspace`, as this device's person may read it.
+    ///
+    /// # Errors
+    /// The workspace is not held here.
+    #[cfg(feature = "apps")]
+    pub(crate) async fn resource_get(
+        &self,
+        workspace: &str,
+        kind: &str,
+        id: &str,
+    ) -> Result<Option<Indexed>, String> {
+        let may_read = may_read(self.resource_reader()?);
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let answer = {
+            let mut governed = state.lock().await;
+            governed
+                .store_with_surfaces()
+                .get(kind, id, &may_read)
+                .cloned()
+        };
+        Ok(answer)
+    }
+
+    /// One page of `query` in `workspace`, as this device's person may read it.
+    ///
+    /// # Errors
+    /// The workspace is not held here.
+    #[cfg(feature = "apps")]
+    pub(crate) async fn resource_query(
+        &self,
+        workspace: &str,
+        query: &tilo_resource_store::Query,
+    ) -> Result<tilo_resource_store::Page, String> {
+        let may_read = may_read(self.resource_reader()?);
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let answer = {
+            let mut governed = state.lock().await;
+            governed.store_with_surfaces().query(query, &may_read)
+        };
+        Ok(answer)
+    }
+
+    /// How many resources of `kind` hold to `filters` in `workspace`, as this device's person may
+    /// read them.
+    ///
+    /// # Errors
+    /// The workspace is not held here.
+    #[cfg(feature = "apps")]
+    pub(crate) async fn resource_count(
+        &self,
+        workspace: &str,
+        kind: &str,
+        filters: &[tilo_resource_store::Filter],
+    ) -> Result<usize, String> {
+        let may_read = may_read(self.resource_reader()?);
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let answer = {
+            let mut governed = state.lock().await;
+            governed
+                .store_with_surfaces()
+                .count(kind, filters, &may_read)
+        };
+        Ok(answer)
+    }
+}
+
+/// Whether the reader set `readers` names `reader`: `*` names everyone.
+#[cfg(feature = "apps")]
+fn may_read(reader: String) -> impl Fn(&str) -> bool {
+    move |readers| readers == "*" || readers.split(',').any(|person| person == reader)
 }
 
 #[cfg(all(test, feature = "agents"))]
