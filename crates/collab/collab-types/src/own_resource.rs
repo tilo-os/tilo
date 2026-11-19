@@ -13,6 +13,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Why a live write to an archived member document is refused.
+pub const ARCHIVE_READ_ONLY: &str = "earlier per-member workspace documents can only be read";
+
 /// Domain separation for the id derivation.
 const DOMAIN: &str = "tilo own record v1";
 

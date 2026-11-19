@@ -4,13 +4,13 @@ use super::{
     AdmissionError, DocumentAdmission, MissingPrerequisite, Route, SignedOp, StatePeer, SystemTime,
 };
 
-/// Why this device's own write is not in its record.
+/// Why this device's own write is absent from its document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NotAdmitted {
     /// Kept: the workspace has not admitted what it waits for here yet, and
     /// the write is admitted once it is.
     Waiting(MissingPrerequisite),
-    /// The record does not take the write, and never will: the reason.
+    /// Why the document refused the write.
     Refused(String),
     /// The workspace's rules refused the change before it went: the document it writes, the
     /// changes it carries and why, as a server's refusal of a change names them.
@@ -455,6 +455,53 @@ mod tests {
             panic!("expected actual signed document publication")
         };
         (peer, *envelope, other, certificate, now)
+    }
+
+    #[test]
+    fn a_member_cannot_add_new_history_to_an_archived_workspace_document() {
+        let (mut peer, key, _, certificate, now) = crate::admission_tests::seeded();
+        let app = "so.tilo.settings";
+        let own =
+            collab_types::OwnResource::new("settings.root", certificate.user_public_key).unwrap();
+        let document = own.document_id();
+        let stored = peer
+            .core
+            .documents
+            .get(&Route {
+                app: "test.app".into(),
+                record: "tab:1".into(),
+            })
+            .unwrap()
+            .clone();
+        peer.core.documents.insert(
+            Route {
+                app: app.into(),
+                record: document.clone(),
+            },
+            stored,
+        );
+        peer.keep_own_document(app, &own);
+        let archived = peer.document(app, &document).unwrap();
+        let payload = collab_types::DocumentMutation::Snapshot(archived.clone())
+            .encode()
+            .unwrap();
+        let mut envelope = SignedOp::new_unsigned(
+            payload,
+            collab_types::document_artifact_id(app, peer.workspace_id(), &document),
+            Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+            collab_types::document_attestation_id(app, peer.workspace_id(), &document),
+            collab_types::OpKind::Change,
+            now,
+            1,
+        );
+        collab_types::sign_op(&mut envelope, &key).unwrap();
+        assert_eq!(
+            peer.admit_new_local_document(app, &document, envelope, now),
+            Err(NotAdmitted::Refused(
+                collab_types::own_resource::ARCHIVE_READ_ONLY.to_owned(),
+            )),
+        );
+        assert_eq!(peer.document(app, &document), Some(archived));
     }
 
     /// A local write whose app surface this process does not hold waits for

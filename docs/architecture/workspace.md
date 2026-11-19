@@ -44,6 +44,11 @@ from the account owner's profile. Native Mail and Passwords provide actions to
 recover the current member's earlier data into these shared resources. The
 earlier TiloLang Mail mailboxes remain private archives.
 
+Workspaces refuse new writes to archived per-member app documents. Those
+documents retain their original read rules so members can recover earlier data.
+Packages can use shared workspace documents or declare
+personal profile storage for private data.
+
 Signature profiles, saved TiloLang views, and facts from private agent turns
 live in the person's store outside workspaces. Views retain their workspace
 context so they can refer to its resources. Device-only data such as pending
