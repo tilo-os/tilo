@@ -85,6 +85,11 @@ pub const HANDED_SERVICES: &[&str] = &[
     MESSAGING_SERVICE,
     USH_SERVICE,
     BLOB_SERVICE,
+    // The render broker is the Linux desktop's: its socket, transport and handshake live in
+    // `tilo_render_protocol::broker`, which only compiles there. A host without it (the
+    // per-user macOS runtime) hands no render service, and naming one nothing serves would
+    // fail every launch that dials it.
+    #[cfg(target_os = "linux")]
     tilo_render_protocol::broker::SERVICE,
     tilo_system_stats::SERVICE,
 ];
