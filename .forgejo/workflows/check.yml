@@ -639,6 +639,17 @@ jobs:
           bash scripts/ci-run.sh "cargo check (tilo-app without default features)" --
           cargo check --locked -p tilo-app --no-default-features --lib
 
+      # A host that runs agents serves no apps to devices: `tilo-server`'s `agents`
+      # build links the service with `agents` and `web` alone
+      # (crates/server/tilo-server/Cargo.toml). Keep that build compiling, its
+      # tests included.
+      - name: Check the workspace service without its app serving build
+        if: contains(format('{0} ', matrix.packages), '-p tilo-workspace-service ')
+        run: >-
+          bash tools/ci/measure.sh "check workspace service under agents" --
+          bash scripts/ci-run.sh "cargo check (workspace service under agents)" --
+          cargo check --locked -p tilo-workspace-service --features agents --all-targets
+
       - name: Save observed compiler inputs
         if: always()
         continue-on-error: true

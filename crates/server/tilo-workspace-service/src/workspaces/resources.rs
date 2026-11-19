@@ -131,8 +131,8 @@ impl Resources {
         }
     }
 
-    /// The store, for whoever reads the workspace's resources.
-    #[cfg(all(test, feature = "agents"))]
+    /// The store, for the tests of a device's own writes to it.
+    #[cfg(all(test, feature = "apps", feature = "agents"))]
     pub(super) fn store(&self) -> std::sync::MutexGuard<'_, Store> {
         use tilo_lock::MutexRecover as _;
         self.store.lock_recover()
@@ -738,5 +738,7 @@ fn may_read(reader: String) -> impl Fn(&str) -> bool {
     move |readers| readers == "*" || readers.split(',').any(|person| person == reader)
 }
 
-#[cfg(all(test, feature = "agents"))]
+// The tests write and read a device's resources through the store (`apps`) and
+// the members around it (`agents`, for the device the sealed fixtures make).
+#[cfg(all(test, feature = "apps", feature = "agents"))]
 mod tests;
