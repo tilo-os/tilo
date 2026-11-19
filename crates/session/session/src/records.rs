@@ -469,6 +469,39 @@ pub(crate) mod testing {
         }
     }
 
+    /// A test's stand-in for this device's workspace service, writing the engine's own copy of a
+    /// workspace's documents as the service writes the ones it holds. The service itself holds
+    /// them in production; these tests have no endpoint to open it on.
+    pub(crate) struct EngineWrites(pub(crate) Arc<Engine>);
+
+    impl tilo_workspace_service::workspace_documents::DeviceWrites for EngineWrites {
+        fn write(
+            &self,
+            workspace: &str,
+            app: &str,
+            document: &str,
+            changes: &[u8],
+            founding: bool,
+            sealed: Option<&key_group::ContentKeys>,
+        ) -> tilo_workspace_service::workspace_documents::DocumentWrite {
+            let engine = Arc::clone(&self.0);
+            let workspace = workspace.to_owned();
+            let (app, document) = (app.to_owned(), document.to_owned());
+            let changes = changes.to_vec();
+            let sealed = sealed.cloned();
+            Box::pin(async move {
+                let id = tilo_desktop_model::WorkspaceId::parse(&workspace).ok_or_else(|| {
+                    tilo_peer_state::owner::WriteRefusal::Refused(format!(
+                        "{workspace} is not a workspace"
+                    ))
+                })?;
+                engine
+                    .write_resource(id, (&app, &document), &changes, founding, sealed.as_ref())
+                    .await
+            })
+        }
+    }
+
     pub(crate) struct Device {
         engine: Arc<Engine>,
         records: EngineRecords,
@@ -515,8 +548,9 @@ pub(crate) mod testing {
             let found = super::Records::of(state.path().join("data"));
             let changes = found.changes();
             let reads = Arc::new(EngineDocuments(Arc::clone(&engine)));
+            let writes = Arc::new(EngineWrites(Arc::clone(&engine)));
             let records = EngineRecords::new(Arc::new(|| {}));
-            records.attach(Arc::clone(&engine), reads.clone(), &changes, None);
+            records.attach(Arc::clone(&engine), reads.clone(), writes, &changes, None);
             found.read_from(reads, records.clone(), PERSON.to_owned());
             Self {
                 engine,

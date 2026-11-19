@@ -86,7 +86,7 @@ impl Shared {
             self.restore.borrow_mut().without_layouts();
             return;
         };
-        self.desktops.attach_engine(engine);
+        self.desktops.attach(engine, &self.document_writes);
         // The apps a login's end takes with it leave the workspaces' sessions as they were.
         if crate::termination::asked() {
             return;

@@ -1,12 +1,13 @@
 //! The workspace records the session itself reads and writes — Chat's record of a workspace's
-//! agents, its emoji and its conversations — held as the workspace's own copy of them: the
-//! engine's, which every app of the workspace, the person's other devices and the index read.
-//! The session opens them as any app's window opens a workspace record ([`WorkspaceResources`]),
-//! over stores kept in memory and replicated with the engine the way a page replicates its
-//! records with its workspace: what the engine holds is merged into the stores, and what the
-//! session changes in them is written into the engine — sealed where the workspace's records are
-//! its members' sealed channels — and handed to this device's apps as a member's write is. No
-//! copy of its own is kept beside the workspace's.
+//! agents, its emoji and its conversations — held as the workspace's own copy of them: the one
+//! its documents live in, which every app of the workspace, the person's other devices and the
+//! index read. The session opens them as any app's window opens a workspace document
+//! ([`WorkspaceResources`]), over stores kept in memory and replicated with that copy the way a
+//! page replicates its documents with its workspace: what the workspace holds is merged into the
+//! stores, and what the session changes in them is written into the workspace through this
+//! device's service — sealed where the workspace's documents are sealed for its members — and
+//! handed to this device's apps as a member's write is. No copy of its own is kept beside the
+//! workspace's.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -37,6 +38,9 @@ struct Inner {
     /// The documents of the workspaces this device's service holds, once the session opened it:
     /// what the workspace holds of a record reads from there.
     reads: RefCell<Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>>>,
+    /// What this device's service writes into a workspace's documents: where a write of the
+    /// session's reaches the workspace, signed, sealed and kept as this device's.
+    writes: RefCell<Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>>>,
     /// Where a write reaches this device's apps, as a member's write does.
     apps: RefCell<Option<crate::sync::PeerDocuments>>,
     /// The store of each app's records in each workspace, by workspace and app, as handed out.
@@ -112,6 +116,7 @@ impl EngineRecords {
                 store,
                 engine: RefCell::default(),
                 reads: RefCell::default(),
+                writes: RefCell::default(),
                 apps: RefCell::default(),
                 stores: RefCell::default(),
                 replicas: RefCell::default(),
@@ -133,11 +138,13 @@ impl EngineRecords {
         &self,
         engine: Arc<Engine>,
         reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+        writes: Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
         changes: &crate::platform::records::Changes,
         apps: Option<crate::sync::PeerDocuments>,
     ) {
         *self.0.engine.borrow_mut() = Some(engine);
         *self.0.reads.borrow_mut() = Some(reads);
+        *self.0.writes.borrow_mut() = Some(writes);
         *self.0.apps.borrow_mut() = apps;
         *self.0.moved.borrow_mut() = Some(changes.reader());
         *self.0.changes.borrow_mut() = Some(changes.clone());
@@ -313,6 +320,19 @@ impl Inner {
         if noted {
             (self.wake)();
         }
+    }
+
+    /// What this device's service writes into a workspace's documents, once the session opened it.
+    fn writes(&self) -> Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>> {
+        self.writes.borrow().clone()
+    }
+
+    /// Whether this device's service holds the document `key` names.
+    fn holds_resource(&self, key: &DocumentKey) -> bool {
+        self.reads
+            .borrow()
+            .as_ref()
+            .is_some_and(|reads| reads.holds(&key.0, &key.1, &key.2))
     }
 
     /// The store `app` keeps its records of `workspace` in, holding what the engine does from the
@@ -513,6 +533,9 @@ impl Inner {
     /// wait for a later pass.
     fn write_documents(&self, engine: &Arc<Engine>) -> BTreeSet<(String, String)> {
         let mut unwritten = BTreeSet::new();
+        let Some(writes) = self.writes() else {
+            return unwritten;
+        };
         let keys: Vec<DocumentKey> = self.documents.borrow().keys().cloned().collect();
         for key in keys {
             let (workspace, app, record) = &key;
@@ -534,7 +557,7 @@ impl Inner {
                     Some(synced) => (doc.save_after(synced), false, heads),
                     // A record the workspace holds is written once it was read here: one never
                     // read is founded by this write, never over what the workspace holds.
-                    None if engine.holds_resource(workspace, app, record) => {
+                    None if self.holds_resource(&key) => {
                         unwritten.insert((workspace.clone(), app.clone()));
                         continue;
                     }
@@ -553,11 +576,17 @@ impl Inner {
                     continue;
                 }
             };
-            let (engine, route) = (Arc::clone(engine), (app.clone(), record.clone()));
+            let (writes, writing_key) = (Arc::clone(&writes), key.clone());
             let mut writing = Writing::write(Arc::clone(&self.wake), async move {
-                let route = (route.0.as_str(), route.1.as_str());
-                engine
-                    .write_resource(room, route, &changes, founding, sealed.as_ref())
+                writes
+                    .write(
+                        &writing_key.0,
+                        &writing_key.1,
+                        &writing_key.2,
+                        &changes,
+                        founding,
+                        sealed.as_ref(),
+                    )
                     .await
             });
             match writing.done() {
@@ -598,6 +627,9 @@ impl Inner {
         let Some(engine) = self.engine.borrow().clone() else {
             return;
         };
+        let Some(writes) = self.writes() else {
+            return;
+        };
         // What a write that is done leaves to write is written on this pass.
         let mut written = std::mem::take(&mut *self.written.borrow_mut());
         written.extend(self.settle_writes());
@@ -624,8 +656,7 @@ impl Inner {
                 let mut replicas = self.replicas.borrow_mut();
                 // A record the engine holds is written once its copy was read here: one this copy
                 // never read is founded by this write, never over what the workspace holds.
-                if !replicas.contains_key(&key) && engine.holds_resource(&workspace, &app, &record)
-                {
+                if !replicas.contains_key(&key) && self.holds_resource(&key) {
                     unwritten.insert((workspace.clone(), app.clone()));
                     continue;
                 }
@@ -659,11 +690,17 @@ impl Inner {
                         continue;
                     }
                 };
-                let (engine, route) = (Arc::clone(&engine), (app.clone(), record.clone()));
+                let (writes, writing_key) = (Arc::clone(&writes), key.clone());
                 let mut writing = Writing::write(Arc::clone(&self.wake), async move {
-                    let route = (route.0.as_str(), route.1.as_str());
-                    engine
-                        .write_resource(room, route, &changes, founding, sealed.as_ref())
+                    writes
+                        .write(
+                            &writing_key.0,
+                            &writing_key.1,
+                            &writing_key.2,
+                            &changes,
+                            founding,
+                            sealed.as_ref(),
+                        )
                         .await
                 });
                 match writing.done() {

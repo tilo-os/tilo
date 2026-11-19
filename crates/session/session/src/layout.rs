@@ -6,10 +6,11 @@
 //! ([`Self::capture`]) and read back from it ([`Self::follow`]). Undo and redo of a layout change
 //! are taken from its own history ([`Self::step`]).
 //! Both documents are read from the engine's copy of the workspace, which holds what the workspace
-//! admitted and what it held before this device joined. Nothing here decides whether a write may
-//! land: that is the workspace's, decided where the engine takes it in. A record that did not move
-//! since the last look is neither read nor written again, and what is written is published off the
-//! loop ([`crate::engine_write`]).
+//! admitted and what it held before this device joined, and written through this device's
+//! workspace service as its signed, sealed writes. Nothing here decides whether a write may land:
+//! that is the workspace's, decided where the service takes it in. A document that
+//! did not move since the last look is neither read nor written again, and what is written is
+//! published off the loop ([`crate::engine_write`]).
 
 // Nothing compiled for the web reads this module's roles yet: the page's session wires them with
 // its own host.
@@ -357,7 +358,13 @@ impl Save {
             reason = "a page's engine holds its one thread's handles; the write runs on that thread"
         )
     )]
-    async fn write(self, engine: &Engine, person: &str, closed: &BTreeSet<u64>) -> Laid {
+    async fn write(
+        self,
+        engine: &Engine,
+        writes: &dyn tilo_workspace_service::workspace_documents::DeviceWrites,
+        person: &str,
+        closed: &BTreeSet<u64>,
+    ) -> Laid {
         let Self {
             workspace_id,
             workspace,
@@ -450,10 +457,11 @@ impl Save {
         }
         let changes = candidate.save_after(&heads);
         // A write on no history is the whole record: the one that founds it.
-        let took = engine
-            .write_resource(
-                workspace_id,
-                (DESKTOP_APP, DESKTOP_DOCUMENT),
+        let took = writes
+            .write(
+                &workspace_id.to_string(),
+                DESKTOP_APP,
+                DESKTOP_DOCUMENT,
                 &changes,
                 founding,
                 Some(&sealed),
@@ -638,6 +646,9 @@ pub(crate) struct Layouts {
     device: RefCell<String>,
     /// The engine this session keeps its workspaces in, once it opened them.
     engine: RefCell<Option<Arc<Engine>>>,
+    /// What this device's workspace service writes into the workspaces' documents, once the
+    /// session opened it: where a layout's write reaches the workspace.
+    writes: RefCell<Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>>>,
     /// The workspace's own document as this device holds it, and the engine revision it was read
     /// at: its governance is read from there, never from a device's copy of it.
     governing: RefCell<HashMap<WorkspaceId, (u64, Option<automerge::AutoCommit>)>>,
@@ -1038,9 +1049,20 @@ impl Layouts {
         self.moved.get()
     }
 
-    /// Read and write the workspaces' layouts through `engine` from now on.
-    pub(crate) fn attach_engine(&self, engine: &Arc<Engine>) {
+    /// Read the workspaces' documents through `engine`, and write the layouts through `writes`, the
+    /// session's own write of its device's workspace service.
+    pub(crate) fn attach(
+        &self,
+        engine: &Arc<Engine>,
+        writes: &Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
+    ) {
         *self.engine.borrow_mut() = Some(Arc::clone(engine));
+        *self.writes.borrow_mut() = Some(Arc::clone(writes));
+    }
+
+    /// The writes into the workspaces' documents, once the session opened its service.
+    fn writes(&self) -> Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>> {
+        self.writes.borrow().clone()
     }
 
     /// The engine this session keeps its workspaces in, once it opened them.
@@ -1549,6 +1571,17 @@ impl Layouts {
     /// Hand `save` to the task that writes it, and take what it came to at once if it is there
     /// already.
     fn lay(&self, engine: &Arc<Engine>, person: &str, revision: Option<[u8; 32]>, save: Save) {
+        let Some(writes) = self.writes() else {
+            tracing::debug!(
+                workspace = %save.workspace_id,
+                "the layout has no service to write it, and is kept for the look after one opens"
+            );
+            self.unwritten(
+                save.workspace_id,
+                Some("its workspace service is not open yet"),
+            );
+            return;
+        };
         let engine = Arc::clone(engine);
         let person = person.to_owned();
         let key = (save.workspace_id, Route::layout());
@@ -1560,7 +1593,7 @@ impl Layouts {
             self.wake.handle(),
             {
                 let person = person.clone();
-                async move { Box::pin(save.write(&engine, &person, &closed)).await }
+                async move { Box::pin(save.write(&engine, writes.as_ref(), &person, &closed)).await }
             },
             || {
                 Laid::Failed(
@@ -1780,7 +1813,7 @@ impl Layouts {
         }
         let mut stepped = false;
         for candidate in taken {
-            stepped |= self.take_step(engine, workspace_id, person, redo, handle, candidate);
+            stepped |= self.take_step(workspace_id, person, redo, handle, candidate);
         }
         stepped
     }
@@ -1789,7 +1822,6 @@ impl Layouts {
     /// and publish it. Whether there was one.
     fn take_step(
         &self,
-        engine: &Arc<Engine>,
         workspace_id: WorkspaceId,
         person: &str,
         redo: bool,
@@ -1840,7 +1872,7 @@ impl Layouts {
         };
         self.held(&key, |held| held.undo = Some(log));
         self.keep(&key, doc.clone(), revision);
-        self.publish(engine, &key, doc, Some(written), &before, revision, sealed);
+        self.publish(&key, doc, Some(written), &before, revision, sealed);
         true
     }
 
@@ -1960,7 +1992,6 @@ impl Layouts {
         self.held(&key, |held| held.folded = Some(heads.clone()));
         self.keep(&key, doc.clone(), revision);
         self.publish(
-            engine,
             &key,
             doc,
             Some(Written::Layout(own, notes)),
@@ -2099,7 +2130,6 @@ impl Layouts {
                 continue;
             }
             wrote |= self.publish(
-                engine,
                 &key,
                 held,
                 Some(Written::View(written)),
@@ -2154,7 +2184,6 @@ impl Layouts {
     /// could never read.
     fn publish(
         &self,
-        engine: &Arc<Engine>,
         key: &Key,
         mut candidate: automerge::AutoCommit,
         replaced: Option<Written>,
@@ -2166,6 +2195,14 @@ impl Layouts {
         if replaced.is_none() {
             return false;
         }
+        let Some(writes) = self.writes() else {
+            tracing::debug!(
+                %workspace_id,
+                "a document of the layout has no service to write it"
+            );
+            self.unwritten(workspace_id, Some("its workspace service is not open yet"));
+            return false;
+        };
         // Every change a device signs says what it is and who made it: the edit of the record this
         // person just made here. A step taken from the history is its own change already.
         if candidate.pending_ops() > 0 {
@@ -2178,12 +2215,14 @@ impl Layouts {
         let changes = candidate.save_after(heads);
         // A write on no history is the whole record: the one that founds it.
         let founding = heads.is_empty();
-        let (engine, record) = (Arc::clone(engine), route.record.clone());
+        let (document, app) = (route.record.clone(), route.app);
+        let workspace = workspace_id.to_string();
         let mut writing = crate::engine_write::Writing::write(self.wake.handle(), async move {
-            engine
-                .write_resource(
-                    workspace_id,
-                    (route.app, &record),
+            writes
+                .write(
+                    &workspace,
+                    app,
+                    &document,
                     &changes,
                     founding,
                     Some(&sealed),
@@ -2749,8 +2788,12 @@ impl crate::activity::History for LayoutHistory {
         hasher.finish()
     }
 
-    fn attach_engine(&self, engine: &Arc<Engine>) {
-        self.layouts.attach_engine(engine);
+    fn attach(
+        &self,
+        engine: &Arc<Engine>,
+        writes: &Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
+    ) {
+        self.layouts.attach(engine, writes);
     }
 }
 

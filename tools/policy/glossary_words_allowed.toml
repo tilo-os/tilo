@@ -1693,3 +1693,25 @@ paths = [
     "crates/system/tilo-cli/src/migrate/tests.rs",
     "crates/system/tilo-cli/src/migrate/thunderbird.rs",
 ]
+
+[[allow]]
+reason = "Tokio's oneshot and mpsc constructors: the hand-off between a commit's answer and the workspace's governor taking the write in."
+words = ["channel"]
+identifiers = ["channel"]
+paths = [
+    "crates/server/tilo-workspace-service/src/peer/commit.rs",
+    "crates/server/tilo-workspace-service/src/peer/state.rs",
+    "crates/server/tilo-workspace-service/src/peer/state_tests/connections.rs",
+]
+
+[[allow]]
+reason = "The workspace service's own test fixture for the device a test runs workspaces on, with the keys it holds (`test_host_holding`); the fixture's name, never prose."
+words = ["host"]
+identifiers = ["test_host_holding"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/writes.rs"]
+
+[[allow]]
+reason = "The session's `records` module, whose test stand-in writes a workspace's documents into the engine's copy (`records::testing::EngineWrites`); the module's name in a path, never prose."
+words = ["record"]
+identifiers = ["records"]
+paths = ["crates/session/session/src/layout/tests.rs"]

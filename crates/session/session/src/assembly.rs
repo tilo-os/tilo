@@ -339,6 +339,11 @@ pub(crate) struct Shared {
     #[cfg(target_os = "linux")]
     pub(crate) document_reads:
         std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+    /// The same documents as the session's own roles write them: what a layout's change reaches
+    /// its workspace through.
+    #[cfg(target_os = "linux")]
+    pub(crate) document_writes:
+        std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
     /// The workspaces' shared desktops, as their records hold them: what each
     /// device that shows a workspace puts on its own session, and what this one
     /// writes back.

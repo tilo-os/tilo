@@ -29,6 +29,7 @@ pub mod published_authorization;
 pub use tilo_broker_core::route;
 pub mod service_reads;
 pub mod service_resources;
+pub mod service_writes;
 pub mod services;
 
 pub use broker_error::{BrokerError, BrokerErrorKind};

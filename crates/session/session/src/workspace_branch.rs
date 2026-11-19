@@ -10,7 +10,8 @@
 //!    ([`Engine::found`]): its governance is new, its only member the person, as its owner, and
 //!    its channels get keys of their own the first time a record of it is sealed.
 //! 2. Every record the source holds here is read whole, with its history, and written into the
-//!    branch as its founding write ([`Engine::write_resource`]), forked under a writer of its own and
+//!    branch as its founding write, through this device's workspace service
+//!    ([`tilo_workspace_service::workspace_documents::DeviceWrites`]), forked under a writer of its own and
 //!    naming the branch as its workspace ([`ui::resource::transfer::branch`]). A record an app keeps on
 //!    this device too is the same document there: the local copy's changes are merged in first,
 //!    and the branch's local copy is the very document the branch's engine holds.
@@ -175,14 +176,22 @@ fn events(engine: &Engine) -> Vec<tokio::sync::watch::Receiver<u64>> {
 /// device, the branch's only member, makes, waiting for them until `until`.
 async fn found(
     engine: &Engine,
+    writes: &dyn tilo_workspace_service::workspace_documents::DeviceWrites,
     workspace: WorkspaceId,
-    (app, record): (&str, &str),
+    (app, document): (&str, &str),
     changes: &[u8],
     until: Instant,
 ) -> Result<(), String> {
     let sealed = Some(seal_keys(engine, workspace, until).await?);
-    engine
-        .write_resource(workspace, (app, record), changes, true, sealed.as_ref())
+    writes
+        .write(
+            &workspace.to_string(),
+            app,
+            document,
+            changes,
+            true,
+            sealed.as_ref(),
+        )
         .await
         .map(|_| ())
         .map_err(String::from)
@@ -214,6 +223,7 @@ async fn moved(events: &mut [tokio::sync::watch::Receiver<u64>], until: Instant)
 /// its copies run off the loop.
 pub(crate) async fn copy(
     engine: Option<&Engine>,
+    writes: &std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
     reads: &std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
     places: Places,
     from: WorkspaceId,
@@ -245,11 +255,22 @@ pub(crate) async fn copy(
         branched.missing.push(error.to_string());
         (branched, Vec::new())
     });
-    for ((app, record), changes) in records {
+    for ((app, document), changes) in records {
         let Some(engine) = founds else { break };
-        match found(engine, to, (&app, &record), &changes, until).await {
+        match found(
+            engine,
+            writes.as_ref(),
+            to,
+            (&app, &document),
+            &changes,
+            until,
+        )
+        .await
+        {
             Ok(()) => branched.records = branched.records.saturating_add(1),
-            Err(error) => branched.missing.push(format!("{record} of {app}: {error}")),
+            Err(error) => branched
+                .missing
+                .push(format!("{document} of {app}: {error}")),
         }
     }
     branched
@@ -734,6 +755,7 @@ impl crate::Shared {
             return;
         };
         let engine = self.engine.clone();
+        let writes = std::sync::Arc::clone(&self.document_writes);
         let reads = std::sync::Arc::clone(&self.document_reads);
         let until = Instant::now()
             .checked_add(PATIENCE)
@@ -751,6 +773,7 @@ impl crate::Shared {
                 }
                 copy(
                     engine.as_deref(),
+                    &writes,
                     &reads,
                     Places::here(),
                     from,
@@ -1517,6 +1540,28 @@ mod tests {
         AutoCommit::load(&std::fs::read(path).unwrap()).unwrap()
     }
 
+    /// A device with no service open writes no document: what a branch of a session that keeps no
+    /// workspaces finds.
+    struct NoWrites;
+
+    impl tilo_workspace_service::workspace_documents::DeviceWrites for NoWrites {
+        fn write(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &[u8],
+            _: bool,
+            _: Option<&key_group::ContentKeys>,
+        ) -> tilo_workspace_service::workspace_documents::DocumentWrite {
+            Box::pin(async {
+                Err(tilo_peer_state::owner::WriteRefusal::Refused(
+                    "no workspace service is open".to_owned(),
+                ))
+            })
+        }
+    }
+
     /// A device with no service open reads no document: what a branch of a session that keeps no
     /// workspaces finds.
     struct NoDocuments;
@@ -1559,8 +1604,14 @@ mod tests {
                 }
                 None => Arc::new(NoDocuments),
             };
+        let writes: Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites> = match held
+        {
+            Some(engine) => Arc::new(crate::records::testing::EngineWrites(Arc::clone(engine))),
+            None => Arc::new(NoWrites),
+        };
         pollster::block_on(copy(
             held.map(std::convert::AsRef::as_ref),
+            &writes,
             &reads,
             places,
             from,
@@ -1607,19 +1658,22 @@ mod tests {
 
     /// Write `doc` into `workspace` as `record` of `app` , sealed, as an app's first write is.
     fn write(
-        engine: &Engine,
+        engine: &Arc<Engine>,
         keys: &key_group::ContentKeys,
         workspace: WorkspaceId,
         (app, record): (&str, &str),
         doc: &mut AutoCommit,
     ) {
+        use tilo_workspace_service::workspace_documents::DeviceWrites as _;
         // The keys of the source and of the branch, as the key service hands them to a member.
         for held in [ids().0, ids().1] {
             engine.hand_keys(held, keys.clone());
         }
-        pollster::block_on(engine.write_resource(
-            workspace,
-            (app, record),
+        let writes = crate::records::testing::EngineWrites(Arc::clone(engine));
+        pollster::block_on(writes.write(
+            &workspace.to_string(),
+            app,
+            record,
             &doc.save_after(&[]),
             true,
             Some(keys),

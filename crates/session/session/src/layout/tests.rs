@@ -435,6 +435,76 @@ impl collab_types::signer::DeviceSigner for HeldSigner {
     }
 }
 
+/// A device's workspace service as these tests stand it in: every write waits on `hold` and
+/// answers as the workspace took it. A layout's write reaches its workspace through the service.
+struct HeldWrites {
+    hold: Arc<Hold>,
+    person: String,
+}
+
+impl tilo_workspace_service::workspace_documents::DeviceWrites for HeldWrites {
+    fn write(
+        &self,
+        workspace: &str,
+        app: &str,
+        document: &str,
+        _changes: &[u8],
+        _founding: bool,
+        _sealed: Option<&key_group::ContentKeys>,
+    ) -> tilo_workspace_service::workspace_documents::DocumentWrite {
+        let hold = Arc::clone(&self.hold);
+        let person = self.person.clone();
+        let (workspace, app, document) =
+            (workspace.to_owned(), app.to_owned(), document.to_owned());
+        Box::pin(async move {
+            std::future::poll_fn(move |context| {
+                if hold.held() {
+                    hold.waiting
+                        .lock()
+                        .expect("the hold")
+                        .push(context.waker().clone());
+                    if hold.held() {
+                        return std::task::Poll::Pending;
+                    }
+                }
+                std::task::Poll::Ready(())
+            })
+            .await;
+            Ok(write_of(&workspace, &app, &document, &person))
+        })
+    }
+}
+
+/// The write a workspace took, as this device's apps hear it: what the stand-in service answers.
+fn write_of(
+    workspace: &str,
+    app: &str,
+    document: &str,
+    person: &str,
+) -> tilo_peer_state::owner::AppWrite {
+    tilo_peer_state::owner::AppWrite {
+        peer: 1,
+        app_id: app.to_owned(),
+        cluster_id: workspace.to_owned(),
+        document_id: document.to_owned(),
+        author: tilo_action_policy::MemberAccess::person(
+            tilo_action_policy::WorkspacePolicy::new(workspace, person),
+            person.to_owned(),
+        ),
+        replayed: false,
+        envelope: collab_types::SignedOp::new_unsigned(
+            Vec::new(),
+            collab_types::ArtifactId::new(),
+            collab_types::Ed25519PublicKey::from_bytes([0; 32]),
+            collab_types::AttestationId::new(),
+            collab_types::OpKind::Change,
+            std::time::SystemTime::now(),
+            0,
+        ),
+        own: None,
+    }
+}
+
 /// The wake that says a record's write is done, as a channel.
 fn woken() -> (tilo_service::LoopWake, std::sync::mpsc::Receiver<()>) {
     struct Rings(std::sync::Mutex<std::sync::mpsc::Sender<()>>);
@@ -531,7 +601,11 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
         person.clone(),
         None,
     );
-    desktops.attach_engine(&engine);
+    let writes = Arc::new(HeldWrites {
+        hold: Arc::clone(&hold),
+        person: person.clone(),
+    }) as Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>;
+    desktops.attach(&engine, &writes);
     // The workspace's keys, as the key service hands them to this device.
     let keys = key_group::KeyGroup::create(
         workspace,
@@ -704,7 +778,11 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     );
     let (wake, _heard) = woken();
     let desktops = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(state.path()));
-    desktops.attach_engine(&engine);
+    desktops.attach(
+        &engine,
+        &(Arc::new(crate::records::testing::EngineWrites(Arc::clone(&engine)))
+            as Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>),
+    );
     let mut shown = layout.clone();
     desktops.follow(&engine, "", &mut shown);
     // What a look that cannot reach the workspace leaves behind: the layout the person made of
@@ -730,7 +808,11 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     // are here.
     let (wake, _heard) = woken();
     let next = Layouts::new(Arc::clone(&notes), wake, person, Some(state.path()));
-    next.attach_engine(&engine);
+    next.attach(
+        &engine,
+        &(Arc::new(crate::records::testing::EngineWrites(Arc::clone(&engine)))
+            as Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>),
+    );
     assert!(
         !next.held(&view_key, |held| held.pending_view.is_empty()),
         "the view is back"

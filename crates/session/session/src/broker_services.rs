@@ -189,6 +189,14 @@ pub(crate) fn session_documents() -> (
     (service, reads)
 }
 
+/// What the session's own roles write into the documents of the workspaces this device's service
+/// holds: the same workspaces its reads answer from.
+pub(crate) fn session_writes(
+    service: tilo_workspace_service::service::ServiceSlot,
+) -> Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites> {
+    Arc::new(tilo_workspace_service::apps::service_writes::ServiceWrites::on(service))
+}
+
 /// The one store of the workspaces this device's service holds, as apps write and read their
 /// resources in it: no app keeps a store of its own, and none is kept beside the service's.
 pub(crate) fn resources(service: tilo_workspace_service::service::ServiceSlot) -> HeldResources {

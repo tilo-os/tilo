@@ -108,6 +108,40 @@ pub trait DeviceDocuments: Send + Sync + 'static {
     fn workspaces(&self) -> Vec<String>;
 }
 
+/// What a write of a document came to: the write as the workspace took it, or why it took none.
+pub type WriteAnswer =
+    Result<tilo_peer_state::owner::AppWrite, tilo_peer_state::owner::WriteRefusal>;
+
+/// A write of one document under way in this device's service.
+#[cfg(not(target_arch = "wasm32"))]
+pub type DocumentWrite =
+    std::pin::Pin<Box<dyn std::future::Future<Output = WriteAnswer> + Send + 'static>>;
+/// A write of one document under way in this device's service.
+#[cfg(target_arch = "wasm32")]
+pub type DocumentWrite =
+    std::pin::Pin<Box<dyn std::future::Future<Output = WriteAnswer> + 'static>>;
+
+/// The documents of the workspaces a device's service holds, written as that device itself: what
+/// the session's own roles write on work of their own, without an app or a peer asking.
+///
+/// A write is signed and sealed as the device the service serves, so the workspace keeps it as
+/// any of that device's writes and carries it to the workspace's other devices.
+pub trait DeviceWrites: Send + Sync + 'static {
+    /// Write `changes` to `app`'s `document` of `workspace`: the document's founding write when
+    /// `founding` (the whole document, which the workspace must not hold yet), a change of it
+    /// otherwise, sealed under `sealed` (the keys of the document's group) where the workspace
+    /// seals its documents.
+    fn write(
+        &self,
+        workspace: &str,
+        app: &str,
+        document: &str,
+        changes: &[u8],
+        founding: bool,
+        sealed: Option<&key_group::ContentKeys>,
+    ) -> DocumentWrite;
+}
+
 /// In-process access to the workspaces this server hosts.
 #[derive(Clone)]
 pub struct WorkspaceDocuments {

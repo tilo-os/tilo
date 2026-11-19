@@ -99,6 +99,8 @@ mod pages;
 mod peer_parts;
 #[cfg(feature = "apps")]
 mod reads;
+#[cfg(feature = "apps")]
+mod writes;
 // The person's mail accounts and model providers, kept where their
 // workspace runs: a page has no mail connection and no vault of its own.
 #[cfg(not(target_arch = "wasm32"))]
