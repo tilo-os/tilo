@@ -641,6 +641,14 @@ fn an_app_whose_keeper_stops_says_so_in_its_own_tab() {
         [tab],
         "the notice stands where the window was, and no other tab opens"
     );
+    // The window went with its keeper: what the switcher walks and the overview pictures is the
+    // windows, and a card saying the app stopped is the tab's, not one of them.
+    let key = tab.to_string();
+    let windows = crate::common::windows(&pass.session);
+    assert!(
+        !windows.iter().any(|window| window.key == key),
+        "the window of the app that stopped is still one to walk to"
+    );
     pass.end(Teardown::Logout);
 }
 

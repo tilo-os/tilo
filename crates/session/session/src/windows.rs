@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_desktop::overlays::{Overlay, Overlays, SwitcherScope};
-use tilo_desktop_model::{Layout, Strip, Tab, WindowGroup, Workspace};
+use tilo_desktop_model::{Layout, Strip, Tab, TileContent, WindowGroup, Workspace};
 use tilo_desktop_surface::DesktopHandle;
 
 /// The layout's windows as `session:windows` publishes them.
@@ -83,7 +83,6 @@ struct TabPlace<'a> {
 /// instead of its picture (`withheld`), and one that is not this device's window shows neither
 /// (`none`).
 fn window_reading(tab: &Tab, at: TabPlace<'_>, handle: &DesktopHandle) -> Window {
-    use tilo_desktop_model::TileContent;
     let app = match &tab.tile {
         TileContent::Foreign { app_id, .. }
         | TileContent::LocalApp { app_id, .. }
@@ -148,6 +147,10 @@ fn window_reading(tab: &Tab, at: TabPlace<'_>, handle: &DesktopHandle) -> Window
 /// their order. Each window says where it stands (`place`), the workspace, strip and group it is
 /// in, its tab's place in the group and the share of the strip it keeps, so a picture can be drawn
 /// where the window stands.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one walk over the layout's tabs, keeping their order, their share of a strip and the one in front together"
+)]
 pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
     let Some(front) = tree.active_workspace() else {
         return Vec::new();
@@ -192,6 +195,15 @@ pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
                     .unwrap_or(0);
                 let mut behind = 0_i64;
                 for (index, tab) in group.tabs.iter().enumerate() {
+                    // A tab that shows no window is not one the person can walk to: a card where
+                    // an app stopped working, or a place a saved window stood in, is the tab's,
+                    // and the switcher's walk and the overview's pictures are the windows'.
+                    if matches!(
+                        tab.tile,
+                        TileContent::AppPlaceholder { .. } | TileContent::Stub { .. }
+                    ) {
+                        continue;
+                    }
                     let tab_index = if index == leading {
                         0
                     } else {
