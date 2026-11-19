@@ -335,6 +335,8 @@ tilo_test_env::scenario! {
         app.invoke(Checklist::RENAME.with("Hardware")).unwrap();
         app.invoke(Checklist::ADD.with("nails")).unwrap();
         assert_ne!(app.state(), past);
+        // History lists what the session serves for the window's document.
+        app.serve_history();
 
         let harness = app.harness();
         assert!(

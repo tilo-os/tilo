@@ -183,7 +183,7 @@ impl ResourceApp for ContactsShell {
         if let Some(scene) = cx.fixture::<Scene>().map(|scene| *scene)
             && let Some(chain) = cx.chain::<ContactCards>()
         {
-            scene.fill(&chain);
+            scene.stage(&chain);
         }
         crate::account_editor::build(cx)
     }
@@ -271,7 +271,7 @@ impl Scene {
     }
 
     /// Add the scene's contacts to `chain`, once.
-    pub(crate) fn fill(self, chain: &ui::framework::Chain<ContactCards>) {
+    pub(crate) fn stage(self, chain: &ui::framework::Chain<ContactCards>) {
         if !chain.parts().is_empty() {
             return;
         }

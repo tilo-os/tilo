@@ -748,7 +748,7 @@
       "resource_kind": "test.shelf",
       "resource_label": "Shelf",
       "action_label": "History",
-      "description": "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, invocation, author, time, undone, checkpoints.",
+      "description": "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, invocation, author, time, undone, what an undo took back or a redo brought back, checkpoints.",
       "locus": "ClientLocal",
       "kind": "View",
       "contract": {

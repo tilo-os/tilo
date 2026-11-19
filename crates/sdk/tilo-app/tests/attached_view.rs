@@ -241,7 +241,9 @@ tilo_test_env::scenario! {
             .into_iter()
             .map(|operation| operation.address.action)
             .collect();
-        assert_eq!(actions, ["bump"]);
+        // The named action, and the ways any value of it is invoked: a typed edit, a group of
+        // them, a field edit. Each admits only the values the grant reaches.
+        assert_eq!(actions, ["bump", "apply", "group", "field-edit"]);
         view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
         assert_eq!(count(&view), 1);
         assert!(

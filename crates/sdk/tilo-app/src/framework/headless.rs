@@ -1925,22 +1925,26 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.call_within(None, id, arguments)
     }
 
-    /// [`Self::call`] as one agent run: every call naming the same `run`
-    /// belongs to it, the way an agent's connection groups its invocations.
+    /// [`Self::call`] as one agent session: every call naming the same
+    /// `session` belongs to it, the way an agent's connection groups its
+    /// invocations. The session was asked nothing, so it has no label: history
+    /// names it by its id alone.
     ///
     /// # Errors
     /// As [`Self::invoke`].
     pub fn call_in_run(
         &mut self,
-        run: &str,
+        session: &str,
         id: &str,
         arguments: serde_json::Value,
     ) -> Result<Option<serde_json::Value>, tilo_actions::ApiError> {
-        let ambient = tilo_actions::ActionContext::default().with_group(
-            run,
-            run,
-            ui_core::history_source::steps::AGENT_SESSION,
-        );
+        let mut ambient = tilo_actions::ActionContext::default();
+        ambient.group = Some(tilo_actions::WorkGroup {
+            id: session.to_owned(),
+            label: None,
+            kind: ui_core::history_source::steps::AGENT_SESSION.to_owned(),
+            declared_id: None,
+        });
         self.call_within(Some(&ambient), id, arguments)
     }
 
@@ -2321,6 +2325,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .into_iter()
             .filter_map(|version| version.context)
             .collect()
+    }
+
+    /// Serve the document's history to History, as the session serves the history of the document
+    /// a window shows: without it History lists nothing, since what it lists is the workspace's
+    /// history and not the frame's own reading of the changes.
+    #[cfg(feature = "test-support")]
+    pub fn serve_history(&mut self) {
+        let doc = self.read_document(Clone::clone);
+        ui_core::testing::serve_history(&doc);
     }
 
     /// What each version of the record `id` did through an action, oldest

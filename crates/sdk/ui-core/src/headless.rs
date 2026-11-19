@@ -2276,6 +2276,10 @@ impl FrameHarness {
             )
         };
         let locale = crate::i18n::I18nManager::revision();
+        let crossed = self
+            .component_wake
+            .as_ref()
+            .and_then(|wake| wake.binding.lifetime.crossed());
         let (before, after, replaced, resting) = tilo_resource::profiling::unobserved(|| {
             fixed_clock(|| {
                 let width = f64::from(self.viewport.0);
@@ -2311,7 +2315,13 @@ impl FrameHarness {
             return;
         }
         self.drain_component_wakes();
-        if self.wake_pending() || crate::i18n::I18nManager::revision() != locale {
+        if self.wake_pending()
+            || crate::i18n::I18nManager::revision() != locale
+            || self
+                .component_wake
+                .as_ref()
+                .is_some_and(|wake| wake.binding.lifetime.crossed() != crossed)
+        {
             self.request_layout();
             return;
         }
