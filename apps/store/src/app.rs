@@ -3969,10 +3969,15 @@ mod tests {
                 remote: "remote:flathub".into(),
             })
             .unwrap_err();
-        // Admin effects are removed from a viewer's public api; unlike a
-        // retained read effect submitting a forbidden edit, lookup itself refuses.
+        // Admin effects are off a viewer's public api; the refusal says the
+        // action exists and their permissions keep it from them, naming it,
+        // rather than answering as if the Store had no such action.
         assert!(
-            matches!(&refused, ui::tilo_actions::ApiError::Unknown(_)),
+            matches!(
+                &refused,
+                ui::tilo_actions::ApiError::Unavailable { code, reason }
+                    if code == "permission_denied" && reason.contains("enable source")
+            ),
             "{refused:?}"
         );
         assert!(!app.harness().controls().iter().any(|control| matches!(
