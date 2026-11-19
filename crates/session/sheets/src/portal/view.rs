@@ -353,7 +353,8 @@ fn rows(dialog: &Dialog, focus: Focus, parts: &Parts) -> Element {
                 ));
             }
             // The answers in one row on the words' own edge, wrapping when they do not fit: with
-            // none suggested, the one under the pointer or the keyboard takes the primary face.
+            // none suggested, only the one under the pointer takes the primary face, while the
+            // keyboard's place wears the focus ring alone.
             let mut answers = Row::new()
                 .with_id("portal-answers")
                 .with_rhythm(Rhythm::Related)
@@ -368,7 +369,7 @@ fn rows(dialog: &Dialog, focus: Focus, parts: &Parts) -> Element {
                     })
                     .on_own_device_effect(move || press.answer(at));
                 if *suggested >= choices.len() {
-                    button = button.primary_when_engaged();
+                    button = button.primary_on_hover();
                 }
                 button.set_focus(at == dialog.selected);
                 answers = answers.push(Box::new(button));
