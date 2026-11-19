@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Compilation runs in CI to keep the pre-commit hook fast; the component catalogue is the one
-# generated file that exists only as a compiled answer, so its step compiles the toolkit, and
-# only for a commit that stages a widget source.
+# Judges the commit being made, not the repository: every check reads the files
+# the commit stages, from the index, so its cost follows the size of the change
+# instead of the size of the tree. The checks whose verdict compares files
+# across the tree judge it in the policy suite, which CI applies to every
+# pushed head, and compilation stays in CI. The one generated file that exists
+# only as a compiled answer is the component catalogue, so its step compiles
+# the toolkit, and only for a commit that stages a widget source.
 set -euo pipefail
 # The policy scripts need Python 3.11 or newer (tomllib). On macOS the python3 first on PATH is
 # often the system's 3.9, which fails every commit; put a newer interpreter's directory first.
@@ -29,14 +33,13 @@ lock_staged_names=$(git diff --cached --name-only)
 # This inventory compares tracked paths with the working tree's baseline.
 # Run before the merge-only index hides scripts inherited from main, or
 # those baseline entries would incorrectly look like removed scripts.
-GIT_INDEX_FILE="$full_index" python3 "$root/tools/policy/check_image_interpreters.py" || fail=1
-# Content validation needs the complete index, including inherited exceptions.
+# Both judge the files this commit stages, read from the index: a file it
+# leaves as HEAD has it was judged by the commit that wrote it, and the whole
+# tree is judged by the policy suite and by CI on every pushed head. Reading
+# the change rather than the twenty thousand files around it is what keeps the
+# hook's cost with the size of the commit.
+GIT_INDEX_FILE="$full_index" python3 "$root/tools/policy/check_image_interpreters.py" --staged || fail=1
 GIT_INDEX_FILE="$full_index" python3 "$root/tools/policy/check_source_content.py" --staged || fail=1
-
-# Audit the exact candidate tree, including inherited assets and their pinned
-# exceptions. The filtered index below can remove a newly inherited manifest
-# or restore obsolete binary assets from HEAD; neither represents the commit.
-python3 "$root/tools/policy/check_source_content.py" --staged || fail=1
 
 # Merging main into a branch stages everything main changed since the branch
 # point, thousands of files that main's own checks already passed. The checks
@@ -60,12 +63,17 @@ if merge_head=$(git rev-parse -q --verify MERGE_HEAD); then
       | GIT_INDEX_FILE="$merge_index" git reset -q HEAD --pathspec-from-file=- --
   fi
   export GIT_INDEX_FILE="$merge_index"
+  # The filtered index put every file the merge took from its parent back at
+  # HEAD, so this second pass judges what the resolution itself changed; the
+  # first judged the whole candidate tree, inherited assets included.
+  python3 "$root/tools/policy/check_source_content.py" --staged || fail=1
 fi
 python3 "$root/tools/policy/check_public_references.py" --staged || fail=1
 note() { printf '  %s\n' "$*" >&2; }
 
-# Every crate on disk must be a workspace member.
-"$root/scripts/check-workspace-complete.sh"
+# Every crate on disk must be a workspace member; --staged judges the crate
+# manifests this commit stages, and the policy suite and CI judge the tree.
+"$root/scripts/check-workspace-complete.sh" --staged
 # These judge a file by its own text, so a commit can only introduce a
 # violation in a file it stages: `--staged` judges the commit's files, read
 # from the index, instead of reading the ten thousand of the tree on every
@@ -73,18 +81,10 @@ note() { printf '  %s\n' "$*" >&2; }
 # tools/policy/run.sh and CI run each of these over the whole tree, and this
 # hook is the fast answer, not the only one.
 python3 "$root/tools/policy/check_app_text_contract.py" --staged
-python3 "$root/tools/policy/check_session_copy_contract.py"
-# A catalogue is judged against its siblings, not by its own text: half a
-# translation or a key defined twice reads as drift or breaks the file only
-# beside the others, and the registry `tilo-app` generates beside the source
-# catalog is stale the moment a message is added or dropped. It reads every
-# catalogue in well under a second.
-python3 "$root/tools/policy/check_catalogue_coverage.py"
-python3 "$root/tools/policy/check_app_copy_resolution.py"
+python3 "$root/tools/policy/check_session_copy_contract.py" --staged
 python3 "$root/tools/policy/check_app_window_inputs_contract.py" --staged
 python3 "$root/tools/policy/check_ui_clock_contract.py" --staged
 python3 "$root/tools/policy/check_clock_contract.py" --staged
-python3 "$root/tools/policy/check_loop_never_blocks.py" || fail=1
 python3 "$root/tools/policy/check_formats.py" --staged || fail=1
 python3 "$root/tools/policy/check_settings_writes.py" --staged || fail=1
 python3 "$root/tools/policy/check_swallowed_failures.py" --staged || fail=1
@@ -98,21 +98,15 @@ python3 "$root/tools/policy/check_glossary_words.py" --staged || fail=1
 # keep meaning what they meant (docs/policies.md). Judged against HEAD, so a
 # merge is charged only with what its resolution changed.
 python3 "$root/tools/policy/check_wire_enums.py" staged || fail=1
-# A type a compact format carries writes every field it declares: postcard reads
-# a struct's fields by position, so one left out shifts every field after it and
-# the frame does not decode (docs/policies.md). Judged over the whole tree, since
-# what a format carries is the interfaces' declarations, not this commit's files.
-python3 "$root/tools/policy/check_wire_attributes.py" || fail=1
-# An interface's version and schema are recorded beside its code, served by the
-# image and asked for by every app's manifest; one moved without the others
-# leaves the next image refusing its own apps at install (docs/policies.md).
-python3 "$root/tools/policy/check_interfaces.py" check || fail=1
-# Every test-shaped file and every Rust file that reads outside its package is
-# accounted for in tools/ci/suites.toml, so changing what it reads runs it.
-# `--staged` reads only the commit's Rust files and the ones the manifest names
-# (the whole tree when the manifest itself changes); the suites policy step
-# reads them all.
-python3 "$root/tools/ci/suites.py" check --staged || fail=1
+# Checks whose verdict compares files across the tree are not here. Catalogue
+# coverage, app copy resolution, the session loop's blocking rules, wire
+# attributes and interface versions each read many files to answer, so they
+# judge the whole tree in the policy suite, which CI applies to every pushed
+# head (.forgejo/workflows/lint.yml). They are as strict there as they were
+# here; a commit no longer reads the tree to learn what it already knows.
+# The suite manifest (`tools/ci/suites.py check`) is one of them: it holds every
+# test-shaped file and every cross-package reader in the tree against
+# tools/ci/suites.toml, so it is applied with them.
 
 # The staged names and diffs, read once. Every check below matches against
 # these variables, never against a pipe from git: under pipefail, a `grep -q`
@@ -354,13 +348,24 @@ own_diff=$(git diff --cached -U0 -- "${own_rs[@]}")
 # hand-formatted, so rustfmt skips it. tilo-app's registries are checked:
 # tilo-app formats them, and `cargo fmt` formats them as ordinary modules.
 staged_rs=$(git diff --cached --name-only --diff-filter=ACM -- "${own_rs[@]}")
+# One search for the marker, then a file's first lines only for the files that
+# could carry it: asking each file separately is two processes per staged file,
+# and the staged change can be the whole commit.
+generated_rs=""
+if [ -n "$staged_rs" ]; then
+  generated_rs=$(xargs -d '\n' -r git grep --cached -l -F -e '@generated' -- <<< "$staged_rs" 2>/dev/null || true)
+fi
 fmt_rs=""
 while IFS= read -r f; do
   [ -z "$f" ] && continue
-  head5=$(git show ":$f" 2>/dev/null | head -n 5 || true)
-  case "$head5" in
-    *"@generated by tilo-app"*) ;;
-    *@generated*) continue ;;
+  case $'\n'"$generated_rs"$'\n' in
+    *$'\n'"$f"$'\n'*)
+      head5=$(git show ":$f" 2>/dev/null | head -n 5 || true)
+      case "$head5" in
+        *"@generated by tilo-app"*) ;;
+        *@generated*) continue ;;
+      esac
+      ;;
   esac
   fmt_rs="$fmt_rs$f"$'\n'
 done <<< "$staged_rs"

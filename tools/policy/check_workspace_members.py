@@ -8,6 +8,7 @@ older edition compiles, so nothing else would notice it.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 import tomllib
 from collections import Counter
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import NamedTuple
 
 EDITION = "2024"
+# The directories a crate can live in.
+CRATE_DIRS = ("apps", "crates", "examples")
 
 
 class WorkspaceInventory(NamedTuple):
@@ -40,7 +43,7 @@ def string_list(document: dict, key: str) -> tuple[str, ...]:
 
 def discover_crates(root: Path, excluded: frozenset[str]) -> frozenset[str]:
     crates: set[str] = set()
-    for top_level in ("apps", "crates", "examples"):
+    for top_level in CRATE_DIRS:
         directory = root / top_level
         if not directory.is_dir():
             continue
@@ -55,13 +58,18 @@ def discover_crates(root: Path, excluded: frozenset[str]) -> frozenset[str]:
     return frozenset(crates)
 
 
-def member_edition(root: Path, member: str) -> str:
-    """The edition a member's manifest declares, inherited or not; Cargo's default is 2015."""
-    edition = load_manifest(root / member / "Cargo.toml").get("package", {}).get("edition", "2015")
+def edition_of(root: Path, document: dict) -> str:
+    """The edition a manifest declares, inherited from the workspace or not."""
+    edition = document.get("package", {}).get("edition", "2015")
     if isinstance(edition, dict) and edition.get("workspace") is True:
         workspace = load_manifest(root / "Cargo.toml").get("workspace", {})
         edition = workspace.get("package", {}).get("edition", "2015")
     return str(edition)
+
+
+def member_edition(root: Path, member: str) -> str:
+    """The edition a member's manifest declares, inherited or not; Cargo's default is 2015."""
+    return edition_of(root, load_manifest(root / member / "Cargo.toml"))
 
 
 def inventory(root: Path) -> WorkspaceInventory:
@@ -97,15 +105,77 @@ def violations(root: Path, state: WorkspaceInventory) -> list[str]:
     return errors
 
 
+def staged_manifests(root: Path) -> tuple[bool, list[str]]:
+    """Whether the root manifest is staged, and the crate manifests the commit changes.
+
+    Read from the index, so an unstaged edit cannot hide what the commit stages.
+    """
+    output = subprocess.check_output(
+        ["git", "-C", str(root), "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"],
+    )
+    names = sorted(name.decode() for name in output.split(b"\0") if name)
+    crates = [
+        name
+        for name in names
+        if name.endswith("/Cargo.toml") and name.split("/", 1)[0] in CRATE_DIRS
+    ]
+    return "Cargo.toml" in names, crates
+
+
+def staged_violations(root: Path) -> list[str]:
+    """The commit's own manifests judged against the workspace it stages them into.
+
+    The members list and the edition it inherits come from the root manifest, and
+    only the manifests the commit changes are read: a crate the commit does not
+    touch has the verdict the commit that added it gave it, and the policy suite
+    and CI judge the whole tree.
+    """
+    document = load_manifest(root / "Cargo.toml")
+    members = frozenset(string_list(document, "members"))
+    excluded = frozenset(string_list(document, "exclude"))
+    _, manifests = staged_manifests(root)
+    errors: list[str] = []
+    for relative in manifests:
+        crate = relative.rsplit("/", 1)[0]
+        staged = tomllib.loads(index_text(root, relative))
+        if "workspace" in staged:
+            continue
+        if crate in excluded:
+            if crate in members:
+                errors.append(f"path is both a workspace member and excluded: {crate}")
+        elif crate not in members:
+            errors.append(f"crate is not a workspace member: {crate}")
+        elif (edition := edition_of(root, staged)) != EDITION:
+            errors.append(f"workspace member is on edition {edition}, not {EDITION}: {crate}")
+    return errors
+
+
+def index_text(root: Path, relative: str) -> str:
+    """The bytes the commit stages for ``relative``, as text."""
+    return subprocess.check_output(["git", "-C", str(root), "show", ":" + relative]).decode("utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument(
+        "--staged",
+        action="store_true",
+        help="judge only the crate manifests this commit adds or changes, read from the "
+        "index, as the pre-commit hook does; without it every crate of the tree is "
+        "judged, as the policy suite and CI do",
+    )
     args = parser.parse_args(argv)
     root = args.root.resolve()
+    state = None
     try:
-        state = inventory(root)
-        errors = violations(root, state)
-    except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
+        staged, manifests = staged_manifests(root) if args.staged else (True, [])
+        if args.staged and not staged:
+            errors = staged_violations(root)
+        else:
+            state = inventory(root)
+            errors = violations(root, state)
+    except (OSError, tomllib.TOMLDecodeError, ValueError, subprocess.CalledProcessError) as error:
         print(f"workspace membership check failed: {error}", file=sys.stderr)
         return 1
     if errors:
@@ -116,6 +186,9 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+    if state is None:
+        print(f"workspace membership OK ({len(manifests)} staged crate manifest(s))")
+        return 0
     print(
         "workspace membership OK "
         f"({len(state.members)} unique members; {len(state.discovered)} repository crates)"

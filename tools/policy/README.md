@@ -29,3 +29,16 @@ counts or compares across the tree keeps judging the tree, and says why. Keep
 both modes reporting the same thing about the same files:
 `tools/tests/test_staged_judgement.py` holds each check to it.
 
+Three rules judge a set that is fixed or derivable from the change, and take
+`--staged` without `judged.py`, because their verdict still depends on the
+files themselves: `check_image_interpreters.py` judges the overlay scripts and
+installs the commit adds or changes and leaves the baseline inventory to the
+suite; `check_workspace_members.py` judges the crate manifests it stages; and
+`check_session_copy_contract.py` judges the copy files the commit touches. Each
+one's whole-tree half — a baselined path that no longer ships, a crate no
+manifest stages, a copy file left alone — is an inventory the suite keeps.
+
+The rest compare files with each other (catalogue coverage, app copy
+resolution, the session loop's blocking rules, wire attributes, interface
+versions), so they judge the whole tree and the hook leaves them to the suite.
+

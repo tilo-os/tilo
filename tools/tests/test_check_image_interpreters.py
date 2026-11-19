@@ -73,7 +73,7 @@ class ImageInterpreterTests(unittest.TestCase):
                     path.mkdir()
                 out = io.StringIO()
                 with mock.patch.object(checker, "ROOT", self.root), contextlib.redirect_stderr(out):
-                    self.assertEqual(checker.main(), 1)
+                    self.assertEqual(checker.main([]), 1)
                 self.assertIn("Cannot inspect", out.getvalue())
                 self.assertIn("unobserved", out.getvalue())
 
@@ -112,7 +112,7 @@ class ImageInterpreterTests(unittest.TestCase):
         self.assertEqual(checker.check(self.root), ([], ["os/usr/libexec/tilo-linux-vm"]))
         out = io.StringIO()
         with mock.patch.object(checker, "ROOT", self.root), contextlib.redirect_stdout(out):
-            self.assertEqual(checker.main(), 1)
+            self.assertEqual(checker.main([]), 1)
         self.assertIn(
             f"{checker.BASELINE}:3: os/usr/libexec/tilo-linux-vm no longer ships",
             out.getvalue(),
@@ -178,6 +178,47 @@ class ImageInterpreterTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(checker.BaselineError, "already listed on line 3"):
             checker.check(self.root)
+
+    def commit(self) -> None:
+        self.git("-c", "user.name=Policy Test", "-c", "user.email=policy@example.org", "commit", "-qm", "the tree")
+
+    def test_staged_mode_judges_the_files_the_commit_changes(self) -> None:
+        self.commit()
+        self.write("os/usr/libexec/tilo-pipe", "#!/bin/bash\nsfdisk --json | python3 -c 'import json'\n")
+        # A script the commit does not stage has the verdict the commit that
+        # added it gave it, and an untracked file is nobody's commit.
+        self.write("os/usr/libexec/local-experiment", "#!/usr/bin/env python3\n", track=False)
+        self.assertEqual(
+            checker.check(self.root, staged=True),
+            (["os/usr/libexec/tilo-pipe"], []),
+        )
+
+    def test_staged_mode_reads_the_bytes_the_commit_stages(self) -> None:
+        self.commit()
+        self.write("os/usr/libexec/tilo-pipe", "#!/bin/bash\nsfdisk --json | python3 -c 'import json'\n")
+        # Further work in the tree is not what the commit would ship.
+        (self.root / "os/usr/libexec/tilo-pipe").write_text("#!/bin/bash\nexec true\n", encoding="utf-8")
+        self.assertEqual(
+            checker.check(self.root, staged=True),
+            (["os/usr/libexec/tilo-pipe"], []),
+        )
+
+    def test_staged_mode_reports_no_inventory_a_commit_cannot_change(self) -> None:
+        self.commit()
+        self.git("rm", "-qf", "os/usr/libexec/tilo-linux-vm")
+        # The stale baseline entry is an inventory of the tree; a commit that
+        # removes nothing staged cannot make it stale.
+        self.assertEqual(checker.check(self.root), ([], ["os/usr/libexec/tilo-linux-vm"]))
+        self.assertEqual(checker.check(self.root, staged=True), ([], []))
+
+    def test_staged_mode_judges_an_install_the_commit_changes(self) -> None:
+        self.commit()
+        self.write("tools/client.py", "print()\n", track=False)
+        self.write("os/Containerfile", "COPY tools/client.py /usr/libexec/tilo/client.py\n")
+        self.assertEqual(
+            checker.check(self.root, staged=True),
+            (["image:/usr/libexec/tilo/client.py"], []),
+        )
 
     def test_shebang_interpreter(self) -> None:
         cases = {

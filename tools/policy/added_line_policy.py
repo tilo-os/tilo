@@ -152,17 +152,21 @@ def scan_staged(root: Path, secrets_only: bool) -> list[str]:
     against = parents[0] if parents else git(root, "hash-object", "-t", "tree", "/dev/null").decode().strip()
     raw = git(root, "diff", "--cached", "--raw", "-z", "--no-renames", "--no-abbrev",
               "--diff-filter=ACMT", against).split(b"\0")
-    # Resolve parent paths through NUL-delimited trees, not cat-file's line
-    # protocol: Git filenames may contain newlines or non-UTF-8 bytes.
+    # The parent's blobs of the paths the commit changes, and of nothing else:
+    # listing a parent's whole tree is the twenty thousand files around the
+    # change, and the hook's cost follows the change.
+    changed = [name for index, name in enumerate(raw) if index % 2 == 1]
     parent_blobs = []
     for parent in parents:
         blobs = {}
-        for record in git(root, "ls-tree", "-r", "-z", parent).split(b"\0"):
-            if record:
-                metadata, name = record.split(b"\t", 1)
-                mode, kind, oid = metadata.split()
-                if kind == b"blob":
-                    blobs[name] = oid.decode()
+        if changed:
+            listing = git(root, "--literal-pathspecs", "ls-tree", "-r", "-z", parent, "--", *changed).split(b"\0")
+            for entry in listing:
+                if entry:
+                    metadata, name = entry.split(b"\t", 1)
+                    mode, kind, oid = metadata.split()
+                    if kind == b"blob":
+                        blobs[name] = oid.decode()
         parent_blobs.append(blobs)
     issues = []
     with object_reader(root) as read:

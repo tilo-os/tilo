@@ -369,6 +369,7 @@ class HookWiringTests(unittest.TestCase):
 
     STAGED_IN_HOOK = (
         "check_app_text_contract",
+        "check_session_copy_contract",
         "check_app_window_inputs_contract",
         "check_ui_clock_contract",
         "check_clock_contract",

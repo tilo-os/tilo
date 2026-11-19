@@ -376,13 +376,8 @@ def change_checks(root: Path) -> set[str]:
     }
 
 
-def audit(root: Path, tracked: list[str], manifest: Manifest | None = None,
-          staged: set[str] | None = None) -> list[str]:
-    """Return policy violations for the manifest against the tracked tree.
-
-    With `staged`, only those Rust files and the ones the manifest names are read for
-    cross-package reads: a commit can only add an undeclared reader among the files it stages.
-    """
+def audit(root: Path, tracked: list[str], manifest: Manifest | None = None) -> list[str]:
+    """Return policy violations for the manifest against the tracked tree."""
     manifest = manifest or load(root)
     problems: list[str] = []
     tracked_set = set(tracked)
@@ -441,7 +436,7 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None,
             problems.append(
                 f"{path}: test-shaped file is neither guarded nor listed in {MANIFEST} "
                 "(add it to a group, or to [[covered]]/[[unrequired]] with a reason)")
-    problems.extend(audit_cargo(root, tracked, manifest, staged))
+    problems.extend(audit_cargo(root, tracked, manifest))
     return problems
 
 
@@ -634,14 +629,12 @@ def package_dir(path: str, packages: dict[str, str]) -> str | None:
     return None
 
 
-def cross_package_reads(root: Path, tracked: list[str], packages: dict[str, str],
-                        only: set[str] | None = None) -> dict[str, list[CrossRead]]:
-    """Rust files that read repository files outside their own package (of `only`, if given)."""
+def cross_package_reads(root: Path, tracked: list[str],
+                        packages: dict[str, str]) -> dict[str, list[CrossRead]]:
+    """Rust files that read repository files outside their own package."""
     found: dict[str, list[CrossRead]] = {}
     for path in tracked:
         if not path.endswith(".rs") or path.startswith("vendor/"):
-            continue
-        if only is not None and path not in only:
             continue
         directory = package_dir(path, packages)
         if directory is None:
@@ -676,8 +669,7 @@ def cross_package_reads(root: Path, tracked: list[str], packages: dict[str, str]
     return found
 
 
-def audit_cargo(root: Path, tracked: list[str], manifest: Manifest,
-                staged: set[str] | None = None) -> list[str]:
+def audit_cargo(root: Path, tracked: list[str], manifest: Manifest) -> list[str]:
     """Every Rust file that reads outside its package must be declared.
 
     A declared package lists the files that read (so a new reader cannot go
@@ -690,11 +682,7 @@ def audit_cargo(root: Path, tracked: list[str], manifest: Manifest,
     tracked_set = set(tracked)
     packages = cargo_packages(root, tracked)
     names = set(packages.values())
-    only = None
-    if staged is not None:
-        only = staged | set(manifest.cargo_exempt)
-        only.update(reader for entry in manifest.cargo for reader in entry.readers)
-    reads = cross_package_reads(root, tracked, packages, only)
+    reads = cross_package_reads(root, tracked, packages)
     files = Tree(tracked)
     entries = {entry.package: entry for entry in manifest.cargo}
     for entry in manifest.cargo:
@@ -800,14 +788,6 @@ def uncovered(read: CrossRead, inputs: tuple[str, ...], tree: Tree) -> list[str]
     return problems
 
 
-def staged_files(root: Path) -> set[str] | None:
-    """The paths the index stages, or None (the whole tree) when it stages what decides the audit."""
-    output = subprocess.run(["git", "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"],
-                            cwd=root, check=True, stdout=subprocess.PIPE).stdout.decode("utf-8")
-    staged = {path for path in output.split("\0") if path}
-    return None if staged & CONTROL_INPUTS else staged
-
-
 def tracked_files(root: Path) -> list[str]:
     """The files the tree being checked holds: tracked, less those it deletes,
     plus those it adds.
@@ -837,16 +817,12 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     commands.add_parser("list", help="print every declared suite")
     check_parser = commands.add_parser("check", help="verify every test-shaped file is accounted for")
-    check_parser.add_argument(
-        "--staged", action="store_true",
-        help="read only the Rust files the index stages (and those the manifest names) for "
-             "cross-package reads: the commit hook's fast answer; CI checks the whole tree")
     args = parser.parse_args(argv)
     if args.command == "list":
         print("\n".join(load(ROOT).suites()))
         return 0
     if args.command == "check":
-        problems = audit(ROOT, tracked_files(ROOT), staged=staged_files(ROOT) if args.staged else None)
+        problems = audit(ROOT, tracked_files(ROOT))
         # Findings on stdout, everything else on stderr.
         for problem in problems:
             print(problem)
