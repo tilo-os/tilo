@@ -111,7 +111,7 @@ tilo_test_env::scenario! {
         let toolbar = reacted(vec![pill("👍", 2, true), pill("🎉", 1, false)], true);
         let mut row = row_of(&toolbar, 900.0, false);
         let party = row.parts().reactions[1].center();
-        assert!(row.press(party));
+        assert!(row.press(party, false));
         assert!(row.release(party));
         assert_eq!(
             row.take_events(),
@@ -125,7 +125,7 @@ tilo_test_env::scenario! {
         assert!(!row.pressing_app_part());
 
         let add = row.parts().reaction_add.center();
-        assert!(row.press(add));
+        assert!(row.press(add, false));
         assert!(row.release(add));
         assert!(row.popup_open(), "the emoji picker opens");
         assert!(
@@ -147,7 +147,7 @@ tilo_test_env::scenario! {
         let viewer_toolbar = reacted(vec![pill("👍", 2, false)], false);
         let mut viewer = row_of(&viewer_toolbar, 900.0, false);
         let thumbs = viewer.parts().reactions[0].center();
-        viewer.press(thumbs);
+        viewer.press(thumbs, false);
         viewer.release(thumbs);
         assert!(
             viewer.take_events().is_empty(),

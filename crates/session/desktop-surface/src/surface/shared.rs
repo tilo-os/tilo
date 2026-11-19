@@ -75,6 +75,7 @@ impl Shared {
             asked_floats: Vec::new(),
             holders: HashMap::new(),
             opened_by: std::collections::BTreeMap::new(),
+            resources: std::collections::BTreeMap::new(),
             window_offers: Vec::new(),
             workspace_shares: None,
             workspace_share_asks: Vec::new(),
