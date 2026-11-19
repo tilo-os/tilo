@@ -76,7 +76,7 @@ impl FileKeys {
         }
     }
 
-    async fn access(&self) -> Result<ContentKeys> {
+    pub(crate) async fn access(&self) -> Result<ContentKeys> {
         let read = Arc::clone(&self.read);
         tokio::task::spawn_blocking(move || read()).await?
     }
@@ -112,9 +112,32 @@ impl FileKeys {
     }
 }
 
+enum ScopedKeyService {
+    Identity(PathBuf),
+    Session {
+        link: crate::net::SessionLink,
+        runtime: tokio::runtime::Handle,
+    },
+}
+
+impl ScopedKeyService {
+    fn file_keys(&self, workspace: WorkspaceId) -> FileKeys {
+        match self {
+            Self::Identity(path) => FileKeys::new(workspace, path.clone()),
+            Self::Session { link, runtime } => {
+                let link = link.clone();
+                let runtime = runtime.clone();
+                FileKeys::from_session(workspace, move || {
+                    runtime.block_on(link.file_keys(workspace))
+                })
+            }
+        }
+    }
+}
+
 /// The managed mount shares one namespace between the person's folders and signed workspace roots.
 pub(super) struct ScopedFileKeys {
-    identity: PathBuf,
+    authority: ScopedKeyService,
     policy: AclHandle,
     reader: IdentityKey,
     sources: Mutex<BTreeMap<WorkspaceId, FileKeys>>,
@@ -133,7 +156,7 @@ impl ScopedFileKeys {
             .sources
             .lock_recover()
             .entry(workspace)
-            .or_insert_with(|| FileKeys::new(workspace, self.identity.clone()))
+            .or_insert_with(|| self.authority.file_keys(workspace))
             .clone())
     }
 }
@@ -161,13 +184,35 @@ impl Hydrator {
     /// Use the workspace key for each governed folder of the managed Files mount.
     #[must_use]
     pub fn with_scoped_file_keys(
-        mut self,
+        self,
         identity: PathBuf,
         policy: AclHandle,
         reader: IdentityKey,
     ) -> Self {
+        self.with_key_service(ScopedKeyService::Identity(identity), policy, reader)
+    }
+
+    /// Use the active login's authenticated session link for shared workspace keys.
+    #[must_use]
+    pub fn with_session_file_keys(self, policy: AclHandle, reader: IdentityKey) -> Self {
+        let crate::net::Net::Session(link) = &self.net else {
+            return self;
+        };
+        let authority = ScopedKeyService::Session {
+            link: link.clone(),
+            runtime: self.runtime_handle.clone(),
+        };
+        self.with_key_service(authority, policy, reader)
+    }
+
+    fn with_key_service(
+        mut self,
+        authority: ScopedKeyService,
+        policy: AclHandle,
+        reader: IdentityKey,
+    ) -> Self {
         self.scoped_file_keys = Some(ScopedFileKeys {
-            identity,
+            authority,
             policy,
             reader,
             sources: Mutex::default(),

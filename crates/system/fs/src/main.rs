@@ -1307,6 +1307,14 @@ async fn serve(
             );
             hydrator.with_scoped_file_keys(socket, policy.clone(), *reader)
         }
+        None if managed_service
+            && backend.backend == BackendChoice::Fuse
+            && session_link.is_some()
+            && mount_point == Path::new(tilo_paths::WORKSPACE_MOUNT) =>
+        {
+            let (policy, reader) = acl.as_ref().context("workspace file keys require an ACL")?;
+            hydrator.with_session_file_keys(policy.clone(), *reader)
+        }
         None => hydrator,
     });
     if let Some(cache_dir) = cache_dir.as_deref() {
