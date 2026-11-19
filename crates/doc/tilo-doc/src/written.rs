@@ -46,15 +46,22 @@ pub fn written_by(
         let (blocks, at, inserted) = match (&patch.action, rich) {
             (PatchAction::SpliceText { index, value, .. }, Some(blocks)) => (blocks, *index, value),
             (PatchAction::SpliceText { index, value, .. }, None) => {
-                let start = *index as u64;
-                let end = start.saturating_add(value.make_string().chars().count() as u64);
-                field_changed(&mut fields, &patch.obj, keys, start, end);
+                let length = value.make_string().chars().count() as u64;
+                field_changed(
+                    &mut fields,
+                    &patch.obj,
+                    keys,
+                    Splice::Insert(*index as u64, length),
+                );
                 continue;
             }
             (PatchAction::DeleteSeq { index, length }, None) => {
-                let start = *index as u64;
-                let end = start.saturating_add(*length as u64);
-                field_changed(&mut fields, &patch.obj, keys, start, end);
+                field_changed(
+                    &mut fields,
+                    &patch.obj,
+                    keys,
+                    Splice::Delete(*index as u64, *length as u64),
+                );
                 continue;
             }
             (
@@ -101,13 +108,10 @@ pub fn written_by(
         return None;
     }
     let (region, block) = field_place(&field.keys)?;
+    let (start, end) = field.span();
     Some(tilo_actions::InteractionAnchor::Text {
         region,
-        ranges: vec![tilo_actions::InteractionTextRange {
-            block,
-            start: field.start,
-            end: field.end,
-        }],
+        ranges: vec![tilo_actions::InteractionTextRange { block, start, end }],
     })
 }
 
@@ -116,31 +120,70 @@ pub fn written_by(
 struct FieldWrite<'a> {
     obj: &'a automerge::ObjId,
     keys: Vec<&'a str>,
+    /// Where the changed characters stand in the text as the change left it.
     start: u64,
     end: u64,
+    /// Whether any patch inserted characters.
+    inserted: bool,
+    /// The first cut, as the characters it took away stood: what a change that only took words
+    /// away names.
+    cut: Option<(u64, u64)>,
 }
 
-/// Note that the text `obj`, at `keys`, gained characters at `start..end` (an insertion or a
-/// replacement): the field's changed span grows to hold it.
+impl FieldWrite<'_> {
+    /// The characters the change wrote, or, when it only took some away, those it took.
+    fn span(&self) -> (u64, u64) {
+        match self.cut {
+            Some(cut) if !self.inserted => cut,
+            _ => (self.start, self.end),
+        }
+    }
+}
+
+/// One patch to a plain text, at the offset the text has when it applies: characters inserted,
+/// or characters taken away.
+#[derive(Clone, Copy)]
+enum Splice {
+    Insert(u64, u64),
+    Delete(u64, u64),
+}
+
+/// Note that the text `obj`, at `keys`, was spliced. Each patch's offset is the text's after the
+/// patches before it, so the span already noted moves with the characters around it. An
+/// insertion grows it to hold the new characters; a cut leaves a point where the characters
+/// were, so the words around it keep their places.
 fn field_changed<'a>(
     fields: &mut Vec<FieldWrite<'a>>,
     obj: &'a automerge::ObjId,
     keys: Vec<&'a str>,
-    start: u64,
-    end: u64,
+    splice: Splice,
 ) {
-    match fields.iter_mut().find(|field| field.obj == obj) {
-        Some(field) => {
-            field.start = field.start.min(start);
-            field.end = field.end.max(end);
-        }
-        None => fields.push(FieldWrite {
+    let (at, written) = match splice {
+        Splice::Insert(at, length) => (at, at + length),
+        Splice::Delete(at, _) => (at, at),
+    };
+    let Some(field) = fields.iter_mut().find(|field| field.obj == obj) else {
+        fields.push(FieldWrite {
             obj,
             keys,
-            start,
-            end,
-        }),
-    }
+            start: at,
+            end: written,
+            inserted: matches!(splice, Splice::Insert(..)),
+            cut: match splice {
+                Splice::Delete(at, length) => Some((at, at + length)),
+                Splice::Insert(..) => None,
+            },
+        });
+        return;
+    };
+    let moved = |offset: u64| match splice {
+        Splice::Insert(at, length) if offset > at => offset + length,
+        Splice::Delete(at, length) if offset > at => offset.saturating_sub(length).max(at),
+        _ => offset,
+    };
+    field.start = moved(field.start).min(at);
+    field.end = moved(field.end).max(written);
+    field.inserted |= matches!(splice, Splice::Insert(..));
 }
 
 /// The region and block a plain text field at `keys` is drawn in ([`written_by`]): the field
@@ -236,6 +279,26 @@ mod tests {
             Some(text_at("title", "7d2b", (5, 11))),
             "a rename names the characters it replaced and typed, in its item's block"
         );
+        // A rename written as a new title "Book hall 4" over "Book the hall": its patches may
+        // type the new words first and take the old ones after, or the other way round, and
+        // name the same new words either way, within the title as it now reads.
+        for (insert_first, case) in [(true, "typed, then cut"), (false, "cut, then typed")] {
+            let retitled = wrote(|doc| {
+                let title = field(doc, &["issues", "7d2b", "v", "title"]);
+                if insert_first {
+                    doc.splice_text(&title, 5, 0, "hall 4").unwrap();
+                    doc.splice_text(&title, 11, 8, "").unwrap();
+                } else {
+                    doc.splice_text(&title, 5, 8, "").unwrap();
+                    doc.splice_text(&title, 5, 0, "hall 4").unwrap();
+                }
+            });
+            assert_eq!(
+                retitled,
+                Some(text_at("title", "7d2b", (5, 11))),
+                "{case}: the new words, never past the end of the title"
+            );
+        }
         let shortened = wrote(|doc| {
             let title = field(doc, &["issues", "7d2b", "v", "title"]);
             doc.splice_text(&title, 4, 9, "").unwrap();
