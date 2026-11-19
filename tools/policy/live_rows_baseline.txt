@@ -1,3 +1,2 @@
 # Rows and trees apps still build by hand
 # (tools/policy/check_live_rows.py). Counts only shrink.
-row-operation 1 apps/code-editor/src/app/surface.rs

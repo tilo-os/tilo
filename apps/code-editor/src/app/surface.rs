@@ -336,15 +336,13 @@ impl CodeApp {
             return None;
         }
         // A file is a row of the project's file collection: what it is, and
-        // opening, saving and reading it, are its item's. The row adds the
-        // read of its committed text, which no effect declares.
-        let mut row = LiveRow::typed::<crate::rows::FileRow>(
+        // opening, saving and reading it, are its item's. The read of its
+        // committed text is published beside its effects (`item_reads`), as
+        // no effect declares that read.
+        let row = LiveRow::typed::<crate::rows::FileRow>(
             actions::file_resource_id(&item.resource_id),
             item.name.clone(),
         );
-        row = row.operation(crate::text_operations::snapshot_spec(
-            item.resource_id.clone(),
-        ));
         Some((item.resource_id.clone(), row))
     }
 
