@@ -957,8 +957,16 @@ impl NativeWorkspaceOwner {
             }
         }
         let report = live.receive_from_report(origin, message, now)?;
+        // A message let go for newer ones is no loss: its server retains it, and it is asked for
+        // again once what it waited for arrives. While a replica waits for its governance, every
+        // write of a busy app past the few it holds is let go so, which said one by one buried
+        // the log; only one refused or too large to hold is worth a warning.
         for dropped in &report.summary().dropped {
-            tracing::warn!(%workspace, %dropped, "a held app message was let go unapplied");
+            if matches!(dropped.reason, crate::DropReason::Superseded) {
+                tracing::debug!(%workspace, %dropped, "a held app message was let go, to be asked for again");
+            } else {
+                tracing::warn!(%workspace, %dropped, "a held app message was let go unapplied");
+            }
         }
         Ok(report)
     }
