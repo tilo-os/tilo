@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.word-processor@6e955cbec242485f";
+export const SURFACE = "so.tilo.word-processor@d8ed1c63bd93e2ff";
 
 /** One of member, named: an object whose case the app tags it with. */
 export type Author = Record<string, unknown>;
@@ -267,7 +267,7 @@ export interface Document extends tilo.Resource {
   noteFileWrittenMany(items: NoteFileWrittenArgs[]): Promise<tilo.ActionAnswer[]>;
   shareImage(): Promise<void>;
   readFile(args: {
-    file: unknown;
+    file: string;
     from?: number;
   }): Promise<ReadDocument>;
   readContent(args: {

@@ -188,25 +188,25 @@ params = [
 id = "show-symbol"
 kind = "read"
 params = [
-  { name = "symbol", type = "text", required = true },
+  { name = "symbol", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "show-result"
 kind = "read"
 params = [
-  { name = "result", type = "text", required = true },
+  { name = "result", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "reveal"
 kind = "read"
 params = [
-  { name = "file", type = { option = "text" }, required = false },
-  { name = "path", type = { option = "any" }, required = false },
-  { name = "line", type = "int", required = true },
-  { name = "column", type = "int", required = true },
-  { name = "results", type = "bool", required = true },
+  { name = "file", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "path", type = { option = "any" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "line", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "column", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "results", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
@@ -221,7 +221,7 @@ kind = "read"
 id = "go-to-line"
 kind = "read"
 params = [
-  { name = "value", type = { option = "text" }, required = false },
+  { name = "value", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]

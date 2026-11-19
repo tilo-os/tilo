@@ -182,7 +182,7 @@ NoteFileWrittenArgs = TypedDict("NoteFileWrittenArgs", {
 
 class Document(Resource):
     """Document — `word-processor.document`."""
-    __surface__ = "so.tilo.word-processor@6e955cbec242485f"
+    __surface__ = "so.tilo.word-processor@d8ed1c63bd93e2ff"
     body: str
     comments: list[Entry[Comment]]
 
@@ -381,7 +381,7 @@ class Document(Resource):
 
     def read_file(self,
         *,
-        file: Any,
+        file: str,
         from_: int | None = None,
     ) -> ReadDocument:
         """Runs the app's action."""

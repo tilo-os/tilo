@@ -11,49 +11,49 @@ version = 1
 id = "set-layout"
 kind = "read"
 params = [
-  { name = "value", type = "text", required = true },
+  { name = "value", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "set-size"
 kind = "read"
 params = [
-  { name = "value", type = "text", required = true },
+  { name = "value", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "set-suggestions"
 kind = "read"
 params = [
-  { name = "value", type = "bool", required = true },
+  { name = "value", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
 id = "set-autocorrect"
 kind = "read"
 params = [
-  { name = "value", type = "bool", required = true },
+  { name = "value", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
 id = "set-typing-language"
 kind = "read"
 params = [
-  { name = "value", type = "text", required = true },
+  { name = "value", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "set-personalization"
 kind = "read"
 params = [
-  { name = "value", type = "bool", required = true },
+  { name = "value", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
 id = "set-emoji-recents"
 kind = "read"
 params = [
-  { name = "value", type = { list = "text" }, required = true },
+  { name = "value", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
 ]
 
 [[resources]]

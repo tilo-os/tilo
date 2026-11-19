@@ -25,7 +25,7 @@ __all__ = [
 
 class Vault(Resource):
     """Password vault — `passwords.vault`."""
-    __surface__ = "so.tilo.passwords@a04accfc27a535ec"
+    __surface__ = "so.tilo.passwords@924dd15c855e952e"
     def deny_access(self, *, proposal: str) -> None:
         """Runs the app's action."""
         return self.action("deny-access", proposal=proposal)

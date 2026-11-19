@@ -25,14 +25,14 @@ kind = "read"
 id = "set-live-tail"
 kind = "read"
 params = [
-  { name = "enabled", type = { option = "bool" }, required = false },
+  { name = "enabled", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "select-entry"
 kind = "read"
 params = [
-  { name = "entry_id", type = "text", required = true },
+  { name = "entry_id", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.types]]

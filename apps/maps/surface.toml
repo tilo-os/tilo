@@ -76,7 +76,7 @@ kind = "undoable"
 id = "search"
 kind = "read"
 params = [
-  { name = "query", type = "text", required = true },
+  { name = "query", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -91,36 +91,36 @@ kind = "read"
 id = "open-place"
 kind = "read"
 params = [
-  { name = "place", type = "text", required = true },
+  { name = "place", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "directions"
 kind = "read"
 params = [
-  { name = "place", type = "text", required = true },
+  { name = "place", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "open-poi"
 kind = "read"
 params = [
-  { name = "poi", type = "text", required = true },
+  { name = "poi", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "poi-directions"
 kind = "read"
 params = [
-  { name = "poi", type = "text", required = true },
+  { name = "poi", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "show-point"
 kind = "read"
 params = [
-  { name = "lat", type = "float", required = true },
-  { name = "lon", type = "float", required = true },
+  { name = "lat", type = "float", required = true, schema = { type = "number" } },
+  { name = "lon", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
@@ -128,7 +128,7 @@ id = "delete-offline-area"
 destructive = true
 kind = "read"
 params = [
-  { name = "area", type = "text", required = true },
+  { name = "area", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]

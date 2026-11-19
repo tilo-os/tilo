@@ -59,7 +59,7 @@ kind = "read"
 id = "search"
 kind = "read"
 params = [
-  { name = "query", type = "text", required = true },
+  { name = "query", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.types]]

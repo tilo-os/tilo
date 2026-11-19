@@ -91,7 +91,7 @@ ImportTrackArgs = TypedDict("ImportTrackArgs", {
 
 class Library(Resource):
     """Music — `music.library`."""
-    __surface__ = "so.tilo.music@e983a0f927db8d83"
+    __surface__ = "so.tilo.music@7a5ebeaadc88f72c"
     recommendations: Preferences
     @property
     def artists(self) -> dict[str, Artist]:

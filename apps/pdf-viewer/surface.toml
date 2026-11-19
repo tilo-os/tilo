@@ -216,8 +216,8 @@ id = "read-text"
 kind = "read"
 returns = { type = { named = "PdfText" }, schema = { type = "object", additionalProperties = false, properties = { file = { type = "string" }, next = { type = ["integer", "null"], minimum = 0 }, page_count = { type = "integer", minimum = 0 }, pages = { type = "array", items = { type = "object", additionalProperties = false, properties = { page = { type = "integer", minimum = 0 }, text = { type = "string" } }, required = ["page", "text"] } }, without_text = { type = "array", items = { type = "integer", minimum = 0 } } }, required = ["file", "page_count", "pages", "without_text"] } }
 params = [
-  { name = "from_page", type = { option = "int" }, required = false },
-  { name = "to_page", type = { option = "int" }, required = false },
+  { name = "from_page", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+  { name = "to_page", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
 ]
 
 [[resources.verbs]]
@@ -229,8 +229,8 @@ returns = { type = { named = "FormFields" }, schema = { type = "object", additio
 id = "look-page"
 kind = "read"
 params = [
-  { name = "page", type = "int", required = true },
-  { name = "size", type = { option = "int" }, required = false },
+  { name = "page", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "size", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
 ]
 
 [[resources.types]]

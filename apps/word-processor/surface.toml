@@ -198,8 +198,8 @@ id = "read-file"
 kind = "read"
 returns = { type = { named = "ReadDocument" }, schema = { type = "object", additionalProperties = false, properties = { bytes = { type = ["integer", "null"], minimum = 0 }, file = { type = "string" }, format = { type = "string" }, from = { type = ["integer", "null"], minimum = 0 }, height = { type = ["integer", "null"], minimum = 0 }, media_type = { type = ["string", "null"] }, next = { type = ["integer", "null"], minimum = 0 }, picture = { type = ["string", "null"] }, text = { type = ["string", "null"] }, total = { type = ["integer", "null"], minimum = 0 }, width = { type = ["integer", "null"], minimum = 0 } }, required = ["file", "format"] } }
 params = [
-  { name = "file", required = true },
-  { name = "from", type = { option = "int" }, required = false },
+  { name = "file", required = true, schema = { type = "string" } },
+  { name = "from", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
 ]
 
 [[resources.verbs]]
@@ -207,16 +207,16 @@ id = "read-content"
 kind = "read"
 returns = { type = { named = "ReadDocument" }, schema = { type = "object", additionalProperties = false, properties = { bytes = { type = ["integer", "null"], minimum = 0 }, file = { type = "string" }, format = { type = "string" }, from = { type = ["integer", "null"], minimum = 0 }, height = { type = ["integer", "null"], minimum = 0 }, media_type = { type = ["string", "null"] }, next = { type = ["integer", "null"], minimum = 0 }, picture = { type = ["string", "null"] }, text = { type = ["string", "null"] }, total = { type = ["integer", "null"], minimum = 0 }, width = { type = ["integer", "null"], minimum = 0 } }, required = ["file", "format"] } }
 params = [
-  { name = "content", type = "text", required = true },
-  { name = "name", type = "text", required = true },
-  { name = "from", type = { option = "int" }, required = false },
+  { name = "content", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "from", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
 ]
 
 [[resources.verbs]]
 id = "export-content"
 kind = "read"
 params = [
-  { name = "format", type = { option = "text" }, required = false },
+  { name = "format", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.types]]

@@ -166,18 +166,22 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "refresh"
+kind = "read"
+
+[[resources.verbs]]
 id = "hand-over"
 kind = "read"
 params = [
-  { name = "file", type = "text", required = true },
+  { name = "file", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "read-text"
 kind = "read"
 params = [
-  { name = "file", type = "text", required = true },
-  { name = "from", type = { option = "int" }, required = false },
+  { name = "file", type = "text", required = true, schema = { type = "string" } },
+  { name = "from", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
 ]
 
 [[resources.verbs]]

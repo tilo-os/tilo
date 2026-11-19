@@ -5055,7 +5055,9 @@
       "backups.workspace.verify.Arguments": {
         "type": "object",
         "properties": {
-          "snapshot_id": {}
+          "snapshot_id": {
+            "type": "string"
+          }
         },
         "required": [
           "snapshot_id"
@@ -6309,7 +6311,13 @@
       "calendar.calendar.export-ics-content.Arguments": {
         "type": "object",
         "properties": {
-          "event": {}
+          "event": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -6719,6 +6727,30 @@
         },
         "required": [
           "raw"
+        ],
+        "description": ""
+      },
+      "camera.set-grid.Arguments": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "description": ""
+      },
+      "camera.set-level.Arguments": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on"
         ],
         "description": ""
       },
@@ -9551,8 +9583,15 @@
       "chat.workspace.export-content.Arguments": {
         "type": "object",
         "properties": {
-          "channel": {},
-          "format": {}
+          "channel": {
+            "type": "string"
+          },
+          "format": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [
           "channel"
@@ -9568,8 +9607,12 @@
       "chat.workspace.select-input.Arguments": {
         "type": "object",
         "properties": {
-          "channel": {},
-          "input": {}
+          "channel": {
+            "type": "string"
+          },
+          "input": {
+            "type": "string"
+          }
         },
         "required": [
           "channel",
@@ -12600,7 +12643,9 @@
       "clocks.collection.show.Arguments": {
         "type": "object",
         "properties": {
-          "section": {}
+          "section": {
+            "type": "string"
+          }
         },
         "required": [
           "section"
@@ -13108,7 +13153,9 @@
       "code_editor.project.show-symbol.Arguments": {
         "type": "object",
         "properties": {
-          "symbol": {}
+          "symbol": {
+            "type": "string"
+          }
         },
         "required": [
           "symbol"
@@ -13118,7 +13165,9 @@
       "code_editor.project.show-result.Arguments": {
         "type": "object",
         "properties": {
-          "result": {}
+          "result": {
+            "type": "string"
+          }
         },
         "required": [
           "result"
@@ -13128,11 +13177,29 @@
       "code_editor.project.reveal.Arguments": {
         "type": "object",
         "properties": {
-          "file": {},
-          "path": {},
-          "line": {},
-          "column": {},
-          "results": {}
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "column": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "results": {
+            "type": "boolean"
+          }
         },
         "required": [
           "line",
@@ -13156,7 +13223,12 @@
       "code_editor.project.go-to-line.Arguments": {
         "type": "object",
         "properties": {
-          "value": {}
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -13218,8 +13290,19 @@
       "contacts.book.export-vcard-content.Arguments": {
         "type": "object",
         "properties": {
-          "contact": {},
-          "name": {}
+          "contact": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -15757,7 +15840,9 @@
       "discord.guild.link-offer.Arguments": {
         "type": "object",
         "properties": {
-          "token": {}
+          "token": {
+            "type": "string"
+          }
         },
         "required": [
           "token"
@@ -15769,7 +15854,48 @@
         "properties": {
           "event": {},
           "chat": {},
-          "context": {},
+          "context": {
+            "additionalProperties": false,
+            "properties": {
+              "avatars": {
+                "type": "string"
+              },
+              "link": {
+                "type": "string"
+              },
+              "links": {
+                "additionalProperties": false,
+                "properties": {
+                  "host_device": {
+                    "type": "string"
+                  },
+                  "origin": {
+                    "type": "string"
+                  },
+                  "web_entry": {
+                    "type": "string"
+                  },
+                  "workspace": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "web_entry",
+                  "origin",
+                  "workspace",
+                  "host_device"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "workspace": {},
           "emoji": {}
         },
@@ -15822,7 +15948,9 @@
       "disks.system.select.Arguments": {
         "type": "object",
         "properties": {
-          "device": {}
+          "device": {
+            "type": "string"
+          }
         },
         "required": [
           "device"
@@ -15832,7 +15960,9 @@
       "disks.system.show-tab.Arguments": {
         "type": "object",
         "properties": {
-          "tab": {}
+          "tab": {
+            "type": "string"
+          }
         },
         "required": [
           "tab"
@@ -16243,8 +16373,16 @@
       "ebook.library.read-chapter.Arguments": {
         "type": "object",
         "properties": {
-          "book": {},
-          "chapter": {}
+          "book": {
+            "type": "string"
+          },
+          "chapter": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
         "required": [
           "book"
@@ -16405,7 +16543,9 @@
       "feeds.library.reader-font.Arguments": {
         "type": "object",
         "properties": {
-          "font": {}
+          "font": {
+            "type": "string"
+          }
         },
         "required": [
           "font"
@@ -16415,7 +16555,9 @@
       "feeds.library.reader-paper.Arguments": {
         "type": "object",
         "properties": {
-          "paper": {}
+          "paper": {
+            "type": "string"
+          }
         },
         "required": [
           "paper"
@@ -17108,10 +17250,18 @@
           "null"
         ]
       },
+      "files.folder.refresh.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
       "files.folder.hand-over.Arguments": {
         "type": "object",
         "properties": {
-          "file": {}
+          "file": {
+            "type": "string"
+          }
         },
         "required": [
           "file"
@@ -17121,8 +17271,16 @@
       "files.folder.read-text.Arguments": {
         "type": "object",
         "properties": {
-          "file": {},
-          "from": {}
+          "file": {
+            "type": "string"
+          },
+          "from": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
         "required": [
           "file"
@@ -17874,7 +18032,9 @@
       "imager.sources.choose-drive.Arguments": {
         "type": "object",
         "properties": {
-          "drive": {}
+          "drive": {
+            "type": "string"
+          }
         },
         "required": [
           "drive"
@@ -17896,7 +18056,12 @@
       "logs.journal.set-live-tail.Arguments": {
         "type": "object",
         "properties": {
-          "enabled": {}
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -17904,7 +18069,9 @@
       "logs.journal.select-entry.Arguments": {
         "type": "object",
         "properties": {
-          "entry_id": {}
+          "entry_id": {
+            "type": "string"
+          }
         },
         "required": [
           "entry_id"
@@ -18714,13 +18881,61 @@
       "mail.mailbox.search-messages.Arguments": {
         "type": "object",
         "properties": {
-          "query": {},
-          "folder": {},
-          "from": {},
-          "subject": {},
-          "since": {},
-          "until": {},
-          "has_attachment": {}
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "folder": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "enum": [
+                  "inbox",
+                  "starred",
+                  "sent",
+                  "drafts",
+                  "archive",
+                  "trash",
+                  "junk"
+                ],
+                "type": "string"
+              }
+            ]
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_attachment": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -18728,9 +18943,37 @@
       "mail.mailbox.export-content.Arguments": {
         "type": "object",
         "properties": {
-          "format": {},
-          "message": {},
-          "folder": {}
+          "format": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "folder": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "enum": [
+                  "inbox",
+                  "starred",
+                  "sent",
+                  "drafts",
+                  "archive",
+                  "trash",
+                  "junk"
+                ],
+                "type": "string"
+              }
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -19876,7 +20119,9 @@
       "maps.workspace.search.Arguments": {
         "type": "object",
         "properties": {
-          "query": {}
+          "query": {
+            "type": "string"
+          }
         },
         "required": [
           "query"
@@ -19898,7 +20143,9 @@
       "maps.workspace.open-place.Arguments": {
         "type": "object",
         "properties": {
-          "place": {}
+          "place": {
+            "type": "string"
+          }
         },
         "required": [
           "place"
@@ -19908,7 +20155,9 @@
       "maps.workspace.directions.Arguments": {
         "type": "object",
         "properties": {
-          "place": {}
+          "place": {
+            "type": "string"
+          }
         },
         "required": [
           "place"
@@ -19918,7 +20167,9 @@
       "maps.workspace.open-poi.Arguments": {
         "type": "object",
         "properties": {
-          "poi": {}
+          "poi": {
+            "type": "string"
+          }
         },
         "required": [
           "poi"
@@ -19928,7 +20179,9 @@
       "maps.workspace.poi-directions.Arguments": {
         "type": "object",
         "properties": {
-          "poi": {}
+          "poi": {
+            "type": "string"
+          }
         },
         "required": [
           "poi"
@@ -19938,8 +20191,12 @@
       "maps.workspace.show-point.Arguments": {
         "type": "object",
         "properties": {
-          "lat": {},
-          "lon": {}
+          "lat": {
+            "type": "number"
+          },
+          "lon": {
+            "type": "number"
+          }
         },
         "required": [
           "lat",
@@ -19950,7 +20207,9 @@
       "maps.workspace.delete-offline-area.Arguments": {
         "type": "object",
         "properties": {
-          "area": {}
+          "area": {
+            "type": "string"
+          }
         },
         "required": [
           "area"
@@ -20164,8 +20423,12 @@
       "tilo.messages.list-groups.Arguments": {
         "type": "object",
         "properties": {
-          "service": {},
-          "account": {}
+          "service": {
+            "type": "string"
+          },
+          "account": {
+            "type": "string"
+          }
         },
         "required": [
           "service",
@@ -20176,9 +20439,15 @@
       "tilo.messages.read-group-membership.Arguments": {
         "type": "object",
         "properties": {
-          "service": {},
-          "account": {},
-          "group": {}
+          "service": {
+            "type": "string"
+          },
+          "account": {
+            "type": "string"
+          },
+          "group": {
+            "type": "string"
+          }
         },
         "required": [
           "service",
@@ -20190,9 +20459,15 @@
       "tilo.messages.read-group-history.Arguments": {
         "type": "object",
         "properties": {
-          "service": {},
-          "account": {},
-          "group": {}
+          "service": {
+            "type": "string"
+          },
+          "account": {
+            "type": "string"
+          },
+          "group": {
+            "type": "string"
+          }
         },
         "required": [
           "service",
@@ -20204,7 +20479,9 @@
       "tilo.messages.read-history.Arguments": {
         "type": "object",
         "properties": {
-          "choice": {}
+          "choice": {
+            "type": "string"
+          }
         },
         "required": [
           "choice"
@@ -20214,7 +20491,9 @@
       "tilo.messages.read-older-history.Arguments": {
         "type": "object",
         "properties": {
-          "choice": {}
+          "choice": {
+            "type": "string"
+          }
         },
         "required": [
           "choice"
@@ -20224,7 +20503,9 @@
       "tilo.messages.search-messages.Arguments": {
         "type": "object",
         "properties": {
-          "query": {}
+          "query": {
+            "type": "string"
+          }
         },
         "required": [
           "query"
@@ -20234,8 +20515,18 @@
       "tilo.messages.export-content.Arguments": {
         "type": "object",
         "properties": {
-          "format": {},
-          "conversation": {}
+          "format": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "conversation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -20277,7 +20568,9 @@
       "monitor.processes.show-tab.Arguments": {
         "type": "object",
         "properties": {
-          "tab": {}
+          "tab": {
+            "type": "string"
+          }
         },
         "required": [
           "tab"
@@ -20287,7 +20580,12 @@
       "monitor.processes.filter.Arguments": {
         "type": "object",
         "properties": {
-          "query": {}
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -20295,7 +20593,9 @@
       "monitor.processes.inspect.Arguments": {
         "type": "object",
         "properties": {
-          "process": {}
+          "process": {
+            "type": "string"
+          }
         },
         "required": [
           "process"
@@ -20305,7 +20605,9 @@
       "monitor.processes.copy-pid.Arguments": {
         "type": "object",
         "properties": {
-          "process": {}
+          "process": {
+            "type": "string"
+          }
         },
         "required": [
           "process"
@@ -20467,7 +20769,9 @@
       "music.library.search.Arguments": {
         "type": "object",
         "properties": {
-          "query": {}
+          "query": {
+            "type": "string"
+          }
         },
         "required": [
           "query"
@@ -20501,8 +20805,19 @@
       "notes.notebook.export-markdown-content.Arguments": {
         "type": "object",
         "properties": {
-          "page": {},
-          "title": {}
+          "page": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -21467,7 +21782,9 @@
       "osk.keyboard.set-layout.Arguments": {
         "type": "object",
         "properties": {
-          "value": {}
+          "value": {
+            "type": "string"
+          }
         },
         "required": [
           "value"
@@ -21477,7 +21794,9 @@
       "osk.keyboard.set-size.Arguments": {
         "type": "object",
         "properties": {
-          "value": {}
+          "value": {
+            "type": "string"
+          }
         },
         "required": [
           "value"
@@ -21487,7 +21806,9 @@
       "osk.keyboard.set-suggestions.Arguments": {
         "type": "object",
         "properties": {
-          "value": {}
+          "value": {
+            "type": "boolean"
+          }
         },
         "required": [
           "value"
@@ -21497,7 +21818,9 @@
       "osk.keyboard.set-autocorrect.Arguments": {
         "type": "object",
         "properties": {
-          "value": {}
+          "value": {
+            "type": "boolean"
+          }
         },
         "required": [
           "value"
@@ -21507,7 +21830,9 @@
       "osk.keyboard.set-typing-language.Arguments": {
         "type": "object",
         "properties": {
-          "value": {}
+          "value": {
+            "type": "string"
+          }
         },
         "required": [
           "value"
@@ -21517,7 +21842,9 @@
       "osk.keyboard.set-personalization.Arguments": {
         "type": "object",
         "properties": {
-          "value": {}
+          "value": {
+            "type": "boolean"
+          }
         },
         "required": [
           "value"
@@ -21527,7 +21854,12 @@
       "osk.keyboard.set-emoji-recents.Arguments": {
         "type": "object",
         "properties": {
-          "value": {}
+          "value": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
         },
         "required": [
           "value"
@@ -21589,7 +21921,9 @@
       "passwords.vault.deny-access.Arguments": {
         "type": "object",
         "properties": {
-          "proposal": {}
+          "proposal": {
+            "type": "string"
+          }
         },
         "required": [
           "proposal"
@@ -21617,7 +21951,9 @@
       "passwords.vault.copy.Arguments": {
         "type": "object",
         "properties": {
-          "item": {}
+          "item": {
+            "type": "string"
+          }
         },
         "required": [
           "item"
@@ -21627,7 +21963,9 @@
       "passwords.vault.copy-identity.Arguments": {
         "type": "object",
         "properties": {
-          "item": {}
+          "item": {
+            "type": "string"
+          }
         },
         "required": [
           "item"
@@ -21637,7 +21975,9 @@
       "passwords.vault.copy-origins.Arguments": {
         "type": "object",
         "properties": {
-          "item": {}
+          "item": {
+            "type": "string"
+          }
         },
         "required": [
           "item"
@@ -21647,7 +21987,9 @@
       "passwords.vault.reveal.Arguments": {
         "type": "object",
         "properties": {
-          "item": {}
+          "item": {
+            "type": "string"
+          }
         },
         "required": [
           "item"
@@ -21657,7 +21999,9 @@
       "passwords.vault.filter.Arguments": {
         "type": "object",
         "properties": {
-          "filter": {}
+          "filter": {
+            "type": "string"
+          }
         },
         "required": [
           "filter"
@@ -22924,8 +23268,20 @@
       "pdf.document.read-text.Arguments": {
         "type": "object",
         "properties": {
-          "from_page": {},
-          "to_page": {}
+          "from_page": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "to_page": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -23130,8 +23486,18 @@
       "pdf.document.look-page.Arguments": {
         "type": "object",
         "properties": {
-          "page": {},
-          "size": {}
+          "page": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "size": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
         "required": [
           "page"
@@ -23799,9 +24165,27 @@
       "settings.root.inspect-input-sources.Arguments": {
         "type": "object",
         "properties": {
-          "query": {},
-          "page": {}
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "page": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
+        "required": [],
+        "description": ""
+      },
+      "settings.root.inspect-keyboard-map.Arguments": {
+        "type": "object",
+        "properties": {},
         "required": [],
         "description": ""
       },
@@ -23814,7 +24198,9 @@
       "settings.root.set-source-options-visible.Arguments": {
         "type": "object",
         "properties": {
-          "visible": {}
+          "visible": {
+            "type": "boolean"
+          }
         },
         "required": [
           "visible"
@@ -23824,7 +24210,9 @@
       "settings.root.set-source-inspection-visible.Arguments": {
         "type": "object",
         "properties": {
-          "visible": {}
+          "visible": {
+            "type": "boolean"
+          }
         },
         "required": [
           "visible"
@@ -23852,11 +24240,30 @@
       "settings.root.search-hub-models.Arguments": {
         "type": "object",
         "properties": {
-          "query": {},
-          "format": {}
+          "query": {
+            "type": "string"
+          },
+          "format": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [
           "query"
+        ],
+        "description": ""
+      },
+      "settings.root.show-hub-model.Arguments": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model"
         ],
         "description": ""
       },
@@ -23869,11 +24276,31 @@
       "settings.root.discover-thunderbird-accounts.Arguments": {
         "type": "object",
         "properties": {
-          "prefs": {}
+          "prefs": {
+            "type": "string"
+          }
         },
         "required": [
           "prefs"
         ],
+        "description": ""
+      },
+      "settings.root.choose-thunderbird-metadata.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "settings.root.inspect-thunderbird-import.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "settings.root.inspect-calendar-choices.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
         "description": ""
       },
       "settings.root.inspect-display-configuration.Arguments": {
@@ -25432,7 +25859,12 @@
       "sheets.workbook.export-csv-content.Arguments": {
         "type": "object",
         "properties": {
-          "sheet": {}
+          "sheet": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -25440,9 +25872,22 @@
       "sheets.workbook.read-file.Arguments": {
         "type": "object",
         "properties": {
-          "file": {},
-          "sheet": {},
-          "from": {}
+          "file": {
+            "type": "string"
+          },
+          "sheet": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
         "required": [
           "file"
@@ -25456,9 +25901,22 @@
             "content": true,
             "type": "string"
           },
-          "name": {},
-          "sheet": {},
-          "from": {}
+          "name": {
+            "type": "string"
+          },
+          "sheet": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
         "required": [
           "content",
@@ -25469,10 +25927,29 @@
       "sheets.workbook.read-cells.Arguments": {
         "type": "object",
         "properties": {
-          "sheet": {},
-          "range": {},
-          "from": {},
-          "shown": {}
+          "sheet": {
+            "type": "string"
+          },
+          "range": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "shown": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
         },
         "required": [
           "sheet"
@@ -27043,7 +27520,12 @@
       "store.catalog.inspect-catalogue.Arguments": {
         "type": "object",
         "properties": {
-          "app": {}
+          "app": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -27051,7 +27533,9 @@
       "store.catalog.set-search.Arguments": {
         "type": "object",
         "properties": {
-          "query": {}
+          "query": {
+            "type": "string"
+          }
         },
         "required": [
           "query"
@@ -27061,7 +27545,9 @@
       "store.catalog.show-view.Arguments": {
         "type": "object",
         "properties": {
-          "view": {}
+          "view": {
+            "type": "string"
+          }
         },
         "required": [
           "view"
@@ -27077,7 +27563,9 @@
       "store.catalog.browse-remote.Arguments": {
         "type": "object",
         "properties": {
-          "remote": {}
+          "remote": {
+            "type": "string"
+          }
         },
         "required": [
           "remote"
@@ -27087,7 +27575,9 @@
       "store.catalog.set-category.Arguments": {
         "type": "object",
         "properties": {
-          "category": {}
+          "category": {
+            "type": "string"
+          }
         },
         "required": [
           "category"
@@ -27103,7 +27593,9 @@
       "store.catalog.show-details.Arguments": {
         "type": "object",
         "properties": {
-          "app": {}
+          "app": {
+            "type": "string"
+          }
         },
         "required": [
           "app"
@@ -27113,8 +27605,15 @@
       "store.catalog.show-runtime-details.Arguments": {
         "type": "object",
         "properties": {
-          "runtime": {},
-          "registry": {}
+          "runtime": {
+            "type": "string"
+          },
+          "registry": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [
           "runtime"
@@ -27124,7 +27623,9 @@
       "store.catalog.set-technical-details.Arguments": {
         "type": "object",
         "properties": {
-          "expanded": {}
+          "expanded": {
+            "type": "boolean"
+          }
         },
         "required": [
           "expanded"
@@ -27134,8 +27635,18 @@
       "store.catalog.open-reference.Arguments": {
         "type": "object",
         "properties": {
-          "path": {},
-          "contents": {}
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contents": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -27161,8 +27672,12 @@
       "store.catalog.prepare-moderation.Arguments": {
         "type": "object",
         "properties": {
-          "app": {},
-          "appeal": {}
+          "app": {
+            "type": "string"
+          },
+          "appeal": {
+            "type": "boolean"
+          }
         },
         "required": [
           "app",
@@ -28817,7 +29332,9 @@
       "terminal.session.open-link.Arguments": {
         "type": "object",
         "properties": {
-          "url": {}
+          "url": {
+            "type": "string"
+          }
         },
         "required": [
           "url"
@@ -29002,7 +29519,9 @@
       "themes.studio.export.Arguments": {
         "type": "object",
         "properties": {
-          "theme": {}
+          "theme": {
+            "type": "string"
+          }
         },
         "required": [
           "theme"
@@ -29086,7 +29605,9 @@
       "tube.library.open-video.Arguments": {
         "type": "object",
         "properties": {
-          "video": {}
+          "video": {
+            "type": "string"
+          }
         },
         "required": [
           "video"
@@ -29096,7 +29617,9 @@
       "tube.library.open-creator.Arguments": {
         "type": "object",
         "properties": {
-          "creator": {}
+          "creator": {
+            "type": "string"
+          }
         },
         "required": [
           "creator"
@@ -29106,7 +29629,9 @@
       "tube.library.open-playlist.Arguments": {
         "type": "object",
         "properties": {
-          "playlist": {}
+          "playlist": {
+            "type": "string"
+          }
         },
         "required": [
           "playlist"
@@ -29116,7 +29641,11 @@
       "tube.library.search.Arguments": {
         "type": "object",
         "properties": {
-          "query": {}
+          "query": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
         },
         "required": [
           "query"
@@ -29132,7 +29661,9 @@
       "tube.library.seek.Arguments": {
         "type": "object",
         "properties": {
-          "seconds": {}
+          "seconds": {
+            "type": "number"
+          }
         },
         "required": [
           "seconds"
@@ -29148,7 +29679,9 @@
       "tube.library.share.Arguments": {
         "type": "object",
         "properties": {
-          "video": {}
+          "video": {
+            "type": "string"
+          }
         },
         "required": [
           "video"
@@ -29158,7 +29691,9 @@
       "tube.library.mark-watched.Arguments": {
         "type": "object",
         "properties": {
-          "video": {}
+          "video": {
+            "type": "string"
+          }
         },
         "required": [
           "video"
@@ -29168,7 +29703,9 @@
       "tube.library.forget-watched.Arguments": {
         "type": "object",
         "properties": {
-          "video": {}
+          "video": {
+            "type": "string"
+          }
         },
         "required": [
           "video"
@@ -29184,8 +29721,12 @@
       "tube.library.set-preference.Arguments": {
         "type": "object",
         "properties": {
-          "preference": {},
-          "enabled": {}
+          "preference": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
         },
         "required": [
           "preference",
@@ -29196,7 +29737,9 @@
       "tube.library.set-preferred-quality.Arguments": {
         "type": "object",
         "properties": {
-          "quality": {}
+          "quality": {
+            "type": "string"
+          }
         },
         "required": [
           "quality"
@@ -29206,8 +29749,12 @@
       "tube.library.set-segment-handling.Arguments": {
         "type": "object",
         "properties": {
-          "category": {},
-          "mode": {}
+          "category": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          }
         },
         "required": [
           "category",
@@ -30103,10 +30650,30 @@
       "video-editor.project.render-timeline.Arguments": {
         "type": "object",
         "properties": {
-          "start": {},
-          "end": {},
-          "format": {},
-          "size": {}
+          "start": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "end": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "format": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -30114,11 +30681,44 @@
       "video-editor.project.export-video-content.Arguments": {
         "type": "object",
         "properties": {
-          "format": {},
-          "width": {},
-          "height": {},
-          "fps": {},
-          "wait": {}
+          "format": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "width": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "height": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "fps": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "wait": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -30126,8 +30726,17 @@
       "video-editor.project.export-video-status.Arguments": {
         "type": "object",
         "properties": {
-          "job": {},
-          "wait": {}
+          "job": {
+            "type": "string"
+          },
+          "wait": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
         "required": [
           "job"
@@ -30137,7 +30746,9 @@
       "video-editor.project.cancel-video-export.Arguments": {
         "type": "object",
         "properties": {
-          "job": {}
+          "job": {
+            "type": "string"
+          }
         },
         "required": [
           "job"
@@ -30147,8 +30758,17 @@
       "video-editor.project.view-frame-content.Arguments": {
         "type": "object",
         "properties": {
-          "at": {},
-          "width": {}
+          "at": {
+            "type": "number"
+          },
+          "width": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
         "required": [
           "at"
@@ -30285,7 +30905,12 @@
       "video-player.library.open-video.Arguments": {
         "type": "object",
         "properties": {
-          "path": {}
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -30433,8 +31058,15 @@
       "windows.manager.open-file.Arguments": {
         "type": "object",
         "properties": {
-          "app": {},
-          "path": {}
+          "app": {
+            "type": "string"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [
           "app"
@@ -30870,8 +31502,16 @@
       "word-processor.document.read-file.Arguments": {
         "type": "object",
         "properties": {
-          "file": {},
-          "from": {}
+          "file": {
+            "type": "string"
+          },
+          "from": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
         "required": [
           "file"
@@ -30957,9 +31597,19 @@
       "word-processor.document.read-content.Arguments": {
         "type": "object",
         "properties": {
-          "content": {},
-          "name": {},
-          "from": {}
+          "content": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "from": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
         },
         "required": [
           "content",
@@ -31046,7 +31696,12 @@
       "word-processor.document.export-content.Arguments": {
         "type": "object",
         "properties": {
-          "format": {}
+          "format": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         },
         "required": [],
         "description": ""
@@ -31547,6 +32202,18 @@
       "resource": "camera",
       "action": "record-scan",
       "arguments": "#/components/schemas/camera.record-scan.Arguments"
+    },
+    {
+      "app": "so.tilo.camera",
+      "resource": "camera",
+      "action": "set-grid",
+      "arguments": "#/components/schemas/camera.set-grid.Arguments"
+    },
+    {
+      "app": "so.tilo.camera",
+      "resource": "camera",
+      "action": "set-level",
+      "arguments": "#/components/schemas/camera.set-level.Arguments"
     },
     {
       "app": "so.tilo.canvas",
@@ -33267,6 +33934,12 @@
     {
       "app": "so.tilo.file-explorer",
       "resource": "files.folder",
+      "action": "refresh",
+      "arguments": "#/components/schemas/files.folder.refresh.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.folder",
       "action": "hand-over",
       "arguments": "#/components/schemas/files.folder.hand-over.Arguments"
     },
@@ -34635,6 +35308,12 @@
     {
       "app": "so.tilo.settings",
       "resource": "settings.root",
+      "action": "inspect-keyboard-map",
+      "arguments": "#/components/schemas/settings.root.inspect-keyboard-map.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
       "action": "inspect-keyboard-sources",
       "arguments": "#/components/schemas/settings.root.inspect-keyboard-sources.Arguments"
     },
@@ -34677,6 +35356,12 @@
     {
       "app": "so.tilo.settings",
       "resource": "settings.root",
+      "action": "show-hub-model",
+      "arguments": "#/components/schemas/settings.root.show-hub-model.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
       "action": "toggle-microphone-test",
       "arguments": "#/components/schemas/settings.root.toggle-microphone-test.Arguments"
     },
@@ -34685,6 +35370,24 @@
       "resource": "settings.root",
       "action": "discover-thunderbird-accounts",
       "arguments": "#/components/schemas/settings.root.discover-thunderbird-accounts.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
+      "action": "choose-thunderbird-metadata",
+      "arguments": "#/components/schemas/settings.root.choose-thunderbird-metadata.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
+      "action": "inspect-thunderbird-import",
+      "arguments": "#/components/schemas/settings.root.inspect-thunderbird-import.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
+      "action": "inspect-calendar-choices",
+      "arguments": "#/components/schemas/settings.root.inspect-calendar-choices.Arguments"
     },
     {
       "app": "so.tilo.settings",

@@ -117,7 +117,7 @@ SwitchPolarityArgs = TypedDict("SwitchPolarityArgs", {
 
 class Studio(Resource):
     """Themes — `themes.studio`."""
-    __surface__ = "so.tilo.themes@5e3310065e4c4d56"
+    __surface__ = "so.tilo.themes@e80cf408e9b8df2c"
     themes: list[Entry[Theme]]
 
     def new_theme(self,

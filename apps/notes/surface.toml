@@ -31,8 +31,8 @@ params = [
 id = "export-markdown-content"
 kind = "read"
 params = [
-  { name = "page", type = { option = "text" }, required = false },
-  { name = "title", type = { option = "text" }, required = false },
+  { name = "page", type = { option = "text" }, required = false, schema = { type = ["string", "null"], format = "uuid" } },
+  { name = "title", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.types]]

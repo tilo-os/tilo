@@ -139,7 +139,7 @@ id = "open-link"
 destructive = true
 kind = "read"
 params = [
-  { name = "url", type = "text", required = true },
+  { name = "url", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.types]]

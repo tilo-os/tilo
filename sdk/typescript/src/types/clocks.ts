@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.clocks@0c6cd6613646c99c";
+export const SURFACE = "so.tilo.clocks@9852f71e51ca4a4d";
 
 export interface Alarm {
   label: string;

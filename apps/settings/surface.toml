@@ -12,9 +12,13 @@ shows = ["add-account", "add-google-gemini", "add-google-vertex", "ask-hotspot-p
 id = "inspect-input-sources"
 kind = "read"
 params = [
-  { name = "query", type = { option = "text" }, required = false },
-  { name = "page", type = { option = "int" }, required = false },
+  { name = "query", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "page", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
 ]
+
+[[resources.verbs]]
+id = "inspect-keyboard-map"
+kind = "read"
 
 [[resources.verbs]]
 id = "inspect-keyboard-sources"
@@ -24,14 +28,14 @@ kind = "read"
 id = "set-source-options-visible"
 kind = "read"
 params = [
-  { name = "visible", type = "bool", required = true },
+  { name = "visible", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
 id = "set-source-inspection-visible"
 kind = "read"
 params = [
-  { name = "visible", type = "bool", required = true },
+  { name = "visible", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
@@ -50,8 +54,15 @@ kind = "read"
 id = "search-hub-models"
 kind = "read"
 params = [
-  { name = "query", type = "text", required = true },
-  { name = "format", type = { option = "text" }, required = false },
+  { name = "query", type = "text", required = true, schema = { type = "string" } },
+  { name = "format", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "show-hub-model"
+kind = "read"
+params = [
+  { name = "model", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -62,8 +73,20 @@ kind = "read"
 id = "discover-thunderbird-accounts"
 kind = "read"
 params = [
-  { name = "prefs", type = "text", required = true },
+  { name = "prefs", type = "text", required = true, schema = { type = "string" } },
 ]
+
+[[resources.verbs]]
+id = "choose-thunderbird-metadata"
+kind = "read"
+
+[[resources.verbs]]
+id = "inspect-thunderbird-import"
+kind = "read"
+
+[[resources.verbs]]
+id = "inspect-calendar-choices"
+kind = "read"
 
 [[resources.verbs]]
 id = "inspect-display-configuration"

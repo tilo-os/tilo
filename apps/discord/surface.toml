@@ -412,18 +412,18 @@ kind = "read"
 id = "link-offer"
 kind = "read"
 params = [
-  { name = "token", required = true },
+  { name = "token", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "plan-event"
 kind = "read"
 params = [
-  { name = "event", required = true },
-  { name = "chat", required = true },
-  { name = "context", type = { option = { named = "Context" } }, required = false },
-  { name = "workspace", type = { option = "any" }, required = false },
-  { name = "emoji", type = { option = "any" }, required = false },
+  { name = "event", required = true, schema = {} },
+  { name = "chat", required = true, schema = {} },
+  { name = "context", type = { option = { named = "Context" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { avatars = { type = "string" }, link = { type = "string" }, links = { type = ["object", "null"], additionalProperties = false, properties = { host_device = { type = "string" }, origin = { type = "string" }, web_entry = { type = "string" }, workspace = { type = "string" } }, required = ["web_entry", "origin", "workspace", "host_device"] } } } },
+  { name = "workspace", type = { option = "any" }, required = false, schema = {} },
+  { name = "emoji", type = { option = "any" }, required = false, schema = {} },
 ]
 
 [[resources.types]]

@@ -19,7 +19,7 @@ fields = [
 id = "verify"
 kind = "read"
 params = [
-  { name = "snapshot_id", type = "text", required = true },
+  { name = "snapshot_id", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.types]]

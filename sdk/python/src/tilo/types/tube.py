@@ -76,7 +76,7 @@ ClearArgs = TypedDict("ClearArgs", {
 
 class Library(Resource):
     """Tube — `tube.library`."""
-    __surface__ = "so.tilo.tube@4b888c16305c5f19"
+    __surface__ = "so.tilo.tube@ba370587a8fe0bb0"
     likes: list[str]
     queue: list[str]
     subscriptions: list[str]
@@ -174,7 +174,7 @@ class Library(Resource):
 
 class WatchHistory(Resource):
     """Watch history — `tube.watch-history`."""
-    __surface__ = "so.tilo.tube@4b888c16305c5f19"
+    __surface__ = "so.tilo.tube@ba370587a8fe0bb0"
     watched: dict[str, int]
     positions: dict[str, int]
 

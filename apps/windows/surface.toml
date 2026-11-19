@@ -15,8 +15,8 @@ fields = [
 id = "open-file"
 kind = "read"
 params = [
-  { name = "app", type = "text", required = true },
-  { name = "path", type = { option = "any" }, required = false },
+  { name = "app", type = "text", required = true, schema = { type = "string" } },
+  { name = "path", type = { option = "any" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.types]]

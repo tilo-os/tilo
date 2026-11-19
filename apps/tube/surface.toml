@@ -36,28 +36,28 @@ params = [
 id = "open-video"
 kind = "read"
 params = [
-  { name = "video", type = "text", required = true },
+  { name = "video", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "open-creator"
 kind = "read"
 params = [
-  { name = "creator", type = "text", required = true },
+  { name = "creator", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "open-playlist"
 kind = "read"
 params = [
-  { name = "playlist", type = "text", required = true },
+  { name = "playlist", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "search"
 kind = "read"
 params = [
-  { name = "query", type = "text", required = true },
+  { name = "query", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -68,7 +68,7 @@ kind = "read"
 id = "seek"
 kind = "read"
 params = [
-  { name = "seconds", type = "float", required = true },
+  { name = "seconds", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
@@ -79,21 +79,21 @@ kind = "read"
 id = "share"
 kind = "read"
 params = [
-  { name = "video", type = "text", required = true },
+  { name = "video", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "mark-watched"
 kind = "read"
 params = [
-  { name = "video", type = "text", required = true },
+  { name = "video", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "forget-watched"
 kind = "read"
 params = [
-  { name = "video", type = "text", required = true },
+  { name = "video", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -105,23 +105,23 @@ kind = "read"
 id = "set-preference"
 kind = "read"
 params = [
-  { name = "preference", type = "text", required = true },
-  { name = "enabled", type = "bool", required = true },
+  { name = "preference", type = "text", required = true, schema = { type = "string" } },
+  { name = "enabled", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
 id = "set-preferred-quality"
 kind = "read"
 params = [
-  { name = "quality", type = "text", required = true },
+  { name = "quality", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "set-segment-handling"
 kind = "read"
 params = [
-  { name = "category", type = "text", required = true },
-  { name = "mode", type = "text", required = true },
+  { name = "category", type = "text", required = true, schema = { type = "string" } },
+  { name = "mode", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.types]]

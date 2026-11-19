@@ -12,7 +12,7 @@ shows = ["hide", "show-access"]
 id = "deny-access"
 kind = "read"
 params = [
-  { name = "proposal", type = "text", required = true },
+  { name = "proposal", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -31,34 +31,34 @@ kind = "read"
 id = "copy"
 kind = "read"
 params = [
-  { name = "item", type = "text", required = true },
+  { name = "item", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "copy-identity"
 kind = "read"
 params = [
-  { name = "item", type = "text", required = true },
+  { name = "item", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "copy-origins"
 kind = "read"
 params = [
-  { name = "item", type = "text", required = true },
+  { name = "item", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "reveal"
 kind = "read"
 params = [
-  { name = "item", type = "text", required = true },
+  { name = "item", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "filter"
 kind = "read"
 params = [
-  { name = "filter", type = "text", required = true },
+  { name = "filter", type = "text", required = true, schema = { type = "string" } },
 ]
 

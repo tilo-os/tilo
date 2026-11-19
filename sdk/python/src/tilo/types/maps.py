@@ -172,7 +172,7 @@ ClearArgs = TypedDict("ClearArgs", {
 
 class Workspace(Resource):
     """Maps — `maps.workspace`."""
-    __surface__ = "so.tilo.maps@41f20a9deca55fef"
+    __surface__ = "so.tilo.maps@9382d7197649df17"
     places: list[Entry[Place]]
     @property
     def recents(self) -> Any:
@@ -328,7 +328,7 @@ class Workspace(Resource):
 
 class OfflineAreas(Resource):
     """Offline areas — `maps.offline-areas`."""
-    __surface__ = "so.tilo.maps@41f20a9deca55fef"
+    __surface__ = "so.tilo.maps@9382d7197649df17"
     devices: dict[str, Any]
 
     def remember(self,

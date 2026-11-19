@@ -35,6 +35,20 @@ params = [
   { name = "raw", type = "text", required = true, schema = { type = "string" } },
 ]
 
+[[resources.verbs]]
+id = "set-grid"
+kind = "read"
+params = [
+  { name = "on", type = "bool", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "set-level"
+kind = "read"
+params = [
+  { name = "on", type = "bool", required = true, schema = { type = "boolean" } },
+]
+
 [[resources.types]]
 name = "CaptureKind"
 cases = [

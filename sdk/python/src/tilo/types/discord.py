@@ -431,7 +431,7 @@ ReportVoiceArgs = TypedDict("ReportVoiceArgs", {
 
 class Guild(Resource):
     """Discord server — `discord.guild`."""
-    __surface__ = "so.tilo.discord@3d8469c4024dfffb"
+    __surface__ = "so.tilo.discord@e3c83e7ada110859"
     @property
     def guild_id(self) -> str:
         """Read only."""
@@ -802,7 +802,7 @@ class Guild(Resource):
         """Runs the app's action."""
         return self.action("my-link")
 
-    def link_offer(self, *, token: Any) -> None:
+    def link_offer(self, *, token: str) -> None:
         """Runs the app's action."""
         return self.action("link-offer", token=token)
 

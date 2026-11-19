@@ -12,8 +12,8 @@ shows = ["cancel-account-review", "close-accounts", "edit-account", "edit-field"
 id = "export-vcard-content"
 kind = "read"
 params = [
-  { name = "contact", type = { option = "text" }, required = false },
-  { name = "name", type = { option = "text" }, required = false },
+  { name = "contact", type = { option = "text" }, required = false, schema = { type = ["string", "null"], format = "uuid" } },
+  { name = "name", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources]]

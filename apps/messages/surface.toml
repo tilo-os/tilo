@@ -55,55 +55,55 @@ params = [
 id = "list-groups"
 kind = "read"
 params = [
-  { name = "service", type = "text", required = true },
-  { name = "account", type = "text", required = true },
+  { name = "service", type = "text", required = true, schema = { type = "string" } },
+  { name = "account", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "read-group-membership"
 kind = "read"
 params = [
-  { name = "service", type = "text", required = true },
-  { name = "account", type = "text", required = true },
-  { name = "group", type = "text", required = true },
+  { name = "service", type = "text", required = true, schema = { type = "string" } },
+  { name = "account", type = "text", required = true, schema = { type = "string" } },
+  { name = "group", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "read-group-history"
 kind = "read"
 params = [
-  { name = "service", type = "text", required = true },
-  { name = "account", type = "text", required = true },
-  { name = "group", type = "text", required = true },
+  { name = "service", type = "text", required = true, schema = { type = "string" } },
+  { name = "account", type = "text", required = true, schema = { type = "string" } },
+  { name = "group", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "read-history"
 kind = "read"
 params = [
-  { name = "choice", type = "text", required = true },
+  { name = "choice", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "read-older-history"
 kind = "read"
 params = [
-  { name = "choice", type = "text", required = true },
+  { name = "choice", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "search-messages"
 kind = "read"
 params = [
-  { name = "query", type = "text", required = true },
+  { name = "query", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "export-content"
 kind = "read"
 params = [
-  { name = "format", type = { option = "text" }, required = false },
-  { name = "conversation", type = { option = "text" }, required = false },
+  { name = "format", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "conversation", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.types]]

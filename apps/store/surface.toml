@@ -30,21 +30,21 @@ params = [
 id = "inspect-catalogue"
 kind = "read"
 params = [
-  { name = "app", type = { option = "text" }, required = false },
+  { name = "app", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "set-search"
 kind = "read"
 params = [
-  { name = "query", type = "text", required = true },
+  { name = "query", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "show-view"
 kind = "read"
 params = [
-  { name = "view", type = "text", required = true },
+  { name = "view", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -55,14 +55,14 @@ kind = "read"
 id = "browse-remote"
 kind = "read"
 params = [
-  { name = "remote", type = "text", required = true },
+  { name = "remote", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "set-category"
 kind = "read"
 params = [
-  { name = "category", type = "text", required = true },
+  { name = "category", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -73,30 +73,30 @@ kind = "read"
 id = "show-details"
 kind = "read"
 params = [
-  { name = "app", type = "text", required = true },
+  { name = "app", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "show-runtime-details"
 kind = "read"
 params = [
-  { name = "runtime", type = "text", required = true },
-  { name = "registry", type = { option = "text" }, required = false },
+  { name = "runtime", type = "text", required = true, schema = { type = "string" } },
+  { name = "registry", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "set-technical-details"
 kind = "read"
 params = [
-  { name = "expanded", type = "bool", required = true },
+  { name = "expanded", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
 id = "open-reference"
 kind = "read"
 params = [
-  { name = "path", type = { option = "any" }, required = false },
-  { name = "contents", type = { option = "text" }, required = false },
+  { name = "path", type = { option = "any" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "contents", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -115,8 +115,8 @@ kind = "read"
 id = "prepare-moderation"
 kind = "read"
 params = [
-  { name = "app", type = "text", required = true },
-  { name = "appeal", type = "bool", required = true },
+  { name = "app", type = "text", required = true, schema = { type = "string" } },
+  { name = "appeal", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.types]]
