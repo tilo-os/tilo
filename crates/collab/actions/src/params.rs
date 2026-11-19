@@ -721,7 +721,9 @@ impl ActionParam {
         for choice in &self.choices {
             let valid = match self.ty {
                 ParamType::Text => true,
-                ParamType::Integer => choice.parse::<i64>().is_ok(),
+                // As wide as an integer argument carries: an id past `i64::MAX` is a
+                // choice like any other ([`ArgValue::Integer`]).
+                ParamType::Integer => choice.parse::<i128>().is_ok(),
                 ParamType::Number => choice.parse::<f64>().is_ok(),
                 ParamType::Boolean => matches!(choice.as_ref(), "true" | "false"),
                 ParamType::Object => {
@@ -904,15 +906,13 @@ pub enum ArgViolation {
 }
 
 impl std::fmt::Display for ArgViolation {
+    /// The bound as the schema spells it: a whole id reads as the id, not a rounded float.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (side, bound) = match self {
             Self::Minimum { bound } => ("least", bound),
             Self::Maximum { bound } => ("most", bound),
         };
-        match bound.as_f64() {
-            Some(bound) => write!(f, "must be at {side} {bound}"),
-            None => write!(f, "must be at {side} {bound}"),
-        }
+        write!(f, "must be at {side} {bound}")
     }
 }
 
@@ -1788,25 +1788,56 @@ fn validate_schema_number(
     value: &serde_json::Value,
     schema: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), ArgViolation> {
-    if let Some(number) = value.as_f64() {
-        if let Some(minimum) = schema
-            .get("minimum")
-            .filter(|minimum| minimum.as_f64().is_some_and(|minimum| number < minimum))
-        {
-            return Err(ArgViolation::Minimum {
-                bound: minimum.clone(),
-            });
-        }
-        if let Some(maximum) = schema
-            .get("maximum")
-            .filter(|maximum| maximum.as_f64().is_some_and(|maximum| number > maximum))
-        {
-            return Err(ArgViolation::Maximum {
-                bound: maximum.clone(),
-            });
-        }
+    if let Some(minimum) = schema
+        .get("minimum")
+        .filter(|minimum| past(value, minimum, Side::Below))
+    {
+        return Err(ArgViolation::Minimum {
+            bound: minimum.clone(),
+        });
+    }
+    if let Some(maximum) = schema
+        .get("maximum")
+        .filter(|maximum| past(value, maximum, Side::Above))
+    {
+        return Err(ArgViolation::Maximum {
+            bound: maximum.clone(),
+        });
     }
     Ok(())
+}
+
+/// Which side of a bound is out.
+#[derive(Clone, Copy)]
+enum Side {
+    Below,
+    Above,
+}
+
+/// Whether `value` lies past `bound` on `side`. Two whole numbers compare exactly: as floats,
+/// an id past 2^53 compares equal to its neighbour.
+fn past(value: &serde_json::Value, bound: &serde_json::Value, side: Side) -> bool {
+    if let (Some(value), Some(bound)) = (whole(value), whole(bound)) {
+        return match side {
+            Side::Below => value < bound,
+            Side::Above => value > bound,
+        };
+    }
+    let (Some(value), Some(bound)) = (value.as_f64(), bound.as_f64()) else {
+        return false;
+    };
+    match side {
+        Side::Below => value < bound,
+        Side::Above => value > bound,
+    }
+}
+
+/// A JSON number as the whole number it is, when it is one.
+fn whole(value: &serde_json::Value) -> Option<i128> {
+    value
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| value.as_u64().map(i128::from))
 }
 
 fn validate_schema_string(
@@ -2229,6 +2260,56 @@ mod declaration_reuse_tests {
         let negative = ActionArgs::bind_json(&params, json!({"row": -48}).as_object().unwrap())
             .expect("a negative integer binds too");
         assert_eq!(negative.to_json()["row"], json!(-48));
+    }
+
+    /// A choice is a value the parameter takes, at the same width: a list of ids holds the ones a
+    /// device mints past `i64::MAX`, and binding one of them is a call the parameter allows.
+    #[test]
+    fn an_integers_choices_are_as_wide_as_its_values() {
+        for id in [u64::MAX - 7, 4_294_967_296, 7] {
+            let param = ActionParam::required("place", ParamType::Integer, "Place")
+                .with_choices([id.to_string()]);
+            assert!(
+                param.validate_declaration().is_empty(),
+                "`{id}` declares as a choice: {:?}",
+                param.validate_declaration()
+            );
+            let bound = ActionArgs::bind_json(
+                std::slice::from_ref(&param),
+                json!({"place": id}).as_object().unwrap(),
+            )
+            .expect("the id binds as its own choice");
+            assert_eq!(
+                bound.to_json()["place"],
+                json!(id),
+                "exactly what was given"
+            );
+            let other = ActionArgs::bind_json(
+                std::slice::from_ref(&param),
+                json!({"place": id - 1}).as_object().unwrap(),
+            );
+            assert!(
+                other.is_err_and(|error| matches!(error, super::ArgError::NotAllowed { .. })),
+                "an id not in the list is refused"
+            );
+        }
+    }
+
+    /// A refusal names the bound the schema holds, not a float that rounds it.
+    #[test]
+    fn a_bounds_refusal_names_the_whole_number() {
+        let id = u64::MAX - 7;
+        let param = ActionParam::required("place", ParamType::Integer, "Place")
+            .with_schema(json!({"type": "integer", "maximum": id}));
+        let refused = ActionArgs::bind_json(
+            std::slice::from_ref(&param),
+            json!({"place": id + 1}).as_object().unwrap(),
+        )
+        .expect_err("beyond the bound");
+        assert_eq!(
+            refused.to_string(),
+            format!("argument `place` must be at most {id}")
+        );
     }
 }
 
