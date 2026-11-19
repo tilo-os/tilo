@@ -384,15 +384,19 @@ impl CliError {
             Self::ProtocolMismatch { vm, client, daemon, bootc } if client > daemon => {
                 let name = if vm.is_empty() { String::new() } else { format!(" {vm}") };
                 let target = if vm.is_empty() { "<vm>" } else { vm.as_str() };
+                // Replacing the daemon needs no protocol: its layer is unpacked over SSH.
+                let replace = format!(
+                    "   |   or give it this tilo-vm's own tilo-vmd, over SSH: tilo-vm --target {target} swap vmd --account vm"
+                );
                 match bootc {
                     Some(true) => format!(
-                        "the VM is older than this tilo-vm: execute the command with the VM's own client (tilo-vm vm client {target} -- <the same arguments>), or move it onto a current dev image with tilo-vm vm upgrade{name}"
+                        "the VM is older than this tilo-vm: execute the command with the VM's own client (tilo-vm vm client {target} -- <the same arguments>), or move it onto a current dev image with tilo-vm vm upgrade{name}{replace}"
                     ),
                     Some(false) => format!(
-                        "the VM is older than this tilo-vm, and it is not running a bootc dev image, so vm upgrade cannot move it: {NOT_BOOTC_FIX}   |   or drive it with its own client: tilo-vm vm client {target} -- <the same arguments>"
+                        "the VM is older than this tilo-vm, and it is not running a bootc dev image, so vm upgrade cannot move it: {NOT_BOOTC_FIX}   |   or drive it with its own client: tilo-vm vm client {target} -- <the same arguments>{replace}"
                     ),
                     None => format!(
-                        "the VM is older than this tilo-vm; {UNCHECKED_BOOTC}: tilo-vm vm status{name}   (it says whether vm upgrade can move this VM)   |   or drive it with its own client: tilo-vm vm client {target} -- <the same arguments>"
+                        "the VM is older than this tilo-vm; {UNCHECKED_BOOTC}: tilo-vm vm status{name}   (it says whether vm upgrade can move this VM)   |   or drive it with its own client: tilo-vm vm client {target} -- <the same arguments>{replace}"
                     ),
                 }
             }
@@ -1187,7 +1191,13 @@ mod tests {
                 assert!(!unknown.contains("tilo-vm vm upgrade"), "{unknown}");
                 assert!(unknown.contains("tilo-vm vm status dev"), "{unknown}");
                 for bootc in [Some(true), Some(false), None] {
+                    let replace = mismatch(2, 1, bootc).hint();
+                    assert!(
+                        replace.contains("tilo-vm --target dev swap vmd --account vm"),
+                        "{replace}"
+                    );
                     let rebuild = mismatch(1, 2, bootc).hint();
+                    assert!(!rebuild.contains("swap vmd"), "{rebuild}");
                     assert!(rebuild.contains("cargo build -p tilo-vm"), "{rebuild}");
                     assert!(rebuild.contains("tilo-vm vm client dev --"), "{rebuild}");
                     assert!(!rebuild.contains("vm upgrade"), "{rebuild}");

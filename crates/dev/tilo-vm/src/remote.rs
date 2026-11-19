@@ -21,24 +21,76 @@ pub(crate) fn imported_daemon_command(
     root: &str,
     layer: &str,
 ) -> Result<Vec<String>, CliError> {
-    let invalid = |detail| {
-        CliError::io("prepare imported daemon handoff")(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            detail,
-        ))
-    };
+    if layer.len() != 64
+        || !layer
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(invalid_handoff(
+            "expected an absolute state root and an imported SHA-256 layer",
+        ));
+    }
+    daemon_command_at(configured, root, &format!("layers/{layer}"))
+}
+
+/// Where, under the state root, a replacement tilo-vmd is unpacked over plain
+/// SSH when the VM's own speaks another protocol: no upload through a daemon
+/// reaches it then, and this tilo-vm's own daemon takes over the swap.
+pub(crate) const BRIDGE_DIR: &str = "vmd-bridge";
+
+/// The state root the configured daemon command names, or tilo-vmd's default.
+pub(crate) fn configured_root(configured: Option<&str>) -> String {
+    let mut words = configured.unwrap_or(DEFAULT_DAEMON).split_whitespace();
+    while let Some(word) = words.next() {
+        if word == "--root" {
+            if let Some(root) = words.next() {
+                return root.to_owned();
+            }
+        } else if let Some(root) = word.strip_prefix("--root=") {
+            return root.to_owned();
+        }
+    }
+    "/var/lib/tilo-vm".into()
+}
+
+/// The configured daemon command, started from the tilo-vmd unpacked into
+/// [`BRIDGE_DIR`].
+pub(crate) fn bridge_daemon_command(
+    configured: Option<&str>,
+    root: &str,
+) -> Result<Vec<String>, CliError> {
+    daemon_command_at(configured, root, BRIDGE_DIR)
+}
+
+/// The shell line that unpacks a layer's tar from stdin into [`BRIDGE_DIR`],
+/// owned by whoever unpacks it, as the daemon imports a layer.
+pub(crate) fn bridge_unpack_line(root: &str) -> String {
+    let dir = crate::vmbuild::sh_quote(&format!("{root}/{BRIDGE_DIR}"));
+    format!("rm -rf {dir} && mkdir -p {dir} && tar -x --no-same-owner -C {dir}")
+}
+
+fn invalid_handoff(detail: &str) -> CliError {
+    CliError::io("prepare imported daemon handoff")(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        detail.to_owned(),
+    ))
+}
+
+/// The configured daemon command with its tilo-vmd taken from the layer tree
+/// at `tree` under the state root, and that root.
+fn daemon_command_at(
+    configured: Option<&str>,
+    root: &str,
+    tree: &str,
+) -> Result<Vec<String>, CliError> {
     let path = std::path::Path::new(root);
     if !path.is_absolute()
         || path
             .components()
             .any(|part| matches!(part, std::path::Component::ParentDir))
         || root.chars().any(char::is_control)
-        || layer.len() != 64
-        || !layer
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     {
-        return Err(invalid(
+        return Err(invalid_handoff(
             "expected an absolute state root and an imported SHA-256 layer",
         ));
     }
@@ -55,18 +107,17 @@ pub(crate) fn imported_daemon_command(
                 .is_some_and(|name| name == "tilo-vmd")
         })
         .ok_or_else(|| {
-            invalid("configured daemon must invoke tilo-vmd rpc for a daemon upgrade")
+            invalid_handoff("configured daemon must invoke tilo-vmd rpc for a daemon upgrade")
         })?;
     if words.get(executable.saturating_add(1)).map(String::as_str) != Some("rpc") {
-        return Err(invalid(
+        return Err(invalid_handoff(
             "configured daemon must invoke tilo-vmd rpc for a daemon upgrade",
         ));
     }
     *words
         .get_mut(executable)
-        .ok_or_else(|| invalid("configured daemon has no executable"))? = path
-        .join("layers")
-        .join(layer)
+        .ok_or_else(|| invalid_handoff("configured daemon has no executable"))? = path
+        .join(tree)
         .join("usr/libexec/tilo/tilo-vmd")
         .to_string_lossy()
         .into_owned();
@@ -76,7 +127,7 @@ pub(crate) fn imported_daemon_command(
         if word == "--root" {
             arguments
                 .next()
-                .ok_or_else(|| invalid("configured --root has no value"))?;
+                .ok_or_else(|| invalid_handoff("configured --root has no value"))?;
         } else if !word.starts_with("--root=") {
             command.push(word);
         }
@@ -647,6 +698,32 @@ mod tests {
                 imported_daemon_command(Some("other-daemon rpc"), "/var/lib/tilo-vm", &hash).is_err()
             );
             assert!(imported_daemon_command(Some("tilo-vmd exec"), "/var/lib/tilo-vm", &hash).is_err());
+        }
+
+        phase a_daemon_of_another_protocol_is_replaced_from_a_tree_unpacked_over_ssh;
+        {
+            assert_eq!(configured_root(None), "/var/lib/tilo-vm");
+            assert_eq!(configured_root(Some("sudo -n tilo-vmd rpc --root /srv/vm")), "/srv/vm");
+            assert_eq!(configured_root(Some("tilo-vmd rpc --root=/srv/vm")), "/srv/vm");
+            // A command already pointed at an unpacked daemon keeps its flags and root.
+            let configured = "/var/lib/tilo-vm/layers/x/usr/libexec/tilo/tilo-vmd rpc --expect-domain greetd_t --root /srv/vm";
+            let root = configured_root(Some(configured));
+            assert_eq!(
+                bridge_daemon_command(Some(configured), &root).unwrap(),
+                [
+                    "/srv/vm/vmd-bridge/usr/libexec/tilo/tilo-vmd",
+                    "rpc",
+                    "--expect-domain",
+                    "greetd_t",
+                    "--root",
+                    "/srv/vm",
+                ]
+            );
+            assert!(bridge_daemon_command(Some("tilo-vmd exec"), &root).is_err());
+            assert_eq!(
+                bridge_unpack_line("/var/lib/tilo-vm"),
+                "rm -rf /var/lib/tilo-vm/vmd-bridge && mkdir -p /var/lib/tilo-vm/vmd-bridge && tar -x --no-same-owner -C /var/lib/tilo-vm/vmd-bridge"
+            );
         }
 
         phase remote_ssh_is_key_only_bounded_and_takes_the_daemons_lock;

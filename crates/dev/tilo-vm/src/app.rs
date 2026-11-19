@@ -53,6 +53,7 @@ mod branch;
 mod branch_admit;
 mod builder;
 mod client;
+mod daemon;
 mod device;
 #[cfg(test)]
 mod forwarded_port_tests;
@@ -4215,38 +4216,6 @@ impl App {
         }
     }
 
-    fn handoff_daemon(
-        &mut self,
-        vm: &Resolved,
-        remote: Remote,
-        layer: &str,
-    ) -> Result<Remote, CliError> {
-        let mut remote = remote;
-        let layers = remote.call(LayerList {})?;
-        let provenance = daemon_import_receipt(&layers, layer, &remote.hello.arch)?;
-        self.receipt.set("daemon_import", provenance);
-        let command =
-            remote::imported_daemon_command(vm.entry.daemon.as_deref(), &remote.hello.root, layer)?;
-        let command: Vec<String> = command.iter().map(|word| vmbuild::sh_quote(word)).collect();
-        let endpoint = self.endpoint(vm)?;
-        let line = remote::ssh_command(&endpoint, vm.entry.key.as_deref(), &command, false);
-        let adapter = Self::adapter(vm)?;
-        let debug = Self::debug_commands(adapter.as_ref(), &vm.name);
-        let mut imported = self.receipt.phase("daemon-handoff", || {
-            remote.handoff(&vm.name, &line, &endpoint, debug)
-        })?;
-        let verified = imported.call(tilo_vm_protocol::LayerVerify { hash: layer.into() })?;
-        if verified.hash != layer {
-            return Err(CliError::InvalidInput(
-                "replacement daemon refused imported layer integrity".into(),
-            ));
-        }
-        // End the old RPC only after the replacement handshake succeeded.
-        drop(remote);
-        self.receipt.set("applying_daemon_layer", layer);
-        Ok(imported)
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "one swap sequence: resolve, build, deliver and receipt stay in order"
@@ -4309,8 +4278,18 @@ impl App {
             )?;
         }
         let cohort_inputs = self.cohort_inputs(&component, &source)?;
-        let vm = self.resolve_vm(None)?;
-        let mut remote = self.prepare_swap_connection(&vm)?;
+        let mut vm = self.resolve_vm(None)?;
+        let mut bridged = false;
+        let mut remote = match (self.prepare_swap_connection(&vm), &entry) {
+            (Err(CliError::ProtocolMismatch { .. }), Some(daemon))
+                if component == "vmd" && matches!(source, ci::Source::Worktree) =>
+            {
+                vm.entry.daemon = Some(self.bridge_daemon(&vm, daemon)?);
+                bridged = true;
+                self.prepare_swap_connection(&vm)?
+            }
+            (connected, _) => connected?,
+        };
         let apps_build = if cohort_inputs.is_some() {
             let configured = self
                 .registry()?
@@ -4359,6 +4338,9 @@ impl App {
         remote = self.connect_with_wake(&vm, true)?;
         if component == "vmd" {
             remote = self.handoff_daemon(&vm, remote, &layer)?;
+            if bridged {
+                self.remove_bridge(&vm);
+            }
         }
         let info = frame_cpu_info(entry, frame_cpu_trace)?;
         let result = self.receipt.phase("apply", || {
