@@ -548,7 +548,7 @@ tilo_test_env::scenario! {
         );
 
         // One that writes and answers nothing is a viewer's no more than any write: refused at
-        // once, as one this app does not offer them, and nothing is written.
+        // once as not theirs to take, saying why, and nothing is written.
         app.set_role(tilo_app::Role::Viewer);
         let refused = app
             .effect_by(
@@ -559,11 +559,28 @@ tilo_test_env::scenario! {
             )
             .expect_err("a viewer writes nothing");
         assert!(
-            matches!(&refused, tilo_actions::ApiError::Unknown(address) if address.action == "note"),
+            matches!(
+                &refused,
+                tilo_actions::ApiError::Unavailable { code, reason }
+                    if code == "permission_denied" && !reason.is_empty()
+            ),
             "{refused:?}"
         );
         app.settle();
         assert_eq!(app.state().fetched, "", "nothing was written");
+        // A name nothing publishes is unknown, to a viewer as to anyone.
+        let unknown = app
+            .call_by(
+                tilo_actions::ActionInvoker::member(MemberId::agent("viewer")),
+                "test.mailbox",
+                "no-such-effect",
+                serde_json::json!({}),
+            )
+            .expect_err("nothing is called that");
+        assert!(
+            matches!(&unknown, tilo_actions::ApiError::Unknown(address) if address.action == "no-such-effect"),
+            "{unknown:?}"
+        );
 
         // The writer's is kept.
         app.set_role(tilo_app::Role::Owner);
