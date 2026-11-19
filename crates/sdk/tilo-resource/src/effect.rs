@@ -6,13 +6,15 @@
 //! ```
 //! use tilo_resource::Effect;
 //!
-//! #[derive(Clone, Debug, Effect)]
+//! #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 //! #[effect(operation = "example.backups")]
 //! pub enum Backups {
 //!     /// Back up now.
+//!     #[effect(kind = "outside")]
 //!     #[effect(job, cancellable)]
 //!     BackUp,
 //!     /// Restore a snapshot.
+//!     #[effect(kind = "outside")]
 //!     #[effect(job, destructive)]
 //!     Restore {
 //!         #[param("Id of the snapshot")]
