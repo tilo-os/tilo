@@ -343,6 +343,12 @@ rows = json.load(open(sys.argv[1]))['blockdevices']
 assert len(rows) == 1 and rows[0]['type'] == 'disk', rows
 assert not rows[0].get('children'), rows
 PY
+# Staging writes where a disk's partition table says nothing is used yet, so a
+# disk the person has not prepared takes the empty GPT their other disks carry
+# before the request names it.
+printf 'label: gpt\n' | server "sudo sfdisk /dev/vdb" \
+  > "$evidence/04-target-labelled.txt" 2>&1 \
+  || die 'the target disk could not take a GPT'
 mark_step 04-retained ok
 
 # --- copy the imager, bundle, plan and token into the machine ----------------
