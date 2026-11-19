@@ -24,8 +24,6 @@ use crate::model::Place;
 use ui::widget::DrawChild;
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
-/// Where typed places come from, as their placeholder names it.
-pub(crate) const GEOCODER: &str = "OpenStreetMap";
 const OVERLAY_MAX: usize = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,9 +94,7 @@ impl Field {
         self.input.set_arriving(
             self.asked
                 .filter(|_| waiting && !self.searched)
-                .map(|asked| {
-                    ui::arriving::ArrivalClock::new(asked, ui::arriving::Source::host(GEOCODER))
-                }),
+                .map(|asked| ui::arriving::ArrivalClock::new(asked, ui::arriving::Source::Remote)),
         );
         if editing && waiting {
             self.input

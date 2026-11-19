@@ -40,7 +40,6 @@ use crate::wxcode::Sky;
 pub use detail::RETRY_KEY;
 
 const GEOCODE_DEBOUNCE: Duration = Duration::from_millis(220);
-const GEOCODER: &str = "Open-Meteo";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavIntent {
@@ -662,9 +661,10 @@ impl Core {
         } else if self.search_asked.is_none() {
             self.search_asked = Some(ui::time::now());
         }
-        self.search.set_arriving(self.search_asked.map(|asked| {
-            ui::arriving::ArrivalClock::new(asked, ui::arriving::Source::host(GEOCODER))
-        }));
+        self.search.set_arriving(
+            self.search_asked
+                .map(|asked| ui::arriving::ArrivalClock::new(asked, ui::arriving::Source::Remote)),
+        );
         if q.is_empty() {
             self.search.set_suggestions(Vec::new());
             self.search.set_status(None);

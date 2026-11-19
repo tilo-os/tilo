@@ -295,11 +295,7 @@ fn skeleton_grid(ui: Ui<'_>) -> Column {
     let theme = ui.theme;
     let since = ui.waiting.since();
     let placeholder = |shape| {
-        ui::widget::ArrivingView::placeholder_since(
-            ui::arriving::Source::host("YouTube"),
-            since,
-            shape,
-        )
+        ui::widget::ArrivingView::placeholder_since(ui::arriving::Source::Remote, since, shape)
     };
     let (columns, column) = grid_columns(ui);
     let mut grid = stack().with_rhythm(ui::tokens::Rhythm::Group);

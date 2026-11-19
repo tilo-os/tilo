@@ -219,7 +219,6 @@ history-sync-offline = Working offline. Changes will sync when you're back.
 history-sync-reconnecting = Connecting. Changes will sync once you're connected.
 history-sync-join-refused = This workspace didn't let this app join: { $reason }. Your changes stay on this device.
 arriving-loading = Loading
-arriving-from = From { $source }
 arriving-received-of = { $received } of { $total }
 arriving-received = { $received } received
 arriving-failed = Couldn’t load this

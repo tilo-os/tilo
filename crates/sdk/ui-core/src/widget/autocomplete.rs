@@ -530,8 +530,7 @@ impl FloatingList<Suggestion> {
                     clock,
                     crate::time::now(),
                 )
-                .caption()
-                .unwrap_or_else(|| crate::i18n::I18nManager::lookup_plain("arriving-loading"))
+                .description()
             });
             return arriving
                 .or_else(|| self.status().map(str::to_owned))
@@ -1766,7 +1765,7 @@ mod tests {
             let asked = crate::time::now();
             busy.set_arriving(Some(crate::arriving::ArrivalClock::new(
                 asked,
-                crate::arriving::Source::host("Open-Meteo"),
+                crate::arriving::Source::Remote,
             )));
             assert!(busy.rect().is_some());
             let rows = busy.access_rows(|_| 0);
@@ -1784,7 +1783,7 @@ mod tests {
             ac.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 32.0));
             ac.set_arriving(Some(crate::arriving::ArrivalClock::new(
                 asked,
-                crate::arriving::Source::host("Open-Meteo"),
+                crate::arriving::Source::Remote,
             )));
             ac.open();
             assert!(ac.list_rect().is_some());
@@ -1794,7 +1793,7 @@ mod tests {
             );
             assert_eq!(
                 Widget::next_wake_deadline(&ac),
-                crate::arriving::ArrivalClock::new(asked, crate::arriving::Source::host("Open-Meteo"))
+                crate::arriving::ArrivalClock::new(asked, crate::arriving::Source::Remote)
                     .next_step_at(crate::time::now()),
                 "the placeholder steps on at its deadline"
             );

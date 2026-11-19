@@ -99,10 +99,6 @@ impl SkeletonFace {
         }
     }
 
-    pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
-        self.paint_naming(ctx, rect, None);
-    }
-
     /// The rect a retained widget paints the skeleton in, from its layout box: the box the
     /// content it stands for paints in.
     #[must_use]
@@ -113,9 +109,8 @@ impl SkeletonFace {
         }
     }
 
-    /// Paint the skeleton in `rect`, `caption` (where the content comes from) in a
-    /// place the shape keeps for it: a row's last line, a text's first, inside a card's art.
-    pub fn paint_naming(&self, ctx: &mut PaintCtx<'_>, rect: Rect, caption: Option<&str>) {
+    /// Paint the skeleton in `rect`.
+    pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
@@ -134,19 +129,12 @@ impl SkeletonFace {
         let lines = |ctx: &mut PaintCtx<'_>, count: usize| {
             for i in 0..count {
                 let top = rect.y0 + crate::num::f64_of_usize(i) * body;
-                match caption {
-                    Some(caption) if i == 0 => {
-                        paint_caption(ctx, caption, (rect.x0, top), rect.width(), body);
-                    }
-                    _ => {
-                        let w = if i + 1 == count && count > 1 {
-                            rect.width() * LAST_LINE_SHARE
-                        } else {
-                            rect.width()
-                        };
-                        paint_bar(ctx, rect.x0, top, w, body);
-                    }
-                }
+                let w = if i + 1 == count && count > 1 {
+                    rect.width() * LAST_LINE_SHARE
+                } else {
+                    rect.width()
+                };
+                paint_bar(ctx, rect.x0, top, w, body);
             }
         };
         match self.shape {
@@ -161,7 +149,7 @@ impl SkeletonFace {
                 let count = (rect.height() / body.max(1.0)).floor() as usize;
                 lines(ctx, count.max(1));
             }
-            SkeletonShape::Row(row) => row.face().paint_skeleton(ctx, rect, caption),
+            SkeletonShape::Row(row) => row.face().paint_skeleton(ctx, rect),
             SkeletonShape::Media(aspect) => {
                 let art_h = (rect.width() / aspect.ratio()).min(rect.height());
                 let art = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + art_h);
@@ -177,16 +165,6 @@ impl SkeletonFace {
                     None,
                     &RoundedRect::from_rect(art, art_radius),
                 );
-                if let Some(caption) = caption {
-                    let inset = f64::from(theme.tokens.spacing.s3);
-                    paint_caption(
-                        ctx,
-                        caption,
-                        (art.x0 + inset, art.y0 + inset),
-                        art.width() - 2.0 * inset,
-                        caption_line,
-                    );
-                }
                 let top = art.y1 + f64::from(theme.tokens.spacing.s2);
                 paint_bar(ctx, rect.x0, top, rect.width() * TITLE_SHARE, body);
                 paint_bar(

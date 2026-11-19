@@ -600,10 +600,7 @@ fn paint_art(
             paint_placeholder(ctx, m, art, radius, title);
         }
         MediaArt::Arriving(step) => {
-            if matches!(
-                step,
-                crate::arriving::Step::Skeleton | crate::arriving::Step::Named
-            ) {
+            if step == crate::arriving::Step::Skeleton {
                 let tone = crate::widget::skeleton_tone(ctx.theme.tokens.colors.surfaces.content);
                 ctx.scene.fill(
                     Fill::NonZero,

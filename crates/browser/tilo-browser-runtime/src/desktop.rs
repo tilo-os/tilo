@@ -1202,17 +1202,6 @@ fn embed_instance(view: &ResourceView) -> TabId {
     hasher.finish() | (1 << 63)
 }
 
-/// Where an app's code comes from: the host that served this page, by
-/// the name its address gives it. A window showing its app arrive says it.
-pub(crate) fn code_host() -> ui::arriving::Source {
-    let host = js_sys::Reflect::get(&js_sys::global(), &"location".into())
-        .and_then(|location| js_sys::Reflect::get(&location, &"host".into()))
-        .ok()
-        .and_then(|host| host.as_string())
-        .unwrap_or_default();
-    ui::arriving::Source::host(host)
-}
-
 /// Why a window cannot show its app yet.
 enum Unready {
     /// The app's code is still being fetched.
@@ -1444,11 +1433,11 @@ impl TileSource for Tiles {
                 self.shared.landed.borrow_mut().remove(&tab.id);
                 let TileContent::LocalApp { app_id, .. } = &tab.tile else {
                     return TileHost::new(ui::widget::TileContent::Arriving)
-                        .arriving_from(code_host());
+                        .arriving_from(ui::arriving::Source::Remote);
                 };
                 let shape = ui::application::registry::declared_arrival_shape(app_id);
                 TileHost::new(ui::widget::TileContent::Arriving)
-                    .arriving_from(code_host())
+                    .arriving_from(ui::arriving::Source::Remote)
                     .with_arrival_shape(shape)
             }
             Err(Unready::Notice(detail)) => {

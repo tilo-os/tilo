@@ -188,7 +188,7 @@ impl AppPage {
     /// it — and [`Self::present`] builds it once the record is here.
     fn arrival(self: &Rc<Self>) -> Presentation {
         let shown = ui::widget::TileHost::new(ui::widget::TileContent::Arriving)
-            .arriving_from(crate::desktop::code_host())
+            .arriving_from(ui::arriving::Source::Remote)
             .with_arrival_shape(ui::application::registry::declared_arrival_shape(
                 self.definition.app_id(),
             ));

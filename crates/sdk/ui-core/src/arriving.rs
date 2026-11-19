@@ -1,6 +1,6 @@
 //! Data that is not here yet: the one model for every read whose answer arrives later. An [`Arriving`]
-//! value is a read in flight, its [`Arrival`] pending (with the [`Source`] the answer comes from),
-//! ready or failed.
+//! value is a read in flight, its [`Arrival`] pending (from this device or from elsewhere), ready or
+//! failed.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -14,47 +14,20 @@ use crate::time::{Duration, Instant};
 pub const GRACE: Duration = Duration::from_millis(150);
 /// The shortest time a skeleton stays once it showed: it never flashes.
 pub const MIN_SHOWN: Duration = Duration::from_millis(300);
-/// When a placeholder starts saying where its data comes from.
-pub const NAME_SOURCE_AFTER: Duration = Duration::from_secs(2);
-
-/// Where data that is not here yet comes from.
+/// Where data that is not here yet comes from: what decides whether a frame waits for it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Source {
     /// This device: its files, its workspaces, its store.
     Local,
-    /// Another device, the person or a member's, by the name the person knows it by ("Laptop").
-    Peer(Arc<str>),
-    /// A host that serves the data ("eu1.tilo.sh").
-    Host(Arc<str>),
+    /// Anywhere else: another device, or a service over the network.
+    Remote,
 }
 
 impl Source {
-    /// Another device, by its name.
-    #[must_use]
-    pub fn peer(name: impl Into<Arc<str>>) -> Self {
-        Self::Peer(name.into())
-    }
-
-    /// A host, by its name.
-    #[must_use]
-    pub fn host(name: impl Into<Arc<str>>) -> Self {
-        Self::Host(name.into())
-    }
-
     /// Whether the data is on this device.
     #[must_use]
     pub const fn is_local(&self) -> bool {
         matches!(self, Self::Local)
-    }
-
-    /// The name a placeholder says the data comes from; `None` for this device, which is not worth
-    /// saying.
-    #[must_use]
-    pub fn name(&self) -> Option<&str> {
-        match self {
-            Self::Local => None,
-            Self::Peer(name) | Self::Host(name) => Some(&**name).filter(|name| !name.is_empty()),
-        }
     }
 }
 
@@ -212,8 +185,6 @@ pub enum Step {
     Ground,
     /// A skeleton in the content's shape.
     Skeleton,
-    /// The skeleton, saying where the data comes from.
-    Named,
     /// The answer (or the failure) shows.
     Shown,
 }
@@ -252,9 +223,10 @@ impl ArrivalClock {
         self.since
     }
 
-    /// Where the answer comes from.
+    /// Whether the answer comes from this device or from elsewhere: what a read that goes on in
+    /// another view keeps of it.
     #[must_use]
-    pub fn source(&self) -> &Source {
+    pub(crate) fn source(&self) -> &Source {
         &self.from
     }
 
@@ -336,11 +308,7 @@ impl ArrivalClock {
         if !self.skeleton_showed(now) || now < self.skeleton_at() {
             return Step::Ground;
         }
-        if self.from.name().is_some() && now >= self.after(NAME_SOURCE_AFTER) {
-            Step::Named
-        } else {
-            Step::Skeleton
-        }
+        Step::Skeleton
     }
 
     /// The placeholder step the answer replaces when it shows: what stood
@@ -358,7 +326,7 @@ impl ArrivalClock {
     #[must_use]
     pub fn next_step_at(&self, now: Instant) -> Option<Instant> {
         let shows_at = self.shows_at();
-        let mut candidates = Vec::with_capacity(3);
+        let mut candidates = Vec::with_capacity(2);
         if let Some(at) = shows_at {
             candidates.push(at);
         }
@@ -366,10 +334,6 @@ impl ArrivalClock {
         let skeleton = self.skeleton_at();
         if before_answer(skeleton) {
             candidates.push(skeleton);
-        }
-        let named = self.after(NAME_SOURCE_AFTER);
-        if self.from.name().is_some() && before_answer(named) {
-            candidates.push(named);
         }
         candidates.into_iter().filter(|at| *at > now).min()
     }
@@ -698,22 +662,18 @@ mod tests {
             assert!(clock.arrives_with_motion());
         }
 
-        phase a_remote_read_shows_ground_then_a_skeleton_then_its_source;
+        phase a_remote_read_shows_ground_then_a_skeleton;
         {
             let t0 = crate::time::now();
-            let clock = ArrivalClock::with_budget(t0, Source::host("eu1.tilo.sh"), BUDGET);
+            let clock = ArrivalClock::with_budget(t0, Source::Remote, BUDGET);
             assert!(!clock.holds_frame(t0), "a remote read never holds a frame");
             assert_eq!(clock.step(t0), Step::Ground);
             assert_eq!(clock.step(at(t0, 149)), Step::Ground);
             assert_eq!(clock.next_step_at(t0), Some(t0 + GRACE));
             assert_eq!(clock.step(at(t0, 150)), Step::Skeleton);
+            assert_eq!(clock.step(at(t0, 60_000)), Step::Skeleton);
             assert_eq!(
                 clock.next_step_at(at(t0, 150)),
-                Some(t0 + NAME_SOURCE_AFTER)
-            );
-            assert_eq!(clock.step(at(t0, 2_000)), Step::Named);
-            assert_eq!(
-                clock.next_step_at(at(t0, 2_000)),
                 None,
                 "nothing changes until the answer lands"
             );
@@ -722,7 +682,7 @@ mod tests {
         phase a_skeleton_never_shows_for_less_than_its_minimum;
         {
             let t0 = crate::time::now();
-            let mut clock = ArrivalClock::with_budget(t0, Source::peer("Laptop"), BUDGET);
+            let mut clock = ArrivalClock::with_budget(t0, Source::Remote, BUDGET);
             clock.arrive(at(t0, 200));
             assert_eq!(clock.shows_at(), Some(t0 + GRACE + MIN_SHOWN));
             assert_eq!(clock.step(at(t0, 200)), Step::Skeleton);
@@ -739,7 +699,7 @@ mod tests {
         phase a_remote_answer_before_the_grace_period_shows_without_a_skeleton;
         {
             let t0 = crate::time::now();
-            let mut clock = ArrivalClock::with_budget(t0, Source::peer("Laptop"), BUDGET);
+            let mut clock = ArrivalClock::with_budget(t0, Source::Remote, BUDGET);
             clock.arrive(at(t0, 90));
             assert_eq!(clock.shows_at(), Some(at(t0, 90)));
             assert_eq!(clock.step(at(t0, 90)), Step::Shown);
@@ -750,10 +710,10 @@ mod tests {
         phase a_late_answer_shows_when_it_lands;
         {
             let t0 = crate::time::now();
-            let mut clock = ArrivalClock::with_budget(t0, Source::host("host"), BUDGET);
+            let mut clock = ArrivalClock::with_budget(t0, Source::Remote, BUDGET);
             clock.arrive(at(t0, 3_000));
             assert_eq!(clock.shows_at(), Some(at(t0, 3_000)));
-            assert_eq!(clock.replaced_step(), Step::Named);
+            assert_eq!(clock.replaced_step(), Step::Skeleton);
         }
     }
 
@@ -764,7 +724,7 @@ mod tests {
         {
             let arriving: Arriving<u32> = Arriving::pending(Source::Local);
             let first = arriving.begin(Source::Local);
-            let second = arriving.begin(Source::host("host"));
+            let second = arriving.begin(Source::Remote);
             assert!(!first.is_current());
             assert!(
                 !first.finish(Ok(1)),
@@ -773,7 +733,7 @@ mod tests {
             assert_eq!(
                 arriving.with(Clone::clone),
                 Arrival::Pending {
-                    from: Source::host("host")
+                    from: Source::Remote
                 }
             );
             assert!(second.finish(Ok(2)));
@@ -802,12 +762,5 @@ mod tests {
             assert_eq!(arriving.clock(), None);
             assert_eq!(arriving.holds_frame_until(crate::time::now()), None);
         }
-    }
-
-    #[test]
-    fn this_device_is_never_named_as_a_source() {
-        assert_eq!(Source::Local.name(), None);
-        assert_eq!(Source::peer("Laptop").name(), Some("Laptop"));
-        assert_eq!(Source::host("").name(), None);
     }
 }

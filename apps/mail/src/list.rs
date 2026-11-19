@@ -750,14 +750,13 @@ fn paint_arriving_rows(
     let frame = RowFrame::new(list, row_h, false, theme);
     let face =
         ui::widget::ArrivalFace::new(ui::widget::SkeletonShape::Row(kind.shape()), clock, now);
-    let mut named = ui::widget::NamedOnce::default();
     let mut index = 0;
     loop {
         let row = frame.row(index, 0.0);
         if row.y0 >= list.y1 {
             break;
         }
-        face.clone().named_once(&mut named).paint(ctx, row);
+        face.paint(ctx, row);
         index += 1;
     }
     face.step()

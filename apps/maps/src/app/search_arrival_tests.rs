@@ -7,7 +7,6 @@ fn a_committed_searchs_places_wait_in_rows_until_the_geocoder_answers() {
     let asked = ui::time::now();
     app.search_asked = Some(("bakery".into(), asked));
     let clock = app.search_clock().expect("the places are on their way");
-    assert_eq!(clock.source(), &ui::arriving::Source::host(GEOCODER));
     assert_eq!(
         Widget::next_wake_deadline(&app),
         clock.next_step_at(ui::time::now()),

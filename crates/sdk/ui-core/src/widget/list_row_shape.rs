@@ -8,7 +8,6 @@ use super::{ListRow, ListRowFace, RowLeading, RowMetrics, RowValue};
 use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::skeleton::{LAST_LINE_SHARE, TITLE_SHARE, paint_bar};
 use crate::widget::{AvatarFace, MediaArt, MediaAspect};
 
@@ -151,9 +150,7 @@ impl ListRowFace<'_> {
 
     /// Paint this row's skeleton in `rect`: its leading mark and a bar
     /// where each of its lines stands, as [`Self::paint`] places them.
-    /// `caption` (where the row comes from) takes the last line's place,
-    /// so naming the source moves nothing.
-    pub fn paint_skeleton(&self, ctx: &mut PaintCtx<'_>, rect: Rect, caption: Option<&str>) {
+    pub fn paint_skeleton(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
@@ -212,27 +209,8 @@ impl ListRowFace<'_> {
         let block: f64 = lines.iter().map(|(line, _)| line).sum();
         let mut top = rect.center().y - block / 2.0;
         let width = (geo.text_right - geo.text_x).max(0.0);
-        let last = lines.len().saturating_sub(1);
-        for (i, (line, share)) in lines.into_iter().enumerate() {
-            match caption {
-                Some(caption) if i == last => {
-                    #[allow(
-                        clippy::cast_possible_truncation,
-                        reason = "a laid-out width is far below f32::MAX"
-                    )]
-                    let spare = width as f32;
-                    let style = theme.text(TextRole::Caption);
-                    let caption_line = f64::from(ctx.text.measure_style("Ag", None, &style).1);
-                    ctx.text_role(
-                        caption,
-                        TextRole::Caption,
-                        theme.tokens.colors.text_dim,
-                        vello::kurbo::Point::new(geo.text_x, top + (line - caption_line) / 2.0),
-                        Some(spare),
-                    );
-                }
-                _ => paint_bar(ctx, geo.text_x, top, width * share, line),
-            }
+        for (line, share) in lines {
+            paint_bar(ctx, geo.text_x, top, width * share, line);
             top += line;
         }
     }

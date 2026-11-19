@@ -880,11 +880,11 @@ impl PeerSurface {
                     .with_alt(alt),
             ),
             // A page of which no whole frame came waits as a picture does: in the shape its
-            // device announced, under that device's name.
+            // device announced.
             None => Box::new(MediaGrid::arriving(
                 1,
                 self.aspect(),
-                &ui::arriving::Source::peer(Arc::clone(&self.sharer)),
+                &ui::arriving::Source::Remote,
                 self.since,
             )),
         }

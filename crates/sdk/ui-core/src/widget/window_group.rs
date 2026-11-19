@@ -4235,7 +4235,7 @@ mod tests {
             // Another device's frame never holds this one's: the place is
             // reserved from the first frame.
             let mut g = crate::time::testing::with_monotonic_time(t0, || {
-                group_opening("Notes", false, crate::arriving::Source::peer("Laptop"))
+                group_opening("Notes", false, crate::arriving::Source::Remote)
             });
             crate::time::testing::with_monotonic_time(t0, || {
                 assert_eq!(Widget::holds_frame_until(&g, t0), None);

@@ -1164,16 +1164,11 @@ impl StoreState {
         let waiting = busy && self.items.is_empty();
         let pending = self.catalogue_read.with(ui::Arrival::is_pending);
         if waiting && !pending {
-            let from = self.remotes.iter().find(|remote| !remote.disabled).map_or(
-                ui::arriving::Source::Local,
-                |remote| {
-                    ui::arriving::Source::host(if remote.title.is_empty() {
-                        remote.name.clone()
-                    } else {
-                        remote.title.clone()
-                    })
-                },
-            );
+            let from = if self.remotes.iter().any(|remote| !remote.disabled) {
+                ui::arriving::Source::Remote
+            } else {
+                ui::arriving::Source::Local
+            };
             self.catalogue_read.writer().pending(from);
         } else if !waiting && pending {
             self.catalogue_read.writer().ready(());
