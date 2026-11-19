@@ -180,6 +180,12 @@ pub enum AgentModelsEffect {
     RedoModel,
 }
 
+/// The agent model choice as a declared type: the providers the person set
+/// up and the model agents answer with.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.agent-models", label = "Agent models")]
+pub struct AgentModelsResource;
+
 /// The reading and its actions, as the settings service publishes them.
 pub(crate) struct Served {
     /// The settings version the reading was last read at, and the reading.
@@ -212,11 +218,12 @@ impl Served {
 
     /// The published resource: its reading's fields and its verbs.
     pub(crate) fn resource() -> tilo_actions::ResourceSpec {
-        tilo_service::offer::<AgentModelsEffect>(tilo_actions::ResourceSpec::new(
-            RESOURCE,
-            KIND,
-            crate::i18n::t("settings-agent-models"),
-        ))
+        tilo_service::offer::<AgentModelsEffect>(
+            tilo_resource::typed_resource::<AgentModelsResource>(
+                RESOURCE,
+                crate::i18n::t("settings-agent-models"),
+            ),
+        )
     }
 
     /// The reading of the resource, as JSON; `None` for another resource.

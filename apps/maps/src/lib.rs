@@ -40,6 +40,7 @@ pub mod place_search;
 mod presentation;
 pub mod rank;
 pub mod resource;
+mod rows;
 #[cfg(feature = "samples")]
 pub mod sample;
 #[cfg(feature = "samples")]

@@ -928,12 +928,36 @@ impl Workspaces {
         &self,
         workspace: &GovernedWorkspace,
     ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
-        let role = workspace
+        self.transport_hint_as(workspace, self.own_role(workspace))
+    }
+
+    /// The role this device's governance names it in `workspace`, a key
+    /// holder until it names one.
+    fn own_role(&self, workspace: &GovernedWorkspace) -> CopyRole {
+        workspace
             .peer()
             .governance()
             .holder_role(&self.inner.host.cert.device_public_key)
-            .unwrap_or(CopyRole::KeyHolder);
-        self.transport_hint_as(workspace, role)
+            .unwrap_or(CopyRole::KeyHolder)
+    }
+
+    /// The hint an invitation of `workspace` carries: the address this device answers at once
+    /// its relays are up. They wake for it and the answer waits for one, because a link signed
+    /// before this device reached a relay names only the network it stands in and reaches
+    /// nobody the link is handed to. Nothing held back names the address the endpoint has.
+    pub(super) async fn invitation_hint(
+        &self,
+        workspace: &GovernedWorkspace,
+    ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
+        let role = self.own_role(workspace);
+        let waking = self
+            .reachability()
+            .reached_addr("an invitation names this device's address");
+        let addr = match waking {
+            Some(reached) => reached.await,
+            None => self.endpoint_addr(),
+        };
+        self.signed_hint(workspace, role, &addr)
     }
 
     /// [`Self::transport_hint`], saying this device holds `workspace` as
@@ -943,12 +967,22 @@ impl Workspaces {
         workspace: &GovernedWorkspace,
         role: CopyRole,
     ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
+        let addr = self.endpoint_addr();
+        self.signed_hint(workspace, role, &addr)
+    }
+
+    /// Sign `workspace`'s answer for this device holding it `role`, answering at `addr`.
+    fn signed_hint(
+        &self,
+        workspace: &GovernedWorkspace,
+        role: CopyRole,
+        addr: &EndpointAddr,
+    ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
         let holds_keys = role == CopyRole::KeyHolder;
         let host = &self.inner.host;
         // An invitation is handed to whoever the link reaches, so what this
         // host answers at inside its own network stays out of it.
-        let endpoint_addr =
-            tilo_delivery_protocol::workspace_join::reachable(&host.endpoint.addr());
+        let endpoint_addr = tilo_delivery_protocol::workspace_join::reachable(addr);
         let packet_relay_url = endpoint_addr
             .relay_urls()
             .next()

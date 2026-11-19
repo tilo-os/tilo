@@ -21,6 +21,7 @@ use ui::widget::{AppModel, Element, FloatingSurfaceProvider, ModelPath, Widget};
 use super::MapsApp;
 use crate::failure;
 use crate::resource::MapsEffect;
+use crate::rows::{area_row, history_row, place_row, poi_row, search_result_row};
 use crate::workspace::Workspace;
 use ui::widget::DrawChild;
 
@@ -89,6 +90,24 @@ pub(crate) fn window(cx: &ViewCx<Workspace>, mut app: MapsApp) -> Element {
 /// How many rows of one kind a published page holds; the rest resolve by id.
 const ROWS_PER_KIND: usize = 12;
 
+/// The id `value` names, as the row that published it names it
+/// (`maps.place:x` for a place, `maps.search-history:x` for a past search) or
+/// as the map knows it, so a row's press and a control's reach the same place.
+fn entity_id(value: &str) -> &str {
+    for prefix in [
+        "maps.place:",
+        "maps.search-result:",
+        "maps.poi:",
+        "maps.region:",
+        "maps.search-history:",
+    ] {
+        if let Some(id) = value.strip_prefix(prefix) {
+            return id;
+        }
+    }
+    value
+}
+
 impl MapsApp {
     pub(crate) fn answer_effect(
         &mut self,
@@ -96,7 +115,7 @@ impl MapsApp {
         cx: &mut EffectCx<Workspace>,
     ) -> EffectAnswer {
         match effect {
-            MapsEffect::Search { query } => self.search_for(query),
+            MapsEffect::Search { query } => self.search_for(entity_id(&query).to_owned()),
             MapsEffect::Locate => {
                 if let Some(reason) = self.locate_unavailable() {
                     return Err(reason.1);
@@ -108,19 +127,19 @@ impl MapsApp {
             MapsEffect::ToggleTraffic => {
                 self.set_traffic(!self.map_controls.traffic_enabled());
             }
-            MapsEffect::OpenPlace { place } => self.open_place(&place)?,
+            MapsEffect::OpenPlace { place } => self.open_place(entity_id(&place))?,
             MapsEffect::Directions { place } => {
-                self.open_place(&place)?;
+                self.open_place(entity_id(&place))?;
                 self.enter_directions();
             }
             MapsEffect::OpenPoi { poi } | MapsEffect::PoiDirections { poi }
-                if !self.pois.iter().any(|known| known.id == poi) =>
+                if !self.pois.iter().any(|known| known.id == entity_id(&poi)) =>
             {
                 return Err(failure::t("maps-poi-unavailable"));
             }
-            MapsEffect::OpenPoi { poi } => self.select_poi(&poi),
+            MapsEffect::OpenPoi { poi } => self.select_poi(entity_id(&poi)),
             MapsEffect::PoiDirections { poi } => {
-                self.select_poi(&poi);
+                self.select_poi(entity_id(&poi));
                 self.poi_directions();
             }
             MapsEffect::ShowPoint { lat, lon } => {
@@ -129,7 +148,7 @@ impl MapsApp {
                 }
                 self.center_on(crate::model::LatLon::new(lat, lon));
             }
-            MapsEffect::DeleteOfflineArea { area } => self.delete_region(&area)?,
+            MapsEffect::DeleteOfflineArea { area } => self.delete_region(entity_id(&area))?,
             MapsEffect::ClearOfflineAreas => self.clear_offline_areas(),
         }
         Ok(Effected::done())
@@ -265,44 +284,6 @@ impl MapsApp {
         }
         None
     }
-}
-
-fn search_result_row(id: &str, name: &str) -> LiveRow {
-    LiveRow::new(
-        format!("maps.search-result:{id}"),
-        "maps.search-result",
-        name,
-    )
-    .effect(&MapsEffect::OpenPlace { place: id.into() })
-    .effect(&MapsEffect::Directions { place: id.into() })
-}
-
-fn poi_row(id: &str, name: &str) -> LiveRow {
-    LiveRow::new(format!("maps.poi:{id}"), "maps.poi", name)
-        .effect(&MapsEffect::OpenPoi { poi: id.into() })
-        .effect(&MapsEffect::PoiDirections { poi: id.into() })
-}
-
-fn place_row(id: &str, name: &str) -> LiveRow {
-    LiveRow::new(format!("maps.place:{id}"), "maps.place", name)
-        .effect(&MapsEffect::OpenPlace { place: id.into() })
-        .effect(&MapsEffect::Directions { place: id.into() })
-}
-
-fn history_row(query: &str) -> LiveRow {
-    LiveRow::new(
-        format!("maps.search-history:{query}"),
-        "maps.search-history",
-        query,
-    )
-    .effect(&MapsEffect::Search {
-        query: query.into(),
-    })
-}
-
-fn area_row(id: &str, label: &str) -> LiveRow {
-    LiveRow::new(format!("maps.region:{id}"), "maps.region", label)
-        .effect(&MapsEffect::DeleteOfflineArea { area: id.into() })
 }
 
 impl FloatingSurfaceProvider for MapWindow {

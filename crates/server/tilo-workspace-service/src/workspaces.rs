@@ -930,6 +930,8 @@ pub(crate) struct WorkspaceServices {
     /// The work this device takes: it serves a workspace placed on it only when the setting
     /// takes the placing person's work.
     pub(crate) work: tilo_server_protocol::WorkSetting,
+    /// The relays this device holds back until something needs it reachable.
+    pub(crate) reachability: tilo_endpoint_reachability::Reachability,
     /// What this keeper says of itself among the holders of the workspaces it serves, which
     /// its signed address carries.
     pub(crate) holder: Arc<std::sync::RwLock<HolderClaim>>,
@@ -1171,6 +1173,16 @@ impl std::fmt::Debug for Workspaces {
 }
 
 impl Workspaces {
+    /// The address this device answers at, as its endpoint has it now.
+    pub(super) fn endpoint_addr(&self) -> iroh_base::EndpointAddr {
+        self.inner.host.endpoint.addr()
+    }
+
+    /// The relays this device holds back until something needs it reachable.
+    pub(super) fn reachability(&self) -> &tilo_endpoint_reachability::Reachability {
+        &self.inner.host.reachability
+    }
+
     /// The channel keys of the device this host runs on, when its embedder
     /// runs that device's channel service beside it: the host asks it for the
     /// records of the workspaces it holds and keeps no keys of its own.

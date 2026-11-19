@@ -29,12 +29,17 @@ pub const DICTATION: &str = "dictation:session";
 /// The kind of [`DICTATION`].
 pub const DICTATION_KIND: &str = "so.tilo.dictation.session";
 
+/// The `dictation:session` resource's declared type: where dictation stands,
+/// whose actions are [`DictationAction`]'s.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.dictation.session", label = "Dictation")]
+pub struct DictationSession;
+
 /// The `dictation:session` resource, with the actions a person can take on it.
 #[must_use]
 pub fn dictation_resource() -> ResourceSpec {
-    offer::<DictationAction>(ResourceSpec::new(
+    offer::<DictationAction>(tilo_resource::typed_resource::<DictationSession>(
         DICTATION,
-        DICTATION_KIND,
         crate::i18n::name(DICTATION_KIND, "Dictation"),
     ))
 }

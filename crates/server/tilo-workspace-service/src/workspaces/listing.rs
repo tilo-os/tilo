@@ -746,6 +746,7 @@ impl Workspaces {
                         false,
                         now,
                     )
+                    .await
                     .map_err(refused)?;
                 governed
                     .admissions

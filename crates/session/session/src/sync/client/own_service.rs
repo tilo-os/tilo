@@ -21,6 +21,7 @@ use tilo_actions::remote::{
     ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
     WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_resource,
 };
+use tilo_endpoint_reachability::Reachability;
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_network_actor::own_service::{OwnService, workspace_service};
 use tilo_peer_state::actions::{ActionService, FOLLOW_DEADLINE};
@@ -32,7 +33,8 @@ use tilo_workspace_service::workspaces::{DeviceKeyGroups, GroupKeys, KeySink};
 const OPEN_WAIT: Duration = Duration::from_secs(30);
 
 /// Open this device's workspace service under `engine`'s state, as `identity`, on `endpoint`,
-/// and serve it through `own` from now on.
+/// waking the relays `reachability` holds back for the invitations it signs, and serve it
+/// through `own` from now on.
 ///
 /// # Errors
 /// The engine keeps no state, this device cannot certify the service's own key, or the
@@ -41,7 +43,8 @@ pub(super) async fn open(
     own: &OwnService,
     identity: &DeviceIdentity,
     engine: &Arc<Engine>,
-    endpoint: iroh::Endpoint,
+    endpoint: &iroh::Endpoint,
+    reachability: &Reachability,
 ) -> Result<Arc<workspace_service::WorkspaceService>, String> {
     let root = engine
         .service_root()
@@ -61,10 +64,13 @@ pub(super) async fn open(
             // back until something needs the device reachable: the service names its address
             // again once a relay comes, and a desktop never waits on the network to show.
             reaching: tilo_endpoint_reachability::Reaching::WhenNeeded,
+            // The service makes the links this device hands out, and an invitation's address is
+            // its to sign: it wakes these relays and waits for one before it does.
+            reachability: reachability.clone(),
             ..workspace_service::ServiceConfig::new(root, tilo_server_protocol::WorkSetting::none())
         },
         service_identity,
-        endpoint,
+        endpoint.clone(),
         Some(DeviceKeyGroups {
             keys: Arc::new(DeviceGroupKeys {
                 keys: engine.keys(),
@@ -166,7 +172,8 @@ pub(crate) fn found_alone(engine: &Arc<Engine>) {
             .bind()
             .await
             .map_err(|error| format!("this device's own endpoint: {error}"))?;
-        open(&own, &identity, engine, endpoint.clone()).await?;
+        // Only this process reaches this endpoint, so nothing is held back for a link it makes.
+        open(&own, &identity, engine, &endpoint, &Reachability::default()).await?;
         Ok::<_, String>(endpoint)
     };
     let opened = tilo_rt::try_app()
@@ -182,8 +189,6 @@ pub(crate) fn found_alone(engine: &Arc<Engine>) {
             engine: Arc::downgrade(engine),
             network: None,
             actions: None,
-            // This endpoint is this process's alone: it holds nothing back, and names no relay.
-            reachability: None,
         })),
         Err(error) => {
             tracing::warn!(%error, "this device's workspace service did not open, so it founds no workspace");
@@ -208,11 +213,6 @@ pub(super) struct Founding {
     /// The session's device action service, which asks a workspace held elsewhere of its holder:
     /// `None` while this device takes part in no peer network.
     pub(super) actions: Option<ActionService>,
-    /// What holds this device's relays back, when the session set any aside: an invitation this
-    /// device hands out needs an address another network reaches, so making one wakes them
-    /// ([`tilo_endpoint_reachability::Reachability::need`]). `None` when no relay waits behind the
-    /// session's endpoint, whose own address is as good as it gets then.
-    pub(super) reachability: Option<tilo_endpoint_reachability::Reachability>,
 }
 
 impl tilo_session_client::engine::Founder for Founding {
@@ -260,14 +260,6 @@ impl tilo_session_client::engine::Founder for Founding {
     ) -> Option<tilo_session_client::engine::ServiceAnswer> {
         let engine = self.engine.upgrade()?;
         let named = workspace.to_string();
-        // An invitation a person hands out names where this device is reached, so whoever redeems it
-        // dials it from any network: the desktop's relays are held back until something needs them,
-        // and making a link is that need. The service signs the address the endpoint has when it
-        // answers, so the ask wakes the relays and gives them their wait to name one first.
-        let reached = (action == tilo_action_policy::roles::governance::INVITE)
-            .then_some(self.reachability.as_ref())
-            .flatten()
-            .map(|reachability| (reachability.clone(), self.endpoint.clone()));
         let request = governance_request(&named, action, arguments);
         // The service holds a workspace this device is the holder of: it shares this device's key,
         // and answers it here as it answers every other member's device.
@@ -275,19 +267,13 @@ impl tilo_session_client::engine::Founder for Founding {
             let cert = &self.identity.device_cert;
             let caller = Caller::authenticated(cert.user_public_key, cert.device_public_key)
                 .in_workspace(named);
-            let service = self.service.get()?;
+            let invoked = self
+                .service
+                .get()?
+                .workspaces()
+                .device_actions()
+                .invoke(&caller, request);
             return Some(Box::pin(async move {
-                if let Some((reachability, endpoint)) = reached {
-                    reachability.need(
-                        tilo_endpoint_reachability::Need::Session,
-                        Some("an invitation is made"),
-                    );
-                    let _ = tilo_endpoint_reachability::await_relay(&endpoint).await;
-                }
-                let invoked = service
-                    .workspaces()
-                    .device_actions()
-                    .invoke(&caller, request);
                 match invoked.await {
                     Some(Ok(receipt)) => settled(receipt.status),
                     Some(Err(error)) => Err(error.to_string()),

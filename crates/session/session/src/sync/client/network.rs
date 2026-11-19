@@ -13,6 +13,7 @@ use tilo_session_client::Cmd;
 use tilo_session_client::network::Event;
 
 use super::adopt::{Carrier, enter, redeem};
+use super::own_service::open as open_own_service;
 use super::{
     DesktopEvent, DeviceActions, Engine, Enrolled, HostCmd, KeyLink, PeerDocuments, endpoint_for,
 };
@@ -614,9 +615,9 @@ async fn listening(
     };
     let publisher = endpoint.id();
     let addr = endpoint.addr();
-    // Nothing wakes the held-back relays from here: the peer actor does when it dials a host or a
-    // peer, and the session while a workspace it shows has someone else in it
-    // (`Client::note_reachability`).
+    // The peer actor wakes the held-back relays when it dials a holder or a peer, the session
+    // while a workspace it shows has someone else in it (`Client::note_reachability`), and the
+    // workspace service before it signs an invitation's address.
     let reachability = tilo_endpoint_reachability::Reachability::defer(
         &endpoint,
         &deferred_relays,
@@ -657,7 +658,7 @@ async fn listening(
     );
     let mut opened = false;
     if let (Some(service), Some(identity), Some(engine)) = (&own_service, identity, engine) {
-        let opening = super::own_service::open(service, identity, engine, endpoint.clone());
+        let opening = open_own_service(service, identity, engine, &endpoint, &reachability);
         opened = own_service_opened(Box::pin(opening), &actor, actions.get()).await;
     }
     let founding_link = link.clone();
@@ -682,10 +683,6 @@ async fn listening(
             network: Some((actor.clone(), events.clone())),
             link: founding_link,
             actions: actions.get().map(DeviceActions::action_service),
-            // A link into a workspace this device holds is dialled from anywhere, so the relays the
-            // session set aside are woken for it: one the session was given none of is reached at
-            // its own address, and waits for nothing.
-            reachability: (!deferred_relays.is_empty()).then(|| reachability.clone()),
         }));
     }
     if ready.send(Ok((publisher, addr, reachability))).is_err() {

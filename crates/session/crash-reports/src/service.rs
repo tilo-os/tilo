@@ -51,11 +51,20 @@ fn present(report: &CrashReport) -> ResourcePresentation {
     }
 }
 
+/// The listed reports as one resource of a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.crash-reports", label = "Crash reports")]
+pub struct CrashReportsList;
+
+/// One report as a resource of a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.crash-report", label = "Crash report")]
+pub struct CrashReportResource;
+
 /// What a report's resource is called to a reader with no words of its own.
 fn resource(report: &CrashReport) -> ResourceSpec {
-    ResourceSpec::new(
+    tilo_resource::typed_resource::<CrashReportResource>(
         wire::report(&report.id),
-        CRASH_REPORT_KIND,
         label(report.kind),
     )
     .with_presentation(present(report))
@@ -94,7 +103,7 @@ impl CrashReports {
 impl Service for CrashReports {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
-            ResourceSpec::new(wire::RESOURCE, CRASH_REPORTS_KIND, "Crash reports")
+            tilo_resource::typed_resource::<CrashReportsList>(wire::RESOURCE, "Crash reports")
                 .with_children(self.reports().iter().map(resource)),
         ]
     }
