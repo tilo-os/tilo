@@ -214,7 +214,7 @@ pub trait Effect: Sized + 'static {
     /// effect to an item reads, so offering it on many items costs one
     /// declaration each, not the whole vocabulary.
     fn declaration(id: &str) -> Option<EffectDecl> {
-        Self::declarations().into_iter().find(|decl| decl.id == id)
+        first_declaration(Self::declarations(), id)
     }
 
     /// This effect's id among the declarations.
@@ -548,6 +548,14 @@ fn kept_specs(
     specs.to_vec()
 }
 
+/// The declaration `id` of `declarations`, as [`Effect::declaration`] reads
+/// one. Not generic over the vocabulary, so the search is compiled once rather
+/// than in every app that declares effects.
+#[inline(never)]
+fn first_declaration(declarations: Vec<EffectDecl>, id: &str) -> Option<EffectDecl> {
+    declarations.into_iter().find(|decl| decl.id == id)
+}
+
 fn offered_specs(check: Check, decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionSpec> {
     // Offered on an item or a row (`item = field`, `on = Row`) as well as
     // here, where it acts on the item a caller names: its audience is the
@@ -576,7 +584,7 @@ fn bound_type(
 ) -> Arc<ActionType> {
     let build = encoder(check, operation, id, Bound::Only);
     let spec = match decl {
-        Some(decl) => decl.spec_with(operation, Vec::new(), build),
+        Some(decl) => decl.spec_with_boxed(operation, Vec::new(), Arc::new(build)),
         None => ActionSpec::typed_operation_on(
             id,
             id,
@@ -605,7 +613,7 @@ fn asking_spec(
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
     let build = encoder(check, operation, decl.id, Bound::UnderCaller);
-    decl.spec_with(operation, params, build)
+    decl.spec_with_boxed(operation, params, Arc::new(build))
         .action_type()
         .bind(Target::new(args))
         .with_bound(fixed)
@@ -658,7 +666,10 @@ fn target_specs(
             let ty = kept_type((key, decl.id, Some(target.key())), || {
                 let rest = params_from(decl.params.get(1..).unwrap_or_default());
                 let build = encoder(check, operation, decl.id, Bound::OverCaller);
-                Arc::clone(decl.spec_with(operation, rest, build).action_type())
+                Arc::clone(
+                    decl.spec_with_boxed(operation, rest, Arc::new(build))
+                        .action_type(),
+                )
             });
             let fixed: Vec<(String, serde_json::Value)> = bound.clone().into_iter().collect();
             let arguments: serde_json::Map<String, serde_json::Value> =
@@ -764,7 +775,7 @@ fn target_specs_with(
                     }
                     let arguments: serde_json::Map<String, serde_json::Value> =
                         target.clone().into_iter().collect();
-                    let mut spec = decl.spec_with(operation, asked, build);
+                    let mut spec = decl.spec_with_boxed(operation, asked, Arc::new(build));
                     if let Some(phrase) = decl.phrase {
                         spec = asking_phrase(spec, phrase(&arguments));
                     }
@@ -1097,7 +1108,7 @@ impl EffectDecl {
     /// [`Self::spec`] of a vocabulary that reads arguments back with `check`.
     fn spec_checked(&self, operation: &'static str, check: Check) -> ActionSpec {
         let build = encoder(check, operation, self.id, Bound::None);
-        let spec = self.spec_with(operation, params_from(&self.params), build);
+        let spec = self.spec_with_boxed(operation, params_from(&self.params), Arc::new(build));
         let asks_words = matches!(
             spec.input(),
             tilo_actions::ActionInput::Prompted {
@@ -1198,17 +1209,9 @@ impl EffectDecl {
         }
     }
 
-    fn spec_with(
-        &self,
-        operation: &'static str,
-        params: Vec<ActionParam>,
-        build: impl Fn(&Target, &tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static,
-    ) -> ActionSpec {
-        self.spec_with_boxed(operation, params, Arc::new(build))
-    }
-
-    /// [`Self::spec_with`] once the builder is boxed, so the toolkit compiles it
-    /// once rather than every app once per vocabulary.
+    /// The published action of this effect, taking `params` and encoding an
+    /// invocation with `build`. The builder is passed boxed: boxing at the
+    /// call site keeps this out of every app's vocabulary instance.
     fn spec_with_boxed(
         &self,
         operation: &'static str,
