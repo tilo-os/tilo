@@ -34,7 +34,7 @@ use crate::model::{
 };
 use crate::page::{self, Frame};
 use crate::resource::CATALOG;
-use crate::resource::{Imager, ImagerEffect};
+use crate::resource::{ImageWrite, Imager, ImagerEffect, InstallerDownload};
 use crate::write::{JobControl, WriteRequest, spawn_job};
 use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, JobProgress, Jobs,
@@ -2968,10 +2968,10 @@ impl ImagerApp {
             .map(|target| self.target_row(target))
             .collect::<Vec<_>>();
         let phase = self.progress.phase.key();
-        rows.push(
-            LiveRow::new("imager.job", "imager.job", format!("Image write: {phase}"))
-                .effect(&ImagerEffect::Status),
-        );
+        rows.push(LiveRow::typed::<ImageWrite>(
+            "imager.job",
+            format!("Image write: {phase}"),
+        ));
         if let Some(download) = &self.release_download {
             let name = self
                 .releases
@@ -2983,16 +2983,11 @@ impl ImagerApp {
                 |progress| Self::download_status(&progress),
             );
             rows.push(
-                LiveRow::new(
-                    "imager.download",
-                    "imager.download",
-                    format!("Download {name}"),
-                )
-                .presentation(tilo_actions::ResourcePresentation {
-                    detail: Some(detail),
-                    ..tilo_actions::ResourcePresentation::default()
-                })
-                .effect(&ImagerEffect::CancelDownload),
+                LiveRow::typed::<InstallerDownload>("imager.download", format!("Download {name}"))
+                    .presentation(tilo_actions::ResourcePresentation {
+                        detail: Some(detail),
+                        ..tilo_actions::ResourcePresentation::default()
+                    }),
             );
         }
         rows

@@ -139,7 +139,7 @@ pub enum ImagerEffect {
         confirmation: String,
     },
     /// Show image-write status.
-    #[effect(returns, kind = "read")]
+    #[effect(returns, kind = "read", on = ImageWrite)]
     Status,
     /// Export headless configuration.
     #[effect(returns, kind = "read")]
@@ -181,7 +181,7 @@ pub enum ImagerEffect {
     #[effect(label = "imager-drop-title")]
     ChooseImage,
     /// Cancel the installer download; what was verified is kept for resume.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = InstallerDownload)]
     CancelDownload,
     #[effect(own_device, kind = "read")]
     #[effect(label = "imager-rescan-drives")]
@@ -224,6 +224,22 @@ impl ImagerEffect {
         }
     }
 }
+
+/// The write of an image to a drive, as Imager publishes it: a row of the
+/// `imager.job` type, offering its status.
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "imager.job", label = "Image write", effects = ImagerEffect)]
+pub struct ImageWrite;
+
+/// Tilo's installer download, as Imager publishes it: a row offering to
+/// cancel what was verified for resume.
+#[derive(ui::tilo_resource::Row)]
+#[row(
+    kind = "imager.download",
+    label = "Installer download",
+    effects = ImagerEffect
+)]
+pub struct InstallerDownload;
 
 pub struct ImagerShell;
 

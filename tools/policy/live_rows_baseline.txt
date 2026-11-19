@@ -59,7 +59,7 @@ row-operation 2 apps/contacts/src/actions.rs
 row-operation 6 apps/containers/src/app.rs
 row-operation 2 apps/disks/src/resource.rs
 row-operation 7 apps/git-client/src/actions.rs
-row-operation 4 apps/imager/src/app.rs
+row-operation 2 apps/imager/src/app.rs
 row-operation 1 apps/imager/src/setup/actions.rs
 row-operation 9 apps/imager/src/setup/import_actions.rs
 row-operation 1 apps/launcher/src/surface.rs
@@ -96,7 +96,7 @@ untyped-live-row 2 apps/disk-usage/src/resource.rs
 untyped-live-row 2 apps/disks/src/resource.rs
 untyped-live-row 15 apps/git-client/src/actions.rs
 untyped-live-row 1 apps/git-client/src/app.rs
-untyped-live-row 3 apps/imager/src/app.rs
+untyped-live-row 1 apps/imager/src/app.rs
 untyped-live-row 5 apps/imager/src/setup/actions.rs
 untyped-live-row 1 apps/imager/src/setup/desktop_journey.rs
 untyped-live-row 3 apps/imager/src/setup/import_actions.rs
