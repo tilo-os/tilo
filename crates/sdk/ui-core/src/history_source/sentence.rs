@@ -71,26 +71,17 @@ pub fn wire_author_line(author: &wire::Author) -> String {
 
 /// The badge that names what wrote an attributed change beside the person's
 /// own avatar: the agent tool ("Claude Code"), the app's name, or the
-/// program's name. `None` for the person's own change, and for an author
-/// whose change carries no recorded writer.
+/// program's name. `None` for the person's own change, for an author whose
+/// change carries no recorded writer, and for any other agent, which is the
+/// author itself and goes by its member name ([`author_parts`]).
 pub fn writer_badge(author: &HistoryAuthor) -> Option<String> {
     let attribution = author.attribution.as_ref()?;
-    let label = attribution.writer_label.as_deref();
     match attribution.writer.as_ref()? {
-        // The agent by its own name. A session's label is the session's title, which the
-        // hover shows ([`attribution_hover`]): never the agent's name.
-        fs_protocol::AttributedWriter::Agent { agent, session } => agent_tool_name(agent)
-            .map(str::to_owned)
-            .or_else(|| {
-                session
-                    .is_none()
-                    .then_some(label)
-                    .flatten()
-                    .map(str::to_owned)
-            })
-            .or_else(|| Some(agent.trim().to_owned())),
+        fs_protocol::AttributedWriter::Agent { agent, .. } => {
+            agent_tool_name(agent).map(str::to_owned)
+        }
         fs_protocol::AttributedWriter::App(_) | fs_protocol::AttributedWriter::Program(_) => {
-            label.map(str::to_owned)
+            attribution.writer_label.clone()
         }
     }
     .filter(|badge| !badge.trim().is_empty())
@@ -131,6 +122,20 @@ pub fn author_parts(author: &HistoryAuthor) -> AuthorParts {
         writer,
         device: attribution.and_then(|attribution| attribution.device.clone()),
     }
+}
+
+/// [`AuthorParts`] as a band's lead shows them, with whom software acted for: software that
+/// acted for someone leads by its own name ("Planner", then "for Ben"), as its face already
+/// says what it is; anyone else as [`author_parts`] names them.
+#[must_use]
+pub(crate) fn lead_parts(author: &HistoryAuthor) -> (AuthorParts, Option<String>) {
+    let mut parts = author_parts(author);
+    let acted_for = acted_for(author);
+    if acted_for.is_some() {
+        parts.person.clone_from(&author.name);
+        parts.writer = None;
+    }
+    (parts, acted_for)
 }
 
 /// What a reader hears of an author cell, as one description built from its fields:
@@ -196,8 +201,11 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
         fs_protocol::AttributedWriter::Agent { agent, .. } => {
             parts.push(crate::i18n::widget_format("history-writer-agent", &[]));
             let tool = agent_tool_name(agent);
+            // The tool, else the agent itself when it is the author.
             if let Some(tool) = tool {
                 parts.push(tool.to_owned());
+            } else if author.relation == AuthorRelation::Software {
+                parts.push(author.name.clone());
             }
             // The session's own title, unless it only repeats the tool's name.
             if !label.trim().is_empty() && Some(label) != tool {
@@ -230,9 +238,9 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
     Some(parts.join("\n"))
 }
 
-/// Whom software `author` acted for, as the hover says it: "For Ada", "For you". `None` for a
-/// person's own change and for software that acted for nobody.
-fn acted_for(author: &HistoryAuthor) -> Option<String> {
+/// Whom software `author` acted for, as the hover and a band's lead say it: "for Ada", "for
+/// you". `None` for a person's own change and for software that acted for nobody.
+pub(crate) fn acted_for(author: &HistoryAuthor) -> Option<String> {
     if author.relation != AuthorRelation::Software {
         return None;
     }
@@ -247,7 +255,7 @@ fn acted_for(author: &HistoryAuthor) -> Option<String> {
 
 /// The name of the coding agent `agent` (`claude` is Claude Code). `None`
 /// for any other agent.
-fn agent_tool_name(agent: &str) -> Option<&'static str> {
+pub(crate) fn agent_tool_name(agent: &str) -> Option<&'static str> {
     match agent {
         "claude" => Some("Claude Code"),
         "codex" => Some("Codex"),

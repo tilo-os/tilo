@@ -567,7 +567,7 @@ mod tests {
             );
             assert!(
                 groups[0]
-                    .subtitle_facts(&entries)
+                    .subtitle_facts()
                     .iter()
                     .all(|fact| !fact.contains("named by")),
                 "nobody is credited with the model's words"

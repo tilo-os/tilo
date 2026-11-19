@@ -212,18 +212,27 @@ tilo_test_env::scenario! {
         // The frame draws the one window it has mapped; the other tab is an app to open again, with
         // no window of its own yet.
         let frames = |id: u64| if id == 7 { 41 } else { 0 };
-        let rows = window_rows(&tree, |id| (id == 7).then_some((14, 96, 946, 984)), frames);
+        // The window's app says what it shows; the tab with no window shows nothing.
+        let resources = |tab: u64| (tab == 100).then(|| "notes.page:groceries".to_owned());
+        let rows = window_rows(
+            &tree,
+            |id| (id == 7).then_some((14, 96, 946, 984)),
+            frames,
+            resources,
+        );
         assert_eq!(rows.len(), 2, "one row per tab: {rows:?}");
         assert_eq!(rows[0]["window"], json!(7));
         assert_eq!(rows[0]["rect"], json!([14, 96, 946, 984]));
         assert_eq!(rows[0]["active"], json!(true));
         assert_eq!(rows[0]["frames"], json!(41));
+        assert_eq!(rows[0]["resource"], json!("notes.page:groceries"));
         assert_eq!(rows[1]["window"], Json::Null);
         assert_eq!(rows[1]["rect"], Json::Null);
         assert_eq!(rows[1]["frames"], json!(0));
+        assert_eq!(rows[1]["resource"], Json::Null);
         // A frame that no longer maps the window leaves the row without a rectangle rather than one
         // that is no longer where it is drawn.
-        let closed = window_rows(&tree, |_| None, frames);
+        let closed = window_rows(&tree, |_| None, frames, resources);
         assert_eq!(closed[0]["window"], json!(7));
         assert_eq!(closed[0]["rect"], Json::Null);
     }

@@ -58,6 +58,17 @@ use tilo_user_identity::DeviceCert;
 /// carries it.
 pub type Invitation = String;
 
+/// Whether the sessions of this process's devices draw the tilolang shell, when a test asked for
+/// it: each test is a process of its own, so the shell is that test's.
+static SHELL: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// Draw the shell every session this test starts from here on shows: the tilolang shell package,
+/// whose windows are its frames, rather than the desktop's own strips. What a test that reads a
+/// window's bar, a place's tabs or the shell's own actions asks for before it makes its devices.
+pub fn show_the_shell() {
+    let _ = SHELL.set(());
+}
+
 /// The log filter the sessions of this process's devices start under, when a test asked for more
 /// than the fixture's own `info`. Each test runs in a process of its own, so the filter is that
 /// test's.
@@ -1312,6 +1323,11 @@ impl Device {
                 "--test-control",
                 control.to_str().expect("a socket path"),
             ])
+            .args(if SHELL.get().is_some() {
+                vec!["--shell", "screen"]
+            } else {
+                Vec::new()
+            })
             .env("HOME", root.join("home"))
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("XDG_DATA_HOME", root.join("data"))
@@ -2058,9 +2074,25 @@ impl Chat<'_> {
         self.conversation(peer).unread
     }
 
-    /// Why Chat has no conversation with `peer` here: `None` when it has one.
+    /// Why Chat refuses a conversation with `peer` here: `None` when it offers one. The app's own
+    /// answer, asked as opening the conversation asks it: the conversation's shared resource
+    /// cannot say it, because a resource this device holds nothing of reads as an empty
+    /// conversation, so only the app — which knows whom the workspace names — refuses a stranger.
     pub fn refusal(&self, peer: &str) -> Option<String> {
-        self.read(peer).err()
+        let answer = self.device.app_act(
+            "so.tilo.chat",
+            "open-direct-conversation",
+            &json!({"public_key": Self::conversation_key(peer)}),
+        );
+        if let Some(refused) = answer.get("err") {
+            return Some(refused["message"].as_str().unwrap_or_default().to_owned());
+        }
+        let update = &answer["answer"]["receipt"]["update"];
+        match update["state"].as_str() {
+            Some("succeeded") => None,
+            Some("failed") => Some(update["output"]["error"].to_string()),
+            other => Some(format!("the open ended as {other:?}: {answer}")),
+        }
     }
 
     /// Wait until Chat offers `peer` as someone to talk to: until the workspace's people are in its

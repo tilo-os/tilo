@@ -265,7 +265,7 @@ pub async fn create_voice_channel(
     })
     .await;
     let mut chat = AutoCommit::new();
-    chat::demo::start(&mut chat, "fixture").unwrap();
+    chat::demo::start(&mut chat, &hex::encode(device.cert.user_public_key)).unwrap();
     let voice = chat::projection::read(&chat)
         .channel_rows()
         .into_iter()

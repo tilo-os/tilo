@@ -46,7 +46,13 @@ pub(super) async fn open(
         .ok_or("this device's key never leaves its store, so it opens no workspace service")?;
     let cert = identity.device_cert.clone();
     let service = workspace_service::WorkspaceService::open(
-        workspace_service::ServiceConfig::new(root, tilo_server_protocol::WorkSetting::none()),
+        workspace_service::ServiceConfig {
+            // The desktop's first frame waits on this service, and its endpoint holds its relays
+            // back until something needs the device reachable: the service names its address
+            // again once a relay comes, and a desktop never waits on the network to show.
+            reaching: tilo_endpoint_reachability::Reaching::WhenNeeded,
+            ..workspace_service::ServiceConfig::new(root, tilo_server_protocol::WorkSetting::none())
+        },
         workspace_service::ServiceIdentity {
             user_public_key: cert.user_public_key,
             device_signing_key: ed25519_dalek::SigningKey::from_bytes(&secret),

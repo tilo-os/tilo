@@ -315,7 +315,9 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         .own_workspace(Map::from_iter([("name".into(), json!("More"))]))
         .await
         .unwrap_err();
-    assert_eq!(made.code, "refused", "{made:?}");
+    // Its grant names one workspace: making another is the person's to allow,
+    // so they are asked on the devices that hold their identity.
+    assert_eq!(made.code, "awaiting_approval", "{made:?}");
     assert!(
         script
             .enter_workspace(&elsewhere.workspace, "A script")

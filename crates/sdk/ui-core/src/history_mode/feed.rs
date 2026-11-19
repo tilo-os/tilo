@@ -140,6 +140,35 @@ fn row(entry: &wire::Entry, id: HistoryEntryId) -> HistoryEntry {
         });
     by.for_reader = author.for_reader;
     by.task.clone_from(&author.task);
+    // Software names whom it acted for, as the session's own rows do.
+    if let Some(person) = author
+        .on_behalf_of
+        .as_ref()
+        .filter(|_| author.relation == wire::Relation::Software)
+    {
+        let mut attribution = crate::widget::history::HistoryAttribution::new(
+            crate::tilo_actions::Acting::agent(author.identity.clone()),
+        );
+        attribution.on_behalf_of_name = Some(person.clone());
+        by.attribution = Some(attribution);
+    }
+    // What the change did, in this app's own words where its action recorded the step.
+    let mut context = entry
+        .step
+        .clone()
+        .or_else(|| entry.app.as_ref().map(|_| ActionContext::default()));
+    if let (Some(context), Some(label)) = (context.as_mut(), entry.app.as_ref()) {
+        let id = context.app.take().map(|app| app.id).unwrap_or_default();
+        context.app = Some(ActionApp {
+            id,
+            label: label.clone(),
+        });
+    }
+    let summary = context
+        .as_ref()
+        .filter(|_| entry.step.is_some())
+        .and_then(crate::history_source::sentence::step_summary)
+        .unwrap_or_else(|| entry.summary.clone());
     let at = u64::try_from(entry.at_ms).unwrap_or_default();
     HistoryEntry {
         id,
@@ -157,17 +186,11 @@ fn row(entry: &wire::Entry, id: HistoryEntryId) -> HistoryEntry {
         },
         artifact_kind: ArtifactKind::File,
         timestamp: crate::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(at),
-        summary: entry.summary.clone(),
+        summary,
         text_delta: None,
         diff_payload: None,
         redaction: None,
-        context: entry.app.as_ref().map(|app| ActionContext {
-            app: Some(ActionApp {
-                id: String::new(),
-                label: app.clone(),
-            }),
-            ..ActionContext::default()
-        }),
+        context,
         target: None,
     }
 }

@@ -229,17 +229,13 @@ impl HistoryGroup {
     /// The dim second line: who, and how much moved, as separate facts a
     /// surface lays out apart ([`crate::widget::primitives::Facts`]), never
     /// joined by a glyph.
-    pub fn subtitle_facts(&self, entries: &[HistoryEntry]) -> Vec<String> {
-        self.subtitle_facts_summarised(entries, None)
+    pub fn subtitle_facts(&self) -> Vec<String> {
+        self.subtitle_facts_summarised(None)
     }
 
     /// [`Self::subtitle_facts`], with what the app says the band amounts to (`summary`) in
     /// place of how much text moved.
-    pub fn subtitle_facts_summarised(
-        &self,
-        entries: &[HistoryEntry],
-        summary: Option<String>,
-    ) -> Vec<String> {
+    pub fn subtitle_facts_summarised(&self, summary: Option<String>) -> Vec<String> {
         let mut parts: Vec<String> = Vec::new();
         if self.name.is_some() {
             let count = widget_format("history-group-changes", &[("count", self.len().into())]);
@@ -270,16 +266,6 @@ impl HistoryGroup {
             } else {
                 widget_format("history-group-chars-removed", &[("count", del.into())])
             });
-        } else if !summarised
-            && self.name.is_none()
-            && self.len() > 1
-            && self.targets(entries).is_none()
-            && let Some(first) = entries.get(self.start)
-        {
-            parts.push(widget_format(
-                "history-group-from",
-                &[("summary", first.summary.as_str().into())],
-            ));
         }
         if let Some(by) = &self.named_by
             && self.name.is_some()
@@ -769,9 +755,16 @@ mod tests {
                 // Drawn as separate facts, never joined by a glyph; what nothing removed is
                 // not counted.
                 assert_eq!(
-                    groups[0].subtitle_facts(&entries),
+                    groups[0].subtitle_facts(),
                     vec!["Alice".to_owned(), "+30 chars".to_owned()]
                 );
+                // Without counts, the band says who did it and nothing its rows already say.
+                let mut quiet = entries.clone();
+                for change in &mut quiet {
+                    change.text_delta = None;
+                }
+                let groups = group_entries(&quiet, &[], &GroupingConfig::default());
+                assert_eq!(groups[0].subtitle_facts(), vec!["Alice".to_owned()]);
             }
 
             fn a_five_minute_gap_ends_the_session() {
@@ -1137,7 +1130,7 @@ mod tests {
                 entries[1].text_delta = None;
                 let groups = group_entries(&entries, &[], &GroupingConfig::default());
                 assert_eq!(groups[0].text_delta, None);
-                let facts = groups[0].subtitle_facts(&entries);
+                let facts = groups[0].subtitle_facts();
                 assert!(
                     !facts.iter().any(|fact| fact.contains("chars")),
                     "got {facts:?}"

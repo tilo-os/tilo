@@ -1215,8 +1215,13 @@ fn a_long_writer_name_never_reaches_a_rows_time() {
     .into_iter()
     .map(|pane| {
         let mut entry = entry(EntryKind::Text, long, 1_000, 1);
-        entry.author = HistoryAuthor::new(long, 120.0, "deadbeef")
-            .with_relation(crate::widget::history::AuthorRelation::Software);
+        entry.author = HistoryAuthor::new("Ada", 120.0, "deadbeef").with_attribution(
+            crate::widget::history::HistoryAttribution::new(tilo_actions::Acting::person("ada"))
+                .written_by(
+                    fs_protocol::AttributedWriter::Program("editor".into()),
+                    long,
+                ),
+        );
         let mut t = timeline_at(pane, vec![entry]);
         let mut text = TextRenderer::new();
         let mut scene = Scene::new();
@@ -1294,4 +1299,29 @@ fn a_long_band_lead_leaves_room_for_the_facts_beside_it() {
     );
     assert!(facts <= end + 0.01, "the lead never reaches the time");
     assert!(facts >= at.x, "the lead never starts left of its face");
+}
+
+/// Software that is a row's author wears its own face and no chip repeating its name, so the
+/// row's width goes to what it did.
+#[test]
+fn an_agent_author_has_its_face_and_no_chip() {
+    let theme = Theme::dark();
+    let mut entry = entry(
+        EntryKind::Text,
+        "Renamed Draft the plan to Final plan",
+        1_000,
+        1,
+    );
+    entry.author = HistoryAuthor::new("Planner", 120.0, "deadbeef")
+        .with_relation(crate::widget::history::AuthorRelation::Software);
+    let mut t = timeline_at(Rect::new(8.0, 8.0, 360.0, 408.0), vec![entry]);
+    t.place_controls(&theme);
+    t.draw(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &theme,
+        &PresenceCtx::empty(),
+    );
+    assert_eq!(t.row_parts(0).expect("the row painted").chip, None);
 }

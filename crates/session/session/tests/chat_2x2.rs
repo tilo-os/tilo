@@ -527,7 +527,15 @@ fn another_pair_is_another_conversation() {
         &studio.site,
         Some(studio.site.admit(carol.public).as_str()),
     );
-    carol_laptop.chat().wait_for_contact(&bob_key);
+    // Chat offers her Bob once the workspace has told her window about him: what a conversation
+    // needs before the app opens it.
+    carol_laptop.open("so.tilo.chat");
+    carol_laptop.wait_for_window("so.tilo.chat");
+    tilo_test_env::wait_until("Carol's Chat to offer Bob to talk to", || {
+        carol_laptop.chat().refusal(&bob_key).is_none()
+    });
+    // Their conversation holds nothing of Ada and Bob's.
+    carol_laptop.chat().open(&bob_key);
     assert!(
         carol_laptop.chat().texts(&bob_key).is_empty(),
         "Carol reads nothing of the conversation between Ada and Bob"

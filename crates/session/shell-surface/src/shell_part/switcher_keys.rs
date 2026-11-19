@@ -158,7 +158,7 @@ fn with_a_surface_up() -> Vec<Case> {
                 asks(alt(false), "commit-switcher", Vec::new()),
                 asks(right_alt_let_go(), "commit-switcher", Vec::new()),
                 asks(enter(), "commit-switcher", Vec::new()),
-                asks(escape(), "close-surface", vec![("slot", "switcher".into())]),
+                asks(escape(), "close-surface", vec![("part", "switcher".into())]),
                 // Alt going down again, and a letter, are no answer to the switcher.
                 passes(alt(true)),
                 passes(letter()),
@@ -172,7 +172,7 @@ fn with_a_surface_up() -> Vec<Case> {
             name: "the overview up",
             here: "overview",
             keys: vec![
-                asks(escape(), "close-surface", vec![("slot", "overview".into())]),
+                asks(escape(), "close-surface", vec![("part", "overview".into())]),
                 // Enter and letting Alt go answer the switcher alone.
                 passes(enter()),
                 passes(alt(false)),
@@ -193,7 +193,7 @@ fn with_a_surface_up() -> Vec<Case> {
                 passes(letter()),
                 passes(enter()),
                 passes(alt(false)),
-                asks(escape(), "close-surface", vec![("slot", "launcher".into())]),
+                asks(escape(), "close-surface", vec![("part", "launcher".into())]),
                 locked(escape()),
             ],
         },

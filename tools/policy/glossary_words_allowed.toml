@@ -123,8 +123,10 @@ paths = [
     "crates/session/client/tests/invitation_entry.rs",
     "crates/session/client/tests/server_restart.rs",
     "crates/session/session/src/sync/client/mod.rs",
+    "crates/session/session/src/sync/client/own_service.rs",
     "crates/session/session/src/enrollment.rs",
     "crates/session/session/src/window_share.rs",
+    "crates/session/session/tests/offline_start.rs",
     "crates/system/fs/src/full_replica.rs",
     "crates/system/tilo-auth/Cargo.toml",
     "crates/system/tilo-cli/src/login.rs",
@@ -944,3 +946,12 @@ reason = "A call's failure names the host's own error beside its text (`Failure:
 words = ["host"]
 identifiers = ["host"]
 paths = ["crates/runtime/tilo-mcp/src/mcp_agent.rs"]
+
+[[allow]]
+reason = "The search registry's own two questions — whether an app opens on a desktop's platforms, and what a window says where it does not — whose names the tests that check them say."
+words = ["run"]
+identifiers = ["runs_on", "runs_elsewhere"]
+paths = [
+    "crates/session/desktop-search/src/availability.rs",
+    "crates/session/desktop-search/src/providers.rs",
+]

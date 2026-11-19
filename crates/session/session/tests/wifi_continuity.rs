@@ -100,8 +100,9 @@ fn private_socket() -> (tempfile::TempDir, PathBuf) {
 }
 
 /// A session serving Settings on `socket` , on this computer's certified device, with the person's
-/// shell.
-fn session(socket: &Path, person: &Person) -> Session {
+/// shell. The passphrase is kept in the person's own store, so the session keeps its state under
+/// `state`.
+fn session(socket: &Path, person: &Person, state: &Path) -> Session {
     // The app speaks from this test's own process, so the launch the session would have recorded
     // for it names that process.
     let launches = Arc::new(Launches::default());
@@ -112,6 +113,7 @@ fn session(socket: &Path, person: &Person) -> Session {
         app_socket: AppSocket::At(socket.to_path_buf()),
         person: "Ada".to_owned(),
         launches,
+        state: Some(state.to_path_buf()),
         ..Options::default()
     });
     session.handle().replace_tree(shell(person));
@@ -213,7 +215,8 @@ fn until_the_app_is_done<T>(session: &mut Session, seen: &std::sync::mpsc::Recei
 fn settings_shares_and_reads_a_wifi_passphrase_through_the_session() {
     let person = person();
     let (_root, socket) = private_socket();
-    let mut session = session(&socket, &person);
+    let state = tempfile::tempdir().expect("a state directory for the session");
+    let mut session = session(&socket, &person, state.path());
 
     let (seen, received) = std::sync::mpsc::channel();
     let (device, cert) = (person.device.clone(), person.cert);
