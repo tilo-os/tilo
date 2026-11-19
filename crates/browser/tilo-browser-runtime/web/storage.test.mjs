@@ -203,6 +203,7 @@ test('pagehide posts a final flush that settles after the queued commits',async 
   assert.equal(worker.replies.length,1,'the flush answers only after the queued commit');
   hold.release();await commit;await settle();
   assert.deepEqual(worker.replies.map(reply=>reply.id),[1,2,3]);
+  assert.equal(h.locks.holder(WRITER),undefined,'pagehide releases the worker lock after flushing so a reloaded WKWebView can open immediately');
   await lease.release();
 });
 

@@ -35,6 +35,11 @@ function createBridge(worker,onDeath){
       });
     },
     kill:die,
+    close(error=workerFailure('page closing')){
+      if(dead)return;dead=error;
+      for(const request of pending.values())request.reject(error);pending.clear();
+      try{worker.terminate();}catch{}
+    },
   };
 }
 /** Storage for the page: leases proxy to the persistence worker when one can
@@ -48,7 +53,22 @@ export function createStorageAccess({createWorker=defaultCreateWorker,inline,eve
   const leases=new Map(),live=new Set(),queues=new WeakMap();
   let bridge=null,inlineOnly=false,inlineStorage=inline;
   const inlineAccess=()=>inlineStorage??=createInlineStorage();
-  const onPageHide=()=>{void flush().catch(()=>{});};
+  const onPageHide=()=>{
+    const current=bridge;
+    // Flush queued commits first, then terminate the worker without falling
+    // back to an in-page lease so iOS WKWebView never keeps the Web Lock held
+    // across a reload or inside the Back-Forward Cache.
+    void flush().catch(()=>{}).finally(()=>{
+      if(current&&bridge===current){
+        bridge=null;
+        events?.removeEventListener?.('pagehide',onPageHide);
+        current.close();
+      }
+      if(inlineOnly){
+        for(const lease of [...live])void lease.release().catch(()=>{});
+      }
+    });
+  };
   function connectWorker(){
     if(inlineOnly||bridge)return bridge;
     let worker;
@@ -103,6 +123,7 @@ export function createStorageAccess({createWorker=defaultCreateWorker,inline,eve
         }
       }
     }
+    events?.addEventListener?.('pagehide',onPageHide);
     return inlineBackend(await acquireInlineRetrying(profile,device,undefined));
   }
   async function acquireStorage(profile,device){
