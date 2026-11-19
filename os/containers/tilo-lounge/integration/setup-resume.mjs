@@ -405,7 +405,12 @@ await tab.navigate(site);
 await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready'`);
 const promptC = await copy(tab, 'first-run-agent');
 const agentC = login(codeOf(promptC), computer('two'));
-check(await until(tab, `(document.getElementById('first-run-steps')?.innerText ?? '').includes('logged in as you')`, stepLimit(3)),
+// The screen cannot say the agent logged in before the agent did, and on a
+// loaded machine that login outlasts the steps of this flow's pacing: past the
+// usual wait, the agent's own end is the clock, then one step for the screen
+// to draw what the host said. A screen that never says it fails still.
+const LOGGED_IN = `(document.getElementById('first-run-steps')?.innerText ?? '').includes('logged in as you')`;
+check(await until(tab, LOGGED_IN, stepLimit(3)) || await agentC.then(() => until(tab, LOGGED_IN, stepLimit(1)), () => null),
   '6. the agent logged in', await pageText(tab));
 await close(tab);
 const ranC = await agentC;
