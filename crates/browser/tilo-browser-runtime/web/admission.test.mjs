@@ -283,26 +283,30 @@ test('an invitation sent off the wait list opens the person’s own workspace in
   const open = async ({waitList, scope = sealed, deep = false, secrets = {invite: key}, way = 'sealed-invitation', own = {workspace: 'own-id', name: 'Ada'},
     reconnect = async ({workspace}) => ({joined: 'again', workspace})}) => {
     const steps = [];
+    let card = null;
     const lounge = {joined: 'lounge', workspace: 'lounge-id', dispose: async () => steps.push('dispose lounge')};
     const {deps} = entries({
       openInvitation: async () => ({invitation: 'the invitation'}),
+      confirmInvitation: async shown => { card = shown; return true; },
       inspectInvitation: async () => offer(waitList),
       joinWorkspace: async () => { steps.push('join lounge'); return lounge; },
       ownWorkspace: async peer => { steps.push(['own of', peer.workspace]); return own; },
       reconnect: async options => { steps.push(['enter', options.origin, options.workspace]); return reconnect(options); },
     });
     const landed = await admit({scope, deep, secrets, runtime: rules([way]).runtime, deps});
-    return {landed, steps, lounge};
+    return {landed, steps, lounge, card};
   };
   // Off the wait list: joined, then their own workspace made and entered,
   // with the joined one let go first, before anything is shown.
   const wait = await open({waitList: true});
   assert.deepEqual(wait.landed, {peer: {joined: 'again', workspace: 'own-id'}, own: true});
   assert.deepEqual(wait.steps, ['join lounge', ['own of', 'lounge-id'], 'dispose lounge', ['enter', server, 'own-id']]);
+  assert.equal(wait.card.ownFirst, true, 'the card they answer says their own workspace opens');
   // An ordinary invitation into the Lounge stays there.
   const plain = await open({waitList: false});
   assert.equal(plain.landed.peer, plain.lounge);
   assert.deepEqual(plain.steps, ['join lounge']);
+  assert.equal(plain.card.ownFirst, undefined, 'the card offers the Lounge itself');
   // The long link a wait-list mail carries names the workspace it admits
   // to, and nothing inside it: their own workspace still opens.
   const long = {...target, workspace: 'lounge-id'};
@@ -312,6 +316,7 @@ test('an invitation sent off the wait list opens the person’s own workspace in
   const deep = await open({waitList: true, scope: long, deep: true, secrets: {invite: 'AAEC'}, way: 'invitation'});
   assert.equal(deep.landed.peer, deep.lounge);
   assert.deepEqual(deep.steps, ['join lounge']);
+  assert.equal(deep.card.ownFirst, undefined);
   // A server that keeps no workspace of their own leaves them where they were let in.
   const none = await open({waitList: true, own: null});
   assert.equal(none.landed.peer, none.lounge);

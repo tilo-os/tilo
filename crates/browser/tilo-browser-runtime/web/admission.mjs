@@ -82,7 +82,10 @@ async function viaInvitation({origin, invitation, offered = null, id = null, dee
   if (!runtime.admittedAsAsked(id ?? undefined, offer.workspace ?? undefined)) {
     throw new AdmissionError('mismatch', 'This invitation is for another workspace than the link names');
   }
-  if (!await deps.confirmInvitation(offer, origin)) throw new AdmissionError('declined', 'You did not join');
+  // Whether joining opens the person's own workspace in this one's place
+  // (below), so the card they answer says so.
+  const ownFirst = !deep && offer.waitList === true && Boolean(deps.ownWorkspace);
+  if (!await deps.confirmInvitation(ownFirst ? {...offer, ownFirst} : offer, origin)) throw new AdmissionError('declined', 'You did not join');
   const joined = await deps.joinWorkspace({
     origin, invitation, admissionToken: secrets.token,
     onProgress: event => onProgress(event),
@@ -93,7 +96,7 @@ async function viaInvitation({origin, invitation, offered = null, id = null, dee
   // before anything mounts, so the page opens one workspace and loads once.
   // A link that names a place inside the workspace (`deep`: an app, or a
   // resource of one) opens that place.
-  if (!deep && offer.waitList && deps.ownWorkspace) {
+  if (ownFirst) {
     const own = await deps.ownWorkspace(joined);
     if (own?.workspace && own.workspace !== joined.workspace) {
       // One device key per server for this tab: the workspace the invitation

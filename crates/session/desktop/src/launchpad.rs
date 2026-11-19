@@ -317,6 +317,10 @@ const FOOTER_TOP: f64 = 14.0;
 const FOOTER_MIN_H: f64 = 36.0;
 /// Height of the heading band (title + subtitle) above the first card row.
 const HEADING_BAND: f64 = 90.0;
+/// The band at the canvas's top the page's bar floats over.
+const TOP_BAND: f64 = 32.0;
+/// The band at the canvas's bottom kept for the persistent help affordance on laptops.
+const HELP_BAND: f64 = 64.0;
 
 impl Default for CollaborationLaunchpad {
     fn default() -> Self {
@@ -590,10 +594,19 @@ impl CollaborationLaunchpad {
         let gap = 12.0;
         let card_w = (panel_w - gap * (columns.saturating_sub(1) as f64)) / columns as f64;
         let rows = count.div_ceil(columns).max(1);
-        let available_h = (rect.height() - 168.0 - gap * (rows.saturating_sub(1) as f64)).max(0.0);
+        // The cards share what the heading, the footer and the bands around them leave, so a short
+        // canvas shrinks the cards rather than pushing the heading off its top.
+        let above = TOP_BAND + HEADING_BAND;
+        let below = FOOTER_TOP + FOOTER_MIN_H + HELP_BAND;
+        let available_h =
+            (rect.height() - above - below - gap * (rows.saturating_sub(1) as f64)).max(0.0);
         let card_h = (available_h / rows as f64).clamp(64.0, 96.0);
         let grid_h = (rows as f64).mul_add(card_h, (rows.saturating_sub(1) as f64) * gap);
-        let top = rect.center().y - grid_h / 2.0 + 32.0;
+        // Centred a top band's height low, and moved up no further than leaves the heading its band.
+        let lowest = rect.y1 - below - grid_h;
+        let top = (rect.center().y - grid_h / 2.0 + TOP_BAND)
+            .min(lowest)
+            .max(rect.y0 + above);
         let cards = (0..count)
             .map(|index| {
                 let column = index % columns;
@@ -919,7 +932,7 @@ impl Widget for CollaborationLaunchpad {
         // not by where the button happens to sit inside it, so centring the
         // button on the hint's line cannot move the hint.
         let footer_bottom = self.footer_band().y1.max(self.app_button_rect().y1);
-        let overflow = (footer_bottom - (self.presentation_rect().y1 - 64.0)).max(0.0);
+        let overflow = (footer_bottom - (self.presentation_rect().y1 - HELP_BAND)).max(0.0);
         for card in &mut self.card_rects {
             *card = *card + vello::kurbo::Vec2::new(0.0, -overflow);
         }
@@ -1795,7 +1808,34 @@ mod tests {
                 }
             }
 
+            // A short browser window (780 by 493 for a laptop's half screen) under the page's
+            // floating bar: the cards shrink, and the heading stays below the bar.
+            fn short_page_keeps_its_heading_under_the_bar() {
+                for (width, height) in [(780.0, 493.0), (1280.0, 560.0), (460.0, 900.0)] {
+                    let mut pad = every_card();
+                    pad.rect = Rect::new(0.0, 0.0, width, height);
+                    pad.draw_child(
+                        &mut Scene::new(),
+                        Affine::IDENTITY,
+                        &mut TextRenderer::new(),
+                        &Theme::dark(),
+                        &PresenceCtx::default(),
+                    );
+                    let heading = pad.card_rects[0].y0 - HEADING_BAND;
+                    assert!(
+                        heading >= TOP_BAND - 0.5,
+                        "{width}x{height}: heading at {heading}, under the bar"
+                    );
+                    assert!(
+                        pad.footer_band().y1 <= height - HELP_BAND + 0.5,
+                        "{width}x{height}: footer {:?} in the help band",
+                        pad.footer_band()
+                    );
+                }
+            }
+
             compact_large_text_heading_stays_below_top_chrome();
+            short_page_keeps_its_heading_under_the_bar();
             desktop_app_button_has_visible_bounds_in_compact_layouts();
             wide_and_narrow_layouts_keep_all_cards_actionable();
         }
