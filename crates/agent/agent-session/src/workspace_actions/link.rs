@@ -103,6 +103,11 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Option<ViewReadPolicy> {
         None
     }
+    /// Whether `workspace` keeps `caller`'s key as one its person revoked: nothing it asks is
+    /// answered until they approve another, and every refusal says so.
+    fn key_revoked(&self, _workspace: WorkspaceId, _caller: &Caller) -> bool {
+        false
+    }
     /// The agent `caller` is, which a person's own device handed its session to, works in
     /// `workspace`: the server adds it to the workspace's list of its agents where that list
     /// does not name it yet, and answers the bound the list keeps for it, which narrows

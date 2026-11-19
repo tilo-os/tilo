@@ -69,13 +69,17 @@ pub(super) async fn handle_remote_action(
     if !current_session(&wr, peer, session.outbound) {
         // The workspace dropped this connection's subscription (its device
         // revoked or removed): its audit ends it.
-        return refuse(Refusal::NotAMember(
-            "sender may not act in the workspace".into(),
+        return refuse(not_a_member(
+            &wr,
+            peer,
+            "sender may not act in the workspace",
         ));
     }
     if action_peer_admitted(&wr, peer, session).is_err() {
-        return refuse(Refusal::NotAMember(
-            "sender may not act in the workspace".into(),
+        return refuse(not_a_member(
+            &wr,
+            peer,
+            "sender may not act in the workspace",
         ));
     }
     // A browser environment's device answers the page actions the server hands
@@ -236,6 +240,20 @@ fn hand_over_replaced(
             to_device_public_key: to,
             refusal: Refusal::Invalid("the host could not write the frame".into()),
         }),
+    }
+}
+
+/// The refusal of `peer`, which `wr` no longer admits: a key its person revoked is told so, with
+/// the one command that approves another, so every caller knows what to do.
+fn not_a_member(
+    wr: &crate::workspace::WorkspaceRuntime,
+    peer: &AuthenticatedPeer,
+    reason: &str,
+) -> Refusal {
+    if wr.revoked_key(&peer.device_public_key) {
+        Refusal::NotAMember(crate::workspace::key_revoked_reason())
+    } else {
+        Refusal::NotAMember(reason.into())
     }
 }
 

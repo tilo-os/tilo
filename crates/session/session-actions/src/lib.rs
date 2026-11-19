@@ -235,6 +235,13 @@ fn unavailable(reason: impl Into<String>) -> ActionCallError {
 fn refused(refusal: &Refusal) -> ActionCallError {
     match refusal {
         Refusal::NotReady => ActionCallError::NotReady,
+        // A key its person revoked: the workspace's own words say what to do about it, which a
+        // caller acts on, rather than that it may not.
+        Refusal::NotAMember(reason) if reason.contains(tilo_actions::remote::KEY_REVOKED) => {
+            ActionCallError::Refused {
+                reason: reason.clone(),
+            }
+        }
         Refusal::NotAMember(_) | Refusal::NotAdmitted | Refusal::NotGranted(_) => {
             ActionCallError::NotPermitted
         }

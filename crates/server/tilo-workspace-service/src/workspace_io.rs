@@ -314,6 +314,7 @@ pub(crate) async fn replace_membership(
 pub(crate) async fn replace_governed_access(
     workspace: &SharedWorkspace,
     access: GovernedAccessRecord,
+    revoked: Vec<[u8; 32]>,
 ) -> Result<Vec<[u8; 32]>, StoreError> {
     let slot = admit_work().await?;
     let workspace = workspace.clone();
@@ -326,8 +327,15 @@ pub(crate) async fn replace_governed_access(
             governed: true,
             ..access
         };
+        let revoked: std::collections::HashSet<[u8; 32]> = revoked.into_iter().collect();
         let (narrowed, removed) = {
             let mut runtime = workspace.lock().await;
+            // What the workspace keeps as revoked keys now: refused with how to approve another,
+            // wherever they ask, and no longer a device access admits.
+            runtime.revoked_keys.extend(revoked.iter().copied());
+            runtime
+                .revoked_keys
+                .retain(|device| !access.member_devices.contains(device));
             runtime.membership_revision = runtime
                 .membership_revision
                 .checked_add(1)

@@ -97,6 +97,19 @@ fn refused(failure: &Failure, retry_safe: bool) -> Value {
         None => said,
         Some(_) => message,
     };
+    // A key its workspace keeps as revoked is told so by every surface, with the one command
+    // that approves another: the caller knows what to do, not only that it may not.
+    if let Some(at) = message.find("key_revoked:") {
+        let said = message
+            .get(at.saturating_add("key_revoked:".len())..)
+            .unwrap_or_default()
+            .trim();
+        return json!({"status":"failed","error":{
+            "code":"key_revoked",
+            "message":said,
+            "next_steps":[tilo_actions::remote::APPROVE_AGAIN],
+        }});
+    }
     let (code, next) = match &failure.host {
         Some(ActionCallError::NotReady) if retry_safe => (
             "not_ready",

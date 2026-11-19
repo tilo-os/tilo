@@ -178,6 +178,9 @@ pub struct WorkspaceRuntime {
     /// Failed/pending replacements cap what an old external file may grant.
     pub(crate) membership_ceiling: Option<HashSet<[u8; 32]>>,
     pub(crate) membership_revision: u64,
+    /// The devices this workspace keeps as keys its person revoked: refused with how to approve
+    /// another wherever they ask, until their person's approval admits a new key.
+    pub(crate) revoked_keys: HashSet<[u8; 32]>,
     /// The daemon's watch on this workspace's membership files, attached on the
     /// first fresh read once a watch covers the state root.
     pub(crate) disk_generation: Option<crate::membership_watch::DiskGeneration>,
@@ -325,6 +328,16 @@ impl CommitLog {
 /// The first bytes of every Automerge chunk (document, change or bundle).
 const AUTOMERGE_MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
 
+/// What a workspace tells a key its person revoked: the one command that approves another, in the
+/// words every surface uses.
+pub(crate) fn key_revoked_reason() -> String {
+    format!(
+        "{}: this key was revoked. {}",
+        tilo_actions::remote::KEY_REVOKED,
+        tilo_actions::remote::APPROVE_AGAIN
+    )
+}
+
 /// Whether `bytes` can be an Automerge chunk. Automerge logs every chunk it
 /// cannot parse before returning the error, and the deltas a server routes
 /// are mostly co-edit wrappers and sealed channel payloads, which never start
@@ -425,6 +438,7 @@ impl WorkspaceRuntime {
             authorization: Arc::new(AsyncMutex::new(())),
             membership_ceiling: None,
             membership_revision: 0,
+            revoked_keys: HashSet::new(),
             disk_generation: None,
             loaded_generation: None,
             admission,
@@ -819,18 +833,37 @@ impl WorkspaceRuntime {
         self.session(device, tx).is_some()
     }
 
+    /// Whether this workspace keeps `device` as a key its person revoked: nothing it asks is
+    /// answered as a member's until they approve another.
+    #[must_use]
+    pub(crate) fn revoked_key(&self, device: &[u8; 32]) -> bool {
+        self.revoked_keys.contains(device)
+    }
+
     /// Tell live devices that just lost membership they are no longer
     /// authorised, while their connection is still open. Removals publish
     /// this before durable IO so a concurrent audit cannot close the session
     /// without an authenticated refusal. The subscriber is then unregistered
     /// so a follow-up write closes instead of emitting a second refusal.
     pub(crate) fn refuse_removed_live_members(&mut self, removed: &[[u8; 32]]) {
-        self.refuse_live_members(
-            removed,
-            &tilo_server_protocol::refusal::Refusal::NotAMember(
-                "workspace membership changed".into(),
-            ),
-        );
+        let (revoked, others): (Vec<[u8; 32]>, Vec<[u8; 32]>) = removed
+            .iter()
+            .copied()
+            .partition(|device| self.revoked_key(device));
+        if !revoked.is_empty() {
+            self.refuse_live_members(
+                &revoked,
+                &tilo_server_protocol::refusal::Refusal::NotAMember(key_revoked_reason()),
+            );
+        }
+        if !others.is_empty() {
+            self.refuse_live_members(
+                &others,
+                &tilo_server_protocol::refusal::Refusal::NotAMember(
+                    "workspace membership changed".into(),
+                ),
+            );
+        }
     }
 
     /// Tell every live device of the workspace it is no longer authorised,

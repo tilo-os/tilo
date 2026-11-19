@@ -740,12 +740,10 @@ impl Workspaces {
                 let named = args.text("name")?.is_some();
                 makes
                     && self.own().is_some_and(|own| {
-                        let mine = own.of(&person);
-                        let theirs = |moving: &str| mine.iter().any(|own| own == moving);
                         if named {
-                            !moving.is_some_and(theirs)
+                            !moving.is_some_and(|moving| own.is_of(&person, moving))
                         } else {
-                            moving.is_none() && mine.is_empty()
+                            moving.is_none() && !own.any_of(&person)
                         }
                     })
             }
@@ -897,17 +895,34 @@ impl Workspaces {
         let person = device.user_public_key;
         if person != self.inner.host.cert.user_public_key {
             let own = self.own().map(|own| own.of(&person)).unwrap_or_default();
+            let now = tilo_clock::unix_now_ns();
+            // A workspace they were invited into carries none of their labels. Every one the
+            // list may name is read in one pass over the registry, however many they keep: the
+            // list is built as often as it changes, and a lock per workspace would cost more
+            // the more workspaces they have.
+            let mut invited = if labels.is_empty() {
+                self.inner.memberships.of(&person)
+            } else {
+                Vec::new()
+            };
+            invited.retain(|workspace| !own.contains(workspace));
+            let wanted: std::collections::HashSet<String> = own
+                .iter()
+                .chain(&invited)
+                .filter(|workspace| only.names(workspace) && self.lists_to(device, workspace))
+                .cloned()
+                .collect();
+            let mut kept = self.listings_of(&wanted).await;
             let mut listed: Vec<WorkspaceListing> = Vec::new();
             for workspace in &own {
-                if !only.names(workspace)
-                    || !self.lists_to(device, workspace)
+                if !wanted.contains(workspace)
                     || !self
                         .own()
                         .is_some_and(|own| labelled(&own.labels_of(workspace), labels))
                 {
                     continue;
                 }
-                if let Ok(mut one) = self.listing_of(workspace).await {
+                if let Some(mut one) = kept.remove(workspace) {
                     one.role = Some(OWNER_ROLE.to_owned());
                     if let Some(own) = self.own() {
                         one.labels = own.labels_of(workspace);
@@ -916,24 +931,14 @@ impl Workspaces {
                     listed.push(one);
                 }
             }
-            let now = tilo_clock::unix_now_ns();
-            // A workspace they were invited into carries none of their labels.
-            let invited = if labels.is_empty() {
-                self.inner.memberships.of(&person)
-            } else {
-                Vec::new()
-            };
             for workspace in invited {
-                if own.contains(&workspace)
-                    || !only.names(&workspace)
-                    || !self.lists_to(device, &workspace)
-                {
+                if !wanted.contains(&workspace) {
                     continue;
                 }
                 let Some(role) = self.role_of(&workspace, person, now).await else {
                     continue;
                 };
-                if let Ok(mut one) = self.listing_of(&workspace).await {
+                if let Some(mut one) = kept.remove(&workspace) {
                     one.role = Some(role.key().to_owned());
                     listed.push(one);
                 }
@@ -1020,8 +1025,7 @@ impl Workspaces {
             (None, None) => Some(own.making(hex::encode(person)).await),
             (None, Some(_)) => None,
         };
-        let mine = own.of(&person);
-        let theirs = moving.filter(|moving| mine.iter().any(|own| own == moving));
+        let theirs = moving.filter(|moving| own.is_of(&person, moving));
         // A key the workspace keeps as revoked is told so, and invited no more.
         if device.capabilities.agent.is_some()
             && let Some(moving) = moving
@@ -1056,10 +1060,12 @@ impl Workspaces {
             // and it is never read as some other workspace they have.
             return Err(refused(&Refusal::NotYourOwn.to_reason()));
         } else if name.is_none()
-            && let Some(first) = mine.first()
+            && let Some(first) = own.first_of(&person)
         {
             // A plain ask for "my workspace" answers the first they made.
-            self.summary(first).await.map_err(|error| refused(&error))?
+            self.summary(&first)
+                .await
+                .map_err(|error| refused(&error))?
         } else if !makes {
             return Err(refused(&Refusal::NotYourOwn.to_reason()));
         } else {

@@ -150,17 +150,25 @@ impl HostedTurn<'_> {
     /// where a rule names this very action and does not deny it.
     #[must_use]
     pub fn may_take(&self, workspace: &str, target: &RemoteActionTarget) -> bool {
-        let Some(bound) = self.bound else {
-            return true;
-        };
-        let node = TreePath::workspace(workspace)
-            .app(target.provider.clone())
-            .kind(target.address.resource.clone())
-            .resource(target.address.resource.clone())
-            .action(target.address.action.clone());
-        let granted = tilo_automation::grant_answer(bound, &node, ActionKind::Outside);
-        granted.names_action && granted.answer != Answer::Deny
+        bound_allows(self.bound, workspace, target)
     }
+}
+
+/// Whether the rules `bound` narrow a turn to let it take `target` in `workspace`: an agent
+/// nothing narrows (`None`) may, a narrowed one only where a rule names this very action and
+/// does not deny it.
+#[must_use]
+pub fn bound_allows(bound: Option<&[Rule]>, workspace: &str, target: &RemoteActionTarget) -> bool {
+    let Some(bound) = bound else {
+        return true;
+    };
+    let node = TreePath::workspace(workspace)
+        .app(target.provider.clone())
+        .kind(target.address.resource.clone())
+        .resource(target.address.resource.clone())
+        .action(target.address.action.clone());
+    let granted = tilo_automation::grant_answer(bound, &node, ActionKind::Outside);
+    granted.names_action && granted.answer != Answer::Deny
 }
 
 /// How a use a hosted turn asked for went.
