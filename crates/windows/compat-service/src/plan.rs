@@ -1190,9 +1190,9 @@ pub enum PlanError {
     #[error("the program has no display to show its windows on: {0}")]
     NoDisplay(String),
     #[error(
-        "the session's GPU device {0} is not a DRM render node (/dev/dri/renderD*): its display \
-         device has no GPU for programs to render on; start the session on a display whose \
-         device has a render node"
+        "this display has no GPU, and Windows programs need one to draw their windows: its \
+         device {0} is not a GPU render node (/dev/dri/renderD*). Use a display connected to a \
+         GPU (a virtual machine needs 3D acceleration turned on), then open the program again."
     )]
     UnsafeRenderNode(String),
     #[error("capsule does not match resolved route")]

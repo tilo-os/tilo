@@ -410,7 +410,9 @@ impl LaunchDisplays for Display {
         let wayland_socket = wayland_socket
             .ok_or_else(|| "this session has not bound its display yet".to_owned())?;
         let render_node = render_node.ok_or_else(|| {
-            "this session draws without a GPU, which Windows programs need".to_owned()
+            "this display has no GPU, and Windows programs need one to draw their windows: use a \
+             display connected to a GPU, then open the program again"
+                .to_owned()
         })?;
         Ok(LaunchDisplay {
             uid: rustix::process::geteuid().as_raw(),
