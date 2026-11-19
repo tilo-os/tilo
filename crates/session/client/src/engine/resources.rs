@@ -63,14 +63,9 @@ impl Engine {
         let named = collab_types::app_surface::registered();
         if resources.declared != named {
             resources.declared = named;
-            for (app, bytes) in collab_types::app_surface::every() {
-                match collab_types::surface::SurfaceFile::parse(bytes) {
-                    Ok(file) => {
-                        for surface in &file.resources {
-                            resources.store.declare(Schema::from_surface(surface));
-                        }
-                    }
-                    Err(error) => tracing::warn!(%error, %app, "an app's surface is not declared"),
+            for file in collab_types::app_surface::every() {
+                for surface in &file.resources {
+                    resources.store.declare(Schema::from_surface(surface));
                 }
             }
         }

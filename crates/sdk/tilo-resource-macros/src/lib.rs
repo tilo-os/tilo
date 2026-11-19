@@ -21,69 +21,61 @@ fn krate() -> Tokens {
     quote!(#name)
 }
 
-/// Derive `Model` (and `Fields` for structs with named fields).
+/// The app's committed `surface.toml` (the file its package ships) and that
+/// file as JSON, read while the crate that expands it is built:
+/// `Option<(&'static [u8], &'static str)>`, `Some` when it has a
+/// `surface.toml` at its root, else `None`.
 ///
-/// * a struct with named fields is a map, one key per field;
-/// * a newtype struct is its inner value;
-/// * an enum of unit variants is a string naming the variant; the variant
-///   marked `#[default]` is the value of an absent slot;
-/// * an enum whose variants carry fields is a map: the variant's name under
-///   `$variant` and each field under a key of its variant
-///   (`$field/<variant>/<field>`, a tuple variant's fields named `0`, `1`,
-///   …), so edits of one variant merge field by field, a change of variant is
-///   last writer wins, and no variant reads a field another one wrote.
-///
-/// Field attributes: `#[model(rename = "key")]`, `#[model(skip)]` (not
-/// stored; the containing type's `Default` on read), `#[model(atom)]` on a
-/// `String`, an `Id`, a `Vec` or an `Option` of one (written whole, last writer
-/// wins, as `Atom` is: a colour or a list of points two people set at once
-/// is one of theirs, never a mix),
-/// `#[model(whole)]` (read every part of a value that loads on demand,
-/// rich text's paragraphs), `#[model(resource)]` on a field whose type is a
-/// resource with its own operations (rich text: published beneath the
-/// record's resource, an item's or the record's own, at `<record>/<key>`,
-/// its actions applied as field edits; see `tilo_resource::child`), `#[model(remove = "quiet")]` on a collection whose items are cheap to
-/// remove (removing one by field edit asks no confirmation),
-/// `#[model(default = expr)]` (what the field reads as when the document
-/// holds none: a required field with a sensible derivation, so an item
-/// missing it still reads; the next whole write stores it),
-/// `#[model(trust = "sensitive")]` (every edit of it asks for confirmation:
-/// a change can expose the person), `#[model(trust = "weakening")]`
-/// (it also crosses a security boundary: any change can weaken the person's
-/// security, so an agent or script acting for them needs their own grant)
-/// and `#[model(weaker = ..)]` (only a change making it weaker than it is
-/// now does: `weaker = "higher"` or `"lower"` for a number, with
-/// `weakest = N` for the value weaker than any, such as a lock delay's `0`
-/// for never; `weaker = true` or `false` for a switch; a list of values
-/// from the strongest to the weakest for a choice), `#[model(range =
-/// low..=high)]` on a number and `#[model(choices = expr)]` on a text (what
-/// the field may hold: published in its value's schema and held by the
-/// record's own check, through every API).
-///
-/// Type attributes: `#[model(check = path)]` (its invariant, with
-/// `check_reads`/`check_items` saying what it reads), `#[model(label =
-/// "..")]`, `#[model(defaults)]` (the type's `Default` is what each field
-/// holds until changed, published with it) and `#[model(field(name,
-/// options..))]` (a field's options given on the type, for a record whose
-/// fields a shared macro writes).
-///
-/// A struct's `Model::SHAPE` lists its stored fields, so layout-aware services
-/// (History restore) reconcile it field by field.
-/// The app's committed `surface.toml` (the file its package ships), as
-/// `Option<&'static [u8]>`: `Some` with the file's bytes when the crate
-/// that expands it has one at its root, else `None`.
+/// The JSON is the file's own content, so the shell's built-in apps and the
+/// web desktop read their surfaces without a TOML parser. A file that does not
+/// parse fails the build, where such a process would otherwise find that the
+/// surface declares nothing.
 #[proc_macro]
 pub fn committed_surface(_input: TokenStream) -> TokenStream {
     let path = std::env::var_os("CARGO_MANIFEST_DIR")
         .map(std::path::PathBuf::from)
         .map(|dir| dir.join("surface.toml"))
         .filter(|path| path.is_file());
-    if let Some(path) = path.and_then(|path| path.to_str().map(str::to_owned)) {
-        quote::quote! {
-            ::core::option::Option::Some(::core::include_bytes!(#path) as &'static [u8])
+    let Some(path) = path else {
+        return quote::quote! { ::core::option::Option::<(&'static [u8], &'static str)>::None }
+            .into();
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            let error = format!("{}: {error}", path.display());
+            return syn::Error::new(Span::call_site(), error)
+                .to_compile_error()
+                .into();
         }
-    } else {
-        quote::quote! { ::core::option::Option::<&'static [u8]>::None }
+    };
+    let value: serde_json::Value = match toml::from_str(&text) {
+        Ok(value) => value,
+        Err(error) => {
+            let error = format!("{}: {error}", path.display());
+            return syn::Error::new(Span::call_site(), error)
+                .to_compile_error()
+                .into();
+        }
+    };
+    let json = match serde_json::to_string(&value) {
+        Ok(json) => json,
+        Err(error) => {
+            let error = format!("{}: {error}", path.display());
+            return syn::Error::new(Span::call_site(), error)
+                .to_compile_error()
+                .into();
+        }
+    };
+    let Some(path) = path.to_str().map(str::to_owned) else {
+        return quote::quote! { ::core::option::Option::<(&'static [u8], &'static str)>::None }
+            .into();
+    };
+    quote::quote! {
+        ::core::option::Option::Some((
+            ::core::include_bytes!(#path) as &'static [u8],
+            #json,
+        ))
     }
     .into()
 }
@@ -145,6 +137,54 @@ impl syn::parse::Parse for WordInput {
     }
 }
 
+/// Derive `Model` (and `Fields` for structs with named fields).
+///
+/// * a struct with named fields is a map, one key per field;
+/// * a newtype struct is its inner value;
+/// * an enum of unit variants is a string naming the variant; the variant
+///   marked `#[default]` is the value of an absent slot;
+/// * an enum whose variants carry fields is a map: the variant's name under
+///   `$variant` and each field under a key of its variant
+///   (`$field/<variant>/<field>`, a tuple variant's fields named `0`, `1`,
+///   …), so edits of one variant merge field by field, a change of variant is
+///   last writer wins, and no variant reads a field another one wrote.
+///
+/// Field attributes: `#[model(rename = "key")]`, `#[model(skip)]` (not
+/// stored; the containing type's `Default` on read), `#[model(atom)]` on a
+/// `String`, an `Id`, a `Vec` or an `Option` of one (written whole, last writer
+/// wins, as `Atom` is: a colour or a list of points two people set at once
+/// is one of theirs, never a mix),
+/// `#[model(whole)]` (read every part of a value that loads on demand,
+/// rich text's paragraphs), `#[model(resource)]` on a field whose type is a
+/// resource with its own operations (rich text: published beneath the
+/// record's resource, an item's or the record's own, at `<record>/<key>`,
+/// its actions applied as field edits; see `tilo_resource::child`), `#[model(remove = "quiet")]` on a collection whose items are cheap to
+/// remove (removing one by field edit asks no confirmation),
+/// `#[model(default = expr)]` (what the field reads as when the document
+/// holds none: a required field with a sensible derivation, so an item
+/// missing it still reads; the next whole write stores it),
+/// `#[model(trust = "sensitive")]` (every edit of it asks for confirmation:
+/// a change can expose the person), `#[model(trust = "weakening")]`
+/// (it also crosses a security boundary: any change can weaken the person's
+/// security, so an agent or script acting for them needs their own grant)
+/// and `#[model(weaker = ..)]` (only a change making it weaker than it is
+/// now does: `weaker = "higher"` or `"lower"` for a number, with
+/// `weakest = N` for the value weaker than any, such as a lock delay's `0`
+/// for never; `weaker = true` or `false` for a switch; a list of values
+/// from the strongest to the weakest for a choice), `#[model(range =
+/// low..=high)]` on a number and `#[model(choices = expr)]` on a text (what
+/// the field may hold: published in its value's schema and held by the
+/// record's own check, through every API).
+///
+/// Type attributes: `#[model(check = path)]` (its invariant, with
+/// `check_reads`/`check_items` saying what it reads), `#[model(label =
+/// "..")]`, `#[model(defaults)]` (the type's `Default` is what each field
+/// holds until changed, published with it) and `#[model(field(name,
+/// options..))]` (a field's options given on the type, for a record whose
+/// fields a shared macro writes).
+///
+/// A struct's `Model::SHAPE` lists its stored fields, so layout-aware services
+/// (History restore) reconcile it field by field.
 #[proc_macro_derive(Model, attributes(model))]
 pub fn derive_model(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
