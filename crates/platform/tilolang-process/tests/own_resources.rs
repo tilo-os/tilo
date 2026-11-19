@@ -360,13 +360,68 @@ fn workspace_members_share_mail_and_the_viewer_cannot_archive_it() {
 }
 
 #[test]
-fn an_archive_owner_recovers_drafts_into_the_shared_mailbox_once() {
-    use tilolang_tilo::runtime::Value;
+fn an_archive_owner_recovers_mail_into_the_shared_mailbox_once() {
+    use tilolang_tilo::runtime::{ResourceRef, Value};
 
     let bundle = Arc::new(mail());
     let workspace = uuid::Uuid::new_v4();
     let mut earlier = member(&Rc::new(Bus::default()), workspace, ADA, &bundle);
     earlier.settle();
+    earlier
+        .host
+        .instances_mut()
+        .next()
+        .unwrap()
+        .stage("a busy inbox");
+    earlier.settle();
+    for (id, action, arguments) in [
+        (
+            6,
+            "label",
+            serde_json::json!({ "name": "Release planning", "on": true }),
+        ),
+        (7, "mute", serde_json::json!({ "muted": true })),
+        (
+            8,
+            "snooze",
+            serde_json::json!({ "until": "2099-12-31T12:00:00Z" }),
+        ),
+    ] {
+        let address = earlier
+            .hosted()
+            .published()
+            .iter()
+            .find(|offered| {
+                offered.address.action == action
+                    && offered
+                        .resource_label
+                        .contains("Launch plan for the autumn release")
+            })
+            .expect("the old conversation offers the action")
+            .address
+            .clone();
+        earlier
+            .inbox
+            .borrow_mut()
+            .push_back(CollabEvent::Invocation {
+                id,
+                invocation: tilo_actions::InvocationId::new(),
+                resource: address.resource,
+                action: address.action,
+                argument: Some(format!(
+                    "{}{arguments}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX
+                )),
+                actor: tilo_actions::MemberId::person(ADA).into(),
+                context: None,
+            });
+        earlier.settle();
+        assert!(
+            earlier.answer(id).contains("Succeeded"),
+            "{}",
+            earlier.answer(id)
+        );
+    }
     earlier
         .host
         .instances_mut()
@@ -458,11 +513,60 @@ fn an_archive_owner_recovers_drafts_into_the_shared_mailbox_once() {
             })
             .collect::<Vec<_>>()
     };
+    let check_mail = |member: &Member| {
+        let host = member.hosted().instance().host().unwrap();
+        let root = host.root_of(MAIL).unwrap();
+        let read = |item: &ResourceRef, field: &str| host.runtime().read(item, field).unwrap();
+        let Value::List(threads) = read(&root, "recovered_mail") else {
+            panic!("the workspace holds recovered conversations");
+        };
+        assert_eq!(threads.len(), 8);
+        let conversation = threads
+            .into_iter()
+            .find_map(|item| {
+                let Value::Ref(thread) = item else {
+                    panic!("a recovered conversation");
+                };
+                (read(&thread.target, "subject").as_text()
+                    == Some("Launch plan for the autumn release"))
+                .then_some(thread.target)
+            })
+            .expect("the archive contains the launch conversation");
+        assert!(matches!(read(&conversation, "muted"), Value::Bool(true)));
+        assert_eq!(
+            read(&conversation, "snoozed_until").as_text(),
+            Some("2099-12-31T12:00:00Z")
+        );
+        assert!(matches!(read(&conversation, "labels"), Value::List(values)
+            if values.iter().any(|name| name.as_text() == Some("Release planning"))));
+        let Value::List(messages) = read(&conversation, "messages") else {
+            panic!("the recovered conversation holds messages");
+        };
+        assert_eq!(messages.len(), 3);
+        let Value::Ref(message) = &messages[0] else {
+            panic!("a recovered message");
+        };
+        assert!(
+            read(&message.target, "body")
+                .as_text()
+                .unwrap()
+                .contains("The beta goes out on the fifth")
+        );
+        assert_eq!(
+            read(&message.target, "received").as_text(),
+            Some("2026-06-30T08:20:00Z")
+        );
+        assert_eq!(read(&message.target, "key").as_text(), Some(""));
+        assert!(matches!(read(&root, "accounts"), Value::List(values) if values.is_empty()));
+        assert!(member.window.shows().contains("Launch plan"));
+        assert!(member.found().contains("Launch plan"));
+    };
 
     ada.inbox.borrow_mut().push_back(invoke(10, BO));
     ada.settle();
     assert!(ada.answer(10).contains("permission_denied"));
     assert!(drafts(&ada).is_empty());
+    assert!(!ada.found().contains("Launch plan"));
     for id in [11, 12] {
         ada.inbox.borrow_mut().push_back(invoke(id, ADA));
         ada.settle();
@@ -471,6 +575,8 @@ fn an_archive_owner_recovers_drafts_into_the_shared_mailbox_once() {
         let expected = ["Re: Launch plan for the autumn release"];
         assert_eq!(drafts(&ada), expected);
         assert_eq!(drafts(&bo), expected);
+        check_mail(&ada);
+        check_mail(&bo);
         assert!(
             ada.hosted()
                 .instance()

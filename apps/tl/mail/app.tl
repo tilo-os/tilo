@@ -128,6 +128,9 @@ type Mail {
     accounts: Collection<Account>
     drafts: Collection<Draft>
     labels: Collection<Label>
+    /// Conversations retained from an earlier mailbox, outside the IMAP account collections.
+    recovered_mail: Collection<Thread>
+    recovered_conversations: Set<Text>
     /// Previously imported drafts, including ones subsequently deleted.
     recovered_drafts: Set<Text>
 
@@ -137,6 +140,7 @@ type Mail {
     search {
         filter hold
         hide recovered_drafts
+        hide recovered_conversations
     }
 }
 
@@ -197,12 +201,17 @@ primary action new_message(a: Account) -> Draft (icon: .pencil, label: "New mess
     m.drafts.insert(Draft(from: a.key, body: signature_of(m, a.key)))
 }
 
-/// Copies drafts and labels from the earlier private mailbox into this workspace.
-action recover_previous(m: Mail, drafts: List<List<Text>> = [], labels: List<Text> = []) -> Int (
+/// Copies data from the earlier private mailbox into this workspace.
+action recover_previous(
+    m: Mail,
+    drafts: List<List<Text>> = [],
+    labels: List<Text> = [],
+    conversations: List<List<List<Text>>> = [],
+) -> Int (
     icon: .archive,
-    label: "Recover previous drafts and labels",
+    label: "Recover previous mail",
 ) {
-    let before = m.drafts.len() + m.labels.len()
+    let before = m.drafts.len() + m.labels.len() + m.recovered_mail.len()
     for row in drafts {
         let key = row.at(0) ?? ""
         if row.len() == 8 and key != "" and not m.recovered_drafts.contains(key) {
@@ -223,7 +232,62 @@ action recover_previous(m: Mail, drafts: List<List<Text>> = [], labels: List<Tex
             m.labels.insert(Label(name: name))
         }
     }
-    m.drafts.len() + m.labels.len() - before
+    for rows in conversations {
+        let header = rows.at(0) ?? []
+        let key = header.at(0) ?? ""
+        if header.len() == 10 and key != "" and not m.recovered_conversations.contains(key) {
+            let t = m.recovered_mail.insert(Thread(
+                key: key,
+                account: header.at(1) ?? "",
+                subject: header.at(2) ?? "",
+                latest: recovered_time(header.at(3) ?? ""),
+                snippet: header.at(4) ?? "",
+                senders: header.at(5) ?? "",
+                count: rows.len() - 3,
+                unread: header.at(6) == .some("true"),
+                flagged: header.at(7) == .some("true"),
+                snoozed_until: recovered_time(header.at(8) ?? ""),
+                muted: header.at(9) == .some("true"),
+            ))
+            for name in rows.at(1) ?? [] {
+                if name != "" {
+                    t.labels.add(name)
+                }
+            }
+            for name in rows.at(2) ?? [] {
+                if name != "" {
+                    t.boxes.add(name)
+                }
+            }
+            for row in rows {
+                if row.len() == 15 and row.at(0) == .some("message") {
+                    t.messages.insert(Message(
+                        account: t.account,
+                        subject: row.at(1) ?? "",
+                        from: row.at(2) ?? "",
+                        from_name: row.at(3) ?? "",
+                        to: row.at(4) ?? "",
+                        cc: row.at(5) ?? "",
+                        received: recovered_time(row.at(6) ?? ""),
+                        snippet: row.at(7) ?? "",
+                        body: row.at(8) ?? "",
+                        message_id: row.at(9) ?? "",
+                        references: row.at(10) ?? "",
+                        attachments: row.at(11) ?? "",
+                        unread: row.at(12) == .some("true"),
+                        flagged: row.at(13) == .some("true"),
+                        mailbox: row.at(14) ?? "",
+                    ))
+                }
+            }
+            m.recovered_conversations.add(key)
+        }
+    }
+    m.drafts.len() + m.labels.len() + m.recovered_mail.len() - before
+}
+
+fn recovered_time(value: Text) -> Time {
+    Time("1970-01-01T00:00:00Z") + Duration(value.to_int() ?? 0)
 }
 
 /// Starts a message from the first account.
@@ -484,6 +548,12 @@ action rename_label(m: Mail, l: Label, name: Text) {
             }
         }
     }
+    for t in m.recovered_mail {
+        if t.labels.any(x -> x == l.name) {
+            t.labels.remove(l.name)
+            t.labels.add(name)
+        }
+    }
     l.name = name
 }
 
@@ -493,6 +563,9 @@ destructive action delete_label(m: Mail, l: Label) (icon: .trash) {
         for t in a.threads {
             if t.labels.any(x -> x == l.name) { t.labels.remove(l.name) }
         }
+    }
+    for t in m.recovered_mail {
+        if t.labels.any(x -> x == l.name) { t.labels.remove(l.name) }
     }
     m.labels.remove(l)
 }
@@ -614,6 +687,7 @@ action undo_send(d: Draft) (icon: .undo_2, label: "Undo send") {
 /// as a reply to it, quoted.
 action answer(t: Thread, body: Text) -> Draft uses time (icon: .reply) {
     require body.len() > 0 "Say something first"
+    require can_answer(t) "The account for this conversation is unavailable"
     let m = root Mail
     let last = t.messages.last()
     let said = if let l = last { quoted(l) } else { "" }
@@ -631,6 +705,11 @@ action answer(t: Thread, body: Text) -> Draft uses time (icon: .reply) {
     )
     send(d)
     d
+}
+
+fn can_answer(t: Thread) -> Bool {
+    let m = root Mail
+    m.accounts.any(a -> a.key == t.account)
 }
 
 /// The message as it will leave, shown when someone is asked to send it.
@@ -684,8 +763,14 @@ view account_notice(a: Account) {
 view mail(m: Mail) {
     state account: Text = ""
     if m.accounts.is_empty() {
-        std.page(m) {
-            ui.EmptyState("Add a mail account in Settings", icon: .mail)
+        if m.recovered_mail.is_empty() {
+            std.page(m) {
+                ui.EmptyState("Add a mail account in Settings", icon: .mail)
+            }
+        } else {
+            std.page(m) {
+                recovered_mail(m)
+            }
         }
     } else if let a = m.accounts.find(x -> x.key == account) {
         mailboxes(a)
@@ -705,8 +790,8 @@ view unified(m: Mail) {
         ui.NavShell(
             content_kind: .document,
             sidebar_title: "All accounts",
-            overview_title: title,
-            overview_count: shown.len(),
+            overview_title: if query == "recovered" { "Recovered mail" } else { title },
+            overview_count: if query == "recovered" { m.recovered_mail.len() } else { shown.len() },
         ) {
             sidebar_actions: {
                 // The accounts whose server does not stand well, beside the name of the accounts
@@ -722,6 +807,11 @@ view unified(m: Mail) {
                     }
                     ui.NavItem("all", "All mail", icon: .mail) {
                         on select: set(query, "")
+                    }
+                    if not m.recovered_mail.is_empty() {
+                        ui.NavItem("recovered", "Recovered mail", icon: .archive) {
+                            on select: set(query, "recovered")
+                        }
                     }
                     if not m.labels.is_empty() {
                         ui.NavSection("Labels") {
@@ -751,10 +841,18 @@ view unified(m: Mail) {
             overview: {
                 // The list shows `a`'s mail, so what the account's server says of itself is
                 // said over it, and `Try again` asks the server that account reads from.
-                account_threads(a, shown)
+                if query == "recovered" {
+                    recovered_mail(m)
+                } else {
+                    account_threads(a, shown)
+                }
             }
         }
     }
+}
+
+view recovered_mail(m: Mail) {
+    thread_list(m.recovered_mail.matching(""))
 }
 
 /// The workspace's mail, with every account's inbox in one
@@ -934,12 +1032,14 @@ view conversation(t: Thread) {
         content: {
             ui.Docked {
                 foot: {
-                    row {
-                        ui.TextInput(bind: draft, placeholder: "Reply to {t.subject}", fill) {
-                            on submit: answer(t, draft).then(set(draft, ""))
-                        }
-                        ui.Button("Reply", icon: .send, icon_only: true) {
-                            on press: answer(t, draft).then(set(draft, ""))
+                    if can_answer(t) {
+                        row {
+                            ui.TextInput(bind: draft, placeholder: "Reply to {t.subject}", fill) {
+                                on submit: answer(t, draft).then(set(draft, ""))
+                            }
+                            ui.Button("Reply", icon: .send, icon_only: true) {
+                                on press: answer(t, draft).then(set(draft, ""))
+                            }
                         }
                     }
                 }

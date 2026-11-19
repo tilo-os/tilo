@@ -214,6 +214,11 @@ d-gkuo27e6 = Drafts
 
 d-z3zcztpz = Labels
 
+d-bag7bf25 = Recovered mail
+    .doc = Conversations retained from an earlier mailbox, outside the IMAP account collections.
+
+d-fezdozrd = Recovered conversations
+
 d-5upxgb6g = Recovered drafts
     .doc = Previously imported drafts, including ones subsequently deleted.
 
@@ -239,12 +244,14 @@ d-arnkrvgw = Check now
 d-eon6gbrn = New message
     .doc = Starts a message from the account.
 
-d-y6hvqjbf = Recover previous drafts and labels
-    .doc = Copies drafts and labels from the earlier private mailbox into this workspace.
+d-y6hvqjbf = Recover previous mail
+    .doc = Copies data from the earlier private mailbox into this workspace.
 
 d-y6hvqjbf-drafts = Drafts
 
 d-y6hvqjbf-labels = Labels
+
+d-y6hvqjbf-conversations = Conversations
 
 d-ygbvdl5l = New message
     .doc = Starts a message from the first account.
@@ -389,6 +396,7 @@ d-twebu5cb = Undo send
 d-a4rv5wm6 = Answer
     .doc = Answers the conversation with what was typed: the message goes to whoever wrote its newest, as a reply to it, quoted.
     .w-say-something-first = Say something first
+    .w-the-account-for-this-conversation-is = The account for this conversation is unavailable
 
 d-a4rv5wm6-body = Body
 
@@ -455,9 +463,12 @@ d-7rcrynvm = Mail
 
 d-4fjgzcq6 = Unified
     .w-all-accounts = All accounts
+    .w-recovered-mail = Recovered mail
     .w-all-inboxes = All inboxes
     .w-all-mail = All mail
     .w-labels = Labels
+
+d-3k7hkyhl = Recovered mail
 
 d-m5y6nl2m = All inboxes
     .w-add-a-mail-account-in-settings = Add a mail account in Settings
