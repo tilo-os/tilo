@@ -318,14 +318,12 @@ pub(super) fn seal_version(
             .open(address)
             .ok_or("the source file is missing")
     };
-    let (manifest, mut inline) = match version.manifest {
-        Some(manifest) => (manifest, None),
-        None => {
-            let (manifest, _) =
-                fs::content::build_reader(BufReader::new(open()?), version.len, None)
-                    .map_err(|error| error.to_string())?;
-            (manifest, Some(BufReader::new(open()?)))
-        }
+    let (manifest, mut inline) = if let Some(manifest) = version.manifest {
+        (manifest, None)
+    } else {
+        let (manifest, _) = fs::content::build_reader(BufReader::new(open()?), version.len, None)
+            .map_err(|error| error.to_string())?;
+        (manifest, Some(BufReader::new(open()?)))
     };
     let old = manifest.sealed().map(|old| {
         let group = WorkspaceId::from_u128(u128::from_be_bytes(old.group));
@@ -387,14 +385,13 @@ pub(super) fn seal_version(
     {
         return Err("the source file changed while it was copied".into());
     }
-    let overhead = match overhead {
-        Some(overhead) => overhead,
-        None => {
-            let (_, sealed) = branch_keys
-                .seal_content(to, ContentRetention::Delta, &[])
-                .map_err(|error| error.to_string())?;
-            u32::try_from(sealed.len()).map_err(|error| error.to_string())?
-        }
+    let overhead = if let Some(overhead) = overhead {
+        overhead
+    } else {
+        let (_, sealed) = branch_keys
+            .seal_content(to, ContentRetention::Delta, &[])
+            .map_err(|error| error.to_string())?;
+        u32::try_from(sealed.len()).map_err(|error| error.to_string())?
     };
     let manifest = Manifest::new_sealed(
         manifest.tier(),
