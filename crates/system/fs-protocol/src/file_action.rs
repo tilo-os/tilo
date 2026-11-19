@@ -295,6 +295,32 @@ pub fn change_context(
     }
 }
 
+/// The workspace's tree as a node below the workspace: `files › files.tree › <tree document>`,
+/// every chunk decided as the document it splits, as a receiver of a change of it names it.
+#[must_use]
+pub fn tree_node() -> tilo_actions::policy::TreePath {
+    tilo_actions::policy::TreePath::root()
+        .app(crate::tree::FILES_APP)
+        .kind(crate::tree::TREE_KIND)
+        .resource(collab_types::receipt::published_resource(
+            &crate::tree::document_id(),
+        ))
+}
+
+/// The node below the workspace the file action `verb` on the tree's node `node` is decided
+/// at, or on the whole tree with no node named. It is the node a receiver of the change
+/// decides it at (`collab_types::receipt::claim_node`), so a mount writing a file, a call
+/// writing one where the tree is kept and every receiver of either answer at one node.
+#[must_use]
+pub fn verb_node(node: Option<&str>, verb: &str) -> tilo_actions::policy::TreePath {
+    let tree = tree_node();
+    match node {
+        Some(node) => tree.item(node),
+        None => tree,
+    }
+    .action(verb)
+}
+
 /// The verbs of the tree, as grants and History name them.
 pub mod verbs {
     pub const NEW_FOLDER: &str = "new-folder";

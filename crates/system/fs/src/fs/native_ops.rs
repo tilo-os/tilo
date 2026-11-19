@@ -124,6 +124,7 @@ impl QuickFS {
         if components.is_empty() {
             return Ok(());
         }
+        self.admit_as(None, None, fs_protocol::file_action::verbs::NEW_FOLDER)?;
         let ino = self.ensure_dir_components(&components)?;
         self.set_posix(ino, attrs, true)
     }
@@ -218,6 +219,16 @@ impl QuickFS {
         let Some((name, parents)) = components.split_last() else {
             return Err(EISDIR);
         };
+        let existing = self.ino_at(&components);
+        self.admit_as(
+            None,
+            existing,
+            if existing.is_some() {
+                fs_protocol::file_action::verbs::WRITE
+            } else {
+                fs_protocol::file_action::verbs::NEW_FILE
+            },
+        )?;
         let parent = self.ensure_dir_components(parents)?;
         let ino = match self.lookup_kind(parent, name) {
             Some((ino, FileType::RegularFile)) => ino,
@@ -275,7 +286,11 @@ impl QuickFS {
                 _ => return Ok(()),
             }
         }
-        match self.lookup_kind(parent, name) {
+        let found = self.lookup_kind(parent, name);
+        if let Some((ino, _)) = found {
+            self.admit_as(None, Some(ino), fs_protocol::file_action::verbs::TRASH)?;
+        }
+        match found {
             None => Ok(()),
             Some((_, FileType::Directory)) => self.remove_subtree(parent, name),
             Some(_) => match self.delete_named(parent, name, false) {
@@ -303,9 +318,10 @@ impl QuickFS {
             return Err(libc::EINVAL);
         }
         let parent = self.ino_at(parents).ok_or(ENOENT)?;
-        if self.lookup_kind(parent, name).is_none() {
+        let Some((ino, _)) = self.lookup_kind(parent, name) else {
             return Err(ENOENT);
-        }
+        };
+        self.admit_as(None, Some(ino), fs_protocol::file_action::verbs::MOVE)?;
         let new_parent = self.ensure_dir_components(new_parents)?;
         self.rename_named(parent, name, new_parent, new_name)?;
         self.publish();

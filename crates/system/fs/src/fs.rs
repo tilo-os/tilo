@@ -352,6 +352,25 @@ fn unsaved_copy_name_for(name: &[u8], digest: &blake3::Hash) -> Vec<u8> {
 /// returns.
 struct WriterNote(Option<crate::namespace::ActingAs>);
 
+/// Who one request writes for.
+struct Writing {
+    /// Whether a writer resolver named it: where none does, the thread's own acting stands.
+    resolved: bool,
+    /// The invoker its file actions name: `None` for the person at this device.
+    invoker: Option<tilo_actions::ActionInvoker>,
+}
+
+impl Writing {
+    fn noted(self) -> WriterNote {
+        WriterNote(self.resolved.then(|| {
+            crate::namespace::acting_as(
+                self.invoker
+                    .map(|invoker| tilo_actions::ActionContext::default().with_invoker(invoker)),
+            )
+        }))
+    }
+}
+
 impl Drop for WriterNote {
     fn drop(&mut self) {
         self.0.take();
@@ -545,6 +564,8 @@ pub struct QuickFS {
     actor: Option<fs_protocol::FileActor>,
     /// Who writes, from the process each request names ([`crate::writer`]).
     writers: Option<Arc<crate::writer::WriterResolver>>,
+    /// Whether the workspace takes a file action from that writer ([`crate::admission`]).
+    admission: Option<Arc<crate::admission::FileAdmission>>,
     /// Makes the namespace on disk hold the current placements: run after a record group
     /// is durable (native backend), and by `fsync`/`fsyncdir`.
     durability_hook: std::sync::OnceLock<DurabilityHook>,
@@ -600,6 +621,7 @@ impl QuickFS {
 
             actor: None,
             writers: None,
+            admission: None,
             durability_hook: std::sync::OnceLock::new(),
             changeset_open: AtomicBool::new(false),
             announce_held: AtomicBool::new(false),
@@ -1984,19 +2006,81 @@ impl QuickFS {
         self
     }
 
+    /// Admit every file action this filesystem writes as the workspace decides it: refused
+    /// ones answer `EROFS` ([`crate::admission`]).
+    #[must_use]
+    pub fn with_admission(mut self, admission: Arc<crate::admission::FileAdmission>) -> Self {
+        self.admission = Some(admission);
+        self
+    }
+
+    /// Who process `pid` writes for.
+    fn writing(&self, pid: u32) -> Writing {
+        let Some(writers) = &self.writers else {
+            return Writing {
+                resolved: false,
+                invoker: None,
+            };
+        };
+        let person = self.actor.as_ref().map(|actor| hex::encode(actor.person.0));
+        Writing {
+            resolved: true,
+            invoker: writers.resolve(pid).invoker(person.as_deref()),
+        }
+    }
+
     /// Note who process `pid` writes for, for the rest of this request on this thread: the
     /// file actions it makes are done by them.
     fn note_writer(&self, pid: u32) -> WriterNote {
-        let Some(writers) = &self.writers else {
-            return WriterNote(None);
+        self.writing(pid).noted()
+    }
+
+    /// [`Self::note_writer`], once the workspace admits the file action `verb` from that
+    /// writer on the node `ino` is (on the tree, for a node not made yet).
+    ///
+    /// # Errors
+    /// `EROFS` when the workspace refuses it: what no holder of the workspace would take is
+    /// read-only here.
+    fn admit_writer(&self, pid: u32, ino: Option<u64>, verb: &str) -> Result<WriterNote, i32> {
+        let writing = self.writing(pid);
+        self.admit_as(writing.invoker.as_ref(), ino, verb)?;
+        Ok(writing.noted())
+    }
+
+    /// [`Self::admit_writer`] for the node named `name` in the folder `parent`, when there is
+    /// one: what it is is the caller's to answer.
+    fn admit_named(
+        &self,
+        pid: u32,
+        parent: u64,
+        name: &[u8],
+        verb: &str,
+    ) -> Result<WriterNote, i32> {
+        let ino = self.ns().lookup(parent, name).map(|attr| attr.ino.0);
+        self.admit_writer(pid, ino, verb)
+    }
+
+    /// Whether the workspace admits the file action `verb` on `ino` by `invoker` (the person
+    /// at this device when `None`). Admitted without an admission attached.
+    fn admit_as(
+        &self,
+        invoker: Option<&tilo_actions::ActionInvoker>,
+        ino: Option<u64>,
+        verb: &str,
+    ) -> Result<(), i32> {
+        let Some(admission) = &self.admission else {
+            return Ok(());
         };
-        let writer = writers.resolve(pid);
-        let person = self.actor.as_ref().map(|actor| hex::encode(actor.person.0));
-        WriterNote(Some(crate::namespace::acting_as(
-            writer
-                .invoker(person.as_deref())
-                .map(|invoker| tilo_actions::ActionContext::default().with_invoker(invoker)),
-        )))
+        let node = ino.and_then(|ino| self.ns().id_for_ino(ino).map(str::to_owned));
+        if admission.admits(
+            invoker.map(|invoker| &invoker.acting),
+            node.as_deref(),
+            verb,
+        ) {
+            Ok(())
+        } else {
+            Err(EROFS)
+        }
     }
 
     /// The metadata projection of `ino`'s current content: the rich facts this device
@@ -4050,8 +4134,21 @@ impl Filesystem for QuickFS {
     }
 
     fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
-        let _writer = (!matches!(flags.acc_mode(), OpenAccMode::O_RDONLY))
-            .then(|| self.note_writer(req.pid()));
+        let _writer = if matches!(flags.acc_mode(), OpenAccMode::O_RDONLY) {
+            None
+        } else {
+            match self.admit_writer(
+                req.pid(),
+                Some(ino.0),
+                fs_protocol::file_action::verbs::WRITE,
+            ) {
+                Ok(writer) => Some(writer),
+                Err(errno) => {
+                    reply.error(to_errno(errno));
+                    return;
+                }
+            }
+        };
         let opened_path = {
             let ns = self.ns();
             ns.getattr(ino.0).and_then(|_| ns.path_for(ino.0))
@@ -4145,7 +4242,14 @@ impl Filesystem for QuickFS {
         flags: i32,
         reply: ReplyCreate,
     ) {
-        let writer = self.note_writer(req.pid());
+        let writer =
+            match self.admit_writer(req.pid(), None, fs_protocol::file_action::verbs::NEW_FILE) {
+                Ok(writer) => writer,
+                Err(errno) => {
+                    reply.error(to_errno(errno));
+                    return;
+                }
+            };
         let name_bytes = name.as_bytes();
         if let Err(e) = self.check_new_name(parent.0, name_bytes) {
             reply.error(to_errno(e));
@@ -4303,7 +4407,21 @@ impl Filesystem for QuickFS {
         _flags: Option<BsdFileFlags>,
         reply: ReplyAttr,
     ) {
-        let _writer = size.is_some().then(|| self.note_writer(req.pid()));
+        let _writer = if size.is_some() || mode.is_some() {
+            match self.admit_writer(
+                req.pid(),
+                Some(ino.0),
+                fs_protocol::file_action::verbs::WRITE,
+            ) {
+                Ok(writer) => Some(writer),
+                Err(errno) => {
+                    reply.error(to_errno(errno));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         // Truncation is a write; everything else here is ignored anyway, but a `setattr` on
         // something outside the view must not describe it, so the visibility check runs regardless.
         if !self.ino_in_view(ino.0) {
@@ -4348,7 +4466,14 @@ impl Filesystem for QuickFS {
         umask: u32,
         reply: ReplyEntry,
     ) {
-        let _writer = self.note_writer(req.pid());
+        let _writer =
+            match self.admit_writer(req.pid(), None, fs_protocol::file_action::verbs::NEW_FOLDER) {
+                Ok(writer) => writer,
+                Err(errno) => {
+                    reply.error(to_errno(errno));
+                    return;
+                }
+            };
         let name = name.as_bytes();
         if let Err(e) = self.check_new_name(parent.0, name) {
             reply.error(to_errno(e));
@@ -4381,12 +4506,34 @@ impl Filesystem for QuickFS {
     }
 
     fn unlink(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
-        let _writer = self.note_writer(req.pid());
+        let _writer = match self.admit_named(
+            req.pid(),
+            parent.0,
+            name.as_bytes(),
+            fs_protocol::file_action::verbs::TRASH,
+        ) {
+            Ok(writer) => writer,
+            Err(errno) => {
+                reply.error(to_errno(errno));
+                return;
+            }
+        };
         self.remove_entry(parent, name, false, reply);
     }
 
     fn rmdir(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
-        let _writer = self.note_writer(req.pid());
+        let _writer = match self.admit_named(
+            req.pid(),
+            parent.0,
+            name.as_bytes(),
+            fs_protocol::file_action::verbs::TRASH,
+        ) {
+            Ok(writer) => writer,
+            Err(errno) => {
+                reply.error(to_errno(errno));
+                return;
+            }
+        };
         self.remove_entry(parent, name, true, reply);
     }
 
@@ -4400,7 +4547,18 @@ impl Filesystem for QuickFS {
         flags: RenameFlags,
         reply: ReplyEmpty,
     ) {
-        let _writer = self.note_writer(req.pid());
+        let _writer = match self.admit_named(
+            req.pid(),
+            parent.0,
+            name.as_bytes(),
+            fs_protocol::file_action::verbs::MOVE,
+        ) {
+            Ok(writer) => writer,
+            Err(errno) => {
+                reply.error(to_errno(errno));
+                return;
+            }
+        };
         let name = name.as_bytes();
         let newname = newname.as_bytes();
         #[cfg(target_os = "linux")]

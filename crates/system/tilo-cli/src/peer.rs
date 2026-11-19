@@ -32,7 +32,8 @@ use tilo_session_client::device::Device as Entered;
 struct Held {
     workspace: WorkspaceId,
     name: String,
-    read_only: bool,
+    /// What the workspace takes from this device's writes ([`tilo_fs::admission`]).
+    admission: Arc<tilo_fs::admission::FileAdmission>,
     showing: mount::Showing,
     replica: tree::TreeReplica,
     _content: Arc<content::SessionContent>,
@@ -293,11 +294,7 @@ impl Peer {
                 self.fail(entry.workspace, &format!("not entered: {refusal}"));
                 continue;
             }
-            let read_only = entry
-                .role
-                .as_deref()
-                .is_some_and(|role| matches!(role, "viewer" | "commenter"));
-            match self.hold(device, entry, (&folder.name, &folder.path), read_only) {
+            match self.hold(device, entry, (&folder.name, &folder.path)) {
                 Ok(shown) => {
                     shown.replica.set_paused(folder.paused);
                     self.held.lock().await.push(shown);
@@ -320,10 +317,19 @@ impl Peer {
         device: &Entered,
         entry: &Listed,
         (folder_name, at): (&str, &Path),
-        read_only: bool,
     ) -> anyhow::Result<Held> {
         let workspace = entry.workspace;
         let link = device.session().clone();
+        // Every write is the workspace's to take, as its policy reads on this device now: a
+        // role changed or a grant taken back answers at the next write, never at mount time.
+        let engine = Arc::clone(link.engine());
+        let admission = Arc::new(
+            tilo_fs::admission::FileAdmission::new(
+                &hex::encode(device.cert().user_public_key),
+                Box::new(move || engine.policy(&workspace.to_string()).ok()),
+            )
+            .ok_or_else(|| anyhow::anyhow!("this device's person has no valid key"))?,
+        );
         let key = device.cert().device_public_key;
         let content = content::SessionContent::new(workspace, key, &link, Arc::clone(&self.store));
         let state = self.state.join(workspace.to_string());
@@ -339,6 +345,7 @@ impl Peer {
             content: Arc::clone(&content),
             actor,
             writers: Arc::clone(&self.writers),
+            admission: Arc::clone(&admission),
             state: &state,
         };
         let showing = mount::show(
@@ -346,12 +353,11 @@ impl Peer {
             at,
             &state.join("folder"),
             self.mount,
-            read_only,
         )?;
         Ok(Held {
             workspace,
             name: folder_name.to_owned(),
-            read_only,
+            admission,
             showing,
             replica,
             _content: content,
@@ -385,7 +391,11 @@ impl Peer {
                     name: shown.name.clone(),
                     at: shown.showing.at.clone(),
                     shown: shown.showing.shown,
-                    read_only: shown.read_only,
+                    read_only: !shown.admission.admits(
+                        None,
+                        None,
+                        fs_protocol::file_action::verbs::WRITE,
+                    ),
                     local_bytes: 0,
                     status: shown.replica.status(),
                 };

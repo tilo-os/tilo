@@ -11,6 +11,8 @@
 #[cfg(feature = "filesystem")]
 pub mod acl;
 #[cfg(feature = "filesystem")]
+pub mod admission;
+#[cfg(feature = "filesystem")]
 pub mod authenticated_transport;
 #[cfg(feature = "filesystem")]
 pub mod availability;
