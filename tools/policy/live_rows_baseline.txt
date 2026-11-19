@@ -50,7 +50,6 @@ row-operation 7 apps/git-client/src/actions.rs
 row-operation 2 apps/imager/src/app.rs
 row-operation 1 apps/imager/src/setup/actions.rs
 row-operation 9 apps/imager/src/setup/import_actions.rs
-row-operation 1 apps/launcher/src/surface.rs
 row-operation 1 apps/mail/src/contact_recipients.rs
 row-operation 16 apps/music/src/actions.rs
 row-operation 12 apps/music/src/app.rs
@@ -72,7 +71,6 @@ untyped-live-row 1 apps/imager/src/app.rs
 untyped-live-row 5 apps/imager/src/setup/actions.rs
 untyped-live-row 1 apps/imager/src/setup/desktop_journey.rs
 untyped-live-row 3 apps/imager/src/setup/import_actions.rs
-untyped-live-row 1 apps/launcher/src/surface.rs
 untyped-live-row 1 apps/mail/src/app.rs
 untyped-live-row 2 apps/mail/src/contact_recipients.rs
 untyped-live-row 1 apps/mail/src/resource.rs

@@ -7,6 +7,16 @@ use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, Effect, Model, resource};
 use ui::widget::Element;
 
+/// A result the search shows: an item of the `launcher.result` type, whose
+/// address names the entry it opens.
+#[derive(ui::tilo_resource::Row)]
+#[row(
+    kind = "launcher.result",
+    label = "Search result",
+    effects = LauncherEffect
+)]
+pub(crate) struct LauncherResult;
+
 /// The launcher resource, where its effects and result rows are published.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Launcher {}
@@ -59,7 +69,7 @@ pub enum LauncherEffect {
         by: i64,
     },
     #[effect(kind = "outside")]
-    #[effect(own_device, attended)]
+    #[effect(own_device, attended, on = LauncherResult)]
     Choose {
         #[param("The result to choose; the selected one when left out")]
         row: Option<String>,
