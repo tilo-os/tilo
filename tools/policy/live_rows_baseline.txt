@@ -59,7 +59,6 @@ row-operation 1 apps/mail/src/contact_recipients.rs
 row-operation 1 apps/monitor/src/app.rs
 row-operation 2 apps/music/src/app/local_files.rs
 row-operation 1 apps/music/src/app/spotify.rs
-row-operation 2 apps/pdf-viewer/src/actions.rs
 row-operation 11 apps/settings/src/panes/accounts.rs
 row-operation 2 apps/settings/src/panes/accounts/calendar_selection.rs
 row-operation 2 apps/settings/src/panes/accounts/thunderbird_import.rs
@@ -91,4 +90,3 @@ untyped-live-row 3 apps/imager/src/setup/import_actions.rs
 untyped-live-row 1 apps/mail/src/app.rs
 untyped-live-row 2 apps/mail/src/contact_recipients.rs
 untyped-live-row 1 apps/mail/src/resource.rs
-untyped-live-row 3 apps/pdf-viewer/src/actions.rs
