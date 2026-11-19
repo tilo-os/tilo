@@ -62,7 +62,7 @@ impl NativeProcess {
             crate::workspace_sync::follow_participation(&permissions);
         }
         let mut host = ApplicationOwner::with_store(
-            Rc::new(app_state::FsStore::new(resolved.profile_root)),
+            Rc::new(app_state::shared_store(resolved.profile_root)),
             resolved.device_id,
             &resolved.workspace_id,
             author,
@@ -472,7 +472,7 @@ impl NativeProfile {
         let (workspace_id, _) = launcher_workspace(workspace)?;
         let device_id = persistent_device_id(profile_root)?;
         let store: Rc<dyn durable_store::DurableStore> =
-            Rc::new(app_state::FsStore::new(profile_root.to_path_buf()));
+            Rc::new(app_state::shared_store(profile_root));
         let views = InstanceViewStore::with_store(Rc::clone(&store), &device_id, &workspace_id)
             .map_err(LaunchError::Restore)?;
         Ok(Self {
@@ -918,7 +918,7 @@ impl ApplicationOwner {
             )));
         }
         Self::with_store(
-            Rc::new(app_state::FsStore::new(profile_root)),
+            Rc::new(app_state::shared_store(profile_root)),
             device_id,
             workspace_id,
             author,

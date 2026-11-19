@@ -84,7 +84,7 @@ impl Records {
     #[cfg(target_os = "linux")]
     #[must_use]
     pub fn of(root: PathBuf) -> Self {
-        Self::new(Arc::new(app_state::FsStore::new(root)), Changes::default())
+        Self::new(app_state::shared_store(root), Changes::default())
     }
 
     /// The records of the workspace whose records `store` keeps as they reach this host, read

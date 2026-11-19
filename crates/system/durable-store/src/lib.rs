@@ -352,6 +352,87 @@ pub trait DurableStore {
     }
 }
 
+/// A store behind a handle several holders share: one instance, one writer thread, however many
+/// of them keep documents in it.
+impl<T: DurableStore + ?Sized> DurableStore for std::sync::Arc<T> {
+    fn namespace(&self) -> &str {
+        self.as_ref().namespace()
+    }
+
+    fn read(&self, key: &StorageKey) -> Result<Option<Stored>, StoreError> {
+        self.as_ref().read(key)
+    }
+
+    fn write(
+        &self,
+        key: &StorageKey,
+        op: WriteOp,
+        writer: Option<&[u8]>,
+    ) -> Result<Revision, StoreError> {
+        self.as_ref().write(key, op, writer)
+    }
+
+    fn durability(&self, key: &StorageKey, revision: Revision) -> Durability {
+        self.as_ref().durability(key, revision)
+    }
+
+    fn flush(&self, key: Option<&StorageKey>) -> Result<(), StoreError> {
+        self.as_ref().flush(key)
+    }
+
+    fn flush_without_waiting(&self, key: &StorageKey) -> Result<(), StoreError> {
+        self.as_ref().flush_without_waiting(key)
+    }
+
+    fn flush_where_allowed(&self, key: &StorageKey) -> Result<(), StoreError> {
+        self.as_ref().flush_where_allowed(key)
+    }
+
+    fn is_settled(&self, key: &StorageKey) -> bool {
+        self.as_ref().is_settled(key)
+    }
+
+    fn wake_when_settled(&self, key: &StorageKey, wake: ReadyWake) -> SettleWatch {
+        self.as_ref().wake_when_settled(key, wake)
+    }
+
+    fn lease(&self, key: &StorageKey) -> Result<Lease, StoreError> {
+        self.as_ref().lease(key)
+    }
+
+    fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, StoreError> {
+        self.as_ref().lease_shared(key)
+    }
+
+    fn declined_waiting_here(&self) -> bool {
+        self.as_ref().declined_waiting_here()
+    }
+
+    fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, StoreError> {
+        self.as_ref().claim(key, claimant)
+    }
+
+    fn documents(&self, app: &str, workspace: &str) -> Result<Vec<String>, StoreError> {
+        self.as_ref().documents(app, workspace)
+    }
+
+    fn workspace_indexes(&self) -> Result<Vec<(String, String)>, StoreError> {
+        self.as_ref().workspace_indexes()
+    }
+
+    fn local_path(&self, key: &StorageKey) -> Option<PathBuf> {
+        self.as_ref().local_path(key)
+    }
+
+    fn write_hint(&self, key: &StorageKey, hint: &[u8]) -> Result<(), StoreError> {
+        self.as_ref().write_hint(key, hint)
+    }
+
+    fn read_hint(&self, key: &StorageKey) -> Option<Vec<u8>> {
+        self.as_ref().read_hint(key)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

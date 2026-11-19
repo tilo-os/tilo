@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::{DOCUMENT_FILE, FsStore};
-use durable_store::{DurableStore as _, StorageKey};
+use crate::DOCUMENT_FILE;
+use durable_store::{DurableStore, StorageKey};
 
 /// The documents `keys` name in `store`, followed: what a follower compares to notice the holder's
 /// saves, and watches to hear of them at once.
@@ -23,8 +23,9 @@ pub struct Follow {
 impl Follow {
     /// Follow the documents `keys` name in `store`. Each is a directory holding
     /// [`DOCUMENT_FILE`]; a document the holder has not made yet has one too, and the watch arms
-    /// when it appears.
-    pub fn of(store: &FsStore, keys: &[StorageKey]) -> Self {
+    /// when it appears. Keys a store keeps nowhere locally are not followed; a follower then
+    /// reads its holder's documents through the store.
+    pub fn of(store: &dyn DurableStore, keys: &[StorageKey]) -> Self {
         let documents = keys
             .iter()
             .filter_map(|key| store.local_path(key))
@@ -212,6 +213,7 @@ mod socket {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FsStore;
     use durable_store::WriteOp;
 
     fn key(name: &str) -> StorageKey {

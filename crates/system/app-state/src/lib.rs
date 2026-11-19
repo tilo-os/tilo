@@ -47,6 +47,66 @@ pub mod held;
 mod save_plan;
 pub use save_plan::{Save, SavePlan};
 
+/// The document store over `root`: one per process, so every holder in this process that keeps a
+/// document in that profile writes through one writer thread and one debounce queue. A second
+/// call for the same root answers the same store.
+#[must_use]
+pub fn shared_store(root: impl Into<PathBuf>) -> Arc<FsStore> {
+    static STORES: std::sync::Mutex<std::collections::BTreeMap<PathBuf, Arc<FsStore>>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let root = root.into();
+    let mut stores = STORES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(
+        stores
+            .entry(root.clone())
+            .or_insert_with(|| Arc::new(FsStore::new(root))),
+    )
+}
+
+/// [`shared_store`] over the platform data directory: the device's one store for the documents
+/// that are the device's rather than an app's (its settings, and whatever a service beside them
+/// keeps).
+#[must_use]
+pub fn shared_native_store() -> Arc<FsStore> {
+    shared_store(cli::data_home())
+}
+
+#[cfg(test)]
+mod shared_store_tests {
+    use super::*;
+    use durable_store::WriteOp;
+
+    #[test]
+    fn one_root_answers_one_store_and_another_root_another() {
+        let root = tempfile::tempdir().unwrap();
+        let first = shared_store(root.path());
+        let second = shared_store(root.path());
+        assert!(Arc::ptr_eq(&first, &second));
+        let other = shared_store(root.path().join("elsewhere"));
+        assert!(!Arc::ptr_eq(&first, &other));
+    }
+
+    #[test]
+    fn a_document_written_through_one_handle_reads_through_the_other() {
+        let root = tempfile::tempdir().unwrap();
+        let key = StorageKey::app("so.tilo.test");
+        let writer = shared_store(root.path());
+        let lease = writer.lease(&key).unwrap();
+        writer
+            .write(&key, WriteOp::Replace(b"kept".to_vec()), None)
+            .unwrap();
+        writer.flush(Some(&key)).unwrap();
+        drop(lease);
+        let reader = shared_store(root.path());
+        assert_eq!(
+            reader.read(&key).unwrap().map(|stored| stored.bytes),
+            Some(b"kept".to_vec())
+        );
+    }
+}
+
 pub const DOCUMENT_FILE: &str = "state.automerge";
 pub const ACTOR_FILE: &str = "actor";
 /// Beside a large document: the change hashes its last full save
@@ -229,17 +289,17 @@ impl DocStore {
         Self::open_for(&cli::package_id())
     }
 
-    /// The store the native host keeps launch-environment documents in: an
-    /// [`FsStore`] over the platform data directory (`$XDG_DATA_HOME`, else
-    /// `~/.local/share`).
+    /// The store the native host keeps launch-environment documents in: the process's one
+    /// [`FsStore`] over the platform data directory (`$XDG_DATA_HOME`, else `~/.local/share`),
+    /// shared with everything else in this process that keeps a document there.
     pub fn native_store() -> Rc<dyn DurableStore> {
-        Rc::new(FsStore::new(cli::data_home()))
+        Rc::new(shared_native_store())
     }
 
     /// [`Self::native_store`] as a handle any thread may hold: a service
     /// that keeps a document of its own beside the app's shares this one.
     pub fn native_store_shared() -> Arc<dyn DurableStore + Send + Sync> {
-        Arc::new(FsStore::new(cli::data_home()))
+        shared_native_store()
     }
 
     /// Open the store for an explicit app id — for tests and migration

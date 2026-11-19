@@ -240,7 +240,7 @@ fn person_store() -> Option<std::rc::Rc<dyn durable_store::DurableStore>> {
         .or_else(|| {
             launcher::appdir::host_data_home().map(|home| home.join(launcher::appdir::PERSON_DIR))
         })?;
-    Some(std::rc::Rc::new(app_state::FsStore::new(root)))
+    Some(std::rc::Rc::new(app_state::shared_store(root)))
 }
 
 impl Drop for ShellRecord {

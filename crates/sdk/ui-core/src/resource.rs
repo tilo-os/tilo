@@ -1191,7 +1191,7 @@ pub struct ResourceOwners {
 impl ResourceOwners {
     /// Owners persisting under a local profile directory.
     pub fn new(profile_state_root: PathBuf) -> Self {
-        Self::with_store(Rc::new(app_state::FsStore::new(profile_state_root)))
+        Self::with_store(Rc::new(app_state::shared_store(profile_state_root)))
     }
 
     /// Owners persisting through a host-provided store.
