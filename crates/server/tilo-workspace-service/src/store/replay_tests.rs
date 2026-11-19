@@ -1268,3 +1268,58 @@ fn a_join_costs_what_it_sends() {
         "the first batch of 400 members took {large:?}, of 40 {small:?}"
     );
 }
+
+/// A capture finishes when a lineage's frame is staged but not put in place yet, and when a
+/// lineage's first frame is still being retained. The newcomer is still sent the lineage's frame
+/// that is in place, and the staged one through the queue it is sent.
+#[test]
+fn a_capture_finishes_with_a_lineage_whose_frame_is_not_in_place_yet() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
+    let retained = raw_generation(&store, 0, 9);
+    let in_place = frame(1, 32, 1);
+    fs::write(
+        retained.join("00000000000000000000000000000001.delta"),
+        &in_place,
+    )
+    .unwrap();
+    // A commit's frame, staged under its group's name until the barrier puts it in place.
+    let staged = frame(2, 32, 2);
+    fs::write(
+        retained.join(".00000000000000000000000000000002.delta.7.group"),
+        &staged,
+    )
+    .unwrap();
+    // A lineage whose first frame is still being retained: a generation with nothing in it yet.
+    raw_generation(&store, 0, 10);
+    // The staged frame is queued for the device this replay is for, as a commit's fan-out to a
+    // session still catching up leaves it.
+    raw_pending(&store, &[2; 32], 3, &staged);
+
+    let mut build = store
+        .start_replay_capture(ReplayId(rand::random()), [2; 32])
+        .unwrap();
+    let mut steps = 0;
+    let mut snapshot = loop {
+        steps += 1;
+        assert!(
+            steps <= 64,
+            "a capture finishes rather than listing a lineage only its owner can settle"
+        );
+        if let Step::Done(snapshot) = store
+            .capture_replay_step(&mut build, WorkLimit::default())
+            .unwrap()
+        {
+            break snapshot;
+        }
+    };
+    let stamps = stamps_of(&store, &mut snapshot);
+    assert!(
+        stamps.contains(&1),
+        "the lineage's frame in place is sent: {stamps:?}"
+    );
+    assert!(
+        stamps.contains(&2),
+        "the staged frame reaches the newcomer through its queue: {stamps:?}"
+    );
+}

@@ -260,6 +260,11 @@ pub(crate) struct ReplayOrder {
     ranks: HashMap<OsString, &'static str>,
     /// Lineages to list again before the order is read.
     stale: BTreeSet<OsString>,
+    /// Lineages this capture could not list as settled, or could not read at all: the next
+    /// capture lists them again, this one never. Their in-place frames are listed now; what a
+    /// commit has staged and not put in place reaches the newcomer through the queue it is sent
+    /// ([`crate::store::replay`]'s pending cut).
+    deferred: BTreeSet<OsString>,
     /// Whether `lineages` holds every lineage but the stale ones.
     complete: bool,
 }
@@ -330,52 +335,66 @@ impl WorkspaceStore {
     /// lineage again, every lineage when the order is not complete.
     fn update_replay_order(&self, limit: WorkLimit) -> Result<Step<()>, StoreError> {
         let v2 = self.root.join("retained/v2");
-        let mut order = self.replay_order();
-        if !order.complete {
-            let mut names = BTreeSet::new();
-            if let Some(entries) = open_dir(&v2)? {
-                for entry in entries {
-                    let entry = entry?;
-                    if entry.file_type()?.is_dir() {
-                        names.insert(entry.file_name());
+
+        let more = {
+            let mut order = self.replay_order();
+            if !order.complete {
+                let mut names = BTreeSet::new();
+                if let Some(entries) = open_dir(&v2)? {
+                    for entry in entries {
+                        let entry = entry?;
+                        if entry.file_type()?.is_dir() {
+                            names.insert(entry.file_name());
+                        }
+                    }
+                }
+                order.lineages.clear();
+                order.ranks.clear();
+                order.stale = names;
+                order.deferred.clear();
+                order.complete = true;
+            }
+            for _ in 0..limit.entry_bound() {
+                let Some(name) = order.stale.pop_first() else {
+                    break;
+                };
+                if let Some(rank) = order.ranks.remove(&name) {
+                    order.lineages.remove(&(rank, name.clone()));
+                }
+                let listed = self.list_lineage(&v2, &name);
+                match listed {
+                    Ok(Some((frames, settled))) => {
+                        if !settled {
+                            // A frame its owner's group has not put in place yet. Only the owner
+                            // settles it, and the owner is here until this capture ends: listing
+                            // it again in this capture would never finish, and every newcomer's
+                            // replay would wait behind it. Its frames in place are listed now,
+                            // what is staged arrives through the queue the newcomer is sent, and
+                            // the next capture lists it again.
+                            order.deferred.insert(name.clone());
+                        }
+                        order.ranks.insert(name.clone(), frames.rank);
+                        order.lineages.insert((frames.rank, name), Arc::new(frames));
+                    }
+                    Ok(None) => {
+                        // A first checkpoint still staged, or a lineage gone: read again by the
+                        // next capture.
+                        order.deferred.insert(name);
+                    }
+                    Err(error) => {
+                        order.stale.insert(name);
+                        return Err(error);
                     }
                 }
             }
-            order.lineages.clear();
-            order.ranks.clear();
-            order.stale = names;
-            order.complete = true;
-        }
-        for _ in 0..limit.entry_bound() {
-            let Some(name) = order.stale.pop_first() else {
-                return Ok(Step::Done(()));
-            };
-            if let Some(rank) = order.ranks.remove(&name) {
-                order.lineages.remove(&(rank, name.clone()));
+            let more = !order.stale.is_empty();
+            if !more {
+                // What this capture could not settle or read waits for the next one.
+                order.stale = std::mem::take(&mut order.deferred);
             }
-            let listed = self.list_lineage(&v2, &name);
-            match listed {
-                Ok(Some((frames, settled))) => {
-                    if !settled {
-                        // A frame its owner's group has not put in place
-                        // yet: the lineage is listed again next time.
-                        order.stale.insert(name.clone());
-                    }
-                    order.ranks.insert(name.clone(), frames.rank);
-                    order.lineages.insert((frames.rank, name), Arc::new(frames));
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    order.stale.insert(name);
-                    return Err(error);
-                }
-            }
-        }
-        Ok(if order.stale.is_empty() {
-            Step::Done(())
-        } else {
-            Step::More
-        })
+            more
+        };
+        Ok(if more { Step::More } else { Step::Done(()) })
     }
 
     /// Lineage `name` of `v2` as its current generation holds it, and
@@ -1118,7 +1137,13 @@ impl WorkspaceStore {
         }
         if build.phase == 2 {
             self.classify_lineages()?;
-            if self.update_replay_order(limit)? == Step::More {
+            let (stale, deferred) = {
+                let order = self.replay_order();
+                (order.stale.len(), order.deferred.len())
+            };
+            let more = self.update_replay_order(limit)? == Step::More;
+            tracing::debug!(device = %hex::encode(&build.device[..2]), stale, deferred, more, "CAPTURE order");
+            if more {
                 return Ok(Step::More);
             }
             build.lineages = self.replayed_lineages(build.every_document, build.channels.as_ref());

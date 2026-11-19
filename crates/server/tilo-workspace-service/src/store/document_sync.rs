@@ -93,6 +93,9 @@ pub(super) struct Classes {
     chains: HashMap<[u8; 32], ChainKey>,
     /// Lineages already read for their channel's record.
     lineages: HashSet<OsString>,
+    /// Lineages whose first frame is still being retained: read again on the next look, without
+    /// reading the whole directory again.
+    pending: BTreeSet<OsString>,
     /// When the retained directory last changed as of the last read of its
     /// lineages: it is read again only once a lineage was added or removed.
     scanned: Option<std::time::SystemTime>,
@@ -485,8 +488,13 @@ impl WorkspaceStore {
     fn read_lineage_records(&self) -> Result<(), StoreError> {
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         let changed = fs::metadata(&v2).and_then(|meta| meta.modified()).ok();
-        if changed.is_some() && self.classes().scanned == changed {
-            return Ok(());
+        {
+            let classes = self.classes();
+            // A lineage whose first frame is still being retained is read again, alone: the
+            // directory was read whole.
+            if changed.is_some() && classes.scanned == changed && classes.pending.is_empty() {
+                return Ok(());
+            }
         }
         self.read_lineages_at(&v2, changed)
     }
@@ -514,15 +522,12 @@ impl WorkspaceStore {
         // A lineage still being retained is read again next time, whether or
         // not another is added meanwhile: until then the store does not know
         // which part of its chain is the head.
-        let mut unread = false;
         for entry in entries {
             let entry = entry?;
             let name = entry.file_name();
             if self.classes().lineages.contains(&name) {
                 continue;
             }
-            // Read for the first time: the replay order lists it.
-            self.forget_listed(Some(std::slice::from_ref(&name)));
             let channel = lineage_channel(&name);
             let read = match channel {
                 Some(channel) if !self.classes().channels.contains_key(&channel) => {
@@ -530,22 +535,23 @@ impl WorkspaceStore {
                 }
                 _ => LineageRecord::Other,
             };
-            let mut classes = self.classes();
-            match (read, channel) {
-                // Read again next time: its first frame is still being
-                // retained.
-                (LineageRecord::Empty, _) => {
-                    unread = true;
-                    continue;
-                }
-                (LineageRecord::Record(route), Some(channel)) => {
-                    classes.learn(channel, &route);
-                }
-                _ => {}
+            // Its first frame is still being retained: it holds nothing to classify yet, and it is
+            // read again on the next look. Marking it stale here would mark it on every look, and a
+            // capture listing the order again and again never finishes.
+            if matches!(read, LineageRecord::Empty) {
+                self.classes().pending.insert(name);
+                continue;
             }
+            // Read for the first time: the replay order lists it.
+            self.forget_listed(Some(std::slice::from_ref(&name)));
+            let mut classes = self.classes();
+            if let (LineageRecord::Record(route), Some(channel)) = (read, channel) {
+                classes.learn(channel, &route);
+            }
+            classes.pending.remove(&name);
             classes.lineages.insert(name);
         }
-        self.classes().scanned = changed.filter(|_| !unread);
+        self.classes().scanned = changed;
         Ok(())
     }
 
