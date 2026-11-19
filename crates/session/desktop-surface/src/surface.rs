@@ -208,6 +208,15 @@ pub trait TileSource {
     }
 }
 
+/// What a strip reads for control hints as it draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HintReading {
+    /// Where its windows' bars and edges are.
+    Places,
+    /// Those, and where its windows show text and controls: while a hint may show soon.
+    WithInk,
+}
+
 struct Shared {
     tree: Layout,
     /// The floating windows this device stands in the floating layer's column, and where the
@@ -274,6 +283,8 @@ struct Shared {
     shown_strip: Option<(StripId, Rect, f64)>,
     /// Where the shown strip's controls are for control hints, as last drawn.
     hint_places: ui::widget::HintPlaces,
+    /// What the strip reads for control hints as it draws.
+    hint_reading: HintReading,
     /// Carets and selections of the focused window's editors, as last laid out
     /// ([`ui::presence::capability::subtree_presence`]).
     focused_presence: Vec<(PresenceKey, PresencePayload)>,
@@ -519,6 +530,16 @@ impl DesktopHandle {
     /// in the surface's coordinates, as last drawn.
     pub fn hint_places(&self) -> ui::widget::HintPlaces {
         self.shared.borrow().hint_places.clone()
+    }
+
+    /// Whether the desktop's control hints may show soon: while they may, each frame also reads
+    /// where the shown windows show text and controls, which a hint's card keeps off.
+    pub fn read_hint_ink(&self, read: bool) {
+        self.shared.borrow_mut().hint_reading = if read {
+            HintReading::WithInk
+        } else {
+            HintReading::Places
+        };
     }
 
     /// The caret or selection this desktop publishes as its presence, given the keyboard-focused
@@ -2348,9 +2369,10 @@ impl Widget for DesktopSurface {
     ) {
         self.draw_leaving_strip(scene, transform, text, theme, presence);
         self.draw_display_strips(scene, transform, text, theme, presence);
+        let read_ink = self.shared.borrow().hint_reading == HintReading::WithInk;
         let hint_places = self.shown_row().map(|row| {
             ui::widget::draw_child(row, scene, transform, text, theme, presence);
-            row.hint_places()
+            row.hint_places(read_ink)
         });
         // What the strips just drew of their floated windows whole over the windows under them,
         // the shown row's included: the compositor draws those around it rather than under it, so

@@ -186,6 +186,11 @@ pub struct ControlHints {
     motion: EffectiveMotion,
     /// The person typed until then: no hint begins meanwhile.
     typing_until: Option<Instant>,
+    /// The strip was last asked to read where its windows show text and controls
+    /// ([`Self::reads_ink`]); asked anew, one more frame brings what it read.
+    reading_ink: bool,
+    /// A frame is wanted for the strip to read it.
+    ink_frame: Cell<bool>,
 }
 
 impl ControlHints {
@@ -197,6 +202,8 @@ impl ControlHints {
             said: Rc::default(),
             motion: EffectiveMotion::default(),
             typing_until: None,
+            reading_ink: false,
+            ink_frame: Cell::new(false),
         }
     }
 
@@ -204,6 +211,31 @@ impl ControlHints {
     #[must_use]
     pub fn enabled(&self) -> bool {
         self.layer.coach().learned().enabled
+    }
+
+    /// Whether a hint may show soon, so the strip should read where its windows show text and
+    /// controls as it draws: hints are on, one is on screen or still to learn, and the person is
+    /// not typing. Reading that walks the windows' content, so it stops once every hint is learned.
+    pub fn reads_ink(&mut self, now: Instant) -> bool {
+        let reads = self.wants_ink(now);
+        if reads && !self.reading_ink {
+            self.ink_frame.set(true);
+        }
+        self.reading_ink = reads;
+        reads
+    }
+
+    fn wants_ink(&self, now: Instant) -> bool {
+        let coach = self.layer.coach();
+        let learned = coach.learned();
+        let typing = self.typing_until.is_some_and(|until| now < until);
+        learned.enabled
+            && (coach.current().is_some()
+                || (!typing
+                    && HINTS.iter().any(|spec| {
+                        !learned.knows(spec.id)
+                            && learned.showings(spec.id) < ui::control_hints::coach::MAX_SHOWINGS
+                    })))
     }
 
     /// Turn hints on or off (the person's "Show control hints").
@@ -312,7 +344,7 @@ impl ControlHints {
     /// Whether the hint on screen moves at `now` .
     #[must_use]
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
-        self.layer.needs_frame(now, self.motion)
+        self.ink_frame.replace(false) || self.layer.needs_frame(now, self.motion)
     }
 
     /// When the hints next need a frame: a hint's own schedule, or the pause in typing that lets a
@@ -422,6 +454,18 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
             )
         }
     };
+    // What the card may slide along to find free ground: the bar the window is held by, the
+    // edge the view moves toward, the top half of the desktop where search opens. An edge between
+    // two windows is its own stretch.
+    let along = match spec.gesture {
+        Gesture::OpenFromSearch => Rect::new(area.x0, anchor.y0, area.x1, area.center().y),
+        Gesture::MoveWindow => row.bar_span.map_or(anchor, |bar| bar.union(anchor)),
+        Gesture::ResizeEdge => anchor,
+        Gesture::PanView => edge.map_or(anchor, |line| Rect::from_points(line.p0, line.p1)),
+    };
+    // Where the windows show text and controls is read only while a hint may show: until the
+    // strip has read it, no hint stands anywhere.
+    let ink = row.ink.clone()?;
     Some(HintPlace {
         anchor,
         side,
@@ -430,6 +474,9 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
         keys,
         points: spec.gesture != Gesture::OpenFromSearch,
         touch: frame.touch,
+        along,
+        windows: row.windows_on_strip.clone(),
+        ink,
     })
 }
 
@@ -451,6 +498,8 @@ mod tests {
                     WindowEdge::Trailing,
                 )),
                 asking: false,
+                ink: Some(Vec::new()),
+                ..HintPlaces::default()
             },
             area: Rect::new(0.0, 40.0, 1440.0, 900.0),
             search_keys: vec!["Ctrl".into(), "K".into()],
@@ -545,6 +594,15 @@ mod tests {
                 place(resize, &frame).unwrap().words,
                 crate::i18n::t("control-hint-resize")
             );
+        }
+
+        phase no_hint_stands_before_the_strip_read_its_windows_text_and_controls;
+        {
+            let mut frame = frame();
+            frame.row.ink = None;
+            for spec in HINTS {
+                assert!(place(spec, &frame).is_none(), "{}", spec.id);
+            }
         }
 
         phase a_hint_whose_anchor_is_not_on_screen_waits;

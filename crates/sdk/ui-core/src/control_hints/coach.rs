@@ -1,4 +1,4 @@
-//! When a control hint shows, goes, and is learned: a pure schedule over what the host observed, with
+//! When a control hint shows, goes, and is learned: a pure schedule over what the shell observed, with
 //! no drawing and no clock of it.
 
 use super::{Cue, HintSpec, Learned, Quiet};
@@ -10,11 +10,13 @@ pub const IGNORED_AFTER: Duration = Duration::from_secs(9);
 pub const MIN_GAP: Duration = Duration::from_secs(60);
 /// How long after it went unanswered a hint may come back, once, in the same session.
 pub const RETURN_AFTER: Duration = Duration::from_secs(10 * 60);
-/// How long a moment a host saw ([`Cue::Saw`]) stays the moment to show a hint: one that comes after
+/// How long a moment the shell saw ([`Cue::Saw`]) stays the moment to show a hint: one that comes after
 /// this is no longer about what just happened.
 pub const CUE_FRESH: Duration = Duration::from_secs(20);
 /// The most times one hint shows, ever.
 pub const MAX_SHOWINGS: u8 = 2;
+/// How long after a hint found no free spot to stand in it may try again.
+pub const RETRY_AFTER: Duration = Duration::from_secs(5);
 
 /// Where the hint on screen is in its life.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,7 +43,7 @@ struct Track {
     left: Option<Instant>,
 }
 
-/// The schedule of a set of hints over the signals `S` a host observes.
+/// The schedule of a set of hints over the signals `S` a shell observes.
 pub struct Coach<S: 'static> {
     specs: &'static [HintSpec<S>],
     tracks: Vec<Track>,
@@ -49,9 +51,14 @@ pub struct Coach<S: 'static> {
     current: Option<Current>,
     started: Option<Instant>,
     last_began: Option<Instant>,
+    /// When the hint before the one on screen began: what the gap between hints counts from again
+    /// when the one on screen is withdrawn.
+    began_before: Option<Instant>,
+    /// No hint begins before this: one just withdrawn for want of a free spot tries again then.
+    held_until: Option<Instant>,
     /// The last instant [`Self::tick`] advanced to.
     ticked: Option<Instant>,
-    /// The record changed since the host last took it.
+    /// The record changed since the shell last took it.
     dirty: bool,
 }
 
@@ -65,6 +72,8 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
             current: None,
             started: None,
             last_began: None,
+            began_before: None,
+            held_until: None,
             ticked: None,
             dirty: false,
         }
@@ -89,7 +98,7 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
         &self.learned
     }
 
-    /// The record, when it changed since the last call: the host writes it to the person data.
+    /// The record, when it changed since the last call: the shell writes it to the person data.
     pub fn take_changed(&mut self) -> Option<Learned> {
         std::mem::take(&mut self.dirty).then(|| self.learned.clone())
     }
@@ -137,6 +146,43 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
         }
     }
 
+    /// The hint on screen has nowhere to stand now: what it points at is covered, or everything
+    /// beside it is text and controls. It goes, as one whose anchor went, and may come back once
+    /// it has been away.
+    pub fn dismiss(&mut self, now: Instant) {
+        let Some(current) = self.current else {
+            return;
+        };
+        if !matches!(current.phase, Phase::Shown(_)) {
+            return;
+        }
+        if let Some(track) = self.tracks.get_mut(current.index) {
+            track.left = Some(now);
+        }
+        self.current = Some(Current {
+            index: current.index,
+            phase: Phase::Leaving(now),
+        });
+    }
+
+    /// The hint just begun found no free spot to stand in before it ever reached the screen: it
+    /// did not show, so it does not count as shown, and it tries again at the next chance.
+    pub fn withdraw(&mut self, now: Instant) {
+        let Some(Current {
+            index,
+            phase: Phase::Shown(_),
+        }) = self.current
+        else {
+            return;
+        };
+        if let Some(spec) = self.specs.get(index) {
+            self.learned.withdraw_shown(spec.id);
+        }
+        self.last_began = self.began_before;
+        self.held_until = Some(now + RETRY_AFTER);
+        self.current = None;
+    }
+
     /// Advance to `now`.
     pub fn tick(
         &mut self,
@@ -157,6 +203,7 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
             || self
                 .last_began
                 .is_some_and(|began| now.saturating_duration_since(began) < MIN_GAP)
+            || self.held_until.is_some_and(|until| now < until)
         {
             return;
         }
@@ -166,7 +213,7 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
             let id = self.specs[index].id;
             self.learned.note_shown(id);
             self.dirty = true;
-            self.last_began = Some(now);
+            self.began_before = self.last_began.replace(now);
             self.current = Some(Current {
                 index,
                 phase: Phase::Shown(now),
@@ -190,6 +237,9 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
         }
         let started = self.started?;
         let mut due = self.last_began.map(|began| began + MIN_GAP);
+        if let Some(held) = self.held_until {
+            due = Some(due.map_or(held, |d| d.max(held)));
+        }
         for (index, spec) in self.specs.iter().enumerate() {
             if self.learned.knows(spec.id) {
                 continue;

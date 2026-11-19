@@ -12,10 +12,11 @@
 )]
 use std::rc::Rc;
 
+use crate::hint_app::SketchTiles;
 use crate::support::with_chrome;
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::control_hints::{ControlHints, HINTS, HintFrame, HintsFeed};
-use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
+use tilo_desktop::desktop_host::{DesktopChrome, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
@@ -87,7 +88,9 @@ fn chrome_over(tree: &Layout, feed: &HintsFeed) -> (FrameHarness, DesktopHandle)
 
 /// [`chrome_over`] on a screen `width` logical pixels across.
 fn chrome_over_at(tree: &Layout, feed: &HintsFeed, width: u32) -> (FrameHarness, DesktopHandle) {
-    let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
+    let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(SketchTiles));
+    // The strip reads where its windows show text and controls, as it does while a hint may show.
+    handle.read_hint_ink(true);
     let mut shell = FrameHarness::new(ui::state::State::new(), Box::new(surface), (width, 800));
     shell.relayout();
     let mut chrome = DesktopChrome::new(
@@ -125,8 +128,8 @@ fn draw_chrome(frame: &mut FrameHarness) {
 /// What a case leaves the feed as, before a frame.
 type Arrange = fn(&HintsFeed);
 
-/// The record of someone who learned every hint but `unlearned`.
-fn record_learning_all_but(unlearned: &str) -> Learned {
+/// What someone learned: every hint but `unlearned`.
+fn learning_all_but(unlearned: &str) -> Learned {
     let mut learned = Learned::default();
     for spec in HINTS.iter().filter(|spec| spec.id != unlearned) {
         learned.learn(spec.id);
@@ -137,7 +140,7 @@ fn record_learning_all_but(unlearned: &str) -> Learned {
 #[test]
 fn a_hint_the_person_has_not_learned_shows_over_the_desktop() {
     let feed = HintsFeed::default();
-    feed.set_record(record_learning_all_but("resize-window"));
+    feed.set_record(learning_all_but("resize-window"));
     feed.set_context(None, true, Vec::new());
     let mut frame = chrome_with_hints(2, &feed);
     with_chrome(&mut frame, |chrome| {
@@ -157,7 +160,7 @@ fn a_hint_the_person_has_not_learned_shows_over_the_desktop() {
 #[test]
 fn a_hint_leaves_when_the_overview_covers_the_shell() {
     let feed = HintsFeed::default();
-    feed.set_record(record_learning_all_but("resize-window"));
+    feed.set_record(learning_all_but("resize-window"));
     feed.set_context(None, true, Vec::new());
     let mut frame = chrome_with_hints(2, &feed);
     assert!(with_chrome(&mut frame, |chrome| chrome
@@ -180,17 +183,17 @@ fn nothing_is_taught_while_the_person_may_not_learn() {
     // Each case leaves the feed as a host would before a frame.
     let cases: [(&str, Arrange); 3] = [
         ("every hint the person learned", |feed| {
-            feed.set_record(record_learning_all_but(""));
+            feed.set_record(learning_all_but(""));
             feed.set_context(None, true, Vec::new());
         }),
         ("hints turned off in the person's settings", |feed| {
-            let mut learned = record_learning_all_but("resize-window");
+            let mut learned = learning_all_but("resize-window");
             learned.enabled = false;
             feed.set_record(learned);
             feed.set_context(None, true, Vec::new());
         }),
         ("following someone", |feed| {
-            feed.set_record(record_learning_all_but("resize-window"));
+            feed.set_record(learning_all_but("resize-window"));
             feed.set_context(Some(ui::control_hints::Quiet::Following), true, Vec::new());
         }),
     ];
@@ -230,7 +233,8 @@ fn maximised(windows: u64) -> Layout {
 /// strip's row as it lays out: every window stands clear of the bar, the way the desktop stands
 /// them while its bar shows.
 fn shell_below_the_bar(tree: &Layout, width: u32) -> (FrameHarness, ui::widget::HintPlaces) {
-    let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
+    let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(SketchTiles));
+    handle.read_hint_ink(true);
     // Windows come to rest below the bar at once, as they do when the person asks for less motion:
     // the slide down to it is motion, not geometry, and a hint is placed against the geometry.
     let mut shell = FrameHarness::for_root(
@@ -274,7 +278,7 @@ fn painted_hint(
     let bar = f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX);
     let viewport = row.viewport;
     let area = Rect::new(viewport.x0, viewport.y0.max(bar), viewport.x1, viewport.y1);
-    let mut hints = ControlHints::new(record_learning_all_but(unlearned));
+    let mut hints = ControlHints::new(learning_all_but(unlearned));
     for cue in cues {
         performed::note(*cue);
     }
@@ -308,13 +312,28 @@ fn painted_hint(
 /// that card, never a line-tall label.
 const CARD_HEIGHT: f64 = 56.0;
 
-/// Every hint is a card over the desktop, under the bar and never in it, whatever the bar holds:
-/// search comes down at the middle of the desktop just under the bar, the view's hint sits at the
-/// edge the windows hide past, and the move and resize hints sit at the bar and edge they teach.
+/// Every place the strip says its windows show text and controls.
+fn ink_of(row: &ui::widget::HintPlaces) -> Vec<Rect> {
+    row.ink
+        .clone()
+        .expect("fixture: the strip read its windows' text and controls")
+}
+
+/// Whether `card` covers none of what `row`'s windows show.
+fn covers_nothing(card: Rect, row: &ui::widget::HintPlaces) {
+    for ink in ink_of(row) {
+        assert!(!card.overlaps(ink), "the hint {card:?} covers {ink:?}");
+    }
+}
+
+/// Every hint is a card over the desktop, under the bar and never in it, at its gesture, and
+/// covering none of the windows' text and controls: search comes down just under the bar, the
+/// view's hint sits at the edge the windows hide past, and the move and resize hints sit at the
+/// bar and edge they teach.
 #[test]
 fn every_hint_is_a_card_over_the_desktop_at_its_gesture() {
     for tree in [layout_tree(0), layout_tree(2), maximised(3), busy_shell()] {
-        let (painted, _, area) = painted_hint(
+        let (painted, row, area) = painted_hint(
             &tree,
             "open-from-search",
             &[],
@@ -323,13 +342,25 @@ fn every_hint_is_a_card_over_the_desktop_at_its_gesture() {
         );
         let card = painted.expect("the search hint shows");
         assert!(card.y0 >= area.y0, "under the bar, not in it: {card:?}");
-        assert!(card.y0 - area.y0 < 48.0, "just under the bar: {card:?}");
         assert!(
-            (card.center().x - area.center().x).abs() < 1.0,
-            "at the desktop's middle: {card:?} in {area:?}"
+            card.y1 <= area.center().y,
+            "in the top half of the desktop: {card:?}"
         );
         assert_eq!(card.height(), CARD_HEIGHT, "the card with its picture");
+        covers_nothing(card, &row);
     }
+    let (painted, _, area) = painted_hint(
+        &layout_tree(0),
+        "open-from-search",
+        &[],
+        ui::time::Duration::from_secs(18),
+        1280,
+    );
+    let card = painted.expect("the search hint shows");
+    assert!(
+        (card.center().x - area.center().x).abs() < 1.0,
+        "on an empty desktop, at its middle: {card:?} in {area:?}"
+    );
     let (painted, row, area) = painted_hint(
         &layout_tree(4),
         "pan-view",
@@ -343,11 +374,8 @@ fn every_hint_is_a_card_over_the_desktop_at_its_gesture() {
         area.x1 - card.x1 < 40.0,
         "at the edge the windows hide past: {card:?} in {area:?}"
     );
-    assert!(
-        (card.center().y - area.center().y).abs() < 1.0,
-        "halfway down that edge: {card:?}"
-    );
     assert_eq!(card.height(), CARD_HEIGHT);
+    covers_nothing(card, &row);
     let (painted, row, _) = painted_hint(
         &layout_tree(2),
         "resize-window",
@@ -358,9 +386,11 @@ fn every_hint_is_a_card_over_the_desktop_at_its_gesture() {
     let card = painted.expect("the resize hint shows");
     let (line, _) = row.focused_edge.expect("fixture: an edge to take");
     assert!(
-        card.x0 > line.p0.x && card.x0 - line.p0.x < 24.0,
+        (card.x0 > line.p0.x && card.x0 - line.p0.x < 24.0)
+            || (card.x1 < line.p0.x && line.p0.x - card.x1 < 24.0),
         "right beside the edge it teaches: {card:?} by {line:?}"
     );
+    covers_nothing(card, &row);
     let (painted, row, _) = painted_hint(
         &layout_tree(3),
         "move-window",
@@ -374,4 +404,41 @@ fn every_hint_is_a_card_over_the_desktop_at_its_gesture() {
         card.y0 > bar.y1 && card.y0 - bar.y1 < 24.0,
         "just below the bar it teaches: {card:?} under {bar:?}"
     );
+    covers_nothing(card, &row);
+}
+
+/// Notes and Chat side by side filling the desktop, Chat in front with its trailing edge at the
+/// screen's: nothing past that edge. The resize hint's card stands beside it on Chat's empty
+/// ground, never over the words of Chat's empty state nor any other text or control, however
+/// wide the screen.
+#[test]
+fn the_resize_hint_beside_the_screens_edge_covers_no_text_or_control() {
+    for width in [1280, 1400, 1920] {
+        let mut tree = layout_tree(0);
+        let half = |id: u64, title: &str| WindowGroup {
+            id,
+            active_tab: id.saturating_add(20),
+            tabs: vec![window(id.saturating_add(20), title)],
+            width: WindowWidth::Fraction(500),
+            maximized: false,
+            focus_history: Vec::new(),
+        };
+        tree.workspaces[0].strips[0].window_groups = vec![half(3, "Notes"), half(4, "Chat")];
+        tree.active_group.insert(StripId(2), 4);
+        let (painted, row, _) =
+            painted_hint(&tree, "resize-window", &[], ui::time::Duration::ZERO, width);
+        let (line, _) = row.focused_edge.expect("fixture: Chat's edge");
+        assert!(
+            row.windows_on_strip.len() == 2,
+            "fixture: two windows {:?}",
+            row.windows_on_strip
+        );
+        let card = painted.expect("Chat has empty ground beside its edge");
+        covers_nothing(card, &row);
+        assert!(
+            (card.x0 > line.p0.x && card.x0 - line.p0.x < 24.0)
+                || (card.x1 < line.p0.x && line.p0.x - card.x1 < 24.0),
+            "{width}: beside the edge it teaches: {card:?} by {line:?}"
+        );
+    }
 }

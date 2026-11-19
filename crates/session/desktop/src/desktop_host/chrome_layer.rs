@@ -356,6 +356,7 @@ impl DesktopChrome {
         }
         let frame = self.hint_frame();
         self.hints.update(&frame, now);
+        self.handle.read_hint_ink(self.hints.reads_ink(now));
         self.hints_frame = frame;
         if let (Some(feed), Some(learned)) = (&self.hints_feed, self.hints.take_changed()) {
             feed.note_learned(learned);
