@@ -741,6 +741,29 @@ pub fn keyed_target(namespace: &str, keys: &[u64]) -> String {
     format!("tilo.key-action:{namespace}:{keys}")
 }
 
+/// A widget's semantics as a page reads them: its own words, role and state. Its synthetic
+/// children are not: a widget that names one composes it as a part of its own, and carrying the
+/// subtree nested a copy of every descendant inside each ancestor — Notes' document node alone
+/// repeated its sixty blocks' rows — for a page that never reads them.
+#[expect(
+    clippy::ref_option,
+    reason = "serde's `with` hands the field by reference"
+)]
+fn semantics_without_children<S>(
+    semantics: &Option<crate::a11y::AccessNode>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::Serialize as _;
+    let mut own = semantics.clone();
+    if let Some(node) = own.as_mut() {
+        node.children.clear();
+    }
+    own.serialize(serializer)
+}
+
 /// One widget of a composition.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Composed {
@@ -766,7 +789,10 @@ pub struct Composed {
     /// It scrolls vertically: `[offset, content, viewport]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scroll: Option<[f64; 3]>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "semantics_without_children"
+    )]
     pub semantics: Option<crate::a11y::AccessNode>,
     /// The ground its element is filled with, under its words and children.
     #[serde(skip_serializing_if = "Option::is_none")]
