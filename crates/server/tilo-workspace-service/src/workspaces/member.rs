@@ -1227,7 +1227,7 @@ impl Workspaces {
         };
         let state = self.workspace(workspace).await.map_err(|e| e.to_string())?;
         let governed = state.lock().await;
-        let followed = governed.follow(author, message.clone());
+        let followed = governed.follow_kept(author, message.clone()).await;
         if let Some(reason) = followed.refused {
             tracing::debug!(%workspace, %reason, "a member copy refused a write the serving device carried");
         }

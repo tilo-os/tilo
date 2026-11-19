@@ -1839,7 +1839,7 @@ impl Workspaces {
             workspace: workspace.clone(),
         });
         if runtime.governor_tap.is_none() {
-            let (tap, notices) = tokio::sync::mpsc::channel(DOCUMENT_NOTICES);
+            let (tap, notices) = crate::workspace::governor_tap(DOCUMENT_NOTICES);
             runtime.governor_tap = Some(tap);
             self.follow(workspace, notices);
         }
@@ -1895,7 +1895,7 @@ impl Workspaces {
         #[cfg(any(feature = "agents", feature = "web"))]
         self.found_retained(workspace, &state, &retained).await;
         let mut governed = state.lock().await;
-        self.recall_retained(&mut governed, retained);
+        self.recall_retained(&mut governed, retained).await;
         let mut gone = std::collections::BTreeSet::new();
         self.retry_held(&mut governed, &mut gone).await;
         drop(governed);
@@ -2533,7 +2533,7 @@ impl Workspaces {
         (app, record): (String, String),
     ) {
         let following = crate::timing::start();
-        let followed = workspace.follow(author, message.clone());
+        let followed = workspace.follow_kept(author, message.clone()).await;
         if followed.changed {
             self.landed(workspace, &message);
             self.keep_soon(workspace);

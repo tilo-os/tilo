@@ -319,6 +319,61 @@ impl SealingMember {
         messages
     }
 
+    /// The member's compaction of `history`, the document's sealed history as the member holds
+    /// it, numbered as the last of its own writes there: what its engine sends in place of
+    /// exactly those writes, whatever the governor's copy holds.
+    pub async fn compacts(
+        &self,
+        workspaces: &Workspaces,
+        workspace: &str,
+        history: Vec<SignedOp>,
+    ) -> NeighbourMsg {
+        let (app, document) = (self.route.0.as_str(), self.route.1.as_str());
+        let artifact = collab_types::document_artifact_id(app, workspace, document);
+        let author = self.key.verifying_key().to_bytes();
+        let seq = history
+            .iter()
+            .filter(|op| op.author.as_bytes() == &author)
+            .map(|op| op.seq)
+            .max()
+            .unwrap_or(0);
+        let candidate = workspaces
+            .workspace(workspace)
+            .await
+            .unwrap()
+            .lock()
+            .await
+            .peer()
+            .clone();
+        let mut ops = candidate
+            .publication()
+            .draft_sealed_compaction_of(
+                (app, document),
+                history,
+                &mut |op| self.open(op),
+                &mut |frame| {
+                    self.keys
+                        .seal_content(artifact, ContentRetention::of_frame(frame), frame)
+                        .map_err(|error| error.to_string())
+                },
+                (author, seq),
+                tilo_clock::wall(),
+            )
+            .unwrap();
+        assert_eq!(ops.len(), 1, "a small document compacts into one write");
+        let mut op = ops.remove(0);
+        collab_types::sign_op(&mut op, &self.key).unwrap();
+        NeighbourMsg::AppDocument {
+            peer: tilo_peer_state::peer_handle(&author),
+            app_id: app.into(),
+            cluster_id: workspace.into(),
+            document_id: document.into(),
+            envelope: Box::new(op),
+            own: None,
+            readers: None,
+        }
+    }
+
     /// Open `op`, any write of the record's history, under any epoch this
     /// member holds, a compaction included.
     fn open(&self, op: &SignedOp) -> Result<Vec<u8>, String> {

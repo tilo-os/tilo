@@ -703,12 +703,7 @@ pub(crate) async fn tell_governor(
     // governor's own schedule: a linked device reads it live, and one that
     // joins reads the history as it stands then.
     crate::workspaces::carry_admitted(ws, author, &body).await;
-    let (taken, answer) = tokio::sync::oneshot::channel();
-    let notice = crate::workspace::GovernorNotice {
-        author,
-        body,
-        taken,
-    };
+    let (notice, answer) = crate::workspace::GovernorNotice::new(author, body);
     if tap.send(notice).await.is_err() {
         tracing::debug!("the workspace's governor no longer follows it");
     }

@@ -203,8 +203,7 @@ pub(super) async fn admit_commit(
         false,
     ))
     .await?;
-    let (told, turn) = tokio::sync::oneshot::channel();
-    let before = ws.lock().await.governor_turn.replace(turn);
+    let (before, told) = ws.lock().await.next_governor_turn();
     Ok(CommitAdmission::Admitted(Box::new(AdmittedCommit {
         ws,
         workspace_id,
