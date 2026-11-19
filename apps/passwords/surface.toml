@@ -81,15 +81,15 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "open-workspace-vault"
-kind = "read"
-
-[[resources.verbs]]
 id = "reveal"
 kind = "read"
 params = [
   { name = "item", type = "text", required = true },
 ]
+
+[[resources.verbs]]
+id = "open-workspace-vault"
+kind = "read"
 
 [[resources.verbs]]
 id = "filter"
