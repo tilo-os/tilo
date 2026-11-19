@@ -506,6 +506,52 @@ fn a_surface_declares_types_their_indexed_fields_and_what_nests_in_them() {
     );
 }
 
+/// A tracker whose issues are part of it and whose comments are a storage unit of their own.
+fn tracker_surface() -> tilo_actions::surface::Surface {
+    toml_like(serde_json::json!({
+        "kind": "tasks.tracker",
+        "label": "Tracker",
+        "version": 1,
+        "verbs": [
+            {"id": "rename", "kind": "undoable"},
+            {"id": "comment", "kind": "undoable", "writes": ["comments.*"]},
+        ],
+        "fields": [
+            {"path": "issues.*.state", "owner": "issue", "type": "text", "readonly": true},
+            {"path": "issues.*.comments", "owner": "issue", "stored": "collection",
+             "type": {"collection": {"named": "Comment"}}, "unit": true},
+        ],
+        "types": [
+            {"name": "Tracker", "fields": [
+                {"name": "name", "type": "text"},
+                {"name": "issues", "type": {"collection": {"named": "Issue"}}},
+            ]},
+            {"name": "Issue", "fields": [
+                {"name": "title", "type": "text"},
+                {"name": "state", "type": "text"},
+                {"name": "comments", "type": {"collection": {"named": "Comment"}}},
+            ]},
+            {"name": "Comment", "fields": [{"name": "text", "type": "text"}]},
+        ],
+    }))
+}
+
+#[test]
+fn a_verb_writes_what_its_type_holds_and_the_units_it_declares() {
+    use tilo_resource_store::FIELD_EDIT;
+    let schema = Schema::from_surface(&tracker_surface());
+    let kinds =
+        |verb: &str| -> Vec<String> { schema.verb(verb).unwrap().writes.keys().cloned().collect() };
+    assert_eq!(kinds("rename"), ["Issue", "Tracker"]);
+    assert_eq!(kinds("comment"), ["Comment", "Issue", "Tracker"]);
+    let edit = schema.verb(FIELD_EDIT).unwrap();
+    assert!(edit.writes["Issue"].sets_only);
+    assert!(edit.writes["Issue"].fields.contains("title"));
+    assert!(!edit.writes["Issue"].fields.contains("state"));
+    assert!(edit.writes["Comment"].fields.contains("text"));
+    assert!(!schema.verb("comment").unwrap().writes["Comment"].sets_only);
+}
+
 fn toml_like(value: serde_json::Value) -> tilo_actions::surface::Surface {
     serde_json::from_value(value).expect("a surface")
 }
@@ -849,6 +895,46 @@ mod store {
     }
 
     #[test]
+    fn a_change_writes_only_what_the_verb_it_names_declares() {
+        use tilo_resource_store::Refusal;
+        let mut there = Store::new();
+        there.declare(Schema::from_surface(&super::tracker_surface()));
+        let anyone = |_: &Proposal<'_>| true;
+        let comment = |stamp: Stamp, id: &str| {
+            let mut fields = BTreeMap::new();
+            fields.insert("text".to_owned(), Cell::One("Looks right".into()));
+            let resource = Resource {
+                readers: MEMBERS.to_owned(),
+                parent: None,
+                order: None,
+                fields,
+            };
+            // Each from a device of its own, so none is built on another's refusal.
+            Store::new().put("Comment", id, resource, &stamp).unwrap()
+        };
+        assert_eq!(
+            deliver(&comment(stamp("comment", "c1"), "c1"), &mut there, &anyone),
+            []
+        );
+        assert!(matches!(
+            deliver(&comment(stamp("rename", "c2"), "c2"), &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("Comment")
+        ));
+        assert!(matches!(
+            deliver(&comment(stamp(tilo_resource_store::FIELD_EDIT, "c3"), "c3"), &mut there, &anyone)
+                .as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("only sets")
+        ));
+        assert!(matches!(
+            deliver(&comment(Stamp::default(), "c4"), &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("verb")
+        ));
+        let all = |_: &str| true;
+        assert!(there.get("Comment", "c1", &all).is_some());
+        assert!(there.get("Comment", "c2", &all).is_none());
+    }
+
+    #[test]
     fn a_change_the_declared_types_do_not_allow_is_refused() {
         use tilo_resource_store::{Expected, Field, FieldKind, Refusal, Schema, Type};
         let field = |name: &str, kind, value, optional| Field {
@@ -872,6 +958,7 @@ mod store {
                 ],
                 nested: Vec::new(),
             }],
+            verbs: Vec::new(),
         };
         let mut here = Store::new();
         let mut there = Store::new();

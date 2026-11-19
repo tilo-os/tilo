@@ -94,8 +94,9 @@ pub struct Proposal<'a> {
 
 /// The one permission check, as a holder asks it of each change it receives: whether the
 /// change's author may invoke its verb on the resources it touches in the document's reader set,
-/// as of the membership its stamp names, and whether what it touches lies within what the verb
-/// declares it writes. It must answer alike on every holder.
+/// as of the membership its stamp names. It must answer alike on every holder. That what the
+/// change touches lies within what its verb declares it writes the store checks itself, from
+/// the declared schema ([`crate::Schema::verbs`]).
 pub trait Admit {
     fn admit(&self, proposal: &Proposal<'_>) -> bool;
 }
@@ -335,6 +336,43 @@ pub(crate) fn declared(
             && !declared.value.holds(value, declared.optional)
         {
             return Err(format!("`{kind}.{field}` holds no {value:?}"));
+        }
+    }
+    Ok(())
+}
+
+/// Whether what `touched` writes lies within what the verb `stamp` names declares it writes. A
+/// schema that declares no verbs checks none; one that does refuses a change that names no verb.
+pub(crate) fn within_verb(
+    schema: &Schema,
+    touched: &Touched,
+    stamp: Option<&Stamp>,
+) -> Result<(), String> {
+    if schema.verbs.is_empty() {
+        return Ok(());
+    }
+    let Some(stamp) = stamp else {
+        return Err("the change names no verb".to_owned());
+    };
+    let Some(verb) = schema.verb(&stamp.verb) else {
+        return Err(format!("no verb `{}` is declared", stamp.verb));
+    };
+    for (id, touch) in &touched.resources {
+        let Some(kind) = &touch.kind else {
+            continue;
+        };
+        let Some(writes) = verb.writes.get(kind) else {
+            return Err(format!("`{}` writes no `{kind}`", verb.name));
+        };
+        if writes.sets_only && (touch.made || touch.removed || touch.placed || touch.content) {
+            return Err(format!("`{}` only sets fields of `{id}`", verb.name));
+        }
+        if let Some(field) = touch
+            .fields
+            .iter()
+            .find(|field| !writes.fields.contains(*field))
+        {
+            return Err(format!("`{}` writes no `{kind}.{field}`", verb.name));
         }
     }
     Ok(())

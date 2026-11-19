@@ -665,6 +665,19 @@ impl Store {
             self.schema.types.retain(|held| held.name != ty.name);
             self.schema.types.push(ty);
         }
+        // A kind is one app's, so a verb's write-sets merge kind by kind: one app's verb of a
+        // name writes that app's kinds, another's of the same name its own.
+        for verb in schema.verbs {
+            match self
+                .schema
+                .verbs
+                .iter_mut()
+                .find(|held| held.name == verb.name)
+            {
+                Some(held) => held.writes.extend(verb.writes),
+                None => self.schema.verbs.push(verb),
+            }
+        }
     }
 
     /// Whether `received` may take effect in `doc_id` as it stands.
@@ -692,6 +705,8 @@ impl Store {
         })
         .map_err(Refusal::Undeclared)?;
         let stamp = Stamp::of(&received.change);
+        crate::admit::within_verb(&self.schema, &touched, stamp.as_ref())
+            .map_err(Refusal::Undeclared)?;
         let admitted = admit.admit(&Proposal {
             doc: doc_id,
             readers,
