@@ -238,8 +238,14 @@ pub fn arrange(mode: DisplayMode, outputs: &[OutputInfo]) -> Vec<OutputChange> {
 /// The resource the session publishes of its displays.
 pub use tilo_session_core::shell::DISPLAYS_RESOURCE as RESOURCE;
 
+/// The displays as the session publishes them: its declared type, what a brightness key and the
+/// displays sheet change.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.displays", label = "Displays")]
+pub struct DisplaysRoot;
+
 /// What kind of resource [`RESOURCE`] is.
-pub const KIND: &str = "session.displays";
+pub const KIND: &str = <DisplaysRoot as tilo_resource::words::RowType>::KIND;
 
 /// How far a brightness key moves a display, as a share of full brightness.
 pub const BRIGHTNESS_STEP: f32 = 0.1;
@@ -791,8 +797,10 @@ impl Service for Displays {
     }
 
     fn resources(&self) -> Vec<ResourceSpec> {
-        let mut resource =
-            offer::<DisplaysAction>(ResourceSpec::new(RESOURCE, KIND, t("session-displays")));
+        let mut resource = offer::<DisplaysAction>(
+            tilo_resource::LiveRow::typed::<DisplaysRoot>(RESOURCE, t("session-displays"))
+                .into_resource(),
+        );
         // The modes and the sheet keep the words the rest of the desktop names them by.
         for spec in &mut resource.actions {
             let label = match spec.id.as_str() {

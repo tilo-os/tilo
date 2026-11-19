@@ -40,8 +40,14 @@ use ui::shortcut_table::{KeyChord, ShortcutAction};
 /// The window menu's resource in the session's catalogue.
 pub const WINDOW_MENU: &str = "desktop:window-menu";
 
+/// The window menu as the shell publishes it: a reading of the window it is for and the rows the
+/// shell offers it, with the verbs that change it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop.window-menu", label = "Window menu", effects = ShellEffect)]
+pub struct WindowMenu;
+
 /// What kind of resource [`WINDOW_MENU`] is.
-pub const WINDOW_MENU_KIND: &str = "desktop.window-menu";
+pub const WINDOW_MENU_KIND: &str = <WindowMenu as tilo_resource::words::RowType>::KIND;
 
 /// The part the window menu is drawn in, as the settings reading names it.
 pub const WINDOW_MENU_PART: &str = "window-menu";
@@ -116,15 +122,25 @@ params = [{ name = "row", required = true, type = "text" }]
 
 use tilo_session_core::shell::OVERLAYS;
 
+/// The surface stack as the shell publishes it: what stands over the windows and in what order.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop.overlays", label = "Surfaces", effects = OverlayEffect)]
+pub struct Overlays;
+
 /// What kind of resource [`OVERLAYS`] is.
-pub const OVERLAYS_KIND: &str = "desktop.overlays";
+pub const OVERLAYS_KIND: &str = <Overlays as tilo_resource::words::RowType>::KIND;
 
 /// What holds the keyboard, in the session's catalogue: the window in front,
 /// or the surface over it.
 pub const FOCUS: &str = "desktop:focus";
 
+/// The keyboard's target as the shell publishes it: the surface a key goes to.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop.focus", label = "Keyboard focus")]
+pub struct KeyboardFocus;
+
 /// What kind of resource [`FOCUS`] is.
-pub const FOCUS_KIND: &str = "desktop.focus";
+pub const FOCUS_KIND: &str = <KeyboardFocus as tilo_resource::words::RowType>::KIND;
 
 /// The window menu's state, as the session holds it: the rest of the shell's presentation — focus,
 /// the surface stack, which strip each display shows — is in the stack beside it.
@@ -611,21 +627,25 @@ impl ShellService {
 impl Service for ShellService {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
-            offer::<ShellEffect>(ResourceSpec::new(
-                WINDOW_MENU,
-                WINDOW_MENU_KIND,
-                crate::i18n::t("session-resource-window-menu"),
-            )),
-            offer::<OverlayEffect>(ResourceSpec::new(
-                OVERLAYS,
-                OVERLAYS_KIND,
-                crate::i18n::t("session-resource-surfaces"),
-            )),
-            ResourceSpec::new(
-                FOCUS,
-                FOCUS_KIND,
-                crate::i18n::t("session-resource-keyboard-focus"),
+            offer::<ShellEffect>(
+                tilo_resource::LiveRow::typed::<WindowMenu>(
+                    WINDOW_MENU,
+                    crate::i18n::t("session-resource-window-menu"),
+                )
+                .into_resource(),
             ),
+            offer::<OverlayEffect>(
+                tilo_resource::LiveRow::typed::<Overlays>(
+                    OVERLAYS,
+                    crate::i18n::t("session-resource-surfaces"),
+                )
+                .into_resource(),
+            ),
+            tilo_resource::LiveRow::typed::<KeyboardFocus>(
+                FOCUS,
+                crate::i18n::t("session-resource-keyboard-focus"),
+            )
+            .into_resource(),
         ]
     }
 

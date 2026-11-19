@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
+use tilo_resource::LiveRow;
 use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_sheets::lock::{LockEffect, Media, Shown, no_password};
 use zeroize::{Zeroize, Zeroizing};
@@ -23,8 +24,11 @@ use crate::MEDIA;
 /// The resource the lock screen reads and asks.
 pub const LOCK: &str = "lock";
 
-/// Its kind, as a reader with no words of its own knows it.
-const LOCK_KIND: &str = "lock.screen";
+/// The lock screen's state as the session publishes it: its declared type, the kind a reader
+/// with no words of its own knows it by, offering the screen's effects.
+#[derive(tilo_resource::Row)]
+#[row(kind = "lock.screen", label = "Lock screen", effects = LockEffect)]
+pub(crate) struct LockScreen;
 
 /// How long the screen is given to dissolve once the password unlocked it: leaving is an animation,
 /// and an animation never holds a session locked.
@@ -178,11 +182,10 @@ impl LockService {
 
 impl Service for LockService {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![offer::<LockEffect>(ResourceSpec::new(
-            LOCK,
-            LOCK_KIND,
-            crate::i18n::t("session-lock-screen"),
-        ))]
+        vec![offer::<LockEffect>(
+            LiveRow::typed::<LockScreen>(LOCK, crate::i18n::t("session-lock-screen"))
+                .into_resource(),
+        )]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
@@ -297,6 +300,26 @@ pub fn transport(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The lock screen's resource is its declared type: the session's services describe what
+    /// search and an agent find it by, never a tree built by hand.
+    #[test]
+    fn the_lock_screen_resource_is_its_declared_type() {
+        let published = LockService::new(Lock::default()).resources();
+        let lock = published
+            .iter()
+            .find(|resource| resource.id.as_str() == LOCK)
+            .expect("the lock screen is published");
+        assert_eq!(
+            lock.kind,
+            <LockScreen as tilo_resource::words::RowType>::KIND
+        );
+        let words = lock.resource_type.as_ref().expect("a declared type");
+        assert!(
+            !words.noun.one.trim().is_empty(),
+            "the type says what it is: {words:?}"
+        );
+    }
 
     /// A locked screen shows what plays here; with nothing playing it shows only what another of
     /// the person's devices offers to continue, and that card leaves the transport alone.

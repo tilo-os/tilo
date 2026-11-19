@@ -10,6 +10,11 @@ use tilo_service::{Service, Started, offer, reading};
 
 pub(crate) const RESOURCE: &str = "session:time";
 
+/// The time as the session publishes it: the kind a reader with no words of its own knows it by.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Time")]
+pub(crate) struct TimeRoot;
+
 /// The time now, as the bar shows it.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
@@ -76,11 +81,10 @@ impl Served {
 
 impl Service for Served {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![offer::<NoEffect>(ResourceSpec::new(
-            RESOURCE,
-            tilo_action_policy::roles::SESSION_KIND,
-            crate::i18n::t("session-time"),
-        ))]
+        vec![offer::<NoEffect>(
+            tilo_resource::LiveRow::typed::<TimeRoot>(RESOURCE, crate::i18n::t("session-time"))
+                .into_resource(),
+        )]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {

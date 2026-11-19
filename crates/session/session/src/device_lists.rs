@@ -891,27 +891,62 @@ impl DeviceLists {
     }
 }
 
+/// The session's own lists as it publishes them: what each is to search and read, under the
+/// session's kind.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Windows")]
+pub(crate) struct WindowsList;
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Tray", effects = TrayEffect)]
+pub(crate) struct TrayRoot;
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Agents", effects = AgentsEffect)]
+pub(crate) struct AgentsRoot;
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Invite", effects = InviteEffect)]
+pub(crate) struct InviteRoot;
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Styles")]
+pub(crate) struct StylesRoot;
+
 impl Service for DeviceLists {
     fn resources(&self) -> Vec<ResourceSpec> {
-        let kind = tilo_action_policy::roles::SESSION_KIND;
         vec![
-            ResourceSpec::new(WINDOWS_RESOURCE, kind, crate::i18n::t("session-windows")),
-            offer::<TrayEffect>(ResourceSpec::new(
-                TRAY_RESOURCE,
-                kind,
-                crate::i18n::t("session-tray"),
-            )),
-            offer::<AgentsEffect>(ResourceSpec::new(
-                AGENTS_RESOURCE,
-                kind,
-                crate::i18n::t("session-agents"),
-            )),
-            offer::<InviteEffect>(ResourceSpec::new(
-                INVITE_RESOURCE,
-                kind,
-                crate::i18n::t("session-invite"),
-            )),
-            ResourceSpec::new(STYLES_RESOURCE, kind, crate::i18n::t("session-styles")),
+            tilo_resource::LiveRow::typed::<WindowsList>(
+                WINDOWS_RESOURCE,
+                crate::i18n::t("session-windows"),
+            )
+            .into_resource(),
+            offer::<TrayEffect>(
+                tilo_resource::LiveRow::typed::<TrayRoot>(
+                    TRAY_RESOURCE,
+                    crate::i18n::t("session-tray"),
+                )
+                .into_resource(),
+            ),
+            offer::<AgentsEffect>(
+                tilo_resource::LiveRow::typed::<AgentsRoot>(
+                    AGENTS_RESOURCE,
+                    crate::i18n::t("session-agents"),
+                )
+                .into_resource(),
+            ),
+            offer::<InviteEffect>(
+                tilo_resource::LiveRow::typed::<InviteRoot>(
+                    INVITE_RESOURCE,
+                    crate::i18n::t("session-invite"),
+                )
+                .into_resource(),
+            ),
+            tilo_resource::LiveRow::typed::<StylesRoot>(
+                STYLES_RESOURCE,
+                crate::i18n::t("session-styles"),
+            )
+            .into_resource(),
         ]
     }
 

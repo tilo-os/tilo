@@ -1151,9 +1151,11 @@ impl SessionNotifications {
 /// The resource the notification centre is published under.
 pub const RESOURCE: &str = "session:notifications";
 
-/// What kind of resource [`RESOURCE`] is: the session's own kind, as the clipboard is, so the grant
-/// the device's panel reads the session's own readings through reaches it.
-pub const KIND: &str = tilo_action_policy::roles::SESSION_KIND;
+/// The notification centre as the session publishes it: what was kept there and what each
+/// notification does.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Notifications", effects = CentreAction)]
+pub struct NotificationCentreRoot;
 
 /// What the centre resource offers: what a notification kept there does.
 #[derive(Clone, Debug, PartialEq, Effect)]
@@ -1251,7 +1253,12 @@ impl Served {
 impl Service for Served {
     fn resources(&self) -> Vec<ResourceSpec> {
         let mut resource = offer::<CentreAction>(
-            ResourceSpec::new(RESOURCE, KIND, t("session-notifications")).with_personal_reading(),
+            tilo_resource::LiveRow::typed::<NotificationCentreRoot>(
+                RESOURCE,
+                t("session-notifications"),
+            )
+            .into_resource()
+            .with_personal_reading(),
         );
         // The panel keeps the words the rest of the desktop names them by.
         for spec in &mut resource.actions {

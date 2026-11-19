@@ -29,8 +29,11 @@ use crate::{BoxAsk, Shared};
 /// agent, a script.
 pub(crate) const RESOURCE: &str = "session:send-to";
 
-/// What kind of resource [`RESOURCE`] is.
-const KIND: &str = "session.send-to";
+/// The session's send-to resource: what the palette and a canvas ask to send a message into a
+/// conversation.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.send-to", label = "Send to")]
+pub(crate) struct SendTo;
 
 /// The sends the last passes carried out, newest last, that its reading keeps.
 const KEPT: usize = 16;
@@ -135,11 +138,10 @@ type Posted = std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<u64, St
 
 /// What [`RESOURCE`] publishes: the send.
 fn published() -> Vec<ResourceSpec> {
-    vec![offer::<SendToAction>(ResourceSpec::new(
-        RESOURCE,
-        KIND,
-        crate::i18n::t("send-to-resource"),
-    ))]
+    vec![offer::<SendToAction>(
+        tilo_resource::LiveRow::typed::<SendTo>(RESOURCE, crate::i18n::t("send-to-resource"))
+            .into_resource(),
+    )]
 }
 
 impl Sends {

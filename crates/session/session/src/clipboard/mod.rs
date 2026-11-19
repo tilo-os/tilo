@@ -819,14 +819,16 @@ pub(crate) enum ClipboardAction {
 /// What the person copied, and pasting it into a folder.
 fn clipboard_resource() -> ResourceSpec {
     offer::<ClipboardAction>(
-        ResourceSpec::new(
-            CLIPBOARD_RESOURCE,
-            tilo_action_policy::roles::SESSION_KIND,
-            t("session-clipboard"),
-        )
-        .with_personal_reading(),
+        tilo_resource::LiveRow::typed::<ClipboardRoot>(CLIPBOARD_RESOURCE, t("session-clipboard"))
+            .into_resource()
+            .with_personal_reading(),
     )
 }
+
+/// The clipboard as the session publishes it: what was copied here, and what a paste does.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Clipboard", effects = ClipboardAction)]
+pub(crate) struct ClipboardRoot;
 
 /// How often the fabric is read when nothing was copied here.
 const SYNC_EVERY: Duration = Duration::from_millis(500);
