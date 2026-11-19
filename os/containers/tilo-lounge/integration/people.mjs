@@ -1022,13 +1022,15 @@ try {
   await dump(a.tab, '3-a-chat');
   await dump(b.tab, '3-b-chat');
 
-  // A window A opens is in B's strip: one shell, every member of it.
+  // A window A opens is in B's strip: one shell, every member of it. The
+  // workspace tells B of the window over the live session, and the wait measured
+  // 56 s of its four steps on a node at load 320: six, as a page's join gets.
   const beforeB = await dump(b.tab, '4-b-before-open');
   await search(a.tab, a.command, 'notes', 'Notes');
   await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Notes')`,
     "A's own Notes window", stepLimit(3));
   await until(b.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Notes')`,
-    "A's Notes window in B", stepLimit(4));
+    "A's Notes window in B", stepLimit(6));
   report.shared = {bBefore: beforeB.windows, bAfter: (await snapshot(b.tab)).windows};
   console.log('ok: the window A opened is in B\'s strip');
   mark('A\'s window in B\'s strip');
