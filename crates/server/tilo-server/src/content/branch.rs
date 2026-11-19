@@ -372,13 +372,22 @@ fn seal_version(
     {
         return Err("the source file changed while it was copied".into());
     }
+    let overhead = match overhead {
+        Some(overhead) => overhead,
+        None => {
+            let (_, sealed) = branch_keys
+                .seal_content(to, ContentRetention::Delta, &[])
+                .map_err(|error| error.to_string())?;
+            u32::try_from(sealed.len()).map_err(|error| error.to_string())?
+        }
+    };
     let manifest = Manifest::new_sealed(
         manifest.tier(),
         chunks,
         fs::content::SealedChunks {
             group: *branch_keys.workspace().as_uuid().as_bytes(),
             epoch: branch_keys.epoch(),
-            overhead: overhead.ok_or("empty sealed manifest")?,
+            overhead,
         },
     );
     destination
@@ -619,6 +628,11 @@ mod tests {
                 1,
             )
             .unwrap();
+        let (empty, _) = fs::content::build(b"", None);
+        let empty_hash = original.put_public(&empty.encode()).unwrap();
+        namespace
+            .create_file(ROOT_INO, "empty", Some(&empty_hash.parse().unwrap()), 0, 1)
+            .unwrap();
         let mut copied = snapshot(&mut namespace);
         let copier = StoresBranches(stores.clone());
         assert_eq!(
@@ -636,6 +650,9 @@ mod tests {
             "the branch copied no plaintext file payload"
         );
         let tree = tree_of(&copied).unwrap();
+        let empty = Manifest::decode(&store.read(tree.file_hash(&empty_hash)).unwrap()).unwrap();
+        assert!(empty.sealed().is_some());
+        assert_eq!(empty.total_len(), 0);
         let hash = tree.file_hash(&raw);
         let manifest = Manifest::decode(&store.read(hash).unwrap()).unwrap();
         assert!(manifest.sealed().is_some());
