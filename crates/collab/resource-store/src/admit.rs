@@ -6,9 +6,9 @@
 //! which resources, fields and placements it touches ([`Touched`]), from its operations against
 //! the document as it stands, without applying it. The store checks what the declared types can
 //! say (a field the type declares, a value of its type, a case of its enum, a kind nested where
-//! its parent's type nests it); the caller's [`Admit`] decides whether the author may invoke the
-//! verb on those resources in that reader set, and whether what the change touches lies within
-//! what the verb writes, against the membership the stamp names. Every holder reaches the same
+//! its parent's type nests it, and what the verb declares it writes); the caller's [`Admit`]
+//! decides whether the author may invoke the verb on those resources in that reader set,
+//! against the membership the stamp names. Every holder reaches the same
 //! answer from the same change, so a change that is refused is kept beside the document but has
 //! no effect on it, on any holder; a change built on a refused one is refused too.
 
@@ -34,6 +34,9 @@ pub struct Stamp {
     /// The heads of the membership the author saw when it wrote the change, as the membership
     /// names them: who may do what is judged as of there, not as of the receiver's now.
     pub membership: Vec<String>,
+    /// The invocation this one takes back, when it is an undo: it names that invocation's verb.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undoes: Option<String>,
 }
 
 impl Stamp {

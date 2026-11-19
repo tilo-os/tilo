@@ -837,7 +837,93 @@ mod store {
             invoker: "ada".to_owned(),
             invocation: invocation.to_owned(),
             membership: vec!["m1".to_owned()],
+            undoes: None,
         }
+    }
+
+    #[test]
+    fn undo_takes_back_one_invocation_in_every_document_and_nothing_after_it() {
+        use automerge::ReadDoc as _;
+        use automerge::transaction::Transactable as _;
+
+        let all = |_: &str| true;
+        let mut store = Store::new();
+        store
+            .put(
+                ISSUE,
+                "a",
+                resource("board", "a0", "Draft", "open"),
+                &stamp("make", "i1"),
+            )
+            .unwrap();
+        let ((), _) = store
+            .edit_content(ISSUE, "a", &stamp("make", "i1"), |tx, root| {
+                tx.put(root, "note", "first")
+            })
+            .unwrap();
+        // One invocation: a field of `a`, a new resource `b`, and `a`'s content.
+        let renamed = stamp("rename", "i2");
+        store
+            .put(
+                ISSUE,
+                "a",
+                resource("board", "a0", "Final", "open"),
+                &renamed,
+            )
+            .unwrap();
+        store
+            .put(
+                ISSUE,
+                "b",
+                resource("board", "a1", "Split off", "open"),
+                &renamed,
+            )
+            .unwrap();
+        let ((), _) = store
+            .edit_content(ISSUE, "a", &renamed, |tx, root| {
+                tx.put(root, "note", "second")
+            })
+            .unwrap();
+        // A later invocation changes another field of `a`.
+        store
+            .put(
+                ISSUE,
+                "a",
+                resource("board", "a0", "Final", "done"),
+                &stamp("close", "i3"),
+            )
+            .unwrap();
+
+        let undo = Stamp {
+            undoes: Some("i2".to_owned()),
+            ..stamp("rename", "i4")
+        };
+        let written = store.undo("i2", &undo).unwrap();
+        assert!(written.len() >= 3, "{written:?}");
+        let a = store.get(ISSUE, "a", &all).unwrap();
+        assert_eq!(a.fields["title"], Cell::One("Draft".into()));
+        assert_eq!(
+            a.fields["state"],
+            Cell::One("done".into()),
+            "the later change stays"
+        );
+        assert!(store.get(ISSUE, "b", &all).is_none());
+        let (doc, root) = store.content(ISSUE, "a").unwrap().unwrap();
+        let note = doc.get(&root, "note").unwrap().unwrap().0.to_string();
+        assert_eq!(note, "\"first\"");
+        assert!(
+            written
+                .iter()
+                .all(|write| Stamp::of(&write.change) == Some(undo.clone()))
+        );
+
+        // Undoing the undo takes the rename back again.
+        store.undo("i4", &stamp("rename", "i5")).unwrap();
+        assert_eq!(
+            store.get(ISSUE, "a", &all).unwrap().fields["title"],
+            Cell::One("Final".into())
+        );
+        assert!(store.get(ISSUE, "b", &all).is_some());
     }
 
     #[test]
