@@ -8,6 +8,10 @@
 //! the host sends are decoded in sandboxed workers, started as the
 //! `tilo-automerge-worker` program beside the addon.
 
+// The direct API's futures nest deeply enough (the network actor's netlink types among
+// them) that proving them `Send` passes the default limit of 128.
+#![recursion_limit = "256"]
+
 use napi::bindgen_prelude::{Either, Uint8Array};
 use napi_derive::napi;
 use std::collections::HashMap;

@@ -1859,16 +1859,17 @@ impl Reply {
     /// then on, and takes what the turn's model writes while it writes ([`written`]).
     async fn taken(&self) {
         if let Ask::Message { .. } = &self.ask
-            && self.work(json!({"state": "taken"}), None).await
+            && self.work(json!({"state": "taken"}), None).await.is_ok()
         {
             self.written.open();
         }
     }
 
-    /// Tell the person what the agent is doing now.
+    /// Tell the person what the agent is doing now. A note Chat does not take costs the person
+    /// the step alone, and [`Self::work`] says why.
     async fn doing(&self, did: &str) {
         if let Ask::Message { .. } = &self.ask {
-            self.work(json!({"state": "doing", "did": did}), None).await;
+            let _ = self.work(json!({"state": "doing", "did": did}), None).await;
         }
     }
 
@@ -1917,14 +1918,28 @@ impl Reply {
 
     /// Leave this ask for what its person wrote next: its reply says the answer follows below.
     /// A reply that holds what its model wrote keeps that, and ends there.
-    async fn went_on(&self) {
-        if !self.grown_ends(&Outcome::Answered(String::new())).await {
-            self.work(json!({"state": "provider_complete"}), Some(WENT_ON))
-                .await;
+    ///
+    /// # Errors
+    /// Chat did not keep that the reply ended ([`Self::unfinished`]).
+    async fn went_on(&self) -> Result<(), String> {
+        if self.grown_ends(&Outcome::Answered(String::new())).await {
+            return Ok(());
+        }
+        match self
+            .work(json!({"state": "provider_complete"}), Some(WENT_ON))
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self.unfinished(&error).await),
         }
     }
 
     /// Give the person the turn's answer.
+    ///
+    /// # Errors
+    /// Chat did not keep how the reply ended: it then says on the reply that the answer could
+    /// not be finished ([`Self::unfinished`]), and whoever works the turn reads why. No reader
+    /// takes such a reply for answered, so the message it answers is not asked twice.
     async fn finished(&self, outcome: &Outcome) -> Result<(), String> {
         match &self.ask {
             Ask::Message { .. } => {
@@ -1944,8 +1959,10 @@ impl Reply {
                 } else {
                     json!({"state": state})
                 };
-                self.work(work, Some(words)).await;
-                Ok(())
+                match self.work(work, Some(words)).await {
+                    Ok(()) => Ok(()),
+                    Err(error) => Err(self.unfinished(&error).await),
+                }
             }
             Ask::Issue { record, issue, .. } => {
                 let words = match outcome {
@@ -2050,10 +2067,12 @@ impl Reply {
     }
 
     /// Record `work` on the reply to the message, with `say` as its words when it has none yet.
-    /// Whether Chat took it.
-    async fn work(&self, work: Value, say: Option<&str>) -> bool {
+    ///
+    /// # Errors
+    /// Chat did not take it, as it says.
+    async fn work(&self, work: Value, say: Option<&str>) -> Result<(), String> {
         let Ask::Message { part, message, .. } = &self.ask else {
-            return false;
+            return Err("the ask is no message of a conversation".to_owned());
         };
         let route = DocumentRoute {
             app_id: CHAT.to_owned(),
@@ -2067,7 +2086,7 @@ impl Reply {
             arguments.insert("say".into(), json!(say));
         }
         let resource = format!("{}/messages/{message}", chat::parts::ChatMessages::KIND);
-        match invoke_named(
+        invoke_named(
             &self.provider,
             &self.caller,
             &route,
@@ -2076,13 +2095,23 @@ impl Reply {
             arguments,
         )
         .await
-        {
-            Ok(_) => true,
-            Err(error) => {
-                tracing::warn!(workspace = %self.workspace, %message, %error, "a host agent's reply did not take its work");
-                false
-            }
-        }
+        .map(drop)
+        .map_err(|error| {
+            tracing::warn!(workspace = %self.workspace, %message, %error, "a reply of an agent on the workspace's server did not take its work");
+            error
+        })
+    }
+
+    /// Say on the reply that its answer could not be finished, where Chat still takes a write,
+    /// and answer what its person reads there. An end Chat never took leaves the reply unfinished
+    /// to every reader, and the message it answers owed a turn again; a failure to say so is the
+    /// log's ([`Self::work`]).
+    async fn unfinished(&self, why: &str) -> String {
+        let said = format!("This answer was not kept as finished: {why}");
+        let _ = self
+            .work(json!({"state": "provider_failed", "detail": said}), None)
+            .await;
+        said
     }
 }
 
@@ -2529,9 +2558,9 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         };
         let mut at = self.at.lock().await;
         let (turn, reply) = &mut *at;
-        reply.went_on().await;
+        reply.went_on().await?;
         for between in passed {
-            self.scope.reply(between).went_on().await;
+            self.scope.reply(between).went_on().await?;
         }
         **turn = newest.clone();
         **reply = self.scope.reply(turn);

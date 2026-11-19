@@ -390,10 +390,6 @@ fn text<'a>(value: &'a Value, name: &str) -> &'a str {
     value.get(name).and_then(Value::as_str).unwrap_or_default()
 }
 
-fn compact(value: &Value) -> String {
-    serde_json::to_string(value).unwrap_or_default()
-}
-
 fn show(json: bool, typed: &Value, said: &str) -> ExitCode {
     if json {
         println!(
@@ -444,73 +440,36 @@ fn when(row: &Value, field: &str, none: &str) -> String {
 }
 
 /// `tilo do <path> name=value… -w <workspace>`: one action of a hosted
-/// workspace, as `app/resource#action`.
+/// workspace, as `app/resource#action`, said as `tilo do` says an action
+/// this desktop ran ([`tilo_control::front::say`]).
 pub fn act(reach: Reach<'_>, workspace: &str, path: &str, args: &[String]) -> ExitCode {
-    run(async {
+    crate::log_to_stderr(tracing_subscriber::filter::LevelFilter::OFF);
+    let acting = async {
         let client = Client::open(reach)?;
         let Some((resource, action)) = path.rsplit_once('#') else {
             bail!("{path:?} names no action: write it as app/resource#action, like notes#open");
         };
         let workspace = client.workspace_id(workspace).await?;
-        let arguments = arguments(args)?;
-        let answer = client
+        let arguments =
+            Value::Object(tilo_control::front::arguments(args).map_err(anyhow::Error::msg)?);
+        client
             .act(&workspace, resource, action, &arguments, path)
-            .await?;
-        Ok(show(reach.json, &answer, &action_text(&answer)))
-    })
-}
-
-/// An action's answer as the lines a person reads.
-fn action_text(answer: &Value) -> String {
-    let path = text(answer, "path");
-    // An action names the resource it resolved to; one that names none says
-    // its status alone.
-    let named = |word: &str| {
-        if path.is_empty() {
-            word.to_owned()
-        } else {
-            format!("{word} {path}")
-        }
+            .await
     };
-    let mut said = match text(answer, "status") {
-        "ok" => named("ok"),
-        "pending" => {
-            let mut said = format!("pending {}: it waits for you", text(answer, "invocation"));
-            if let Some(url) = answer.pointer("/ask/url").and_then(Value::as_str) {
-                let _ = write!(said, ", at {url}");
-            }
-            if !path.is_empty() {
-                let _ = write!(said, " ({path})");
-            }
-            said
-        }
-        other => named(other),
-    };
-    if let Some(result) = answer.get("result").filter(|result| !result.is_null()) {
-        let _ = write!(said, "\n{}", compact(result));
-    }
-    // What the action answered it made or changed, as the workspace names it:
-    // the path the next command can take as it is.
-    for resource in answer
-        .get("resources")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-    {
-        let _ = write!(said, "\n-> {resource}");
-    }
-    let links = answer
-        .get("links")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .chain(answer.get("link").and_then(Value::as_str));
-    for link in links {
-        let _ = write!(said, "\n{link}");
-    }
-    said
+    let answered = runtime()
+        .and_then(|runtime| runtime.block_on(acting))
+        .map_err(|error| format!("tilo: {error:#}"));
+    let stdout = std::io::stdout();
+    let stderr = std::io::stderr();
+    let code = tilo_control::front::say(
+        answered,
+        reach.json,
+        &mut tilo_control::front::Io {
+            out: &mut stdout.lock(),
+            err: &mut stderr.lock(),
+        },
+    );
+    ExitCode::from(code)
 }
 
 /// `tilo ls [path] -w <workspace>`: what the workspace holds, or what `path`
@@ -2040,19 +1999,6 @@ async fn ask_key(asked: &KeyAsk<'_>) -> Result<Value> {
     }
 }
 
-/// `name=value` options: each value as JSON when it is, else as text.
-pub fn arguments(args: &[String]) -> Result<Value> {
-    let mut object = serde_json::Map::new();
-    for arg in args {
-        let (name, value) = arg
-            .split_once('=')
-            .ok_or_else(|| anyhow!("{arg:?} is not name=value"))?;
-        let value = serde_json::from_str::<Value>(value).unwrap_or_else(|_| Value::from(value));
-        object.insert(name.to_owned(), value);
-    }
-    Ok(Value::Object(object))
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -2829,23 +2775,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn hosted_arguments_and_answers_read_as_a_person_wrote_them;
-
-        phase options_are_json_where_they_parse;
-        {
-            assert_eq!(
-                arguments(&[
-                    "name=Jane Doe".into(),
-                    "count=3".into(),
-                    "ok=true".into(),
-                    "edit={\"op\":\"set\"}".into()
-                ])
-                .unwrap(),
-                serde_json::json!({"name": "Jane Doe", "count": 3, "ok": true,
-                    "edit": {"op": "set"}})
-            );
-            assert!(arguments(&["nothing".into()]).is_err());
-        }
+        fn hosted_answers_read_as_a_person_wrote_them;
 
         phase a_workspace_is_named_by_its_words;
         {
@@ -2863,31 +2793,6 @@ mod tests {
                 workspace_line(&row),
                 "Applicant: Jane Doe (id 3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b, on eu1.tilo.sh, \
              owner)"
-            );
-        }
-
-        phase an_action_answer_says_what_ran_and_where_it_is;
-        {
-            let done = serde_json::json!({"status": "ok", "path": "notes#open",
-                "invocation": "inv-1", "link": "https://tilo.sh/#/w/x/notes/Todo"});
-            assert_eq!(
-                action_text(&done),
-                "ok notes#open\nhttps://tilo.sh/#/w/x/notes/Todo"
-            );
-            // What it made or changed, as a path the next command takes as it
-            // is: the answer an agent's create prints is not lost.
-            let created = serde_json::json!({"status": "ok", "path": "tasks#create",
-                "resources": ["tasks.tracker/issues/7"]});
-            assert_eq!(
-                action_text(&created),
-                "ok tasks#create\n-> tasks.tracker/issues/7"
-            );
-            let pending = serde_json::json!({"status": "pending", "invocation": "inv-2",
-                "path": "pdf-viewer#import-pdf-content", "ask": {"url": "https://tilo.sh/approve/1"}});
-            assert_eq!(
-                action_text(&pending),
-                "pending inv-2: it waits for you, at https://tilo.sh/approve/1 \
-             (pdf-viewer#import-pdf-content)"
             );
         }
 

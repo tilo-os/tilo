@@ -1649,7 +1649,6 @@ try {
           log(`${combo}: the first screen made no code`, JSON.stringify(state));
           log(`${combo}: the page console`, tab.log.slice(-8).join(' | '));
           const made = await tab.evaluate(`(async () => {
-            try { await globalThis.tiloIdentity?.keepStandIn?.(); } catch (error) { /* the link below says why */ }
             const made = await globalThis.tiloIdentity.connectAgent();
             return {link: made.link, expiresAt: made.expiresAt};
           })().then(made => made, error => ({error: String(error?.message ?? error), code: error?.code ?? null}))`);

@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost} from './workspaces.mjs';
+import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost, keptMembership} from './workspaces.mjs';
 import {AdmissionError} from './admission.mjs';
-import {assistantAddress, PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_SAME_PERSON} from './pairing.mjs';
+import {assistantAddress, PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_SAME_PERSON, parsePairSecret} from './pairing.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
 const USER = 'aa'.repeat(32);
@@ -13,7 +13,7 @@ const ORIGIN = 'https://node.example';
 const tick = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 
 class Element {
-  constructor(tag) { this.tag = tag; this.children = []; this.listeners = new Map(); this.dataset = {}; this.style = {}; }
+  constructor(tag) { this.tag = tag; this.children = []; this.listeners = new Map(); this.dataset = {}; this.style = {}; this.classList = {add() {}, remove() {}}; }
   append(...nodes) { this.children.push(...nodes); }
   prepend(...nodes) { this.children.unshift(...nodes); }
   replaceChildren(...nodes) { this.children = nodes; }
@@ -37,20 +37,20 @@ const ENTRY_PARTS = ['arrival-refusal', 'arrival-refusal-heading', 'arrival-refu
 
 // Run the real page wiring and workspace actions. Replace only the booted
 // WASM/GPU peer, arrival animation, and root device key with fixtures. `pair`
-// stands for the runtime certifying this tab's device key through the host
-// (`pairDevice`, peer.mjs): what the host answers a new device. `identity` is
+// stands for the runtime certifying this tab's device key through the server
+// (`pairDevice`, peer.mjs): what the server answers a new device. `identity` is
 // the person this tab has open, and `kept` the one this browser keeps
 // whether or not a tab opened them (`keptIdentity`). `join` stands for
-// joining through a host's entry (`joinViaHost`) where a test says what the
-// host answers; without one the page's own join runs. `entryParts` gives the page
+// joining through a server's entry (`joinViaHost`) where a test says what the
+// server answers; without one the page's own join runs. `entryParts` gives the page
 // the entry's own parts (`ENTRY_PARTS`), as index.html has them. `profile` is what
-// the host keeps of the person a pairing link names (`{display_name}`, or
+// the server keeps of the person a pairing link names (`{display_name}`, or
 // `null` for none), and `whose` what the person presses on the card that says
 // whose device this becomes: `'go'`, `'stop'`, or a function told the card
 // that answers which.
 async function fixture({boot, remembered = [], own = false, search = '', session = {}, local = {}, member = null, entry = null, scope = null,
   pair = async () => { throw new Error('this fixture pairs no device'); }, identity = {userPublicKey: USER}, kept = null, join = null, entryParts = false,
-  profile = null, whose = 'go'} = {}) {
+  profile = null, whose = 'go', runtime: answers = {}} = {}) {
   const values = new Map(Object.entries(local));
   let assigned = null;
   const stored = new Map(Object.entries(session));
@@ -90,7 +90,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   const peer = {origin: ORIGIN, workspace: 'current', userPublicKey: USER,
     host: {hostCert: {user_public_key: Array(32).fill(170), device_public_key: Array(32).fill(0xcd)}},
     createInvitation: async () => { calls.push('invite'); return 'signed-secret'; },
-    // A member, not the owner, of a host that keeps its wait list to whoever
+    // A member, not the owner, of a server that keeps its wait list to whoever
     // it lets invite.
     membership: {list: async () => ({name: 'Current', members: []}), mayInvite: async () => false, waitList: async () => { throw new Error('only someone the workspace lets invite lists the wait list'); }},
     workspaces: {create: async name => ({workspace: 'created', name}), enter: async () => calls.push('enter')},
@@ -104,6 +104,8 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     link: {format: route => `https://web.example/#/${route.target.scope.workspace}`}};
   const prepared = [];
   const runtime = runtimeFake({
+    // What a test has the runtime answer beside the fixture's own, held to the module's surface as they are.
+    ...answers,
     presenceColor: id => {
       calls.push(['colour', id]);
       return '#ffd166';
@@ -114,9 +116,9 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     },
     // The rules of the list are the runtime's (tilo-session-client's `entered`,
     // tested there); these keep only what the page's steps here rely on.
-    forgetGoneWorkspaces: (list, origin, hostDevice) => {
+    forgetGoneWorkspaces: (list, origin, serverDevice) => {
       const all = JSON.parse(list);
-      const gone = entry => entry.origin === origin && entry.hostDevice !== hostDevice;
+      const gone = entry => entry.origin === origin && entry.hostDevice !== serverDevice;
       return JSON.stringify({entered: all.filter(entry => !gone(entry)), unchoose: all.filter(gone)});
     },
     rememberEntered: (list, entry) => {
@@ -587,8 +589,8 @@ test('an embedded workspace offers no invite sheet it could not carry out', asyn
   const embedded = deps;
   // The host's own key rides along: it is a member of the workspaces it
   // holds, and no person a link is made for.
-  const hostKey = Array(32).fill(0x2a);
-  const joining = {workspace: 'current', origin: ORIGIN, userPublicKey: USER, host: {hostCert: {user_public_key: hostKey}}};
+  const serverKey = Array(32).fill(0x2a);
+  const joining = {workspace: 'current', origin: ORIGIN, userPublicKey: USER, host: {hostCert: {user_public_key: serverKey}}};
   assert.equal(embedded.invite({peer: joining, entry: {base: 'https://web.example/'}}), null);
   await fixture({boot: async (options, page) => { deps = options.deps; return page; }});
   // Named no earlier than admission names the person; the sheet makes the
@@ -1149,5 +1151,261 @@ test('the pairing sheet hands its link to Tilo Assistant by an address of the ap
   // Only a web address is handed over: the app pairs with a link, and takes nothing else.
   for (const other of [undefined, null, '', 'javascript:alert(1)', 'tilo-assistant://pair?link=x', 'file:///tmp/a-link', ' https://web.example/']) {
     assert.equal(assistantAddress(other, mac), null, String(other));
+  }
+});
+
+// ---- Adding a device from a person's own desktop ---------------------------
+
+/** A person whose root this browser holds, as the page reads them
+ * (`currentIdentity`): not kept yet, so nothing of theirs is published. */
+const rootHolder = (userPublicKey = USER) => ({userPublicKey, kept: false, keepWithPasskey: async () => {},
+  createRecoveryKey: async () => 'recovery', revokeDevice: async () => {}});
+
+/** A link as the site's grammar writes it: a workspace at its server, or the person's own desktop. */
+const siteLink = {format: ({target: {scope}}) => (scope.kind === 'own' ? 'https://web.example/#/me'
+  : `https://web.example/#/@${new URL(scope.host).hostname}/w/${scope.workspace}`)};
+
+/**
+ * The site's own server as a page with no session there reaches its pairing
+ * (the runtime's pairing reach, at the address the server publishes): the
+ * devices `waiting()` says wait there, and every reach, question and answer,
+ * with the root each came with. `session()` is that reach as a workspace's
+ * peer hands it out.
+ */
+function homeServer(waiting = () => []) {
+  const asked = [];
+  class Pairing {
+    constructor(address) { asked.push(['reach', address]); }
+    async pending(root) { asked.push(['pending', root?.userPublicKey]); return JSON.stringify(waiting()); }
+    async answer(root, digest, approved) {
+      asked.push(['answer', root?.userPublicKey, digest, approved]);
+      return approved ? '{"cert":{}}' : null;
+    }
+    async close() { asked.push(['close']); }
+  }
+  return {asked, count: what => asked.filter(([said]) => said === what).length, session: () => new Pairing('session'),
+    runtime: {PairingHost: Pairing, hostInfo: async () => JSON.stringify({address: {id: 'home-server'}}), qrSvg: () => '<svg/>'}};
+}
+
+/**
+ * The page's repeating and late timers, held instead of started, so a test
+ * drives the pairing's poll itself (`poll(ms)`: every held timer of that
+ * period, once) and nothing outlives it. `release()` gives the clock back.
+ */
+function heldTimers() {
+  const real = {setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval, setTimeout: globalThis.setTimeout, now: Date.now};
+  const every = new Map();
+  let next = 1;
+  let ahead = 0;
+  globalThis.setInterval = (fire, ms) => { const id = `held-${next++}`; every.set(id, {fire, ms}); return id; };
+  globalThis.clearInterval = id => { if (!every.delete(id)) real.clearInterval(id); };
+  globalThis.setTimeout = (fire, ms, ...rest) => (ms >= 1000 ? `late-${next++}` : real.setTimeout(fire, ms, ...rest));
+  Date.now = () => real.now() + ahead;
+  return {
+    poll: async ms => { for (const held of [...every.values()]) if (held.ms === ms) held.fire(); await settled(); },
+    later: ms => { ahead += ms; },
+    release() {
+      Object.assign(globalThis, {setInterval: real.setInterval, clearInterval: real.clearInterval, setTimeout: real.setTimeout});
+      Date.now = real.now;
+    },
+  };
+}
+
+/** The person chooses the desktop's action `id`, which its page carries out. */
+const choose = (diagnostics, id, value) => diagnostics.onHostAction(id, value);
+/** A page that opened the pairing link naming `named`: its own way in pairs it. */
+const following = named => async ({deps}, page) => {
+  deps.onScope({scope: {kind: 'workspace', host: named.origin, workspace: named.workspace}, entry: HOME_ENTRY});
+  await deps.pairDevice({...named, listed: null});
+  return page;
+};
+const settled = async () => { for (let turn = 0; turn < 4; turn++) await tick(); };
+/** How often a page with an open pairing link asks its server who waits (`PAIR_POLL_MS`). */
+const PAIR_POLL = 3000;
+const card = kind => document.body.children.find(shown => shown.dataset.card === kind) ?? null;
+const pairingLinkOf = sheet => sheet.children.find(part => part.name === 'pairing-link').value;
+/** What a pairing link names: the server and workspace it opens, the person and the invite. */
+const namedBy = link => {
+  const [, server, workspace, secret] = /#\/@([^/]+)\/w\/([^?]+)\?pair=([0-9a-f]+)$/.exec(link);
+  return {origin: `https://${server}`, workspace, ...parsePairSecret(secret)};
+};
+const waitingDevice = (digest, invite) => ({digest, pairingCode: '123456', label: 'Safari on iPhone', device: 'ee'.repeat(32),
+  invite, requestedAtMs: Date.now()});
+/** A site whose home workspace, `lounge`, the server at `ORIGIN` keeps. */
+const HOME_ENTRY = {base: 'https://web.example/', home: {...HOME_AT_ORIGIN, workspace: 'lounge'}};
+/** A person's own desktop on that site, in a browser that holds `identity`;
+ * `chosen` is the workspace a bare entry opens for them, when they chose one:
+ * one this browser entered, as a choice is kept only while it remembers that. */
+const ownDesktop = ({identity = rootHolder(), server, chosen = null, entry = HOME_ENTRY, ...rest}) => fixture({own: true, identity, entry,
+  ...(chosen ? {remembered: [{origin: ORIGIN, workspace: chosen, hostDevice: 'cd'.repeat(32), name: 'Mine'}]} : {}),
+  runtime: server.runtime, ...rest, boot: async (_options, page) => {
+    if (chosen) chooseWorkspace({id: `open-workspace:${chosen}`, name: 'Mine', origin: ORIGIN, workspace: chosen});
+    page.link = siteLink;
+    return page;
+  }});
+
+test('on a person’s own desktop Add a device opens the pairing sheet, with a link another device of theirs joins with', async () => {
+  // Settings' Add a device asks the session for the sheet, and the desktop
+  // hands the page the action `pair-device`. On a person's own desktop
+  // no workspace's peer is in front, and the page offered no pairing there:
+  // the press opened nothing and said nothing. A device joins the person, not
+  // a workspace: their home server carries the request, and their root answers.
+  const timers = heldTimers();
+  try {
+    let waiting = [];
+    const server = homeServer(() => waiting);
+    const {diagnostics, shown, failure} = await ownDesktop({server, chosen: 'mine'});
+    assert.equal(failure, null);
+    assert.ok(shown.flat().some(action => action.id === 'pair-device'), 'the own desktop offers pairing, in search and on the person’s card');
+    choose(diagnostics, 'pair-device');
+    await settled();
+    assert.equal(card('pair-link')?.children[0].textContent, 'Pair a new device', 'the sheet opens');
+    const named = namedBy(pairingLinkOf(card('pair-link')));
+    assert.deepEqual({origin: named.origin, workspace: named.workspace, userPublicKey: named.userPublicKey},
+      {origin: ORIGIN, workspace: 'mine', userPublicKey: USER}, 'the link opens the person’s workspace on their home server, as them');
+    assert.match(named.invite, /^[0-9a-f]{32}$/, 'and names a fresh invite');
+    assert.deepEqual(server.asked, [['reach', JSON.stringify({id: 'home-server'})], ['pending', USER]],
+      'the root asks its home server who waits, at the address that server publishes');
+
+    // The device that opened the link waits there under its invite: this page
+    // asks its person, with the code the device shows, and answers nothing itself.
+    waiting = [waitingDevice('d1', named.invite)];
+    await timers.poll(PAIR_POLL);
+    const ask = card('pair-ask');
+    assert.ok(ask, 'the person is asked about the device that answered the link');
+    assert.ok(cardAndButtons(ask).includes('123456'), 'with the six digits the device shows');
+    assert.equal(server.count('answer'), 0, 'nothing is let in before the person approves');
+    const approve = ask.children.find(part => part.className === 'tilo-entry-actions').children.find(button => button.textContent === 'Approve 123456');
+    await approve.listeners.get('click')();
+    assert.deepEqual(server.asked.filter(([what]) => what === 'answer'), [['answer', USER, 'd1', true]], 'the root this page holds answers, once');
+    assert.ok(cardAndButtons(card('pair-ask')).includes('Safari on iPhone is now one of your devices'));
+
+    // Another device of theirs follows that link: the page's own way in pairs
+    // it through the server the link names, as the person and invite it names.
+    const joined = [];
+    const device = await fixture({identity: null, pair: async options => { joined.push(options); return {workspace: named.workspace}; },
+      boot: following(named)});
+    assert.equal(device.failure, null);
+    assert.deepEqual(joined.map(options => [options.origin, options.workspace, options.userPublicKey, options.invite]),
+      [[ORIGIN, 'mine', USER, named.invite]]);
+  } finally {
+    timers.release();
+  }
+});
+
+test('the own desktop’s pairing link opens a workspace of the home server this browser knows, and where it knows none no sheet opens', async () => {
+  const timers = heldTimers();
+  try {
+    for (const [remembered, entry, workspace] of [
+      // The one this browser entered on that server.
+      [[], HOME_ENTRY, 'other'],
+      // Else the site's home workspace itself.
+      [null, HOME_ENTRY, 'lounge'],
+      // A site that names no workspace of its home, in a browser that kept none: nowhere for a device to land.
+      [null, {base: 'https://web.example/', home: HOME_AT_ORIGIN}, null],
+    ]) {
+      const server = homeServer();
+      const {diagnostics} = await ownDesktop({server, remembered, entry});
+      choose(diagnostics, 'pair-device');
+      await settled();
+      assert.equal(card('pair-link') ? namedBy(pairingLinkOf(card('pair-link'))).workspace : null, workspace);
+      if (!workspace) assert.deepEqual(server.asked, [], 'and the server is asked nothing');
+    }
+  } finally {
+    timers.release();
+  }
+});
+
+test('a page that is not one of the person’s root-holding devices opens no pairing sheet', async () => {
+  // Only the root signs a new device's certificate. A browser that was itself
+  // paired holds no root, on the person's own desktop as in a workspace, and
+  // a browser that holds another person's root is not this person: neither
+  // shows a link, and neither asks the server who waits.
+  const timers = heldTimers();
+  try {
+    for (const page of [
+      {own: true, identity: {userPublicKey: USER}},
+      {own: false, identity: {userPublicKey: USER}},
+      {own: false, identity: rootHolder(ELSEWHERE)},
+    ]) {
+      const server = homeServer(() => [waitingDevice('d1', '0f'.repeat(16))]);
+      const {diagnostics, shown} = await fixture({...page, entry: HOME_ENTRY, runtime: server.runtime,
+        member: {pairing: () => server.session()}});
+      assert.ok(!shown.flat().some(action => action.id === 'pair-device'), 'pairing is not offered');
+      choose(diagnostics, 'pair-device');
+      await settled();
+      assert.equal(card('pair-link'), null, 'no sheet, no link');
+      assert.equal(card('pair-ask'), null, 'and nobody is asked about a device');
+      assert.deepEqual(server.asked, [], 'the server is asked nothing');
+    }
+  } finally {
+    timers.release();
+  }
+});
+
+test('a spent invitation and an ended one let nobody in from the own desktop: no device naming either is asked about', async () => {
+  const timers = heldTimers();
+  try {
+    let waiting = [];
+    const server = homeServer(() => waiting);
+    const {diagnostics} = await ownDesktop({server, chosen: 'mine'});
+    choose(diagnostics, 'pair-device');
+    await settled();
+    const spent = namedBy(pairingLinkOf(card('pair-link'))).invite;
+    waiting = [waitingDevice('d1', spent)];
+    await timers.poll(PAIR_POLL);
+    const decline = card('pair-ask').children.find(part => part.className === 'tilo-entry-actions').children.find(button => button.textContent === 'Decline');
+    await decline.listeners.get('click')();
+    assert.deepEqual(server.asked.filter(([what]) => what === 'answer'), [['answer', USER, 'd1', false]]);
+    // Answered, the invite is spent, approved or not: a second device naming it is never put to the person.
+    waiting = [waitingDevice('d2', spent)];
+    const before = server.count('pending');
+    await timers.poll(PAIR_POLL);
+    await timers.poll(PAIR_POLL);
+    assert.equal(server.count('pending'), before, 'the server is not even asked who waits: no invite of this page is open');
+    assert.equal(server.count('answer'), 1, 'and nothing more is answered');
+    assert.ok(cardAndButtons(card('pair-ask')).includes('Declined. Safari on iPhone was not let in.'), 'no new ask took the first one’s place');
+
+    // A link nobody answered ends ten minutes after it was made: its sheet
+    // closes, and a device that names it afterwards is not asked about either.
+    choose(diagnostics, 'pair-device');
+    await settled();
+    const ended = namedBy(pairingLinkOf(card('pair-link'))).invite;
+    assert.notEqual(ended, spent, 'each press makes a fresh invite');
+    timers.later(10 * 60 * 1000);
+    waiting = [waitingDevice('d3', ended)];
+    const asks = server.count('pending');
+    await timers.poll(PAIR_POLL);
+    assert.equal(card('pair-link'), null, 'the ended link’s sheet closes');
+    assert.equal(server.count('pending'), asks);
+    assert.equal(server.count('answer'), 1);
+  } finally {
+    timers.release();
+  }
+});
+
+test('a device approved through the own desktop’s link is the device of the person that link names, and of nobody else', async () => {
+  const timers = heldTimers();
+  try {
+    let waiting = [];
+    const server = homeServer(() => waiting);
+    const {diagnostics} = await ownDesktop({server, chosen: 'mine'});
+    choose(diagnostics, 'pair-device');
+    await settled();
+    const named = namedBy(pairingLinkOf(card('pair-link')));
+    // A device waiting under an invite this page never made (another person's
+    // link, or none) is not this page's to approve, whatever the server lists.
+    waiting = [waitingDevice('d9', '0e'.repeat(16)), {...waitingDevice('d8', null)}];
+    await timers.poll(PAIR_POLL);
+    assert.equal(card('pair-ask'), null);
+    assert.equal(server.count('answer'), 0);
+    assert.ok(server.asked.every(([what, root]) => !['pending', 'answer'].includes(what) || root === USER),
+      'every question to the server came with this person’s root and no other');
+    // The browser that follows the link keeps itself as that person's device alone.
+    await fixture({identity: null, pair: async () => ({workspace: named.workspace}), boot: following(named)});
+    const kept = keptMembership(HOME_AT_ORIGIN);
+    assert.deepEqual([kept?.userPublicKey, kept?.paired], [USER, true]);
+  } finally {
+    timers.release();
   }
 });

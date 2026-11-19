@@ -2297,7 +2297,7 @@ fn opened(
     })
     .unwrap();
     let mut whole = Vec::new();
-    for frame in workspaces.content_answer(workspace, &want) {
+    for frame in workspaces.content_answer(workspace, &device, &want) {
         match postcard::from_bytes(&frame).unwrap() {
             neighbour_wire::NeighbourMsg::DocumentContentPiece { bytes, .. } => whole.extend(bytes),
             neighbour_wire::NeighbourMsg::DocumentContentLacks { .. } => return None,

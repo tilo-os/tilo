@@ -329,10 +329,10 @@ public struct EngineRoom: View {
 
 /// One live Tilo thing, drawn by Tilo's own runtime, in a native view.
 ///
-/// In a message it is `compact`: it is looked at, keeps its shape, and takes no touch, so the
-/// conversation scrolls over it like over a picture. When the person hops in it is `working`:
-/// it fills the room it is given, and the keyboard and the pointer are its own. Both are the
-/// same record and the same mount: nothing loads again between them.
+/// In a message it is `compact`: it keeps its shape while allowing direct editing and
+/// interaction with the live app inside it. When the person hops in it is `working`: it fills
+/// the room it is given. Both are the same record and the same mount: nothing loads again
+/// between them.
 public struct TiloLiveView: View {
     public enum Size: Sendable {
         case compact
@@ -401,7 +401,6 @@ public struct TiloLiveView: View {
             if shows {
                 HolderView(holder: Holder(made: { [stage] view in stage.stand(in: view) },
                                           gone: { [stage] view in stage.leaves(view) }))
-                    .allowsHitTesting(size == .working)
             } else {
                 resting
             }

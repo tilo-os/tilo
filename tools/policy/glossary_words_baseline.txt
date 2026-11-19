@@ -4,7 +4,7 @@ room 3276
 space 4618
 channel 19124
 subject 2940
-host 67715
+host 67711
 relay 3256
 run 56746
 seat 1008

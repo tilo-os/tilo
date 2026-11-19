@@ -497,7 +497,7 @@ function pairingWait(code, whose, where, onStop) {
 
 /** Said on a tab its person signed in with their agent while its pairing
  * goes through (`ownPairing`): nothing asks the person anything, since
- * their stand-in approves the request their own computer's claim named, so
+ * their own computer certifies the request its claim named, so
  * the tab shows no code and points at no other device. */
 function pairingSigningIn() {
   const card = pairCard('pair-own', PAIRING_SIGNING_IN, 'status');
@@ -2207,12 +2207,15 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
     // A peer that cannot set a name of its own (a guest the server admitted)
     // goes by none; the person's own desktop (no peer) and a workspace they
     // joined do.
-    identity, name, pairing: pairingOf({peer, identity, link}), naming: !peer || peer.setDisplayName ? naming : null,
+    identity, name, naming: !peer || peer.setDisplayName ? naming : null,
+    // Another device is paired through the workspace in front, over the
+    // page's session with its server; on the person's own desktop, where no
+    // workspace is in front, through their home server (`pairingAtHome`).
+    pairing: pairingOf({peer, identity, link}) ?? (peer ? null : pairingAtHome({home, identity, runtime, link})),
     photos: !peer || peer.setDisplayName ? photos : null,
     hosts: () => membershipOrigins(identity.userPublicKey),
     lookups: () => [...membershipOrigins(), ...listedWorkspaces({home}).map(workspace => workspace.host.origin)],
     pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', showPairLink: pairLinkSheet, askPairing: pairingAsk,
-    standIn: standInOf({peer, identity, runtime}), standInStore: globalThis.localStorage,
     profiled: at => peer?.setProfileChanged?.(at),
     // The card's "Connect an agent" is the first screen's own setup, shown
     // again with a fresh code: the same prompt and the same MCP address the
@@ -2339,8 +2342,7 @@ const LET_IN_MS = 30_000;
  * workspace on that host, as the host answers it once this tab is let in
  * (`askOwnWorkspace`): made then on a first visit, under an id the host
  * chooses, so the link names a workspace the host knows. The tab approves the
- * agent's device through the host's published address, and gives the person
- * a stand-in there.
+ * agent's device through the host's published address.
  */
 function agentSetupCodes({origin, identity, runtime, link, workspace = null}) {
   const host = new URL(origin).origin;
@@ -2350,12 +2352,7 @@ function agentSetupCodes({origin, identity, runtime, link, workspace = null}) {
     if (actions) return actions;
     const links = await link;
     actions = createIdentityActions({identity, pairing: pairingAt({origin: host, identity, runtime, link: links}),
-      standIn: standInOf({peer: {origin: host}, identity, runtime}), standInStore: globalThis.localStorage,
-      passkeys: () => false,
-      // The person's agent is in, so their root is worth not losing with
-      // this tab: a stand-in on the host keeps them, made now and not for
-      // every visitor shown a prompt.
-      onAgent: () => { void actions?.keepStandIn().catch(error => console.warn('first run: stand-in', error)); }});
+      passkeys: () => false});
     agentWatchers.add(actions);
     return actions;
   };
@@ -2424,7 +2421,7 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
   const {codes, ours} = setup;
   // Claimed by a device of the person: this tab asks to be certified as a
   // device of theirs with the invite the claim named, as a pairing link
-  // does, and their stand-in on the host approves exactly that request.
+  // does, and the device that claimed it certifies exactly that request.
   // The link opens the workspace this tab is let into, so it waits for that.
   const signIn = async claimed => {
     const peer = await Promise.race([pageLetIn, new Promise(resolve => setTimeout(resolve, LET_IN_MS, null))]);
@@ -2441,7 +2438,7 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
  * Sign this tab in as the person whose device claimed its sign-in code
  * (`{user, invite}`): it opens `workspace` on the host at `origin` as a new
  * device of theirs, asking to be certified with the invite the claim named,
- * which their stand-in there approves, and then their own workspace.
+ * which the device that claimed it certifies, and then their own workspace.
  */
 async function signInAs({user, invite}, {origin, workspace}, link) {
   const url = (await link).format({mode: 'desktop', target: {scope: {kind: 'workspace', host: origin, workspace}}});
@@ -2534,23 +2531,6 @@ async function ensureOwnWorkspace(peer, store = globalThis.localStorage) {
 const ownChoice = own => ({id: `${OPEN_WORKSPACE}${own.id}`, name: own.name ?? 'My workspace', origin: own.origin, workspace: own.id});
 
 /**
- * The person's stand-in on the host `peer` is in, where the runtime can
- * certify one with the root this tab holds and revoke it again. The root
- * revokes it by signing, as it revokes any of the person's devices: the
- * entry is kept with the person and every session of theirs announces it to
- * its host, so the stand-in approves nothing from then on.
- */
-function standInOf({peer, identity, runtime}) {
-  if (!peer?.origin || typeof runtime?.keepStandIn !== 'function' || typeof identity?.revokeDevice !== 'function') return null;
-  const post = httpsPost(peer.origin);
-  return {
-    keep: () => runtime.keepStandIn(post, identity),
-    retire: () => runtime.retireStandIn(post, identity),
-    revoke: key => identity.revokeDevice(key),
-  };
-}
-
-/**
  * The login codes of the host at `origin`, through the one client of them
  * (`createLoginCode`, `followLoginCode` in wasm): `create(link)` makes one
  * naming this tab's pairing link, or nothing to be signed in by a device of
@@ -2620,7 +2600,7 @@ function pairingAt({origin, identity, runtime, link}) {
 }
 
 /**
- * Pairing another device of `identity` through the host `peer` is in: the
+ * Pairing another device of `identity` through the server `peer` is in: the
  * link that opens this workspace there as a new device of this person,
  * answering `invite`, and the host's requests waiting for this root to
  * approve them.
@@ -2640,4 +2620,51 @@ function pairingOf({peer, identity, link}) {
     answer: (digest, approved) => at().answer(identity, digest, approved),
     close: () => { const done = host; host = null; return done?.close(); },
   };
+}
+
+/**
+ * Pairing another device of `identity` from the person's own desktop, where
+ * no workspace's peer is in front. A device joins the person, not a
+ * workspace: the request it signs names them, its own key and the invite,
+ * and their server lists it for their root alone. So the root asks the home
+ * server of this site (`home`, as the site's own entry names it, never a
+ * link) at the address that server publishes (`pairingAt`, as the first screen
+ * pairs an agent), and the link opens a workspace of that server for the new
+ * device to land in: the one a bare entry opens for the person in this
+ * browser, else the one this browser was let into or entered there, else the
+ * site's home workspace. The ceremony is the same as from a workspace:
+ * a fresh invite that works once, for ten minutes, the person asked on this
+ * page with the code the device shows, and the root signing here. `null`
+ * where the site names no home server: nothing to pair through. Where no
+ * workspace of that server is known its `link` is `null`, which the action
+ * says (`no-workspace`).
+ */
+function pairingAtHome({home, identity, runtime, link}) {
+  let server;
+  try {
+    server = new URL(home?.host?.origin).origin;
+  } catch {
+    return null;
+  }
+  const through = pairingAt({origin: server, identity, runtime, link});
+  if (!through) return null;
+  const there = kept => {
+    try {
+      return Boolean(kept?.workspace) && new URL(kept.origin).origin === server;
+    } catch {
+      return false;
+    }
+  };
+  const landing = () => {
+    const chosen = remembering(() => chosenWorkspace());
+    if (there(chosen)) return chosen.workspace;
+    // What this browser joined that server as counts only where it joined as this person.
+    const member = remembering(() => keptMembership(home));
+    return (member?.userPublicKey === identity.userPublicKey ? member.workspace : null)
+      ?? (remembering(() => enteredWorkspaces()) ?? []).find(there)?.workspace ?? home.workspace ?? null;
+  };
+  return {...through, link: invite => {
+    const workspace = landing();
+    return workspace ? through.link(invite, workspace) : null;
+  }};
 }

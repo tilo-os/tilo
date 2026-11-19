@@ -22,7 +22,6 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-#[cfg(target_os = "linux")]
 use tilo_clock::time::SystemTime;
 
 use tilo_action_policy::WorkspacePolicy;
@@ -1680,15 +1679,7 @@ impl Engine {
     /// which is where the person's other devices enter it.
     pub fn holder_of(&self, workspace: WorkspaceId) -> Option<[u8; 32]> {
         self.owner
-            .with_current(workspace, |view| {
-                let host = view.workspace_host();
-                // A device's workspace service writes under a key of its own, which the device
-                // certified: the device is the one it serves.
-                Ok(match &host.issuer {
-                    Some(device) if host.capabilities.workspace_service => device.device_public_key,
-                    _ => host.device_public_key,
-                })
-            })
+            .with_current(workspace, |view| Ok(view.workspace_host().writes_for()))
             .ok()
     }
 
@@ -1916,34 +1907,23 @@ impl Engine {
         let now = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |since| since.as_nanos());
-        #[expect(
-            clippy::needless_collect,
-            reason = "the open links are taken out so their lock is released before each \
-                      workspace's holder is read under the owner's"
-        )]
-        let open: Vec<WorkspaceId> = self
-            .open_links
+        self.open_links
             .lock_recover()
-            .iter()
-            .filter(|(_, lapses)| lapses.iter().any(|lapses| u128::from(*lapses) > now))
-            .map(|(workspace, _)| *workspace)
-            .collect();
-        let own = self.identity.device_cert.device_public_key;
-        open.into_iter()
-            .any(|workspace| self.holder_of(workspace) == Some(own))
+            .values()
+            .any(|lapses| lapses.iter().any(|until| u128::from(*until) > now))
     }
 
     /// Note the links into `workspace` its holder's list names, each open until it lapses: in
     /// place of what was noted before.
     pub fn note_invitations(&self, workspace: WorkspaceId, listed: &serde_json::Value) {
+        if !self.dials_for(workspace) {
+            return;
+        }
         let lapses = listed
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|link| {
-                link.get("expires_at_ns")
-                    .and_then(serde_json::Value::as_u64)
-            })
+            .filter_map(|link| link["expires_at_ns"].as_u64())
             .collect();
         self.open_links.lock_recover().insert(workspace, lapses);
     }
@@ -1951,11 +1931,20 @@ impl Engine {
     /// Note the link into `workspace` that is open until `until`: one more beside the ones its
     /// holder listed.
     pub fn note_link(&self, workspace: WorkspaceId, until: u64) {
+        if !self.dials_for(workspace) {
+            return;
+        }
         self.open_links
             .lock_recover()
             .entry(workspace)
             .or_default()
             .push(until);
+    }
+
+    /// Whether a person redeeming a link into `workspace` dials this device: it holds the
+    /// workspace as its holder. One held elsewhere is answered by that device.
+    fn dials_for(&self, workspace: WorkspaceId) -> bool {
+        self.holder_of(workspace) == Some(self.identity.device_cert.device_public_key)
     }
 
     /// Put the workspace a join is installing into on this device's layout: an enrollment only
@@ -2206,26 +2195,38 @@ mod tests {
     }
 
     /// A link out of a workspace this device holds keeps it dialable for whoever redeems it, and
-    /// only until the link lapses.
+    /// only until the link lapses; a link into a workspace another device holds moves nothing.
     #[test]
     fn a_link_out_of_a_held_workspace_keeps_this_device_dialable_until_it_lapses() {
         let state = tempfile::tempdir().expect("a state directory");
         let (identity, _) = identity(DeviceCapabilities::member());
-        let engine = engine(state.path(), identity);
-        let workspace = founded(&engine);
         let now = tilo_clock::wall();
-        assert!(!engine.invitations_open(now), "no link is out");
-
         let lapses = tilo_clock::unix_now_ns().saturating_add(60_000_000_000);
-        engine.note_link(workspace, lapses);
-        assert!(engine.invitations_open(now), "one is");
-        assert!(!engine.invitations_open(now + std::time::Duration::from_secs(120)));
+        let workspace = {
+            let engine = engine(state.path(), identity);
+            let workspace = founded(&engine);
+            assert!(!engine.invitations_open(now), "no link is out");
+            engine.note_link(workspace, lapses);
+            assert!(engine.invitations_open(now), "one is");
+            assert!(
+                !engine.invitations_open(now + std::time::Duration::from_secs(120)),
+                "it lapsed"
+            );
+            let listed = serde_json::json!([{ "expires_at_ns": lapses }]);
+            engine.note_invitations(workspace, &listed);
+            assert!(engine.invitations_open(now), "its holder lists it too");
+            engine.note_invitations(workspace, &serde_json::json!([]));
+            assert!(!engine.invitations_open(now), "the holder lists none");
+            workspace
+        };
 
-        let listed = serde_json::json!([{ "expires_at_ns": lapses }]);
-        engine.note_invitations(workspace, &listed);
-        assert!(engine.invitations_open(now), "its holder lists it too");
-        engine.note_invitations(workspace, &serde_json::json!([]));
-        assert!(!engine.invitations_open(now), "the holder lists none");
+        let (copy, _) = device_of([0x44; 32], DeviceCapabilities::member());
+        let copy = engine(state.path(), copy);
+        copy.note_link(workspace, lapses);
+        assert!(
+            !copy.invitations_open(now),
+            "a joiner dials the holder, not this copy"
+        );
     }
 
     /// A machine copied from a device, before the workspace admits it, reads what the copy holds,

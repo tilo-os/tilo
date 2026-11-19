@@ -186,9 +186,21 @@ async fn a_keys_writes_land() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    // Its person revokes the key's grant in the workspace: a write to the
-    // tree's own document and one into a part of the notebook are refused
-    // alike, and neither answers that it went in.
+    // The key, which acts as its person, also holds an MCP session in the workspace.
+    let mut mcp = super::api::Mcp {
+        api: &api,
+        path: format!("/w/{workspace}/mcp"),
+        token: key.token.clone(),
+        session: None,
+    };
+    assert_eq!(mcp.initialize().await.0, 200);
+    mcp.did("notes/Notes#new-note", json!({"title": "over MCP"}))
+        .await;
+
+    // Its person revokes the key's grant in the workspace: every open session of the key ends
+    // at once, and a write to the tree's own document, one into a part of the notebook, a read
+    // and a call over MCP are refused alike as a revoked key's, each saying how its person
+    // approves another.
     let person = root.verifying_key().to_bytes();
     let grants = workspaces.grants_of(&workspace, &person).await.unwrap();
     assert_eq!(grants.len(), 1, "the workspace lists the key: {grants:?}");
@@ -198,6 +210,15 @@ async fn a_keys_writes_land() {
             .await
             .unwrap()
     );
+    let ending = Instant::now() + Duration::from_secs(5);
+    while !on_server.api.open_sessions().is_empty() {
+        assert!(
+            Instant::now() < ending,
+            "a revoked key's session stays open: {:?}",
+            on_server.api.open_sessions()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let (status, put) = json_of(
         key.send(
             hyper::Method::POST,
@@ -225,16 +246,42 @@ async fn a_keys_writes_land() {
             &[],
         )
         .await;
-    for (what, (status, answer)) in [("the tree", tree_write), ("a part", part_write)] {
-        assert!(
-            !(200..300).contains(&status) || answer["status"] != "ok",
-            "a revoked key's write to {what} answers an error: {status} {answer}"
+    let read = key.get(&format!("{base}/resources")).await;
+    for (what, (status, answer)) in [
+        ("write to the tree", tree_write),
+        ("write to a part", part_write),
+        ("read", read),
+    ] {
+        assert_eq!(
+            (status, &answer["error"]["code"]),
+            (401, &json!("key_revoked")),
+            "a revoked key's {what} is refused as revoked: {answer}"
         );
         assert!(
             answer.to_string().contains("tilo keys create"),
             "the refusal says how to approve a key again: {answer}"
         );
     }
+    let (_, over_mcp) = mcp
+        .post(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                     "params": {"name": "tilo_do", "arguments":
+                                {"path": "notes/Notes#new-note", "args": {"title": "revoked"}}}}))
+        .await;
+    assert!(
+        over_mcp.to_string().contains("tilo keys create"),
+        "a revoked key's MCP call is refused as revoked: {over_mcp}"
+    );
+    assert!(
+        !titles_kept(&on_server, &workspace)
+            .await
+            .contains("revoked"),
+        "a revoked key's MCP call writes nothing"
+    );
+    assert!(
+        on_server.api.open_sessions().is_empty(),
+        "a refused call opens no session: {:?}",
+        on_server.api.open_sessions()
+    );
 
     // Doing what it says gives a key that writes again.
     let page = enrol(&root, "Ada's browser again", DeviceCapabilities::member());

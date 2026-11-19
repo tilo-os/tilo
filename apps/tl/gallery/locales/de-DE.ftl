@@ -263,13 +263,13 @@ d-7chkyi44 = Grundlagen
     .w-opened-from-the-panel-with-the = Aus dem Panel geöffnet, mit dem Weg zurück darüber.
 
 d-vvxmf5ve = Backlogliste
-    .w-message-the-team = Nachricht ans Team
-    .w-send = Senden
+    .w-add-an-item-to-the-backlog = Einen Eintrag zum Backlog hinzufügen
+    .w-add = Hinzufügen
+    .w-rows-of-a-collection-each-with = Zeilen einer Sammlung: jede mit einem Menü, einem Wischen, einer Werkzeugleiste beim Darüberfahren und ihren Reaktionen.
 
 d-7ptc3r7a = Eintragszeile
-    .w-copy-link = Link kopieren
+    .w-mark-done = Als erledigt markieren
     .w-delete = Löschen
-    .w-reply = Antworten
 
 d-qczmqkvq = Release-Board
     .w-a-board-a-list-per-stage = Ein Board, eine Liste je Phase, mit Karten, die eine App zwischen ihnen zieht.
@@ -595,7 +595,7 @@ d-5l4lnfd6 = Seitentitel
     .w-media = Medien
     .w-places = Orte
     .w-shell-parts = Rahmenteile
-    .w-your-own = Eigenes
+    .w-charts-and-views = Diagramme und Ansichten
     .w-gallery = Galerie
 
 d-yy2pow4p = Eintrag notiert
@@ -770,3 +770,25 @@ d-ugfyyjbk = Füllen beim ersten Start
 
 d-haqpp6u6 = Füllen
     .doc = Was die Galerie zeigt, solange noch nichts in ihr steht: ein Dokument jeder Gruppe, damit ein Mensch die Komponenten trifft statt ein leeres Fenster.
+
+d-6obnc5qh = Eintrag hinzufügen
+    .doc = Fügt hinzu, was die Zeile des Backlogs sagt, als zu erledigenden Eintrag, und leert die Zeile.
+    .w-write-the-item-first = Schreib zuerst den Eintrag
+
+d-qt2z24yc = Erledigen
+    .doc = Markiert einen Eintrag als erledigt.
+
+d-jkdyuciq = Eintrag entfernen
+    .doc = Nimmt einen Eintrag aus dem Backlog.
+
+d-jkdyuciq-x = X
+
+d-pshdk4bg = Reagieren
+    .doc = Reagiert mit einem Emoji auf einen Eintrag, oder nimmt die eigene Reaktion zurück.
+
+d-pshdk4bg-emoji = Emoji
+
+d-iemy5gb4 = Eintrag hinzufügen~present
+
+d-bmdkc22s = Name
+    .doc = Wie die Galerie heißt: ihr Name, damit kein Feld, das eine Seite bearbeitet, für ihren Titel gehalten wird.

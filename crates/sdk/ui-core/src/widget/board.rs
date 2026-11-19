@@ -402,17 +402,30 @@ impl Board {
         f64::from(theme.tokens.metrics.board_list_width).max(CardWidth::Regular.min_width(theme))
     }
 
-    /// The width a list takes on a board `width` wide: a list's comfortable measure, the same
-    /// on every board and at every window width, so lists stand left-aligned with the width a
-    /// wider pane leaves open beside them. Only a pane too narrow for one list and the board's
-    /// gutters narrows it, and then to the pane, so a narrow board shows one whole list per
-    /// page rather than one list and a sliver of the next.
-    pub(crate) fn list_width(theme: &Theme, width: f64) -> f32 {
+    /// The width each of `lists` lists takes on a board `width` wide: a comfortable measure,
+    /// the same on every board and at every window width, so lists stand left-aligned with the
+    /// width a wider pane leaves open beside them. Only a pane too narrow for one list and the
+    /// board's gutters narrows it, and then to the pane, so a narrow board shows one whole list
+    /// per page rather than one list and a sliver of the next.
+    ///
+    /// Lists that fall a little short of fitting side by side narrow, never below the measure a
+    /// card needs, so every list stands whole in the pane rather than the last one cut off at its
+    /// edge; lists that do not fit even then keep their comfortable measure and scroll.
+    pub(crate) fn lists_width(theme: &Theme, width: f64, lists: usize) -> f32 {
         let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
+        let gap = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Sibling));
         let least = f64::from(CardWidth::Regular.min_width(theme));
         let comfortable = Self::comfortable_list(theme);
         let spare = (width - 2.0 * gutter).max(0.0);
-        let list = if spare >= comfortable {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a board holds a handful of lists"
+        )]
+        let count = lists.max(1) as f64;
+        let fitted = (spare - gap * (count - 1.0)) / count;
+        let list = if lists > 1 && fitted < comfortable && fitted >= least {
+            fitted
+        } else if spare >= comfortable {
             comfortable
         } else {
             spare.max(least)
@@ -441,7 +454,7 @@ impl Board {
         theme: &Theme,
         width: f64,
     ) -> bool {
-        let width = Self::list_width(theme, width);
+        let width = Self::lists_width(theme, width, Widget::children(&self.row).len());
         if self.sized.is_some_and(|sized| (sized - width).abs() < 0.05) {
             return false;
         }
@@ -891,7 +904,7 @@ mod tests {
         // open beside them at the trailing edge.
         {
             let theme = Theme::dark();
-            let list = f64::from(Board::list_width(&theme, 1280.0));
+            let list = f64::from(Board::lists_width(&theme, 1280.0, 1));
             let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
             let gap = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Sibling));
             let pane = 1280u32;

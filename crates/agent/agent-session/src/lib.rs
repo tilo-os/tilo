@@ -58,6 +58,7 @@ mod workspace_documents;
 pub use apps::{
     AppCatalogue, AppError, PlacedApp, PlacedArgument, Replica, ReplicaActor, Seed, component_apps,
 };
+pub use control::AgentSessions;
 pub use control::{
     AdmissionDone, AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, ApprovalDone,
     GrantRecord, Spawner, SupervisorHost, SupervisorSnapshot,

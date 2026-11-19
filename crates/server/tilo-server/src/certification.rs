@@ -86,33 +86,33 @@ impl Asked {
     }
 }
 
+/// Whether `entry` is a person's own request, still open, naming `user`
+/// and `invite`.
+#[cfg(feature = "web")]
+fn named(entry: &Pending, user: &[u8; 32], invite: &[u8; 16], now_ns: u64) -> bool {
+    !entry.decided()
+        && entry.agent.is_none()
+        && entry.entry.request.user_public_key == *user
+        && entry.entry.request.invite == *invite
+        && entry.entry.request.expires_at_ns > now_ns
+}
+
 /// A queued request: its digest, pairing code and a receiver of its answer.
 type Queued = ([u8; 32], String, watch::Receiver<Option<CertifyReply>>);
 
 /// The pairing invites answered, as (person, invite).
 type AnsweredInvites = std::collections::HashSet<([u8; 32], [u8; 16])>;
 
-/// What certifies a device for a person's stand-in on this host
-/// (`crate::web`'s login codes): only a request whose person and invite a
-/// claim of a sign-in code named, once.
-pub(crate) trait StandInApprover: Send + Sync {
+/// The requests this server's login codes expect (`crate::web`'s login
+/// codes): queued for whoever answers them, even for a person no workspace
+/// here lets in yet.
+pub(crate) trait CodeRequests: Send + Sync {
     /// Whether a computer resolving a setting-up code here made `request`,
-    /// so its tab, which wrote the link the code names, answers it: queued
-    /// even before that person was let into a workspace this host serves.
+    /// so its tab, which wrote the link the code names, answers it.
     fn sets_up(&self, request: &CertificationRequest, now_ns: u64) -> bool;
-    /// Whether a claim on this host expects `request`, and that person's
-    /// stand-in may approve it now.
+    /// Whether a claim of a sign-in code here expects `request`: the device
+    /// that claimed it certifies it ([`CertificationProtocol::issue_named`]).
     fn expects(&self, request: &CertificationRequest, now_ns: u64) -> bool;
-    /// The stand-in's certificate for `request`, spending the claim that
-    /// expected it; `None` when nothing expects it any more.
-    fn issue(
-        &self,
-        request: &CertificationRequest,
-        revocations: &RevocationList,
-        now_ns: u64,
-    ) -> Option<DeviceCert>;
-    /// `request` was answered with the stand-in's certificate.
-    fn approved(&self, request: &CertificationRequest);
 }
 
 /// What tells a person, outside every Tilo of theirs, that a question waits
@@ -155,8 +155,8 @@ pub struct CertificationProtocol {
     /// The workspaces this host serves, whose members may queue their own
     /// devices' requests; absent in a host that governs none.
     workspaces: Option<crate::peer::WorkspaceRegistry>,
-    /// Approves the requests a person's stand-in on this host expects.
-    stand_in: Arc<std::sync::OnceLock<Arc<dyn StandInApprover>>>,
+    /// The requests this server's login codes expect.
+    codes: Arc<std::sync::OnceLock<Arc<dyn CodeRequests>>>,
     /// The workspaces this host governs, whose records keep each person's
     /// devices: a certificate a root issues here joins its person's record.
     records: Arc<std::sync::OnceLock<tilo_workspace_service::workspaces::Workspaces>>,
@@ -196,7 +196,7 @@ impl CertificationProtocol {
             confirmations: Arc::new(Mutex::new(HashMap::new())),
             answered_invites: Arc::new(Mutex::new(std::collections::HashSet::new())),
             workspaces,
-            stand_in: Arc::default(),
+            codes: Arc::default(),
             records: Arc::default(),
             moved: Arc::new(watch::Sender::new(0)),
             notifier: Arc::default(),
@@ -264,11 +264,75 @@ impl CertificationProtocol {
         }
     }
 
-    /// Name what approves for people's stand-ins here. Named once; a later
-    /// call keeps the first.
+    /// Name the requests this server's login codes expect. Named once; a
+    /// later call keeps the first.
     #[cfg(feature = "web")]
-    pub(crate) fn set_stand_in(&self, approver: Arc<dyn StandInApprover>) {
-        let _ = self.stand_in.set(approver);
+    pub(crate) fn set_code_requests(&self, codes: Arc<dyn CodeRequests>) {
+        let _ = self.codes.set(codes);
+    }
+
+    /// The request waiting here, undecided, that names `user` and `invite`:
+    /// what the device that claimed a sign-in code certifies.
+    #[cfg(feature = "web")]
+    pub(crate) fn waiting_for(
+        &self,
+        user: &[u8; 32],
+        invite: &[u8; 16],
+        now_ns: u64,
+    ) -> Option<CertificationRequest> {
+        self.lock()
+            .values()
+            .find(|entry| named(entry, user, invite, now_ns))
+            .map(|entry| entry.entry.request.clone())
+    }
+
+    /// Answer the request waiting here that names `user` and `invite` with
+    /// `cert`, which the person's root signed for exactly that request, as
+    /// a root holder's `Issue` answers it. `take` spends what expected the
+    /// request, once `cert` was found to answer it; nothing is answered when
+    /// it finds nothing to spend.
+    ///
+    /// # Errors
+    ///
+    /// No such request waits, `cert` does not answer it, or `take` found
+    /// nothing to spend.
+    #[cfg(feature = "web")]
+    pub(crate) fn issue_named(
+        &self,
+        user: &[u8; 32],
+        invite: &[u8; 16],
+        cert: DeviceCert,
+        take: impl FnOnce(&CertificationRequest) -> bool,
+        now_ns: u64,
+    ) -> Result<CertificationRequest, String> {
+        let revocations = self.revocations();
+        let mut pending = self.lock();
+        let entry = pending
+            .values_mut()
+            .find(|entry| named(entry, user, invite, now_ns))
+            .ok_or("the tab's request is not waiting here")?;
+        if cert.issuer.is_some() {
+            return Err("only the person's root certifies this tab".into());
+        }
+        verify_issued_cert(
+            &entry.entry.request,
+            &cert,
+            &self.policy,
+            &revocations,
+            now_ns,
+        )
+        .map_err(|error| error.to_string())?;
+        let request = entry.entry.request.clone();
+        if !take(&request) {
+            return Err("nothing expects this request any more".into());
+        }
+        self.answered_invites
+            .lock_recover()
+            .insert((request.user_public_key, request.invite));
+        let reply = self.issued(entry, cert);
+        self.settle(entry, reply);
+        drop(pending);
+        Ok(request)
     }
 
     /// Add the certificate `reply` issues, when it issues one, to its
@@ -712,19 +776,14 @@ impl CertificationProtocol {
         // the Lounge has let it into a workspace here, so a computer that
         // resolves that code is queued the same way: once its request
         // arrives, the tab is the one that answers it.
+        // A request a sign-in code's claim expects is queued the same way,
+        // for the device that claimed it to certify.
         let member = self.admits(request.user_public_key).await
-            || self
-                .stand_in
-                .get()
-                .is_some_and(|codes| request.invite != [0; 16] && codes.sets_up(&request, now));
-        // A request a person's stand-in here expects is queued like theirs,
-        // whether or not they are a member of a workspace this host serves.
-        let stand_in = self
-            .stand_in
-            .get()
-            .filter(|approver| request.invite != [0; 16] && approver.expects(&request, now))
-            .cloned();
-        let queued = self.enqueue_member(request, now, member || stand_in.is_some());
+            || self.codes.get().is_some_and(|codes| {
+                request.invite != [0; 16]
+                    && (codes.sets_up(&request, now) || codes.expects(&request, now))
+            });
+        let queued = self.enqueue_member(request, now, member);
         let (digest, pairing_code, answer) = match queued {
             Ok(queued) => queued,
             Err(reason) => {
@@ -737,9 +796,6 @@ impl CertificationProtocol {
         write_frame(&mut send, &encode(&CertifyReply::Pending { pairing_code })?)
             .await
             .map_err(|error| io(&error))?;
-        if let Some(approver) = stand_in {
-            self.stand_in_decide(approver.as_ref(), &digest, unix_now_ns());
-        }
         let wait = Duration::from_nanos(expires_at_ns.saturating_sub(now));
         let reply = tokio::select! {
             reply = answered(answer, wait) => reply,
@@ -823,46 +879,14 @@ impl CertificationProtocol {
         }
     }
 
-    /// Answer pending request `digest` with the stand-in's certificate, as
-    /// a root holder's `Issue` answers it, when the stand-in still expects
-    /// it. The requester sees no difference.
-    fn stand_in_decide(&self, approver: &dyn StandInApprover, digest: &[u8; 32], now_ns: u64) {
-        let revocations = self.revocations();
-        let mut pending = self.lock();
-        let Some(entry) = pending
-            .get_mut(digest)
-            .filter(|entry| !entry.decided() && entry.agent.is_none())
-        else {
-            return;
-        };
-        let Some(cert) = approver.issue(&entry.entry.request, &revocations, now_ns) else {
-            return;
-        };
-        if verify_issued_cert(
-            &entry.entry.request,
-            &cert,
-            &self.policy,
-            &revocations,
-            now_ns,
-        )
-        .is_err()
-        {
-            return;
-        }
-        let request = entry.entry.request.clone();
-        self.answered_invites
-            .lock_recover()
-            .insert((request.user_public_key, request.invite));
-        // Recorded before the requester can read its answer, so a tab that
-        // follows its code after being certified sees the approval.
-        approver.approved(&request);
-        entry.answer.send_replace(Some(CertifyReply::Issued {
+    /// The answer issuing `cert` for `entry`, under the name the server gave it.
+    #[cfg(feature = "web")]
+    fn issued(&self, entry: &Pending, cert: DeviceCert) -> CertifyReply {
+        CertifyReply::Issued {
             cert,
             server_cert: self.identity.cert.clone(),
             label: entry.label.clone(),
-        }));
-        drop(pending);
-        self.moved();
+        }
     }
 
     /// Every question still waiting for `person`'s answer: a device of

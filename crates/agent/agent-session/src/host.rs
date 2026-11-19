@@ -97,6 +97,9 @@ struct Shared {
     /// Each agent's session state, by its agent id: kept while the host
     /// runs, so an agent stopped and started again keeps its channel keys.
     sessions: Mutex<BTreeMap<String, Arc<tilo_session_client::MemoryPeerStore>>>,
+    /// The agents' sessions here, which sign a change an action made for each
+    /// ([`crate::workspace_actions`]).
+    agent_sessions: crate::control::AgentSessions,
     /// The wall clock the keeper judges grants by.
     clock: HostClock,
 }
@@ -159,6 +162,7 @@ impl AgentHost {
             stopping: AtomicBool::new(false),
             threads: Mutex::new(Vec::new()),
             sessions: Mutex::new(BTreeMap::new()),
+            agent_sessions: crate::control::AgentSessions::default(),
             clock,
         });
         let spawning = shared.clone();
@@ -179,6 +183,12 @@ impl AgentHost {
     #[must_use]
     pub const fn supervisor(&self) -> &Arc<AgentSupervisor> {
         &self.supervisor
+    }
+
+    /// The agents' sessions here, which sign a change an action made for each.
+    #[must_use]
+    pub fn agent_sessions(&self) -> crate::control::AgentSessions {
+        self.shared.agent_sessions.clone()
     }
 
     /// Where the grants and agents are kept.
@@ -401,6 +411,7 @@ fn run_agent(
             .entry(agent_id.clone())
             .or_default(),
     );
+    let device = identity.cert.device_public_key;
     let mut member = match AgentMember::start_with_store(
         MemberConfig {
             host: endpoint.host,
@@ -419,6 +430,7 @@ fn run_agent(
             return;
         }
     };
+    shared.agent_sessions.joined(device, member.peer().clone());
     tracing::info!(agent = %agent_id, "agent joined its workspace");
     member.run_until(None, |_| {
         shared.stopping.load(Ordering::Acquire) || control.status() == AgentStatus::Stopped
@@ -428,6 +440,7 @@ fn run_agent(
         member.pump();
     }
     member.close();
+    shared.agent_sessions.left(&device);
     tracing::info!(agent = %agent_id, "agent left its workspace");
 }
 

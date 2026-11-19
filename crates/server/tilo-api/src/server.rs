@@ -739,7 +739,14 @@ impl Connection {
     /// the server for good.
     #[must_use]
     pub fn is_live(&self) -> bool {
+        // A workspace it entered that lets it in no more (a key its person revoked there) ends
+        // the session: the key's next call opens another, which that workspace refuses saying
+        // why, rather than going on answering from one it is no longer in.
         self.device.is_live()
+            && lock(&self.entered)
+                .values()
+                .filter_map(|entered| entered.get())
+                .all(|workspace| self.device.holds(*workspace))
     }
 
     /// Enter `workspace`, as every device enters one, in at most [`ENTERING`]:

@@ -25,6 +25,9 @@ public struct ConversationView: View {
     /// How tall what shows of the conversation is, once its scroll view has said so: a turn's
     /// opened steps take a share of it. Nothing until then.
     @State private var shownTall: CGFloat = 0
+    /// How many scrolls the view has asked for itself to bring the end back, and not yet seen through.
+    /// Where one of them puts the conversation is never the person scrolling away from the end.
+    @State private var ownScrolls = 0
 
     public init(chat: Chat, picturedSecret: String = "", head: String? = nil) {
         self.chat = chat
@@ -44,7 +47,7 @@ public struct ConversationView: View {
         let sinceRow = sinceFirst.flatMap { first in rows.first { $0.item == first }?.id }
         // Under the newest reply whose model gave no answer for the key's sake: the way back to the key.
         let way = model.replyWay(in: chat)
-        GeometryReader { space in
+        GeometryReader { area in
             ScrollViewReader { reader in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
@@ -87,7 +90,7 @@ public struct ConversationView: View {
                     .frame(maxWidth: Measure.column)
                     .padding(.horizontal, Measure.columnGutter)
                     .frame(maxWidth: .infinity)
-                    .frame(minHeight: space.size.height, alignment: .bottom)
+                    .frame(minHeight: area.size.height, alignment: .bottom)
                 }
                 .defaultScrollAnchor(.bottom)
                 // What scrolls out under the bar above or the field below leaves softly: no piece is
@@ -106,17 +109,24 @@ public struct ConversationView: View {
                 } action: { was, now in
                     if shownTall != now.shown { shownTall = now.shown }
                     if was.tall != now.tall || was.shown != now.shown {
-                        if atEnd {
-                            reader.scrollTo("end", anchor: .bottom)
-                        }
+                        if atEnd { rest(reader) }
                     } else {
                         // The end is in sight while what shows reaches to within two lines of it.
                         let inSight = now.below <= 40
-                        if atEnd != inSight { atEnd = inSight }
+                        // A scroll the view asked for itself, set before the conversation is laid out,
+                        // may throw a long one to its top for a moment: that is not the person leaving.
+                        if atEnd != inSight, inSight || ownScrolls == 0 { atEnd = inSight }
                         if inSight, moreBelow { moreBelow = false }
                     }
                 }
-                .onAppear { reader.scrollTo("end", anchor: .bottom) }
+                .onAppear { rest(reader) }
+                // The height the conversation has changes when a bar or the keyboard comes or goes, and
+                // a scroll view does not tell its reader of every such step: a chat that is the first
+                // thing its window shows gets its bar's height in the pass that lays the window out, and
+                // the reader above is not called for it. The height itself says so here.
+                .onChange(of: area.size.height) {
+                    if atEnd { rest(reader) }
+                }
                 // Scrolled up, the view stays where the person put it, and a quiet mark says that
                 // more came below. A press on it brings the end back.
                 .overlay(alignment: .bottom) {
@@ -177,6 +187,18 @@ public struct ConversationView: View {
     /// Whether the newest piece is what the person wrote themselves.
     private func newestIsOwn(_ conversation: Conversation) -> Bool {
         if case .message(let message)? = conversation.items.last?.content { message.author == .person } else { false }
+    }
+
+    /// Bring the conversation's end into view: at once, and once more when the window has finished
+    /// what it is laying out, if the person still rests at the end. An end set in the middle of a
+    /// layout pass is set for a height that is still changing, and stays where it was put.
+    private func rest(_ reader: ScrollViewProxy) {
+        ownScrolls += 1
+        reader.scrollTo("end", anchor: .bottom)
+        Task { @MainActor in
+            if atEnd { reader.scrollTo("end", anchor: .bottom) }
+            ownScrolls -= 1
+        }
     }
 
     private var liveAgent: SubAgent? {

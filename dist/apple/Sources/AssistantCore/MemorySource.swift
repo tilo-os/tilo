@@ -46,6 +46,9 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
 
     private let lock = NSLock()
     private let now: @Sendable () -> Date
+    /// How long after it is asked a conversation's pieces arrive, as a site's do a moment after
+    /// the window stands. Nothing: at once.
+    private let arrives: Duration?
     private let sessionNow: Broadcast<Session>
     private let reachNow = Broadcast<Reach>(.reachable)
     private let endedNow: Broadcast<String?>
@@ -74,8 +77,9 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     private var files: [Attachment.ID: URL] = [:]
     private var made = 0
 
-    public init(_ content: Content = Content(), now: @escaping @Sendable () -> Date = { Date() }) {
+    public init(_ content: Content = Content(), now: @escaping @Sendable () -> Date = { Date() }, arrives: Duration? = nil) {
         self.now = now
+        self.arrives = arrives
         sessionNow = Broadcast(content.session)
         endedNow = Broadcast(content.pairingEnded)
         endedDetailsNow = Broadcast(content.pairingEndedDetails)
@@ -302,7 +306,17 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
 
     public func conversation(_ chat: Chat) -> AsyncStream<ConversationChange> {
         guard let feed = feed(chat) else { return AsyncStream { $0.yield(.all([])) } }
-        return feed.stream()
+        guard let arrives else { return feed.stream() }
+        // The pieces come as a site's do: a moment after they were asked for.
+        return AsyncStream { continuation in
+            let coming = Task {
+                try? await Task.sleep(for: arrives)
+                guard !Task.isCancelled else { return }
+                for await change in feed.stream() { continuation.yield(change) }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in coming.cancel() }
+        }
     }
 
     public func earlier(in chat: Chat, before item: Item.ID) async throws -> [Item] {

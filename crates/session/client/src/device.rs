@@ -215,6 +215,13 @@ impl Device {
         )
     }
 
+    /// Whether the session still holds `workspace_id`: it was let in and has not been told since
+    /// that it may be there no more (taken out, or a key its person revoked there).
+    #[must_use]
+    pub fn holds(&self, workspace_id: WorkspaceId) -> bool {
+        self.peer.status().workspaces.contains_key(&workspace_id)
+    }
+
     /// Join `workspace` (its UUID) and wait for its host to say this device is in: its id here.
     ///
     /// # Errors

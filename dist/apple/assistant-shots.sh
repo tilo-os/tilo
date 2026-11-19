@@ -13,6 +13,10 @@
 #   dist/apple/assistant-shots.sh OUT secret   the protected field with something typed into it, in front and as
 #                                              the app leaves the front: OUT/phone/secret.txt and its pictures
 #   dist/apple/assistant-shots.sh OUT typing   the main chat with the keyboard up, as the whole screen shows it
+#   dist/apple/assistant-shots.sh OUT place    whether a chat shown for the first time rests at its end, and
+#                                              where each of its messages says it stands to someone who
+#                                              cannot see it, against where a held finger reaches it
+#                                              (OUT/phone/place.txt; a line FAULT fails it)
 #   dist/apple/assistant-shots.sh OUT keyboard the main chat with the keyboard up, put away and up again, light
 #                                              and dark: what a drag on the conversation does to the keyboard,
 #                                              what the window draws behind the keyboard's upper corners,
@@ -85,7 +89,8 @@ bundle() {
   local sdk bin app="$made/Assistant Shots.app" appex
   sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
   local flags=(-c release ${jobs[@]+"${jobs[@]}"} --triple "$(uname -m)-apple-ios26.4-simulator" --sdk "$sdk" --scratch-path "$made/swiftpm")
-  (cd "$here" && xcrun swift build "${flags[@]}" >&2)
+  # A build that fails ends the script: what an earlier build left is not the tool it was asked for.
+  (cd "$here" && xcrun swift build "${flags[@]}" >&2) || die "the picture tool did not build for the simulator"
   bin="$(cd "$here" && xcrun swift build "${flags[@]}" --show-bin-path)"
   appex="$app/PlugIns/AssistantWidgets.appex"
   rm -rf "$app"
@@ -146,7 +151,7 @@ print(found[0] if found else "")
 
 phone() {
   local app device container
-  app="$(bundle)"
+  app="$(bundle)" || exit 1
   device="$(simulator)"
   mkdir -p "$out/phone"
   xcrun simctl install "$device" "$app"
@@ -160,7 +165,7 @@ phone() {
 
 told() {
   local app device waited=0
-  app="$(bundle)"
+  app="$(bundle)" || exit 1
   device="$(simulator)"
   mkdir -p "$out/phone"
   xcrun simctl install "$device" "$app"
@@ -189,14 +194,22 @@ told() {
 # The picture tool put into the simulator and started in one of its ways, left running.
 started() { # the way
   local app device
-  app="$(bundle)"
+  app="$(bundle)" || exit 1
   device="$(simulator)"
   mkdir -p "$out/phone"
   xcrun simctl install "$device" "$app"
   # What an earlier run kept is not this run's word.
   rm -f "$(xcrun simctl get_app_container "$device" "$id" data)"/Documents/*.txt 2>/dev/null || true
-  xcrun simctl launch --terminate-running-process "$device" "$id" "$1" >/dev/null
+  xcrun simctl launch --terminate-running-process "$device" "$id" "$@" >/dev/null
   printf '%s\n' "$device"
+}
+
+# The tool, already in the simulator, started once more in a way.
+again() { # device, the way
+  local device="$1"
+  shift
+  rm -f "$(xcrun simctl get_app_container "$device" "$id" data)"/Documents/*.txt 2>/dev/null || true
+  xcrun simctl launch --terminate-running-process "$device" "$id" "$@" >/dev/null
 }
 
 # Wait for a line in a file the tool keeps in its documents, and name the file.
@@ -213,7 +226,7 @@ waited() { # device, file, line
 
 said() {
   local app device container
-  app="$(bundle)"
+  app="$(bundle)" || exit 1
   device="$(simulator)"
   mkdir -p "$out/phone"
   xcrun simctl install "$device" "$app"
@@ -246,6 +259,35 @@ typing() {
   sleep 7
   xcrun simctl io "$device" screenshot "$out/phone/typing.png" >/dev/null 2>&1
   xcrun simctl terminate "$device" "$id" >/dev/null 2>&1 || true
+}
+
+# Whether a chat rests at its end, and where each of its messages says it stands to someone who cannot
+# see it against where a held finger reaches it, once for each way a chat comes to be shown for the
+# first time: with the list of conversations under it (`chat`; `start`: as the app itself starts;
+# `late`: its pieces arriving a second after; `active`: made once the app is in front), opened from
+# that list (`list`), without the list (`alone`), the same on a chat longer than the screen (`-long`),
+# and in the dark look (`-dark`).
+# TILO_SHOTS_FIRST names the ways to show. A line FAULT is the tool's own refusal.
+place() {
+  local device="" container first firsts="${TILO_SHOTS_FIRST:-chat start late active list alone chat-long late-long alone-long start-dark}" wanted=0
+  mkdir -p "$out/phone"
+  : > "$out/phone/place.txt"
+  for first in $firsts; do
+    wanted=$((wanted + 1))
+    if [ -z "$device" ]; then
+      device="$(started --place "--first=$first")" || die "the tool was not started"
+    else
+      again "$device" --place "--first=$first"
+    fi
+    waited "$device" place.txt '^PLACE done' >/dev/null || say "the tool did not finish ($first)"
+    container="$(xcrun simctl get_app_container "$device" "$id" data)"
+    cat "$container/Documents/place.txt" >> "$out/phone/place.txt" 2>/dev/null || die "the tool said nothing of where a message stands ($first)"
+    cp "$container"/Documents/place-*.png "$out/phone/" 2>/dev/null || true
+    xcrun simctl terminate "$device" "$id" >/dev/null 2>&1 || true
+  done
+  cat "$out/phone/place.txt"
+  [ "$(grep -c '^PLACE done' "$out/phone/place.txt")" = "$wanted" ] || die "where a message stands: the tool did not finish"
+  ! grep -q '^PLACE FAULT' "$out/phone/place.txt" || die "where a message stands: a fault, named in the lines above"
 }
 
 # The keyboard up and put away again, in both looks. A line FAULT is the tool's own refusal.
@@ -281,8 +323,9 @@ case "$what" in
   said) said ;;
   secret) secret ;;
   typing) typing ;;
+  place) place ;;
   keyboard) keyboard ;;
-  *) die "mac, phone, told, said, secret, typing or keyboard" ;;
+  *) die "mac, phone, told, said, secret, typing, place or keyboard" ;;
 esac
 if [ "$what" != mac ]; then
   xcrun simctl shutdown "$(simulator)" >/dev/null 2>&1 || true

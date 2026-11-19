@@ -57,19 +57,11 @@ impl AppBrokerState {
         command.validate()?;
         let (resource, action, argument) = match command {
             WorkspaceMembershipCommand::Grant { grant } => {
-                let argument = format!(
-                    "{}{}",
-                    tilo_actions::ARGUMENTS_JSON_PREFIX,
-                    serde_json::json!({ "grant": grant })
-                );
+                let argument = encoded(&serde_json::json!({ "grant": grant }))?;
                 (WORKSPACE.into(), "grant", Some(argument))
             }
             WorkspaceMembershipCommand::Revoke { grant } => {
-                let argument = format!(
-                    "{}{}",
-                    tilo_actions::ARGUMENTS_JSON_PREFIX,
-                    serde_json::json!({ "grant": grant })
-                );
+                let argument = encoded(&serde_json::json!({ "grant": grant }))?;
                 (WORKSPACE.into(), "revoke", Some(argument))
             }
             WorkspaceMembershipCommand::InstallBot(_)
@@ -848,27 +840,15 @@ fn people_action(
 fn bot_invocation(command: &WorkspaceMembershipCommand) -> Result<(&'static str, String), String> {
     Ok(match command {
         WorkspaceMembershipCommand::InstallBot(install) => {
-            let argument = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::json!({ "install": install })
-            );
+            let argument = encoded(&serde_json::json!({ "install": install }))?;
             ("install-bot", argument)
         }
         WorkspaceMembershipCommand::RenewBot(renewal) => {
-            let argument = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::json!({ "renewal": renewal })
-            );
+            let argument = encoded(&serde_json::json!({ "renewal": renewal }))?;
             ("renew-bot", argument)
         }
         WorkspaceMembershipCommand::AdoptBot(adoption) => {
-            let argument = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::json!({ "adoption": adoption })
-            );
+            let argument = encoded(&serde_json::json!({ "adoption": adoption }))?;
             ("adopt-bot", argument)
         }
         WorkspaceMembershipCommand::UninstallBot { installation }
@@ -879,38 +859,26 @@ fn bot_invocation(command: &WorkspaceMembershipCommand) -> Result<(&'static str,
                 WorkspaceMembershipCommand::PauseBot { .. } => "pause-bot",
                 _ => "resume-bot",
             };
-            let argument = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::json!({ "installation": installation })
-            );
+            let argument = encoded(&serde_json::json!({ "installation": installation }))?;
             (action, argument)
         }
         WorkspaceMembershipCommand::SetBotAppearance {
             installation,
             appearance,
         } => {
-            let argument = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::json!({ "installation": installation, "appearance": appearance })
-            );
+            let argument = encoded(
+                &serde_json::json!({ "installation": installation, "appearance": appearance }),
+            )?;
             ("set-bot-appearance", argument)
         }
         WorkspaceMembershipCommand::RequestBot(request) => {
-            let argument = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::json!({ "entry": request.entry, "version": request.version })
-            );
+            let argument = encoded(
+                &serde_json::json!({ "entry": request.entry, "version": request.version }),
+            )?;
             ("request-bot", argument)
         }
         WorkspaceMembershipCommand::WithdrawBotRequest { entry } => {
-            let argument = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::json!({ "entry": entry })
-            );
+            let argument = encoded(&serde_json::json!({ "entry": entry }))?;
             ("withdraw-bot-request", argument)
         }
         _ => return Err("not a bot command".into()),

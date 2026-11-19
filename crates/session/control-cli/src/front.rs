@@ -307,7 +307,7 @@ pub fn pick(input: &str, actions: &[Action]) -> Pick {
 /// Turn what was typed after an action's name into its arguments, checked
 /// against what it takes. `key=value`, `--key value` and `--key=value` name
 /// a parameter; a lone value goes to the one parameter that is required (or
-/// the only one); `--json '{…}'` passes an object as it is.
+/// the only one).
 ///
 /// # Errors
 /// A sentence saying what was wrong and what the action takes.
@@ -319,18 +319,6 @@ pub fn bind_args(
     let mut bare: Vec<&str> = Vec::new();
     let mut iter = words.iter();
     while let Some(word) = iter.next() {
-        if word == "--json" {
-            let raw = iter
-                .next()
-                .ok_or_else(|| "--json needs a JSON object after it.".to_string())?;
-            let value: serde_json::Value = serde_json::from_str(raw)
-                .map_err(|_| "What follows --json isn't valid JSON.".to_string())?;
-            let serde_json::Value::Object(object) = value else {
-                return Err("What follows --json must be a JSON object.".into());
-            };
-            args.extend(object);
-            continue;
-        }
         if let Some(flag) = word.strip_prefix("--") {
             let (key, value) = if let Some((key, value)) = flag.split_once('=') {
                 (key.to_string(), value.to_string())
@@ -380,28 +368,22 @@ pub fn bind_args(
     Ok(args)
 }
 
-/// Arguments for an action named by its address, whose parameters this
-/// side has not seen: `key=value` as text, `--json '{…}'` as it is. The
-/// desktop checks them against what the action takes.
-fn bind_loose(words: &[String]) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+/// Arguments for an action whose parameters this side has not seen: each
+/// `name=value` (or `--name=value`), its value as the JSON it reads as, else
+/// as text (`count=3` is a number, `title=Groceries` text). Whoever carries out
+/// the action checks them against what it takes: the desktop for an action named
+/// by its address, the workspace for one `tilo do -w` names.
+///
+/// # Errors
+/// The sentence that names a word that is no `name=value`.
+pub fn arguments(words: &[String]) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     let mut args = serde_json::Map::new();
-    let mut iter = words.iter();
-    while let Some(word) = iter.next() {
-        if word == "--json" {
-            let raw = iter
-                .next()
-                .ok_or_else(|| "--json needs a JSON object after it.".to_string())?;
-            match serde_json::from_str(raw) {
-                Ok(serde_json::Value::Object(object)) => args.extend(object),
-                _ => return Err("What follows --json must be a JSON object.".into()),
-            }
-        } else if let Some((key, value)) = word.trim_start_matches("--").split_once('=') {
-            args.insert(key.to_string(), value.into());
-        } else {
-            return Err(format!(
-                "Write “{word}” as name=value, or pass --json '{{…}}'."
-            ));
-        }
+    for word in words {
+        let Some((key, value)) = word.trim_start_matches("--").split_once('=') else {
+            return Err(format!("Write “{word}” as name=value."));
+        };
+        let value = serde_json::from_str(value).unwrap_or_else(|_| value.into());
+        args.insert(key.to_string(), value);
     }
     Ok(args)
 }
@@ -594,13 +576,17 @@ fn refused_sentence(err: &serde_json::Value, spelling: &Spelling) -> String {
     }
 }
 
-fn report(failure: &Failure, spelling: &Spelling, io: &mut Io<'_>) -> u8 {
-    let sentence = match failure {
+/// The sentence a person reads for `failure`.
+fn sentence(failure: &Failure, spelling: &Spelling) -> String {
+    match failure {
         Failure::Unreachable(why) => unreachable_sentence(why),
         Failure::Refused(err) => refused_sentence(err, spelling),
         Failure::Said(sentence) => sentence.clone(),
-    };
-    let _ = writeln!(io.err, "{sentence}");
+    }
+}
+
+fn report(failure: &Failure, spelling: &Spelling, io: &mut Io<'_>) -> u8 {
+    let _ = writeln!(io.err, "{}", sentence(failure, spelling));
     1
 }
 
@@ -798,77 +784,147 @@ fn example_args(action: &Action) -> String {
         })
 }
 
-/// `tilo do NAME [args]`: run one action, waiting for how it went.
+/// `tilo do NAME [args]`: do one action, waiting for how it went, and say
+/// its answer: the lines a person reads, or with `json` the typed answer
+/// itself. The answer is the one Tilo's API gives for an action in a hosted
+/// workspace ([`act`]), so `tilo do` reads and prints one shape wherever the
+/// action ran.
 pub fn run(
     sockets: &[ControlSocket],
     name: &str,
     words: &[String],
+    json: bool,
     spelling: &Spelling,
     io: &mut Io<'_>,
 ) -> u8 {
-    let Some((mut desktop, action, args)) = wanted(sockets, name, words, spelling, io) else {
-        return 1;
-    };
-    invoke(&mut desktop, &action, &args, spelling, io, false)
+    say(act(sockets, name, words, spelling), json, io)
 }
 
-/// The action `name` finds, answered as the typed JSON the API answers a
-/// hosted workspace with: one shape for a `--json` caller wherever the action
-/// ran.
-pub fn do_json(
+/// The action `name` finds, with `words` bound as its arguments, carried out at
+/// the desktop these sockets reach: its answer as Tilo's API answers an action
+/// (`status`, `invocation`, `result`), or the sentence that says why it never
+/// started or did not work.
+///
+/// # Errors
+/// What a person reads when the action could not start, failed or was
+/// cancelled.
+pub fn act(
     sockets: &[ControlSocket],
     name: &str,
     words: &[String],
     spelling: &Spelling,
-    io: &mut Io<'_>,
-) -> u8 {
-    let Some((mut desktop, action, args)) = wanted(sockets, name, words, spelling, io) else {
-        return 1;
-    };
-    invoke(&mut desktop, &action, &args, spelling, io, true)
-}
-
-/// The action `name`, with `words` bound as its arguments, at the desktop
-/// these sockets reach. Says what went wrong, when nothing did.
-fn wanted(
-    sockets: &[ControlSocket],
-    name: &str,
-    words: &[String],
-    spelling: &Spelling,
-    io: &mut Io<'_>,
-) -> Option<(Desktop, Action, serde_json::Value)> {
-    let mut desktop = match connect(sockets) {
-        Ok(desktop) => desktop,
-        Err(failure) => {
-            report(&failure, spelling, io);
-            return None;
-        }
-    };
-    let action = match find(&mut desktop, name, spelling) {
-        Ok(action) => action,
-        Err(failure) => {
-            report(&failure, spelling, io);
-            return None;
-        }
-    };
-    let bound = if action.kind.is_empty() && action.params.is_empty() {
+) -> Result<serde_json::Value, String> {
+    let mut desktop = connect(sockets).map_err(|failure| sentence(&failure, spelling))?;
+    let action =
+        find(&mut desktop, name, spelling).map_err(|failure| sentence(&failure, spelling))?;
+    let args = if action.kind.is_empty() && action.params.is_empty() {
         // Named by its address: the desktop checks the arguments.
-        bind_loose(words)
+        arguments(words)?
     } else {
-        bind_args(&action, words)
+        bind_args(&action, words)?
     };
-    match bound {
-        Ok(args) => Some((desktop, action, serde_json::Value::Object(args))),
+    invoke(
+        &mut desktop,
+        &action,
+        &serde_json::Value::Object(args),
+        spelling,
+    )
+}
+
+/// Say `answered`: the answer as [`answer_text`] words it, or as typed JSON
+/// when `json`; what went wrong on standard error, in words either way.
+pub fn say(answered: Result<serde_json::Value, String>, json: bool, io: &mut Io<'_>) -> u8 {
+    match answered {
+        Ok(answer) if json => {
+            let _ = writeln!(
+                io.out,
+                "{}",
+                serde_json::to_string_pretty(&answer).unwrap_or_default()
+            );
+            0
+        }
+        Ok(answer) => {
+            let _ = writeln!(io.out, "{}", answer_text(&answer));
+            0
+        }
         Err(sentence) => {
-            report(&Failure::Said(sentence), spelling, io);
-            None
+            let _ = writeln!(io.err, "{sentence}");
+            1
         }
     }
 }
 
+/// An action's answer, as Tilo's API gives it, in the lines a person reads:
+/// how it stands and the resource it acted on, what it answered, what it
+/// made or changed, and the links to it.
+#[must_use]
+pub fn answer_text(answer: &serde_json::Value) -> String {
+    use std::fmt::Write as _;
+    let text = |name: &str| {
+        answer
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+    };
+    let path = text("path");
+    // An action names the resource it resolved to; one that names none says
+    // its status alone.
+    let mut said = match text("status") {
+        "pending" => {
+            let mut said = format!("pending {}", text("invocation"));
+            match answer
+                .pointer("/ask/url")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some(url) => {
+                    let _ = write!(said, ": it waits for you, at {url}");
+                }
+                None => said.push_str(": still going"),
+            }
+            if !path.is_empty() {
+                let _ = write!(said, " ({path})");
+            }
+            said
+        }
+        status if path.is_empty() => status.to_owned(),
+        status => format!("{status} {path}"),
+    };
+    match answer.get("result") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::String(result)) => {
+            let _ = write!(said, "\n{result}");
+        }
+        Some(result) => {
+            let _ = write!(said, "\n{result}");
+        }
+    }
+    // What the action answered it made or changed, as the workspace names it:
+    // the path the next command can take as it is.
+    for resource in answer
+        .get("resources")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+    {
+        let _ = write!(said, "\n-> {resource}");
+    }
+    let links = answer
+        .get("links")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .chain(answer.get("link").and_then(serde_json::Value::as_str));
+    for link in links {
+        let _ = write!(said, "\n{link}");
+    }
+    said
+}
+
 /// Do the desktop's own action `id` of `provider` with `args`, called `title` where the answer
 /// names it: a verb `tilo` spells itself (`tilo workspace branch`), which needs no listing to
-/// find. Prints what it answers, as [`run`] does.
+/// find. Says what it answers, as `tilo do` says an answer.
 pub fn run_address(
     sockets: &[ControlSocket],
     (provider, id, title): (&str, &str, &str),
@@ -876,10 +932,6 @@ pub fn run_address(
     spelling: &Spelling,
     io: &mut Io<'_>,
 ) -> u8 {
-    let mut desktop = match connect(sockets) {
-        Ok(desktop) => desktop,
-        Err(failure) => return report(&failure, spelling, io),
-    };
     let action = Action {
         provider: provider.to_owned(),
         id: id.to_owned(),
@@ -888,101 +940,58 @@ pub fn run_address(
         subtitle: None,
         params: Vec::new(),
     };
-    invoke(&mut desktop, &action, args, spelling, io, false)
+    let answered = connect(sockets)
+        .map_err(|failure| sentence(&failure, spelling))
+        .and_then(|mut desktop| invoke(&mut desktop, &action, args, spelling));
+    say(answered, false, io)
 }
 
+/// Invoke `action` with `args` and wait for how it went: its answer as Tilo's
+/// API answers an action, or the sentence that says why there is none.
 fn invoke(
     desktop: &mut Desktop,
     action: &Action,
     args: &serde_json::Value,
     spelling: &Spelling,
-    io: &mut Io<'_>,
-    json: bool,
-) -> u8 {
+) -> Result<serde_json::Value, String> {
     let request =
         crate::client::invoke_wire(&action.provider, &action.id, args, None, Some(RUN_WAIT_MS));
-    let answer = match desktop.request(&request) {
-        Ok(answer) => answer,
-        Err(why) => return report(&Failure::Unreachable(why), spelling, io),
-    };
-    if json {
-        settle_json(&answer, action, spelling, io)
-    } else {
-        settle(&answer, action, spelling, io)
-    }
+    let answer = desktop
+        .request(&request)
+        .map_err(|why| sentence(&Failure::Unreachable(why), spelling))?;
+    typed(&answer, action, spelling)
 }
 
-/// Say how an invocation went as the typed JSON the API answers with
-/// (`status`, `invocation`, `result`), so a `--json` caller reads one shape
-/// from this desktop and from a hosted workspace. What did not work is said in
-/// words, on standard error, as it is without `--json`.
-fn settle_json(
+/// The desktop's `answer` to an invocation of `action`, as Tilo's API answers
+/// an action: `ok` with its `result` once it succeeded, `pending` while it
+/// is still going, each with its `invocation`. A refusal, a failure and a cancel
+/// are the sentence a person reads instead.
+fn typed(
     answer: &serde_json::Value,
     action: &Action,
     spelling: &Spelling,
-    io: &mut Io<'_>,
-) -> u8 {
-    let Some(receipt) = answer.get("answer") else {
-        return settle(answer, action, spelling, io);
-    };
-    let update = receipt
-        .pointer("/receipt/update")
-        .cloned()
-        .unwrap_or_default();
-    let status = match update
-        .get("state")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-    {
-        "succeeded" => "ok",
-        "accepted" | "running" | "queued" | "pending" => "pending",
-        // A failure, a cancel or a state we do not name says what it is in
-        // words, exactly as it does without `--json`.
-        _ => return settle(answer, action, spelling, io),
-    };
-    let mut typed = serde_json::json!({"status": status});
-    if let Some(fields) = typed.as_object_mut() {
-        if let Some(invocation) = receipt.pointer("/receipt/invocation") {
-            fields.insert("invocation".into(), invocation.clone());
-        }
-        if let Some(result) = update
-            .pointer("/output/value")
-            .filter(|value| !value.is_null())
-        {
-            fields.insert("result".into(), result.clone());
-        }
-    }
-    let _ = writeln!(
-        io.out,
-        "{}",
-        serde_json::to_string_pretty(&typed).unwrap_or_default()
-    );
-    0
-}
-
-/// Say how an invocation went: its result, if it gave one; why it failed;
-/// or that it is still going.
-fn settle(answer: &serde_json::Value, action: &Action, spelling: &Spelling, io: &mut Io<'_>) -> u8 {
+) -> Result<serde_json::Value, String> {
+    use std::fmt::Write as _;
     if let Some(err) = answer.get("err") {
         let code = err
             .get("code")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
         if code == "invalid_arguments" {
-            let message = err
+            let mut said = err
                 .get("message")
                 .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            let _ = writeln!(io.err, "{message}");
+                .unwrap_or_default()
+                .to_owned();
             if !action.kind.is_empty() {
-                let _ = writeln!(io.err, "It takes {}.", takes(action));
+                let _ = write!(said, "\nIt takes {}.", takes(action));
             }
-            return 1;
+            return Err(said);
         }
-        return report(&Failure::Refused(err.clone()), spelling, io);
+        return Err(refused_sentence(err, spelling));
     }
-    let answer = answer.get("answer").cloned().unwrap_or_default();
-    let update = answer
+    let receipt = answer.get("answer").cloned().unwrap_or_default();
+    let update = receipt
         .pointer("/receipt/update")
         .cloned()
         .unwrap_or_default();
@@ -992,49 +1001,33 @@ fn settle(answer: &serde_json::Value, action: &Action, spelling: &Spelling, io: 
             .and_then(serde_json::Value::as_str)
             .map(str::to_string)
     };
-    match text("/state").as_deref() {
+    let status = match text("/state").as_deref() {
         Some("failed") => {
             let message = text("/error/message").unwrap_or_default();
-            let _ = writeln!(
-                io.err,
-                "{}",
-                if message.trim().is_empty() {
-                    format!("“{}” didn't work.", action.title)
-                } else {
-                    message
-                }
-            );
-            return 1;
+            return Err(if message.trim().is_empty() {
+                format!("“{}” didn't work.", action.title)
+            } else {
+                message
+            });
         }
-        Some("cancelled") => {
-            let _ = writeln!(io.err, "“{}” was cancelled.", action.title);
-            return 1;
+        Some("cancelled") => return Err(format!("“{}” was cancelled.", action.title)),
+        Some("accepted" | "running" | "queued" | "pending") => "pending",
+        _ => "ok",
+    };
+    let mut typed = serde_json::json!({"status": status});
+    if let Some(fields) = typed.as_object_mut() {
+        if let Some(invocation) = receipt.pointer("/receipt/invocation") {
+            fields.insert("invocation".into(), invocation.clone());
         }
-        Some("accepted" | "running" | "queued" | "pending") => {
-            let _ = writeln!(io.err, "“{}” is still going.", action.title);
-            return 0;
-        }
-        _ => {}
-    }
-    let value = update
-        .pointer("/output/value")
-        .or_else(|| answer.pointer("/receipt/output/value"))
-        .cloned()
-        .unwrap_or_default();
-    match value {
-        serde_json::Value::Null => {}
-        serde_json::Value::String(text) => {
-            let _ = writeln!(io.out, "{text}");
-        }
-        other => {
-            let _ = writeln!(
-                io.out,
-                "{}",
-                serde_json::to_string_pretty(&other).unwrap_or_else(|_| other.to_string())
-            );
+        if let Some(result) = update
+            .pointer("/output/value")
+            .or_else(|| receipt.pointer("/receipt/output/value"))
+            .filter(|value| !value.is_null())
+        {
+            fields.insert("result".into(), result.clone());
         }
     }
-    0
+    Ok(typed)
 }
 
 /// Whether `item` is a link (`https://…`, `mailto:…`) rather than a path.
@@ -1130,13 +1123,9 @@ pub fn open(
         return 1;
     };
     if items.is_empty() {
-        return invoke(
-            &mut desktop,
-            &chosen,
-            &serde_json::json!({}),
-            spelling,
+        return opened(
+            invoke(&mut desktop, &chosen, &serde_json::json!({}), spelling),
             io,
-            false,
         );
     }
     if chosen.provider != "applications" || chosen.id.contains(':') {
@@ -1155,14 +1144,27 @@ pub fn open(
         ..chosen
     };
     let items: Vec<String> = items.iter().map(|item| open_item(item, cwd)).collect();
-    invoke(
-        &mut desktop,
-        &open_with,
-        &serde_json::json!({ "open": items }),
-        spelling,
+    opened(
+        invoke(
+            &mut desktop,
+            &open_with,
+            &serde_json::json!({ "open": items }),
+            spelling,
+        ),
         io,
-        false,
     )
+}
+
+/// How opening went: nothing to say once the app is up, the sentence when it
+/// is not.
+fn opened(answered: Result<serde_json::Value, String>, io: &mut Io<'_>) -> u8 {
+    match answered {
+        Ok(_) => 0,
+        Err(sentence) => {
+            let _ = writeln!(io.err, "{sentence}");
+            1
+        }
+    }
 }
 
 /// Names that complete `prefix` after `tilo do`: the desktop's own ranking

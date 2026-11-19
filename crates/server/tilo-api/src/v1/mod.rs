@@ -842,8 +842,11 @@ impl<'a> Caller<'a> {
             "upload" => {
                 let content = crate::content::put(&self.session, &ws, self.body)
                     .await
-                    .map_err(|why| {
-                        ApiError::new("unavailable", why).next("upload the file again")
+                    .map_err(|refused| match refused.code {
+                        // A revoked key is told so, and how its person approves another.
+                        "key_revoked" => ApiError::from(refused),
+                        _ => ApiError::new("unavailable", refused.message)
+                            .next("upload the file again"),
                     })?;
                 Ok(Answer::created(
                     json!({"content": content, "size": self.body.len()}),

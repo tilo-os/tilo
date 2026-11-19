@@ -25,6 +25,9 @@ d-x3epwv5u = Gallery
        *[other] galleries
     }
 
+d-bmdkc22s = Name
+    .doc = What the gallery is called: its name, so no field a page edits is taken for its title.
+
 d-cbwtcaei = Basics note
     .doc = The note the basics' text input writes.
 
@@ -262,6 +265,23 @@ d-ugfyyjbk = Seed
 d-haqpp6u6 = Fill
     .doc = What the gallery shows with nothing in it yet: one document of every group, so a person meets the components rather than an empty window.
 
+d-6obnc5qh = Add item
+    .doc = Adds what the backlog's line says as an item to do, and clears the line.
+    .w-write-the-item-first = Write the item first
+
+d-qt2z24yc = Finish
+    .doc = Marks an item done.
+
+d-jkdyuciq = Remove item
+    .doc = Takes an item off the backlog.
+
+d-jkdyuciq-x = X
+
+d-pshdk4bg = React
+    .doc = Reacts to an item with an emoji, or takes the person's reaction back.
+
+d-pshdk4bg-emoji = Emoji
+
 d-yy2pow4p = Note item
     .doc = Note the item a row opened, in the page's answer.
 
@@ -384,7 +404,7 @@ d-5l4lnfd6 = Page title
     .w-media = Media
     .w-places = Places
     .w-shell-parts = Shell parts
-    .w-your-own = Your own
+    .w-charts-and-views = Charts and views
     .w-gallery = Gallery
 
 d-wjo4okew = Gallery
@@ -453,13 +473,15 @@ d-7chkyi44 = Basics
     .w-opened-from-the-panel-with-the = Opened from the panel, with the way back above it.
 
 d-vvxmf5ve = Backlog list
-    .w-message-the-team = Message the team
-    .w-send = Send
+    .w-add-an-item-to-the-backlog = Add an item to the backlog
+    .w-add = Add
+    .w-rows-of-a-collection-each-with = Rows of a collection: each with a menu, a swipe, a toolbar on hover and its reactions.
 
 d-7ptc3r7a = Item row
-    .w-copy-link = Copy link
+    .w-mark-done = Mark done
     .w-delete = Delete
-    .w-reply = Reply
+
+d-iemy5gb4 = Add item~present
 
 d-qczmqkvq = Release board
     .w-a-board-a-list-per-stage = A board, a list per stage, with cards an app drags between them.

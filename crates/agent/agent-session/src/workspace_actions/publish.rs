@@ -12,7 +12,7 @@
 
 use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Link, Outbox};
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -98,22 +98,31 @@ type KeptAsk = Box<dyn Fn() -> Option<(String, bool)> + Send>;
 pub(super) const REUSE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// One write the host handed to the session, as its log names it.
+#[derive(Clone)]
 pub(super) struct Written {
     app: String,
     workspace: String,
     record: String,
     whole: bool,
     changes: Vec<String>,
+    /// The agent whose own session was handed it ([`Worker::writer`]): `None`
+    /// for the service's own session.
+    by: Option<[u8; 32]>,
 }
 
 impl Written {
-    pub(super) fn of(route: &DocumentRoute, mutation: &DocumentMutation) -> Self {
+    pub(super) fn of(
+        route: &DocumentRoute,
+        mutation: &DocumentMutation,
+        by: Option<[u8; 32]>,
+    ) -> Self {
         Self {
             app: route.app_id.clone(),
             workspace: route.cluster_id.clone(),
             record: route.document.clone(),
             whole: matches!(mutation, DocumentMutation::Snapshot(_)),
             changes: changes_of(mutation),
+            by,
         }
     }
 
@@ -173,7 +182,7 @@ pub(super) enum Saving {
 /// Writes handed to the session that the host has not said it holds yet.
 pub(super) struct Unsaved {
     saved: tilo_session_client::Receipt<Result<(), String>>,
-    /// What says why they are not saved, once they stay so ([`Worker::asks_what_is_kept`]).
+    /// What says why they are not saved, once they stay so ([`Worker::asks_kept_on`]).
     asking: Option<KeptAsk>,
     written: Vec<Written>,
     /// Who hears whether the writes were saved, besides the caller
@@ -423,6 +432,14 @@ fn changes_of(mutation: &DocumentMutation) -> Vec<String> {
         .collect()
 }
 
+impl super::WorkspaceActions {
+    /// Write the changes actions make for this device's agents through the
+    /// agents' own sessions, so each is signed as the agent it was made for.
+    pub fn attach_agent_sessions(&self, sessions: crate::control::AgentSessions) {
+        let _ = self.shared.agent_sessions.set(sessions);
+    }
+}
+
 impl Worker {
     /// Publish `mutation` as the member: sealed with the record's channel
     /// keys, or held until a member admits the member to it. The write
@@ -434,15 +451,26 @@ impl Worker {
         route: &DocumentRoute,
         mutation: &DocumentMutation,
     ) -> Result<(), String> {
-        self.hand_over(workspace_id, route, mutation)?;
+        let by = self.writer();
+        self.hand_over(workspace_id, route, mutation, by.as_ref())?;
         self.handed
             .entry(workspace_id)
             .or_default()
-            .push(Written::of(route, mutation));
+            .push(Written::of(route, mutation, by.map(|(device, _)| device)));
         // The workspace holds the record by its index naming it, as a
         // window opening the record names it there.
         self.index_document(workspace_id, route);
         Ok(())
+    }
+
+    /// The session that signs the changes of the request being served: one an
+    /// agent asked for is signed by the agent's own session, inside its
+    /// delegation and never with the authority of the device the service signs
+    /// as; anyone else's goes through the service's own session.
+    fn writer(&self) -> Option<([u8; 32], Link)> {
+        let device = self.writing_as?;
+        let link = self.shared.agent_sessions.get()?.link(&device)?;
+        Some((device, link))
     }
 
     /// Hand `mutation` to the session, which seals it with the record's
@@ -452,6 +480,7 @@ impl Worker {
         workspace_id: WorkspaceId,
         route: &DocumentRoute,
         mutation: &DocumentMutation,
+        by: Option<&([u8; 32], Link)>,
     ) -> Result<(), String> {
         if !self.workspaces.contains_key(&workspace_id) {
             return Err("the workspace was not joined".into());
@@ -468,18 +497,32 @@ impl Worker {
                 .and_then(|link| link.host_keys(route, false))
         {
             let keys = keys?;
-            self.workspaces
-                .get_mut(&workspace_id)
-                .ok_or("the workspace was not joined")?
-                .peer
-                .send(Cmd::InstallGroupKeys(route.clone(), keys))?;
+            let writer = match by {
+                Some((_, link)) => link,
+                None => {
+                    &self
+                        .workspaces
+                        .get(&workspace_id)
+                        .ok_or("the workspace was not joined")?
+                        .peer
+                }
+            };
+            writer.send(Cmd::InstallGroupKeys(route.clone(), keys))?;
         }
         let workspace = self
             .workspaces
             .get_mut(&workspace_id)
             .ok_or("the workspace was not joined")?;
-        workspace.peer.write(route.clone(), mutation)?;
-        let written = Written::of(route, mutation);
+        match by {
+            Some((_, link)) => {
+                // The agent's own session holds the document, or asks for it:
+                // its change is a delta on one it did not make.
+                link.send(Cmd::OpenRoute(route.clone()))?;
+                link.write(route.clone(), mutation)?;
+            }
+            None => workspace.peer.write(route.clone(), mutation)?,
+        }
+        let written = Written::of(route, mutation, by.map(|(device, _)| *device));
         tracing::debug!(
             app = %written.app,
             workspace = %written.workspace,
@@ -576,22 +619,8 @@ impl Worker {
             return Saving::Saved;
         }
         let waiting = super::timing_start();
-        // Asked of the documents the request wrote and of no other: the service's one session
-        // carries every caller's writes, a write that waits beside these, in another workspace
-        // or for another document of this one, says nothing about them, and another caller's
-        // refused write is not this one's.
-        let documents: Vec<DocumentRoute> = written.iter().map(Written::route).collect();
-        let saved = match self
-            .workspaces
-            .get(&workspace_id)
-            .ok_or_else(|| "the workspace was not joined".to_owned())
-            .and_then(|workspace| {
-                workspace
-                    .peer
-                    .barrier_for(&documents)
-                    .map_err(|closed| closed.to_string())
-            }) {
-            Ok(saved) => saved,
+        let groups = match self.barriers(workspace_id, &written) {
+            Ok(groups) => groups,
             Err(reason) => {
                 let reason = format!("the server did not save the change: {reason}");
                 log_saved(&written, &Err(reason.clone()));
@@ -610,84 +639,158 @@ impl Worker {
             self.save_grace
         };
         let waited = std::time::Instant::now();
-        match saved.recv_timeout(grace) {
-            Ok(outcome) => {
-                self.save_grace = waited.elapsed().saturating_add(SAVE_MARGIN).min(SAVE_GRACE);
-                self.save_probes = 0;
-                log_saved(&written, &outcome);
-                super::timing_done("action.save", waiting);
-                tracing::debug!(
-                    writes = written.len(),
-                    waited_ms = waited.elapsed().as_millis(),
-                    saved = outcome.is_ok(),
-                    "workspace actions: a change's save settled on the service thread"
-                );
-                match outcome {
-                    Ok(()) => Saving::Saved,
-                    Err(reason) => {
-                        Saving::Refused(format!("the server did not save the change: {reason}"))
+        let mut groups = groups.into_iter();
+        // A request writes as one session, so this waits on one barrier; the
+        // loop is for a write of another request still on its way beside it.
+        while let Some((group, (link, saved))) = groups.next() {
+            let rest = grace.saturating_sub(waited.elapsed());
+            match saved.recv_timeout(rest) {
+                Ok(outcome) => {
+                    log_saved(&group, &outcome);
+                    if let Err(reason) = outcome {
+                        super::timing_done("action.save_failed", waiting);
+                        return Saving::Refused(format!(
+                            "the server did not save the change: {reason}"
+                        ));
                     }
                 }
-            }
-            Err(tilo_session_client::RecvTimeoutError::Timeout) => {
-                self.save_grace = std::time::Duration::ZERO;
-                self.save_probes = 1;
-                super::timing_done("action.save_pending", waiting);
-                tracing::debug!(
-                    writes = written.len(),
-                    waited_ms = waited.elapsed().as_millis(),
-                    "workspace actions: a change's save outlived the grace; answered pending"
-                );
-                Saving::Pending(Unsaved {
-                    saved,
-                    asking: self.asks_what_is_kept(workspace_id, &workspaces, &written),
-                    written,
-                    heard: Vec::new(),
-                })
-            }
-            Err(tilo_session_client::RecvTimeoutError::Disconnected) => {
-                let reason = "the server did not save the change: the session ended".to_owned();
-                log_saved(&written, &Err(reason.clone()));
-                super::timing_done("action.save_failed", waiting);
-                Saving::Failed(reason)
+                Err(tilo_session_client::RecvTimeoutError::Timeout) => {
+                    self.save_grace = std::time::Duration::ZERO;
+                    self.save_probes = 1;
+                    super::timing_done("action.save_pending", waiting);
+                    tracing::debug!(
+                        writes = group.len(),
+                        waited_ms = waited.elapsed().as_millis(),
+                        "workspace actions: a change's save outlived the grace; answered pending"
+                    );
+                    // What another caller waits on still settles: only what
+                    // this request answers is answered pending.
+                    for (rest, (rest_link, rest_saved)) in groups {
+                        Unsaved {
+                            saved: rest_saved,
+                            asking: rest_link
+                                .map(|peer| Self::asks_kept_on(peer, &workspaces, &rest)),
+                            written: rest,
+                            heard: Vec::new(),
+                        }
+                        .settle(|_| {});
+                    }
+                    return Saving::Pending(Unsaved {
+                        saved,
+                        asking: link.map(|peer| Self::asks_kept_on(peer, &workspaces, &group)),
+                        written: group,
+                        heard: Vec::new(),
+                    });
+                }
+                Err(tilo_session_client::RecvTimeoutError::Disconnected) => {
+                    let reason = "the server did not save the change: the session ended".to_owned();
+                    log_saved(&group, &Err(reason.clone()));
+                    super::timing_done("action.save_failed", waiting);
+                    return Saving::Failed(reason);
+                }
             }
         }
+        self.save_grace = waited.elapsed().saturating_add(SAVE_MARGIN).min(SAVE_GRACE);
+        self.save_probes = 0;
+        super::timing_done("action.save", waiting);
+        tracing::debug!(
+            writes = written.len(),
+            waited_ms = waited.elapsed().as_millis(),
+            saved = true,
+            "workspace actions: a change's save settled on the service thread"
+        );
+        Saving::Saved
+    }
+
+    /// `written` by the session each was handed to, with that session's
+    /// barrier for its documents: a change made for an agent is the agent's
+    /// own session's to save, and one made for anyone else the service's.
+    #[expect(
+        clippy::type_complexity,
+        reason = "one group of writes with the session and the barrier that answer for them"
+    )]
+    fn barriers(
+        &self,
+        workspace_id: WorkspaceId,
+        written: &[Written],
+    ) -> Result<
+        Vec<(
+            Vec<Written>,
+            (
+                Option<Link>,
+                tilo_session_client::Receipt<Result<(), String>>,
+            ),
+        )>,
+        String,
+    > {
+        let mut groups: Vec<(Option<[u8; 32]>, Vec<Written>)> = Vec::new();
+        for write in written {
+            match groups.iter_mut().find(|(by, _)| *by == write.by) {
+                Some((_, group)) => group.push(write.clone()),
+                None => groups.push((write.by, vec![write.clone()])),
+            }
+        }
+        let mut barred = Vec::with_capacity(groups.len());
+        for (by, group) in groups {
+            // Asked of the documents the request wrote and of no other: a
+            // session carries every caller's writes, a write that waits beside
+            // these, in another workspace or for another document of this one,
+            // says nothing about them, and another caller's refused write is
+            // not this one's.
+            let documents: Vec<DocumentRoute> = group.iter().map(Written::route).collect();
+            let link = match by {
+                Some(device) => Some(
+                    self.shared
+                        .agent_sessions
+                        .get()
+                        .and_then(|sessions| sessions.link(&device))
+                        .ok_or_else(|| "the agent's session ended".to_owned())?,
+                ),
+                None => None,
+            };
+            let peer = match &link {
+                Some(peer) => peer,
+                None => {
+                    &self
+                        .workspaces
+                        .get(&workspace_id)
+                        .ok_or_else(|| "the workspace was not joined".to_owned())?
+                        .peer
+                }
+            };
+            let saved = peer
+                .barrier_for(&documents)
+                .map_err(|closed| closed.to_string())?;
+            barred.push((group, (link, saved)));
+        }
+        Ok(barred)
     }
 
     /// Log whether the host comes to hold what a job that answers no
     /// invocation handed to the session, without holding the job.
     pub(super) fn watch_handed(&mut self) {
         for (workspace_id, written) in std::mem::take(&mut self.handed) {
-            let documents: Vec<DocumentRoute> = written.iter().map(Written::route).collect();
-            let Some(saved) = self
-                .workspaces
-                .get(&workspace_id)
-                .and_then(|workspace| workspace.peer.barrier_for(&documents).ok())
-            else {
+            let Ok(groups) = self.barriers(workspace_id, &written) else {
                 continue;
             };
-            Unsaved {
-                saved,
-                asking: self.asks_what_is_kept(workspace_id, &[workspace_id], &written),
-                written,
-                heard: Vec::new(),
+            for (group, (link, saved)) in groups {
+                Unsaved {
+                    saved,
+                    asking: link.map(|peer| Self::asks_kept_on(peer, &[workspace_id], &group)),
+                    written: group,
+                    heard: Vec::new(),
+                }
+                .settle(|_| {});
             }
-            .settle(|_| {});
         }
     }
 
-    /// What asks the session of the workspace `workspace_id` what it keeps of `workspaces`,
-    /// once `written` stays unsaved.
-    fn asks_what_is_kept(
-        &self,
-        workspace_id: WorkspaceId,
-        workspaces: &[WorkspaceId],
-        written: &[Written],
-    ) -> Option<KeptAsk> {
-        let peer = self.workspaces.get(&workspace_id)?.peer.clone();
+    /// What says why `written` are not saved, read from the `peer` they were
+    /// handed to.
+    fn asks_kept_on(peer: Link, workspaces: &[WorkspaceId], written: &[Written]) -> KeptAsk {
         let workspaces = workspaces.to_vec();
         let own: HashSet<DocumentRoute> = written.iter().map(Written::route).collect();
-        Some(Box::new(move || kept_said(&peer, &workspaces, &own)))
+        Box::new(move || kept_said(&peer, &workspaces, &own))
     }
 
     /// What the record at `route` is called in its app's index of the

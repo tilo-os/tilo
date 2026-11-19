@@ -158,7 +158,7 @@ lazy_exports!("peer":
     "hostRefusal", "hostInfo", "certifyDevice", "channelVault", "issueDeviceCert",
     "redeemInvitation", "inspectInvitation", "reconnectCertificate",
     "invitationEntry", "entryRequest", "deviceCertCanonical", "certifyWithRoot",
-    "createLoginCode", "followLoginCode", "keepStandIn", "retireStandIn", "revokeDevice",
+    "createLoginCode", "followLoginCode", "revokeDevice",
     "wasmpeer_*", "__wbg_wasmpeer_*", "pairinghost_*", "__wbg_pairinghost_*",
     "rootNew", "rootHeld", "rootOpenRecovery", "rootOpenPasskey", "rootEnvelopeEmpty",
     "rootEnvelopePublicKey", "rootEnvelopeKept", "rootEnvelopePasskeys", "nodeSessionVouched",

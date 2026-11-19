@@ -222,8 +222,6 @@ struct Web {
     site: Option<Site>,
     /// The login codes tabs hand their agents.
     login_codes: Arc<login_codes::LoginCodes>,
-    /// The stand-in approvers this host keeps for people.
-    stand_ins: Arc<stand_in::StandIns>,
     /// The wait list the entry keeps for a workspace taking people by
     /// invitation, when whoever runs this host keeps one.
     wait_list: Option<Arc<crate::entry::WaitListPage>>,
@@ -256,7 +254,8 @@ fn follow_endpoint(address: &mut ServerAddress, now: iroh_base::EndpointAddr) {
     address.endpoint_addr = now;
 }
 
-/// Where this host keeps the stand-ins it approves for people with.
+/// Where this server keeps the stand-ins that certify the browser sessions it
+/// places.
 #[must_use]
 pub(crate) fn stand_ins_dir(state_root: &std::path::Path) -> std::path::PathBuf {
     state_root.join("stand-ins")
@@ -550,10 +549,9 @@ impl Server {
                 public_origin.clone(),
                 also,
             )),
-            stand_ins: Arc::new(stand_in::StandIns::new(stand_ins_dir(self.state_root()))),
             wait_list: config.wait_list.clone(),
         });
-        web.serve_stand_ins();
+        web.serve_code_requests();
         web.serve_pushes(
             self.state_root(),
             config.site.as_deref(),
@@ -1234,29 +1232,21 @@ fn login_route(
             Ok(claim) => web.claim(&claim).unwrap_or_else(|refusal| refusal),
             Err(refusal) => refusal,
         },
+        wire::WAITING_ROUTE => match json_body::<wire::Waiting>(bytes) {
+            Ok(waiting) => answered(web.waiting(&waiting)),
+            Err(refusal) => refusal,
+        },
+        wire::CERTIFY_ROUTE => match json_body::<wire::Certify>(bytes) {
+            Ok(certify) => web.certify(&certify).map_or_else(
+                |refusal| refusal,
+                |()| reply(StatusCode::NO_CONTENT, Vec::new()),
+            ),
+            Err(refusal) => refusal,
+        },
         wire::FOLLOW_ROUTE => match json_body::<wire::Follow>(bytes) {
             Ok(follow) => {
                 answered(codes.follow(&follow.follow, follow.offer.as_ref(), client, now_ms))
             }
-            Err(refusal) => refusal,
-        },
-        wire::STAND_IN_ROUTE => match json_body::<wire::StandInRequest>(bytes) {
-            Ok(request) => web
-                .stand_ins
-                .answer(request, client, tilo_clock::unix_now_ns())
-                .map_or_else(
-                    |refusal| {
-                        let code = match refusal {
-                            stand_in::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
-                            stand_in::Refusal::Forbidden(_) => StatusCode::FORBIDDEN,
-                            stand_in::Refusal::Unknown => StatusCode::NOT_FOUND,
-                            stand_in::Refusal::TooMany => StatusCode::TOO_MANY_REQUESTS,
-                            stand_in::Refusal::Storage => StatusCode::INTERNAL_SERVER_ERROR,
-                        };
-                        refused(code, refusal.message())
-                    },
-                    |reply| json(&reply),
-                ),
             Err(refusal) => refusal,
         },
         _ => return None,
