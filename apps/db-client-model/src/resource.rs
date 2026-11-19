@@ -163,36 +163,43 @@ pub enum DbEffect {
     /// New connection
     #[effect(view)]
     NewConnection,
-    #[effect(view, row)]
+    #[effect(view, row, on = crate::rows::Database)]
     FocusDatabase { connection: Uuid },
-    #[effect(view, row)]
+    #[effect(view, row, on = crate::rows::Schema)]
     FocusSchema { connection: Uuid, schema: String },
     #[effect(kind = "outside")]
-    #[effect(row, job, idempotent)]
+    #[effect(row, job, idempotent, on = crate::rows::Table)]
+    #[effect(on = crate::rows::View, on = crate::rows::Column)]
     Browse {
         connection: Uuid,
         schema: String,
         table: String,
     },
-    #[effect(view, row)]
+    #[effect(view, row, on = crate::rows::QueryResult)]
     ShowResult { connection: Uuid, generation: usize },
     /// Read query result
-    #[effect(view, row, returns)]
+    #[effect(
+        view,
+        row,
+        returns,
+        on = crate::rows::QueryResult,
+        tag = tilo_actions::DOCUMENT_READ_TAG
+    )]
     ReadResult { connection: Uuid, generation: usize },
     #[effect(kind = "outside")]
-    #[effect(attended, row, job)]
+    #[effect(attended, row, job, on = crate::rows::QueryResult)]
     ExportCsv { connection: Uuid, generation: usize },
     #[effect(kind = "outside")]
-    #[effect(row, job)]
+    #[effect(row, job, on = crate::rows::Transaction)]
     Begin { connection: Uuid },
     #[effect(kind = "outside")]
-    #[effect(row, job, destructive)]
+    #[effect(row, job, destructive, on = crate::rows::Transaction)]
     Commit { connection: Uuid },
     #[effect(kind = "outside")]
-    #[effect(row, job, destructive)]
+    #[effect(row, job, destructive, on = crate::rows::Transaction)]
     Rollback { connection: Uuid },
     /// Execute a historical query
     #[effect(kind = "outside")]
-    #[effect(row, job, destructive)]
+    #[effect(row, job, destructive, on = crate::rows::QueryHistoryEntry)]
     Rerun { connection: Uuid, generation: usize },
 }

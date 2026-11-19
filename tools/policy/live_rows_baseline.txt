@@ -65,7 +65,6 @@ untyped-live-row 1 apps/chat/src/direct.rs
 untyped-live-row 5 apps/chat/src/effects.rs
 untyped-live-row 1 apps/contacts/src/account_editor.rs
 untyped-live-row 1 apps/contacts/src/actions.rs
-untyped-live-row 1 apps/db-client/src/app.rs
 untyped-live-row 2 apps/disk-usage/src/resource.rs
 untyped-live-row 2 apps/disks/src/resource.rs
 untyped-live-row 15 apps/git-client/src/actions.rs
