@@ -19,3 +19,32 @@ pub struct Call;
     effects = ChatEffect
 )]
 pub struct DirectConversation;
+
+/// One conversation the chat holds: an item of the channels collection, its
+/// address the item resource's.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "chat.workspace.channels",
+    label = "Conversation",
+    effects = ChatEffect
+)]
+pub struct Channel;
+
+/// One message a conversation holds: the chat keeps messages in its parts,
+/// so the window publishes each as a row of the messages item type.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "chat.workspace.messages",
+    label = "Message",
+    effects = ChatEffect
+)]
+pub struct Message;
+
+/// One reviewed feedback report, shown in the conversation it was written in.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "chat.workspace.feedback",
+    label = "Report",
+    effects = ChatEffect
+)]
+pub struct Report;
