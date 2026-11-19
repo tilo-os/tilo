@@ -7,6 +7,8 @@ use crate::appliance_owner::{
 use crate::model::{AppStatus, ApplianceState, Catalogue, Route, VmInstallConfirmation};
 use crate::provider::{CompatibilityProvider, EmptyProvider, LiveProvider};
 use crate::strings;
+use crate::support::{Finished, WindowsSupport};
+use os_actions::windows_compat::Readiness;
 use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::rc::Rc;
@@ -92,6 +94,7 @@ pub(crate) enum Intent {
     Install,
     ConfirmCapsule,
     ConfirmVm,
+    InstallSupport,
     Publish,
     Retry,
     Escalate,
@@ -110,7 +113,7 @@ pub(crate) enum Intent {
     ToggleApplianceDetails,
 }
 
-type Intents = ui::Intents<Intent>;
+pub(crate) type Intents = ui::Intents<Intent>;
 
 /// The one status line the window shows above its content.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,6 +173,7 @@ struct ContentKey {
     busy: bool,
     notice: Option<Notice>,
     details: bool,
+    support: Readiness,
 }
 
 fn action_button(
@@ -243,7 +247,7 @@ pub struct WindowsApp {
     selected: usize,
     page: Page,
     notice: Option<Notice>,
-    intents: Intents,
+    pub(crate) intents: Intents,
     push_content: bool,
     appliance_details: bool,
     cursor: Point,
@@ -254,6 +258,7 @@ pub struct WindowsApp {
     document_target: Option<String>,
     iso_portal_rx: Option<OpenFileChannel>,
     appliance_owner: ApplianceOwnerClient,
+    pub(crate) support: WindowsSupport,
     confirm_escalate_to_vm: Option<String>,
     confirm_vendor_uninstall: Option<String>,
     confirm_delete_data: Option<String>,
@@ -300,6 +305,7 @@ impl WindowsApp {
     /// `wake` has the window take in what the service answers as it arrives.
     pub(crate) fn connect_live(&mut self, wake: ui::WakeHandle) {
         self.appliance_owner = ApplianceOwnerClient::new();
+        self.support = WindowsSupport::live(wake.clone());
         let provider: Box<dyn CompatibilityProvider> = match LiveProvider::connect(wake) {
             Ok(provider) => Box::new(provider),
             Err(detail) => Box::new(EmptyProvider::with_detail(detail)),
@@ -396,13 +402,15 @@ impl WindowsApp {
         } else {
             ApplianceStatus::sample_ready()
         });
+        self.support = WindowsSupport::offline(crate::support::staged(scenario));
         self.select(Page::App, 0);
         self.push_content = false;
         match scenario {
             "detail" | "error-compact" => self.push_content = true,
             // A program that opened and closed on its own says nothing else: the list says it is
-            // no longer open.
-            "running" | "closed" => {
+            // no longer open. The support scenarios show a program opened with Proton before
+            // Windows support is on this device.
+            "running" | "closed" | "support-missing" | "support-installing" | "support-failed" => {
                 self.selected = 1;
                 self.push_content = true;
             }
@@ -503,6 +511,7 @@ impl WindowsApp {
             document_target: None,
             iso_portal_rx: None,
             appliance_owner,
+            support: WindowsSupport::offline(Readiness::Ready),
             confirm_escalate_to_vm: None,
             confirm_vendor_uninstall: None,
             confirm_delete_data: None,
@@ -580,6 +589,9 @@ impl WindowsApp {
                     Some(actions::PENDING_INSTALL_ROW),
                     &E::InstallWindowsAppliance,
                 );
+            }
+            Intent::InstallSupport => {
+                return self.queue_live_control(None, &E::InstallWindowsSupport);
             }
             _ => {}
         }
@@ -665,17 +677,26 @@ impl WindowsApp {
     }
 
     /// The operations unavailable while another is still running.
-    fn effect_statuses(&self) -> Vec<EffectStatus> {
+    pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         const CODE: &str = "windows.busy";
         const REASON: &str = "Another Windows operation is still running";
-        if !self.is_busy() {
-            return Vec::new();
+        let mut statuses = Vec::new();
+        let support = self.support.readiness();
+        if !support.can_install() {
+            statuses.push(EffectStatus::unavailable(
+                actions::WindowsEffect::INSTALL_WINDOWS_SUPPORT,
+                "windows.support",
+                support.message(),
+            ));
         }
-        vec![
-            EffectStatus::unavailable(actions::WindowsEffect::INSTALL, CODE, REASON),
-            EffectStatus::unavailable(actions::WindowsEffect::IMPORT_ISO, CODE, REASON),
-            EffectStatus::unavailable(actions::WindowsEffect::OPEN_FILE, CODE, REASON),
-        ]
+        if self.is_busy() {
+            statuses.extend([
+                EffectStatus::unavailable(actions::WindowsEffect::INSTALL, CODE, REASON),
+                EffectStatus::unavailable(actions::WindowsEffect::IMPORT_ISO, CODE, REASON),
+                EffectStatus::unavailable(actions::WindowsEffect::OPEN_FILE, CODE, REASON),
+            ]);
+        }
+        statuses
     }
 
     /// Every application in the service's catalogue, found by its name and publisher and
@@ -725,6 +746,7 @@ impl WindowsApp {
             E::RevokeNetwork => self.appliance_owner.revoke_temporary_egress(),
             E::InstallPrivateCapsule => self.provider.borrow_mut().confirm_capsule_install(),
             E::InstallWindowsAppliance => self.provider.borrow_mut().confirm_vm_install(),
+            E::InstallWindowsSupport => self.install_support(),
             E::Launch { app } => self.launch_app(app),
             E::Stop { app } => {
                 let app = self.offered_app(app, crate::model::WindowsApp::stop_available)?;
@@ -852,12 +874,22 @@ impl WindowsApp {
     }
 
     /// A catalogue change requested on this machine was accepted.
+    /// Start downloading Windows support; its banner follows the helper from here.
+    fn install_support(&mut self) -> Result<(), String> {
+        self.support.install()?;
+        self.notice = None;
+        Ok(())
+    }
+
     fn requested(&mut self) {
         self.notice = Some(Notice::info(strings::t("windows-operation-requested")));
     }
 
-    fn launch_app(&mut self, app: &str) -> Result<(), String> {
+    pub(crate) fn launch_app(&mut self, app: &str) -> Result<(), String> {
         let app = self.offered_app(app, |app| app.launch_available)?;
+        if let Some(refusal) = self.support.refusal(app.route) {
+            return Err(refusal);
+        }
         if app.route == Route::Vm {
             self.provider.borrow_mut().launch_vm_fallback(&app.id)?;
         } else {
@@ -1075,6 +1107,19 @@ impl WindowsApp {
         if let Some(notice) = self.appliance_owner.drain() {
             self.notice = Some(Notice::info(notice));
         }
+        match self.support.drain() {
+            Some(Finished::Ready) => {
+                self.notice = Some(Notice::info(strings::t("windows-support-ready")));
+            }
+            Some(Finished::Failed(error)) => {
+                self.notice = Some(Notice::error(strings::format(
+                    "windows-support-failed",
+                    "error",
+                    &error,
+                )));
+            }
+            None => {}
+        }
         if self.resource_reply.is_some()
             && self.resource_waits_for_appliance
             && let Some(result) = self.appliance_owner.take_action_result()
@@ -1231,6 +1276,11 @@ impl WindowsApp {
                 let result = self.provider.borrow_mut().confirm_vm_install();
                 self.report(result, "windows-vm-setup-started");
                 self.refresh();
+            }
+            Intent::InstallSupport => {
+                if let Err(error) = self.install_support() {
+                    self.notice = Some(Notice::error(error));
+                }
             }
             Intent::Install if self.portal_rx.is_none() => {
                 self.portal_rx = Some(installer_pick_request().send_open_file());
@@ -1425,6 +1475,7 @@ impl WindowsApp {
             busy: self.appliance_busy(),
             notice: self.notice.clone(),
             details: self.appliance_details,
+            support: self.support.readiness().clone(),
         }
     }
 
@@ -1625,6 +1676,12 @@ impl WindowsApp {
             page.head.push(Box::new(banner));
         }
 
+        if self.support.blocks(app.route)
+            && let Some(banner) = self.support.banner(&self.intents)
+        {
+            page.head.push(banner);
+        }
+
         if !recovering || app.launch_available {
             let mut actions: Vec<Element> = vec![Box::new(
                 action_button(
@@ -1638,7 +1695,7 @@ impl WindowsApp {
                     intents,
                     Intent::Launch,
                 )
-                .with_enabled(app.launch_available),
+                .with_enabled(app.launch_available && !self.support.blocks(app.route)),
             )];
             if app.stop_available() {
                 actions.push(Box::new(action_button(

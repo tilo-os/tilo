@@ -343,7 +343,8 @@ impl CompatibilityProvider for SampleProvider {
     }
     fn stage(&mut self, scenario: &str) {
         match scenario {
-            "closed" | "ended-with-error" | "ended-overview" | "could-not-open" => {
+            "closed" | "ended-with-error" | "ended-overview" | "could-not-open"
+            | "support-missing" | "support-installing" | "support-failed" => {
                 if let Some(app) = self.catalogue.app_mut("cyberpunk-2077") {
                     app.status = AppStatus::Ready;
                 }

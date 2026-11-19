@@ -12,6 +12,7 @@ pub mod provider;
 pub mod resource;
 pub mod search;
 pub mod strings;
+mod support;
 
 pub use resource::{Windows, WindowsShell};
 

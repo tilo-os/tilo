@@ -27550,6 +27550,7 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "compat-service",
+ "os-actions",
  "runtime-dylib",
  "runtime-portal",
  "serde",

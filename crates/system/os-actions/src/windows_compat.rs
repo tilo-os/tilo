@@ -83,7 +83,13 @@ impl SizeDisclosure {
 #[derive(Debug)]
 pub struct Consent(());
 
-impl Consent {}
+impl Consent {
+    /// The person chose to install with `disclosure` in front of them.
+    #[must_use]
+    pub const fn shown(_disclosure: &SizeDisclosure) -> Self {
+        Self(())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Readiness {

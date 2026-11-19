@@ -53,6 +53,9 @@ pub enum WindowsEffect {
     InstallPrivateCapsule,
     #[effect(row, job, privileged, kind = "outside")]
     InstallWindowsAppliance,
+    /// Download and add Windows support (Proton), which programs opened with Proton need.
+    #[effect(job, privileged, kind = "outside")]
+    InstallWindowsSupport,
     #[effect(kind = "outside")]
     #[effect(row, job)]
     Launch {
