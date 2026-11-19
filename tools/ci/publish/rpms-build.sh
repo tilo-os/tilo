@@ -71,6 +71,10 @@ else
   # gives consumers of the snapshot that small layer to read (verify-rpm-snapshot-buildkit.py)
   # instead of streaming the multi-GB package layer.
   export TILO_OCI_LAYERS=1
+  # A snapshot built here is dated by its own packages (rpms-copy.sh reads them when no epoch is
+  # beside it): an epoch an earlier snapshot left in $out would date this one before packages
+  # signed since, and rpm refuses those under the image's fixed clock.
+  rm -f -- "$out/epoch" "$out/ref"
   SOURCE_DATE_EPOCH=$(date -u +%s) bash tools/ci/publish/oci-build.sh . os/Containerfile.rpms "$out" \
     --platform "$platform" --build-context "github-assets=$assets" \
     --build-arg "BASE_REF=$BASE_REF" --build-arg "PACKAGES=$packages"
