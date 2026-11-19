@@ -60,8 +60,8 @@ else
   unlock_args=()
 fi
 
-if tilo-rollback unlock --device "$device" "${unlock_args[@]}" \
-     --output "$output"; then
+if reason=$(tilo-rollback unlock --device "$device" "${unlock_args[@]}" \
+              --output "$output" 2>&1); then
   exit 0
 fi
 
@@ -69,5 +69,13 @@ fi
 # success here is intentional: the normal cryptsetup unit must continue and ask
 # for the independent passphrase/recovery key instead of making boot emergency.
 rm -f -- "$output"
+# The reason goes to the person at the machine as well as the journal: a volume
+# whose generation is below the rollback floor, whose prediction no longer
+# matches this boot, or whose key the TPM refused says so here rather than
+# leaving a prompt that only reports that it has nothing to open it with.
+if [[ -n $reason ]]; then
+  printf 'tilo-rollback: %s\n' "$reason" >&2
+  printf 'tilo-rollback: %s\n' "$reason" > /dev/console 2>/dev/null || true
+fi
 printf 'tilo-rollback: TPM unlock unavailable; offering recovery unlock\n' >&2
 exit 0
