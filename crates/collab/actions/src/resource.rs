@@ -2733,6 +2733,21 @@ impl ActionSpec {
         &self.params
     }
 
+    /// Narrow the parameter `name` this action declares for the entity it is
+    /// offered on: the values it takes there now, what it means there, the
+    /// bounds its state sets. A parameter the action does not declare is left
+    /// alone, so narrowing a spec an entity does not have the argument for is
+    /// no change rather than a panic.
+    pub fn narrow_param(&mut self, name: &str, narrow: impl FnOnce(&mut ActionParam)) {
+        if let Some(param) = Arc::make_mut(&mut self.ty)
+            .params
+            .iter_mut()
+            .find(|param| param.name == name)
+        {
+            narrow(param);
+        }
+    }
+
     /// Bind `supplied` against [`params`](Self::params) and build the action.
     ///
     /// Strict: a missing, unknown, wrong-typed or out-of-choice argument is

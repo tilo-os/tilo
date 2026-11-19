@@ -2,7 +2,7 @@
 //! callers right now: unavailable while the engine is offline, labelled
 //! differently while recording, saying what it does on one row.
 
-use tilo_actions::{ActionKind, ActionSpec, Availability};
+use tilo_actions::{ActionKind, ActionParam, ActionSpec, Availability};
 use tilo_resource::ActionRef;
 
 /// What an effect, or one of the resource's own actions, looks like to
@@ -19,6 +19,9 @@ pub struct EffectStatus {
     /// What its caller types to confirm this invocation on this entity (the
     /// drive's name), when the entity's state says it.
     phrase: Option<String>,
+    /// One of the effect's parameters, narrowed to what this entity offers
+    /// for it now.
+    params: Vec<ParamStatus>,
     /// The row or item resource the status is about, when it is about one
     /// ([`Self::on`]) rather than the resource its view publishes.
     item: Option<String>,
@@ -26,6 +29,50 @@ pub struct EffectStatus {
     /// authority to operate a page that holds the person's sign-ins, and only
     /// what any visitor has when it does not.
     kind: Option<ActionKind>,
+}
+
+/// One of an effect's parameters as the entity offers it now: the values it
+/// takes here (a device's name in the nearby targets this window can see),
+/// what it means here, the bounds this entity's state sets.
+#[derive(Clone, Debug, PartialEq)]
+struct ParamStatus {
+    name: String,
+    /// Each accepted value with the words it reads by, when they differ from
+    /// the value itself.
+    choices: Option<Vec<(String, Option<String>)>>,
+    description: Option<String>,
+    schema: Option<serde_json::Value>,
+}
+
+impl ParamStatus {
+    fn apply(&self, param: &mut ActionParam) {
+        if let Some(description) = &self.description {
+            param.description = description.clone().into();
+        }
+        if let Some(schema) = &self.schema {
+            param.schema = Some(std::sync::Arc::new(schema.clone()));
+        }
+        // Choices last: each one's label is a schema annotation, kept beside
+        // the bounds the status sets.
+        if let Some(choices) = &self.choices {
+            if choices.iter().all(|(_, label)| label.is_none()) {
+                param.choices = choices
+                    .iter()
+                    .map(|(value, _)| value.clone().into())
+                    .collect();
+            } else {
+                *param =
+                    param
+                        .clone()
+                        .with_labelled_choices(choices.iter().map(|(value, label)| {
+                            (
+                                value.clone(),
+                                label.clone().unwrap_or_else(|| value.clone()),
+                            )
+                        }));
+            }
+        }
+    }
 }
 
 impl EffectStatus {
@@ -45,6 +92,7 @@ impl EffectStatus {
             label: None,
             description: None,
             phrase: None,
+            params: Vec::new(),
             item: None,
             kind: None,
         }
@@ -59,6 +107,7 @@ impl EffectStatus {
             label: None,
             description: Some(description.into()),
             phrase: None,
+            params: Vec::new(),
             item: None,
             kind: None,
         }
@@ -72,6 +121,7 @@ impl EffectStatus {
             label: None,
             description: None,
             phrase: None,
+            params: Vec::new(),
             item: None,
             kind: Some(kind),
         }
@@ -85,9 +135,96 @@ impl EffectStatus {
             label: Some(label.into()),
             description: None,
             phrase: None,
+            params: Vec::new(),
             item: None,
             kind: None,
         }
+    }
+
+    /// The effect's parameter `param` accepts `choices` on this entity: the
+    /// apps that open this file, the devices nearby now.
+    #[must_use]
+    pub fn with_param_choices<P, V>(self, param: P, choices: impl IntoIterator<Item = V>) -> Self
+    where
+        P: Into<String>,
+        V: Into<String>,
+    {
+        self.with_labelled_param_choices(
+            param,
+            choices.into_iter().map(|choice| {
+                let choice = choice.into();
+                (choice.clone(), choice)
+            }),
+        )
+    }
+
+    /// [`Self::with_param_choices`], each choice with the words it reads by:
+    /// a nearby device's handle reads as the device's name.
+    #[must_use]
+    pub fn with_labelled_param_choices<P, V, L>(
+        mut self,
+        param: P,
+        choices: impl IntoIterator<Item = (V, L)>,
+    ) -> Self
+    where
+        P: Into<String>,
+        V: Into<String>,
+        L: Into<String>,
+    {
+        let choices: Vec<(String, Option<String>)> = choices
+            .into_iter()
+            .map(|(value, label)| {
+                let value = value.into();
+                let label = label.into();
+                (value.clone(), (label != value).then_some(label))
+            })
+            .collect();
+        self.param(param).choices = Some(choices);
+        self
+    }
+
+    /// The effect's parameter `param` means `description` on this entity.
+    #[must_use]
+    pub fn with_param_description<P: Into<String>>(
+        mut self,
+        param: P,
+        description: impl Into<String>,
+    ) -> Self {
+        self.param(param).description = Some(description.into());
+        self
+    }
+
+    /// The effect's parameter `param` is bounded by `schema` on this entity.
+    #[must_use]
+    pub fn with_param_schema<P: Into<String>>(
+        mut self,
+        param: P,
+        schema: serde_json::Value,
+    ) -> Self {
+        self.param(param).schema = Some(schema);
+        self
+    }
+
+    /// The status of `param` on this entity, added when the status does not
+    /// name it yet.
+    #[allow(
+        clippy::expect_used,
+        reason = "the parameter was just added when the search found none"
+    )]
+    fn param(&mut self, param: impl Into<String>) -> &mut ParamStatus {
+        let name = param.into();
+        if !self.params.iter().any(|held| held.name == name) {
+            self.params.push(ParamStatus {
+                name: name.clone(),
+                choices: None,
+                description: None,
+                schema: None,
+            });
+        }
+        self.params
+            .iter_mut()
+            .find(|held| held.name == name)
+            .expect("the parameter was just added when it was missing")
     }
 
     /// This status is about the item or row published as `item` rather than
@@ -171,8 +308,96 @@ impl EffectStatus {
                 phrase: phrase.clone(),
             };
         }
+        for param in &self.params {
+            spec.narrow_param(&param.name, |declared| param.apply(declared));
+        }
         if let Some(kind) = self.kind {
             spec.type_mut().contract.kind = kind;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EffectStatus;
+    use tilo_resource::Effect as _;
+
+    /// A send to one device: what a row's status narrows per entity.
+    #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+    #[effect(operation = "test.status.view", catalogue = "tests/locales")]
+    enum StatusEffect {
+        /// Send
+        #[effect(kind = "read")]
+        Send {
+            #[param("The device")]
+            target: String,
+            #[param("The port")]
+            port: i64,
+        },
+    }
+
+    #[test]
+    fn a_status_narrows_the_parameters_of_the_effect_it_is_about() {
+        let mut spec = StatusEffect::Send {
+            target: String::new(),
+            port: 0,
+        }
+        .bound_asking(&["target", "port"]);
+        EffectStatus::labelled(StatusEffect::SEND, "Send")
+            .with_labelled_param_choices("target", [("a", "Device A"), ("b", "Device B")])
+            .with_param_description("port", "The receiver's port")
+            .with_param_schema("port", serde_json::json!({"minimum": 1}))
+            .overlay(&mut spec);
+        let target = spec
+            .params()
+            .iter()
+            .find(|param| param.name == "target")
+            .expect("the target parameter");
+        assert_eq!(
+            target
+                .choices
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["a", "b"],
+            "only the devices this entity can send to are offered"
+        );
+        assert_eq!(target.choice_label("a"), Some("Device A"));
+        let port = spec
+            .params()
+            .iter()
+            .find(|param| param.name == "port")
+            .expect("the port parameter");
+        assert_eq!(&*port.description, "The receiver's port");
+        assert_eq!(
+            port.schema.as_deref(),
+            Some(&serde_json::json!({"minimum": 1})),
+            "the entity's state bounds what it accepts"
+        );
+    }
+
+    #[test]
+    fn a_status_leaves_the_parameters_it_does_not_name_as_declared() {
+        let mut spec = StatusEffect::Send {
+            target: String::new(),
+            port: 0,
+        }
+        .bound_asking(&["target", "port"]);
+        let declared = spec
+            .params()
+            .iter()
+            .find(|param| param.name == "port")
+            .expect("the port parameter")
+            .clone();
+        EffectStatus::labelled(StatusEffect::SEND, "Send")
+            .with_param_choices("missing", ["a"])
+            .overlay(&mut spec);
+        assert_eq!(
+            spec.params()
+                .iter()
+                .find(|param| param.name == "port")
+                .expect("the port parameter"),
+            &declared
+        );
     }
 }
