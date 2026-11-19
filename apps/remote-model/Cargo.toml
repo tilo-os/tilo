@@ -21,12 +21,18 @@ path = "src/lib.rs"
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-# A Tilo device's address is its certified endpoint id, which the model reads to
-# tell a real one from a friendly name.
-iroh-base = { workspace = true, features = ["key"] }
+# A Tilo device's address is its certified endpoint id: an Ed25519 public key,
+# hex or base32, which the model reads to tell a real one from a friendly name.
+# It decodes the text and checks the key with ed25519-dalek, as iroh-base does,
+# rather than through iroh-base, whose `key` feature turns on getrandom's
+# browser backend, which a model module (no JavaScript host) cannot link.
+ed25519-dalek.workspace = true
+data-encoding.workspace = true
 tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 
 [dev-dependencies]
+# Real endpoint ids for the tests, made as a device makes its own.
+iroh-base = { workspace = true, features = ["key"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

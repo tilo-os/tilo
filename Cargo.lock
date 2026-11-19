@@ -14400,6 +14400,8 @@ dependencies = [
 name = "remote-model"
 version = "0.1.0"
 dependencies = [
+ "data-encoding",
+ "ed25519-dalek 3.0.0",
  "iroh-base",
  "serde",
  "serde_json",
@@ -20853,6 +20855,7 @@ name = "tilo-model-guest"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "getrandom 0.2.17",
  "getrandom 0.4.3",
  "serde",
  "serde_json",
@@ -20896,6 +20899,7 @@ dependencies = [
  "poker-model-wasm",
  "print-centre-model-wasm",
  "publisher-model-wasm",
+ "remote-model-wasm",
  "scratchpad-model-wasm",
  "tasks-model-wasm",
  "tube-model-wasm",

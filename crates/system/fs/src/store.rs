@@ -381,19 +381,22 @@ impl ContentStore {
     /// Closes a group opened by [`Self::defer_sync`]; the last one syncs the database if a write inside
     /// the groups skipped it. The writes stay pending for the next sync when the sync fails.
     pub async fn end_deferred_sync(&self) -> Result<()> {
-        let sync = {
+        let (sync, outermost) = {
             let mut deferred = self.deferred.lock_recover();
             deferred.0 = deferred.0.saturating_sub(1);
             let sync = deferred.0 == 0 && deferred.1;
             if sync {
                 deferred.1 = false;
             }
-            sync
+            (sync, deferred.0 == 0)
         };
+        if outermost {
+            // Every write after the last group is durable on its own again.
+            self.files.set_sync_writes(true);
+        }
         if sync {
             self.write_syncs
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.files.set_sync_writes(true);
             let files = Arc::clone(&self.files);
             if let Err(error) = tokio::task::spawn_blocking(move || files.sync_db()).await? {
                 self.files.set_sync_writes(false);

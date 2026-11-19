@@ -305,13 +305,27 @@ fn profile_issue(kind: ConnectionKind, host: &str, auth: AuthMethod) -> Option<&
             ConnectionKind::Tilo => "remote-issue-tilo-auth",
         });
     }
-    if kind == ConnectionKind::Tilo
-        && !host.trim().is_empty()
-        && host.trim().parse::<iroh_base::EndpointId>().is_err()
-    {
+    if kind == ConnectionKind::Tilo && !host.trim().is_empty() && !is_endpoint_id(host.trim()) {
         return Some("remote-issue-tilo-endpoint");
     }
     None
+}
+
+/// Whether `text` is a device's endpoint id: an Ed25519 public key (32 bytes,
+/// as lowercase hex or unpadded base32, as iroh writes and reads one) whose
+/// point is on the curve: exactly what `iroh_base::EndpointId` accepts.
+fn is_endpoint_id(text: &str) -> bool {
+    let mut bytes = [0u8; 32];
+    let decoded = if text.len() == 64 {
+        data_encoding::HEXLOWER.decode_mut(text.as_bytes(), &mut bytes)
+    } else {
+        let upper = text.to_ascii_uppercase();
+        if data_encoding::BASE32_NOPAD.decode_len(upper.len()) != Ok(bytes.len()) {
+            return false;
+        }
+        data_encoding::BASE32_NOPAD.decode_mut(upper.as_bytes(), &mut bytes)
+    };
+    decoded == Ok(32) && ed25519_dalek::VerifyingKey::from_bytes(&bytes).is_ok()
 }
 
 /// A draft of the add/edit form, private to the editor until Save.
@@ -526,6 +540,33 @@ mod tests {
 
             connection.host = Atom(SecretKey::generate().public().to_string());
             assert_eq!(connection.profile_issue(), None);
+        }
+
+        phase an_endpoint_id_is_read_as_iroh_reads_it;
+        {
+            let key = SecretKey::generate().public();
+            let hex = key.to_string();
+            let base32 = data_encoding::BASE32_NOPAD
+                .encode(key.as_bytes())
+                .to_ascii_lowercase();
+            // 32 bytes that are not a point on the curve.
+            let off_curve = data_encoding::HEXLOWER.encode(&[0xff; 32]);
+            let short: String = hex.chars().skip(1).collect();
+            for text in [
+                hex.as_str(),
+                base32.as_str(),
+                &hex.to_ascii_uppercase(),
+                short.as_str(),
+                off_curve.as_str(),
+                "friendly-name",
+                "",
+            ] {
+                assert_eq!(
+                    is_endpoint_id(text),
+                    text.parse::<iroh_base::EndpointId>().is_ok(),
+                    "{text:?}"
+                );
+            }
         }
 
         phase protocol_specific_authentication_choices_never_offer_dead_paths;

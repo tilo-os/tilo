@@ -267,11 +267,11 @@ impl ContentPut for StorePut {
 /// were read.
 fn read_up_to(file: &mut std::fs::File, into: &mut [u8]) -> std::io::Result<usize> {
     let mut read = 0;
-    while let Some(room) = into.get_mut(read..) {
-        if room.is_empty() {
+    while let Some(unfilled) = into.get_mut(read..) {
+        if unfilled.is_empty() {
             break;
         }
-        match file.read(room) {
+        match file.read(unfilled) {
             Ok(0) => break,
             Ok(bytes) => read = read.saturating_add(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}

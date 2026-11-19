@@ -32,12 +32,6 @@ missing=()
 for guest in apps/*-model-wasm/; do
   guest=${guest%/}
   [ -f "${guest%-model-wasm}/tilo-app.toml" ] || continue
-  # Remote's model links iroh-base, whose `key` feature turns on getrandom's
-  # `wasm_js` backend for wasm32, which getrandom 0.4.3 does not compile beside
-  # the custom backend every model module takes. Its guest builds neither alone
-  # nor here, so it is left out of the combined build until its model stops
-  # needing that feature, rather than failing every app's module with it.
-  [ "$guest" != apps/remote-model-wasm ] || continue
   grep -q "path = \"../../../$guest\"" "$combined/Cargo.toml" || missing+=("$guest")
 done
 if ((${#missing[@]})); then

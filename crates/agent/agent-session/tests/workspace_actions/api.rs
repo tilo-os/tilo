@@ -675,10 +675,10 @@ async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
 
 /// A minted key's agent goes by the name the key was minted with: History
 /// names its changes "Jane Doe's agent", in the colour presence draws it in,
-/// never the key's grant id nor anything the client says of itself. Its run
-/// goes by the title the agent gave it (`_meta` invocation.title), else by the
-/// agent's name; each of its changes names the run's id (`_meta`
-/// invocation.id) beside the agent.
+/// never the key's grant id nor anything the client says of itself. Its
+/// invocation goes by the title the agent gave it (`_meta` invocation.title),
+/// else by the agent's name; each of its changes names the invocation's id
+/// (`_meta` invocation.id) beside the agent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
     let on_server = api_on_server(ISSUER).await;
@@ -772,7 +772,7 @@ async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
     assert_eq!(
         runs,
         [title, "Jane Doe's agent"].into_iter().collect(),
-        "the titled call's run goes by its title, an untitled call's by its agent's name: \
+        "a titled call goes by its title, an untitled call's by its agent's name: \
          {history}"
     );
     assert_eq!(
