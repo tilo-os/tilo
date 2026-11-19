@@ -529,6 +529,7 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
         Arc::new(crate::continuations::Continuations::default()),
         wake,
         person.clone(),
+        None,
     );
     desktops.attach_engine(&engine);
     // The workspace's keys, as the key service hands them to this device.

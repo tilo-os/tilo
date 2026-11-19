@@ -280,14 +280,10 @@ impl Session {
         let notes = options.launches.notes();
         // The workspaces' layouts, which hold the shell itself: what every member shows, and what a
         // change of it is written into.
-        let desktops = Rc::new(
-            crate::layout::Layouts::new(
-                std::sync::Arc::clone(&notes),
-                options.wake.clone(),
-                options.person.clone(),
-            )
-            .hosting(crate::apps::runs_on_its_device),
-        );
+        let desktops = Rc::new(crate::layout::of_session(
+            &options,
+            std::sync::Arc::clone(&notes),
+        ));
         let activity = crate::activity::Activity::new(
             options.state.as_deref(),
             options.person.clone(),
