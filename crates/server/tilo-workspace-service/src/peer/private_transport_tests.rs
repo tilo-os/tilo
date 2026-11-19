@@ -1293,7 +1293,7 @@ async fn a_request_after_a_commit_is_answered_while_the_commit_is_saved() {
     let registry = Arc::new(AsyncMutex::new(entries));
     let (client, server) = tokio::io::duplex(65536);
     let (read, write) = tokio::io::split(server);
-    let session = tokio::spawn(run_peer_stream(
+    let session = tokio::spawn(serve_peer_stream(
         b.clone(),
         read,
         write,
