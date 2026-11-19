@@ -346,6 +346,11 @@ pub(crate) struct Shared {
     /// before the record itself arrived, or the tab's application is still
     /// loading.
     waiting: Rc<RefCell<std::collections::HashSet<TabId>>>,
+    /// Why the workspace cannot answer what windows wait for now, as the page's link to it says
+    /// ([`tilo_session_client::link::PeerStatus::unanswerable`]): a window whose resource is on its
+    /// way shows that failure instead of waiting for an answer that cannot come, and waits again
+    /// once the workspace can answer.
+    unanswerable: Rc<RefCell<Option<String>>>,
     /// The tabs whose window could not open what it names, with what the window says instead
     /// ([`crate::window_states`]).
     pub(crate) unopened: Rc<RefCell<HashMap<TabId, String>>>,
@@ -458,6 +463,25 @@ impl Shared {
     pub fn wake(&self) {
         self.woken.store(true, Ordering::Release);
         crate::browser::wake_desktops();
+    }
+
+    /// The workspace cannot answer this page now, for `cause`, or can again (`None`): the windows
+    /// waiting for a resource are built again, showing the failure or waiting once more.
+    pub fn follow_unanswerable(&self, cause: Option<String>, handle: &DesktopHandle) {
+        if *self.unanswerable.borrow() == cause {
+            return;
+        }
+        *self.unanswerable.borrow_mut() = cause;
+        self.retry_waiting(handle);
+    }
+
+    /// What a window whose resource is still on its way from the workspace shows: its arrival, or,
+    /// while the workspace cannot answer, why ([`Self::follow_unanswerable`]).
+    fn awaiting_resource(&self) -> Unready {
+        match self.unanswerable.borrow().clone() {
+            Some(cause) => Unready::Failed(cause),
+            None => Unready::Arriving,
+        }
     }
 
     /// A record arrived: build the tabs still waiting for theirs again.
@@ -1041,7 +1065,7 @@ impl Tiles {
                 // loading, not broken, and the window is built again once it is here.
                 Unbuilt::Arriving => {
                     self.shared.waiting.borrow_mut().insert(tab.id);
-                    Unready::Arriving
+                    self.shared.awaiting_resource()
                 }
                 Unbuilt::Failed(detail) => Unready::Failed(detail),
             })?;
@@ -1345,7 +1369,7 @@ impl Tiles {
     fn unopened(&self, tab: TabId, error: &ui::resource::ResourceOpenError) -> Unready {
         if matches!(error, ui::resource::ResourceOpenError::Arriving) {
             self.shared.waiting.borrow_mut().insert(tab);
-            return Unready::Arriving;
+            return self.shared.awaiting_resource();
         }
         Unready::Notice(error.to_string())
     }
