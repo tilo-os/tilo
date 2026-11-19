@@ -1652,3 +1652,9 @@ reason = "The extension helper's interface to the operating system it changes (i
 words = ["host", "run"]
 identifiers = ["host", "Host", "run", "run_on"]
 paths = ["crates/system/extension-helper/src/machine.rs", "crates/system/extension-helper/tests/extension.rs"]
+
+[[allow]]
+reason = "HTTP's own `Host` request header (`hyper::header::HOST`), which a test that speaks HTTP/1.1 to the packet relay by hand writes."
+words = ["host"]
+identifiers = ["HOST"]
+paths = ["crates/server/tilo-server/src/daemon.rs"]

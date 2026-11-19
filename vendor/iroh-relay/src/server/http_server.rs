@@ -745,6 +745,26 @@ impl Service<Request<Incoming>> for RelayServiceWithNotify {
     type Future = std::future::Ready<Result<Self::Response, Self::Error>>;
 
     fn call(&self, req: Request<Incoming>) -> Self::Future {
+        // TILO PATCH: a connection is kept only for a relay WebSocket. Any other
+        // answer (a latency probe, a health check, a refused upgrade) closes its
+        // connection behind it, so a front that pools connections (a reverse
+        // proxy) never holds one idle that `handle_connection` then aborts at its
+        // establish deadline.
+        std::future::ready(self.respond(req).map(|mut response| {
+            if response.status() != StatusCode::SWITCHING_PROTOCOLS {
+                response
+                    .headers_mut()
+                    .insert(CONNECTION, HeaderValue::from_static("close"));
+            }
+            response
+        }))
+    }
+}
+
+impl RelayServiceWithNotify {
+    /// The answer to `req`, before [`Service::call`] says whether its
+    /// connection stays.
+    fn respond(&self, req: Request<Incoming>) -> Result<Response<BytesBody>, HyperError> {
         // Create a client if the request hits the relay endpoint.
         if matches!(
             (req.method(), req.uri().path()),
@@ -764,7 +784,7 @@ impl Service<Request<Incoming>> for RelayServiceWithNotify {
                     .body(body_full(e.to_string())),
             }
             .map_err(Into::into);
-            return std::future::ready(response);
+            return response;
         }
         // Otherwise handle the relay connection as normal.
 
@@ -776,16 +796,13 @@ impl Service<Request<Incoming>> for RelayServiceWithNotify {
             .handlers
             .get(&(req.method().clone(), uri.path()))
         {
-            let response = handler(req, self.service.0.default_response());
-            return std::future::ready(response);
+            return handler(req, self.service.0.default_response());
         }
 
         // Otherwise return 404
-        let response = self
-            .service
+        self.service
             .0
-            .not_found_fn(req, self.service.0.default_response());
-        std::future::ready(response)
+            .not_found_fn(req, self.service.0.default_response())
     }
 }
 
