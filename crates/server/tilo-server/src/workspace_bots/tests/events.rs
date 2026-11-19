@@ -207,13 +207,10 @@ async fn a_persons_assistant_sets_an_event_up_and_its_person_reads_the_same() {
     assert_eq!(made.note["style"], "Three lines.");
     assert!(made.on);
     assert_eq!((made.runs, made.last_run.clone()), (0, None));
-    assert!(made.permits.is_empty(), "setting one up gives it no reach");
 
-    // An agent is offered the actions, without what is its person's alone.
+    // An agent is offered the event actions.
     let offered = theirs.offered(&theirs.agent());
     assert!(offered.contains("\"set-up\""), "{offered}");
-    assert!(!offered.contains("\"permit\""), "{offered}");
-    assert!(theirs.offered(&theirs.me()).contains("\"permit\""));
     assert!(
         theirs
             .events
@@ -341,62 +338,6 @@ async fn an_event_is_changed_paused_and_removed_by_its_persons_assistant() {
         .join(hex::encode(cert.user_public_key))
         .join(&made.id);
     assert!(!kept.exists(), "{}", kept.display());
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn what_lets_an_events_work_act_unasked_is_its_persons_alone_to_give() {
-    use tilo_actions::policy::{Level, Rule};
-    let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
-    let workspaces = server.workspaces().clone();
-    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
-    let theirs = Theirs::on(
-        &workspaces,
-        &workspace,
-        &cert,
-        &scratch.path().join("events"),
-    );
-    let made = theirs.set_up();
-    assert!(made.permits.is_empty(), "setting one up gives it no reach");
-
-    // One action that leaves the workspace, named exactly.
-    let send = tilo_automation::action_rule(
-        "so.tilo.mail",
-        "mail.mailbox",
-        None,
-        "send",
-        KindSet::OUTSIDE,
-        Answer::Allow,
-    );
-    let permission = json!({"event": made.id, "rule": send});
-    // Their assistant cannot give it to an event it set up.
-    let asked = theirs.take(&theirs.agent(), person_events::PERMIT, permission.clone());
-    assert!(
-        matches!(&asked, Err(ActionCallError::Refused { reason }) if reason.contains("only the person")),
-        "{asked:?}"
-    );
-    assert!(theirs.listed().iter().all(|event| event.permits.is_empty()));
-    // The person gives it, nothing wider is kept, and they take it back.
-    let permitted = event(theirs.take(&theirs.me(), person_events::PERMIT, permission.clone()));
-    assert_eq!(permitted.permits, vec![send]);
-    let whole_app = Rule::new(
-        TreePath::root().any(Level::Workspace).app("so.tilo.mail"),
-        KindSet::ALL,
-        Answer::Allow,
-    );
-    assert!(
-        theirs
-            .take(
-                &theirs.me(),
-                person_events::PERMIT,
-                json!({"event": made.id, "rule": whole_app}),
-            )
-            .is_err(),
-        "nothing wider than one action is kept"
-    );
-    let withdrawn = event(theirs.take(&theirs.me(), person_events::WITHDRAW, permission));
-    assert!(withdrawn.permits.is_empty());
 }
 
 /// A moment `in_ms` from now, as a trigger's line and in ms since the epoch.

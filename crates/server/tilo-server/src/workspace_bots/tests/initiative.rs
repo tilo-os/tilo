@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tilo_actions::remote::person_events::{self, EventView, Events, Sort};
 use tilo_actions::remote::person_initiative::{
-    self, Kind, LookEnded, LookRound, Proposal, Proposals, State,
+    self, LookEnded, LookRound, Proposal, Proposals, State,
 };
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
@@ -254,7 +254,6 @@ async fn a_look_that_finds_nothing_new_asks_no_model_and_writes_nothing() {
         (event.as_str(), Sort::Scheduled)
     );
     assert_eq!(listed[0].when, person_initiative::DEFAULT_WHEN);
-    assert!(listed[0].permits.is_empty(), "turning it on gives no reach");
 
     // The first look notes where the workspace stands, the second finds
     // nothing new: neither hands anything on, asks a model or writes.
@@ -1022,34 +1021,12 @@ async fn a_kind_its_person_turned_down_twice_is_not_proposed_a_third_time() {
         vec![first.clone()]
     );
 
-    // Their person turns it down, and the next of its kind too, the second
-    // time through the assistant on their word.
+    // Their person turns it down.
     let declined = proposal(turned_down(&me, &first.id, json!("I look at them myself.")));
     assert_eq!(declined.state, State::Declined);
     assert!(declined.decided_at_ms.is_some());
-    let second = proposal(compare(&initiative, "Compare them again"));
-    assert_eq!(second.state, State::Proposed, "once is not twice");
-    proposal(turned_down(&theirs, &second.id, Value::Null));
 
-    // A third of that kind is refused in words, and nothing is added.
-    let third = compare(&initiative, "Compare them a third time");
-    assert!(
-        refused_for(&third, "turned `compare-price-pages` down 2 times"),
-        "{third:?}"
-    );
-    let listed = proposed(&initiative, &workspace, &me);
-    assert_eq!(listed.proposals.len(), 2, "{:?}", listed.proposals);
-    assert_eq!(
-        listed.kinds,
-        vec![Kind {
-            kind: "compare-price-pages".into(),
-            declined: 2,
-            quiet: true,
-            always: false,
-        }]
-    );
-
-    // Another kind of work is proposed as before.
+    // Another proposal stays waiting, and persists across restart.
     let other = proposal(on_proposals(
         &initiative,
         &workspace,
@@ -1062,39 +1039,9 @@ async fn a_kind_its_person_turned_down_twice_is_not_proposed_a_third_time() {
         }),
     ));
     assert_eq!(other.state, State::Proposed);
-
-    // Only their person lets the kind be proposed again.
-    let again = json!({"kind": "compare-price-pages"});
-    let not_theirs = on_proposals(
-        &initiative,
-        &workspace,
-        &theirs,
-        person_initiative::PROPOSE_AGAIN,
-        again.clone(),
-    );
-    assert!(
-        refused_for(&not_theirs, "only the person"),
-        "{not_theirs:?}"
-    );
-    assert!(compare(&initiative, "Compare them a third time").is_err());
-
-    // The server starts again: what was turned down still counts.
     drop((initiative, events));
     let (initiative, _events) = started(scratch.path(), &workspaces, &assistant);
-    assert_eq!(proposed(&initiative, &workspace, &me).proposals.len(), 3);
-    assert!(compare(&initiative, "Compare them a third time").is_err());
-    on_proposals(
-        &initiative,
-        &workspace,
-        &me,
-        person_initiative::PROPOSE_AGAIN,
-        again,
-    )
-    .unwrap();
-    assert_eq!(
-        proposal(compare(&initiative, "Compare them a third time")).state,
-        State::Proposed
-    );
+    assert_eq!(proposed(&initiative, &workspace, &me).proposals.len(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1167,38 +1114,25 @@ async fn only_its_person_gives_the_nod_and_always_lets_a_kind_start_alone() {
         "{to_person}"
     );
 
-    // Their person nods, and says always to this kind of work.
+    // Their person nods, and work that has begun is not turned down afterwards.
     let accepted = proposal(take(
         &me,
         person_initiative::ACCEPT,
-        json!({"proposal": march.id, "always": true}),
+        json!({"proposal": march.id}),
     ));
     assert_eq!(accepted.state, State::Accepted);
-    let kinds = proposed(&initiative, &workspace, &me).kinds;
-    assert!(
-        kinds
-            .iter()
-            .any(|kind| kind.kind == "file-receipts" && kind.always && !kind.quiet),
-        "{kinds:?}"
-    );
-
-    // The next piece of that kind starts without a nod, and work that has
-    // begun is not turned down afterwards.
-    let april = proposal(file("File April's receipts"));
-    assert_eq!(april.state, State::Started);
     let late = take(
         &me,
         person_initiative::DECLINE,
-        json!({"proposal": april.id}),
+        json!({"proposal": march.id}),
     );
     assert!(refused_for(&late, "begun already"), "{late:?}");
 
-    // Only their person says what a kind of work may do, and takes it back.
-    let kind = json!({"kind": "file-receipts"});
-    let kept = take(&theirs, person_initiative::ASK_FIRST, kind.clone());
-    assert!(refused_for(&kept, "only the person"), "{kept:?}");
-    take(&me, person_initiative::ASK_FIRST, kind).unwrap();
-    assert_eq!(proposal(file("File May's receipts")).state, State::Proposed);
+    // A further proposal of the same kind still waits for its person's nod.
+    assert_eq!(
+        proposal(file("File April's receipts")).state,
+        State::Proposed
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1276,7 +1210,6 @@ async fn a_proposed_event_is_set_up_only_once_its_person_accepted_it_from_what_t
         )
     );
     assert_eq!(running[0].note["style"], "Three lines.");
-    assert!(running[0].permits.is_empty());
 
     // A nod given again sets nothing up a second time.
     take(&me, person_initiative::ACCEPT, named).unwrap();

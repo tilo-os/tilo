@@ -295,17 +295,9 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
         .find(|proposal| proposal.id == second.id)
         .expect("the second proposal is listed");
     assert_eq!(cancelled.state, State::Declined);
-    assert_eq!(
-        listed
-            .kinds
-            .iter()
-            .find(|kind| kind.kind == "tidy-notes")
-            .map(|kind| (kind.declined, kind.quiet)),
-        Some((1, false))
-    );
 
     // A third their person turns down where it was proposed: its task is cancelled in the
-    // tracker, and the kind is not proposed again.
+    // tracker.
     let third = proposal(tidy(&initiative, &workspace, &theirs, "Tidy the old plans").await);
     let declined = proposal(
         take(
@@ -325,15 +317,6 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
         .find(|(_, issue)| issue.title == "Tidy the old plans")
         .expect("the third task is kept");
     assert!(dropped.1.status.closed(), "{:?}", dropped.1.status);
-
-    // A fourth of that kind is refused in words, before anything is filed.
-    let fourth = tidy(&initiative, &workspace, &theirs, "Tidy everything").await;
-    assert!(
-        matches!(&fourth, Err(ActionCallError::Refused { reason }) if reason.contains("turned `tidy-notes` down 2 times")),
-        "{fourth:?}"
-    );
-    let part = tracker(&workspaces, &workspace, &issues).await;
-    assert_eq!(part.issues.iter().count(), 3, "nothing more was filed");
 }
 
 /// The whole way, as it goes with no device of the person on: the server answers a turn of the

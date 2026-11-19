@@ -39,9 +39,7 @@ use tilo_actions::contract::{
     RiskLevel,
 };
 use tilo_actions::params::{ActionParam, ParamType};
-use tilo_actions::remote::person_events::{
-    self, Change, EventView, Events, Named, Permission, SetUp, Sort,
-};
+use tilo_actions::remote::person_events::{self, Change, EventView, Events, Named, SetUp, Sort};
 use tilo_actions::remote::person_telling::Kind;
 use tilo_actions::remote::{
     ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource,
@@ -446,7 +444,7 @@ impl PersonEvents {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        let (person, asker) = self.asking(workspace_id, caller)?;
+        let (person, _asker) = self.asking(workspace_id, caller)?;
         let owner = (workspace_id.to_string(), hex::encode(person));
         let mut running = self.inner.running.lock_recover();
         let theirs = running.entry(owner.clone()).or_default();
@@ -481,26 +479,6 @@ impl PersonEvents {
                     tracing::warn!(event = %named.event, %error, "a removed event's directory stays");
                 }
                 said(&listed(theirs))
-            }
-            action @ (person_events::PERMIT | person_events::WITHDRAW) => {
-                if asker != Asker::Person {
-                    return Err(ActionCallError::Refused {
-                        reason: "only the person themselves lets an event act without asking"
-                            .into(),
-                    });
-                }
-                let permission: Permission = argument(
-                    request,
-                    "a permission names its event and the one action it allows",
-                )?;
-                let event = theirs.get(&permission.event).ok_or_else(no_such_event)?;
-                let kept = if action == person_events::PERMIT {
-                    event.kept.permit(permission.rule)
-                } else {
-                    event.kept.withdraw(&permission.rule)
-                };
-                kept.map_err(step_error)?;
-                said(&view(event))
             }
             _ => Err(ActionCallError::UnknownAction),
         }
@@ -672,7 +650,6 @@ fn view(event: &Running) -> EventView {
         told_as: definition.told_as,
         note: kept::note_value(kept.note()),
         on,
-        permits: kept.permits().to_vec(),
         runs: kept.runs(),
         last_run: kept.last_run().map(|last| person_events::LastRun {
             at_ms: last.at_ms,
@@ -738,12 +715,8 @@ struct Offered {
 
 /// The rows the events' actions are offered as to `asker`. What only the
 /// person themselves may do is not offered to their agent.
-fn rows(asker: Asker) -> Vec<CatalogueRow> {
-    let mut offered = for_their_assistant();
-    if asker == Asker::Person {
-        offered.extend(for_the_person_alone());
-    }
-    offered.into_iter().map(row).collect()
+fn rows(_asker: Asker) -> Vec<CatalogueRow> {
+    for_their_assistant().into_iter().map(row).collect()
 }
 
 /// The parameter that names an event.
@@ -855,18 +828,6 @@ fn changed() -> Vec<ActionParam> {
     params
 }
 
-/// What a permission names: its event and the one action it allows.
-fn permission() -> Vec<ActionParam> {
-    vec![
-        event_param(),
-        ActionParam::required(
-            "rule",
-            ParamType::Object,
-            "A grant rule that allows exactly one action that leaves the workspace.",
-        ),
-    ]
-}
-
 /// What a person and their assistant are both offered.
 fn for_their_assistant() -> Vec<Offered> {
     vec![
@@ -922,29 +883,6 @@ fn for_their_assistant() -> Vec<Offered> {
             label: "Remove an event",
             description: "Remove an event for good, with its count and its note.",
             params: vec![event_param()],
-            kind: ActionKind::Undoable,
-            retry: RetryPolicy::Idempotent,
-        },
-    ]
-}
-
-/// What only the person themselves is offered.
-fn for_the_person_alone() -> Vec<Offered> {
-    vec![
-        Offered {
-            action: person_events::PERMIT,
-            label: "Let an event act without asking",
-            description: "Let the work an event starts take one action that leaves the workspace \
-                          without asking first.",
-            params: permission(),
-            kind: ActionKind::Undoable,
-            retry: RetryPolicy::Idempotent,
-        },
-        Offered {
-            action: person_events::WITHDRAW,
-            label: "Have an event ask again",
-            description: "Take back a permission: its action asks again.",
-            params: permission(),
             kind: ActionKind::Undoable,
             retry: RetryPolicy::Idempotent,
         },

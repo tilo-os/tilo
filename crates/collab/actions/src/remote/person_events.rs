@@ -47,11 +47,6 @@ pub const PAUSE: &str = "pause";
 pub const RESUME: &str = "resume";
 /// Remove an event ([`Named`]), answering the events that remain.
 pub const REMOVE: &str = "remove";
-/// Let the work an event starts take one action that leaves the workspace
-/// without asking ([`Permission`]). The person's alone: an agent is refused.
-pub const PERMIT: &str = "permit";
-/// Take such a permission back ([`Permission`]). The person's alone.
-pub const WITHDRAW: &str = "withdraw-permission";
 
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
@@ -147,16 +142,6 @@ pub struct Named {
     pub event: String,
 }
 
-/// A permission of an event: one action that leaves the workspace, which
-/// the work the event starts may take without asking.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Permission {
-    pub event: String,
-    /// A grant rule that allows exactly one action.
-    pub rule: crate::policy::Rule,
-}
-
 /// Whether an event is on a clock or waits for something to happen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -223,9 +208,6 @@ pub struct EventView {
     pub note: Value,
     /// Whether it is on; false while paused.
     pub on: bool,
-    /// The actions that leave the workspace it may take without asking.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub permits: Vec<crate::policy::Rule>,
     /// How many times it ran.
     pub runs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -57,12 +57,6 @@ pub const PROPOSE: &str = "propose";
 pub const ACCEPT: &str = "accept";
 /// Turn a proposal down ([`Decline`]), answering the [`Proposal`].
 pub const DECLINE: &str = "decline";
-/// Have a kind of work wait for a nod again ([`OfKind`]), answering
-/// [`Proposals`]. The person's alone.
-pub const ASK_FIRST: &str = "ask-first";
-/// Let a kind that was turned down be proposed again ([`OfKind`]),
-/// answering [`Proposals`]. The person's alone.
-pub const PROPOSE_AGAIN: &str = "propose-again";
 
 /// How often it looks round when nobody said: every half hour.
 pub const DEFAULT_WHEN: &str = "every 1800 seconds";
@@ -76,8 +70,6 @@ pub const MAX_LOOKS: usize = 20;
 /// The most proposals that wait for a person at once. A further one is
 /// refused until some are decided.
 pub const MAX_WAITING: usize = 20;
-/// The times a kind is turned down before it is no longer proposed.
-pub const QUIET_AFTER: u32 = 2;
 /// The longest a kind's word may be, in bytes.
 pub const MAX_KIND_BYTES: usize = 64;
 /// The longest a proposal's title may be, in characters.
@@ -222,9 +214,6 @@ pub struct Propose {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Accept {
     pub proposal: String,
-    /// Let this kind of work start without a nod from now on.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub always: bool,
 }
 
 /// A proposal turned down.
@@ -237,20 +226,13 @@ pub struct Decline {
     pub why: Option<String>,
 }
 
-/// A kind of work, named by its word.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct OfKind {
-    pub kind: String,
-}
-
 /// Where a proposal stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum State {
     /// It waits for its person's nod.
     Proposed,
-    /// Its person said always to its kind: the work began with no nod.
+    /// Retired: kept so previously saved proposals still deserialize.
     Started,
     Accepted,
     Declined,
@@ -303,26 +285,11 @@ pub struct Proposal {
     pub set_up: Option<String>,
 }
 
-/// What a person made of one kind of work.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Kind {
-    pub kind: String,
-    /// How many times it was turned down.
-    pub declined: u32,
-    /// It is not proposed again: turned down [`QUIET_AFTER`] times.
-    pub quiet: bool,
-    /// It starts without a nod.
-    pub always: bool,
-}
-
-/// What a person's assistant proposed, newest first, and what the person
-/// made of each kind.
+/// What a person's assistant proposed, newest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Proposals {
     pub proposals: Vec<Proposal>,
-    pub kinds: Vec<Kind>,
 }
 
 /// `kind` as it is kept: trimmed, lower case, what is neither a letter nor
@@ -418,7 +385,7 @@ mod tests {
             })
         );
         let accept: Accept = serde_json::from_value(serde_json::json!({"proposal": "p1"})).unwrap();
-        assert!(!accept.always, "a nod is for the one proposal");
-        assert!(State::Proposed.waits() && !State::Started.waits());
+        assert_eq!(accept.proposal, "p1");
+        assert!(State::Proposed.waits() && !State::Accepted.waits());
     }
 }
