@@ -3,13 +3,15 @@
 //!
 //! ```text
 //! cargo build -p mail --features fake-servers --example mail_server_stand_in
-//! target/debug/examples/mail_server_stand_in CERTIFICATE_FILE PORTS_FILE
+//! target/debug/examples/mail_server_stand_in CERTIFICATE_FILE PORTS_FILE [SUBMISSION_PORT]
 //! ```
 //!
 //! It writes the certificate both servers present (for `localhost`) to `CERTIFICATE_FILE` as
 //! PEM, for the stack it rehearses with to trust and nothing else, and `<imap port> <smtp
 //! port>` to `PORTS_FILE`, then serves until it is ended. The IMAP server is TLS from the first
-//! byte and the SMTP server upgrades with `STARTTLS`. It holds made-up mail only, takes any
+//! byte and the SMTP server upgrades with `STARTTLS`. Mail takes an account's SMTP server with
+//! `STARTTLS` on the submission port (587) alone, as Thunderbird's settings name it: with
+//! `SUBMISSION_PORT`, the SMTP server answers there too, and that is the port it writes. It holds made-up mail only, takes any
 //! sign-in, and sends nothing anywhere.
 
 use std::io::Write as _;
@@ -26,8 +28,10 @@ const INBOX: [(&str, &str); 3] = [
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let (Some(certificate_file), Some(ports_file)) = (args.next(), args.next()) else {
-        eprintln!("usage: mail_server_stand_in CERTIFICATE_FILE PORTS_FILE");
+    let (Some(certificate_file), Some(ports_file), submission) =
+        (args.next(), args.next(), args.next())
+    else {
+        eprintln!("usage: mail_server_stand_in CERTIFICATE_FILE PORTS_FILE [SUBMISSION_PORT]");
         std::process::exit(2);
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -54,9 +58,23 @@ fn main() {
                 &[],
             );
         }
+        let smtp_port = match submission {
+            Some(port) => {
+                let Ok(port) = port.parse::<u16>() else {
+                    eprintln!("{port} is not a port");
+                    std::process::exit(2);
+                };
+                if let Err(error) = forward(port, smtp.port).await {
+                    eprintln!("cannot listen on localhost:{port}: {error}");
+                    std::process::exit(1);
+                }
+                port
+            }
+            None => smtp.port,
+        };
         let pem = pem(certificate.as_ref());
         let written = std::fs::write(&certificate_file, pem)
-            .and_then(|()| std::fs::write(&ports_file, format!("{} {}\n", imap.port, smtp.port)));
+            .and_then(|()| std::fs::write(&ports_file, format!("{} {smtp_port}\n", imap.port)));
         if let Err(error) = written {
             eprintln!("cannot write {certificate_file} or {ports_file}: {error}");
             std::process::exit(1);
@@ -65,10 +83,25 @@ fn main() {
             std::io::stderr(),
             "IMAP on localhost:{}, SMTP on localhost:{}",
             imap.port,
-            smtp.port
+            smtp_port
         );
         std::future::pending::<()>().await;
     });
+}
+
+/// Every connection to loopback `port` carried to the SMTP server at loopback `to`.
+async fn forward(port: u16, to: u16) -> std::io::Result<()> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    tokio::spawn(async move {
+        while let Ok((mut incoming, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                if let Ok(mut server) = tokio::net::TcpStream::connect(("127.0.0.1", to)).await {
+                    let _ = tokio::io::copy_bidirectional(&mut incoming, &mut server).await;
+                }
+            });
+        }
+    });
+    Ok(())
 }
 
 /// `der` as a PEM certificate.

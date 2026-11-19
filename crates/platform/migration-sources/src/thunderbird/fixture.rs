@@ -284,8 +284,8 @@ pub struct LiveAccount {
 
 /// A profile with `account` alone, as Thunderbird keeps one that reads its mail from a server:
 /// its servers and identities in `prefs.js`, its password in `logins.json` sealed by
-/// `key4.db`, and one message of its Inbox in Thunderbird's cache. Port 993 and 465 are TLS
-/// from the first byte, any other port upgrades with `STARTTLS`, as Thunderbird says it.
+/// `key4.db`, and one message of its Inbox in Thunderbird's cache. IMAP is TLS from the first
+/// byte on every port but 143, and SMTP on 465 alone; the others upgrade with `STARTTLS`.
 #[expect(
     clippy::expect_used,
     reason = "a fixture that cannot write its files panics with the path"
@@ -299,8 +299,9 @@ pub fn write_live_profile(home: &Path, account: &LiveAccount) {
         "[Profile0]\nName=Default\nIsRelative=1\nPath=l1v3l1v3.default-release\nDefault=1\n",
     )
     .expect("write profiles.ini");
-    // 3 is TLS from the first byte, 2 is STARTTLS.
-    let socket = |port: u16, wrapped: u16| if port == wrapped { 3 } else { 2 };
+    // 3 is TLS from the first byte, 2 is STARTTLS: IMAP is STARTTLS on 143 alone, SMTP is TLS
+    // on 465 alone, as Mail reads an account's ports.
+    let socket = |starttls: bool| if starttls { 2 } else { 3 };
     let mut prefs = format!(
         r#"// Mozilla User Preferences
 
@@ -331,10 +332,10 @@ user_pref("mail.smtpserver.smtp1.try_ssl", {smtp_socket});
         },
         imap_host = account.imap_host,
         imap_port = account.imap_port,
-        imap_socket = socket(account.imap_port, 993),
+        imap_socket = socket(account.imap_port == 143),
         smtp_host = account.smtp_host,
         smtp_port = account.smtp_port,
-        smtp_socket = socket(account.smtp_port, 465),
+        smtp_socket = socket(account.smtp_port != 465),
         email = account.email,
         name = account.name,
     );
