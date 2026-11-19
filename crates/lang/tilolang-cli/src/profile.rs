@@ -199,6 +199,9 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
         ] {
             println!("{when:>10}  {resident}");
         }
+        for (kib, file) in mapped_files().into_iter().take(12) {
+            println!("{:>10}  {file}", format!("{kib} KiB"));
+        }
     }
     for interaction in interactions {
         staged.reset_costs();
@@ -314,4 +317,31 @@ impl std::fmt::Display for Resident {
             self.peak_kib / 1024
         )
     }
+}
+
+/// The files mapped into the process, the most resident first: KiB in RAM and the path.
+fn mapped_files() -> Vec<(u64, String)> {
+    let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap_or_default();
+    let mut files: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let mut current: Option<String> = None;
+    for line in smaps.lines() {
+        let mut fields = line.split_whitespace();
+        let first = fields.next().unwrap_or_default();
+        if first.contains('-') && first.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+            current = line
+                .split_whitespace()
+                .nth(5)
+                .filter(|path| path.starts_with('/'))
+                .map(str::to_owned);
+        } else if first == "Rss:"
+            && let Some(path) = &current
+        {
+            let kib: u64 = fields.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+            let held = files.entry(path.clone()).or_default();
+            *held = held.saturating_add(kib);
+        }
+    }
+    let mut files: Vec<(u64, String)> = files.into_iter().map(|(path, kib)| (kib, path)).collect();
+    files.sort_by_key(|(kib, _)| std::cmp::Reverse(*kib));
+    files
 }
