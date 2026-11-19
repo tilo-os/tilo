@@ -71,7 +71,7 @@ async fn unsupported_alpn_identifies_tilo_server_v1() {
     server.close().await;
     assert_eq!(
         error.unwrap(),
-        LinkError::Unavailable("host does not speak tilo-server/1".into()),
+        LinkError::Unavailable("server does not speak tilo-server/1".into()),
     );
 }
 
@@ -91,7 +91,7 @@ async fn transport_refusal_remains_generic_unavailable() {
         panic!("ordinary transport failures must remain unavailable: {error}");
     };
     assert!(!reason.is_empty());
-    assert_ne!(reason, "host does not speak tilo-server/1");
+    assert_ne!(reason, "server does not speak tilo-server/1");
 }
 
 tilo_test_env::scenario! {
@@ -151,7 +151,7 @@ tilo_test_env::scenario! {
         // Reachability: retried with backoff, never counted as a refusal.
         assert_eq!(
             link_error(ClientError::UnsupportedProtocol),
-            LinkError::Unavailable("host does not speak tilo-server/1".into()),
+            LinkError::Unavailable("server does not speak tilo-server/1".into()),
         );
         assert_eq!(
             link_error(ClientError::Transport("timed out".into())),

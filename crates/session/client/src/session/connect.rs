@@ -310,7 +310,7 @@ pub(super) fn link_error(error: tilo_server_session::ClientError) -> LinkError {
     use tilo_server_session::ClientError;
     match error {
         ClientError::UnsupportedProtocol => {
-            LinkError::Unavailable("host does not speak tilo-server/1".into())
+            LinkError::Unavailable("server does not speak tilo-server/1".into())
         }
         ClientError::Transport(reason) => LinkError::Unavailable(reason),
         ClientError::Sign(reason) => LinkError::Sign(reason),
