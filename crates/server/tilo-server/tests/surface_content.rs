@@ -27,9 +27,12 @@ fn unserved_surface() -> Vec<u8> {
 }
 
 /// What a member's device asks the workspace for.
-fn want(requester: u64, workspace: &str, hash: &str) -> Vec<u8> {
+/// The member device that asks.
+const MEMBER: [u8; 32] = [42; 32];
+
+fn want(workspace: &str, hash: &str) -> Vec<u8> {
     postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
-        requester,
+        requester: tilo_peer_state::peer_handle(&MEMBER),
         app_id: APP.into(),
         cluster_id: workspace.into(),
         hash: hash.into(),
@@ -65,7 +68,11 @@ fn gathered(frames: &[Vec<u8>]) -> Option<Vec<u8>> {
                 mut bytes,
                 ..
             } => {
-                assert_eq!(requester, 42, "addressed to whoever asked");
+                assert_eq!(
+                    requester,
+                    tilo_peer_state::peer_handle(&MEMBER),
+                    "addressed to whoever asked"
+                );
                 assert_eq!(offset, u64::try_from(whole.len()).unwrap());
                 whole.append(&mut bytes);
                 assert_eq!(total, u64::try_from(whole.len()).unwrap_or(u64::MAX));
@@ -98,7 +105,7 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
 
     // Nothing has it: a member asking is told so, not left waiting.
     assert_eq!(
-        gathered(&workspaces.content_answer(&workspace, &want(42, &workspace, &hash))),
+        gathered(&workspaces.content_answer(&workspace, &MEMBER, &want(&workspace, &hash))),
         None
     );
 
@@ -117,7 +124,7 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
     // ([`tilo_workspace_service::surfaces`]) and answers members reading the record it
     // was written with.
     assert_eq!(
-        gathered(&workspaces.content_answer(&workspace, &want(42, &workspace, &hash))),
+        gathered(&workspaces.content_answer(&workspace, &MEMBER, &want(&workspace, &hash))),
         Some(surface.clone()),
         "the surface the member answered with, whole"
     );
@@ -127,12 +134,16 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
     assert_eq!(std::fs::read(content_store.join(&hash)).unwrap(), surface);
     tilo_workspace_service::surfaces::decide_receipt(&content_store);
     assert_eq!(
-        gathered(&workspaces.content_answer(&workspace, &want(42, &workspace, &hash))),
+        gathered(&workspaces.content_answer(&workspace, &MEMBER, &want(&workspace, &hash))),
         Some(surface),
         "answered after a start that asked nobody"
     );
     assert_eq!(
-        gathered(&workspaces.content_answer(&workspace, &want(42, &workspace, &"0".repeat(64)))),
+        gathered(&workspaces.content_answer(
+            &workspace,
+            &MEMBER,
+            &want(&workspace, &"0".repeat(64))
+        )),
         None,
         "a surface nobody answered with is still not kept"
     );
@@ -154,7 +165,7 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
         ),
     );
     assert_eq!(
-        gathered(&workspaces.content_answer(&workspace, &want(42, &workspace, &other))),
+        gathered(&workspaces.content_answer(&workspace, &MEMBER, &want(&workspace, &other))),
         None
     );
 

@@ -302,7 +302,7 @@ impl Workspaces {
                 if !asking {
                     continue;
                 }
-                for answer in workspaces.content_answer(&name, &body) {
+                for answer in workspaces.content_answer(&name, &frame.author, &body) {
                     match postcard::from_bytes::<NeighbourMsg>(&answer) {
                         Ok(message) => {
                             let _ = link.send(message);

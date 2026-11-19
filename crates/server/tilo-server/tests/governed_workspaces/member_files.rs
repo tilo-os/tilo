@@ -311,9 +311,9 @@ fn files_under(root: &std::path::Path) -> Vec<Vec<u8>> {
 
 /// What the host serves a member of `workspace` asking for `address`, its
 /// pieces put together.
-fn served(workspace: &Workspace, requester: u64, address: &str) -> Vec<u8> {
+fn served(workspace: &Workspace, member: [u8; 32], address: &str) -> Vec<u8> {
     let want = postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
-        requester,
+        requester: tilo_peer_state::peer_handle(&member),
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.listing.workspace.clone(),
         hash: address.to_owned(),
@@ -321,12 +321,11 @@ fn served(workspace: &Workspace, requester: u64, address: &str) -> Vec<u8> {
     })
     .unwrap();
     let mut whole = Vec::new();
-    for frame in workspace
-        .server
-        .workspaces()
-        .unwrap()
-        .content_answer(&workspace.listing.workspace, &want)
-    {
+    for frame in workspace.server.workspaces().unwrap().content_answer(
+        &workspace.listing.workspace,
+        &member,
+        &want,
+    ) {
         let NeighbourMsg::DocumentContentPiece { offset, bytes, .. } =
             postcard::from_bytes(&frame).unwrap()
         else {
@@ -411,7 +410,7 @@ async fn a_sealed_attachment_is_ciphertext_on_the_host_and_its_readers_open_it()
             .all(|file| !file.windows(39).any(|w| w == &picture[..39])),
         "nothing on the host's disk holds the picture"
     );
-    let bytes = served(&workspace, 7, &address);
+    let bytes = served(&workspace, [7; 32], &address);
     assert_eq!(bytes, sealed, "the host serves the ciphertext alone");
 
     // Alice's laptop and Bob's phone read the message's reference.
@@ -442,7 +441,7 @@ async fn a_sealed_attachment_is_ciphertext_on_the_host_and_its_readers_open_it()
     .unwrap();
     let carol_store = tilo_content::ContentStore::memory().sealing();
     carol_store
-        .put_public(&served(&workspace, 9, &address))
+        .put_public(&served(&workspace, [9; 32], &address))
         .unwrap();
     assert_eq!(carol_store.read(&reference), Some(picture));
     workspace.server.shutdown().await;

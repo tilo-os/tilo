@@ -28,48 +28,10 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use neighbour_wire::NeighbourMsg;
 use neighbour_wire::content::ContentWants;
-use tilo_peer_state::peer_handle;
 
 use super::{CollaborationError, Workspaces};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_server_protocol::WorkspaceId;
-
-/// The bytes of one piece, as members answer.
-const PIECE_BYTES: usize = 192 * 1024;
-/// Content the host answers with at most.
-const MAX_CONTENT_BYTES: usize = 64 * 1024 * 1024;
-
-/// Word from the host `host` that it keeps none of what `body`, a
-/// member's `NeighbourMsg::DocumentContentWant`, asks for, as a frame for the
-/// member's device alone: the member stops counting on this host for it.
-/// `None` for any other presence.
-pub(crate) fn lacks_answer(host: &[u8; 32], body: &[u8]) -> Option<Vec<u8>> {
-    let Ok(NeighbourMsg::DocumentContentWant {
-        requester,
-        app_id,
-        cluster_id,
-        hash,
-        ..
-    }) = tilo_failure::ignored!(
-        "presence carries other formats, and only a content want is answered",
-        postcard::from_bytes(body)
-    )
-    else {
-        return None;
-    };
-    let hash = hash.to_ascii_lowercase();
-    if !tilo_content::valid_hash(&hash) {
-        return None;
-    }
-    postcard::to_allocvec(&NeighbourMsg::DocumentContentLacks {
-        responder: peer_handle(host),
-        requester,
-        app_id,
-        cluster_id,
-        hash,
-    })
-    .ok()
-}
 
 /// Where a host's content comes from.
 pub trait WorkspaceContent: Send + Sync {
@@ -387,86 +349,34 @@ impl Workspaces {
         Ok(reached)
     }
 
-    /// The answer to `body`, a presence `workspace`'s member published, when it
-    /// asks for content: the pieces of what this host keeps, or word that
-    /// it keeps none, as frames for the member's device alone. Empty for
-    /// any other presence. What it keeps of app surfaces is the workspace's
-    /// content store, never a registry.
-    pub fn content_answer(&self, workspace: &str, body: &[u8]) -> Vec<Vec<u8>> {
-        let Ok(NeighbourMsg::DocumentContentWant {
-            requester,
-            app_id,
-            cluster_id,
-            hash,
-            have,
-        }) = tilo_failure::ignored!(
-            "presence carries other formats, and only a content want is answered",
-            postcard::from_bytes(body)
-        )
-        else {
-            return Vec::new();
-        };
-        let hash = hash.to_ascii_lowercase();
-        if cluster_id != workspace || !tilo_content::valid_hash(&hash) {
+    /// The answer to `body`, a presence the member device `asker` of
+    /// `workspace` published, when it asks for content: the pieces of what
+    /// this host keeps, or word that it keeps none, as frames for the asker's
+    /// device alone ([`neighbour_wire::content::answer`]). Empty for any other
+    /// presence, or a request naming another workspace. What it keeps of app
+    /// surfaces is the workspace's content store, never a registry.
+    pub fn content_answer(&self, workspace: &str, asker: &[u8; 32], body: &[u8]) -> Vec<Vec<u8>> {
+        if !matches!(
+            postcard::from_bytes(body),
+            Ok(NeighbourMsg::DocumentContentWant { cluster_id, .. }) if cluster_id == workspace
+        ) {
             return Vec::new();
         }
-        let responder = peer_handle(&self.inner.host.cert.device_public_key);
-        let Some(bytes) = self
-            .app_file(workspace, &hash)
-            .or_else(|| {
-                self.inner
-                    .content
-                    .get()
-                    .iter()
-                    .find_map(|source| source.read(workspace, &app_id, &hash))
-            })
-            // A record started by an older version of an app reads its writes
-            // with that version's surface, which the workspace's content store
-            // keeps ([`crate::surfaces`]).
-            .or_else(|| crate::surfaces::kept(&app_id, &hash))
-            .filter(|bytes| bytes.len() <= MAX_CONTENT_BYTES)
-        else {
-            return lacks_answer(&self.inner.host.cert.device_public_key, body)
-                .into_iter()
-                .collect();
-        };
-        let total = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let piece = |offset: u64, chunk: &[u8]| NeighbourMsg::DocumentContentPiece {
-            responder,
-            requester,
-            app_id: app_id.clone(),
-            cluster_id: cluster_id.clone(),
-            hash: hash.clone(),
-            total,
-            offset,
-            bytes: chunk.to_vec(),
-        };
-        // At most a window of what the asker lacks: it asks again for the
-        // rest, so a large file crosses a session's outbound queue in windows
-        // instead of filling it and losing what it cannot carry
-        // ([`neighbour_wire::content::answer`] makes the same answer for the
-        // content a keeper holds).
-        let pieces = if bytes.is_empty() {
-            vec![piece(0, &[])]
-        } else {
-            let mut pieces = Vec::new();
-            for (index, chunk) in bytes.chunks(PIECE_BYTES).enumerate() {
-                if pieces.len() >= neighbour_wire::content::PIECES_PER_ANSWER {
-                    break;
-                }
-                let offset = u64::try_from(index.saturating_mul(PIECE_BYTES)).unwrap_or(u64::MAX);
-                let len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
-                if neighbour_wire::content::holds(&have, offset, len) {
-                    continue;
-                }
-                pieces.push(piece(offset, chunk));
-            }
-            pieces
-        };
-        pieces
-            .iter()
-            .filter_map(|message| postcard::to_allocvec(message).ok())
-            .collect()
+        let host = self.inner.host.cert.device_public_key;
+        neighbour_wire::content::answer(&host, asker, body, |app_id, _, hash| {
+            self.app_file(workspace, hash)
+                .or_else(|| {
+                    self.inner
+                        .content
+                        .get()
+                        .iter()
+                        .find_map(|source| source.read(workspace, app_id, hash))
+                })
+                // A record started by an older version of an app reads its writes
+                // with that version's surface, which the workspace's content store
+                // keeps ([`crate::surfaces`]).
+                .or_else(|| crate::surfaces::kept(app_id, hash))
+        })
     }
 }
 
@@ -518,6 +428,7 @@ mod tests {
     #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use super::*;
+    use tilo_peer_state::peer_handle;
 
     struct One(Vec<u8>);
 
@@ -532,9 +443,12 @@ mod tests {
 
     const WORKSPACE: &str = "2f10f463-8f4c-43a3-b9dd-18df422eb0bd";
 
+    /// The member device that asks.
+    const MEMBER: [u8; 32] = [9; 32];
+
     fn want(workspace: &str, hash: &str) -> Vec<u8> {
         postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
-            requester: 42,
+            requester: peer_handle(&MEMBER),
             app_id: "so.tilo.chat".into(),
             cluster_id: workspace.into(),
             hash: hash.into(),
@@ -553,16 +467,16 @@ mod tests {
         let (key, cert) = crate::workspaces::tests::governor();
         let server = crate::workspaces::tests::test_host(scratch.path(), &key, &cert).await;
         let workspaces = server.workspaces().clone();
-        let avatar = vec![7_u8; PIECE_BYTES + 10];
+        let avatar = vec![7_u8; neighbour_wire::content::PIECE_BYTES + 10];
         let hash = blake3::hash(&avatar).to_hex().to_string();
         assert_eq!(
-            lacks(&workspaces.content_answer(WORKSPACE, &want(WORKSPACE, &hash))),
-            Some((peer_handle(&cert.device_public_key), 42)),
+            lacks(&workspaces.content_answer(WORKSPACE, &MEMBER, &want(WORKSPACE, &hash))),
+            Some((peer_handle(&cert.device_public_key), peer_handle(&MEMBER))),
             "a host that serves no content keeps none"
         );
         workspaces.serve_content(Arc::new(One(avatar.clone())));
 
-        let frames = workspaces.content_answer(WORKSPACE, &want(WORKSPACE, &hash));
+        let frames = workspaces.content_answer(WORKSPACE, &MEMBER, &want(WORKSPACE, &hash));
         let mut gathered = Vec::new();
         for frame in &frames {
             let NeighbourMsg::DocumentContentPiece {
@@ -577,7 +491,11 @@ mod tests {
                 panic!("a piece");
             };
             assert_eq!(responder, peer_handle(&cert.device_public_key));
-            assert_eq!(requester, 42, "addressed to whoever asked");
+            assert_eq!(
+                requester,
+                peer_handle(&MEMBER),
+                "addressed to whoever asked"
+            );
             assert_eq!(total, u64::try_from(avatar.len()).unwrap());
             assert_eq!(offset, u64::try_from(gathered.len()).unwrap());
             gathered.extend(bytes);
@@ -588,18 +506,22 @@ mod tests {
         let other = "0b7e4c2a-9d1f-4e3b-8a6c-5f2d1e0c9b8a";
         assert!(
             workspaces
-                .content_answer(other, &want(WORKSPACE, &hash))
+                .content_answer(other, &MEMBER, &want(WORKSPACE, &hash))
                 .is_empty(),
             "another workspace's request"
         );
         assert_eq!(
-            lacks(&workspaces.content_answer(WORKSPACE, &want(WORKSPACE, &"0".repeat(64)))),
-            Some((peer_handle(&cert.device_public_key), 42)),
+            lacks(&workspaces.content_answer(
+                WORKSPACE,
+                &MEMBER,
+                &want(WORKSPACE, &"0".repeat(64))
+            )),
+            Some((peer_handle(&cert.device_public_key), peer_handle(&MEMBER))),
             "not kept: the member is told so"
         );
         assert!(
             workspaces
-                .content_answer(WORKSPACE, b"not a request")
+                .content_answer(WORKSPACE, &MEMBER, b"not a request")
                 .is_empty()
         );
     }

@@ -459,10 +459,8 @@ pub(crate) fn answer_content(
             return;
         };
         let frames = match tokio::task::spawn_blocking(move || match served {
-            Some((workspaces, workspace)) => workspaces.content_answer(&workspace, &body),
-            None => crate::workspaces::lacks_answer(&host, &body)
-                .into_iter()
-                .collect(),
+            Some((workspaces, workspace)) => workspaces.content_answer(&workspace, &member, &body),
+            None => neighbour_wire::content::answer(&host, &member, &body, |_, _, _| None),
         })
         .await
         {

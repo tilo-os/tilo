@@ -46,7 +46,6 @@ mod genesis;
 mod machines;
 pub use machines::WorkspaceMachines;
 mod surfaces;
-pub(crate) use content::lacks_answer;
 pub use content::{ContentKeeper, WholeDocuments, WorkspaceContent};
 mod desktop_writes;
 mod device_actions;
