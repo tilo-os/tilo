@@ -1,10 +1,10 @@
 //! Copy the content a workspace's branch needs. Current Files payloads must be complete.
-//! Older versions go with the branch when they are still stored. Sealed Files versions are
+//! Older versions go with the branch when they are still stored. Files versions are
 //! encrypted with the branch's keys, and the tree index maps their original addresses to the
 //! branch's addresses so history can bring them back.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{BufRead as _, BufReader, Read as _};
+use std::io::{BufReader, Read as _};
 use std::sync::Arc;
 
 use crate::workspaces::BranchFileKeys;
@@ -267,16 +267,23 @@ fn inspect_version(store: &ContentStore, address: &str) -> Result<Option<StoredV
         return Ok(None);
     };
     let mut reader = BufReader::new(reader);
-    let manifest =
-        if fs::content::is_manifest(reader.fill_buf().map_err(|error| error.to_string())?) {
-            let mut bytes = Vec::new();
+    let mut header = [0; blake3::OUT_LEN];
+    let manifest = if len.is_multiple_of(header.len() as u64) {
+        reader
+            .read_exact(&mut header)
+            .map_err(|error| error.to_string())?;
+        if fs_content::is_manifest(&header) {
+            let mut bytes = header.to_vec();
             reader
                 .read_to_end(&mut bytes)
                 .map_err(|error| error.to_string())?;
             Manifest::decode(&bytes).ok()
         } else {
             None
-        };
+        }
+    } else {
+        None
+    };
     Ok(Some(StoredVersion { len, manifest }))
 }
 
