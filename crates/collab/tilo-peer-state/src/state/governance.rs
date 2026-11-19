@@ -197,14 +197,9 @@ impl PeerGovernance<'_> {
         // A host the governance names holds the workspace: its device is let
         // in wherever the workspace is held, and its person, whose host holds
         // all of it already, is let reach the hosts holding it.
-        for hint in self.keeping_devices() {
-            let cert = &hint.host;
-            if tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
-                && !self.peer.core.revocations.refuses(cert)
-            {
-                member_devices.push(cert.device_public_key);
-                member_user_roots.push(cert.user_public_key);
-            }
+        for (root, device) in self.keeping_certificates(now) {
+            member_devices.push(device);
+            member_user_roots.push(root);
         }
         member_devices.sort_unstable();
         member_devices.dedup();
@@ -294,6 +289,23 @@ impl PeerGovernance<'_> {
             .collect())
     }
 
+    /// The certificates of the devices the workspace names among its keepers,
+    /// as `(person root, device key)`: each one the holder signed itself, still
+    /// valid at `now` and not revoked. A keeper holds the workspace by this
+    /// name, so this is how its device and the person it keeps it for are
+    /// known ([`Self::governed_access`], [`Self::governed_members`]).
+    fn keeping_certificates(self, now: SystemTime) -> Vec<([u8; 32], [u8; 32])> {
+        self.keeping_devices()
+            .into_iter()
+            .filter_map(|hint| {
+                let cert = &hint.host;
+                (tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
+                    && !self.peer.core.revocations.refuses(cert))
+                .then_some((cert.user_public_key, cert.device_public_key))
+            })
+            .collect()
+    }
+
     /// The workspace's people and grants as its governance records them: its
     /// owner, its members with the part each takes, when each was admitted,
     /// and the grants on its nodes. This is the one source every list of its
@@ -351,7 +363,9 @@ impl PeerGovernance<'_> {
     /// devices of theirs it lists now: every person its policy gives a role,
     /// its owner among them, by their root, whether or not a device of theirs
     /// has joined; and whoever it removed, kept so a change of theirs still
-    /// reads as theirs. It is the workspace's member set, named.
+    /// reads as theirs. A device the workspace names among its keepers is
+    /// listed as its person's too, though its access comes from the keepers.
+    /// It is the workspace's member set, named.
     pub fn governed_members(self, now: SystemTime) -> Result<MemberList, String> {
         let doc = self
             .peer
@@ -360,6 +374,11 @@ impl PeerGovernance<'_> {
             .as_ref()
             .ok_or("workspace governance missing")?;
         let people = self.governed_set(now)?;
+        // A device the workspace names among its keepers holds it by that
+        // name and is no member's device for its access ([`Self::governed_set`]).
+        // A page still shows it as the device of the person who keeps it
+        // there, so a window it serves or what it narrates reads as theirs.
+        let keeping = self.keeping_certificates(now);
         // Read once per document state ([`crate::cached_document`]), so
         // listing the people costs no decoding or signature check for a row
         // a change left as it was.
@@ -400,6 +419,18 @@ impl PeerGovernance<'_> {
                 devices.insert(row.id.clone(), held.devices);
             }
             members.push(row);
+        }
+        for (root, device) in keeping {
+            let Some(member) = members
+                .iter()
+                .find(|member| member.root() == Some(root) && !member.removed)
+            else {
+                continue;
+            };
+            let devices = devices.entry(member.id.clone()).or_default();
+            if !devices.contains(&device) {
+                devices.push(device);
+            }
         }
         Ok(MemberList { members, devices })
     }
