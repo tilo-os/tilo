@@ -47,13 +47,14 @@ const SAID_CHARS: usize = 200;
 
 /// The last lines of `lines` that say anything, joined and bounded for a sentence a person reads;
 /// none when nothing was said. What was cut is the oldest part, since a program says why it
-/// stopped last.
+/// stopped last. Wine's own diagnostics are not the program's words: a real program's last line
+/// is often a Wine `fixme` that says nothing about why it stopped.
 #[must_use]
 pub fn last_words(lines: &[String]) -> Option<String> {
     let said: Vec<&str> = lines
         .iter()
         .map(|line| line.trim())
-        .filter(|line| !line.is_empty())
+        .filter(|line| !line.is_empty() && !is_wine_diagnostic(line))
         .collect();
     let said = said
         .get(said.len().saturating_sub(SAID_LINES)..)
@@ -71,6 +72,18 @@ pub fn last_words(lines: &[String]) -> Option<String> {
         .skip(length.saturating_sub(SAID_CHARS.saturating_sub(1)))
         .collect();
     Some(format!("…{}", kept.trim_start()))
+}
+
+/// A line of Wine's debug output, such as `0024:fixme:kernelbase:AppPolicy...`: a thread id in
+/// hex, the class, then the Wine module that wrote it.
+fn is_wine_diagnostic(line: &str) -> bool {
+    let mut parts = line.splitn(3, ':');
+    let (Some(thread), Some(class), Some(_)) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    !thread.is_empty()
+        && thread.chars().all(|c| c.is_ascii_hexdigit())
+        && matches!(class, "fixme" | "err" | "warn" | "trace")
 }
 
 /// A program an executor started, which goes on after its launch request is answered: its end
@@ -371,6 +384,25 @@ pub enum ExecutionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real program's stderr ends in Wine's own diagnostics more often than in its reason.
+    #[test]
+    fn what_a_program_said_is_its_own_words_not_wines() {
+        let lines = [
+            "Unable to open key file: no such file",
+            "0024:fixme:kernelbase:AppPolicyGetProcessTerminationMethod FFFFFFFFFFFFFFFA",
+            "00a4:err:module:loader_init Importing dlls failed, status c0000135",
+            "",
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            last_words(&lines).as_deref(),
+            Some("Unable to open key file: no such file")
+        );
+        assert_eq!(last_words(&lines[1..]), None);
+        let said = ["error: fixme: the file is missing".to_owned()];
+        assert_eq!(last_words(&said).as_deref(), Some(said[0].as_str()));
+    }
 
     #[test]
     fn a_sandbox_with_sound_and_a_network_proxy_starts_after_both() {
