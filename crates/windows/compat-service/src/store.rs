@@ -18,6 +18,12 @@ use thiserror::Error;
 
 pub const CAPSULE_SCHEMA_VERSION: u16 = 1;
 const SANDBOX_FILES_ROOT: &str = "/run/tilo/files";
+/// What the capsule's W: drive shows: the Wine runtime as the capsule sees it, never the
+/// person's files. Setting a prefix up needs a drive for it: Wine finds the shipped Wine Mono
+/// only through a drive (without one it asks to download it, and that question holds the setup
+/// until Wine gives up waiting), and the setup's 32-bit helpers load their DLLs from the runtime
+/// through a drive before the prefix has its own copies.
+const RUNTIME_DRIVE_ROOT: &str = "/usr";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// Why a managed executable exists in capsule state. Installer control rows
@@ -643,14 +649,19 @@ impl CapsuleStore {
             Err(error) => return Err(error.into()),
         }
 
-        let q = fd_path(&dosdevices).join("q:");
-        match fs::read_link(&q) {
-            Ok(target) if target == Path::new(SANDBOX_FILES_ROOT) => {}
-            Ok(_) => return Err(CapsuleError::ManagedDriveCollision("Q:")),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                std::os::unix::fs::symlink(SANDBOX_FILES_ROOT, q)?;
+        for (drive, letter, root) in [
+            ("q:", "Q:", SANDBOX_FILES_ROOT),
+            ("w:", "W:", RUNTIME_DRIVE_ROOT),
+        ] {
+            let link = fd_path(&dosdevices).join(drive);
+            match fs::read_link(&link) {
+                Ok(target) if target == Path::new(root) => {}
+                Ok(_) => return Err(CapsuleError::ManagedDriveCollision(letter)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    std::os::unix::fs::symlink(root, link)?;
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(error) => return Err(error.into()),
         }
         Ok(())
     }
@@ -981,6 +992,11 @@ mod tests {
             assert_eq!(
                 fs::read_link(store.prefix_path(&state.id).join("dosdevices/q:")).unwrap(),
                 PathBuf::from(SANDBOX_FILES_ROOT)
+            );
+            assert_eq!(
+                fs::read_link(store.prefix_path(&state.id).join("dosdevices/w:")).unwrap(),
+                PathBuf::from(RUNTIME_DRIVE_ROOT),
+                "Wine finds its shipped Mono and its 32-bit DLLs through a drive"
             );
             assert!(!store.prefix_path(&state.id).join("state.json").exists());
         }
