@@ -72,6 +72,12 @@ use ui::widget::DrawChild;
 
 /// The kind of resource a shared surface's tile publishes.
 pub const KIND: &str = "desktop.peer-surface";
+
+/// A shared surface's tile, as a declared type: whose window it is and how
+/// its stream stands.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop.peer-surface", label = "Shared window")]
+pub struct PeerSurfaceRow;
 /// Move the viewer's pointer over the shared window, in the sender's pixels.
 pub const POINTER_MOTION: &str = "pointer-motion";
 /// Press or release one of the viewer's pointer buttons.
@@ -529,7 +535,7 @@ impl PeerSurface {
     /// its stream stands, and the actions that drive it.
     #[must_use]
     pub fn resource(&self) -> ResourceSpec {
-        ResourceSpec::new(self.resource_id(), KIND, self.title.to_string())
+        tilo_resource::typed_resource::<PeerSurfaceRow>(self.resource_id(), self.title.to_string())
             .with_presentation(ResourcePresentation {
                 detail: Some(bounded(
                     &t_args("peer-window-of", &[("name", (&*self.sharer).into())]),
