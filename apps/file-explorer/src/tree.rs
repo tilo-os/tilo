@@ -42,6 +42,11 @@ const WINDOW_VIEW_VERSION: u32 = 1;
 /// while it keeps them.
 const MAX_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
 
+/// How long a new folder or file waits for the part of the tree it goes into, when nobody
+/// wrote that part yet and the workspace has not answered for it: a page asks the workspace
+/// first, and its answer takes a round trip.
+const PART_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// Files in a page: the workspace's tree, over the page's session.
 pub struct FilesTreeShell;
 
@@ -206,6 +211,12 @@ impl Held {
     /// The whole tree, every chunk read so far.
     fn tree(&self) -> &Tree {
         &self.tree
+    }
+
+    /// Whether the chunk the next node made here goes to is open: one nobody wrote yet is
+    /// on its way until the workspace answers for it.
+    fn next_chunk_here(&self) -> bool {
+        self.chunks.contains_key(&self.tree.chunk_for_new())
     }
 
     /// The chunk `chunk`, when the page holds it.
@@ -459,6 +470,12 @@ pub struct TreeBrowser {
     /// The kind and the name being typed for a new folder or file, while one is: `None`
     /// otherwise.
     naming: Option<(FileNodeKind, ui::LocalState<String>)>,
+    /// A new folder or file named before the part of the tree it goes into arrived, and until
+    /// when it waits for that part: asked for again as the window refreshes.
+    waiting: Option<(FileNodeKind, String, ui::time::Instant)>,
+    /// The waiting node was asked for again and the window has not answered that yet: it is
+    /// asked once at a time, so the asks never pile up into one node each.
+    asked_again: bool,
     /// What the window could not do, said above its rows until the next thing it does.
     notice: Option<Notice>,
     /// The window's bar: where it is, and New folder, New file and Upload.
@@ -522,6 +539,8 @@ impl TreeBrowser {
             opener,
             since: ui::time::now(),
             naming: None,
+            waiting: None,
+            asked_again: false,
             notice: None,
             bar: cx.toolbar(),
             asks,
@@ -568,7 +587,10 @@ impl TreeBrowser {
         }
         for ask in self.asks.take() {
             match ask {
-                Ask::StopNaming => self.naming = None,
+                Ask::StopNaming => {
+                    self.naming = None;
+                    self.waiting = None;
+                }
                 Ask::Open(node) => {
                     if node.is_empty() || node == ROOT_ID {
                         self.show_folder(ROOT_ID);
@@ -577,6 +599,19 @@ impl TreeBrowser {
                     }
                 }
             }
+        }
+        // A node waiting for its part of the tree is asked for again: the window refreshes as
+        // the workspace answers for that part, and the effect founds it then.
+        if let Some((kind, name, _)) = &self.waiting
+            && !self.asked_again
+        {
+            self.asked_again = true;
+            let name = Some(name.clone());
+            self.dispatch.effect(&if *kind == FileNodeKind::Directory {
+                FilesWindowEffect::NewFolder { name }
+            } else {
+                FilesWindowEffect::NewFile { name }
+            });
         }
         // The tree is opened once the workspace delivered it: a window opened before that
         // waits for it rather than showing an empty folder.
@@ -782,6 +817,7 @@ impl TreeBrowser {
     /// Make a folder or an empty text file of `kind` called `name` in the open folder; with
     /// no name, show the row it is named in.
     fn new_node(&mut self, kind: FileNodeKind, name: Option<String>) -> EffectAnswer {
+        self.asked_again = false;
         // The chunk the node goes to is founded here, outside the window's frame.
         if let Some(held) = self.tree.as_mut() {
             held.open_next_chunk();
@@ -864,6 +900,22 @@ impl TreeBrowser {
     fn make(&mut self, kind: FileNodeKind, name: &str) {
         let name = name.trim();
         if name.is_empty() {
+            return;
+        }
+        // The part it goes into is on its way: the node waits for it, rather than failing
+        // because the workspace's answer took longer than the name took to type.
+        let until = self
+            .waiting
+            .take()
+            .map_or_else(|| ui::time::now() + PART_WAIT, |(_, _, until)| until);
+        if self
+            .tree
+            .as_ref()
+            .is_some_and(|held| !held.next_chunk_here())
+            && ui::time::now() < until
+        {
+            self.waiting = Some((kind, name.to_owned(), until));
+            self.notice = None;
             return;
         }
         let title = t(if kind == FileNodeKind::Directory {
@@ -2221,5 +2273,57 @@ mod window_tests {
         )
         .expect("their resource loads");
         assert_eq!(theirs.get_heads(), founded.get_heads());
+    }
+
+    /// The first folder of a fresh workspace goes into a part of the tree nobody wrote yet,
+    /// which a page asks the workspace for: a name entered before the workspace answered waits
+    /// for that part, and makes one folder once it comes, however often the window refreshed
+    /// meanwhile.
+    #[test]
+    fn a_folder_named_before_its_part_arrives_is_made_once_it_does() {
+        use ui::resource::{DocumentId, WorkspaceAnswer};
+        let mut app =
+            ui::prelude::TestApp::<FilesTreeShell>::awaiting_the_workspace(WORKSPACE, FILES_APP)
+                .expect("the window opens");
+        app.flush().unwrap();
+        let tree = DocumentId::parse(&fs_protocol::tree::document_id()).unwrap();
+        app.workspace_answered(tree, WorkspaceAnswer::HoldsNone);
+        // The window takes the answer up over a frame or two, as a page does.
+        for _ in 0..3 {
+            app.flush().unwrap();
+            app.frame();
+        }
+        let texts = app.texts();
+        assert!(
+            texts.iter().any(|text| text == "This folder is empty"),
+            "the empty tree is here: {texts:?}"
+        );
+
+        app.effect(&FilesWindowEffect::NewFolder {
+            name: Some("one".into()),
+        })
+        .expect("New folder answers");
+        for _ in 0..10 {
+            app.flush().unwrap();
+            app.frame();
+        }
+        let texts = app.texts();
+        assert!(
+            !texts.iter().any(|text| text.starts_with("Couldn’t")),
+            "the folder waits for its part rather than failing: {texts:?}"
+        );
+
+        let part = DocumentId::parse(&fs_protocol::tree::chunk_document_id(1)).unwrap();
+        app.workspace_answered(part, WorkspaceAnswer::HoldsNone);
+        for _ in 0..10 {
+            app.flush().unwrap();
+            app.frame();
+        }
+        let texts = app.texts();
+        let made: Vec<&String> = texts
+            .iter()
+            .filter(|text| text.starts_with("one"))
+            .collect();
+        assert_eq!(made, ["one"], "one folder is made: {texts:?}");
     }
 }
