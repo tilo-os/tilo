@@ -2101,6 +2101,10 @@ impl Worker {
     /// sent is asked for when a request names it.
     fn documents(&mut self, state: &WorkspaceState, cluster_id: &str) -> Vec<DocumentRoute> {
         let mut routes: Vec<DocumentRoute> = state.documents.to_vec();
+        // What the serving device lists for this workspace, which this device
+        // may not have been sent: a public workspace sends a device its
+        // documents only once it opens one.
+        let mut served_there: Vec<DocumentRoute> = Vec::new();
         if let Some(held) = self
             .shared
             .link
@@ -2114,8 +2118,9 @@ impl Worker {
                     document: record,
                 };
                 if !routes.contains(&route) {
-                    routes.push(route);
+                    routes.push(route.clone());
                 }
+                served_there.push(route);
             }
         }
         // What people have open on the shared desktop first, then the most
@@ -2144,9 +2149,13 @@ impl Worker {
             // keeps only as retained changes (a window's own document, a sealed one it cannot
             // open) is no data of the app here, and is neither listed nor offered. A part of a
             // chain is always kept: a public workspace sends one to this device when its chain
-            // is asked for, and the listing is what asks.
+            // is asked for, and the listing is what asks. What the serving device lists and
+            // this device was not sent is listed on its word, which the doc comment above
+            // promises: the replica has nothing of it to hold or to read until a request
+            // names it.
             .filter(|route| {
                 is_part(&route.document)
+                    || served_there.contains(route)
                     || state
                         .engine
                         .record(cluster_id, &route.app_id, &route.document)
