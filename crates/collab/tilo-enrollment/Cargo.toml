@@ -22,13 +22,13 @@ iroh.workspace = true
 iroh-base.workspace = true
 libc.workspace = true
 postcard.workspace = true
-runtime-identity = { path = "../../runtime/runtime-identity" }
 serde.workspace = true
 serde_json.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-device-identity = { path = "../tilo-device-identity" }
 fs = { package = "tilo-fs", path = "../../system/fs" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
+tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 tilo-user-identity = { path = "../tilo-user-identity" }

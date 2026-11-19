@@ -144,7 +144,7 @@ pub fn presentation(device: &SigningKey, cert: &DeviceCert) -> Vec<u8> {
         workspace_id: WORKSPACE.to_owned(),
         device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
         proof: device
-            .sign(&runtime_identity::collaboration_join_digest(WORKSPACE).unwrap())
+            .sign(&tilo_identity_client::collaboration_join_digest(WORKSPACE).unwrap())
             .to_bytes()
             .to_vec(),
     }
@@ -208,7 +208,7 @@ pub fn this_computer_with_an_identity(
     )
     .expect("this computer's identity");
     home.env().set("TILO_IDENTITY_ROOT", &root);
-    let person = runtime_identity::list_identities(&identity_dir)
+    let person = tilo_identity::store::list_identities(&identity_dir)
         .expect("this computer's identities")
         .into_iter()
         .next()

@@ -1332,7 +1332,7 @@ pub(super) fn fake_client(broker: FakeBroker) -> (runtime_collab::CollabClient, 
 
 fn host_identity_fixture(
     certificate: Option<Vec<u8>>,
-    replies: Vec<runtime_identity::wire::Response>,
+    replies: Vec<tilo_identity_client::wire::Response>,
 ) -> (tokio::io::DuplexStream, Arc<std::sync::Mutex<Vec<u8>>>) {
     host_identity_fixture_with_keys(certificate, replies, None)
 }
@@ -1342,10 +1342,10 @@ fn host_identity_fixture(
 /// (or as unavailable) without consuming the scripted `replies`.
 fn host_identity_fixture_with_keys(
     certificate: Option<Vec<u8>>,
-    replies: Vec<runtime_identity::wire::Response>,
+    replies: Vec<tilo_identity_client::wire::Response>,
     keys: Option<(u64, Vec<u8>)>,
 ) -> (tokio::io::DuplexStream, Arc<std::sync::Mutex<Vec<u8>>>) {
-    use runtime_identity::wire::Response;
+    use tilo_identity_client::wire::Response;
     let mut responses = vec![Response::Metadata {
         display_name: "Host fixture".into(),
         avatar_color: [1, 2, 3],
@@ -1361,7 +1361,7 @@ fn host_identity_fixture_with_keys(
     let captured = output.clone();
     let (client, mut server) = tokio::io::duplex(64 * 1024);
     tokio::task::spawn_local(async move {
-        let framing = runtime_identity::wire::FRAMING;
+        let framing = tilo_identity_client::wire::FRAMING;
         let mut responses = responses.into_iter();
         loop {
             let Ok(Some(body)) = framing.read_async(&mut server).await else {
@@ -1372,18 +1372,18 @@ fn host_identity_fixture_with_keys(
                 .unwrap()
                 .extend_from_slice(&framing.encode(&body).unwrap());
             let asks_keys = matches!(
-                postcard::from_bytes::<runtime_identity::wire::Request>(&body),
-                Ok(runtime_identity::wire::Request::GroupKeys { .. })
+                postcard::from_bytes::<tilo_identity_client::wire::Request>(&body),
+                Ok(tilo_identity_client::wire::Request::GroupKeys { .. })
             );
             let response = if asks_keys {
                 match &keys {
                     Some((generation, keys)) => Response::GroupKeys {
-                        access: runtime_identity::wire::KeyAccess::Ready,
+                        access: tilo_identity_client::wire::KeyAccess::Ready,
                         generation: *generation,
                         keys: keys.clone(),
                     },
                     None => Response::GroupKeys {
-                        access: runtime_identity::wire::KeyAccess::Unavailable,
+                        access: tilo_identity_client::wire::KeyAccess::Unavailable,
                         generation: 0,
                         keys: Vec::new(),
                     },
@@ -1406,7 +1406,7 @@ fn host_identity_fixture_with_keys(
     (client, output)
 }
 
-fn host_identity_requests(bytes: &[u8]) -> Vec<runtime_identity::wire::Request> {
+fn host_identity_requests(bytes: &[u8]) -> Vec<tilo_identity_client::wire::Request> {
     let mut remaining = bytes;
     let mut requests = Vec::new();
     while !remaining.is_empty() {
@@ -1426,8 +1426,8 @@ fn host_identity_requests(bytes: &[u8]) -> Vec<runtime_identity::wire::Request> 
 #[test]
 #[cfg(unix)]
 fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
-    use runtime_identity::wire::{FRAMING, Request, Response};
     use std::os::fd::AsFd as _;
+    use tilo_identity_client::wire::{FRAMING, Request, Response};
 
     let cluster_id = Uuid::new_v4();
     let workspace = cluster_id.to_string();
@@ -1470,7 +1470,7 @@ fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
             .write_value(
                 &mut host,
                 &Response::GroupKeys {
-                    access: runtime_identity::wire::KeyAccess::Removed,
+                    access: tilo_identity_client::wire::KeyAccess::Removed,
                     generation: 4,
                     keys: Vec::new(),
                 },
@@ -1486,7 +1486,7 @@ fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
             .write_value(&mut host, &Response::Denied("role revoked".into()))
             .unwrap();
     });
-    let identity = runtime_identity::inherited::connect_service(app.as_fd()).unwrap();
+    let identity = tilo_identity_client::inherited::connect_service(app.as_fd()).unwrap();
     let joined = sdk_join_identity_from(identity, cluster_id).unwrap();
     assert_eq!(joined.member_kind, "person");
     let presentation = runtime_collab::CertifiedJoinIdentity::decode(&joined.presentation)
@@ -1501,7 +1501,7 @@ fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
     assert_eq!(signer.device_certificate(), Some(b"fixture".as_slice()));
     assert_eq!(signer.signing_public_key(), [5; 32]);
     let keys = signer.group_keys(&workspace, "notes", "page", 3).unwrap();
-    assert_eq!(keys.access, runtime_identity::wire::KeyAccess::Removed);
+    assert_eq!(keys.access, tilo_identity_client::wire::KeyAccess::Removed);
     assert_eq!(keys.generation, 4);
     let error = signer
         .sign_collaboration_op(&workspace, "notes", "page", b"operation")
@@ -1593,7 +1593,7 @@ tilo_test_env::scenario! {
         let connector = HostSessionConnector::new(move |_| async move {
             let (identity, _) = host_identity_fixture(
                 Some(b"fixture".to_vec()),
-                vec![runtime_identity::wire::Response::Denied(
+                vec![tilo_identity_client::wire::Response::Denied(
                     "fixture device revoked".into(),
                 )],
             );
@@ -1637,9 +1637,9 @@ tilo_test_env::scenario! {
             let (identity, requests) = host_identity_fixture_with_keys(
                 Some(b"fixture certificate".to_vec()),
                 vec![
-                    runtime_identity::wire::Response::Signature(vec![7; 64]),
-                    runtime_identity::wire::Response::Denied("fixture role revoked".into()),
-                    runtime_identity::wire::Response::Signature(vec![8; 64]),
+                    tilo_identity_client::wire::Response::Signature(vec![7; 64]),
+                    tilo_identity_client::wire::Response::Denied("fixture role revoked".into()),
+                    tilo_identity_client::wire::Response::Signature(vec![8; 64]),
                 ],
                 Some((1, keys)),
             );
@@ -1682,10 +1682,10 @@ tilo_test_env::scenario! {
         manager.send(CollabRequest::document_incremental(
             b"fixture document change".to_vec(),
         ));
-        let is_op = |request: &runtime_identity::wire::Request| {
+        let is_op = |request: &tilo_identity_client::wire::Request| {
             matches!(
                 request,
-                runtime_identity::wire::Request::CollaborationOp { .. }
+                tilo_identity_client::wire::Request::CollaborationOp { .. }
             )
         };
         tilo_test_env::wait_until(
@@ -1698,15 +1698,15 @@ tilo_test_env::scenario! {
         );
         let requests = host_identity_requests(&requests.lock().unwrap());
         assert!(
-            matches!(&requests[1], runtime_identity::wire::Request::CollaborationJoin { workspace_id } if workspace_id == &cluster_id.to_string())
+            matches!(&requests[1], tilo_identity_client::wire::Request::CollaborationJoin { workspace_id } if workspace_id == &cluster_id.to_string())
         );
         assert!(
-            matches!(&requests[2], runtime_identity::wire::Request::GroupKeys { app_id, document_id, .. } if app_id == "so.tilo.notes" && document_id == "note"),
+            matches!(&requests[2], tilo_identity_client::wire::Request::GroupKeys { app_id, document_id, .. } if app_id == "so.tilo.notes" && document_id == "note"),
             "a joined route asks for its channel keys before its first edit"
         );
         let op = requests.iter().find(|request| is_op(request)).unwrap();
         match op {
-            runtime_identity::wire::Request::CollaborationOp {
+            tilo_identity_client::wire::Request::CollaborationOp {
                 workspace_id,
                 app_id,
                 document_id,
@@ -2040,7 +2040,7 @@ fn host_join_hold_connector(
         on_worker();
         let (identity, _) = host_identity_fixture(
             Some(b"fixture certificate".to_vec()),
-            vec![runtime_identity::wire::Response::Signature(vec![7; 64])],
+            vec![tilo_identity_client::wire::Response::Signature(vec![7; 64])],
         );
         let (client, server) = tokio::io::duplex(64 * 1024);
         // The broker is another process in production: serve it on its
@@ -2691,14 +2691,14 @@ tilo_test_env::scenario! {
 
 /// Keys for a fresh channel group, as a ready identity service answers.
 #[cfg(unix)]
-fn ready_channel_keys() -> runtime_identity::wire::ChannelKeysReply {
+fn ready_channel_keys() -> tilo_identity_client::wire::ChannelKeysReply {
     let group = key_group::KeyGroup::create(
         collab_types::WorkspaceId::new(),
         key_group::MemberKey::generate("device").unwrap(),
     )
     .unwrap();
-    runtime_identity::wire::ChannelKeysReply {
-        access: runtime_identity::wire::KeyAccess::Ready,
+    tilo_identity_client::wire::ChannelKeysReply {
+        access: tilo_identity_client::wire::KeyAccess::Ready,
         generation: 1,
         keys: Some(group.content_keys().unwrap().to_bytes().unwrap().to_vec()),
     }
@@ -2714,7 +2714,7 @@ struct FixtureIdentity {
                 &str,
                 u64,
             )
-                -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>
+                -> Result<tilo_identity_client::wire::ChannelKeysReply, runtime_portal::NotAvailable>
             + Send
             + Sync,
     >,
@@ -2729,9 +2729,10 @@ impl FixtureIdentity {
         keys: impl Fn(
             &str,
             u64,
-        )
-            -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>
-        + Send
+        ) -> Result<
+            tilo_identity_client::wire::ChannelKeysReply,
+            runtime_portal::NotAvailable,
+        > + Send
         + Sync
         + 'static,
     ) -> Self {
@@ -2788,7 +2789,7 @@ impl SdkCertifiedIdentity for FixtureIdentity {
         app_id: &str,
         _: &str,
         generation: u64,
-    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
+    ) -> Result<tilo_identity_client::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
         self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         (self.keys)(app_id, generation)
     }
@@ -2829,7 +2830,7 @@ include!("held_outbound_tests.rs");
 /// pushed change must still make it ask afterwards.
 #[cfg(unix)]
 #[cfg(test)]
-fn asks_while_waiting(access: Option<runtime_identity::wire::KeyAccess>, on_timer: bool) {
+fn asks_while_waiting(access: Option<tilo_identity_client::wire::KeyAccess>, on_timer: bool) {
     let changes = Arc::new(tokio::sync::watch::Sender::new(0_u64));
     let broker = FakeBroker {
         captures: Arc::new(std::sync::Mutex::new(Captures {
@@ -2846,7 +2847,7 @@ fn asks_while_waiting(access: Option<runtime_identity::wire::KeyAccess>, on_time
             asked: Arc::clone(&asked),
             ..FixtureIdentity::answering(move |_, generation| {
                 access
-                    .map(|access| runtime_identity::wire::ChannelKeysReply {
+                    .map(|access| tilo_identity_client::wire::ChannelKeysReply {
                         access,
                         generation,
                         keys: None,
@@ -2920,8 +2921,8 @@ fn a_member_waiting_for_keys_shows_the_cleartext_the_broker_admitted() {
     let mut manager = certified_manager(
         fd,
         FixtureIdentity::answering(|_, generation| {
-            Ok(runtime_identity::wire::ChannelKeysReply {
-                access: runtime_identity::wire::KeyAccess::Waiting,
+            Ok(tilo_identity_client::wire::ChannelKeysReply {
+                access: tilo_identity_client::wire::KeyAccess::Waiting,
                 generation,
                 keys: None,
             })
@@ -2950,7 +2951,7 @@ fn a_member_waiting_for_keys_shows_the_cleartext_the_broker_admitted() {
 #[test]
 #[cfg(unix)]
 fn a_route_the_channel_service_answered_waits_for_its_push() {
-    use runtime_identity::wire::KeyAccess;
+    use tilo_identity_client::wire::KeyAccess;
     for access in [KeyAccess::Waiting, KeyAccess::Unavailable] {
         asks_while_waiting(Some(access), false);
     }
@@ -2962,7 +2963,7 @@ fn a_route_the_channel_service_answered_waits_for_its_push() {
 #[test]
 #[cfg(unix)]
 fn a_refused_question_or_a_removal_is_still_asked_on_the_timer() {
-    for access in [None, Some(runtime_identity::wire::KeyAccess::Removed)] {
+    for access in [None, Some(tilo_identity_client::wire::KeyAccess::Removed)] {
         asks_while_waiting(access, true);
     }
 }
@@ -3086,8 +3087,8 @@ fn a_slow_identity_service_never_holds_up_incoming_ops() {
                         )
                         .unwrap();
                 }
-                Ok(runtime_identity::wire::ChannelKeysReply {
-                    access: runtime_identity::wire::KeyAccess::Ready,
+                Ok(tilo_identity_client::wire::ChannelKeysReply {
+                    access: tilo_identity_client::wire::KeyAccess::Ready,
                     generation: 1,
                     keys: first.then(|| keys.clone()),
                 })

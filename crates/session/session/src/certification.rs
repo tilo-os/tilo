@@ -906,7 +906,7 @@ mod tests {
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason};
 
     /// The person's identity as first boot provisions it, in files.
-    fn identity() -> (tempfile::TempDir, runtime_identity::SigningIdentity) {
+    fn identity() -> (tempfile::TempDir, tilo_identity::store::SigningIdentity) {
         let root = tempfile::tempdir().expect("temp root");
         let dir = root.path().join("config/tilo/identity");
         let device = tilo_device_identity::IdentityPaths::under(root.path().join("system"));
@@ -929,7 +929,7 @@ mod tests {
     /// A device holding the person's key, or, with `revoked` , one the person removed.
     #[derive(Clone)]
     struct Held {
-        key: Arc<runtime_identity::SigningIdentity>,
+        key: Arc<tilo_identity::store::SigningIdentity>,
         revoked: bool,
     }
 
@@ -1339,7 +1339,7 @@ mod tests {
 
     /// A joined device of `root` 's person, labelled `label` , whose certificate ran out: the shape
     /// this laptop has, certified by the person's root and holding no root of its own.
-    fn joined_device(root: &runtime_identity::SigningIdentity, label: &str) -> Joined {
+    fn joined_device(root: &tilo_identity::store::SigningIdentity, label: &str) -> Joined {
         let dir = tempfile::tempdir().expect("a directory for a joined device");
         let paths = tilo_device_identity::IdentityPaths::under(dir.path().join("system"));
         paths.ensure_directories().expect("the identity tree");
@@ -1380,14 +1380,14 @@ mod tests {
     /// A [`Keys`] holding `root` , and knowing `current` as the certificate the fleet holds for a
     /// device.
     fn held_by(
-        root: Arc<runtime_identity::SigningIdentity>,
+        root: Arc<tilo_identity::store::SigningIdentity>,
         current: Option<DeviceCert>,
     ) -> HeldKeys {
         HeldKeys { root, current }
     }
 
     struct HeldKeys {
-        root: Arc<runtime_identity::SigningIdentity>,
+        root: Arc<tilo_identity::store::SigningIdentity>,
         current: Option<DeviceCert>,
     }
 
@@ -1532,7 +1532,7 @@ mod tests {
     /// A host of the person whose key `root` is, on this machine, serving the web a new device
     /// opens a pairing link on.
     async fn person_host(
-        root: &Arc<runtime_identity::SigningIdentity>,
+        root: &Arc<tilo_identity::store::SigningIdentity>,
         state: &std::path::Path,
     ) -> (tilo_server::daemon::Server, tilo_server::web::WebHandle) {
         let person = root.person();

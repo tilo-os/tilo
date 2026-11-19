@@ -19,7 +19,7 @@ fn package(root: &Path, staging: &Path, name: &str) -> PathBuf {
 fn real_prepared_setup_authenticates_exact_identity_accounts_then_imports_fresh_ownership() {
     let dav_server = crate::setup::account_transfer::dav_readiness::test_server();
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
@@ -97,7 +97,7 @@ fn real_prepared_setup_authenticates_exact_identity_accounts_then_imports_fresh_
     );
     assert_eq!(fs::read(&identity_path).unwrap(), target_before);
     assert_eq!(
-        runtime_identity::load_from_path(identity_path)
+        tilo_identity::store::load_from_path(identity_path)
             .unwrap()
             .group_public_key(),
         identity.public_key()
@@ -107,7 +107,7 @@ fn real_prepared_setup_authenticates_exact_identity_accounts_then_imports_fresh_
         .import_identity(&target.join("identities"), PASSWORD)
         .unwrap();
     assert_eq!(
-        runtime_identity::load_from_path(identity_path)
+        tilo_identity::store::load_from_path(identity_path)
             .unwrap()
             .group_public_key(),
         identity.public_key()
@@ -156,7 +156,7 @@ fn real_prepared_setup_authenticates_exact_identity_accounts_then_imports_fresh_
 fn malformed_manifest_extra_member_wrong_identity_and_selection_refuse_before_adoption() {
     let dav_server = crate::setup::account_transfer::dav_readiness::test_server();
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
@@ -278,7 +278,7 @@ fn authenticated_applications_only_plan_never_authorizes_original_documents() {
         }
     }
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
@@ -455,7 +455,7 @@ fn large_flatpak_inventory(
 #[test]
 fn authenticated_large_manifest_preserves_actual_retained_home_metadata() {
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
@@ -548,7 +548,7 @@ fn authenticated_large_manifest_preserves_actual_retained_home_metadata() {
 fn protected_accounts_require_authenticated_manifest_protocol_before_adoption() {
     let dav_server = crate::setup::account_transfer::dav_readiness::test_server();
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().canonicalize().unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
@@ -648,7 +648,7 @@ fn prepared_setup_authenticates_separate_selected_session_before_any_adoption() 
     use crate::setup::service_sessions::{PreparedSessions, source::SourceGrant};
     use browser_continuity::{Provider, sessions::Service};
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let root = tempfile::tempdir().unwrap();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let staging = root.path().join("staging");
@@ -960,7 +960,7 @@ fn offline_home_crypto_reopen_preserves_exact_selection_and_refuses_split_declar
         );
     }
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
@@ -1054,7 +1054,7 @@ fn pending_home_without_account_consent_refuses_selected_service_sessions() {
     use crate::setup::service_sessions::{PreparedSessions, source::SourceGrant};
     use browser_continuity::{Provider, sessions::Service};
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let root = tempfile::tempdir().unwrap();
     let (mut manifest, _, _, _) = offline_home_fixture(root.path());
     manifest.account_ids.clear();
@@ -1171,7 +1171,7 @@ fn selected_mail_only_reaches_the_target_mail_store_through_the_authenticated_pa
     use crate::account_sources::SourceRoots;
     use crate::account_transfer::{PasswordSealedThunderbird, ThunderbirdSelection};
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let root = tempfile::tempdir().unwrap();
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let root = root.path();

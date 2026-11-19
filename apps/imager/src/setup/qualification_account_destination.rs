@@ -104,7 +104,7 @@ fn mounted(path: &Path) -> bool {
 #[test]
 fn migrated_dav_grant_default_helper_promotes_system_ownership_and_mounts_real_files() {
     let owner = backend::guarded_owner();
-    for forbidden in [runtime_identity::FILE_SECRETS_ENV, "TILO_SECRETS_DIR"] {
+    for forbidden in [tilo_identity::store::FILE_SECRETS_ENV, "TILO_SECRETS_DIR"] {
         assert!(
             std::env::var_os(forbidden).is_none(),
             "file-secret override refused"

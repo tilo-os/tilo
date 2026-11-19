@@ -25,11 +25,11 @@ fn an_edit_held_for_channel_keys_goes_out_when_the_keys_arrive() {
     let answered = Arc::clone(&ready);
     let identity = FixtureIdentity::answering(move |_, generation| {
         let ready = answered.load(std::sync::atomic::Ordering::Acquire);
-        Ok(runtime_identity::wire::ChannelKeysReply {
+        Ok(tilo_identity_client::wire::ChannelKeysReply {
             access: if ready {
-                runtime_identity::wire::KeyAccess::Ready
+                tilo_identity_client::wire::KeyAccess::Ready
             } else {
-                runtime_identity::wire::KeyAccess::Waiting
+                tilo_identity_client::wire::KeyAccess::Waiting
             },
             generation,
             keys: ready.then(|| keys.clone()),

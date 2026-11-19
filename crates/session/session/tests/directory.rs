@@ -749,7 +749,7 @@ fn expired_throwaway_identity(
     .expect("this computer's throwaway identity");
     // The throwaway certificate lasts a day; issue it a day and a half ago,
     // so it has run out.
-    let identity = runtime_identity::load_from_path(identity_dir.join("primary.json"))
+    let identity = tilo_identity::store::load_from_path(identity_dir.join("primary.json"))
         .expect("this computer's identity");
     let held = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("the throwaway certificate");

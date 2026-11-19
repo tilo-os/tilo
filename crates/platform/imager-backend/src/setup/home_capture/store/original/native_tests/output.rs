@@ -439,7 +439,7 @@ pub fn original_pipeline_with_receiver(
         .tempdir()
         .unwrap();
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let staging = scratch.path().join("setup-stage");
     let mut manifest = if paired::guided_story() {
         let parent = PreparedSetupReview::open(

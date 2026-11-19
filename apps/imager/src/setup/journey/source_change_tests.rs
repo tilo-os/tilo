@@ -186,7 +186,7 @@ fn changed_document_has_published_recovery_and_fresh_review_preserves_identity_a
     env.set("HOME", &home);
     env.set("XDG_CONFIG_HOME", home.join(".config"));
     env.set("XDG_STATE_HOME", ownership.path().join("state"));
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let mut app = App::launched(&["--setup"]).unwrap();
     open_preparation(&mut app, &home);
     let accounts = accounts::checkpoint_fixture_for_journey(&root.join("account-fixture"));

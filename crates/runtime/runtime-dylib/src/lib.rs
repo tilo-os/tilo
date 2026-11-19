@@ -19,7 +19,6 @@ pub use os_actions;
 pub use registry_types;
 pub use roxmltree;
 pub use runtime_fs;
-pub use runtime_identity;
 pub use settings_store;
 pub use thumbnail;
 pub use tilo_actions;
@@ -28,6 +27,7 @@ pub use tilo_bluez;
 pub use tilo_doc_codecs;
 pub use tilo_document;
 pub use tilo_files;
+pub use tilo_identity_client;
 pub use tilo_mime;
 pub use tilo_model_client;
 // The SDK reaches both already (the toolkit runs on `tilo-rt`, and the model

@@ -296,7 +296,7 @@ impl Fixture {
     }
     fn create_variant_at(runnable: bool, actual_home: Option<&Path>) -> Self {
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         environment.set("TILO_NATIVE_FLATPAK_FIXTURE_DIAGNOSTICS", "1");
         for tool in [
             "/usr/bin/flatpak",

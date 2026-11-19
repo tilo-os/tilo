@@ -91,6 +91,7 @@ tilo-desktop-policy = { path = "../desktop-policy" }
 # This device's identity: the certificate it presents and the key it signs with, from the store its
 # host keeps them in.
 tilo-identity = { path = "../../runtime/tilo-identity" }
+tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 # The action broker's half every host runs: what a step is taken by, the step service, the route.
 tilo-broker-core = { path = "../../collab/broker-core" }
 tilo-desktop-surface = { path = "../desktop-surface" }
@@ -340,7 +341,6 @@ tilo-window-share = { path = "../window-share" }
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking", "json"] }
 # The identity record the launcher bound and the person's own: the directories
 # whose changes a worker follows.
-runtime-identity = { path = "../../runtime/runtime-identity" }
 os-actions = { path = "../../system/os-actions" }
 # The person's `network-usage` section, which this device's traffic totals are
 # counted into, and the readings its verb takes.

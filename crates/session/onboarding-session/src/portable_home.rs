@@ -230,8 +230,8 @@ pub mod fixtures {
             tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
-        runtime_identity::set_active_identity(&identity, "primary").unwrap();
-        let signer = runtime_identity::load_from_path(identity.join("primary.json")).unwrap();
+        tilo_identity::store::set_active_identity(&identity, "primary").unwrap();
+        let signer = tilo_identity::store::load_from_path(identity.join("primary.json")).unwrap();
         let declaration = PortableHome {
             schema: 1,
             setup_binding: "installed-operation".into(),
@@ -264,7 +264,7 @@ mod tests {
         phase authenticated_password_handoff_is_bound_to_exact_setup_and_defer_clears_it;
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+            env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
             let (home, identity, declaration) = fixture();
             let digest = Prepared::open(home.path()).unwrap().digest();
             let mut pending = Pending::open(home.path().to_path_buf(), identity, declaration).unwrap();
@@ -302,7 +302,7 @@ mod tests {
         phase declared_missing_home_stays_pending_and_explicit_defer_is_not_completion;
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+            env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
             let (home, identity, declaration) = fixture();
             let before = std::fs::read(identity.join("primary.json")).unwrap();
             let setup = std::fs::read(
@@ -361,7 +361,7 @@ mod tests {
         phase declaration_receipt_refuses_wrong_binding_and_unsafe_defer_destination;
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+            env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
             let (home, identity, declaration) = fixture();
             let mut wrong = declaration.clone();
             wrong.setup_binding = "unrelated-operation".into();

@@ -32,7 +32,7 @@ The in-source comment says it outright: *"clearly NOT useful for signing."*
 Any identity minted through the UI ceremony produces signatures that do not verify against its own
 recorded public key.
 
-Compounding: `crates/runtime/runtime-identity/src/lib.rs:270-297` detects the pubkey/secret
+Compounding: `crates/runtime/tilo-identity/src/store/unix.rs` detects the pubkey/secret
 mismatch and **deliberately does not fail** — the only signal is a
 `#[cfg(debug_assertions)] eprintln!`. In a release build the failure is silent.
 
@@ -41,17 +41,17 @@ mismatch and **deliberately does not fail** — the only signal is a
 ceremony-minted identities are not, with the same on-disk format and no way to tell them apart.
 
 **Fix direction:** add the key-extraction helper to `threshold-identity`, delete the placeholder
-branch, and make the mismatch fatal in `runtime-identity` rather than advisory.
+branch, and make the mismatch fatal in the identity store rather than advisory.
 
 **Resolved.** `ThresholdIdentity` holds the single-device key in dalek form and exports its seed;
 the ceremony persists that seed, and `IdentityRecord::into_threshold_identity` refuses a record
-whose secret does not derive its recorded public key. The mismatch is fatal in `runtime-identity`
+whose secret does not derive its recorded public key. The mismatch is fatal in the identity store
 in every build profile. Firstboot now goes through the same encoder, so there is one writer of
 the format. Held by
 `crates/collab/tilo-identity-ceremony/src/lib.rs::tests::identity_record_serialization_and_signing_round_trips`
 (phase `ceremony_minted_record_signs_for_its_own_recorded_public_key`)
 and
-`crates/runtime/runtime-identity/src/unix.rs::tests::a_local_secret_must_derive_the_recorded_key_to_sign`
+`crates/runtime/tilo-identity/src/store/unix.rs::tests::a_local_secret_must_derive_the_recorded_key_to_sign`
 (phase `secret_that_does_not_derive_the_recorded_pubkey_is_refused`).
 The `identity_flow` widget cited above no longer exists; the record encoder is
 `crates/collab/tilo-identity-ceremony/src/lib.rs` (`IdentityRecord::into_threshold_identity`).
@@ -1145,26 +1145,26 @@ launch.
 ## P2-9 — The per-launch identity broker loads the root secret and never uses it
 
 `crates/packaging/launcher/src/run.rs`, `start_identity_broker`. Every authored launch loads the
-selected record *with* its secret (`runtime_identity::load_for_launch`, a Secret Service round
+selected record *with* its secret (`load_for_launch`, a Secret Service round
 trip or a read of the fallback file) into a broker thread that refuses `sign` for every record
 it can be given (`SigningIdentity::signs_with_root_key` is true whenever `device_certificate` is
 `None`, which every launcher-built identity is). The secret sits in launcher memory for the app's
 lifetime for nothing; app signatures come from the identity service.
 
-**Fix direction:** serve fd 15 from `runtime_identity::load_metadata_from_path`, which validates
+**Fix direction:** serve fd 15 from `tilo_identity::store::load_metadata_from_path`, which validates
 the record without contacting the secret provider.
 
 **Resolved in source.** `start_identity_broker` reads a store record through
-`runtime_identity::load_metadata_for_launch` (an explicit debug record through
-`load_metadata_from_path`) and serves it with `runtime_identity::broker::serve_metadata`, which
+`load_metadata_for_launch` (an explicit debug record through
+`load_metadata_from_path`) and serves it with `tilo_identity::broker::serve_metadata`, which
 answers metadata and refuses every `sign` with the same bytes. Neither contacts the secret
 provider; an unsecured store record still fails the launch, as does one naming a provider this
 session cannot resolve. The secret-loading `load_for_launch`, the identity-backed `broker::serve`
 and its dead local-signing arm are gone. Held by
 `crates/packaging/launcher/src/run.rs::identity_resolution_tests::a_launch_never_reads_the_identity_secret`
 (the secret is deleted from its provider before the launch),
-`crates/runtime/runtime-identity/src/unix.rs::tests::a_launch_reads_public_fields_without_the_secret_provider`
-and `crates/runtime/runtime-identity/src/broker.rs::tests::broker_answers_metadata_and_refuses_every_sign_over_pinned_bounded_frames`.
+`crates/runtime/tilo-identity/src/store/unix.rs::tests::a_launch_reads_public_fields_without_the_secret_provider`
+and `crates/runtime/tilo-identity/src/broker.rs::tests::broker_answers_metadata_and_refuses_every_sign_over_pinned_bounded_frames`.
 
 ---
 

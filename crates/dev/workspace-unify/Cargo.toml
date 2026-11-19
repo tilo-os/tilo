@@ -964,7 +964,6 @@ doc = false
 "runtime-collab" = { path = "../../../crates/runtime/runtime-collab", default-features = false, features = ["client", "default", "settings-host"] }
 "runtime-fs" = { path = "../../../crates/runtime/runtime-fs", default-features = false, features = [] }
 "runtime-fs-fuse" = { path = "../../../crates/runtime/runtime-fs-fuse", default-features = false, features = [] }
-"runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
 "runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = [] }
 "runtime-update" = { path = "../../../crates/packaging/runtime-update", default-features = false, features = [] }
 "rusqlite-0_41_1" = { package = "rusqlite", version = "^0.41.1", default-features = false, features = ["bundled", "hooks", "modern_sqlite", "wal"] }
@@ -2334,7 +2333,6 @@ doc = false
 "runtime-bundle" = { path = "../../../crates/packaging/runtime-bundle", default-features = false, features = [] }
 "runtime-collab" = { path = "../../../crates/runtime/runtime-collab", default-features = false, features = ["client", "default", "settings-host"] }
 "runtime-fs" = { path = "../../../crates/runtime/runtime-fs", default-features = false, features = [] }
-"runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
 "runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = [] }
 "rusqlite-0_41_1" = { package = "rusqlite", version = "^0.41.1", default-features = false, features = ["bundled", "hooks", "modern_sqlite", "wal"] }
 "russh-0_65_1" = { package = "russh", version = "^0.65.1", default-features = false, features = ["flate2", "ring"] }
@@ -3609,7 +3607,6 @@ doc = false
 "runtime-collab" = { path = "../../../crates/runtime/runtime-collab", default-features = false, features = ["client", "default", "settings-host"] }
 "runtime-fs" = { path = "../../../crates/runtime/runtime-fs", default-features = false, features = [] }
 "runtime-fs-fuse" = { path = "../../../crates/runtime/runtime-fs-fuse", default-features = false, features = [] }
-"runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
 "runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = [] }
 "runtime-update" = { path = "../../../crates/packaging/runtime-update", default-features = false, features = [] }
 "rusqlite-0_41_1" = { package = "rusqlite", version = "^0.41.1", default-features = false, features = ["bundled", "hooks", "modern_sqlite", "wal"] }
@@ -4990,7 +4987,6 @@ doc = false
 "runtime-bundle" = { path = "../../../crates/packaging/runtime-bundle", default-features = false, features = [] }
 "runtime-collab" = { path = "../../../crates/runtime/runtime-collab", default-features = false, features = ["client", "default", "settings-host"] }
 "runtime-fs" = { path = "../../../crates/runtime/runtime-fs", default-features = false, features = [] }
-"runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
 "runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = [] }
 "rusqlite-0_41_1" = { package = "rusqlite", version = "^0.41.1", default-features = false, features = ["bundled", "hooks", "modern_sqlite", "wal"] }
 "russh-0_65_1" = { package = "russh", version = "^0.65.1", default-features = false, features = ["flate2", "ring"] }

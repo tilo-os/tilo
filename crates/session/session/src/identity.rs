@@ -34,7 +34,7 @@ struct Present {
     identity: Option<LocalIdentity>,
     /// The public avatar bound to their root key: it is read from their identity record with the
     /// identity, on the worker, and an avatar a frame paints only clones pixels.
-    photo: Option<([u8; 32], runtime_identity::ProfilePhoto)>,
+    photo: Option<([u8; 32], tilo_identity_client::ProfilePhoto)>,
 }
 
 /// [`Present`], kept current by a worker.
@@ -45,14 +45,14 @@ impl LocalIdentitySource for WatchedLocalIdentity {
         self.0.get().identity.clone()
     }
 
-    fn public_photo(&self) -> Option<([u8; 32], runtime_identity::ProfilePhoto)> {
+    fn public_photo(&self) -> Option<([u8; 32], tilo_identity_client::ProfilePhoto)> {
         self.0.get().photo.clone()
     }
 }
 
 /// The directory the person's identity record lives in.
 fn identity_directories() -> Vec<PathBuf> {
-    runtime_identity::identity_dir_from_env()
+    tilo_identity::store::identity_dir_from_env()
         .ok()
         .into_iter()
         .collect()
@@ -61,19 +61,19 @@ fn identity_directories() -> Vec<PathBuf> {
 /// The person's public identity and photo, read from their active record: this session hosts the
 /// identity service, so it reads the directory rather than asking that service.
 fn read_present() -> Present {
-    let Some(directory) = runtime_identity::identity_dir_from_env().ok() else {
+    let Some(directory) = tilo_identity::store::identity_dir_from_env().ok() else {
         return Present {
             identity: None,
             photo: None,
         };
     };
-    let Some(record) = runtime_identity::resolve_active_identity(&directory) else {
+    let Some(record) = tilo_identity_client::resolve_active_identity(&directory) else {
         return Present {
             identity: None,
             photo: None,
         };
     };
-    let Ok(metadata) = runtime_identity::load_metadata_from_path(&record) else {
+    let Ok(metadata) = tilo_identity_client::load_metadata_from_path(&record) else {
         return Present {
             identity: None,
             photo: None,
@@ -171,18 +171,18 @@ pub(crate) fn person_in(workspace: &str, person: &str) -> String {
 /// Name this person's identity `name` : their active identity record takes it, so their own desktop
 /// and the people they work with see it from now on. Says what stopped it when it could not.
 pub(crate) fn rename_to(name: &str) -> Result<(), String> {
-    let dir = runtime_identity::identity_dir_from_env().map_err(|error| error.to_string())?;
-    let record = runtime_identity::resolve_active_identity(&dir)
+    let dir = tilo_identity::store::identity_dir_from_env().map_err(|error| error.to_string())?;
+    let record = tilo_identity_client::resolve_active_identity(&dir)
         .ok_or_else(|| "no active identity".to_owned())?;
     let id = record
         .file_stem()
         .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| "identity record without an id".to_owned())?
         .to_owned();
-    let colour = runtime_identity::load_metadata_from_path(&record)
+    let colour = tilo_identity_client::load_metadata_from_path(&record)
         .map(|metadata| metadata.avatar_color)
         .map_err(|error| error.to_string())?;
-    runtime_identity::update_identity_profile(&dir, &id, name, colour)
+    tilo_identity::store::update_identity_profile(&dir, &id, name, colour)
         .map(drop)
         .map_err(|error| error.to_string())
 }

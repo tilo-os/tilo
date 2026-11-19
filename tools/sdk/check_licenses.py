@@ -14,7 +14,7 @@ TARGETS = (
     "wasm32-unknown-unknown",
 )
 HOST_ONLY = frozenset((
-    "runtime-fs", "runtime-identity", "tilo-fs", "tilo-model-gateway",
+    "runtime-fs", "tilo-fs", "tilo-model-gateway",
     "tilo-identity", "account-credentials", "accounts", "local-model-service",
 ))
 

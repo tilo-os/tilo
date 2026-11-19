@@ -207,7 +207,7 @@ fn browser(
             device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
             proof: key
                 .sign(
-                    &runtime_identity::collaboration_join_digest(workspace)
+                    &tilo_identity_client::collaboration_join_digest(workspace)
                         .expect("a workspace's join digest"),
                 )
                 .to_bytes()

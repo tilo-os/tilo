@@ -738,10 +738,10 @@ pub struct Avatar {
     placeholder: bool,
 }
 
-// The photo type comes from runtime-identity, which only `local-daemons`
+// The photo type comes from tilo-identity-client, which only `local-daemons`
 // builds link; portable builds (the browser's) show initials or an image.
 #[cfg(feature = "local-daemons")]
-pub(crate) fn profile_image(photo: &runtime_identity::ProfilePhoto) -> peniko::ImageData {
+pub(crate) fn profile_image(photo: &tilo_identity_client::ProfilePhoto) -> peniko::ImageData {
     peniko::ImageData {
         data: peniko::Blob::new(std::sync::Arc::new(photo.rgba().to_vec())),
         format: peniko::ImageFormat::Rgba8,
@@ -824,7 +824,7 @@ impl Avatar {
 
     #[cfg(feature = "local-daemons")]
     #[must_use]
-    pub fn with_profile_photo(self, photo: &runtime_identity::ProfilePhoto) -> Self {
+    pub fn with_profile_photo(self, photo: &tilo_identity_client::ProfilePhoto) -> Self {
         self.with_image(profile_image(photo))
     }
 
@@ -1186,7 +1186,7 @@ mod tests {
     fn bound_name_refresh_keeps_photo_and_adjacent_input_selection() {
         use crate::widget::{Row, TextInput};
         let name = crate::LocalState::new("Ada".to_owned());
-        let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
+        let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
         let avatar = Avatar::person("Ada", "ada")
             .with_name_state(&name)
             .with_profile_photo(&photo)
@@ -1239,7 +1239,7 @@ mod tests {
     #[cfg(feature = "local-daemons")]
     #[test]
     fn explicit_canonical_photo_is_drawn_by_shared_avatar() {
-        let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
+        let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
         let mut avatar = Avatar::person("Ada", "ada").with_profile_photo(&photo);
         let mut tree = TaffyTree::new();
         let mut map = std::collections::HashMap::new();

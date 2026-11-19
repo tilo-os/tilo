@@ -1,5 +1,5 @@
-use crate::{NotAvailable, wire};
 use std::io::{Read, Write};
+use tilo_identity_client::{NotAvailable, wire};
 
 pub fn read_frame<T: serde::de::DeserializeOwned>(
     stream: &mut (impl Read + Write),

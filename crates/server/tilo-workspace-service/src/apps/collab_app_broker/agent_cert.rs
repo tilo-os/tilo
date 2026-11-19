@@ -72,7 +72,7 @@ pub(super) fn verify_agent_join(
             .ok_or("the agent's workspace is not a workspace id")?,
         now_ns,
     )?;
-    let join = runtime_identity::collaboration_join_digest(&route.cluster_id)
+    let join = tilo_identity_client::collaboration_join_digest(&route.cluster_id)
         .map_err(|_| "the agent's join cannot be encoded".to_string())?;
     cert.verify_agent_signature(&join, &presentation.proof)
         .map_err(|_| "the agent's join proof is not its key's".to_string())?;

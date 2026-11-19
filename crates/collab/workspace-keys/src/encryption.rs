@@ -2145,7 +2145,7 @@ impl tilo_identity::sources::GroupKeySource for KeyProvider {
         workspace: WorkspaceId,
         known_generation: u64,
     ) -> Option<Result<tilo_identity::sources::GroupKeys, String>> {
-        use runtime_identity::wire::KeyAccess as Wire;
+        use tilo_identity_client::wire::KeyAccess as Wire;
         let groups = self.get()?;
         let (access, generation) = groups.access(workspace);
         // A caller holding no keys asks with generation 0, which is also

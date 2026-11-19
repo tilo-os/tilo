@@ -178,7 +178,7 @@ pub fn find(paths: &IdentityPaths, accounts: &[Account]) -> io::Result<Person> {
 /// device's, or a device with no binding yet, is `Ok(false)`.
 pub fn ensure_proof(
     identity_dir: &Path,
-    identity: &runtime_identity::SigningIdentity,
+    identity: &crate::store::SigningIdentity,
     paths: &IdentityPaths,
     uid: u32,
 ) -> io::Result<bool> {

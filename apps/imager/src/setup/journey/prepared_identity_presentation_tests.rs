@@ -35,7 +35,7 @@ fn negotiated_real_broker_photo_reaches_default_shared_avatar_paint() {
     let system = temp.path().join("system");
     env.set("XDG_CONFIG_HOME", &config)
         .set("TILO_IDENTITY_ROOT", &system)
-        .set(runtime_identity::FILE_SECRETS_ENV, "1");
+        .set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let identity = config.join("tilo/identity");
     let paths = tilo_device_identity::IdentityPaths::under(system);
     tilo_identity::provisioning::ensure_collaboration_identity(
@@ -44,8 +44,8 @@ fn negotiated_real_broker_photo_reaches_default_shared_avatar_paint() {
         IdentityStorage::Files,
     )
     .unwrap();
-    let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
-    let metadata = runtime_identity::update_identity_presentation(
+    let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
+    let metadata = tilo_identity::store::update_identity_presentation(
         &identity,
         "primary",
         "Ada",
@@ -76,21 +76,21 @@ fn negotiated_real_broker_photo_reaches_default_shared_avatar_paint() {
     client
         .set_write_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();
-    let handshake = runtime_identity::wire::PresentationHandshake {
-        handshake: runtime_identity::wire::Handshake {
+    let handshake = tilo_identity_client::wire::PresentationHandshake {
+        handshake: tilo_identity_client::wire::Handshake {
             workspace_id: workspace.to_string(),
             app_id: "so.tilo.imager".into(),
             surface: None,
         },
-        presentation_version: runtime_identity::wire::PRESENTATION_VERSION,
+        presentation_version: tilo_identity_client::wire::PRESENTATION_VERSION,
     };
-    runtime_identity::wire::HANDSHAKE_FRAMING
+    tilo_identity_client::wire::HANDSHAKE_FRAMING
         .write(&mut client, &serde_json::to_vec(&handshake).unwrap())
         .unwrap();
     env.set("TILO_SVC_IDENTITY_FD", client.as_raw_fd().to_string());
     // No injected SDK identity source or explicit image: the production
     // painter obtains presentation from the actual inherited service.
-    let delivered = runtime_identity::load_bound_metadata().unwrap();
+    let delivered = tilo_identity_client::load_bound_metadata().unwrap();
     assert_eq!(delivered.group_public_key, metadata.group_public_key);
     assert_eq!(delivered.profile_photo, Some(photo));
     let theme = ui::Theme::dark();

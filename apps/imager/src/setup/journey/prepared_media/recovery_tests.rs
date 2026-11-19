@@ -10,7 +10,7 @@ fn prepared_stage_rechecks_recovery_ownership_at_actual_write_admission() {
     }
     crate::setup::test_support::isolated("recovery-prepared-write-admission", || {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         // Both trees live on the owned GPT filesystem, not the builder's tmpfs.
         // Distinct sibling paths must not imply independent physical recovery.
         let temp = native_retained::journey_directory();

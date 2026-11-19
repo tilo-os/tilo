@@ -1146,7 +1146,7 @@ fn channels(root: &Path) -> BrokerChannels {
 /// This device's collaboration identity, provisioned in `storage` on first
 /// start; answers its device key.
 fn provision_device(storage: IdentityStorage) -> io::Result<[u8; 32]> {
-    let identity_dir = runtime_identity::identity_dir_from_env()?;
+    let identity_dir = tilo_identity::store::identity_dir_from_env()?;
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
     tilo_identity::provisioning::ensure_foreign_collaboration_identity(
         &identity_dir,
@@ -1170,7 +1170,7 @@ fn admit_device(owner_uid: u32, stage: &mut dyn FnMut(&str)) -> io::Result<[u8; 
         ));
     }
     stage("verifying the existing collaboration identity");
-    let identity_dir = runtime_identity::identity_dir_from_env()?;
+    let identity_dir = tilo_identity::store::identity_dir_from_env()?;
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
     tilo_identity::provisioning::verify_collaboration_identity(
         &identity_dir,

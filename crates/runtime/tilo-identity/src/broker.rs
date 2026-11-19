@@ -14,9 +14,9 @@ use std::time::Duration;
 use collab_types::DocumentMutation;
 use collab_types::{Ed25519PublicKey, SignedOp, document_artifact_id, document_attestation_id};
 use ed25519_dalek::Signer;
-use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Request, Response};
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_clock::unix_now;
+use tilo_identity_client::wire::{FRAMING, HANDSHAKE_FRAMING, Request, Response};
 use wire_frame::FrameError;
 
 pub use crate::sources::{GroupKeySource, GroupKeys, PersonResourceTypes, WorkspaceMembership};
@@ -196,13 +196,14 @@ fn serve(
         tracing::warn!(%error, "cannot configure blocking service connection");
         return;
     }
-    let Ok(negotiated) = read_frame::<runtime_identity::wire::PresentationHandshake>(&mut stream)
+    let Ok(negotiated) =
+        read_frame::<tilo_identity_client::wire::PresentationHandshake>(&mut stream)
     else {
         return;
     };
     if !matches!(
         negotiated.presentation_version,
-        0 | runtime_identity::wire::PRESENTATION_VERSION
+        0 | tilo_identity_client::wire::PRESENTATION_VERSION
     ) {
         let _ = write_action_frame(
             &mut stream,
@@ -287,7 +288,7 @@ fn metadata_response(
         Ok(profile) => profile,
         Err(reason) => return Response::Error(reason),
     };
-    let record = match runtime_identity::load_metadata_from_path(&profile.record_path) {
+    let record = match tilo_identity_client::load_metadata_from_path(&profile.record_path) {
         Ok(record) => record,
         Err(error) => return Response::Error(error.to_string()),
     };
@@ -398,7 +399,7 @@ fn sign_collaboration_join(
         return Response::Denied("collaboration join requested for a different workspace".into());
     }
     match require_trusted_current_device(&profile) {
-        Ok((device, _)) => match runtime_identity::collaboration_join_digest(workspace_id) {
+        Ok((device, _)) => match tilo_identity_client::collaboration_join_digest(workspace_id) {
             Ok(digest) => {
                 match tilo_user_identity::StatementSigner::sign_digest(&device, &digest) {
                     Ok(signature) => Response::Signature(signature.to_vec()),
@@ -653,7 +654,7 @@ fn group_keys(
     };
     match groups.access(workspace, known_generation) {
         None => Response::GroupKeys {
-            access: runtime_identity::wire::KeyAccess::Unavailable,
+            access: tilo_identity_client::wire::KeyAccess::Unavailable,
             generation: 0,
             keys: Vec::new(),
         },
@@ -772,7 +773,7 @@ fn write_action_frame<T: serde::Serialize>(stream: &mut UnixStream, value: &T) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_identity::wire::Handshake;
+    use tilo_identity_client::wire::Handshake;
 
     /// What the client's launch binds it to, for an app that keeps none of
     /// the person's records.
@@ -1404,8 +1405,8 @@ params = []
             let identity_dir = xdg.join("tilo/identity");
             let paths = tilo_device_identity::IdentityPaths::under(system_root);
             ensure_collaboration_identity(&identity_dir, &paths).unwrap();
-            let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
-            runtime_identity::update_identity_photo(&identity_dir, "primary", Some(photo.clone()))
+            let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
+            crate::store::update_identity_photo(&identity_dir, "primary", Some(photo.clone()))
                 .unwrap();
             let workspace = WorkspaceId::new();
             let profile = crate::registry::identity_for_workspace(&workspace.to_string())
@@ -1434,7 +1435,7 @@ params = []
                     .unwrap();
                 write_frame(
                     &mut client,
-                    &runtime_identity::wire::PresentationHandshake {
+                    &tilo_identity_client::wire::PresentationHandshake {
                         handshake: Handshake {
                             workspace_id: workspace.to_string(),
                             app_id: "so.tilo.notes".into(),
@@ -1444,9 +1445,9 @@ params = []
                     },
                 )
                 .unwrap();
-                runtime_identity::BrokerSigningIdentity::from_connected_io(client)
+                tilo_identity_client::BrokerSigningIdentity::from_connected_io(client)
             };
-            let client = connect(runtime_identity::wire::PRESENTATION_VERSION).unwrap();
+            let client = connect(tilo_identity_client::wire::PRESENTATION_VERSION).unwrap();
             assert_eq!(client.metadata().profile_photo(), Some(&photo));
             assert_eq!(
                 client.metadata().group_public_key(),
@@ -1474,10 +1475,10 @@ params = []
                 0o600,
             )
             .unwrap();
-            assert!(connect(runtime_identity::wire::PRESENTATION_VERSION).is_err());
+            assert!(connect(tilo_identity_client::wire::PRESENTATION_VERSION).is_err());
             for invalid in [
                 serde_json::json!({"width":0,"height":1,"rgba":[0,0,0,255]}),
-                serde_json::json!({"width":128,"height":128,"rgba":vec![0; runtime_identity::MAX_PHOTO_BYTES + 1]}),
+                serde_json::json!({"width":128,"height":128,"rgba":vec![0; tilo_identity_client::MAX_PHOTO_BYTES + 1]}),
             ] {
                 let mut record: serde_json::Value = serde_json::from_slice(&original).unwrap();
                 record["profile_photo"] = invalid;
@@ -1487,12 +1488,12 @@ params = []
                     0o600,
                 )
                 .unwrap();
-                assert!(connect(runtime_identity::wire::PRESENTATION_VERSION).is_err());
+                assert!(connect(tilo_identity_client::wire::PRESENTATION_VERSION).is_err());
             }
             tilo_files::native::atomic::write_with_mode(&profile.record_path, &original, 0o600)
                 .unwrap();
             assert_eq!(
-                connect(runtime_identity::wire::PRESENTATION_VERSION)
+                connect(tilo_identity_client::wire::PRESENTATION_VERSION)
                     .unwrap()
                     .metadata()
                     .profile_photo(),
@@ -1545,7 +1546,7 @@ params = []
             let fd = client.into_raw_fd();
             env.set(service_var, fd.to_string());
 
-            let identity = runtime_identity::load().expect("broker metadata");
+            let identity = tilo_identity_client::load().expect("broker metadata");
             assert!(
                 !identity
                     .metadata()
@@ -1592,7 +1593,7 @@ params = []
             VerifyingKey::from_bytes(&identity.metadata().signing_public_key())
                 .expect("device key")
                 .verify(
-                    &runtime_identity::collaboration_join_digest(&workspace_id).unwrap(),
+                    &tilo_identity_client::collaboration_join_digest(&workspace_id).unwrap(),
                     &Signature::from_bytes(&join_proof),
                 )
                 .expect("workspace-scoped device proof");
@@ -1641,7 +1642,7 @@ params = []
             VerifyingKey::from_bytes(&identity.metadata().signing_public_key())
                 .expect("device key")
                 .verify(
-                    &runtime_identity::collaboration_join_digest(&own_cluster).unwrap(),
+                    &tilo_identity_client::collaboration_join_digest(&own_cluster).unwrap(),
                     &Signature::from_bytes(&own_proof),
                 )
                 .expect("a proof for the person's store");
@@ -1764,7 +1765,7 @@ params = []
             _known_generation: u64,
         ) -> Option<Result<GroupKeys, String>> {
             Some(Ok((
-                runtime_identity::wire::KeyAccess::Ready,
+                tilo_identity_client::wire::KeyAccess::Ready,
                 1,
                 vec![1, 2, 3],
             )))

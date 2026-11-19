@@ -66,7 +66,7 @@ impl FleetRenewal {
     /// and for a session with no identity at all.
     #[must_use]
     pub(crate) fn for_joined_device(fabric: Option<SharedLink>) -> Option<Self> {
-        let identity_dir = runtime_identity::identity_dir_from_env().ok()?;
+        let identity_dir = tilo_identity::store::identity_dir_from_env().ok()?;
         let paths = tilo_identity::provisioning::collaboration_identity_paths();
         if !tilo_device_identity::persist::joined_device_is_enrolled(&paths).ok()? {
             return None;

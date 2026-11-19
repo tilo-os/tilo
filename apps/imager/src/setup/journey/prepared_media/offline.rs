@@ -974,7 +974,7 @@ mod tests {
     #[test]
     fn home_contained_application_consent_does_not_require_a_system_carrier() {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let root = tempfile::tempdir().unwrap();
         let _facts = crate::setup::journey::main_story_tests::source_fixture(root.path());
         let (prepared, runner) = selected_preparation(root.path(), false);
@@ -1113,7 +1113,7 @@ mod tests {
     #[test]
     fn canonical_pending_reseal_preserves_home_apps_browser_accounts_and_original_ciphertext() {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let supplied = std::env::var_os("TILO_INSTALLER_NATIVE_SOURCE_STORE")
             .expect("explicit owned GPT-backed source fixture root is required");
         let supplied = Path::new(&supplied);

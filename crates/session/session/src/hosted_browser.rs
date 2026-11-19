@@ -1155,17 +1155,17 @@ fn take_identity(material: &Material) -> Result<(), String> {
     // over their public key, and every part of the session that presents this device's person in a
     // workspace reads that person from this login's identity records. The record carries no root:
     // what signs here is the device certificate the server issued.
-    let directory = runtime_identity::identity_dir_from_env()
+    let directory = tilo_identity::store::identity_dir_from_env()
         .map_err(|error| format!("this device's identity directory is not known: {error}"))?;
-    let record = runtime_identity::public_member_record(
-        runtime_identity::UNNAMED_DISPLAY_NAME,
+    let record = tilo_identity::store::public_member_record(
+        tilo_identity::store::UNNAMED_DISPLAY_NAME,
         ENVIRONMENT_AVATAR,
         material.user_public_key,
     )
     .map_err(|error| format!("the person's record was not written: {error}"))?;
     let user = hex::encode(material.user_public_key);
     let id = format!("identity-{}", user.get(..55).unwrap_or(&user));
-    if let Err(error) = runtime_identity::import_identity(&directory, &id, &record)
+    if let Err(error) = tilo_identity::store::import_identity(&directory, &id, &record)
         && error.kind() != io::ErrorKind::AlreadyExists
     {
         return Err(format!("the person's record was not taken: {error}"));

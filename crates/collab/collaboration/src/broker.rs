@@ -2078,7 +2078,7 @@ pub type EndpointChannelKeys = std::sync::Arc<
             &str,
             u64,
         )
-            -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>
+            -> Result<tilo_identity_client::wire::ChannelKeysReply, runtime_portal::NotAvailable>
         + Send
         + Sync,
 >;
@@ -2145,7 +2145,7 @@ trait SdkCertifiedIdentity: Send + Sync {
         app_id: &str,
         document_id: &str,
         known_generation: u64,
-    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>;
+    ) -> Result<tilo_identity_client::wire::ChannelKeysReply, runtime_portal::NotAvailable>;
     fn device_certificate(&self) -> Option<&[u8]>;
     fn signing_public_key(&self) -> [u8; 32];
     fn sign_collaboration_join(
@@ -2161,15 +2161,15 @@ trait SdkCertifiedIdentity: Send + Sync {
     ) -> Result<[u8; 64], runtime_portal::NotAvailable>;
 }
 
-impl SdkCertifiedIdentity for std::sync::Arc<runtime_identity::BrokerSigningIdentity> {
+impl SdkCertifiedIdentity for std::sync::Arc<tilo_identity_client::BrokerSigningIdentity> {
     fn group_keys(
         &self,
         workspace_id: &str,
         app_id: &str,
         document_id: &str,
         known_generation: u64,
-    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
-        runtime_identity::BrokerSigningIdentity::group_keys(
+    ) -> Result<tilo_identity_client::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
+        tilo_identity_client::BrokerSigningIdentity::group_keys(
             self.as_ref(),
             workspace_id,
             app_id,
@@ -2187,7 +2187,7 @@ impl SdkCertifiedIdentity for std::sync::Arc<runtime_identity::BrokerSigningIden
         &self,
         workspace_id: &str,
     ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        runtime_identity::BrokerSigningIdentity::sign_collaboration_join(
+        tilo_identity_client::BrokerSigningIdentity::sign_collaboration_join(
             self.as_ref(),
             workspace_id,
         )
@@ -2199,7 +2199,7 @@ impl SdkCertifiedIdentity for std::sync::Arc<runtime_identity::BrokerSigningIden
         document_id: &str,
         unsigned_op: &[u8],
     ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        runtime_identity::BrokerSigningIdentity::sign_collaboration_op(
+        tilo_identity_client::BrokerSigningIdentity::sign_collaboration_op(
             self.as_ref(),
             workspace_id,
             app_id,
@@ -2237,7 +2237,7 @@ struct LocalSdkJoinIdentity {
 
 enum LocalSdkDocumentSigner {
     Inherited(SdkDocumentSigner),
-    Host(runtime_identity::AsyncBrokerSigningIdentity),
+    Host(tilo_identity_client::AsyncBrokerSigningIdentity),
 }
 
 impl From<SdkJoinIdentity> for LocalSdkJoinIdentity {
@@ -2271,7 +2271,7 @@ fn harness_presentation() -> Vec<u8> {
 
 #[cfg(unix)]
 fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
-    sdk_join_identity_from(runtime_identity::load()?, cluster_id)
+    sdk_join_identity_from(tilo_identity_client::load()?, cluster_id)
 }
 
 #[cfg_attr(
@@ -2334,7 +2334,7 @@ fn sdk_join_identity_from<I: SdkCertifiedIdentity + 'static>(
     reason = "the host identity transport is constructed and retained only on the shovel LocalSet"
 )]
 async fn sdk_join_identity_from_host(
-    mut identity: runtime_identity::AsyncBrokerSigningIdentity,
+    mut identity: tilo_identity_client::AsyncBrokerSigningIdentity,
     cluster_id: Uuid,
 ) -> Result<LocalSdkJoinIdentity, runtime_portal::NotAvailable> {
     let device_certificate = identity
@@ -2735,7 +2735,7 @@ impl CollaborationManager {
         identity: std::os::fd::BorrowedFd<'_>,
         route: RouteSpec,
     ) -> Result<Self, crate::NativeLaunchError> {
-        let signing = runtime_identity::inherited::connect_service(identity)
+        let signing = tilo_identity_client::inherited::connect_service(identity)
             .map_err(|error| native_launch_refusal(&error))?;
         let identity = sdk_join_identity_from(signing, route.cluster_id)
             .map_err(|error| native_launch_refusal(&error))?;
@@ -3537,7 +3537,7 @@ fn run_shovel(
                 match (connector.connect)(route).await {
                     Ok((collaboration_stream, identity_stream, descriptors)) => {
                         let identity =
-                            runtime_identity::AsyncBrokerSigningIdentity::from_connected_io(
+                            tilo_identity_client::AsyncBrokerSigningIdentity::from_connected_io(
                                 identity_stream,
                                 identity_timeout,
                             )

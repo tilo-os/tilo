@@ -23,7 +23,7 @@ mod actor {
     #[test]
     fn shared_files_media_authenticates_original_plan_without_copying_home() {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let root = PathBuf::from(
             std::env::var_os("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT")
                 .expect("explicit owned native actor fixture required"),

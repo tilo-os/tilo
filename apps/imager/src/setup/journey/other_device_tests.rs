@@ -111,7 +111,7 @@ fn a_real_prepared_package_reaches_a_new_identity_and_returns_a_verified_receipt
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set("HOME", &home);
         env.set("XDG_STATE_HOME", home.join(".local/state"));
         env.set("XDG_CONFIG_HOME", home.join(".config"));
@@ -238,9 +238,9 @@ fn a_real_prepared_package_reaches_a_new_identity_and_returns_a_verified_receipt
         received.is_some()
     });
     assert!(joined, "the source approved the fresh destination's join");
-    let joined_record = runtime_identity::resolve_active_identity(&join_identity)
+    let joined_record = tilo_identity_client::resolve_active_identity(&join_identity)
         .expect("the joined identity is selected");
-    let joined_metadata = runtime_identity::load_metadata_from_path(&joined_record).unwrap();
+    let joined_metadata = tilo_identity_client::load_metadata_from_path(&joined_record).unwrap();
     assert_eq!(
         joined_metadata.group_public_key,
         source_identity.public_key()
@@ -362,7 +362,7 @@ tilo_test_env::scenario! {
         let system = fixture.path().join("destination-system");
         let identity = fixture.path().join("destination-identity");
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         PreparedIdentity::create(
             &identity,
             "Destination person",
@@ -426,7 +426,7 @@ fn a_wrong_join_approval_releases_no_identity_until_the_exact_request_is_approve
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set("HOME", &home);
         env.set("XDG_STATE_HOME", home.join(".local/state"));
         env.set("XDG_CONFIG_HOME", home.join(".config"));
@@ -469,7 +469,7 @@ fn a_wrong_join_approval_releases_no_identity_until_the_exact_request_is_approve
     read_until(tilo_test_env::hang_bound(), || {
         tilo_handoff::transport::refused_approvals() > refused
     });
-    assert!(runtime_identity::resolve_active_identity(&identity).is_none());
+    assert!(tilo_identity_client::resolve_active_identity(&identity).is_none());
     assert!(
         !tilo_device_identity::persist::IdentityPaths::under(&system)
             .user_pubkey
@@ -477,7 +477,7 @@ fn a_wrong_join_approval_releases_no_identity_until_the_exact_request_is_approve
     );
     source.approve(&approval.unwrap()).unwrap();
     read_until(tilo_test_env::hang_bound(), || {
-        runtime_identity::resolve_active_identity(&identity).is_some()
+        tilo_identity_client::resolve_active_identity(&identity).is_some()
     });
     receiver.cancel();
     source.cancel();
@@ -490,7 +490,7 @@ fn a_certificate_signed_by_another_root_releases_no_identity() {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set("HOME", &home);
         env.set("XDG_STATE_HOME", home.join(".local/state"));
         env.set("XDG_CONFIG_HOME", home.join(".config"));
@@ -554,10 +554,10 @@ fn a_certificate_signed_by_another_root_releases_no_identity() {
     source.approve(&approval.unwrap()).unwrap();
     read_until(tilo_test_env::hang_bound(), || {
         matches!(source.poll(), Some(SourceState::Failed))
-            || runtime_identity::resolve_active_identity(&identity).is_some()
+            || tilo_identity_client::resolve_active_identity(&identity).is_some()
     });
     assert!(
-        runtime_identity::resolve_active_identity(&identity).is_none(),
+        tilo_identity_client::resolve_active_identity(&identity).is_none(),
         "a certificate that does not verify under the source root installs nothing"
     );
     assert!(
@@ -576,7 +576,7 @@ fn a_join_for_another_operation_releases_no_identity() {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set("HOME", &home);
         env.set("XDG_STATE_HOME", home.join(".local/state"));
         env.set("XDG_CONFIG_HOME", home.join(".config"));
@@ -608,7 +608,7 @@ fn a_join_for_another_operation_releases_no_identity() {
         tilo_handoff::transport::refused_join_requests() > refused
     });
     assert!(
-        runtime_identity::resolve_active_identity(&identity).is_none(),
+        tilo_identity_client::resolve_active_identity(&identity).is_none(),
         "the source refuses a bootstrap for another operation"
     );
     assert!(

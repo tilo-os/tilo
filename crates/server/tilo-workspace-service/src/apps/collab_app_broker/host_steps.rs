@@ -489,7 +489,7 @@ pub(crate) mod signed_test_support {
                 workspace_id: workspace_id.clone(),
                 device_certificate: serde_json::to_vec(&certificate).unwrap(),
                 proof: key
-                    .sign(&runtime_identity::collaboration_join_digest(&workspace_id).unwrap())
+                    .sign(&tilo_identity_client::collaboration_join_digest(&workspace_id).unwrap())
                     .to_bytes()
                     .to_vec(),
             }
@@ -535,7 +535,10 @@ pub(crate) mod signed_test_support {
                 workspace_id: fixture.workspace.clone(),
                 device_certificate: serde_json::to_vec(&certificate).unwrap(),
                 proof: key
-                    .sign(&runtime_identity::collaboration_join_digest(&fixture.workspace).unwrap())
+                    .sign(
+                        &tilo_identity_client::collaboration_join_digest(&fixture.workspace)
+                            .unwrap(),
+                    )
                     .to_bytes()
                     .to_vec(),
             }

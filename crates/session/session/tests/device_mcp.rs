@@ -577,7 +577,7 @@ struct ThisComputer {
     /// The certificate this device presents.
     cert: DeviceCert,
     /// The person's root, signing here as it does at their own desktop.
-    root: runtime_identity::SigningIdentity,
+    root: tilo_identity::store::SigningIdentity,
     /// The workspace this device holds, by id.
     workspace: String,
     /// Where the session keeps what it holds.
@@ -605,10 +605,10 @@ impl ThisComputer {
         let key = persist::load_device_key(&paths).expect("this device's key");
         let cert =
             persist::read_device_cert(&paths.device_cert).expect("this device's certificate");
-        let record = runtime_identity::resolve_active_identity(&identity_dir)
+        let record = tilo_identity_client::resolve_active_identity(&identity_dir)
             .expect("this identity's record");
-        let root =
-            runtime_identity::load_from_path(record).expect("the person's root signs on this box");
+        let root = tilo_identity::store::load_from_path(record)
+            .expect("the person's root signs on this box");
         let workspace = collab_types::personal_cluster(&cert.user_public_key).to_string();
         workspace_held_here(state.path(), &workspace, &cert, &key);
         Self {
@@ -1255,7 +1255,7 @@ fn notes(
             workspace_id: workspace.to_owned(),
             device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
             proof: key
-                .sign(&runtime_identity::collaboration_join_digest(workspace).unwrap())
+                .sign(&tilo_identity_client::collaboration_join_digest(workspace).unwrap())
                 .to_bytes()
                 .to_vec(),
         }

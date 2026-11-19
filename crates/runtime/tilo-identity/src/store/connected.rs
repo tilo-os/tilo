@@ -1,8 +1,8 @@
-use crate::{
+use std::os::unix::net::UnixStream;
+use tilo_identity_client::{
     NotAvailable,
     wire::{Request, Response},
 };
-use std::os::unix::net::UnixStream;
 
 /// Serve exactly one pre-bound connection. The handler must revalidate current
 /// host authority on every request and finish within its host operation budget.
@@ -13,7 +13,7 @@ pub fn serve(
 ) -> Result<(), NotAvailable> {
     stream.set_nonblocking(false)?;
     loop {
-        let request = match crate::wire::FRAMING.read_value(&mut stream) {
+        let request = match tilo_identity_client::wire::FRAMING.read_value(&mut stream) {
             Ok(Some(request)) => request,
             Ok(None) => return Ok(()),
             Err(error) => {
@@ -24,7 +24,7 @@ pub fn serve(
                 return Err(NotAvailable::ConnectionFailed(error));
             }
         };
-        crate::wire::FRAMING
+        tilo_identity_client::wire::FRAMING
             .write_value(&mut stream, &handler(request))
             .map_err(|error| NotAvailable::ConnectionFailed(error.into()))?;
     }
@@ -33,8 +33,8 @@ pub fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BrokerSigningIdentity, wire};
     use std::os::unix::net::UnixStream;
+    use tilo_identity_client::{BrokerSigningIdentity, wire};
     #[test]
     fn connected_identity_serves_exact_host_metadata_and_denies_signing() {
         let (host, app) = UnixStream::pair().unwrap();

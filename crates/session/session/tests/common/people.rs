@@ -818,7 +818,7 @@ pub struct Person {
     pub name: String,
     /// Their root, as a workspace names them.
     pub public: [u8; 32],
-    root: runtime_identity::SigningIdentity,
+    root: tilo_identity::store::SigningIdentity,
     /// The identity the first use of this machine provisioned for them: the record each of their
     /// devices carries, and the root secret devices certify their own keys with.
     identity: tempfile::TempDir,
@@ -847,9 +847,9 @@ impl Person {
             .expect("this person's identity");
         }
         let identity_dir = config.join("tilo/identity");
-        let record = runtime_identity::resolve_active_identity(&identity_dir)
+        let record = tilo_identity_client::resolve_active_identity(&identity_dir)
             .expect("the identity this machine provisioned for the person");
-        let root = runtime_identity::load_from_path(record).expect("the person's root key");
+        let root = tilo_identity::store::load_from_path(record).expect("the person's root key");
         Self {
             name: name.to_owned(),
             public: root.group_public_key(),

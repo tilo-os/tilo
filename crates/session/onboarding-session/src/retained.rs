@@ -43,9 +43,9 @@ pub fn read_private(path: &Path) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 fn active_key() -> io::Result<[u8; 32]> {
-    let directory = runtime_identity::identity_dir_from_env()?;
-    let active = runtime_identity::resolve_active_identity(&directory).ok_or_else(failure)?;
-    runtime_identity::load_from_path(active)
+    let directory = tilo_identity::store::identity_dir_from_env()?;
+    let active = tilo_identity_client::resolve_active_identity(&directory).ok_or_else(failure)?;
+    tilo_identity::store::load_from_path(active)
         .map(|signer| signer.group_public_key())
         .map_err(|_| failure())
 }
@@ -486,7 +486,7 @@ mod tests {
         env: &mut tilo_test_env::ScopedEnv,
     ) -> (tempfile::TempDir, PathBuf) {
         let home = tempfile::tempdir().unwrap();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set("XDG_CONFIG_HOME", home.path().join(".config"));
         let identity = home.path().join(".config/tilo/identity");
         std::fs::create_dir_all(&identity).unwrap();
@@ -504,7 +504,7 @@ mod tests {
             tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
-        runtime_identity::set_active_identity(&identity, "primary").unwrap();
+        tilo_identity::store::set_active_identity(&identity, "primary").unwrap();
         let directory = plans(home.path());
         std::fs::create_dir_all(&directory).unwrap();
         for part in [

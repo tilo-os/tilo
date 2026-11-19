@@ -371,7 +371,7 @@ pub(super) fn restore_child() {
     fs::create_dir(&config).unwrap();
     fs::set_permissions(&config, fs::Permissions::from_mode(0o700)).unwrap();
     let identity_path = setup.import_identity(&config, &password).unwrap();
-    let signer = runtime_identity::load_from_path(identity_path).unwrap();
+    let signer = tilo_identity::store::load_from_path(identity_path).unwrap();
     assert_eq!(
         signer.group_public_key(),
         setup.manifest().identity_public_key

@@ -840,8 +840,8 @@ fn an_endpoint_hears_of_its_admission_and_removal() {
 /// answer at once meanwhile, and the wait ends with the group.
 #[test]
 fn a_request_waiting_for_keys_leaves_the_other_asks_answered() {
-    use runtime_identity::wire::KeyAccess as Wire;
     use tilo_identity::sources::GroupKeySource as _;
+    use tilo_identity_client::wire::KeyAccess as Wire;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()

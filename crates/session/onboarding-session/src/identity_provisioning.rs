@@ -216,7 +216,7 @@ pub const IDENTITY_RECOVERY_ENV: &str = "TILO_IDENTITY_RECOVERY";
 /// Do not broaden this to every startup error: malformed metadata, permission
 /// failures, and broken device certificates must continue to fail closed.
 pub fn is_secret_service_unavailable(error: &io::Error) -> bool {
-    runtime_identity::is_secret_service_unavailable_io(error)
+    tilo_identity::store::is_secret_service_unavailable_io(error)
 }
 
 impl DiskIdentityStore {
@@ -229,12 +229,12 @@ impl DiskIdentityStore {
     /// Returns an error if the identity directory can't be resolved or
     /// created.
     pub fn from_env() -> Result<Self, io::Error> {
-        let base = runtime_identity::identity_dir_from_env()?;
+        let base = tilo_identity::store::identity_dir_from_env()?;
         // Imported identities keep a fingerprinted filename. Resolve the
         // active runtime identity first so every consumer shares one
         // canonical selection and a successful import remains ready on the
         // next login.
-        let path = runtime_identity::resolve_active_identity(&base)
+        let path = tilo_identity_client::resolve_active_identity(&base)
             .unwrap_or_else(|| base.join("primary.json"));
         Ok(Self { path })
     }
@@ -316,12 +316,12 @@ impl IdentityStore for DiskIdentityStore {
 fn import_identity_record(parent: &Path, id: &str, bytes: &[u8]) -> io::Result<PathBuf> {
     #[cfg(test)]
     {
-        let provider = runtime_identity::BrokerFileProvider::new(parent);
-        runtime_identity::import_identity_with_provider(parent, id, bytes, &provider)
+        let provider = tilo_identity::store::BrokerFileProvider::new(parent);
+        tilo_identity::store::import_identity_with_provider(parent, id, bytes, &provider)
     }
     #[cfg(not(test))]
     {
-        runtime_identity::import_identity(parent, id, bytes)
+        tilo_identity::store::import_identity(parent, id, bytes)
     }
 }
 
@@ -434,7 +434,7 @@ mod tests {
         phase only_the_secret_service_unavailable_error_enters_recovery;
         {
             assert!(is_secret_service_unavailable(
-                &runtime_identity::secret_service_unavailable_error()
+                &tilo_identity::store::secret_service_unavailable_error()
             ));
             assert!(!is_secret_service_unavailable(&io::Error::new(
                 io::ErrorKind::InvalidData,

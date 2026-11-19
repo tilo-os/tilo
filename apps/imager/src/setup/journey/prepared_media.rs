@@ -2453,7 +2453,7 @@ mod tests {
             );
         }
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -2580,7 +2580,7 @@ mod tests {
     #[test]
     fn cancellation_keeps_worker_ownership_until_exit_and_retry_preserves_identity() {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -2694,7 +2694,7 @@ mod tests {
         use sha2::{Digest, Sha256};
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -2772,7 +2772,7 @@ mod tests {
             portable_home_media::MediaGrant,
         };
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         let runner = portable::tests::fixture(&root);
@@ -2883,7 +2883,7 @@ mod tests {
         };
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -3053,7 +3053,7 @@ mod tests {
             authenticated.device_public_key()
         );
         assert!(!paths.user_privkey.exists());
-        let record = runtime_identity::load_from_path(imported.identity_record).unwrap();
+        let record = tilo_identity::store::load_from_path(imported.identity_record).unwrap();
         assert_eq!(record.group_public_key(), authenticated.public_key());
         assert!(!record.is_single_device());
     }
@@ -3172,7 +3172,7 @@ mod tests {
             std::fs::read(device.join("device/cert.bin")).unwrap(),
             source_cert
         );
-        let signer = runtime_identity::load_from_path(target.join("primary.json")).unwrap();
+        let signer = tilo_identity::store::load_from_path(target.join("primary.json")).unwrap();
         assert_eq!(signer.group_public_key(), identity.public_key());
         assert!(!signer.is_single_device());
         let (result, retry) = run("retry-import", password.as_bytes(), &device);
@@ -3188,7 +3188,7 @@ mod tests {
         assert!(!wrong_root.exists());
         let primary = target.join("primary.json");
         let other_person =
-            runtime_identity::public_member_record("Existing other person", [1, 2, 3], [6; 32])
+            tilo_identity::store::public_member_record("Existing other person", [1, 2, 3], [6; 32])
                 .unwrap();
         std::fs::write(&primary, &other_person).unwrap();
         let (result, refused) = run("conflicting-person", password.as_bytes(), &device);
@@ -3271,7 +3271,9 @@ mod tests {
         );
         let sealed = quarantine.join("home").join(prepared_setup::IDENTITY_FILE);
         assert!(sealed.is_file());
-        assert!(runtime_identity::verify_portable_backup(&sealed, password.as_bytes()).is_err());
+        assert!(
+            tilo_identity::store::verify_portable_backup(&sealed, password.as_bytes()).is_err()
+        );
         let authentication = |binding: &str, root_key, device_key| {
             tilo_identity::enrolled_transport::AuthenticatedEnrolledDevice::open(
                 &sealed,
@@ -3300,7 +3302,7 @@ mod tests {
     fn media_preparation_exports_the_actual_identity_and_holds_only_ciphertext() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let root = crate::setup::test_support::qualified_tempdir();
         let private = root.path().canonicalize().unwrap();
         std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();

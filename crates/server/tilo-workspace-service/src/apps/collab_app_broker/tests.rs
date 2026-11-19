@@ -734,7 +734,7 @@ pub(super) fn certified_join(
         workspace_id: workspace.into(),
         device_certificate: serde_json::to_vec(&cert).expect("certificate JSON"),
         proof: device
-            .sign(&runtime_identity::collaboration_join_digest(workspace).unwrap())
+            .sign(&tilo_identity_client::collaboration_join_digest(workspace).unwrap())
             .to_bytes()
             .to_vec(),
     }

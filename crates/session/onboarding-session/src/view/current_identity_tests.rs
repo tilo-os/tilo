@@ -51,7 +51,7 @@ fn current_owner_prepared_activation_keeps_original_record_device_and_selected_d
     let record = identity.join("member.json");
     tilo_files::native::atomic::write_with_mode(
         &record,
-        &runtime_identity::public_member_record("Ada", [1, 2, 3], key).unwrap(),
+        &tilo_identity::store::public_member_record("Ada", [1, 2, 3], key).unwrap(),
         0o600,
     )
     .unwrap();
@@ -65,7 +65,7 @@ fn current_owner_prepared_activation_keeps_original_record_device_and_selected_d
         0o600,
     )
     .unwrap();
-    runtime_identity::set_active_identity(&identity, "member").unwrap();
+    tilo_identity::store::set_active_identity(&identity, "member").unwrap();
     let registry_store = tilo_identity::registry::IdentityRegistryStore::at(&identity);
     let mut registry = registry_store.load().unwrap();
     registry.register_record(&record).unwrap();
@@ -146,7 +146,7 @@ fn current_owner_prepared_activation_keeps_original_record_device_and_selected_d
     assert_eq!(before, after);
     tilo_files::native::atomic::write_with_mode(
         &record,
-        &runtime_identity::public_member_record("Changed", [1, 2, 3], key).unwrap(),
+        &tilo_identity::store::public_member_record("Changed", [1, 2, 3], key).unwrap(),
         0o600,
     )
     .unwrap();

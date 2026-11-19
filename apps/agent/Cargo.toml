@@ -78,7 +78,7 @@ tempfile.workspace = true
 hex.workspace = true
 tilo-agent-web-tools = { path = "../../crates/agent/agent-web-tools", features = ["fixture-servers"] }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
-runtime-identity = { package = "tilo-identity-client", path = "../../crates/runtime/tilo-identity-client" }
+tilo-identity-client = { path = "../../crates/runtime/tilo-identity-client" }
 ed25519-dalek.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 

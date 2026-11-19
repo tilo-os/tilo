@@ -333,11 +333,11 @@ fn source_authority(source_dir: &Path) -> (SourceIdentity, [u8; 32]) {
     )
     .expect("the source identity is created");
     let signer_path = source_dir.join("primary.json");
-    let source_signer =
-        runtime_identity::load_from_path(signer_path.clone()).expect("the source identity loads");
+    let source_signer = tilo_identity::store::load_from_path(signer_path.clone())
+        .expect("the source identity loads");
     let person = source_signer.group_public_key();
-    let metadata =
-        runtime_identity::load_metadata_from_path(&signer_path).expect("the source metadata loads");
+    let metadata = tilo_identity_client::load_metadata_from_path(&signer_path)
+        .expect("the source metadata loads");
     let record = public_member_record(
         &metadata.display_name,
         metadata.avatar_color,
@@ -351,7 +351,7 @@ fn source_authority(source_dir: &Path) -> (SourceIdentity, [u8; 32]) {
         certificates: Vec::new(),
         home_peers: Vec::new(),
         signer: Arc::new(move |digest: &[u8]| {
-            let identity = runtime_identity::load_from_path(signer_path.clone())
+            let identity = tilo_identity::store::load_from_path(signer_path.clone())
                 .map_err(|error| io::Error::other(error.to_string()))?;
             identity
                 .sign(digest)
@@ -398,7 +398,7 @@ fn wait_for_package(
         assert!(
             Instant::now() < deadline,
             "package did not arrive after the join; source states {states:?}; active {:?}",
-            runtime_identity::resolve_active_identity(target_identity)
+            tilo_identity_client::resolve_active_identity(target_identity)
         );
         while let Some(state) = source.poll() {
             let ended = matches!(&state, SourceState::Failed | SourceState::Rejected);
@@ -434,7 +434,9 @@ fn a_fresh_destination_joins_its_person_before_the_package_is_released() {
     std::fs::set_permissions(fixture.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut test_home = tilo_test_env::TestHome::new().unwrap();
     let home = test_home.home().to_path_buf();
-    test_home.env().set(runtime_identity::FILE_SECRETS_ENV, "1");
+    test_home
+        .env()
+        .set(tilo_identity::store::FILE_SECRETS_ENV, "1");
 
     let source_dir = fixture.path().join("source-identity");
     std::fs::create_dir_all(&source_dir).unwrap();
@@ -477,14 +479,14 @@ fn a_fresh_destination_joins_its_person_before_the_package_is_released() {
         "the source to refuse an approval for another request",
         || crate::transport::refused_approvals() > refused,
     );
-    assert!(runtime_identity::resolve_active_identity(&target_identity).is_none());
+    assert!(tilo_identity_client::resolve_active_identity(&target_identity).is_none());
     source.approve(&approval).unwrap();
     let delivered = wait_for_package(&source, &receiver, deadline, &target_identity);
     assert_eq!(delivered.package_sha256, package_sha256);
     assert_eq!(std::fs::read(&delivered.package_path).unwrap(), package);
-    let joined = runtime_identity::resolve_active_identity(&target_identity).unwrap();
+    let joined = tilo_identity_client::resolve_active_identity(&target_identity).unwrap();
     assert_eq!(
-        runtime_identity::load_metadata_from_path(&joined)
+        tilo_identity_client::load_metadata_from_path(&joined)
             .unwrap()
             .group_public_key,
         person

@@ -39,13 +39,12 @@ pub use secure_store::{
     BrokerFileProvider, FILE_SECRETS_ENV, SecretProvider, file_secrets_requested,
 };
 
-use crate::{
-    IdentityMetadata, IdentitySummary, KeyProtection, NotAvailable, collaboration_join_digest,
-};
 #[cfg(test)]
-use crate::{
-    client::{read_frame, write_frame},
-    wire,
+use crate::store::test_wire::{read_frame, write_frame};
+#[cfg(test)]
+use tilo_identity_client::wire;
+use tilo_identity_client::{
+    IdentityMetadata, IdentitySummary, KeyProtection, NotAvailable, collaboration_join_digest,
 };
 
 /// True when a secured identity's Secret Service item could not be obtained.
@@ -639,7 +638,7 @@ pub fn update_identity_presentation(
     id: &str,
     display_name: &str,
     avatar_color: [u8; 3],
-    photo: Option<crate::ProfilePhoto>,
+    photo: Option<tilo_identity_client::ProfilePhoto>,
 ) -> io::Result<IdentityMetadata> {
     let display_name = display_name.trim();
     if display_name.is_empty()
@@ -682,7 +681,7 @@ pub fn update_identity_presentation(
 pub fn update_identity_photo(
     dir: &std::path::Path,
     id: &str,
-    photo: Option<crate::ProfilePhoto>,
+    photo: Option<tilo_identity_client::ProfilePhoto>,
 ) -> io::Result<IdentityMetadata> {
     let _lock = IdentityLock::acquire(dir)?;
     let path = identity_path(dir, id)?;
@@ -770,12 +769,13 @@ mod ondisk {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use zeroize::Zeroizing;
 
-    use crate::{KeyProtection, SecretReference};
+    use super::SecretReference;
+    use tilo_identity_client::KeyProtection;
 
     #[derive(Debug, Deserialize, Serialize)]
     pub struct IdentityRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub profile_photo: Option<crate::ProfilePhoto>,
+        pub profile_photo: Option<tilo_identity_client::ProfilePhoto>,
         pub display_name: String,
         pub avatar_color: [u8; 3],
         pub threshold_identity: SerializableIdentity,
@@ -953,7 +953,7 @@ impl LoadFailure {
 /// **Never** serialise or log this struct — it holds the raw Ed25519
 /// secret. `Debug` deliberately omits `signing_key`.
 pub struct SigningIdentity {
-    profile_photo: Option<crate::ProfilePhoto>,
+    profile_photo: Option<tilo_identity_client::ProfilePhoto>,
     display_name: String,
     avatar_color: [u8; 3],
     group_public_key: [u8; 32],
@@ -1099,7 +1099,7 @@ impl SigningIdentity {
         &self.display_name
     }
 
-    pub fn profile_photo(&self) -> Option<&crate::ProfilePhoto> {
+    pub fn profile_photo(&self) -> Option<&tilo_identity_client::ProfilePhoto> {
         self.profile_photo.as_ref()
     }
 
@@ -1157,7 +1157,7 @@ impl SigningIdentity {
             SigningSource::Local(Some(sk)) => Ok(sk.sign(message).to_bytes()),
             SigningSource::Local(None) => Err(NotAvailable::ConnectionFailed(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "threshold-mode signing is not supported by tilo-runtime-identity; \
+                "threshold-mode signing is not supported by the identity store; \
                  use tilo-threshold-identity + the multi-device orchestrator instead",
             ))),
             SigningSource::LocalThreshold(_) => {
@@ -1195,7 +1195,7 @@ impl SigningIdentity {
 
     /// Sign the fixed collaboration-join domain for `workspace_id` with this
     /// identity's local root. An app with a workspace-bound connection asks
-    /// [`crate::BrokerSigningIdentity`] instead, which the service limits to
+    /// [`tilo_identity_client::BrokerSigningIdentity`] instead, which the service limits to
     /// the workspace its launcher named.
     ///
     /// # Errors
@@ -1414,7 +1414,7 @@ pub fn public_member_record_with_presentation(
     display_name: &str,
     avatar_color: [u8; 3],
     group_public_key: [u8; 32],
-    photo: Option<crate::ProfilePhoto>,
+    photo: Option<tilo_identity_client::ProfilePhoto>,
 ) -> io::Result<Vec<u8>> {
     let record = ondisk::IdentityRecord {
         profile_photo: photo,
@@ -1658,7 +1658,7 @@ mod tests {
             let signer = load_from_path(path.clone()).unwrap();
             let proof = signer.sign(b"complete-presentation").unwrap();
             let before: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            let photo = crate::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
+            let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
             let metadata = update_identity_presentation(
                 dir.path(),
                 "personal",
@@ -1699,7 +1699,7 @@ mod tests {
             assert!(signer.profile_photo().is_none());
             let proof = signer.sign(b"photo-ownership-proof").unwrap();
             let before: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            let photo = crate::ProfilePhoto::new(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]).unwrap();
+            let photo = tilo_identity_client::ProfilePhoto::new(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]).unwrap();
             let changed = update_identity_photo(dir.path(), "personal", Some(photo.clone())).unwrap();
             assert_eq!(changed.profile_photo.as_ref(), Some(&photo));
             let loaded = load_from_path(path.clone()).unwrap();
@@ -1728,7 +1728,7 @@ mod tests {
                 serde_json::json!({"width": 129, "height": 1, "rgba": [0, 0, 0, 255]}),
                 serde_json::json!({"width": 1, "height": 1, "rgba": [0]}),
                 serde_json::json!({"width": 0, "height": 1, "rgba": []}),
-                serde_json::json!({"width": 1, "height": 1, "rgba": vec![0; crate::MAX_PHOTO_BYTES + 1]}),
+                serde_json::json!({"width": 1, "height": 1, "rgba": vec![0; tilo_identity_client::MAX_PHOTO_BYTES + 1]}),
             ] {
                 let mut record: serde_json::Value =
                     serde_json::from_slice(&record_bytes("Invalid", 33)).unwrap();
@@ -1994,7 +1994,7 @@ mod tests {
 
         phase load_without_a_service_descriptor_returns_service_fd_missing;
         {
-            match crate::load() {
+            match tilo_identity_client::load() {
                 Err(NotAvailable::ServiceFdMissing) => {}
                 other => panic!("expected ServiceFdMissing, got {other:?}"),
             }

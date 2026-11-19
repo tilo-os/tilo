@@ -1,6 +1,6 @@
 //! Fail-closed identity enrollment for setup hosts without a local identity provider.
 //!
-//! The Unix host uses `runtime-identity`'s protected identity store. Windows
+//! The Unix host uses `tilo_identity::store`'s protected identity store. Windows
 //! imager can prepare Wi-Fi and media, but cannot enroll a person until that
 //! store has a Windows implementation. Keep this boundary in the host crate so
 //! the imager remains portable and never fabricates an identity.

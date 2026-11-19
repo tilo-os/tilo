@@ -642,7 +642,7 @@ impl PreparedSetupReview {
         let identity_hash = Sha256::digest(&identity).into();
         match manifest.identity_kind {
             IdentityKind::SingleDeviceBackup => {
-                if runtime_identity::verify_portable_backup(
+                if tilo_identity::store::verify_portable_backup(
                     tree.root.join(IDENTITY_FILE),
                     password,
                 )?
@@ -945,8 +945,11 @@ impl PreparedSetupReview {
             enrolled.import_system(system_root)?;
             #[cfg(target_os = "linux")]
             installed_person::publish_namespace(&enrolled, system_root)?;
-        } else if runtime_identity::verify_portable_backup(self.root.join(IDENTITY_FILE), password)?
-            .group_public_key
+        } else if tilo_identity::store::verify_portable_backup(
+            self.root.join(IDENTITY_FILE),
+            password,
+        )?
+        .group_public_key
             != self.manifest.identity_public_key
         {
             return Err(invalid());
@@ -1019,7 +1022,7 @@ impl PreparedSetupReview {
                 .enrolled(password)?
                 .import_public_identity(Path::new("/var/lib/tilo"), target);
         }
-        let imported = runtime_identity::import_portable_backup_matching(
+        let imported = tilo_identity::store::import_portable_backup_matching(
             self.root.join(IDENTITY_FILE),
             password,
             target,
@@ -1036,7 +1039,7 @@ impl PreparedSetupReview {
                 destination_security::check_private_file(&target_pin.file)?;
                 let path = target.join("primary.json");
                 let signer =
-                    runtime_identity::load_from_path(path.clone()).map_err(|_| invalid())?;
+                    tilo_identity::store::load_from_path(path.clone()).map_err(|_| invalid())?;
                 if !signer.is_single_device()
                     || signer.group_public_key() != self.manifest.identity_public_key
                 {

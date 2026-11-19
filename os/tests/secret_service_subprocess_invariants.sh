@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Secret Service access has two shapes after the platform split:
 #   * `tilo-secrets` talks to org.freedesktop.secrets over D-Bus (no
-#     subprocess), and secret-vault / runtime-identity go through it;
+#     subprocess), and secret-vault / tilo_identity::store go through it;
 #   * a few migration paths still call `secret-tool` and must do so only
 #     through bounded-command.
 #
@@ -15,7 +15,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 readonly store_consumers=(
   crates/platform/tilo-secrets/src/linux.rs
   crates/system/secret-vault/src/lib.rs
-  crates/runtime/runtime-identity/src/secure_store.rs
+  crates/runtime/tilo-identity/src/store/secure_store.rs
 )
 
 # Every source that starts the `secret-tool` binary. Tests run it as their

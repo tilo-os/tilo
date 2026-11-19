@@ -78,7 +78,7 @@ fn fixture() -> Fixture {
     let record = identity.join("member.json");
     tilo_files::native::atomic::write_with_mode(
         &record,
-        &runtime_identity::public_member_record("Synthetic qualifier", [88, 101, 242], person)
+        &tilo_identity::store::public_member_record("Synthetic qualifier", [88, 101, 242], person)
             .unwrap(),
         0o600,
     )

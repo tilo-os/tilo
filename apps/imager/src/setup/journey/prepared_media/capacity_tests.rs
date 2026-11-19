@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 #[test]
 fn shared_home_generations_rebuild_capacity_from_their_own_authenticated_artifacts() {
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let root = tempfile::Builder::new()
         .permissions(std::fs::Permissions::from_mode(0o700))
         .tempdir()

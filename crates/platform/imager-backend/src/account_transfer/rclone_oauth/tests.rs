@@ -7,7 +7,7 @@ tilo_test_env::scenario! {
     phase imported_rclone_registration_refreshes_after_portable_reseal_without_touching_source;
     {
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();
         let config = temp.path().join("source/.config");
         std::fs::create_dir_all(config.join("rclone")).unwrap();

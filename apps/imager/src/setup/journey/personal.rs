@@ -12,14 +12,14 @@ enum ResultValue {
     Updated,
     PhotoSelected {
         path: String,
-        photo: runtime_identity::ProfilePhoto,
+        photo: tilo_identity_client::ProfilePhoto,
     },
     JourneyPrepared {
         prepared: Arc<PreparedIdentity>,
         path: Option<String>,
-        photo: Option<runtime_identity::ProfilePhoto>,
+        photo: Option<tilo_identity_client::ProfilePhoto>,
     },
-    Exported(runtime_identity::PortableBackupInfo),
+    Exported(tilo_identity::store::PortableBackupInfo),
     AccountsExported(usize),
     #[cfg(target_os = "linux")]
     SetupExported(imager_backend::setup::portable_transfer::PackageInfo),
@@ -27,9 +27,9 @@ enum ResultValue {
 
 struct PhotoEdit {
     path: Option<String>,
-    photo: Option<runtime_identity::ProfilePhoto>,
+    photo: Option<tilo_identity_client::ProfilePhoto>,
     state: &'static str,
-    metadata: Option<runtime_identity::IdentityMetadata>,
+    metadata: Option<tilo_identity_client::IdentityMetadata>,
 }
 
 #[derive(Default)]
@@ -41,7 +41,7 @@ pub(super) struct Personal {
     photo_edit: Option<PhotoEdit>,
     artifact: Option<serde_json::Value>,
     avatar_path: Option<String>,
-    photo: Option<runtime_identity::ProfilePhoto>,
+    photo: Option<tilo_identity_client::ProfilePhoto>,
 }
 
 impl Personal {
@@ -253,7 +253,7 @@ impl Personal {
         &mut self,
         prepared: Arc<PreparedIdentity>,
         kind: super::draft::IdentityKind,
-        metadata: runtime_identity::IdentityMetadata,
+        metadata: tilo_identity_client::IdentityMetadata,
     ) -> Result<(), &'static str> {
         if self.busy() {
             return Err("installer-preview-identity-busy");
@@ -292,7 +292,7 @@ impl Personal {
         self.prepared.is_some() && self.state == "prepared"
     }
 
-    pub fn photo(&self) -> Option<&runtime_identity::ProfilePhoto> {
+    pub fn photo(&self) -> Option<&tilo_identity_client::ProfilePhoto> {
         self.photo.as_ref()
     }
 
@@ -599,7 +599,7 @@ mod state_root_tests {
 
 pub(super) use imager_backend::prepared_identity::ensure_private_tree;
 
-fn normalize_avatar(path: &str) -> std::io::Result<runtime_identity::ProfilePhoto> {
+fn normalize_avatar(path: &str) -> std::io::Result<tilo_identity_client::ProfilePhoto> {
     use std::io;
     let bytes = imager_backend::prepared_identity::read_avatar(std::path::Path::new(path))?;
     let input = tilo_image_codec::AdmissionLimits::default();
@@ -614,13 +614,13 @@ fn normalize_avatar(path: &str) -> std::io::Result<runtime_identity::ProfilePhot
     .map_err(|_| io::Error::other("avatar decode failed"))?;
     let output = tilo_image_codec::AdmissionLimits {
         max_encoded_bytes: 16 * 1024 * 1024,
-        max_rgba_bytes: runtime_identity::MAX_PHOTO_BYTES as u64,
+        max_rgba_bytes: tilo_identity_client::MAX_PHOTO_BYTES as u64,
         max_dimension: 128,
     };
     output
         .validate(&decoded)
         .map_err(|_| io::Error::other("avatar output refused"))?;
-    runtime_identity::ProfilePhoto::new(
+    tilo_identity_client::ProfilePhoto::new(
         u16::try_from(decoded.width).map_err(io::Error::other)?,
         u16::try_from(decoded.height).map_err(io::Error::other)?,
         decoded.rgba,

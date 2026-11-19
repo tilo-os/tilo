@@ -441,8 +441,8 @@ impl Pending {
                 .load()?
         } else {
             let active =
-                runtime_identity::resolve_active_identity(identity_dir).ok_or_else(refusal)?;
-            runtime_identity::load_from_path(active).map_err(|_| refusal())?
+                tilo_identity_client::resolve_active_identity(identity_dir).ok_or_else(refusal)?;
+            tilo_identity::store::load_from_path(active).map_err(|_| refusal())?
         };
         if receipt.version != 1
             || receipt.digest != self.digest
