@@ -12,7 +12,7 @@ pub mod frame;
 mod geom;
 mod interaction;
 mod written;
-pub use written::written_by;
+pub use tilo_doc::written::written_by;
 mod key;
 mod labels;
 mod layer;

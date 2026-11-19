@@ -71,6 +71,15 @@ impl Instance {
             }
         }
         let published = tilo_actions::logical_resource_id(&interaction.resource.id).into_owned();
+        // A write's block names the item by the id the document keeps it under; the window
+        // draws that text under the resource it publishes the item as.
+        if let tilo_actions::InteractionAnchor::Text { ranges, .. } = &mut interaction.anchor {
+            for range in ranges {
+                if !range.block.is_empty() && published.ends_with(&range.block) {
+                    range.block.clone_from(&published);
+                }
+            }
+        }
         let ty = declared.map_or_else(String::new, |declared| declared.id.clone());
         let Some(target) = published
             .strip_prefix(&format!("tl:{}:", self.app))

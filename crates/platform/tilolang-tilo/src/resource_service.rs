@@ -588,7 +588,7 @@ impl ResourceService {
         action: &DynAction,
         invoker: &tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
-        self.commit_in(action, invoker, None)
+        self.commit_in(action, invoker, None).map(drop)
     }
 
     /// [`Self::commit`] as a step of the run `run`, when it is one of a run's.
@@ -597,7 +597,7 @@ impl ResourceService {
         action: &DynAction,
         invoker: &tilo_actions::ActionInvoker,
         run: Option<&tilo_actions::WorkGroup>,
-    ) -> Result<(), String> {
+    ) -> Result<Option<tilo_actions::InteractionAnchor>, String> {
         let encoded = action.encode().map_err(|error| error.to_string())?;
         let context = ActionContext::for_resource(
             // The workspace root's path, as a grant's tree path names it (`workspace/app:todo/**`),
@@ -623,7 +623,7 @@ impl ResourceService {
         (action, part): (&dyn tilo_actions::Action, Option<&DynAction>),
         encoded: tilo_actions::EncodedAction,
         context: ActionContext,
-    ) -> Result<(), String> {
+    ) -> Result<Option<tilo_actions::InteractionAnchor>, String> {
         let _in_documents = self.in_documents();
         let author = context.invoker.as_ref().map_or_else(
             || {
@@ -634,6 +634,7 @@ impl ResourceService {
             |invoker: &tilo_actions::ActionInvoker| invoker.acting.by.clone(),
         );
         let store = self.host.store();
+        let mut wrote = None;
         self.host
             .with_schemas(|| {
                 store
@@ -643,7 +644,11 @@ impl ResourceService {
                         encoded,
                         &author,
                         context,
-                        |_, _| (),
+                        |doc, before| {
+                            let after = doc.get_heads();
+                            let changes = doc.diff(&before, &after);
+                            wrote = tilo_doc::written::written_by(doc, &changes);
+                        },
                     )
                     .0
             })
@@ -665,7 +670,7 @@ impl ResourceService {
             let _ = document.merge_incoming(&mut self.record());
             *kept.read_at.borrow_mut() = document.get_heads();
         }
-        Ok(())
+        Ok(wrote)
     }
 
     /// Run the published `action` of `resource` with `arguments`, planned on the document as it
@@ -743,7 +748,8 @@ impl ResourceService {
             serde_json::from_slice(&encoded.payload)
                 .map_err(|error| ApiError::InvalidArguments(error.to_string()))?
         };
-        self.commit_in(&planned, invoker, run)
+        let wrote = self
+            .commit_in(&planned, invoker, run)
             .map_err(ApiError::Failed)?;
         // What it made is published before it is answered, so the caller's next invocation
         // reaches it: a document changed as a whole is built now, not off the frame.
@@ -754,10 +760,30 @@ impl ResourceService {
             .take_returned(&planned.action_id)
             .map(|made| resource_id(&planned.app, &made.id_string()));
         Ok(Started::Done(ActionOutput {
-            value: None,
+            value: wrote
+                .map(|wrote| published_in(resource, wrote))
+                .as_ref()
+                .and_then(|wrote| ActionOutput::noting_wrote(None, wrote)),
             resources: made.into_iter().collect(),
         }))
     }
+}
+
+/// `wrote` with its blocks named as the window draws the item's text: the resource it publishes
+/// the item under (`tl:app:document/item`), not the item's own id.
+fn published_in(
+    resource: &str,
+    wrote: tilo_actions::InteractionAnchor,
+) -> tilo_actions::InteractionAnchor {
+    let tilo_actions::InteractionAnchor::Text { region, mut ranges } = wrote else {
+        return wrote;
+    };
+    for range in &mut ranges {
+        if !range.block.is_empty() && resource.ends_with(&range.block) {
+            range.block.clone_from(&resource.to_owned());
+        }
+    }
+    tilo_actions::InteractionAnchor::Text { region, ranges }
 }
 
 /// The place the `open` effect `payload` names: the resource the invocation addresses — the
@@ -803,7 +829,7 @@ impl ResourceService {
             self.content.writing(app);
         }
         let context = ActionContext::for_resource(resource, &kind, &kind);
-        self.apply((&action, None), encoded, in_run(context, invoker, run))?;
+        let _ = self.apply((&action, None), encoded, in_run(context, invoker, run))?;
         self.publications.settle(&self.host, &self.planner);
         self.told();
         Ok(self.host.store().with_document(|chunks| {

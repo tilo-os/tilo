@@ -84,6 +84,7 @@ impl BlockEditor {
             &mut ui::paint::PaintCtx::new(ctx.scene, ctx.transform, ctx.text_renderer, ctx.theme),
             (None, &b.id, line.value()),
             (edited, selected),
+            None,
             &mut |_, interaction, start, end| {
                 // One caret, where the write ends: a write over several paragraphs puts it on
                 // the last of them.

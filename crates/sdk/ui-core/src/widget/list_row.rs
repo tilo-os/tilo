@@ -2111,6 +2111,7 @@ impl ListRow {
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 (Some(field), item, &self.title),
                 (None, None),
+                None,
                 &mut |text, _, start, end| {
                     let (bands, caret) = face.title_span(band, (start, end), text, theme);
                     (bands, Some(caret))

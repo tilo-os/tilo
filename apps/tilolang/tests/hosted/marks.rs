@@ -110,13 +110,8 @@ fn the_field_the_run_renamed_takes_its_colour() {
         .click_at(row[0] + row[2] / 4.0, row[1] + row[3] / 2.0);
     settle(&mut app);
     let field = text_field(&mut app, "Meeting notes");
-    // Its far end, clear of the text and the caret.
-    let end = [
-        field[0] + field[2] - 12.0,
-        field[1] + 2.0,
-        8.0,
-        field[3] - 4.0,
-    ];
+    // Inside the words it wrote, clear of the caret that ends them.
+    let end = [field[0] + 12.0, field[1] + 2.0, 96.0, field[3] - 4.0];
     assert!(
         chroma_in(&mut app, end) > ground.saturating_add(8),
         "the field the run changed is tinted in its colour"
