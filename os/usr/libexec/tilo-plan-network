@@ -1,10 +1,11 @@
 #!/bin/sh
 # The NetworkManager connection a planned machine's static addressing becomes.
 #
-#   tilo-plan-network KEYFILE ADDRESSES GATEWAY DNS [INTERFACE]
+#   tilo-plan-network KEYFILE ADDRESSES GATEWAYS DNS [INTERFACE]
 #
-# ADDRESSES is `address/prefix` entries, comma separated; GATEWAY and DNS are
-# addresses (DNS comma separated) and may be empty. INTERFACE names the link
+# ADDRESSES is `address/prefix` entries, comma separated. GATEWAYS and DNS are
+# addresses, comma separated, and may be empty; there is at most one gateway
+# for each family, so a dual-stack plan routes both. INTERFACE names the link
 # the connection is for; without it the connection matches any wired link.
 #
 # The installed server keeps this keyfile in /etc, and the installer also gives
@@ -20,7 +21,7 @@ umask 0077
 
 die() { printf 'error: %s\n' "$*" >&2; exit 2; }
 
-[ "$#" -ge 4 ] && [ "$#" -le 5 ] || die "usage: tilo-plan-network KEYFILE ADDRESSES GATEWAY DNS [INTERFACE]"
+[ "$#" -ge 4 ] && [ "$#" -le 5 ] || die "usage: tilo-plan-network KEYFILE ADDRESSES GATEWAYS DNS [INTERFACE]"
 keyfile=$1
 addresses=$2
 gateway=$3
@@ -60,12 +61,6 @@ IFS=$old_ifs
 
 [ -n "$v4_csv$v6_csv" ] || die "the plan names no address"
 
-if [ -n "$gateway" ]; then
-    case "$gateway" in
-        *[!0-9A-Fa-f:.]*) die "$gateway is not a gateway address" ;;
-    esac
-fi
-
 v4_dns=
 v6_dns=
 if [ -n "$dns" ]; then
@@ -93,18 +88,32 @@ if [ -n "$interface" ]; then
     [ "${#interface}" -le 15 ] || die "$interface is not an interface name"
 fi
 
-# The gateway belongs to the first address of its own family, so a dual-stack
-# plan with one gateway still gets it on the right side.
+# The gateways come comma separated, at most one for each family: a
+# dual-stack machine needs a default route for both. Each belongs to the first
+# address of its own family.
 v4_gateway=
 v6_gateway=
 if [ -n "$gateway" ]; then
-    if is_v6 "$gateway"; then
-        [ -n "$v6_csv" ] || die "$gateway is an IPv6 gateway but the plan names no IPv6 address"
-        v6_gateway=$gateway
-    else
-        [ -n "$v4_csv" ] || die "$gateway is an IPv4 gateway but the plan names no IPv4 address"
-        v4_gateway=$gateway
-    fi
+    IFS=,
+    for entry in $gateway; do
+        IFS=$old_ifs
+        entry=$(printf '%s' "$entry" | tr -d ' ')
+        [ -n "$entry" ] || die "the plan names an empty gateway"
+        case "$entry" in
+            *[!0-9A-Fa-f:.]*) die "$entry is not a gateway address" ;;
+        esac
+        if is_v6 "$entry"; then
+            [ -z "$v6_gateway" ] || die "the plan names two IPv6 gateways"
+            [ -n "$v6_csv" ] || die "$entry is an IPv6 gateway but the plan names no IPv6 address"
+            v6_gateway=$entry
+        else
+            [ -z "$v4_gateway" ] || die "the plan names two IPv4 gateways"
+            [ -n "$v4_csv" ] || die "$entry is an IPv4 gateway but the plan names no IPv4 address"
+            v4_gateway=$entry
+        fi
+        IFS=,
+    done
+    IFS=$old_ifs
 fi
 
 # One address per line, with the gateway on the family's first, as a keyfile

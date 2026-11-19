@@ -169,7 +169,8 @@ pub struct InstallOptions {
     /// applied to the installer and kept in the installed system, so a machine
     /// whose only address is a static one can reach the person's devices.
     pub network_static: String,
-    /// The static network's gateway; empty for none.
+    /// The static network's default gateways, comma separated: one for each
+    /// address family; empty for none.
     pub network_gateway: String,
     /// The static network's DNS servers, comma separated; empty for none.
     pub network_dns: String,
@@ -1466,7 +1467,7 @@ mod tests {
                 purpose: SERVER_PURPOSE.into(),
                 install_plan: true,
                 network_static: "65.108.204.148/26,2a01:4f9:1a:a083::2/64".into(),
-                network_gateway: "65.108.204.129".into(),
+                network_gateway: "65.108.204.129,fe80::1".into(),
                 network_dns: "185.12.64.1,185.12.64.2".into(),
                 ..InstallOptions::default()
             };
@@ -1480,7 +1481,7 @@ mod tests {
                     "--network-static",
                     "65.108.204.148/26,2a01:4f9:1a:a083::2/64",
                 ],
-                ["--network-gateway", "65.108.204.129"],
+                ["--network-gateway", "65.108.204.129,fe80::1"],
                 ["--network-dns", "185.12.64.1,185.12.64.2"],
             ] {
                 assert!(

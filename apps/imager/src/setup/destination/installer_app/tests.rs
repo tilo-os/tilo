@@ -1108,7 +1108,7 @@ tilo_test_env::scenario! {
         app.apply_install_plan(&plan(serde_json::json!({
             "network": {"addressing": "static",
                         "addresses": "65.108.204.148/26,2a01:4f9:1a:a083::2/64",
-                        "gateway": "65.108.204.129",
+                        "gateway": "65.108.204.129,fe80::1",
                         "dns": "185.12.64.1,185.12.64.2"}
         })))
         .unwrap();
@@ -1122,7 +1122,7 @@ tilo_test_env::scenario! {
             options.network_static,
             "65.108.204.148/26,2a01:4f9:1a:a083::2/64"
         );
-        assert_eq!(options.network_gateway, "65.108.204.129");
+        assert_eq!(options.network_gateway, "65.108.204.129,fe80::1");
         assert_eq!(options.network_dns, "185.12.64.1,185.12.64.2");
 
         // A DHCP plan leaves the image's own network alone.

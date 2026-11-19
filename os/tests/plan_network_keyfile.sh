@@ -62,15 +62,23 @@ grep -qx 'address1=2a01:4f9:1a:a083::2/64,fe80::1' "$work/v6" \
   && ok "the IPv6 address carries its gateway" || bad "the IPv6 gateway was dropped"
 grep -qx 'method=manual' "$work/v6" || bad "the IPv6 side is not static"
 
-# --- both families, one gateway --------------------------------------------
-write dual '65.108.204.148/26,2a01:4f9:1a:a083::2/64' '65.108.204.129' '185.12.64.1,2001:4860:4860::8888' \
-  && ok "a dual-stack plan becomes a connection" || bad "a dual-stack plan was refused"
+# --- both families, a gateway each -----------------------------------------
+write dual '65.108.204.148/26,2a01:4f9:1a:a083::2/64' '65.108.204.129,fe80::1' '185.12.64.1,2001:4860:4860::8888' \
+  && ok "a dual-stack plan becomes a connection" || bad "a dual-stack plan was refused: $(cat "$work/dual.log")"
 grep -qx 'address1=65.108.204.148/26,65.108.204.129' "$work/dual" \
-  && ok "the gateway stays on the address family it belongs to" || bad "the gateway went to the wrong family"
-grep -qx 'address1=2a01:4f9:1a:a083::2/64' "$work/dual" \
-  && ok "the other family's address is numbered from one too" || bad "the other family is numbered wrongly"
+  && ok "each gateway stays on the address family it belongs to" || bad "the IPv4 gateway went to the wrong family"
+grep -qx 'address1=2a01:4f9:1a:a083::2/64,fe80::1' "$work/dual" \
+  && ok "the other family gets its own gateway and starts at one" || bad "the other family's gateway is missing"
 grep -qx 'dns=2001:4860:4860::8888;' "$work/dual" \
   && ok "each DNS server goes to its own family" || bad "an IPv6 DNS server was written under IPv4"
+
+# One gateway for a dual-stack plan still goes to its family alone.
+write one-gateway '10.0.0.5/24,2001:db8::5/64' '2001:db8::1' '' \
+  && ok "a plan with one gateway for two families is accepted" || bad "one gateway was refused"
+grep -qx 'address1=10.0.0.5/24' "$work/one-gateway" \
+  && ok "the unaddressed family gets no gateway" || bad "a gateway was invented for IPv4"
+grep -qx 'address1=2001:db8::5/64,2001:db8::1' "$work/one-gateway" \
+  && ok "the IPv6 address carries its gateway" || bad "the IPv6 gateway was dropped"
 
 # --- no interface: the connection matches any wired link -------------------
 write any '10.0.0.5/24' '' '' && ok "a plan without a named link is still a connection" \
@@ -84,6 +92,8 @@ refused bad-prefix "an address with a non-numeric prefix" '10.0.0.5/x' '' ''
 refused no-address "a plan with no address" '' '10.0.0.1' ''
 refused bad-gateway "a gateway that is not an address" '10.0.0.5/24' 'not-an-address' ''
 refused gateway-family "an IPv6 gateway with no IPv6 address" '10.0.0.5/24' 'fe80::1' ''
+refused two-v4-gateways "two IPv4 gateways" '10.0.0.5/24' '10.0.0.1,10.0.0.2' ''
+refused two-v6-gateways "two IPv6 gateways" '2001:db8::5/64' '2001:db8::1,2001:db8::2' ''
 refused bad-dns "a DNS server that is not an address" '10.0.0.5/24' '' 'dns.example'
 refused bad-interface "an interface name with a shell metacharacter" '10.0.0.5/24' '' '' 'eth0;reboot'
 refused injection "an address carrying a shell command" '10.0.0.5/24;reboot' '' ''

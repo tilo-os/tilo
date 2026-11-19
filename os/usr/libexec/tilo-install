@@ -56,8 +56,8 @@
 #                                     NetworkManager and kept in the installed
 #                                     system, so a machine whose only address is
 #                                     a static public one can enroll and open its
-#                                     disk. --network-gateway and --network-dns
-#                                     go with it.
+#                                     disk. --network-gateway (one per address
+#                                     family) and --network-dns go with it.
 #     --unlock <choice>               how the machine is planned to unlock after
 #                                     a boot: owner-device, tpm or passphrase
 #                                     (empty = the image's own default). A
