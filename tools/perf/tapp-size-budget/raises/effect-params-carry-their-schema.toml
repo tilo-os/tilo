@@ -1,0 +1,5 @@
+reason = "An effect parameter now publishes its type's JSON schema, which the SDK types and the API read: every app's surface.toml carries a `schema` beside each declared parameter, and the package carries that file as data. Feeds' two text parameters add 68 bytes of surface and one 512-byte package block; t's app-sizes-x86_64 (run rb5c377973c) measured it 512 bytes over its budget. One 64 KiB step, the ratchet's quantum. The aarch64 budget is the same surface; that architecture's first run prints what to raise it to."
+run = "rb5c377973c"
+
+[apps."so.tilo.feeds"]
+x86_64 = 65536
