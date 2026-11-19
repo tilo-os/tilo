@@ -51,6 +51,17 @@ pub fn keeps(id: &str) -> bool {
 pub const INDEX_KIND: &str = "settings.index";
 /// The kind of one setting under [`INDEX`].
 pub const SETTING_KIND: &str = "settings.setting";
+
+/// The index as a declared type: the settings people look for by name.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.index", label = "Settings")]
+pub struct SettingsIndex;
+
+/// One setting, and each of its values, as a declared type: what search
+/// changes in place.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.setting", label = "Setting")]
+pub struct SettingRow;
 /// Between a setting's id and the name of one of its values, in the id of
 /// the value's resource: each value of a choice is an action of its own,
 /// on a resource of its own.
@@ -248,9 +259,8 @@ impl SettingsService {
                 }
                 confirm_as(&mut spec, section, &set_path(choice.field, &option.json()));
                 options.push(
-                    ResourceSpec::new(
+                    tilo_resource::typed_resource::<SettingRow>(
                         option_resource(setting.id, option.name),
-                        SETTING_KIND,
                         label,
                     )
                     .with_action(spec),
@@ -291,19 +301,21 @@ impl SettingsService {
         if actions.is_empty() && options.is_empty() {
             return None;
         }
-        let mut resource = ResourceSpec::new(setting_resource(setting.id), SETTING_KIND, name)
-            .with_children(options);
+        let mut resource =
+            tilo_resource::typed_resource::<SettingRow>(setting_resource(setting.id), name)
+                .with_children(options);
         resource.actions = actions;
         Some(resource)
     }
 
     /// The settings people look for by name that search changes in place.
     fn index(&self, sections: &[ResourceSpec]) -> ResourceSpec {
-        ResourceSpec::new(INDEX, INDEX_KIND, crate::i18n::t("settings-resource")).with_children(
-            index::SETTINGS
-                .iter()
-                .filter_map(|setting| self.publish(setting, sections)),
-        )
+        tilo_resource::typed_resource::<SettingsIndex>(INDEX, crate::i18n::t("settings-resource"))
+            .with_children(
+                index::SETTINGS
+                    .iter()
+                    .filter_map(|setting| self.publish(setting, sections)),
+            )
     }
 
     /// What running `effect` on `setting` runs on its section: the address
