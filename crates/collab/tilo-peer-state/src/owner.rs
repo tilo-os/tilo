@@ -347,10 +347,14 @@ impl NativeCommittedView {
             return false;
         };
         let device = &self.device().device_public_key;
+        // The founder's certificate writes for this device: it is this device's, or that of the
+        // workspace service this device certified.
         founder == *device
             || self
-                .transport_hint()
-                .is_ok_and(|hint| hosted_by(hint, &founder) && hosted_by(hint, device))
+                .peer
+                .certificates()
+                .iter()
+                .any(|cert| cert.device_public_key == founder && cert.is_of_device(device))
     }
     /// Whether this device entered a workspace that existed before it: it
     /// redeemed an invitation, or a host vouched for it as a further device of
