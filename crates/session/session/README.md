@@ -30,9 +30,10 @@ same reason it starts no connectivity, system or audio services: the network,
 the clock and time zone, and where sound goes are that computer's.
 
 A nested session leaves the desktop it runs in alone. Its desktop services
-serve no bus unless a flag names one, so the host's session bus keeps its
-portal and notification names; for services on a bus of their own, start a
-private daemon and name it:
+serve on the session bus it was started on, so start it on a private daemon
+(as `dist/dev/session-bus.sh` does) and the host's session bus keeps its portal
+and notification names. `--session-bus ADDRESS` names a bus instead of the
+environment's:
 
 ```sh
 dbus-daemon --session --nofork --address=unix:path="$XDG_RUNTIME_DIR/tilo-nested-bus" &
