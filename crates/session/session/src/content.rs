@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iroh::EndpointId;
+use neighbour_wire::content::MAX_CONTENT_BYTES;
 use neighbour_wire::{NeighbourMsg, peer_handle};
 use tilo_broker_core::route::CrdtRoute;
 use tilo_broker_core::services::{CONTENT_PUT_SCOPE, ContentSink, ContentStoreServices};
@@ -29,7 +30,7 @@ use tilo_network_actor::{RecordContentDelivery, WorkspaceId};
 use tilo_runtime::offload::{BindError, BlobScope, MediaFuture, WorkspaceMedia};
 use tilo_workspace_service::apps::document_content::{
     ContentPeer, ContentPeers, ContentPiece, ContentScope, ContentShelf, ContentSources,
-    ContentState, MAX_CONTENT_BYTES, RouteContent,
+    ContentState, RouteContent,
 };
 
 use crate::sync::{Cmd, HostOutbox};
