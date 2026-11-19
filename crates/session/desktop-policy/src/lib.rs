@@ -403,7 +403,7 @@ impl TileSource for Windows {
         });
     }
 
-    fn window_record(&self, tab: TabId) -> Option<(String, String)> {
+    fn window_resource(&self, tab: TabId) -> Option<(String, String)> {
         let notes = self.notes.borrow().clone()?;
         notes.window_record(tab)
     }

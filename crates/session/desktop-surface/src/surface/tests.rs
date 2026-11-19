@@ -31,6 +31,11 @@ pub(super) fn collect<'a>(
     found
 }
 
+/// The resource a window of tab `tab` shows, as its app says: what its bar lifts.
+pub(super) fn resource_of(tab: u64) -> String {
+    format!("notes.workspace/pages/p{tab}")
+}
+
 struct Notices;
 
 impl TileSource for Notices {
@@ -39,6 +44,10 @@ impl TileSource for Notices {
             title: tab.title.clone(),
             detail: String::new(),
         })
+    }
+
+    fn window_resource(&self, tab: TabId) -> Option<(String, String)> {
+        Some((resource_of(tab), String::new()))
     }
 }
 

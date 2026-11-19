@@ -44,40 +44,6 @@ impl PlayerState {
         statuses
     }
 
-    /// What the live rows say about their own effects: turning subtitles off is
-    /// offered while a subtitle track is on, and clearing the recent videos
-    /// while there are any.
-    pub(crate) fn row_status(&self, id: &str) -> Vec<EffectStatus> {
-        let mut statuses = Vec::new();
-        if id == crate::actions::TRACKS_ID
-            && !self
-                .shown_metadata
-                .subtitle_tracks
-                .iter()
-                .any(|track| track.selected)
-        {
-            statuses.push(
-                EffectStatus::unavailable(
-                    VideoEffect::SUBTITLES_OFF,
-                    "no_subtitles",
-                    "No subtitles are on",
-                )
-                .on(id),
-            );
-        }
-        if id == crate::actions::HISTORY_ID && self.recent.is_empty() {
-            statuses.push(
-                EffectStatus::unavailable(
-                    VideoEffect::CLEAR_RECENT,
-                    "no_recent",
-                    "No video has been played on this device",
-                )
-                .on(id),
-            );
-        }
-        statuses
-    }
-
     /// Do `effect` now; refused when its target changed since it was offered.
     #[allow(
         clippy::too_many_lines,
@@ -93,14 +59,8 @@ impl PlayerState {
             }
             VideoEffect::OpenVideo { path: Some(path) } => self.open_named(&path)?,
             VideoEffect::OpenVideo { path: None } => self.trigger_open(None)?,
-            VideoEffect::PlayQueued { item } => {
-                let entry = self.local_entry_id(&item)?;
-                self.open_local_entry(&entry)?;
-            }
-            VideoEffect::RemoveQueued { item } => {
-                let entry = self.local_entry_id(&item)?;
-                self.remove_queue_entry(&entry)?;
-            }
+            VideoEffect::PlayQueued { item } => self.open_local_entry(&item)?,
+            VideoEffect::RemoveQueued { item } => self.remove_queue_entry(&item)?,
             VideoEffect::ClearRecent => self.clear_recent_history()?,
             VideoEffect::ShowLibrary { tab } => {
                 self.library_tab = LibraryTab::named(&tab)

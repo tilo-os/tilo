@@ -787,6 +787,7 @@ d-6obnc5qh = Eintrag hinzufügen
 
 d-qt2z24yc = Erledigen
     .doc = Markiert einen Eintrag als erledigt.
+    .w-already-done = Schon erledigt
 
 d-jkdyuciq = Eintrag entfernen
     .doc = Nimmt einen Eintrag aus dem Backlog.
@@ -799,6 +800,8 @@ d-pshdk4bg = Reagieren
 d-pshdk4bg-emoji = Emoji
 
 d-iemy5gb4 = Eintrag hinzufügen~present
+
+d-24lyinrx = Erledigen~present
 
 d-bmdkc22s = Name
     .doc = Wie die Galerie heißt: ihr Name, damit kein Feld, das eine Seite bearbeitet, für ihren Titel gehalten wird.

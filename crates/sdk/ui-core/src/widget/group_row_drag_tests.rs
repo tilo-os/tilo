@@ -1,8 +1,33 @@
-//! A dragged window near the strip's edge pans the strip, and resting on a background tab
-//! brings it to the front.
+//! A dragged window near the strip's edge pans the strip, resting on a background tab brings it
+//! to the front, and a bar drag carries the window's resource on the drag bus.
 
-use super::tests::{dispatch_at, group_grab_point, make_row_with_groups_with_taffy, press_at};
+use super::tests::{
+    dispatch_at, group_grab_point, make_row_with_groups_with_taffy, move_to, press_at,
+};
 use super::*;
+
+const RESOURCE: &str = "notes.workspace/pages/p_crit";
+
+fn release(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId) {
+    dispatch_at(
+        row,
+        taffy,
+        root,
+        &WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        },
+    );
+}
+
+/// The window `row` stands first, carrying `RESOURCE`, taken by its bar and carried to `to`.
+fn lifted(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, to: Point) {
+    row.groups[0].set_carries(Some(RESOURCE.to_owned()));
+    let grab = group_grab_point(row, 0);
+    press_at(row, taffy, root, grab);
+    dispatch_at(row, taffy, root, &move_to(to));
+}
 
 tilo_test_env::scenario! {
     fn a_dragged_window_pans_the_strip_and_raises_a_tab;
@@ -85,5 +110,53 @@ tilo_test_env::scenario! {
         assert!(!row.advance_drag_reach_for_test(t0));
         assert!(!row.advance_drag_reach_for_test(t0 + Duration::from_secs(2)));
         assert_eq!(row.groups[0].active_tab_id(), 1);
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_window_lifted_by_its_bar_carries_its_resource;
+    phase a_travelling_press_on_a_windows_bar_puts_its_resource_in_flight;
+    {
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        let grab = group_grab_point(&row, 0);
+        let to = Point::new(row.groups[2].get_rect().center().x + 10.0, grab.y);
+        lifted(&mut row, &taffy, root, to);
+        let flight = crate::widget::drag_bus::current().expect("the drag carries the window");
+        assert_eq!(flight.source, "window:100", "the flight is the window's own");
+        let crate::dnd::DragPayload::Custom { kind, blob } = flight.payload else {
+            panic!("a window's bar carries a resource");
+        };
+        assert_eq!(kind, crate::widget::drag_source::RESOURCE_PAYLOAD);
+        assert_eq!(
+            String::from_utf8(blob).expect("a resource is text"),
+            RESOURCE
+        );
+        assert_eq!(flight.label, "T1", "over the pointer stands the window's name");
+
+        release(&mut row, &taffy, root);
+        assert!(
+            crate::widget::drag_bus::current().is_none(),
+            "letting go here takes the window off the bus"
+        );
+        assert!(
+            row.take_pending_group_reorder().is_some(),
+            "and the strip still rearranges under the pointer"
+        );
+    }
+
+    phase a_window_carried_off_the_screen_rearranges_nothing_where_it_left;
+    {
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        let grab = group_grab_point(&row, 0);
+        let to = Point::new(row.groups[2].get_rect().center().x + 10.0, grab.y);
+        lifted(&mut row, &taffy, root, to);
+        assert!(row.group_drag_active(), "fixture: the window is being moved");
+        // The pointer left the screen and another of the person's devices took the drag.
+        crate::widget::drag_bus::carry_away();
+        release(&mut row, &taffy, root);
+        assert_eq!(row.group_ids(), vec![100, 200, 300], "nothing is reordered here");
+        assert_eq!(row.take_pending_group_reorder(), None);
+        assert_eq!(row.take_pending_float(), None, "and no window floats");
+        assert!(crate::widget::drag_bus::current().is_none());
     }
 }

@@ -36,6 +36,8 @@ mod hint_places;
 pub use hint_places::HintPlaces;
 #[path = "group_row_canvas.rs"]
 mod canvas;
+#[path = "group_row_crossing.rs"]
+mod crossing;
 #[path = "group_row_floats.rs"]
 mod floats;
 pub use floats::{FLOAT_CARD_MARGIN, FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, keep_float_inside};
@@ -212,6 +214,8 @@ pub struct GroupRow {
     group_reorder_target: Option<usize>,
     group_reorder_section: Option<usize>,
     pending_group_reorder: Option<(u64, usize)>,
+    /// The window a bar drag carries, while it carries one, and a window carried here.
+    carried: crossing::Carried,
     /// The next press carries the window it lands in from anywhere in it, its body included, as a
     /// press on its bar does: the press was made with Super held.
     carry_press: bool,
@@ -943,6 +947,7 @@ impl GroupRow {
             group_reorder_target: None,
             group_reorder_section: None,
             pending_group_reorder: None,
+            carried: crossing::Carried::default(),
             carry_press: false,
             pending_topology_change: false,
             output_spans: Vec::new(),
@@ -3062,6 +3067,9 @@ impl GroupRow {
                 lifted = true;
             }
         }
+        if drag.moved && !drag.held {
+            self.carry_window(&drag);
+        }
         self.group_drag = Some(drag);
         if drag.moved && drag.held {
             // Pulled, never placed: there is no gap to drop it in.
@@ -3098,6 +3106,9 @@ impl GroupRow {
             return false;
         };
         let claimed = drag.moved;
+        if !self.let_the_window_go(drag.group_id) {
+            return claimed;
+        }
         if drag.held {
             if drag.moved && !self.reduce_motion {
                 let pull = resisted(self.last_cursor - drag.start);
@@ -4099,6 +4110,7 @@ impl Widget for GroupRow {
                 self.prune_closed_groups();
             }
             let now = crate::motion::frame_now();
+            self.take_window_drop();
             self.tick_snap_at(now);
             self.advance_drag_reach(now);
             self.advance_edge_autoscroll(now);

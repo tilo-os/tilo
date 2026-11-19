@@ -1550,7 +1550,7 @@ impl TileSource for Tiles {
         })
     }
 
-    fn window_record(&self, tab: TabId) -> Option<(String, String)> {
+    fn window_resource(&self, tab: TabId) -> Option<(String, String)> {
         self.shared.records.borrow().get(&tab).map(|checkout| {
             (
                 checkout.id.route().to_owned(),
