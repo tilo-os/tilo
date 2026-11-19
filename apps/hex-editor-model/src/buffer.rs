@@ -379,13 +379,17 @@ impl Operations for ByteBuffer {
             BufferEdit::Overwrite { offset, bytes } => (EditOpKind::Set, offset, bytes.0.len()),
         };
         let number = |value: usize| Scalar::from_json(&serde_json::Value::from(value));
-        OpDescription {
-            op: kind,
-            args: [("offset", number(*offset)), ("count", number(count))]
-                .into_iter()
-                .filter_map(|(name, value)| Some((name.to_owned(), value?)))
-                .collect(),
+        // Inserted rather than collected: `BTreeMap`'s `FromIterator` sorts the
+        // entries first, and std's sort is generic over the key and value, so a
+        // collect leaves a copy of it in every app that describes an edit.
+        let mut args = std::collections::BTreeMap::new();
+        if let Some(value) = number(*offset) {
+            args.insert("offset".to_owned(), value);
         }
+        if let Some(value) = number(count) {
+            args.insert("count".to_owned(), value);
+        }
+        OpDescription { op: kind, args }
     }
 }
 
