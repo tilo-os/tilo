@@ -142,6 +142,26 @@ mod tests {
             assert!(!admission(VIEWER, Some(policy())).admits(Some(&for_viewer), None, verbs::WRITE));
         }
 
+        phase a_program_writes_with_its_person_s_access;
+        {
+            let editor = crate::writer::Writer::Program {
+                id: "org.gnome.TextEditor".into(),
+                name: "Text Editor".into(),
+            };
+            let app = crate::writer::Writer::App { id: "so.tilo.notes".into() };
+            for writer in [editor, app] {
+                for (person, may) in [(OWNER, true), (EDITOR, true), (VIEWER, false)] {
+                    let invoker = writer.invoker(Some(person)).expect("a program names itself");
+                    let admits = admission(person, Some(policy())).admits(
+                        Some(&invoker.acting),
+                        Some("n1"),
+                        verbs::WRITE,
+                    );
+                    assert_eq!(admits, may, "{writer:?} for {person}");
+                }
+            }
+        }
+
         phase a_deny_on_the_tree_refuses_even_its_owner_s_agent;
         {
             let mut denied = policy();
