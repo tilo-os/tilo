@@ -41,6 +41,12 @@ pub(super) struct Missed {
     /// Records whose checkpoint, coverage or earlier changes were missing,
     /// each as this peer held it then.
     routes: std::collections::BTreeMap<Route, Option<Vec<automerge::ChangeHash>>>,
+    /// The governance this peer held when a write waiting for a role change
+    /// was let go: the write is asked for again once the governance moves
+    /// past it. Its writer's held writes filled their share of the queue
+    /// ([`MAX_HELD_FOR_GOVERNANCE_PER_WRITER`]), as a peer that has not
+    /// taken in the workspace's governance yet sees every write of a replay.
+    governance: Option<Vec<[u8; 32]>>,
     /// Something else was missing, or too much to tell apart: any change
     /// that lands asks for a replay.
     anything: bool,
@@ -64,7 +70,10 @@ struct LetGo {
 
 impl Missed {
     fn is_empty(&self) -> bool {
-        self.authors.is_empty() && self.routes.is_empty() && !self.anything
+        self.authors.is_empty()
+            && self.routes.is_empty()
+            && self.governance.is_none()
+            && !self.anything
     }
 }
 
@@ -178,11 +187,15 @@ impl StatePeer {
                 .count()
                 >= MAX_HELD_FOR_GOVERNANCE_PER_WRITER
         {
+            // Let go, not refused: the governance it waits for may simply
+            // not be here yet (a replay to a peer that just started reaches
+            // it ahead of the workspace's governance). Its server is asked for
+            // it again once the governance moves.
             let input = dropped_input(
                 &source,
                 &message,
                 Some(prerequisite.clone()),
-                DropReason::Refused(collab_types::GOVERNANCE_NEVER_ARRIVED.into()),
+                DropReason::Superseded,
             );
             self.remember_missed(&input, in_the_clear(&message));
             let mut report = deferred(vec![input], lacks_history);
@@ -365,6 +378,11 @@ impl StatePeer {
                 let held = self.route_heads(&route);
                 self.missed.routes.entry(route).or_insert(held);
             }
+            Some(MissingPrerequisite::Governance) => {
+                if self.missed.governance.is_none() {
+                    self.missed.governance = Some(self.governance().heads());
+                }
+            }
             _ => self.missed.anything = true,
         }
         if self
@@ -425,6 +443,12 @@ impl StatePeer {
         let mut due = false;
         if self.missed.anything && landed {
             self.missed.anything = false;
+            due = true;
+        }
+        if let Some(held) = &self.missed.governance
+            && *held != self.governance().heads()
+        {
+            self.missed.governance = None;
             due = true;
         }
         let certificates = &self.core.certificates;
