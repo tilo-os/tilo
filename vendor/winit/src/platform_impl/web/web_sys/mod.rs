@@ -151,14 +151,13 @@ pub fn set_canvas_position(
     style.set("top", &format!("{}px", position.y));
 }
 
-/// This function will panic if the element is not inserted in the DOM
-/// or is not a CSS property that represents a size in pixel.
+/// Returns the CSS pixel size for `property`, or `0.0` if the element is
+/// detached from the DOM or has a non-pixel computed size (e.g. `auto`).
 pub fn style_size_property(style: &Style, property: &str) -> f64 {
     let prop = style.get(property);
     prop.strip_suffix("px")
-        .expect("Element was not inserted into the DOM or is not a size in pixel")
-        .parse()
-        .expect("CSS property is not a size in pixel")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0.0)
 }
 
 pub fn is_dark_mode(window: &web_sys::Window) -> Option<bool> {
