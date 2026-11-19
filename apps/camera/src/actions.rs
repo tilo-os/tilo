@@ -230,17 +230,32 @@ pub enum CameraEffect {
     RemovePage,
 }
 
+/// The action a recent capture offers to the app that owns its verified
+/// bytes.
+pub(crate) const HANDOFF_ACTION: &str = "open";
+
 /// The capture's handoff to the app that owns its verified bytes: the app's
 /// typed launch of the content the capture published.
 fn capture_handoff(is_video: bool, content_hash: Option<&str>) -> Option<ActionSpec> {
     let content_hash = content_hash?;
     let (app_id, destination) = capture_destination(is_video);
-    let label = format!("Open in {destination}");
-    Some(ApplicationLaunch::with_content(app_id, content_hash).spec(
-        "open",
-        &label,
-        "Open the verified portable capture in its owning app",
-    ))
+    Some(
+        ui::framework::ContentHandoff::new(
+            app_id,
+            format!("Open in {destination}"),
+            "Open the verified portable capture in its owning app",
+        )
+        .spec(HANDOFF_ACTION, content_hash),
+    )
+}
+
+/// The handoff the row's type offers, from the content hash the row bound.
+pub(crate) fn handoff_spec(is_video: bool, bindings: &RowBindings) -> Option<ActionSpec> {
+    let hash = bindings
+        .arguments(HANDOFF_ACTION)?
+        .get("content_hash")?
+        .as_str()?;
+    capture_handoff(is_video, Some(hash))
 }
 
 // ===========================================================================
@@ -359,21 +374,26 @@ pub(crate) fn capture_resource_id(it: &CaptureItem) -> String {
 /// The recent capture, offering to open its verified bytes in Photos or
 /// Video Player.
 pub(crate) fn recent_row(it: &CaptureItem) -> LiveRow {
-    let row = if it.is_video {
-        LiveRow::typed::<Video>(capture_resource_id(it), item_label(it))
-    } else {
-        LiveRow::typed::<Photo>(capture_resource_id(it), item_label(it))
-    };
     let content_hash = it
         .media_id
         .as_deref()
         .filter(|id| crate::media::is_media_id(id))
         .and_then(|id| id.strip_prefix(crate::media::MEDIA_PREFIX));
-    // The handoff is another app's typed launch, not an effect of Camera's
-    // own vocabulary, so the capture's row offers it beside its type's.
-    match capture_handoff(it.is_video, content_hash) {
-        Some(handoff) => row.operation(handoff),
-        None => row,
+    // The handoff is another app's typed launch, offered as the row's own
+    // `open`, from the content hash the row carries.
+    let mut bindings = RowBindings::new();
+    if let Some(hash) = content_hash {
+        bindings = bindings.bind_id(
+            HANDOFF_ACTION,
+            [("content_hash", serde_json::Value::String(hash.to_owned()))],
+        );
+    }
+    let id = capture_resource_id(it);
+    let label = item_label(it);
+    if it.is_video {
+        LiveRow::typed_with::<Video>(id, label, &bindings)
+    } else {
+        LiveRow::typed_with::<Photo>(id, label, &bindings)
     }
 }
 

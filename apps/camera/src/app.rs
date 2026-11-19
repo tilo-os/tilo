@@ -552,40 +552,22 @@ impl CameraApp {
         }
     }
 
-    fn media_handoff_resource(app_id: &str, label: &str) -> ui::framework::LiveRow {
-        let spec = crate::actions::ApplicationLaunch::content_spec(
-            app_id,
-            "open",
-            &crate::CATALOG.t_args(
-                "camera-app-open",
-                &[("app", ui::i18n::ArgValue::Text(label.to_owned()))],
-            ),
-            &crate::CATALOG.t_args(
-                "camera-app-open-latest",
-                &[("app", ui::i18n::ArgValue::Text(label.to_owned()))],
-            ),
-        );
-        ui::framework::LiveRow::typed::<ui::framework::Application>(format!("{app_id}.app"), label)
-            .operation(spec)
-    }
-
     /// An emitter handing a capture to `app_id`, whose name `name` is a
     /// catalogue key.
     fn media_handoff_emitter(app_id: &str, name: &str) -> Option<ActionEmitter<String>> {
-        use ui::tilo_actions::ActionBinding;
-
-        let row = Self::media_handoff_resource(app_id, &crate::CATALOG.t(name));
-        let spec = row.operations().first()?;
-        ActionBinding::new(&row, spec, |content_hash| {
-            let mut arguments = serde_json::Map::new();
-            arguments.insert(
-                "content_hash".into(),
-                serde_json::Value::String(content_hash),
-            );
-            arguments
-        })
-        .ok()
-        .map(ActionEmitter::new)
+        let label = crate::CATALOG.t(name);
+        ui::framework::ContentHandoff::new(
+            app_id,
+            crate::CATALOG.t_args(
+                "camera-app-open",
+                &[("app", ui::i18n::ArgValue::Text(label.clone()))],
+            ),
+            crate::CATALOG.t_args(
+                "camera-app-open-latest",
+                &[("app", ui::i18n::ArgValue::Text(label))],
+            ),
+        )
+        .emitter("open")
     }
 
     fn photos_browse_emitter() -> Option<ActionEmitter<()>> {
