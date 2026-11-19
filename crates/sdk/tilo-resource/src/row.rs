@@ -187,10 +187,11 @@ impl RowBindings {
         self
     }
 
-    /// Offer `spec` on the row: an action another resource declares, which
-    /// the row was given rather than declaring it itself (a settings
-    /// section's edit, the open of an installed app), published on the row
-    /// as that resource published it.
+    /// Offer `spec` on the row as it is: an action another resource declares,
+    /// which the row was given rather than declaring it itself (a settings
+    /// section's edit, the open of an installed app), or one the row's window
+    /// shapes from its own state for a single entity it names (a form the page
+    /// asks, the departure it holds).
     #[must_use]
     pub fn spec(mut self, spec: ActionSpec) -> Self {
         self.specs.push(spec);

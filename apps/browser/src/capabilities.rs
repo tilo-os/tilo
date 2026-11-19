@@ -502,20 +502,24 @@ impl Capabilities {
     /// its Block button denies it.
     pub fn resource(&self) -> Option<ui::framework::LiveRow> {
         let (_, origin, rights) = self.pending()?;
-        Some(
-            ui::framework::LiveRow::typed::<crate::row_types::PagePermission>(
-                RESOURCE,
-                crate::CATALOG.t_args(
-                    "browser-permission-request",
-                    &[
-                        ("origin", ArgValue::Text(origin.to_owned())),
-                        ("rights", ArgValue::Text(rights.to_owned())),
-                        ("seconds", ArgValue::Number(f64::from(PERMISSION_SECONDS))),
-                    ],
-                ),
-            )
-            .specialized(self.permission_answers()),
-        )
+        let mut bindings = ui::tilo_resource::RowBindings::new();
+        for answer in self.permission_answers() {
+            bindings = bindings.spec(answer);
+        }
+        Some(ui::framework::LiveRow::typed_with::<
+            crate::row_types::PagePermission,
+        >(
+            RESOURCE,
+            crate::CATALOG.t_args(
+                "browser-permission-request",
+                &[
+                    ("origin", ArgValue::Text(origin.to_owned())),
+                    ("rights", ArgValue::Text(rights.to_owned())),
+                    ("seconds", ArgValue::Number(f64::from(PERMISSION_SECONDS))),
+                ],
+            ),
+            &bindings,
+        ))
     }
     /// The answers to the site's waiting request, for the page whose outline
     /// names it and for the request's own row.
