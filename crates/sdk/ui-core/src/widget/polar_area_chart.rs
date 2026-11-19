@@ -19,7 +19,7 @@ use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_geometry::annulus;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
-use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
 pub struct PolarAreaStyle {
@@ -110,18 +110,9 @@ impl PolarAreaChart {
 
 impl PolarAreaMarks {
     fn geometry(&self) -> (Point, f64, f64) {
-        let top = if self.frame.title.is_empty() {
-            12.0
-        } else {
-            40.0
-        };
-        let area = Rect::new(
-            self.frame.rect.x0 + 14.0,
-            self.frame.rect.y0 + top,
-            self.frame.rect.x1 - 14.0,
-            self.frame.rect.y1 - 26.0,
-        );
-        let radius = (area.width().min(area.height()) / 2.0 - 18.0).max(1.0);
+        // A hovered sector reaches past the others by its offset, so the ring keeps that margin.
+        let area = self.frame.inside();
+        let radius = (area.width().min(area.height()) / 2.0 - self.style.hover_offset).max(1.0);
         (
             area.center(),
             radius * self.style.inner_radius.clamp(0.0, 0.92),
@@ -289,6 +280,10 @@ impl PlotMarks for PolarAreaMarks {
                 )
             })
             .collect()
+    }
+
+    fn place(&mut self, _tr: &mut TextRenderer, theme: &Theme) {
+        self.frame.margins = Margins::header(theme, &self.frame.title, 0);
     }
 
     #[allow(

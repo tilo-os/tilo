@@ -27,6 +27,8 @@ pub struct PlotFrame<H> {
     /// The smallest height [`Plot::with_height`] accepts.
     pub(crate) min_height: f32,
     pub(crate) inspection: ChartInspection<H>,
+    /// What the chart keeps between its box and its marks, measured as it is placed.
+    pub(crate) margins: Margins,
 }
 
 impl<H> PlotFrame<H> {
@@ -37,6 +39,7 @@ impl<H> PlotFrame<H> {
             height: None,
             min_height,
             inspection: ChartInspection::default(),
+            margins: Margins::default(),
         }
     }
     pub(crate) fn new(height: f32, min_height: f32) -> Self {
@@ -46,8 +49,121 @@ impl<H> PlotFrame<H> {
             height: Some(height),
             min_height,
             inspection: ChartInspection::default(),
+            margins: Margins::default(),
         }
     }
+}
+
+impl<H> PlotFrame<H> {
+    /// The box the marks take: the frame inside its margins.
+    pub(crate) fn inside(&self) -> Rect {
+        self.margins.inside(self.rect)
+    }
+
+    /// Where a legend's rows start: across the frame, under its title.
+    pub(crate) fn legend_area(&self) -> Rect {
+        let y = self.rect.y0 + self.margins.legend;
+        Rect::new(self.rect.x0, y, self.rect.x1, y)
+    }
+
+    /// How many rows the legend naming `names` takes across the frame.
+    pub(crate) fn legend_rows<'a>(&self, names: impl IntoIterator<Item = &'a str>) -> usize {
+        crate::widget::chart_legend::rows(names, self.rect.x0, self.rect.x1)
+    }
+}
+
+/// What every chart keeps between its box and its marks, in the theme's type and spacing: its
+/// title and then its legend over the marks, and the words of its axes beside and under them.
+/// The marks start on the box's edge wherever nothing stands beside them, so a chart lines up
+/// with the words over and under it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Margins {
+    /// Where the legend's rows start, under the title.
+    pub(crate) legend: f64,
+    pub(crate) top: f64,
+    pub(crate) left: f64,
+    pub(crate) right: f64,
+    pub(crate) bottom: f64,
+}
+
+impl Margins {
+    /// The title's band over the marks, then `legend_rows` rows of legend, each band a related
+    /// gap over what follows it.
+    pub(crate) fn header(theme: &Theme, title: &str, legend_rows: usize) -> Self {
+        let legend = crate::widget::chart_navigation::title_band(theme, title);
+        let rows = if legend_rows == 0 {
+            0.0
+        } else {
+            crate::num::f64_of_usize(legend_rows) * crate::widget::chart_legend::ROW_HEIGHT
+                + f64::from(theme.tokens.spacing.rhythm.related)
+        };
+        Self {
+            legend,
+            top: legend + rows,
+            ..Self::default()
+        }
+    }
+
+    /// The margins of a value axis whose widest label is `widest` wide: the label and a step before
+    /// the marks, and half a label's line over the top rule and under the bottom one, so the
+    /// end labels stand whole.
+    pub(crate) fn value_axis(mut self, theme: &Theme, widest: f64) -> Self {
+        let half = caption_line(theme) / 2.0;
+        self.left += widest + step(theme);
+        self.top += half;
+        self.bottom = self.bottom.max(half);
+        self
+    }
+
+    /// The margin `lines` lines of labels take under the marks, a step below them.
+    pub(crate) fn labels_under(mut self, theme: &Theme, lines: usize) -> Self {
+        if lines > 0 {
+            let under = step(theme)
+                + crate::num::f64_of_usize(lines) * caption_line(theme)
+                + crate::num::f64_of_usize(lines - 1) * f64::from(theme.tokens.spacing.s1);
+            self.bottom = self.bottom.max(under);
+        }
+        self
+    }
+
+    /// The box inside `rect` these margins leave, never turned inside out.
+    pub(crate) fn inside(&self, rect: Rect) -> Rect {
+        let x0 = (rect.x0 + self.left).min(rect.x1);
+        let y0 = (rect.y0 + self.top).min(rect.y1);
+        Rect::new(
+            x0,
+            y0,
+            (rect.x1 - self.right).max(x0),
+            (rect.y1 - self.bottom).max(y0),
+        )
+    }
+}
+
+/// The line a chart's small words take: its axis labels, ticks and captions.
+pub(crate) fn caption_line(theme: &Theme) -> f64 {
+    f64::from(
+        theme
+            .text(crate::tokens::TextRole::Caption)
+            .line_height_px(),
+    )
+}
+
+/// The step between a chart's marks and the words beside them.
+pub(crate) fn step(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.s2)
+}
+
+/// The widest of `labels` in the chart's small words.
+pub(crate) fn widest<S: AsRef<str>>(
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    labels: impl IntoIterator<Item = S>,
+) -> f64 {
+    let style = theme.text(crate::tokens::TextRole::Caption);
+    labels
+        .into_iter()
+        .map(|label| f64::from(tr.measure_style(label.as_ref(), None, &style).0))
+        .fold(0.0, f64::max)
 }
 
 pub struct PlotItem<A> {
@@ -117,6 +233,11 @@ pub trait PlotMarks: 'static {
     /// The height the chart lays out at; `None` fills the parent.
     fn layout_height(&self) -> Option<f32> {
         self.frame().height
+    }
+    /// Whether the chart stands at its natural height rather than filling the parent's, when
+    /// no height is set: a chart of rows, as tall as its rows are.
+    fn keeps_natural_height(&self) -> bool {
+        false
     }
     /// The height a filling chart wants at `width` when the parent leaves
     /// it open.
@@ -326,7 +447,13 @@ impl<M: PlotMarks> Widget for Plot<M> {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        let height = self.marks.layout_height();
+        let height = self.marks.layout_height().or_else(|| {
+            self.marks.keeps_natural_height().then(|| {
+                crate::text_render::with_layout_renderer(theme, |tr| {
+                    crate::num::f32_of_f64(self.marks.natural_height(tr, theme, 0.0))
+                })
+            })
+        });
         self.theme = theme.clone();
         let style = taffy::Style {
             size: taffy::Size {
@@ -535,6 +662,17 @@ pub(crate) struct ValueAxis<F> {
 }
 
 impl<F: Fn(f64) -> String> ValueAxis<F> {
+    /// The widest label the axis over `range` writes.
+    pub(crate) fn widest(tr: &mut TextRenderer, theme: &Theme, range: (f64, f64), label: F) -> f64 {
+        widest(
+            tr,
+            theme,
+            crate::charts::nice_ticks(range.0, range.1, AXIS_TICKS)
+                .into_iter()
+                .map(label),
+        )
+    }
+
     pub(crate) fn paint(
         &self,
         scene: &mut Scene,
@@ -576,6 +714,109 @@ impl<F: Fn(f64) -> String> ValueAxis<F> {
                     )),
                 None,
                 &theme.text(TextRole::Caption),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod margin_tests {
+    use super::*;
+    use crate::widget::cartesian_plot::{CartesianPlot, PlotDatum, PlotSeries};
+    use crate::widget::category_chart::{Category, CategoryChart, CategorySeries};
+    use crate::widget::chart_data::ChartItem;
+    use crate::widget::chart_navigation::title_band;
+    use crate::widget::radar_chart::{RadarAxis, RadarChart, RadarSeries};
+    use crate::widget::treemap::Treemap;
+    use vello::peniko::Color;
+
+    fn placed<M: PlotMarks>(mut chart: Plot<M>, theme: &Theme) -> Plot<M> {
+        chart.marks.frame_mut().rect = Rect::new(0.0, 0.0, 600.0, 400.0);
+        crate::text_render::with_layout_renderer(theme, |tr| chart.marks.place(tr, theme));
+        chart
+    }
+
+    tilo_test_env::scenario! {
+        fn every_chart_keeps_one_title_legend_and_edge;
+
+        phase every_legend_stands_under_the_title;
+        {
+            let theme = Theme::light();
+            let under = title_band(&theme, "Title");
+            let red = Color::from_rgb8(200, 0, 0);
+            let bars = placed(
+                CategoryChart::new(
+                    vec![Category::new("a", "A")],
+                    vec![CategorySeries::new("s", "Sales", red, [1.0])],
+                )
+                .titled("Title"),
+                &theme,
+            );
+            let lines = placed(
+                CartesianPlot::new(vec![PlotSeries::new(
+                    "s",
+                    "Sales",
+                    red,
+                    vec![PlotDatum::new("a", 0.0, 1.0), PlotDatum::new("b", 1.0, 2.0)],
+                )])
+                .titled("Title"),
+                &theme,
+            );
+            let web = placed(
+                RadarChart::new(
+                    vec![RadarAxis::new("a", "Speed", 1.0), RadarAxis::new("b", "Cost", 1.0)],
+                    vec![RadarSeries::new("s", "Sales", red, vec![0.5, 0.5])],
+                )
+                .titled("Title"),
+                &theme,
+            );
+            for (kind, entry) in [
+                ("bars", bars.marks.toggles().and_then(|t| t.entry("s"))),
+                ("lines", lines.marks.toggles().and_then(|t| t.entry("s"))),
+                ("radar", web.marks.toggles().and_then(|t| t.entry("s"))),
+            ] {
+                let entry = entry.expect("the legend names its series");
+                assert!(
+                    (entry.y0 - under).abs() < 0.5 && entry.x0.abs() < 0.5,
+                    "{kind}: the legend starts on the edge under the title: {entry:?}, title band {under}"
+                );
+            }
+        }
+
+        phase marks_start_on_the_edge_with_nothing_beside_them;
+        {
+            let theme = Theme::light();
+            let map = placed(
+                Treemap::new(vec![ChartItem::new("a", "A", 1.0)]).titled("Title"),
+                &theme,
+            );
+            let inside = map.marks.frame().inside();
+            assert!(inside.x0.abs() < 0.5 && (inside.x1 - 600.0).abs() < 0.5);
+            assert!(
+                (inside.y0 - title_band(&theme, "Title")).abs() < 0.5,
+                "the marks start a title band down: {inside:?}"
+            );
+        }
+
+        phase axis_margins_follow_the_text_scale;
+        {
+            let bars = |theme: &Theme| {
+                placed(
+                    CategoryChart::new(
+                        vec![Category::new("a", "A")],
+                        vec![CategorySeries::new("s", "S", Color::BLACK, [12_345.0])],
+                    ),
+                    theme,
+                )
+                .marks
+                .frame()
+                .margins
+            };
+            let small = bars(&Theme::light());
+            let large = bars(&Theme::light().with_text_scale(1.5));
+            assert!(
+                large.left > small.left + 1.0 && large.bottom > small.bottom + 1.0,
+                "larger words take wider margins: {small:?} against {large:?}"
             );
         }
     }

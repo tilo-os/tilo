@@ -20,7 +20,7 @@ use crate::widget::chart_data::{ChartLink, ChartNode, graph_items};
 use crate::widget::chart_geometry::{annulus, append_arc, polar};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
-use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
 pub struct ChordStyle {
@@ -75,6 +75,8 @@ pub struct ChordMarks {
     node_geometry: Vec<NodeGeom>,
     link_geometry: Vec<LinkGeom>,
     label_width: f64,
+    /// The line a label takes over or under the ring.
+    label_line: f64,
 }
 
 pub type ChordChart = Plot<ChordMarks>;
@@ -89,6 +91,7 @@ impl ChordChart {
             node_geometry: Vec::new(),
             link_geometry: Vec::new(),
             label_width: 0.0,
+            label_line: 0.0,
         })
     }
     #[must_use]
@@ -116,20 +119,12 @@ impl ChordChart {
 
 impl ChordMarks {
     fn geometry(&self) -> (Point, f64, f64) {
-        let top = if self.frame.title.is_empty() {
-            10.0
-        } else {
-            38.0
-        };
-        let area = Rect::new(
-            self.frame.rect.x0 + 12.0,
-            self.frame.rect.y0 + top,
-            self.frame.rect.x1 - 12.0,
-            self.frame.rect.y1 - 12.0,
-        );
-        let side = self.label_width.max(self.style.label_offset + 16.0);
+        let area = self.frame.inside();
+        let side = self
+            .label_width
+            .max(self.style.label_offset + self.label_line);
         let outer = (area.width() / 2.0 - side)
-            .min(area.height() / 2.0 - self.style.label_offset - 16.0)
+            .min(area.height() / 2.0 - self.style.label_offset - self.label_line)
             .max(2.0);
         (
             area.center(),
@@ -144,6 +139,7 @@ impl ChordMarks {
     /// The width the labels need beside the ring: the widest label, never
     /// more than a quarter of the chart, so the ring keeps its size.
     fn measure_label_width(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        self.label_line = crate::widget::plot::caption_line(theme);
         if !self.style.show_labels {
             self.label_width = 0.0;
             return;
@@ -307,6 +303,11 @@ impl PlotMarks for ChordMarks {
         graph_items(&self.nodes, &self.links, format_compact)
     }
 
+    fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        self.frame.margins = Margins::header(theme, &self.frame.title, 0);
+        self.measure_label_width(tr, theme);
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "weighted allocation, ribbons, arcs, labels and inspector share chord geometry"
@@ -318,7 +319,6 @@ impl PlotMarks for ChordMarks {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.measure_label_width(tr, theme);
         draw_title(
             scene,
             transform,

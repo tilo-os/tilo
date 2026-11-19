@@ -14,7 +14,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_navigation::draw_title;
-use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks, ValueAxis};
 
 #[derive(Clone, Debug)]
 pub struct Candle {
@@ -108,6 +108,8 @@ pub struct CandlestickMarks {
     candles: Vec<Candle>,
     style: CandlestickStyle,
     frame: PlotFrame<usize>,
+    /// The gap between the price panel and the volume panel under it.
+    panel_gap: f64,
 }
 
 pub type CandlestickChart = Plot<CandlestickMarks>;
@@ -118,6 +120,7 @@ impl CandlestickChart {
             candles,
             style: CandlestickStyle::default(),
             frame: PlotFrame::new(380.0, 160.0),
+            panel_gap: 0.0,
         })
     }
     #[must_use]
@@ -136,31 +139,35 @@ impl CandlestickChart {
 }
 
 impl CandlestickMarks {
+    /// The candles' panel: what the margins leave, less the volume panel under it.
     fn price_rect(&self) -> Rect {
-        let bottom = if self.style.show_volume { 88.0 } else { 38.0 };
-        Rect::new(
-            self.frame.rect.x0 + 60.0,
-            self.frame.rect.y0
-                + if self.frame.title.is_empty() {
-                    18.0
-                } else {
-                    48.0
-                },
-            self.frame.rect.x1 - 14.0,
-            self.frame.rect.y1 - bottom,
-        )
+        let inside = self.frame.inside();
+        match self.volume_rect() {
+            Some(volume) => Rect::new(
+                inside.x0,
+                inside.y0,
+                inside.x1,
+                (volume.y0 - self.panel_gap).max(inside.y0),
+            ),
+            None => inside,
+        }
     }
 
+    /// The volume panel: the last fifth of what the margins leave.
     fn volume_rect(&self) -> Option<Rect> {
         self.style.show_volume.then(|| {
-            let price = self.price_rect();
+            let inside = self.frame.inside();
             Rect::new(
-                price.x0,
-                price.y1 + 16.0,
-                price.x1,
-                self.frame.rect.y1 - 26.0,
+                inside.x0,
+                inside.y1 - inside.height() / 5.0,
+                inside.x1,
+                inside.y1,
             )
         })
+    }
+
+    fn price_label(&self, value: f64) -> String {
+        format!("{:.*}", self.style.price_decimals, value)
     }
 
     fn price_range(&self) -> (f64, f64) {
@@ -364,6 +371,16 @@ impl PlotMarks for CandlestickMarks {
             .collect()
     }
 
+    fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        let widest = ValueAxis::widest(tr, theme, self.price_range(), |value| {
+            self.price_label(value)
+        });
+        self.frame.margins = Margins::header(theme, &self.frame.title, 0)
+            .value_axis(theme, widest)
+            .labels_under(theme, 1);
+        self.panel_gap = f64::from(theme.tokens.spacing.rhythm.related);
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "candles, volume, axes and tooltip form one plot pass"
@@ -386,11 +403,11 @@ impl PlotMarks for CandlestickMarks {
             self.frame.rect,
             &self.frame.title,
         );
-        crate::widget::plot::ValueAxis {
+        ValueAxis {
             plot: price,
             range: (min, max),
             grid: self.style.show_grid,
-            label: |value| format!("{:.*}", self.style.price_decimals, value),
+            label: |value| self.price_label(value),
         }
         .paint(scene, transform, tr, theme);
         let candle_width =
@@ -466,7 +483,10 @@ impl PlotMarks for CandlestickMarks {
                 &candle.label,
                 theme.tokens.colors.text_dim,
                 transform
-                    * Affine::translate((x - f64::from(width) / 2.0, self.frame.rect.y1 - 18.0)),
+                    * Affine::translate((
+                        x - f64::from(width) / 2.0,
+                        self.frame.inside().y1 + crate::widget::plot::step(theme),
+                    )),
                 Some(crate::num::f32_of_f64(self.slot_width().max(0.0))),
                 &theme.text(TextRole::Caption),
             );

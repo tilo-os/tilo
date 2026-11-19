@@ -217,6 +217,9 @@ pub struct Options {
     /// Take the shots as a maximized window stands at rest: its bar hidden over the window's top
     /// edge until the person reaches for it, the app's frame filling the window.
     pub bar_at_rest: bool,
+    /// Take the shots in a window this tall at the `dump` size's width, so the lower part of a
+    /// long page shows; the check still reads the window at its own size.
+    pub shot_height: Option<u32>,
     /// The themes `shots` are taken in: a shipped theme by name
     /// (`glass`, `block`), in its light and dark variant, or a theme
     /// bundle's directory (`ui::theme_bundle`); none takes the stock
@@ -256,6 +259,7 @@ impl Default for Options {
             dump: None,
             shots: None,
             bar_at_rest: false,
+            shot_height: None,
             themes: Vec::new(),
             root: None,
             states: Vec::new(),
@@ -1254,6 +1258,7 @@ impl Worker<'_> {
             dump: self.options.dump,
             shots: self.options.shots.as_deref(),
             bar_at_rest: self.options.bar_at_rest,
+            shot_height: self.options.shot_height,
             themes: &self.options.themes,
             states: &self.options.states,
             keys: &self.options.keys,
@@ -1560,6 +1565,8 @@ struct AppCheck<'a> {
     shots: Option<&'a Path>,
     /// Take the shots with the window's bar at rest ([`Options::bar_at_rest`]).
     bar_at_rest: bool,
+    /// The height the shots are taken at ([`Options::shot_height`]).
+    shot_height: Option<u32>,
     themes: &'a [String],
     states: &'a [String],
     keys: &'a [String],
@@ -2394,6 +2401,11 @@ impl AppCheck<'_> {
                 }
             })
             .collect();
+        let shot = (
+            layout.size.width,
+            self.shot_height
+                .map_or(layout.size.height, |tall| tall.max(layout.size.height)),
+        );
         let viewport = (layout.size.width, layout.size.height);
         let stock = [String::new()];
         let themes = if self.themes.is_empty() {
@@ -2408,7 +2420,7 @@ impl AppCheck<'_> {
                 theme_pair(family)?
             };
             for (name, theme) in pair {
-                staged.lay_out(viewport, theme, layout.input(), 1.0)?;
+                staged.lay_out(shot, theme, layout.input(), 1.0)?;
                 if self.bar_at_rest {
                     staged.harness_mut().present_window_bar_at_rest();
                 }

@@ -105,7 +105,7 @@ view custom(g: Gallery) {
                 total: .some("88 hours"),
             )
             ui.GraphCanvas(
-                name: .some("Release pipeline"),
+                title: .some("Release pipeline"),
                 connections: [
                     .connection(from: "fetch", to: "build"),
                     .connection(from: "build", to: "test"),

@@ -16,7 +16,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
-use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks, ValueAxis};
 
 #[derive(Clone, Debug)]
 pub struct DistributionSeries {
@@ -208,17 +208,7 @@ impl DistributionChart {
 
 impl DistributionMarks {
     fn plot_rect(&self) -> Rect {
-        Rect::new(
-            self.frame.rect.x0 + 58.0,
-            self.frame.rect.y0
-                + if self.frame.title.is_empty() {
-                    16.0
-                } else {
-                    48.0
-                },
-            self.frame.rect.x1 - 14.0,
-            self.frame.rect.y1 - 40.0,
-        )
+        self.frame.inside()
     }
     fn summaries(&self) -> Vec<Option<Summary>> {
         self.series
@@ -379,6 +369,14 @@ impl PlotMarks for DistributionMarks {
             .collect()
     }
 
+    fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        let range = Self::range(&self.summaries());
+        let widest = ValueAxis::widest(tr, theme, range, format_compact);
+        self.frame.margins = Margins::header(theme, &self.frame.title, 0)
+            .value_axis(theme, widest)
+            .labels_under(theme, 1);
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "distribution grid, density, box summaries and inspector share one paint pass"
@@ -402,7 +400,7 @@ impl PlotMarks for DistributionMarks {
             self.frame.rect,
             &self.frame.title,
         );
-        crate::widget::plot::ValueAxis {
+        ValueAxis {
             plot,
             range,
             grid: self.style.show_grid,
@@ -531,7 +529,11 @@ impl PlotMarks for DistributionMarks {
                 scene,
                 &series.label,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((x - f64::from(width) / 2.0, plot.y1 + 10.0)),
+                transform
+                    * Affine::translate((
+                        x - f64::from(width) / 2.0,
+                        plot.y1 + crate::widget::plot::step(theme),
+                    )),
                 Some(crate::num::f32_of_f64(self.slot_width())),
                 &theme.text(TextRole::Caption),
             );
