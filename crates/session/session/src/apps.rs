@@ -1261,6 +1261,18 @@ impl Apps {
         });
     }
 
+    /// Close `tab`, the place the shell held for a launch that ended without the window it was
+    /// asked for and without anything to say: nothing comes into it.
+    fn close_tab(&self, tab: u64) {
+        self.answer_in_tabs(|policy| {
+            let _ = policy.handle().dispatch(
+                tilo_desktop_surface::navigation::LayoutEffect::CloseTab {
+                    tab: tab.to_string(),
+                },
+            );
+        });
+    }
+
     /// Change what tabs say through the desktop's policy. The answer is a shell command like any
     /// other: the shell carries it out, and lays its tabs out, on its next pass.
     fn answer_in_tabs(&self, answer: impl FnOnce(&mut tilo_desktop_policy::DesktopPolicy)) {

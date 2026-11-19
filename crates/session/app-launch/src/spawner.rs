@@ -31,6 +31,7 @@ use std::os::fd::AsFd as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -147,6 +148,9 @@ pub struct Event {
     /// Its keeper was killed while no desktop was there, taking the app with it: the app's saved
     /// tab says it stopped working rather than a notice opening here.
     pub killed: bool,
+    /// The session asked this app to end, as the person's own Quit does: the end is theirs, so no
+    /// notice says it stopped working.
+    pub asked_to_end: bool,
     /// The last of what the app wrote, when this session read its streams.
     /// Empty for an ending reported by someone who started nothing.
     pub said: crate::output::OutputTail,
@@ -566,6 +570,7 @@ impl Spawner {
         // Taken before the watcher can reap the child, so it names this
         // process and no later one with its pid.
         let (app_of, heard) = self.app_of(started.pid, &planned.app, kept.as_ref());
+        let asked_to_end = Arc::clone(&app_of.asked_to_end);
         running(&self.running).insert(id, app_of);
         write_down(started.pid);
         if let Some(hold) = hold {
@@ -610,6 +615,7 @@ impl Spawner {
                     title,
                     end,
                     killed: false,
+                    asked_to_end: asked_to_end.load(Ordering::Acquire),
                     said,
                 });
                 if let Some(wake) = wake {
@@ -969,6 +975,7 @@ impl Spawner {
             .unwrap_or(app.started);
         app.kept = Some(Arc::clone(&kept));
         let cgroup = app.cgroup_dir();
+        let asked_to_end = Arc::clone(&app.asked_to_end);
         running(&self.running).insert(id, app);
         // What the app wrote reached the desktop that started it; from here it is read from the
         // keeper's bounded file, from its start, and followed while the app has windows.
@@ -1014,6 +1021,7 @@ impl Spawner {
                     title,
                     end,
                     killed: false,
+                    asked_to_end: asked_to_end.load(Ordering::Acquire),
                     said,
                 });
                 if let Some(wake) = wake {
@@ -1066,6 +1074,7 @@ impl Spawner {
             .checked_sub(launcher::priority::STARTUP_WINDOW)
             .unwrap_or(app.started);
         app.kept = Some(Arc::clone(&kept));
+        let asked_to_end = Arc::clone(&app.asked_to_end);
         running(&self.running).insert(id, app);
         let (events, wake, still_running) = (
             self.events.0.clone(),
@@ -1090,6 +1099,7 @@ impl Spawner {
                     title,
                     end,
                     killed: false,
+                    asked_to_end: asked_to_end.load(Ordering::Acquire),
                     said: crate::output::OutputTail::default(),
                 });
                 if let Some(wake) = wake {
@@ -1165,6 +1175,7 @@ impl Spawner {
             title: launch.title,
             end,
             killed,
+            asked_to_end: false,
             said,
         });
     }
@@ -1367,6 +1378,9 @@ pub(crate) struct App {
     /// When this launch started: a launch is served before everything else
     /// while it opens ([`crate::memory`]).
     started: Instant,
+    /// The session asked this app to end, as the person's own Quit does: its end is theirs, so no
+    /// notice says it stopped working ([`crate::Event::asked_to_end`]).
+    asked_to_end: Arc<AtomicBool>,
     #[cfg(target_os = "linux")]
     pidfd: Option<std::os::fd::OwnedFd>,
     /// The keeper this launch runs behind, when it is kept.
@@ -1385,6 +1399,7 @@ impl App {
                 pid,
                 name: app,
                 started: Instant::now(),
+                asked_to_end: Arc::new(AtomicBool::new(false)),
                 pidfd: None,
                 kept: None,
             };
@@ -1408,6 +1423,7 @@ impl App {
             pid,
             name: app,
             started: Instant::now(),
+            asked_to_end: Arc::new(AtomicBool::new(false)),
             pidfd,
             kept: None,
         }
@@ -1435,6 +1451,7 @@ impl App {
             pid,
             name: app.to_owned(),
             started: Instant::now(),
+            asked_to_end: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1467,6 +1484,9 @@ impl App {
     /// moment to remove those files itself. `session_ends` when nothing of the session is left to
     /// clear them later, so the wait for the keeper is here; otherwise it is off the loop.
     fn end(&self, session_ends: bool) {
+        // Whoever ends it here is the person or the session they asked: the end that follows is no
+        // crash, and the app's saved place closes quietly.
+        self.asked_to_end.store(true, Ordering::Release);
         self.stop();
         #[cfg(target_os = "linux")]
         if let Some(kept) = &self.kept {
@@ -1693,6 +1713,38 @@ mod tests {
                 "no process, no ending to report"
             );
         }
+    }
+
+    /// An app the session ends on the person's ask is reported as asked to end: the session
+    /// tells it apart from a crash, so the place its window was closes quietly.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_app_the_session_ends_is_reported_as_asked() {
+        let mut spawner = Spawner::default();
+        let quiet = spawner
+            .start(&shell("exit 0", BTreeMap::new()))
+            .expect("starts");
+        let asked = spawner
+            .start(&shell("exec sleep infinity", BTreeMap::new()))
+            .expect("starts");
+        spawner.end_one(asked.id);
+        let mut ended = events(&spawner, 2);
+        ended.sort_by_key(|event| event.id);
+        assert_eq!(ended[0].id, quiet.id);
+        assert!(
+            !ended[0].asked_to_end,
+            "an app that closed on its own was not asked"
+        );
+        assert_eq!(ended[1].id, asked.id);
+        assert!(
+            ended[1].asked_to_end,
+            "the end the session asked for is the person's"
+        );
+        assert!(
+            ended[1].end.crashed(),
+            "a signal is how the ask reaches the app: {:?}",
+            ended[1].end
+        );
     }
 
     #[cfg(target_os = "linux")]

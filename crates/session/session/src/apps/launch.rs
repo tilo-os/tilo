@@ -189,6 +189,18 @@ impl Apps {
                     Got::Closed
                 },
             );
+            // A stop the person asked for is theirs, as closing the app's last window is: the
+            // tab closes quietly, and nothing stands where the window was to say it stopped
+            // working. A tab the shell held for a window that was not coming is closed with it.
+            if event.asked_to_end {
+                tracing::info!(app = %event.app, end = %event.end, "an app the person ended closed");
+                if could_not_open
+                    && let Some(tab) = launch.as_ref().and_then(|launch| launch.instance)
+                {
+                    self.close_tab(tab);
+                }
+                continue;
+            }
             // An app that ran with no window at all (an action's run) and one whose window came
             // are closed by an end they chose; one that crashed gets a notice.
             if !event.end.crashed() && !could_not_open {
