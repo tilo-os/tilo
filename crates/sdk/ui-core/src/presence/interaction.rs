@@ -558,10 +558,11 @@ impl PresenceCtx {
                 &Circle::new(target, radius),
             );
         }
-        // The agent wears the nametag it wears wherever it points, in its
-        // colour, saying what it is doing here: one tag for the agent and its
-        // action, clear of the text around it.
-        let words = self.interaction_status_label(interaction);
+        // The agent wears the nametag it wears wherever it points, in its colour: its name alone,
+        // one tag for the agent, clear of the text around it. What it is doing is said by the
+        // caret it writes with, the card of the action it took, and its line among who is here —
+        // not by a second sentence on the tag, which a long one pushes out of the window.
+        let words = actor_label(self, interaction);
         // A caret it writes with may wear its tag already (an agent writing in a document): the
         // pointer then goes without, one tag for one agent, at its caret. The caret's tag names
         // the agent ("Claude Code") where this one would say what it does; a second tag
@@ -1961,6 +1962,12 @@ pub(crate) mod tests {
                 assert_eq!(
                     presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
                     "Release Notes Agent: Working in Draft.md"
+                );
+                // The pointer's tag names the agent alone: what it does is the card's line, and
+                // a second sentence on the tag pushes a long one out of the window it points in.
+                assert_eq!(
+                    actor_label(&presence, &interaction(11, 1, InteractionPhase::Applying)),
+                    "Release Notes Agent"
                 );
                 presence.names.clear();
                 assert_eq!(
