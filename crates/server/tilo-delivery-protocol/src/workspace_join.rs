@@ -194,8 +194,8 @@ pub fn reachable_relay(url: &iroh_base::RelayUrl) -> bool {
 /// `100.64.0.0/10`), link-local, unspecified, multicast, broadcast,
 /// documentation, benchmarking and reserved ranges of IPv4, and their IPv6
 /// counterparts (loopback, `fc00::/7` unique-local, `fe80::/10` link-local,
-/// unspecified, multicast), as well as an IPv4 address written as an IPv6 one
-/// (`::ffff:10.0.0.1`).
+/// `fec0::/10` site-local, unspecified, multicast), as well as an IPv4 address
+/// written as an IPv6 one (`::ffff:10.0.0.1`).
 #[must_use]
 pub fn reachable_at(address: std::net::SocketAddr) -> bool {
     reachable_ip(address.ip()) && address.port() != 0
@@ -230,7 +230,10 @@ fn reachable_ip(address: std::net::IpAddr) -> bool {
                     || v6.is_loopback()
                     || v6.is_multicast()
                     || v6.is_unique_local()
-                    || v6.is_unicast_link_local())
+                    || v6.is_unicast_link_local()
+                    // fec0::/10: site-local, which RFC 3879 retired but QEMU's
+                    // user network still hands every guest (fec0::/64).
+                    || v6.segments()[0] & 0xffc0 == 0xfec0)
             }
         },
     }
@@ -519,6 +522,19 @@ mod tests {
     }
 
     #[test]
+    fn a_server_in_a_qemu_guest_keeps_its_way_in() {
+        // A server in a QEMU guest on the user network: the guest's IPv6
+        // address is site-local, no more a stranger's than its loopback ones,
+        // so the link keeps everything it has, which is how a page on the same
+        // computer reaches it.
+        let guest = with(&[
+            "http://127.0.0.1:36106/",
+            "[fec0::b096:51f8:c63e:c05d]:42601",
+        ]);
+        assert_eq!(reachable(&guest), guest, "{:?}", reachable(&guest));
+    }
+
+    #[test]
     fn a_stranger_can_dial_no_relay_their_network_alone_reaches() {
         for url in [
             "http://127.0.0.1:7704/",
@@ -553,6 +569,7 @@ mod tests {
             "[::1]:7704",
             "[fe80::1]:7704",
             "[fc00::1]:7704",
+            "[fec0::b096:51f8:c63e:c05d]:7704",
             "[::]:7704",
             "[::ffff:192.168.0.1]:7704",
             "203.0.113.1:7704",
