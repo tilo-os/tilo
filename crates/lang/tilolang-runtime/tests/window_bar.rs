@@ -670,6 +670,12 @@ type Shelf {
 }
 root Shelf
 default view shelf for Shelf
+default view album_page for Album
+view album_page(a: Album) {
+    section(a.title) {
+        text(a.title)
+    }
+}
 primary action add(s: Shelf) -> Album (icon: .plus) {
     s.albums.insert(Album(title: "Blue"))
 }
@@ -690,7 +696,10 @@ view shelf(s: Shelf) {
             let window = w.window("shelf", &root);
             let tree = window.tree();
             let shell = of_kind(tree, "ui.NavShell")[0];
-            let bar: Vec<&UiNode> = part(shell, "actions")
+            // The window lists albums that open, so `std.browse` shapes it as a document with
+            // an overview, and the controls stand over that overview: the part the window's
+            // bar is.
+            let bar: Vec<&UiNode> = part(shell, "overview_actions")
                 .into_iter()
                 .filter(|node| node.kind == "ui.Button")
                 .collect();

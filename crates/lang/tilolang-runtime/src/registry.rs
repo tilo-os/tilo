@@ -67,6 +67,19 @@ impl TypeInfo {
             .collect()
     }
 
+    /// The declared defaults of the type's text fields, by field id: what a new resource's text
+    /// fields hold. A text with no default, or the empty one, starts empty as its object does.
+    pub fn text_defaults(&self) -> Vec<(String, String)> {
+        self.fields
+            .iter()
+            .filter(|f| f.kind == FieldKind::Text)
+            .filter_map(|f| {
+                let text = f.default.as_ref()?.as_str()?;
+                (!text.is_empty()).then(|| (f.id.clone(), text.to_owned()))
+            })
+            .collect()
+    }
+
     pub fn field_names(&self) -> String {
         self.fields
             .iter()
@@ -665,6 +678,7 @@ impl Registry {
             ty: info.id.clone(),
             app: AppId::from(pkg.meta.app.as_str()),
             fields: info.specs(),
+            text_defaults: info.text_defaults(),
         })
     }
 }

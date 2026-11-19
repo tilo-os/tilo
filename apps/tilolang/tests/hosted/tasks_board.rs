@@ -971,7 +971,7 @@ fn an_agent_completing_a_task_is_seen_at_its_check_box() {
 }
 
 /// An agent renaming a task is seen writing in its title, as a person typing there would be:
-/// what it wrote stands in its colour and its caret, named with what it is doing, ends it.
+/// the title stands in its colour and its caret, named with what it is doing, ends it.
 #[test]
 fn an_agent_editing_a_title_is_seen_writing_in_it() {
     use crate::change_marks::{action_id, chroma_in, settle, text_field};
@@ -988,8 +988,25 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
     let mut args = serde_json::Map::new();
     // A caller names the field as the type declares it; the document keeps it under its id.
     args.insert("field".to_owned(), "title".into());
-    args.insert("value".to_owned(), "Buy oat milk and bread".into());
-    let event = agent_acting(&mut app, &task, &edit);
+    let words = "Buy oat milk and bread";
+    args.insert("value".to_owned(), words.into());
+    // The title as it stands before anyone writes there: what a field's text looks like on its
+    // own, which the write's colour is told apart from below.
+    let title = text_field(&mut app, "Buy oat milk");
+    let line = [title[1] + (title[3] - 16.0) / 2.0, 16.0];
+    let plain = chroma_in(&mut app, [title[0] + 12.0, line[0], 24.0, line[1]]);
+    let mut event = agent_acting(&mut app, &task, &edit);
+    // The broker anchors a field's write where the window binds it: the field by the id its type
+    // declares, over the whole of the item the action publishes, as the value it wrote now stands
+    // there (the process names the caller's field the same way, `bind_written_field`).
+    event.anchor = ui::tilo_actions::InteractionAnchor::Text {
+        region: title_field(),
+        ranges: vec![ui::tilo_actions::InteractionTextRange {
+            block: ui::tilo_actions::logical_resource_id(&task).into_owned(),
+            start: 0,
+            end: words.chars().count() as u64,
+        }],
+    };
     app.invoke(Some(agent.clone()), Some(&ambient), &task, &edit, &args)
         .unwrap();
     settle(&mut app);
@@ -1010,8 +1027,10 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
         .as_ref()
         .and_then(|access| access.name.clone())
         .unwrap_or_default();
+    // The mark names who writes there and what it did there: the characters it left say it in
+    // the past tense, as the action's words or else the kind of step it took.
     assert!(
-        named.starts_with("Helper: editing Title"),
+        named.starts_with("Helper: wrote"),
         "a reader is told who writes there and what: {named}"
     );
     let [cx, cy, _, ch] = caret.rect;
@@ -1020,18 +1039,22 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
         "the agent's caret stands in the title: {:?} in {field:?}",
         caret.rect
     );
-    // What it wrote stands in its colour beside the words that were there before.
-    // Inside the line, clear of the field's edge.
+    // A rename names the whole field where it is drawn, the words it kept and the words it wrote
+    // alike, so the title now stands in the writer's colour where it stood neutral before, while
+    // the field's empty rest keeps the window's own.
     let line = [cy + 4.0, (ch - 8.0).max(1.0)];
-    let kept = chroma_in(&mut app, [field[0] + 12.0, line[0], 24.0, line[1]]);
-    let written = chroma_in(&mut app, [cx - 30.0, line[0], 24.0, line[1]]);
+    let washed = chroma_in(&mut app, [field[0] + 12.0, line[0], 24.0, line[1]]);
+    let empty = chroma_in(
+        &mut app,
+        [field[0] + field[2] - 40.0, line[0], 24.0, line[1]],
+    );
     assert!(
-        written > kept.saturating_add(8),
-        "the words the agent wrote stand in its colour: {written} vs {kept}"
+        washed > plain.saturating_add(8) && washed > empty.saturating_add(8),
+        "the title stands in the colour of who writes there: {washed} against {plain} before and \
+         {empty} beside"
     );
     // The caret ends what it wrote: where a caret after the title's last letter stands, as Bo's
     // window places his there.
-    let words = "Buy oat milk and bread";
     let end = bo_writing(&mut app, &task, words.len());
     assert!(
         (cx - end[0]).abs() <= 1.0,

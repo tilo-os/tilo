@@ -35,6 +35,20 @@ pub(super) fn note_versions<C: idx::reflect::ChangeHead>(
     mirror: &Doc,
     resources: &BTreeMap<DocId, (AppId, TypeId)>,
 ) -> Removed {
+    let state = idx::reflect::Reflections::of(mirror);
+    note_versions_with(index, changes, mirror, resources, &state)
+}
+
+/// [`note_versions`], reading what each change wrote in `state`: a caller that reads the same
+/// changes for more — what they wrote, the versions they made — hands one state to each
+/// reader, so the objects a step wrote are walked up to their place once, not once a reader.
+pub(super) fn note_versions_with<'d, C: idx::reflect::ChangeHead>(
+    index: &mut Versions,
+    changes: impl IntoIterator<Item = C>,
+    mirror: &'d Doc,
+    resources: &BTreeMap<DocId, (AppId, TypeId)>,
+    state: &idx::reflect::Reflections<'d>,
+) -> Removed {
     let undone = idx::reflect::undone_changes(mirror);
     for change in changes {
         // What a change says is read once: its version, its action and its run answer what it
@@ -58,7 +72,7 @@ pub(super) fn note_versions<C: idx::reflect::ChangeHead>(
             idx::reflect::versions_of_action(stamp, action, run.as_ref())
         });
         let made = if made.is_empty() {
-            idx::reflect::stepped(&change, mirror, resources)
+            idx::reflect::stepped_with(&change, mirror, resources, state)
         } else {
             made
         };

@@ -485,11 +485,7 @@ fn a_task_typed_into_todays_entry_is_due_the_persons_today() {
             // The day a row is grouped under is the day the window heads by its own clock
             // (`ui::clock::today()`): the day it is due. They are one day, so the row heads
             // Today and stands in Today's list.
-            let headed_by = jiff::Timestamp::try_from(tilo_clock::to_std(tilo_clock::wall()))
-                .unwrap()
-                .to_zoned(jiff::tz::TimeZone::system())
-                .date()
-                .to_string();
+            let headed_by = ui::clock::today().to_string();
             assert_eq!(
                 due.as_deref(),
                 Some(headed_by.as_str()),
@@ -772,11 +768,7 @@ fn today_reads_tasks_from_its_document_and_clears_it_at_its_api() {
     let mut arguments = serde_json::Map::new();
     arguments.insert("title".to_owned(), "Water the plants".into());
     // Due today, the person's: what Today's place holds.
-    let today = jiff::Timestamp::try_from(tilo_clock::to_std(tilo_clock::wall()))
-        .unwrap()
-        .to_zoned(jiff::tz::TimeZone::system())
-        .date()
-        .to_string();
+    let today = ui::clock::today().to_string();
     arguments.insert("due".to_owned(), today.into());
     shell.deliver(
         &new_task,

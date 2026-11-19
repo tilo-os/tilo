@@ -11,7 +11,7 @@ mod cases {
 
 type Inbox {
     unread: Int = 3
-    kind: Text = "work"
+    kind: Text
     pinned: Bool = false
 
     search {

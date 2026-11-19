@@ -718,7 +718,8 @@ impl Lexer<'_> {
             end += 1;
         }
         self.pos = end;
-        if end == start || self.bytes.get(end - 1) == Some(&b'.') || !self.step_follows() {
+        let item_follows = self.at(0) == Some(b'/') && self.step_follows();
+        if end == start || self.bytes.get(end - 1) == Some(&b'.') || !item_follows {
             self.pos = start;
             self.id_chars();
         }
@@ -983,6 +984,12 @@ mod tests {
             "notes"
         );
         assert_eq!(reference("@todo.TodoList:01J8ZK4T.items").id, "01J8ZK4T");
+        // A dotted stretch no item follows is a field read, however it continues: a program
+        // that maps over the list keeps `.items.map(...)` outside the reference.
+        assert_eq!(
+            reference("@tasks.Tasks:01J8ZK4T.items.map(t -> t.title)").id,
+            "01J8ZK4T"
+        );
     }
 
     /// A document a person made is named `uuid:` and its uuid: the id goes on past that colon,

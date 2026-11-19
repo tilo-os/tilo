@@ -62,6 +62,8 @@ action open_titles(bag: Bag) -> List<Text> {
     return bag.items.filter(item -> not item.done).map(item -> item.title)
 }
 
+default view item_document for Item
+
 view chosen(bag: Bag) {
     state place: Text = ""
     // The item this window's list shows opened where it stands.

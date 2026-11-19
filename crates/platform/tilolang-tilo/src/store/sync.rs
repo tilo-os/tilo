@@ -11,9 +11,9 @@ use tilolang_runtime::ids::{AppId, DocId};
 use tilolang_runtime::store::{ChangeSummary, FieldKey, ListingChange};
 
 use super::{
-    Chunks, Doc, Ends, Inner, ItemTouches, LocalWrite, TiloStore, changed_by, collections_by_doc,
-    everything, name_version_changes, note_derived, note_versions, record_splices,
-    told_differently, write_as_a_known_actor,
+    Chunks, Doc, Ends, Inner, ItemTouches, LocalWrite, TiloStore, changed_by_with,
+    collections_by_doc, everything, name_version_changes, note_derived, record_splices,
+    told_differently, versions, write_as_a_known_actor,
 };
 use crate::action::{DynAction, DynEdit};
 use crate::chunk::{self, ChunkNo};
@@ -589,20 +589,17 @@ impl Inner {
         // Once the mirror holds them: a change that is no action of a package (an undo) is
         // read for what it wrote, and the versions are the log's, which names the fields each
         // change wrote.
-        if let (Some(versions), Some(mirror)) =
-            (self.versions.get_mut(&chunk), self.chunks.mirror(chunk))
-        {
-            note_versions(versions, changes, mirror, &self.index);
+        //
+        // Read off its operations once, however many of these ask: a step that takes back a
+        // paste writes as many operations as the paste did, and each reader walking them again
+        // walks every object it wrote up to its place again.
+        let state = idx::reflect::Reflections::of(mirror);
+        if let Some(versions) = self.versions.get_mut(&chunk) {
+            versions::note_versions_with(versions, changes, mirror, &self.index, &state);
         }
-        let what = self
-            .chunks
-            .mirror(chunk)
-            .map(|mirror| changed_by(changes, mirror, &self.index));
-        let ends = match self.chunks.mirror(chunk) {
-            Some(mirror) => idx::reflect::ends_of(changes, mirror, &self.index),
-            None => Ends::new(),
-        };
-        (what, ends, idx::reflect::placed_by(changes))
+        let what = changed_by_with(changes, &mut state.places_mut(), &self.index);
+        let ends = idx::reflect::ends_of_with(changes, &state, mirror, &self.index);
+        (Some(what), ends, idx::reflect::placed_by(changes))
     }
     /// The steps each listed collection took from the indexes `before` (with the overlay
     /// `overlay` over them) to the indexes now, for the items `items`; per document.

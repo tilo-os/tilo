@@ -43,6 +43,8 @@ root Notebook
 
 default view notebook for Notebook
 
+default view note_page for Note
+
 row view note_row for Note
 
 /// Start a new note in the notebook.
@@ -72,6 +74,13 @@ action more(n: Note) (icon: .more_horizontal) {
 
 view note_row(n: Note) {
     row(n.title, secondary: n.body, mark: if n.pinned { .pin })
+}
+
+view note_page(n: Note) {
+    std.document(n) {
+        text(n.title)
+        text(n.body)
+    }
 }
 
 view notebook(nb: Notebook) {
@@ -415,6 +424,14 @@ type Notebook {
 
 default view note_cards for Notebook
 
+default view note_page for Note
+
+view note_page(n: Note) {
+    std.document(n) {
+        text(n.title)
+    }
+}
+
 view note_cards(nb: Notebook) {
     std.list(nb.notes) { (n, at) ->
         ui.ListItem(item: n, presence: at)
@@ -452,6 +469,14 @@ type Notebook {
 }
 
 default view note_cards for Notebook
+
+default view note_page for Note
+
+view note_page(n: Note) {
+    std.document(n) {
+        text(n.title)
+    }
+}
 
 view note_cards(nb: Notebook) {
     std.list(nb.notes) { (n, at) ->
@@ -539,6 +564,12 @@ type Notebook {
 }
 
 default view note_cards for Notebook
+
+default view note for Note
+
+view note(n: Note) {
+    ui.ListRow(title: n.title)
+}
 
 view note_cards(nb: Notebook) {
     std.list(nb.notes) { (n, at) ->
@@ -1088,7 +1119,7 @@ tilo_test_env::scenario! {
     {
         let m = compile_body(
             r#"type Thread {
-    subject: Text
+    title: Text
 }
 action archive(t: Thread) (icon: .archive, key: "e") {}
 action reply(t: Thread) (key: "Ctrl+Enter") {}
@@ -1109,7 +1140,7 @@ action nothing(t: Thread) {}"#,
         for wrong in [r#"key: "ee""#, r#"key: "Entr""#, r#"key: "Ctrl+""#] {
             let said = format!(
                 r"type Thread {{
-    subject: Text
+    title: Text
 }}
 action a(t: Thread) ({wrong}) {{}}"
             );
@@ -1123,10 +1154,10 @@ action a(t: Thread) ({wrong}) {{}}"
     // window-wide against the other root actions, not against an item's.
     {
         let thread = r"type Thread {
-    subject: Text
+    title: Text
 }
 type Draft {
-    subject: Text
+    title: Text
 }";
         expect(
             "E090",
@@ -1150,9 +1181,13 @@ type Threads {{
 }}
 root threads: Threads
 default view thread_list for Threads
+default view thread_page for Thread
+view thread_page(t: Thread) {{
+    text(t.title)
+}}
 row view thread_row for Thread
 view thread_row(t: Thread) {{
-    row(t.subject)
+    row(t.title)
 }}
 view thread_list(threads: Threads) {{
     std.list(threads.threads) {{ (t, at) ->
@@ -1161,8 +1196,8 @@ view thread_list(threads: Threads) {{
         }}
     }}
 }}
-primary action new_thread(threads: Threads) -> Thread (key: "Ctrl+N") {{ return threads.threads.insert(Thread(subject: "")) }}
-action tidy(threads: Threads) (key: "Ctrl+N") {{ threads.threads.remove_where(s -> s.subject == "") }}"#
+primary action new_thread(threads: Threads) -> Thread (key: "Ctrl+N") {{ return threads.threads.insert(Thread(title: "")) }}
+action tidy(threads: Threads) (key: "Ctrl+N") {{ threads.threads.remove_where(s -> s.title == "") }}"#
             ),
         );
         ok(&format!(
@@ -1172,9 +1207,13 @@ type Threads {{
 }}
 root threads: Threads
 default view thread_list for Threads
+default view thread_page for Thread
+view thread_page(t: Thread) {{
+    text(t.title)
+}}
 row view thread_row for Thread
 view thread_row(t: Thread) {{
-    row(t.subject)
+    row(t.title)
 }}
 view thread_list(threads: Threads) {{
     std.list(threads.threads) {{ (t, at) ->
@@ -1183,7 +1222,7 @@ view thread_list(threads: Threads) {{
         }}
     }}
 }}
-action new_thread(threads: Threads) -> Thread (key: "Ctrl+N") {{ return threads.threads.insert(Thread(subject: "")) }}
+action new_thread(threads: Threads) -> Thread (key: "Ctrl+N") {{ return threads.threads.insert(Thread(title: "")) }}
 action archive(t: Thread) (key: "Ctrl+N") {{}}"#
         ));
     }
@@ -1206,7 +1245,15 @@ type Notebook {
 
 default view notebook for Notebook
 
+default view note_page for Note
+
 place view all_notes for Notebook
+
+view note_page(n: Note) {
+    std.document(n) {
+        text(n.title)
+    }
+}
 
 view notebook(nb: Notebook) {
     std.page(nb) {

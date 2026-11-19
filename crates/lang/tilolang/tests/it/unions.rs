@@ -160,4 +160,4 @@ tilo_test_env::scenario! {
     }
 }
 
-const NOTES: &str = "type Note {\n    title: Text\n    pinned: Bool = false\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nroot notebook: Notebook\ndefault view notebook for Notebook\nview notebook(nb: Notebook) {\n    std.list(nb.notes) { (n, at) ->\n        ui.ListItem(item: n, presence: at)\n    }\n}\n";
+const NOTES: &str = "type Note {\n    title: Text\n    pinned: Bool = false\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nroot notebook: Notebook\ndefault view notebook for Notebook\ndefault view note for Note\nview note(n: Note) {\n    ui.ListRow(title: n.title)\n}\nview notebook(nb: Notebook) {\n    std.list(nb.notes) { (n, at) ->\n        ui.ListItem(item: n, presence: at)\n    }\n}\n";

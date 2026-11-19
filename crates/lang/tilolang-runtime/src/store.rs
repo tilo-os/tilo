@@ -225,6 +225,9 @@ pub struct NewResource {
     pub ty: TypeId,
     pub app: AppId,
     pub fields: Vec<FieldSpec>,
+    /// The text fields whose type declares a default, by field id: the resource starts at them,
+    /// as a register field starts at its own.
+    pub text_defaults: Vec<(String, String)>,
 }
 
 /// An open transaction.

@@ -969,3 +969,13 @@ paths = [
     "crates/session/desktop-search/src/availability.rs",
     "crates/session/desktop-search/src/providers.rs",
 ]
+
+[[allow]]
+reason = "The UI toolkit's own names, which the marks test drives a window with: the harness's `send_host_event`, the toolkit's host event, and its report that a window wakes when a dwell runs out."
+words = ["host"]
+paths = ["apps/tilolang/tests/hosted/marks.rs"]
+
+[[allow]]
+reason = "The marks suite's own word for an agent's task run, which this test names beside its neighbours' `run()` and `the_run_marks_...` cases."
+words = ["run"]
+paths = ["apps/tilolang/tests/hosted/marks.rs"]

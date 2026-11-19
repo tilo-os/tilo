@@ -62,14 +62,6 @@ thread_local! {
     static CALLER: RefCell<Option<Caller>> = const { RefCell::new(None) };
 }
 
-/// The person's date and time now: the device's clock, which is the one their window reads, so a
-/// day an instance writes and a day their window heads a row by are the same day.
-fn local_now() -> jiff::Zoned {
-    jiff::Timestamp::try_from(tilo_clock::to_std(tilo_clock::wall()))
-        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
-        .to_zoned(jiff::tz::TimeZone::system())
-}
-
 /// What one instance is: the app, the workspace, the window and who is at it, as the session named
 /// them for the app's launch.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -445,13 +437,16 @@ impl Platform for HostPlatform {
     }
 
     fn now(&self) -> String {
-        format!("{:.0}", local_now().timestamp())
+        // The person's date and time now: the device's clock, which is the one their window
+        // reads, so a day an instance writes and a day their window heads a row by are the same
+        // day.
+        format!("{:.0}", ui::clock::local_now().timestamp())
     }
 
     /// The zone the person's clock stands in, which their day begins in: the device's, as their
     /// window's dates read it, so a day an action writes is the day their window shows it under.
     fn zone(&self) -> i64 {
-        i64::from(local_now().offset().seconds())
+        i64::from(ui::clock::local_now().offset().seconds())
     }
 
     /// The person's zone by name, so a day begins and a repeating item keeps its hour across a
@@ -484,7 +479,7 @@ impl Platform for HostPlatform {
     /// A day or a time of day in a sentence, in the person's styles and their language: the zone
     /// its times read in is the one this host's clock answers in, so a sentence and a view agree.
     fn shown(&self, kind: &str, value: &str) -> String {
-        let now = local_now();
+        let now = ui::clock::local_now();
         tilo_formats::shown(
             kind,
             value,
@@ -499,7 +494,7 @@ impl Platform for HostPlatform {
     /// A day or a time of day named in a sentence (`"{d}"`), in the person's styles and language:
     /// a day as `Jun 29`, or `Jun 29, 2025` another year, a moment as `Jun 29, 6:00 PM`.
     fn sentence(&self, kind: &str, value: &str) -> String {
-        let now = local_now();
+        let now = ui::clock::local_now();
         tilo_formats::sentence(
             kind,
             value,

@@ -27,8 +27,10 @@ use ui::prelude::TestApp;
 /// an agent's call no longer fails on an argument the schema never mentioned,
 /// and to 86 KiB when a map's entries began offering the operations of the
 /// value type they hold beside `set`, so an edit of one is offered rather
-/// than refused.
-const BUDGET: usize = 86 * 1024;
+/// than refused, and to 88 KiB when every app's window gained the `outline` read an
+/// agent sees the view by, and the undo and history named the invocation a group
+/// answers under.
+const BUDGET: usize = 88 * 1024;
 
 #[test]
 fn the_agent_surface_matches_its_golden_file_and_budget() {
