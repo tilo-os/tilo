@@ -22,7 +22,7 @@ agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboratio
 web = []
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
-apps = ["dep:app-cli", "dep:futures", "dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:runtime-identity", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "dep:tilo-broker-core", "dep:tilo-identity", "dep:tilo-paths", "dep:tilo-rt", "dep:tilo-workspace-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json"]
+apps = ["dep:futures", "dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:runtime-identity", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "dep:tilo-broker-core", "dep:tilo-identity", "dep:tilo-paths", "dep:tilo-rt", "dep:tilo-workspace-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json"]
 
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
@@ -98,7 +98,6 @@ tilo-app-package = { path = "../../packaging/tilo-app-package", optional = true 
 parking_lot = { workspace = true, optional = true }
 runtime-identity = { package = "tilo-identity-client", path = "../../runtime/tilo-identity-client", optional = true }
 registry-types = { path = "../../packaging/registry-types", optional = true }
-app-cli = { path = "../../packaging/app-cli", optional = true }
 reqwest = { workspace = true, features = ["blocking", "json"], optional = true }
 tilo-rt = { workspace = true, optional = true }
 futures = { workspace = true, default-features = true, optional = true }
@@ -115,6 +114,10 @@ workspace-hack = { version = "0.1" }
 # An installed app's model, run from the package's WebAssembly module.
 tilo-model-engine = { path = "../../lang/tilo-model-engine" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
+# The model runtime a package's module links against, fetched from the
+# registry that offers the runtime bundle the package names when this host's
+# image carries another release's.
+app-cli = { path = "../../packaging/app-cli" }
 # A host's workspaces keep their content in directories.
 tilo-content = { path = "../../system/content", features = ["dir"] }
 # The person's own accounts and model providers, kept beside their
@@ -175,6 +178,10 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 tilo-workspace-keys = { path = "../../collab/workspace-keys", features = ["test-support"] }
 runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
 registry-server = { path = "../../packaging/registry-server" }
+# A package from another release: the registry's signed runtime package, the
+# runtime bundle it carries, and the entry and snapshot that offer it.
+registry-types = { path = "../../packaging/registry-types" }
+runtime-bundle = { path = "../../packaging/runtime-bundle" }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }

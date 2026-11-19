@@ -119,10 +119,6 @@ impl BundleTrust {
 /// Existing pins plus retained identities scoped to this exact signed bundle.
 /// A mutable, mismatched or replaced retention record fails closed.
 pub fn load_for_bundle(operator_list: &Path, bundle: &Path) -> std::io::Result<BundleTrust> {
-    let mut trust = BundleTrust {
-        publishers: load_with_components(operator_list)?,
-        retained: Vec::new(),
-    };
     let manifest = crate::verify_bundle_metadata_with(
         bundle,
         &crate::VerifyOptions {
@@ -130,10 +126,7 @@ pub fn load_for_bundle(operator_list: &Path, bundle: &Path) -> std::io::Result<B
         },
     )
     .map_err(std::io::Error::other)?;
-    let Some(identity) = RetainedBundleTrust::from_verified(&manifest) else {
-        return Ok(trust);
-    };
-    if let Some(bytes) = read_immutable(&identity.installed_path(), 8192)? {
+    load_for(operator_list, &manifest, || {
         crate::verify_bundle_metadata_with(
             bundle,
             &crate::VerifyOptions {
@@ -141,18 +134,70 @@ pub fn load_for_bundle(operator_list: &Path, bundle: &Path) -> std::io::Result<B
                 ..Default::default()
             },
         )
-        .map_err(std::io::Error::other)?;
+        .map(drop)
+        .map_err(std::io::Error::other)
+    })
+}
+
+/// [`load_for_bundle`] for a bundle known by its manifest alone, as
+/// [`crate::verify_bundle_manifest`] checks it: what takes a few of a
+/// bundle's files without the rest of it.
+pub fn load_for_manifest(
+    operator_list: &Path,
+    manifest: &crate::BundleManifest,
+) -> std::io::Result<BundleTrust> {
+    load_for(operator_list, manifest, || {
+        crate::verify_bundle_manifest(
+            manifest,
+            &crate::VerifyOptions {
+                require_signature: true,
+                ..Default::default()
+            },
+        )
+        .map_err(std::io::Error::other)
+    })
+}
+
+/// The trust for `manifest`: the pins, and the retained identities of it
+/// once `signed` proves it carries a signature that verifies.
+fn load_for(
+    operator_list: &Path,
+    manifest: &crate::BundleManifest,
+    signed: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<BundleTrust> {
+    let mut trust = BundleTrust {
+        publishers: load_with_components(operator_list)?,
+        retained: Vec::new(),
+    };
+    let Some(identity) = RetainedBundleTrust::from_verified(manifest) else {
+        return Ok(trust);
+    };
+    if let Some(bytes) = read_immutable(&identity.installed_path(), 8192)? {
+        signed()?;
         let retained: Vec<RetainedBundleTrust> =
             serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
         if retained.is_empty()
             || retained.len() > 32
-            || retained.iter().any(|record| !record.matches(&manifest))
+            || retained.iter().any(|record| !record.matches(manifest))
         {
             return Err(denied());
         }
         trust.retained = retained;
     }
     Ok(trust)
+}
+
+/// The list of runtime publishers this device accepts: the launcher's
+/// developer override (`TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE`) when set,
+/// else the image's ([`crate::TRUSTED_PUBLISHERS_FILE`]).
+#[must_use]
+pub fn trusted_publishers_file() -> std::path::PathBuf {
+    std::env::var_os("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE")
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || std::path::PathBuf::from(crate::TRUSTED_PUBLISHERS_FILE),
+            std::path::PathBuf::from,
+        )
 }
 
 fn denied() -> std::io::Error {

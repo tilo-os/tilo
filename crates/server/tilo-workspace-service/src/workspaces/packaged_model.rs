@@ -13,6 +13,15 @@
 //! device holding the resource replays the invocation to the same change
 //! ([`tilo_model_engine::Answer::envelope`] is what a peer replays).
 //!
+//! The module is split against the model runtime of the release that built
+//! the app ([`tilo_model_engine::Runtime`]), and this server's image carries its
+//! own release's. A package from another release names a runtime this server
+//! lacks, so [`ensure_model_runtime`] fetches it, before the workspace is
+//! locked, from the registry that offers the runtime bundle the package names
+//! ([`app_cli::model_runtime`]): verified as an installed bundle is, kept on
+//! disk by its hash and in memory for the process, so only the first action
+//! of another release's app waits for the registry.
+//!
 //! What this side does *not* do is decide anything the app decides: it checks
 //! the package's signature, that the package is the app named, and that the
 //! governor may write the document; the module builds the action from its
@@ -27,7 +36,7 @@ use crate::service_authority::ServiceOperation;
 use tilo_actions::MemberId;
 use tilo_app_package::blobs::BlobHash;
 use tilo_app_package::tapp;
-use tilo_model_engine::{Model, Op, Request};
+use tilo_model_engine::{Model, Op, Request, Runtime};
 use tilo_user_identity::DeviceCert;
 
 /// One action of an installed app, as a holder of the workspace applies it
@@ -130,6 +139,73 @@ fn packaged_model(package: &[u8], app: &str) -> Result<Model, CollaborationError
     Model::compile(bytes.as_slice()).map_err(|error| CollaborationError::new(error.to_string()))
 }
 
+/// Make the model runtime `package`'s module links against present: the
+/// runtime is found here, or fetched from the registry that offers the
+/// runtime bundle the package names (`[package].runtime`) and kept. A whole
+/// module, or bytes that hold no model, need nothing; [`packaged_model`]
+/// then refuses what is wrong with them.
+///
+/// # Errors
+/// The runtime is not here and cannot be fetched or verified: the error
+/// names the runtime the module links against, the ones this server holds, and
+/// why the fetch failed.
+pub(crate) async fn ensure_model_runtime(package: &[u8]) -> Result<(), CollaborationError> {
+    let Some((hash, bundle)) = linked_runtime(package) else {
+        return Ok(());
+    };
+    let Err(missing) = Runtime::find(&hash) else {
+        return Ok(());
+    };
+    let Some(bundle) = bundle else {
+        return Err(CollaborationError::new(format!(
+            "{missing}; the package names no runtime bundle to fetch it from"
+        )));
+    };
+    let named = bundle.clone();
+    let fetched = tokio::task::spawn_blocking(move || fetch_model_runtime(&named, &hash))
+        .await
+        .map_err(|error| CollaborationError::new(error.to_string()))?;
+    fetched.map_err(|why| CollaborationError::new(format!("{missing}; fetching {bundle}: {why}")))
+}
+
+/// The model runtime `package`'s module links against, and the runtime
+/// bundle the package names; `None` for a whole module or no module.
+fn linked_runtime(package: &[u8]) -> Option<(String, Option<String>)> {
+    let mut blobs: BTreeMap<BlobHash, Vec<u8>> = BTreeMap::new();
+    let package = tapp::read(package, &mut blobs).ok()?;
+    let module = blobs.get(
+        package
+            .meta
+            .collection
+            .entries
+            .get(tilo_app_package::validate::MODEL_MODULE)?,
+    )?;
+    let hash = tilo_model_engine::linked_runtime(module).ok()??;
+    Some((hash, package.meta.manifest.package.runtime))
+}
+
+/// Fetch model runtime `hash` from the runtime bundle `bundle` and keep it
+/// for this process. Blocking.
+fn fetch_model_runtime(bundle: &str, hash: &str) -> Result<(), String> {
+    let is_named = |runtime: &Runtime| {
+        if runtime.hash() == hash {
+            Ok(())
+        } else {
+            Err(format!(
+                "it carries model runtime {}, not the {hash} the module links against",
+                runtime.hash()
+            ))
+        }
+    };
+    let dir = app_cli::model_runtime::fetch(bundle, hash, &|dir| {
+        is_named(&Runtime::read(dir).map_err(|error| error.to_string())?)
+    })?;
+    let runtime = Runtime::read(&dir).map_err(|error| error.to_string())?;
+    is_named(&runtime)?;
+    drop(runtime.remember());
+    Ok(())
+}
+
 impl Workspaces {
     /// The `.tapp` file this device keeps for the version of `app` the
     /// workspace has, when its governance installs one: the model that every
@@ -177,6 +253,7 @@ impl Workspaces {
                 "packaged application creation requires exact governor ownership",
             ));
         }
+        ensure_model_runtime(package).await?;
         let state = self.workspace(workspace).await?;
         let mut governed = state.lock().await;
         if &governed.record.owner != governor {
@@ -288,6 +365,7 @@ impl Workspaces {
                 "packaged application actions require exact governor ownership",
             ));
         }
+        ensure_model_runtime(package).await?;
         let state = self.workspace(workspace).await?;
         let mut governed = state.lock().await;
         if &governed.record.owner != governor {

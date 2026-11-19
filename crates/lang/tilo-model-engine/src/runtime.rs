@@ -21,6 +21,11 @@
 //!   `$XDG_DATA_HOME/tilo-runtime`) and the system's (`/usr/lib/tilo-runtime`).
 //!   The bundle an app's package names carries the runtime its module was
 //!   split against, since both come from one release build.
+//!
+//! A device built from another release than an app's package lacks that
+//! runtime; it fetches it from the registry that offers the bundle the
+//! package names (`app_cli::model_runtime`), reads it with [`Runtime::read`]
+//! and keeps it with [`Runtime::remember`].
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -112,8 +117,7 @@ impl Runtime {
     /// [`ModelError::Runtime`] naming `hash` and what each directory looked in
     /// holds, when none is it.
     pub fn find(hash: &str) -> Result<Arc<Self>, ModelError> {
-        static FOUND: OnceLock<Mutex<HashMap<String, Arc<Runtime>>>> = OnceLock::new();
-        let found = FOUND.get_or_init(Mutex::default);
+        let found = found();
         if let Some(runtime) = found
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -157,6 +161,20 @@ impl Runtime {
         }))
     }
 
+    /// Keep this runtime for the rest of the process: [`Self::find`] answers
+    /// its hash with it from now on, wherever it was read from (a runtime a
+    /// device fetched because none of [`runtime_dirs`] holds it).
+    #[must_use]
+    pub fn remember(self) -> Arc<Self> {
+        let runtime = Arc::new(self);
+        found()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(runtime.hash.clone())
+            .or_insert_with(|| Arc::clone(&runtime))
+            .clone()
+    }
+
     /// The runtime's hash.
     #[must_use]
     pub fn hash(&self) -> &str {
@@ -173,6 +191,12 @@ impl Runtime {
     pub fn modules(&self) -> impl Iterator<Item = &[u8]> {
         self.modules.iter().map(Vec::as_slice)
     }
+}
+
+/// The runtimes this process has read, by hash.
+fn found() -> &'static Mutex<HashMap<String, Arc<Runtime>>> {
+    static FOUND: OnceLock<Mutex<HashMap<String, Arc<Runtime>>>> = OnceLock::new();
+    FOUND.get_or_init(Mutex::default)
 }
 
 /// The runtime's hash of `modules` (the module docs say how).

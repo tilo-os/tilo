@@ -15,14 +15,14 @@ use tilo_model_engine::{Model, Op, Request};
 use tilo_resource::Resource as _;
 
 /// The app the test installs, which the server does not have compiled in.
-const TASKS: &str = "so.tilo.tasks";
+pub(super) const TASKS: &str = "so.tilo.tasks";
 
 /// The resource kind of the app's tracker, which its module routes requests
 /// to.
-const TRACKER: &str = "tasks.tracker";
+pub(super) const TRACKER: &str = "tasks.tracker";
 
 /// The invocation's origin clock, milliseconds since the Unix epoch.
-const NOW_MS: i64 = 1_760_000_000_000;
+pub(super) const NOW_MS: i64 = 1_760_000_000_000;
 
 /// The Tasks app's signed surface, which its package ships and its changes are
 /// decided against.
@@ -39,21 +39,26 @@ const TASKS_SURFACE: &[u8] = include_bytes!("../../../../../apps/tasks/surface.t
     clippy::expect_used,
     reason = "a module the app-models check did not build is a test failure"
 )]
-fn model_module(app: &str) -> Vec<u8> {
-    let directory = std::env::var_os("TILO_APP_MODELS").map_or_else(
+pub(super) fn model_module(app: &str) -> Vec<u8> {
+    let module = models_dir().join(app).join(tilo_app_package::MODEL_MODULE);
+    let asked = format!(
+        "reading {}; build it with `t outputs app-models`",
+        module.display()
+    );
+    std::fs::read(&module).expect(&asked)
+}
+
+/// The app-models output: each app's module, and the model runtime beside
+/// them that the engine links them after.
+pub(super) fn models_dir() -> PathBuf {
+    std::env::var_os("TILO_APP_MODELS").map_or_else(
         || {
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../..")
                 .join("target/app-models")
         },
         PathBuf::from,
-    );
-    let module = directory.join(app).join(tilo_app_package::MODEL_MODULE);
-    let asked = format!(
-        "reading {}; build it with `t outputs app-models`",
-        module.display()
-    );
-    std::fs::read(&module).expect(&asked)
+    )
 }
 
 /// The model module a package carries: the bytes every device applies the
@@ -101,11 +106,18 @@ fn installed_package() -> Vec<u8> {
 
 /// An app's package: `model`, when it has one, is the payload's model module,
 /// beside the surface the app ships.
+fn package(app: &str, model: Option<&[u8]>) -> Vec<u8> {
+    package_on(app, model, None)
+}
+
+/// [`package`], naming `runtime` (`tilo-runtime/<version>`) as the runtime
+/// bundle it was built against when given: the bundle that carries the model
+/// runtime its module links against.
 #[expect(
     clippy::unwrap_used,
     reason = "a fixture that cannot be written or packed is a test failure"
 )]
-fn package(app: &str, model: Option<&[u8]>) -> Vec<u8> {
+pub(super) fn package_on(app: &str, model: Option<&[u8]>, runtime: Option<&str>) -> Vec<u8> {
     let scratch = tempfile::tempdir().unwrap();
     let payload = scratch.path().join("payload");
     std::fs::create_dir_all(payload.join("bin")).unwrap();
@@ -121,6 +133,7 @@ fn package(app: &str, model: Option<&[u8]>) -> Vec<u8> {
 id = "{app}"
 version = "1.0.0"
 kind = "app"
+{runtime}
 
 [publisher]
 identity = "ed25519:{}"
@@ -138,7 +151,10 @@ mode = "off"
 bin = "bin/tasks"
 type = "gui"
 "#,
-        hex::encode(identity.public_key_bytes())
+        hex::encode(identity.public_key_bytes()),
+        runtime = runtime
+            .map(|runtime| format!("runtime = \"{runtime}\""))
+            .unwrap_or_default(),
     ))
     .unwrap();
     let packed = pack(&payload, &manifest, &identity).unwrap();
@@ -147,7 +163,7 @@ type = "gui"
 }
 
 /// `name` as the action API binds it.
-fn create_area(name: &str) -> serde_json::Map<String, serde_json::Value> {
+pub(super) fn create_area(name: &str) -> serde_json::Map<String, serde_json::Value> {
     let mut arguments = serde_json::Map::new();
     arguments.insert("name".into(), serde_json::Value::String(name.into()));
     arguments

@@ -82,9 +82,25 @@ split bundle. It finds the runtime by its hash in the directories
 `TILO_APP_MODEL_RUNTIME` lists, then under `TILO_APP_MODELS` (the app-models
 output the tests are given), then in every installed runtime bundle (the
 person's and `/usr/lib/tilo-runtime`). The server's image carries the runtime
-of the release it was built with and names it in `TILO_APP_MODEL_RUNTIME`. A
-module whose runtime is not there is refused with both hashes named, never
-linked against other code; a whole module names none and is called as before.
+of the release it was built with and names it in `TILO_APP_MODEL_RUNTIME`.
+A package built by another release names another runtime, and the bundle that
+carries it in its manifest (`[package].runtime`, `tilo-runtime/<version>`). A
+server lacking that runtime fetches it before it applies the app's first action
+(`app_cli::model_runtime`): it asks the enabled registries for the runtime
+package that provides that version, takes the package only as the registry's
+signed entry names it (length, BLAKE3, root and publisher) and when its
+signature verifies, checks that the bundle manifest inside is signed by a
+runtime publisher the device trusts (as the launcher checks an installed
+bundle) and lists every file it takes, and downloads only
+`lib/app-model-runtime`, never the bundle's libraries. The engine then reads
+the runtime and computes its hash from its bytes; it must be the hash the
+module names. The runtime is kept on disk under the store's cache
+(`app-model-runtime/<hash>`, the four most recently used) and in memory for
+the process, so later actions ask the registry nothing. A runtime that cannot
+be fetched or verified is refused with the hash the module names, the ones
+this server holds and why the fetch failed, and is not asked for again for five
+minutes; it is never linked against other code. A whole module names none and
+is called as before.
 
 An app written against the framework writes none of the following: storage, sync, merge,
 undo, history, presence, identity, signing, encryption, key handling, transport,

@@ -8,7 +8,10 @@
 //! This crate never decides whether bytes are safe to extract: [`install::install`] downloads to a
 //! staging file and hands the path to `tilo-install`, which checks the publisher signature
 //! fail-closed first, and never passes `--allow-self-signed`. Only a package file a person installs
-//! by hand may come from an unverified publisher, and only after they said yes.
+//! by hand may come from an unverified publisher, and only after they said yes. The one thing it
+//! writes out of a package itself is the model runtime an app's model module links against
+//! ([`model_runtime`]), a few WebAssembly modules no launch executes natively, each checked against
+//! the signed registry entry, the package signature and the runtime bundle's signed manifest.
 
 #![cfg_attr(
     test,
@@ -25,6 +28,7 @@ pub mod bots;
 pub mod client;
 pub mod config;
 pub mod install;
+pub mod model_runtime;
 
 use serde::{Deserialize, Serialize};
 

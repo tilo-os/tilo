@@ -553,7 +553,7 @@ impl Read for Wire<'_> {
 /// registry entry: its length, then its BLAKE3. Returns the package length.
 /// Whether it travelled compressed changes nothing here — `dest` holds the
 /// plain bytes either way. On any failure `dest` is removed.
-fn fetch_verified(
+pub(crate) fn fetch_verified(
     app: &CatalogueApp,
     dest: &Path,
     on_progress: &mut dyn FnMut(DownloadProgress),

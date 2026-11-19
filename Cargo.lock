@@ -24132,6 +24132,7 @@ dependencies = [
  "registry-server",
  "registry-types",
  "reqwest",
+ "runtime-bundle",
  "runtime-collab",
  "runtime-identity",
  "runtime-portal",
