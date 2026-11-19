@@ -428,11 +428,16 @@ fn runs_of(
     groups
 }
 
-/// The acting key a live presence row stands for: the board names a member by the publisher that
-/// spoke, and a narration names the member it acted as, an agent's spelling its kind
-/// (`agent:<publisher>`).
+/// The acting key a live presence row stands for: the workspace member the
+/// presence names (an agent a server speaks for), else the publisher that
+/// spoke. A narration names the same member it acted as.
 fn agent_actor(member: &collab_types::presence::Shown) -> tilo_actions::Actor {
-    tilo_actions::Actor::Member(tilo_actions::MemberId::agent(member.publisher.clone()))
+    tilo_actions::Actor::Member(
+        member
+            .member
+            .clone()
+            .unwrap_or_else(|| tilo_actions::MemberId::agent(member.publisher.clone())),
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -738,7 +743,10 @@ async fn both_routes_decide_every_callers_actions_alike() {
                 kind != tilo_actions::context::AGENT_SESSION_GROUP || id == "agent-session:claimed"
             })
         {
-            differences.push(format!("{name}'s changes on the host: runs {named:?}"));
+            differences.push(format!(
+                "{name}'s changes on the host: runs {named:?} of {}",
+                runs.len()
+            ));
         }
     }
     if runs
@@ -1008,7 +1016,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
             None,
         ))),
     )
-    .spoken_for("agent-session:forged");
+    .spoken_for("agent-session:forged", "impostor");
     agent
         .peer
         .send(Cmd::SayForSession(
