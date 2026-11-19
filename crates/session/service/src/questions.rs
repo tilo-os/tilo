@@ -259,10 +259,20 @@ impl Questions {
     }
 }
 
+/// The questions pending now, as one resource of a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.questions", label = "Questions")]
+pub struct QuestionsResource;
+
+/// One pending question as a resource of a declared type, its actions
+/// [`QuestionEffect`]'s.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.question", label = "Question")]
+pub struct QuestionResource;
+
 fn question_spec(question: Question) -> ResourceSpec {
-    offer::<QuestionEffect>(ResourceSpec::new(
+    offer::<QuestionEffect>(tilo_resource::typed_resource::<QuestionResource>(
         question_resource(&question.handle),
-        QUESTION_KIND,
         question.label,
     ))
     .with_presentation(ResourcePresentation {
@@ -276,9 +286,8 @@ impl Service for Questions {
     fn resources(&self) -> Vec<ResourceSpec> {
         let children = self.pending().into_iter().map(question_spec);
         vec![
-            ResourceSpec::new(
+            tilo_resource::typed_resource::<QuestionsResource>(
                 QUESTIONS_RESOURCE,
-                QUESTIONS_KIND,
                 crate::i18n::name(QUESTIONS_KIND, "Questions"),
             )
             .with_children(children),
