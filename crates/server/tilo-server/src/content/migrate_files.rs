@@ -309,6 +309,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_legacy_manifest_requires_all_replacement_chunks_before_retirement() {
+        let store = ContentStore::memory();
+        let workspace = WorkspaceId::new();
+        let keys = key_group::KeyGroup::create(
+            workspace,
+            key_group::MemberKey::generate("member").unwrap(),
+        )
+        .unwrap()
+        .content_keys()
+        .unwrap();
+        let mut keep = BTreeSet::new();
+        let parts = [b"the beginning".as_slice(), b"the rest"].map(|clear| {
+            let address = store.put_public(clear).unwrap();
+            let mut hash = [0; blake3::OUT_LEN];
+            hex::decode_to_slice(&address, &mut hash).unwrap();
+            keep.insert(address);
+            fs_content::ChunkRef {
+                hash,
+                len: u32::try_from(clear.len()).unwrap(),
+            }
+        });
+        let manifest = fs_content::Manifest::new(fs_content::ChunkTier::Small, parts.to_vec());
+        let original = store.put_public(&manifest.encode()).unwrap();
+        let version = inspect_version(&store, &original).unwrap().unwrap();
+        let replacement = seal_version(
+            (&store, &store),
+            (&original, version),
+            (workspace, workspace),
+            (None, &keys),
+        )
+        .unwrap();
+        assert!(is_sealed_copy(
+            &store,
+            workspace,
+            &keys,
+            &original,
+            &replacement
+        ));
+
+        keep.extend([original.clone(), replacement.clone()]);
+        store.collect_unreferenced(&keep).unwrap();
+        assert!(!is_sealed_copy(
+            &store,
+            workspace,
+            &keys,
+            &original,
+            &replacement
+        ));
+    }
+
+    #[test]
     fn an_existing_files_index_preserves_history_when_plaintext_is_sealed() {
         let store = ContentStore::memory();
         let workspace = WorkspaceId::new();
