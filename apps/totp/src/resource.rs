@@ -4,11 +4,11 @@
 
 use std::rc::Rc;
 
-use ui::framework::{EffectStatus, Effected, Fixture, LiveRow, Publishes, ResourceApp, ViewCx};
+use ui::framework::{EffectStatus, Effected, Fixture, Publishes, ResourceApp, ViewCx};
 use ui::icons::Icon;
 use ui::secrets::SecretStore;
 use ui::tilo_actions::ResourcePresentation;
-use ui::tilo_resource::{self, Effect, Id, Invoke, Refusal, SearchEntry, resource};
+use ui::tilo_resource::{self, Id, Invoke, Refusal, SearchEntry, resource};
 use ui::tokens::SpacingStep;
 use ui::widget::{ButtonRole, Element, EmptyState, NavShell, Spacer, Stack, When};
 
@@ -30,7 +30,8 @@ impl Totp {
 #[resource(
     kind = "totp.vault",
     search = Totp::search,
-    read_content = Totp::read_document
+    read_content = Totp::read_document,
+    effects = TotpEffect
 )]
 impl Totp {
     /// Move an account one place up.
@@ -99,32 +100,6 @@ pub fn account_resource_id(id: crate::model::AccountId) -> String {
     tilo_resource::items::item_resource_id::<Totp>("accounts", &Totp::item(id))
 }
 
-/// One line naming an account, never its secret.
-pub(crate) fn account_label(a: &Account) -> String {
-    let issuer = safe_identity_field(&a.issuer, &a.secret);
-    let label = safe_identity_field(&a.label, &a.secret);
-    match (issuer.is_empty(), label.is_empty()) {
-        (false, false) => format!("{issuer}: {label}"),
-        (false, true) => issuer.to_string(),
-        (true, false) => label.to_string(),
-        (true, true) => "Account".to_string(),
-    }
-}
-
-pub(crate) fn safe_identity_field<'a>(value: &'a str, secret: &str) -> &'a str {
-    let value = value.trim();
-    let secret = secret.trim();
-    if !secret.is_empty()
-        && value
-            .to_ascii_uppercase()
-            .contains(&secret.to_ascii_uppercase())
-    {
-        ""
-    } else {
-        value
-    }
-}
-
 /// What only this device can do: the add form, an account's codes, its secret.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "totp.effect")]
@@ -133,19 +108,19 @@ pub enum TotpEffect {
     #[effect(screen, label = "totp-add-title-add")]
     AddAccount,
     /// Open account.
-    #[effect(screen)]
+    #[effect(screen, item = accounts)]
     OpenAccount {
         #[param("Id of the account")]
         account: String,
     },
     /// Copy current code.
-    #[effect(attended, privileged, kind = "read")]
+    #[effect(attended, privileged, kind = "read", item = accounts)]
     CopyCode {
         #[param("Id of the account")]
         account: String,
     },
     /// Set up on this device.
-    #[effect(own_device, kind = "read", label = "totp-add-title-provision")]
+    #[effect(own_device, kind = "read", label = "totp-add-title-provision", item = accounts)]
     SetUpLocal {
         #[param("Id of the account")]
         account: String,
@@ -219,7 +194,16 @@ impl ResourceApp for TotpShell {
         let staged = Rc::clone(&store);
         cx.on_stage(move |scenario| staged.borrow_mut().stage(scenario));
         let rows = Rc::clone(&store);
-        let publishes = Publishes::new().live_rows(move || rows.borrow_mut().live_rows());
+        let statuses = Rc::clone(&store);
+        let publishes = Publishes::new()
+            .item_presentation(move |field, id| {
+                if field != "accounts" {
+                    return None;
+                }
+                let id = id.parse().ok()?;
+                Some(rows.borrow().account_presentation(id))
+            })
+            .row_status(move |id| statuses.borrow().account_statuses(id));
         let content = AuthenticatorApp::over(store)
             .with_account_signal(has_accounts.clone())
             .with_count_signal(count.clone());
@@ -344,42 +328,10 @@ impl Store {
         }
     }
 
-    fn live_rows(&mut self) -> Vec<LiveRow> {
-        self.follow_document();
-        self.accounts()
-            .iter()
-            .map(|account| self.account_row(account))
-            .collect()
-    }
-
-    /// What this device adds to a published account: opening it, and the codes and
-    /// setup its own secret allows.
-    fn account_row(&self, account: &Account) -> LiveRow {
-        let id = account.id.to_string();
-        let ready = self.has_local_secret(account.id);
-        let mut copy = TotpEffect::CopyCode {
-            account: id.clone(),
-        }
-        .bound();
-        if !ready {
-            copy.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
-                code: "local_secret_required".into(),
-                reason: "Set up this account on this device before copying a code".into(),
-            };
-        }
-        let mut row = LiveRow::new(
-            account_resource_id(account.id),
-            "totp.account",
-            account_label(account),
-        )
-        .operation(
-            TotpEffect::OpenAccount {
-                account: id.clone(),
-            }
-            .bound(),
-        )
-        .operation(copy)
-        .presentation(ResourcePresentation {
+    /// How an account stands on this device: whether its codes are here.
+    pub(crate) fn account_presentation(&self, id: crate::model::AccountId) -> ResourcePresentation {
+        let ready = self.has_local_secret(id);
+        ResourcePresentation {
             detail: Some(
                 if ready {
                     "Codes available on this device"
@@ -390,11 +342,38 @@ impl Store {
             ),
             badge: Some(if ready { "Ready" } else { "Set up" }.into()),
             preview: None,
-        });
-        if !ready {
-            row = row.operation(TotpEffect::SetUpLocal { account: id }.bound());
         }
-        row
+    }
+
+    /// What this device allows on each account: copying its code once its
+    /// secret is here, and setting it up until then.
+    pub(crate) fn account_statuses(&self, published: &str) -> Vec<EffectStatus> {
+        let Some(account) = self
+            .accounts()
+            .iter()
+            .find(|account| account_resource_id(account.id) == published)
+        else {
+            return Vec::new();
+        };
+        if self.has_local_secret(account.id) {
+            vec![
+                EffectStatus::unavailable(
+                    TotpEffect::SET_UP_LOCAL,
+                    "local_secret_present",
+                    "This account is already set up on this device",
+                )
+                .on(published),
+            ]
+        } else {
+            vec![
+                EffectStatus::unavailable(
+                    TotpEffect::COPY_CODE,
+                    "local_secret_required",
+                    "Set up this account on this device before copying a code",
+                )
+                .on(published),
+            ]
+        }
     }
 }
 
@@ -569,7 +548,16 @@ mod tests {
         ] {
             assert!(ids.contains(&want), "account offers {want}: {ids:?}");
         }
-        assert!(!ids.contains(&"set-up-local"), "it is set up here");
+        assert!(
+            matches!(
+                row.actions
+                    .iter()
+                    .find(|a| a.id == "set-up-local")
+                    .map(|a| &a.contract.availability),
+                Some(Availability::Unavailable { code, .. }) if code == "local_secret_present"
+            ),
+            "setting it up again is refused here"
+        );
         let badge = row.presentation.as_ref().and_then(|p| p.badge.as_deref());
         assert_eq!(badge, Some("Ready"));
         let copy = row.actions.iter().find(|a| a.id == "copy-code").unwrap();
@@ -646,7 +634,16 @@ mod tests {
             row.presentation.as_ref().and_then(|p| p.badge.as_deref()),
             Some("Ready")
         );
-        assert!(!row.actions.iter().any(|a| a.id == "set-up-local"));
+        assert!(
+            matches!(
+                row.actions
+                    .iter()
+                    .find(|a| a.id == "set-up-local")
+                    .map(|a| &a.contract.availability),
+                Some(Availability::Unavailable { code, .. }) if code == "local_secret_present"
+            ),
+            "it is set up here, so setting it up is refused"
+        );
         assert_eq!(
             app.state().list()[0].issuer,
             remote.issuer,
