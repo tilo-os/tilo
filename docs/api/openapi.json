@@ -3350,6 +3350,13 @@
             "items": {
               "$ref": "#/components/schemas/Workspace"
             }
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The listing as a person reads it ([`super::lines`]): what `tilo`\nprints."
           }
         },
         "required": [
@@ -3573,6 +3580,13 @@
             "items": {
               "$ref": "#/components/schemas/KeyRow"
             }
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The listing as a person reads it ([`super::lines`]): what `tilo`\nprints."
           }
         },
         "required": [
@@ -4245,7 +4259,7 @@
       "Members": {
         "type": "object",
         "additionalProperties": true,
-        "description": "The workspace's people, each with their role, and the invitations still\nopen."
+        "description": "The workspace's people, each with their role, and the invitations still\nopen, with `text`: the listing as a person reads it."
       },
       "NewInvitation": {
         "type": "object",
@@ -4301,7 +4315,7 @@
       "WaitList": {
         "type": "object",
         "additionalProperties": true,
-        "description": "The addresses left at the workspace's entry while it takes people by\ninvitation, oldest first, and whether the entry mails invitations."
+        "description": "The addresses left at the workspace's entry while it takes people by\ninvitation, oldest first, and whether the entry mails invitations, with\n`text`: the listing as a person reads it."
       },
       "Servers": {
         "type": "object",
@@ -4325,6 +4339,13 @@
           },
           "copies": {
             "description": "How many copies the workspace wants kept and where they stand."
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The listing as a person reads it ([`super::lines`]): what `tilo`\nprints."
           }
         },
         "required": [

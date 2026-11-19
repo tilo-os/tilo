@@ -410,35 +410,6 @@ fn label_of(label: &str) -> Result<(String, String), String> {
         .ok_or_else(|| format!("`{label}` is no label: write NAME=VALUE, as customer_id=cus_8121"))
 }
 
-fn workspace_line(row: &Value) -> String {
-    let mut line = format!("{} (id {}", text(row, "name"), text(row, "id"));
-    if let Some(host) = row.get("host").and_then(Value::as_str) {
-        let _ = write!(line, ", on {host}");
-    }
-    if let Some(role) = row.get("role").and_then(Value::as_str) {
-        let _ = write!(line, ", {role}");
-    }
-    for (name, value) in row
-        .get("labels")
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-    {
-        let _ = write!(line, ", {name}={}", value.as_str().unwrap_or_default());
-    }
-    if row.get("unattended").and_then(Value::as_bool) == Some(true) {
-        line.push_str(", runs commands unattended");
-    }
-    line.push(')');
-    line
-}
-
-fn when(row: &Value, field: &str, none: &str) -> String {
-    row.get(field)
-        .and_then(Value::as_u64)
-        .map_or_else(|| none.to_owned(), tilo_api::pages::date)
-}
-
 /// `tilo do <path> name=value… -w <workspace>`: one action of a hosted
 /// workspace, as `app/resource#action`, said as `tilo do` says an action
 /// this desktop ran ([`tilo_control::front::say`]).
@@ -753,7 +724,11 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
                         &serde_json::json!({"name": name, "labels": labels}),
                     )
                     .await?;
-                Ok(show(reach.json, &made, &workspace_line(&made)))
+                Ok(show(
+                    reach.json,
+                    &made,
+                    &tilo_api::v1::lines::workspace(&made),
+                ))
             }
             WorkspaceCmd::Rename {
                 workspace: named,
@@ -766,7 +741,11 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
                         &serde_json::json!({ "name": name }),
                     )
                     .await?;
-                Ok(show(reach.json, &renamed, &workspace_line(&renamed)))
+                Ok(show(
+                    reach.json,
+                    &renamed,
+                    &tilo_api::v1::lines::workspace(&renamed),
+                ))
             }
             WorkspaceCmd::Branch {
                 source,
@@ -784,7 +763,11 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
                         &serde_json::json!({"name": name, "labels": labels}),
                     )
                     .await?;
-                Ok(show(reach.json, &made, &workspace_line(&made)))
+                Ok(show(
+                    reach.json,
+                    &made,
+                    &tilo_api::v1::lines::workspace(&made),
+                ))
             }
             WorkspaceCmd::Unattended {
                 workspace: named,
@@ -836,19 +819,7 @@ async fn list_workspaces(
         format!("/v1/workspaces?{}", query.join("&"))
     };
     let listed = client.get(&path).await?;
-    let rows = listed
-        .get("workspaces")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(workspace_line)
-        .collect::<Vec<_>>();
-    let said = if rows.is_empty() {
-        "no workspaces".to_owned()
-    } else {
-        rows.join("\n")
-    };
-    Ok(show(json, &listed, &said))
+    Ok(show(json, &listed, text(&listed, "text")))
 }
 
 /// `tilo workspace unattended <workspace> [--off]`: held while the
@@ -1508,7 +1479,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                 let listed = client
                     .get(&format!("/v1/workspaces/{workspace}/members"))
                     .await?;
-                Ok(show(reach.json, &listed, &members_text(&listed)))
+                Ok(show(reach.json, &listed, text(&listed, "text")))
             }
             PeopleCmd::Invite {
                 role,
@@ -1546,7 +1517,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         &serde_json::json!({ "role": role }),
                     )
                     .await?;
-                Ok(show(reach.json, &moved, &members_text(&moved)))
+                Ok(show(reach.json, &moved, text(&moved, "text")))
             }
             PeopleCmd::Revoke { invite } => {
                 let left = client
@@ -1555,7 +1526,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         api::encode_path(&invite)
                     ))
                     .await?;
-                Ok(show(reach.json, &left, &members_text(&left)))
+                Ok(show(reach.json, &left, text(&left, "text")))
             }
             PeopleCmd::Rm { key } => {
                 let left = client
@@ -1564,7 +1535,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         api::encode_path(&key)
                     ))
                     .await?;
-                Ok(show(reach.json, &left, &members_text(&left)))
+                Ok(show(reach.json, &left, text(&left, "text")))
             }
             PeopleCmd::Add { key, role, name } => {
                 let mut body = serde_json::json!({"person": key, "role": role});
@@ -1574,13 +1545,13 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                 let added = client
                     .post(&format!("/v1/workspaces/{workspace}/members"), &body)
                     .await?;
-                Ok(show(reach.json, &added, &members_text(&added)))
+                Ok(show(reach.json, &added, text(&added, "text")))
             }
             PeopleCmd::WaitList => {
                 let listed = client
                     .get(&format!("/v1/workspaces/{workspace}/members/wait-list"))
                     .await?;
-                Ok(show(reach.json, &listed, &wait_list_text(&listed)))
+                Ok(show(reach.json, &listed, text(&listed, "text")))
             }
             PeopleCmd::Unlist { entry } => {
                 let listed = client
@@ -1588,7 +1559,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         "/v1/workspaces/{workspace}/members/wait-list/{entry}"
                     ))
                     .await?;
-                Ok(show(reach.json, &listed, &wait_list_text(&listed)))
+                Ok(show(reach.json, &listed, text(&listed, "text")))
             }
             PeopleCmd::Name { name } => {
                 let named = client
@@ -1597,7 +1568,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         &serde_json::json!({"name": name}),
                     )
                     .await?;
-                Ok(show(reach.json, &named, &members_text(&named)))
+                Ok(show(reach.json, &named, text(&named, "text")))
             }
         }
     })
@@ -1637,112 +1608,8 @@ fn servers(reach: Reach<'_>, workspace: &str, cmd: ServersCmd) -> ExitCode {
                     .await?
             }
         };
-        Ok(show(reach.json, &listed, &servers_text(&listed)))
+        Ok(show(reach.json, &listed, text(&listed, "text")))
     })
-}
-
-/// A workspace's servers, as lines: each by its device key, the one asked
-/// marked.
-fn servers_text(listed: &Value) -> String {
-    let servers = listed
-        .get("servers")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mut said = String::from("kept by:");
-    for server in &servers {
-        let here = if server.get("here").and_then(Value::as_bool) == Some(true) {
-            "  (asked here)"
-        } else {
-            ""
-        };
-        let _ = write!(said, "\n  {}{here}", text(server, "device"));
-    }
-    if listed.get("confirmed").and_then(Value::as_bool) == Some(false) {
-        said.push_str(
-            "\nthe server that was let go was not reached: it is no longer named, and lets the \
-             workspace go once it hears so",
-        );
-    }
-    said
-}
-
-/// A workspace's wait list, as lines: each address with its entry, and
-/// whether it was invited.
-fn wait_list_text(listed: &Value) -> String {
-    let entries = listed
-        .get("entries")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if entries.is_empty() {
-        return "the wait list is empty".to_owned();
-    }
-    let mut said = String::from("wait list:");
-    for entry in &entries {
-        let invited = if entry.get("invited_at_ns").is_some_and(|at| !at.is_null()) {
-            ", invited"
-        } else {
-            ""
-        };
-        let _ = write!(
-            said,
-            "\n  {}{invited} — {}",
-            text(entry, "contact"),
-            text(entry, "entry")
-        );
-    }
-    said
-}
-
-/// A workspace's people and its open invitations, as lines.
-fn members_text(listed: &Value) -> String {
-    let members = listed
-        .get("members")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mut said = String::from("members:");
-    for member in &members {
-        // One place each: an owner is an administrator with a role beneath, named by the first.
-        let what = Some(text(member, "place"))
-            .filter(|place| !place.is_empty())
-            .unwrap_or_else(|| text(member, "role"));
-        let _ = write!(said, "\n  {} — {what}", text(member, "name"));
-        // A person is named by their key, which `role` and `rm` take.
-        if let Some(key) = member.pointer("/member/person").and_then(Value::as_str) {
-            let _ = write!(said, "  {key}");
-        }
-    }
-    if members.is_empty() {
-        said.push_str("\n  nobody yet");
-    }
-    let invitations = listed
-        .get("invitations")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if invitations.is_empty() {
-        said.push_str("\ninvitations: none open");
-        return said;
-    }
-    said.push_str("\ninvitations:");
-    for invitation in &invitations {
-        // Named by what redeeming it makes them: an owner's or an administrator's invitation
-        // joins someone as an Editor and makes them more.
-        let what = Some(text(invitation, "place"))
-            .filter(|place| !place.is_empty())
-            .unwrap_or_else(|| text(invitation, "role"));
-        // Who it is for, when the inviter named them, and its id, which
-        // cancelling it takes.
-        let named = text(invitation, "invitee_name");
-        let _ = write!(said, "\n  {what} invitation");
-        if !named.is_empty() {
-            let _ = write!(said, " for {named}");
-        }
-        let _ = write!(said, ", {}", text(invitation, "invite"));
-    }
-    said
 }
 
 /// `tilo keys …`.
@@ -1786,28 +1653,7 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
             }
             KeysCmd::Ls => {
                 let listed = Client::open(reach)?.get("/v1/keys").await?;
-                let rows = listed
-                    .get("keys")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .map(|key| {
-                        format!(
-                            "{} (grant {}, reaches {}, last used {}, expires {})",
-                            text(key, "name"),
-                            text(key, "grant"),
-                            text(key, "scope"),
-                            when(key, "last_used_at_ms", "never"),
-                            when(key, "expires_at_ms", "never"),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                let said = if rows.is_empty() {
-                    "no keys".to_owned()
-                } else {
-                    rows.join("\n")
-                };
-                Ok(show(reach.json, &listed, &said))
+                Ok(show(reach.json, &listed, text(&listed, "text")))
             }
             KeysCmd::Mint { name, expires_in } => {
                 let Some(named) = workspace else {
@@ -1823,15 +1669,7 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                     fields.insert("expires_in".into(), serde_json::json!(expires_in));
                 }
                 let minted = client.post("/v1/keys", &body).await?;
-                let said = format!(
-                    "{} (grant {}, reaches {}, expires {})\n  MCP {}\n  key {} (shown once)",
-                    text(&minted, "name"),
-                    text(&minted, "grant"),
-                    text(&minted, "workspace"),
-                    when(&minted, "expires_at_ms", "never"),
-                    text(&minted, "mcp_url"),
-                    text(&minted, "token"),
-                );
+                let said = tilo_api::v1::lines::minted_key(&minted);
                 Ok(show(reach.json, &minted, &said))
             }
             KeysCmd::Revoke { grant } => revoke_key(reach, &grant).await,
@@ -2785,17 +2623,6 @@ mod tests {
             assert!(!api::is_uuid("jane-doe"));
         }
 
-        phase a_workspace_line_names_its_id_and_where_it_lives;
-        {
-            let row = serde_json::json!({"id": "3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b",
-                "name": "Applicant: Jane Doe", "host": "eu1.tilo.sh", "role": "owner"});
-            assert_eq!(
-                workspace_line(&row),
-                "Applicant: Jane Doe (id 3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b, on eu1.tilo.sh, \
-             owner)"
-            );
-        }
-
         phase a_listing_and_a_read_print_what_the_host_said;
         {
             // The host's own text, unrendered: `tilo ls` and `tilo read` print
@@ -2811,31 +2638,6 @@ mod tests {
             );
             let read = serde_json::json!({"path": "notes/Notebook/Todo", "text": "# Todo\n"});
             assert_eq!(text(&read, "text"), "# Todo\n");
-        }
-
-        phase the_people_of_a_workspace_are_a_line_each;
-        {
-            // One place each, as the workspace names it: an owner is an administrator and an
-            // editor beneath, and reads as an owner alone.
-            let listed = serde_json::json!({
-                "members": [{"name": "Ada", "role": "editor", "owner": true, "administrator": true,
-                             "place": "owner"},
-                            {"name": "Rosa Ortiz", "role": "editor", "place": "editor"}],
-                "invitations": [{"invite": "inv-1", "role": "viewer", "invitee_name": "Bo",
-                                 "place": "viewer"},
-                                {"invite": "inv-2", "role": "editor", "administrator": true,
-                                 "owner": true, "place": "owner"}],
-            });
-            assert_eq!(
-                members_text(&listed),
-                "members:\n  Ada — owner\n  Rosa Ortiz — editor\n\
-             invitations:\n  viewer invitation for Bo, inv-1\n  owner invitation, inv-2"
-            );
-            let alone = serde_json::json!({"members": [], "invitations": []});
-            assert_eq!(
-                members_text(&alone),
-                "members:\n  nobody yet\ninvitations: none open"
-            );
         }
     }
 }
