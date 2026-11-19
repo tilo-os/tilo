@@ -799,33 +799,34 @@ unlock, so a machine whose Secure Boot policy changed — a `db` that gained a
 third-party CA, say — asks for the typed secret instead of opening on a boot it no
 longer recognises, rather than opening anyway or leaving an unbootable disk.
 
-### A server's first boot enrols the unlock another of your devices releases
+### A planned server's installer enrols the unlock your devices release
 
 A server is installed before it is one of the person's devices, and the
 sibling unlock (`91tilo-rollback`, `92tilo-sibling-unlock`) can only be
 enrolled once the machine has enrolled and keeps the person's device store.
-At install time the only secret that can authorise a new key slot is the
-installer's throwaway key; `enrol --sibling` accepts any existing passphrase,
-and that key is one.
+But its first boot is the very thing that needs the keyslot: with no TPM and no
+console, the volume cannot open before a service starts. So a staged install
+whose plan names `owner-device`, or names (or leaves open) `tpm` on a machine
+with no usable TPM, does both steps in the installer, while the network and
+the open disk are still in hand:
 
-So an install whose plan names `owner-device`, or names (or leaves open) `tpm`
-on a machine with no usable TPM, keeps the throwaway key instead of dropping
-it in `tilo-disk-encrypt finish`. The key is written root-only (0600, in a
-0700 directory) inside the encrypted root at
-`/var/lib/tilo/sibling-enrol/luks.key`, with the volume's LUKS UUID beside it
-in `enrol.conf`; the file and its value never appear in the installer's log
-or on an unencrypted partition. Its LUKS2 slot stays in the header, so at this
-point the volume has one more way in than the table above lists.
+1. `tilo-enroll enroll` spends the staged token into the installed
+   `/var/lib/tilo`, which hands the machine the person's device store;
+2. `tilo-disk-encrypt enrol --sibling --key-file …` adds the keyslot with the
+   installer's throwaway key, asking the person's devices over the peer
+   network for their consent, and saves the plan's static network keyfile in
+   the token so early boot joins it.
 
-`tilo-server-firstboot` spends it after its own enrolment has produced the
-device certificate, the home-peer file and the person's device store: it calls
-`tilo-disk-encrypt enrol --sibling --key-file …`, then removes the install
-key's slot with
-`cryptsetup luksRemoveKey` and shreds both files. Until that succeeds —
-for example because none of the person's other devices answered within the
-per-boot bound — both stay in place and the next boot tries again. The
-installed system's status says `sibling unlock pending` while it waits
-(`ServerStatus.unlock`, shown by `tilo server status`).
+The first boot then opens with another of the person's devices approving the
+boot, and `tilo-server-firstboot` has nothing left to enrol: it removes the
+install key's LUKS2 keyslot with `cryptsetup luksRemoveKey` and shreds the key
+`tilo-disk-encrypt finish` kept root-only (0600, in a 0700 directory) inside
+the encrypted root at `/var/lib/tilo/sibling-enrol/luks.key`. Until that
+succeeds both stay in place and the next boot tries again; the installed
+system's status says `sibling unlock pending` while it waits
+(`ServerStatus.unlock`, shown by `tilo server status`). A machine that cannot
+enroll or enrol the sibling keyslot fails the install instead of finishing a
+disk nobody can open.
 
 A `passphrase` plan keeps a person at the keyboard and drops the key as before,
 and Tilo OS installs keep nothing: only the server image has a first boot that

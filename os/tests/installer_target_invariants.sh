@@ -637,17 +637,23 @@ else
 fi
 
 # A complete plan installs with nobody at its screen, only as a staged server,
-# and carries its single-use token into the installed system rather than a log.
+# brings up the plan's own network, and enrolls with its single-use token from
+# the installer: the sibling unlock can only be enrolled by an enrolled machine,
+# and the first boot must open the disk before anything can start. The token
+# itself never enters a log or a command argument.
 if grep -Fq -- '--install-plan) INSTALL_PLAN=1' "$backend" \
    && grep -Fq 'the staged plan carried no enrollment token' "$backend" \
-   && grep -Fq 'label_installed_tilo_path "$DEPLOY_ETC/tilo/enrollment-token.txt"' "$backend" \
+   && grep -Fq 'enrol_planned_server' "$backend" \
+   && grep -Fq 'enrol_planned_sibling' "$backend" \
+   && grep -Fq 'TILO_IDENTITY_ROOT="$PLAN_ENROLLED_IDENTITY" "$DISK_ENCRYPT" enrol' "$backend" \
+   && grep -Fq 'apply_plan_network' "$backend" \
    && grep -Fq 'only a Tilo Server installs from a staged plan without a person' \
       "$repo_root/apps/imager/src/setup/staging/helper.rs" \
    && grep -Fq 'pub install_plan: bool' \
       "$repo_root/crates/platform/imager-backend/src/destination/install.rs"; then
-  ok "a staged plan installs a server unattended and keeps its token private"
+  ok "a staged plan installs a server unattended, enrolls it and unlocks its disk"
 else
-  bad "a staged plan can install with a person, without one, or with its token exposed"
+  bad "a staged plan can install with a person, without one, without enrolling, or with its token exposed"
 fi
 
 # The server destination installs the server image with no login account: the

@@ -220,16 +220,28 @@ this for themselves.
 The handoff carries the plan, which is secret-free like every plan. The token
 is not in it: the elevated helper copies the token to
 `/etc/tilo/enrollment-token.txt` on the staging root, mode 0600, as part of the
-handoff step (a resumed staging verifies it), and the live installer carries
-it into the installed system's `/etc/tilo` for the machine's first start. It
-never appears in the handoff, the staging journal, a progress line or a command
-argument.
+handoff step (a resumed staging verifies it). The live installer spends it
+there, before it closes the disk; it never appears in the handoff, the staging
+journal, a progress line or a command argument.
 
 With a complete plan the live installer installs unattended: the plan answers
 the account and confirmation steps, names the machine and its unlock choice,
 and the startup secret it needs is generated and never stored. A passphrase
 plan is refused: a machine with nobody at its screen cannot unlock by a
 passphrase only its owner knows.
+
+The machine then enrolls from the installer, while the network and the open
+disk are still in hand, and enrols the unlock another of the person's devices
+releases (`enrol --sibling` with the installer's throwaway key). That order is
+what makes a server with no TPM and no console open on its first boot: the
+initramfs needs a sibling unlock in the volume's header, and only an enrolled
+machine that holds the person's device store can add one. A static plan's
+addressing is applied to the installer and written into the installed
+`/etc/NetworkManager/system-connections`, and the same keyfile goes into the
+sibling token so early boot joins the machine's network before its disk is
+open. If the machine cannot enroll, the install fails: a disk that can only be
+opened by typing a recovery key at a console nobody is at is not an install
+that finished.
 
 ### Host transaction record
 

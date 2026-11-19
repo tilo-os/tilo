@@ -1,0 +1,160 @@
+#!/bin/sh
+# The NetworkManager connection a planned machine's static addressing becomes.
+#
+#   tilo-plan-network KEYFILE ADDRESSES GATEWAY DNS [INTERFACE]
+#
+# ADDRESSES is `address/prefix` entries, comma separated; GATEWAY and DNS are
+# addresses (DNS comma separated) and may be empty. INTERFACE names the link
+# the connection is for; without it the connection matches any wired link.
+#
+# The installed server keeps this keyfile in /etc, and the installer also gives
+# the same file to the sibling unlock's token: early boot joins it by the
+# interface's MAC address, which is the network a machine with a static-only
+# public address has before its disk is open.
+#
+# Every value is checked here: a plan is a document from the person's devices,
+# but this writes a file NetworkManager reads as root, so nothing gets through
+# that is not an address the kernel would accept.
+set -eu
+umask 0077
+
+die() { printf 'error: %s\n' "$*" >&2; exit 2; }
+
+[ "$#" -ge 4 ] && [ "$#" -le 5 ] || die "usage: tilo-plan-network KEYFILE ADDRESSES GATEWAY DNS [INTERFACE]"
+keyfile=$1
+addresses=$2
+gateway=$3
+dns=$4
+interface=${5:-}
+
+address_line() {
+    case "$1" in
+        ''|*[!0-9A-Fa-f:./]*) return 1 ;;
+    esac
+    printf '%s\n' "$1" | grep -Eq '^[0-9A-Fa-f:.]+/[0-9]{1,3}$'
+}
+
+is_v6() {
+    case "$1" in
+        *:*) return 0 ;;
+    esac
+    return 1
+}
+
+v4_csv=
+v6_csv=
+old_ifs=$IFS
+IFS=,
+for entry in $addresses; do
+    IFS=$old_ifs
+    entry=$(printf '%s' "$entry" | tr -d ' ')
+    address_line "$entry" || die "$entry is not an address/prefix"
+    if is_v6 "${entry%%/*}"; then
+        v6_csv="${v6_csv:+$v6_csv,}$entry"
+    else
+        v4_csv="${v4_csv:+$v4_csv,}$entry"
+    fi
+    IFS=,
+done
+IFS=$old_ifs
+
+[ -n "$v4_csv$v6_csv" ] || die "the plan names no address"
+
+if [ -n "$gateway" ]; then
+    case "$gateway" in
+        *[!0-9A-Fa-f:.]*) die "$gateway is not a gateway address" ;;
+    esac
+fi
+
+v4_dns=
+v6_dns=
+if [ -n "$dns" ]; then
+    IFS=,
+    for entry in $dns; do
+        IFS=$old_ifs
+        entry=$(printf '%s' "$entry" | tr -d ' ')
+        case "$entry" in
+            ''|*[!0-9A-Fa-f:.]*) die "$entry is not a DNS address" ;;
+        esac
+        if is_v6 "$entry"; then
+            v6_dns="${v6_dns}${v6_dns:+;}$entry"
+        else
+            v4_dns="${v4_dns}${v4_dns:+;}$entry"
+        fi
+        IFS=,
+    done
+    IFS=$old_ifs
+fi
+
+if [ -n "$interface" ]; then
+    case "$interface" in
+        ''|*[!A-Za-z0-9_.:-]*) die "$interface is not an interface name" ;;
+    esac
+    [ "${#interface}" -le 15 ] || die "$interface is not an interface name"
+fi
+
+# The gateway belongs to the first address of its own family, so a dual-stack
+# plan with one gateway still gets it on the right side.
+v4_gateway=
+v6_gateway=
+if [ -n "$gateway" ]; then
+    if is_v6 "$gateway"; then
+        [ -n "$v6_csv" ] || die "$gateway is an IPv6 gateway but the plan names no IPv6 address"
+        v6_gateway=$gateway
+    else
+        [ -n "$v4_csv" ] || die "$gateway is an IPv4 gateway but the plan names no IPv4 address"
+        v4_gateway=$gateway
+    fi
+fi
+
+# One address per line, with the gateway on the family's first, as a keyfile
+# writes it.
+section_addresses() {
+    saved_ifs=$IFS
+    csv=$1
+    gw=$2
+    position=0
+    IFS=,
+    for entry in $csv; do
+        IFS=$saved_ifs
+        position=$((position + 1))
+        if [ "$position" -eq 1 ] && [ -n "$gw" ]; then
+            printf 'address1=%s,%s\n' "$entry" "$gw"
+        else
+            printf 'address%d=%s\n' "$position" "$entry"
+        fi
+        IFS=,
+    done
+    IFS=$saved_ifs
+}
+
+uuid=$(cat /proc/sys/kernel/random/uuid)
+: >"$keyfile" || die "could not write $keyfile"
+{
+    printf '[connection]\n'
+    printf 'id=tilo-plan\n'
+    printf 'uuid=%s\n' "$uuid"
+    printf 'type=ethernet\n'
+    [ -z "$interface" ] || printf 'interface-name=%s\n' "$interface"
+    printf 'autoconnect=true\n'
+    printf 'autoconnect-priority=10\n'
+    printf '\n[ethernet]\n'
+    printf '\n[ipv4]\n'
+    if [ -n "$v4_csv" ]; then
+        printf 'method=manual\n'
+        section_addresses "$v4_csv" "$v4_gateway"
+        [ -z "$v4_dns" ] || printf 'dns=%s;\n' "$v4_dns"
+    else
+        printf 'method=ignore\n'
+    fi
+    printf 'may-fail=false\n'
+    printf '\n[ipv6]\n'
+    if [ -n "$v6_csv" ]; then
+        printf 'method=manual\n'
+        section_addresses "$v6_csv" "$v6_gateway"
+        [ -z "$v6_dns" ] || printf 'dns=%s;\n' "$v6_dns"
+    else
+        printf 'method=ignore\n'
+    fi
+} >>"$keyfile"
+chmod 0600 "$keyfile"

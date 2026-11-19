@@ -1079,6 +1079,80 @@ tilo_test_env::scenario! {
             assert!(has_test_id(&app, "return_to_host"));
         }
     }
+
+    phase a_staged_plan_decides_the_server_the_unlock_and_its_network;
+    {
+        let plan = |changes: Value| {
+            let mut document = serde_json::json!({
+                "schema": 1,
+                "plan": "0123456789abcdef0123456789abcdef",
+                "revision": 1,
+                "destination": "tilo-server",
+                "name": "cupboard",
+                "network": {"addressing": "dhcp", "addresses": "", "gateway": "", "dns": ""},
+                "disk": {"kind": "serial", "identity": "INTERNAL"},
+                "unlock": "owner-device",
+                "updates": "stable",
+                "hosting": [],
+                "open": [],
+                "token": {"nonce": "00112233445566778899aabbccddeeff",
+                          "expires_at_ns": 1_700_000_000_000_000_000_u64}
+            });
+            for (name, value) in changes.as_object().expect("an object of changes") {
+                document[name.as_str()] = value.clone();
+            }
+            serde_json::from_value::<install_profile_model::plan::Plan>(document).unwrap()
+        };
+
+        let mut app = staged_app();
+        app.apply_install_plan(&plan(serde_json::json!({
+            "network": {"addressing": "static",
+                        "addresses": "65.108.204.148/26,2a01:4f9:1a:a083::2/64",
+                        "gateway": "65.108.204.129",
+                        "dns": "185.12.64.1,185.12.64.2"}
+        })))
+        .unwrap();
+        assert_eq!(app.purpose, SERVER_PURPOSE);
+        assert_eq!(local_text(&app.hostname), "cupboard");
+        assert_eq!(app.unlock, "owner-device");
+        assert!(app.install_plan);
+        let options = app.install_options();
+        assert!(options.install_plan);
+        assert_eq!(
+            options.network_static,
+            "65.108.204.148/26,2a01:4f9:1a:a083::2/64"
+        );
+        assert_eq!(options.network_gateway, "65.108.204.129");
+        assert_eq!(options.network_dns, "185.12.64.1,185.12.64.2");
+
+        // A DHCP plan leaves the image's own network alone.
+        let mut app = staged_app();
+        app.apply_install_plan(&plan(serde_json::json!({}))).unwrap();
+        assert!(app.install_options().network_static.is_empty());
+
+        // The plan must name the staged disk, be complete, and not need a person.
+        let mut app = staged_app();
+        assert!(
+            app.apply_install_plan(&plan(serde_json::json!({
+                "disk": {"kind": "serial", "identity": "OTHER"}
+            })))
+            .unwrap_err()
+            .contains("names")
+        );
+        let mut app = staged_app();
+        assert!(
+            app.apply_install_plan(&plan(serde_json::json!({
+                "unlock": "passphrase"
+            })))
+            .unwrap_err()
+            .contains("passphrase")
+        );
+        let mut app = staged_app();
+        let mut open = plan(serde_json::json!({}));
+        open.name.clear();
+        open.open = vec!["name".to_owned()];
+        assert!(app.apply_install_plan(&open).unwrap_err().contains("open"));
+    }
 }
 
 tilo_test_env::scenario! {

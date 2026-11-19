@@ -2542,6 +2542,7 @@ COPY \
 COPY --chmod=0755 \
     os/usr/libexec/tilo-disk-encrypt \
     os/usr/libexec/tilo-store-volume \
+    os/usr/libexec/tilo-plan-network \
     os/usr/libexec/tilo-verified-boot-install-preflight \
     /usr/libexec/
 

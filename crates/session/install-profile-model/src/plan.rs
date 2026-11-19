@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 
 /// The OS an installation becomes.
 pub const DESTINATIONS: [&str; 2] = ["tilo-os", "tilo-server"];
+/// The destination that installs the Tilo Server image: the only one a plan
+/// installs with nobody at its screen.
+pub const SERVER: &str = "tilo-server";
 
 /// How a plan names the disk to install to. A rule, not a device: the
 /// destination's real drives are only known when the installer starts.
