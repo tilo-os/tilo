@@ -902,12 +902,10 @@ impl InstanceDocument {
             return false;
         };
         let scope = self.own_steps();
+        let change = ChangeHash(*change);
         self.read(|chunks| {
             chunks.held(chunk).is_some_and(|doc| {
-                steps::steps_in_effect(doc, &|version| scope.owns(version), usize::MAX)
-                    .into_iter()
-                    .flatten()
-                    .any(|version| version.hash.0 == *change)
+                steps::step_in_effect(doc, &|version| scope.owns(version), &change).is_some()
             })
         })
     }
@@ -937,7 +935,7 @@ impl InstanceDocument {
             step: Some(ChangeHash(*change).to_string()),
         };
         let chunk = self.chunk_of_change(change).unwrap_or(FIRST);
-        self.history_apply(chunk, &edit, resource, kind, invoker, Some(ambient))?;
+        self.write_history(chunk, &edit, resource, kind, invoker, Some(ambient))?;
         self.sync_instance(instance);
         Ok(())
     }
@@ -957,9 +955,11 @@ impl InstanceDocument {
         kind: &str,
     ) -> Result<bool, DocumentError> {
         let scope = self.own_steps();
+        let t_last = std::time::Instant::now();
         let Some(step) = self.last_step(&scope) else {
             return Ok(false);
         };
+        eprintln!("DBG undo last_step {:?}", t_last.elapsed());
         // One step may have written several chunks, each with a change of its own: the undo
         // takes back the change of every one of them, so the step is back everywhere it was made.
         // Its parts are one action of its own, under one invocation, and go out as one commit.
@@ -981,7 +981,7 @@ impl InstanceDocument {
                 to: None,
                 step: Some(ChangeHash(change).to_string()),
             };
-            self.history_apply(chunk, &edit, resource, kind, invoker, Some(&ambient))?;
+            self.write_history(chunk, &edit, resource, kind, invoker, Some(&ambient))?;
             taken = true;
         }
         Ok(self.finish_history(instance, taken))
@@ -1074,7 +1074,9 @@ impl InstanceDocument {
         if !taken {
             return false;
         }
+        let t = std::time::Instant::now();
         self.share_into(instance);
+        eprintln!("DBG finish_history took {:?}", t.elapsed());
         true
     }
 
@@ -1146,6 +1148,30 @@ impl InstanceDocument {
         Ok((result, self.share()))
     }
 
+    /// Apply the history verb `edit` as one step, leaving it unsent, and say which heads it was
+    /// applied on: what a caller that answers nobody needs ([`Self::history_apply`], which also
+    /// reads what the verb did for its answer).
+    fn write_history(
+        &mut self,
+        chunk: ChunkNo,
+        edit: &HistoryEdit,
+        resource: &str,
+        kind: &str,
+        invoker: ActionInvoker,
+        ambient: Option<&ActionContext>,
+    ) -> Result<Vec<automerge::ChangeHash>, DocumentError> {
+        let action = HostHistoryEdit::new(edit.clone(), self.words.clone());
+        let encoded = action.encoded().map_err(DocumentError::Refused)?;
+        // The verb's change is a step of its own, or a part of the one action an undo or redo
+        // across chunks is (`ambient`'s invocation).
+        let invocation = ambient
+            .and_then(|ambient| ambient.source_invocation)
+            .unwrap_or_default();
+        let context = ActionContext::for_resource(resource, kind, kind)
+            .with_source_invocation(Some(invocation));
+        self.apply_on(chunk, (&action, None), encoded, context, invoker, ambient)
+    }
+
     /// Apply the history verb `edit` as one step, leaving it unsent: its caller sends it, alone or
     /// as its unit's part of one action.
     fn history_apply(
@@ -1157,17 +1183,7 @@ impl InstanceDocument {
         invoker: ActionInvoker,
         ambient: Option<&ActionContext>,
     ) -> Result<Option<Json>, DocumentError> {
-        let action = HostHistoryEdit::new(edit.clone(), self.words.clone());
-        let encoded = action.encoded().map_err(DocumentError::Refused)?;
-        let before = self.heads_of(chunk);
-        // The verb's change is a step of its own, or a part of the one action an undo or redo
-        // across chunks is (`ambient`'s invocation).
-        let invocation = ambient
-            .and_then(|ambient| ambient.source_invocation)
-            .unwrap_or_default();
-        let context = ActionContext::for_resource(resource, kind, kind)
-            .with_source_invocation(Some(invocation));
-        self.apply_on(chunk, (&action, None), encoded, context, invoker, ambient)?;
+        let before = self.write_history(chunk, edit, resource, kind, invoker, ambient)?;
         let words = &self.words;
         self.chunks.read(|chunks| {
             let Some(doc) = chunks.held(chunk) else {

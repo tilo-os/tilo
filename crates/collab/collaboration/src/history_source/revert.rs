@@ -334,11 +334,22 @@ fn later_writers(
     (before, after): (&[ChangeHash], &[ChangeHash]),
     by: Option<&str>,
     invoker: Option<&tilo_actions::Actor>,
-    created: &HashSet<ObjId>,
+    forward: &mut Option<Vec<Patch>>,
 ) -> Later {
     let versions = tilo_resource::history::versions(doc);
     let saw_run = made_after_run(doc, before, after);
     let start_at = first_index_after(doc, after, versions.len());
+    // What the step made and what it wrote are read only where a change was
+    // made after it: with none, nobody could have built on it, so taking the
+    // step back reads none of its characters (a paste nobody touched since).
+    let created = if start_at < versions.len() {
+        let read = doc.diff(before, after);
+        let created = objects_created(&read);
+        *forward = Some(read);
+        created
+    } else {
+        HashSet::new()
+    };
     let mut out: HashMap<Slot, String> = HashMap::new();
     let mut typed: HashMap<ObjId, text::LaterText> = HashMap::new();
     for i in start_at..versions.len() {
@@ -589,11 +600,15 @@ fn plan(
     (by, invoker): (Option<&str>, Option<&tilo_actions::Actor>),
     authors: &dyn ResolveAuthor,
 ) -> (RevertOutcome, Vec<(Patch, bool)>) {
-    let forward = doc.diff(before, after);
-    let created = objects_created(&forward);
     let inverse = doc.diff(after, before);
-    let later = later_writers(doc, (before, after), by, invoker, &created);
-    let rewritten = text::rewritten(doc, &forward, (before, after), &later.text);
+    let mut forward = None;
+    let later = later_writers(doc, (before, after), by, invoker, &mut forward);
+    let rewritten = text::rewritten(
+        doc,
+        forward.as_deref().unwrap_or_default(),
+        (before, after),
+        &later.text,
+    );
     classify(
         doc,
         inverse,
