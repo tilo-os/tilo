@@ -510,7 +510,7 @@ pub fn requires_independent_document_keys(app: &str, document: &str) -> bool {
 
 /// The access editor's route: an empty app selects workspace defaults or the default for the
 /// app named in `document`. A nonempty app selects one exact document.
-pub fn access_rule_node(workspace: &str, app: &str, document: &str) -> Option<TreePath> {
+fn access_rule_node(workspace: &str, app: &str, document: &str) -> Option<TreePath> {
     let workspace_path = TreePath::workspace(workspace);
     match (app, document) {
         ("", "") => Some(workspace_path.any(tilo_action_policy::Level::App)),

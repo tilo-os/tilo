@@ -456,6 +456,50 @@ impl std::fmt::Debug for Engine {
     }
 }
 
+struct DocumentHistoryKeys {
+    shared: Option<tilo_workspace_keys::HistoryKeys>,
+    historical: Option<Result<tilo_workspace_keys::HistoryKeys, String>>,
+    document: Option<tilo_workspace_keys::HistoryKeys>,
+}
+
+impl DocumentHistoryKeys {
+    fn generation(&self) -> KeysUsed {
+        [
+            self.shared
+                .as_ref()
+                .map(tilo_workspace_keys::HistoryKeys::generation),
+            self.historical
+                .as_ref()
+                .and_then(|keys| keys.as_ref().ok())
+                .map(tilo_workspace_keys::HistoryKeys::generation),
+            self.document
+                .as_ref()
+                .map(tilo_workspace_keys::HistoryKeys::generation),
+        ]
+    }
+
+    fn open(&self, write: &collab_types::SignedOp) -> Result<Vec<u8>, String> {
+        if write.encryption.is_some_and(|metadata| {
+            matches!(
+                metadata.scheme,
+                collab_types::EncryptionScheme::DocumentContentKey { .. }
+            )
+        }) {
+            return self
+                .document
+                .as_ref()
+                .ok_or("the document's keys have not arrived")?
+                .open(write);
+        }
+        match (&self.shared, &self.historical) {
+            (Some(keys), Some(Ok(history))) => keys.open(write).or_else(|_| history.open(write)),
+            (Some(keys), _) => keys.open(write),
+            (None, Some(history)) => history.as_ref().map_err(Clone::clone)?.open(write),
+            (None, None) => Err("this session's key service is not running".into()),
+        }
+    }
+}
+
 /// This device's channel keys, as its owner compacts the sealed histories of its records with
 /// them wherever it writes, linked or not
 /// ([`NativeWorkspaceOwner::keep_sealed_histories`]): those the workspace's host handed it
@@ -1008,7 +1052,62 @@ impl Engine {
                 admission,
             ))
         })?;
-        let named = self.named_document_readers(workspace, document_id)?;
+        let route = DocumentRoute {
+            app_id: app.to_owned(),
+            cluster_id: workspace.to_string(),
+            document: document_id.to_owned(),
+        };
+        let Some(keys) = self.history_keys_for(&route, workspace, admission, sealed, scoped)?
+        else {
+            return Ok(None);
+        };
+        let mut unopened = false;
+        let key = (workspace, app.to_owned(), document_id.to_owned());
+        // What was opened under other keys than these — the channel rotated, as removing a member
+        // rotates it — is let go, and it opens whole under the keys held now.
+        let used = keys.generation();
+        // A sealed resource another read is opening now is waited for, and read on from what that
+        // one opened: taking it out while it was read made the second reader open it whole, which
+        // for a chain part of a thousand items costs the second caller most of a second.
+        let opening = sealed.then(|| {
+            let mut kept = self.kept.lock_recover();
+            if !kept.contains_key(&key) && kept.len() >= KEPT_RECORDS {
+                kept.pop_first();
+            }
+            Arc::clone(kept.entry(key).or_default())
+        });
+        let read = opened_under(opening.as_deref(), &used, |kept| {
+            read(
+                workspace,
+                &mut |write| {
+                    let opened = keys.open(write);
+                    unopened |= opened.is_err();
+                    opened
+                },
+                kept,
+            )
+        });
+        // The person's other devices may hold the key the workspace's server has not handed this
+        // one yet, or cannot, being away: they are asked for the group's frames from the epoch
+        // held.
+        if unopened && let (Some(link), Some(Ok(history))) = (self.link(), &keys.historical) {
+            link.want_frames(workspace, history.generation().1);
+        }
+        match read {
+            Err(_) if unopened => Ok(None),
+            read => read.map(Some),
+        }
+    }
+
+    fn history_keys_for(
+        &self,
+        route: &DocumentRoute,
+        workspace: WorkspaceId,
+        admission: Admission,
+        sealed: bool,
+        scoped: bool,
+    ) -> Result<Option<DocumentHistoryKeys>, String> {
+        let named = self.named_document_readers(workspace, &route.document)?;
         let keys: Option<tilo_workspace_keys::HistoryKeys> = if let Some(readers) = &named {
             match self.reader_keys(workspace, readers) {
                 Ok(SealKeys::Here(keys)) => Some(keys.into()),
@@ -1022,11 +1121,11 @@ impl Engine {
                 Some(KeyAccess::Ready(keys)) => Some(keys.into()),
                 Some(KeyAccess::Waiting | KeyAccess::Removed) => {
                     // Nothing opened under keys this device no longer holds answers a read
-                    // until the document_id's channel gives it keys again.
+                    // until the document's channel gives it keys again.
                     self.kept.lock_recover().remove(&(
                         workspace,
-                        app.to_owned(),
-                        document_id.to_owned(),
+                        route.app_id.clone(),
+                        route.document.clone(),
                     ));
                     return Ok(None);
                 }
@@ -1039,9 +1138,7 @@ impl Engine {
                 // the keys it was copied with, among the history keys, open what it holds.
                 Some(KeyAccess::Unavailable) if admission != Admission::Admitted => None,
                 Some(KeyAccess::Unavailable) => {
-                    return Err(
-                        "this device takes part in no channel of the document_id".to_owned()
-                    );
+                    return Err("this device takes part in no channel of the document".to_owned());
                 }
             }
         } else {
@@ -1058,88 +1155,18 @@ impl Engine {
             None
         };
         let document_keys = if scoped {
-            let route = DocumentRoute {
-                app_id: app.to_owned(),
-                cluster_id: workspace.to_string(),
-                document: document_id.to_owned(),
-            };
-            match self.scoped_keys(&route, named.as_deref())? {
+            match self.scoped_keys(route, named.as_deref())? {
                 SealKeys::Here(keys) => Some(tilo_workspace_keys::HistoryKeys::from(keys)),
                 SealKeys::Waiting | SealKeys::NoSecretStore => return Ok(None),
             }
         } else {
             None
         };
-        // A sealed write the keys this device holds do not open yet — its epoch's key, or the key
-        // of the branch it was sealed on, has not reached this device — reads as what opened
-        // before it until they have, as the app's own channel holds such a write until they do;
-        // a document_id none of whose writes open yet is still arriving here. The document_id's keys open
-        // what they carry; the channel's own history keys open the rest.
-        let mut unopened = false;
-        let key = (workspace, app.to_owned(), document_id.to_owned());
-        // What was opened under other keys than these — the channel rotated, as removing a member
-        // rotates it — is let go, and it opens whole under the keys held now.
-        let used: KeysUsed = [
-            keys.as_ref()
-                .map(tilo_workspace_keys::HistoryKeys::generation),
-            history
-                .as_ref()
-                .and_then(|history| history.as_ref().ok())
-                .map(tilo_workspace_keys::HistoryKeys::generation),
-            document_keys
-                .as_ref()
-                .map(tilo_workspace_keys::HistoryKeys::generation),
-        ];
-        // A sealed resource another read is opening now is waited for, and read on from what that
-        // one opened: taking it out while it was read made the second reader open it whole, which
-        // for a chain part of a thousand items costs the second caller most of a second.
-        let opening = sealed.then(|| {
-            let mut kept = self.kept.lock_recover();
-            if !kept.contains_key(&key) && kept.len() >= KEPT_RECORDS {
-                kept.pop_first();
-            }
-            Arc::clone(kept.entry(key).or_default())
-        });
-        let read = opened_under(opening.as_deref(), &used, |kept| {
-            read(
-                workspace,
-                &mut |write| {
-                    let scoped = write
-                        .encryption
-                        .is_some_and(|metadata| metadata.key_group(workspace) != workspace);
-                    let opened = if scoped {
-                        document_keys
-                            .as_ref()
-                            .ok_or("the document_id's keys have not arrived")?
-                            .open(write)
-                    } else {
-                        match (&keys, &history) {
-                            (Some(keys), Some(Ok(history))) => {
-                                keys.open(write).or_else(|_| history.open(write))
-                            }
-                            (Some(keys), _) => keys.open(write),
-                            (None, Some(history)) => {
-                                history.as_ref().map_err(Clone::clone)?.open(write)
-                            }
-                            (None, None) => Err("this session's key service is not running".into()),
-                        }
-                    };
-                    unopened |= opened.is_err();
-                    opened
-                },
-                kept,
-            )
-        });
-        // The person's other devices may hold the key the workspace's server has not handed this
-        // one yet, or cannot, being away: they are asked for the group's frames from the epoch
-        // held.
-        if unopened && let (Some(link), Some(Ok(history))) = (self.link(), &history) {
-            link.want_frames(workspace, history.generation().1);
-        }
-        match read {
-            Err(_) if unopened => Ok(None),
-            read => read.map(Some),
-        }
+        Ok(Some(DocumentHistoryKeys {
+            shared: keys,
+            historical: history,
+            document: document_keys,
+        }))
     }
 
     /// [`Self::read_resource`] under keys the caller holds itself rather than this device's channel

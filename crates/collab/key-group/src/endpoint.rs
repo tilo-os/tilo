@@ -374,7 +374,7 @@ impl std::fmt::Debug for ContentKeys {
             .field("workspace", &self.workspace)
             .field("epoch", &self.epoch)
             .field("keyring", &self.keyring)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
