@@ -123,6 +123,12 @@ impl Placed {
         self.presence.is_moving(now) || self.rect.is_moving(now)
     }
 
+    /// Whether where it stands is still moving at `now`: what its owner lays out again. Its
+    /// arrival or departure is a pose it is drawn in, and only repaints.
+    pub fn is_gliding(&self, now: Instant) -> bool {
+        self.rect.is_moving(now)
+    }
+
     /// When it arrives or rests; `None` while it is still.
     pub fn settles_at(&self) -> Option<Instant> {
         self.presence.settles_at().max(self.rect.settles_at())

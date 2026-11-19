@@ -358,11 +358,13 @@ impl super::App {
             return false;
         }
         // What the model moved reaches widgets that paint it without a flag
-        // of their own, so drawings kept from the last frame are stale.
+        // of their own, so drawings kept from the last frame are stale. It is
+        // laid out when a widget says its size moved: a picture that arrived,
+        // a label that changed; a value that only repaints is drawn.
         crate::input_generation::note_model();
         self.invalidate_widget_resource_cache();
         self.needs_sync = true;
-        self.layout.layout_dirty = true;
+        self.layout.layout_dirty |= self.root_widget.is_layout_dirty();
         true
     }
 
@@ -408,7 +410,9 @@ impl super::App {
         }
         save_status |=
             crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut());
-        if save_status {
+        // What the sync handed the widgets (a value, a label, a page shown) is laid out when
+        // one of them says its size moved: an input that only repainted asked for no layout.
+        if save_status || self.root_widget.is_layout_dirty() {
             self.layout.layout_dirty = true;
         }
         self.invalidate_widget_resource_cache();

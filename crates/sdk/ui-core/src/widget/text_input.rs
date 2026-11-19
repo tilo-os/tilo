@@ -5571,6 +5571,12 @@ impl Widget for TextInput {
             || (self.caret && self.caret_measured.as_deref() != Some(self.caret_shown()))
     }
 
+    /// The solve read the size it asked for: a field the solver sizes from its style is never
+    /// measured, and its request is met all the same.
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
+    }
+
     /// Where the field's text stands in it, so an audit of a window holds it to the band a
     /// person reads: one line in the middle of the field it is typed into.
     ///

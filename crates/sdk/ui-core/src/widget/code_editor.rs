@@ -599,6 +599,15 @@ impl Widget for CodeEditor {
         self.inner.apply_layout_external(rect);
     }
 
+    /// Its size is its field's: the lines it holds.
+    fn is_layout_dirty(&self) -> bool {
+        self.inner.is_layout_dirty()
+    }
+
+    fn layout_measured(&mut self) {
+        self.inner.layout_measured();
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,

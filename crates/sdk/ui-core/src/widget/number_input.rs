@@ -389,6 +389,9 @@ pub struct NumberInput {
     field_padding: f32,
     value_style: crate::text_render::TextStyle,
     interaction: crate::interaction::InteractionEnvironment,
+    /// The values its width was last fitted to, as shown: while they stand, it asks for no
+    /// layout.
+    fitted: Option<[String; 3]>,
 
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
@@ -438,6 +441,7 @@ impl NumberInput {
                 .style(crate::widget::ControlSize::Regular.text_role())
                 .numeric(),
             interaction: crate::interaction::InteractionEnvironment::default(),
+            fitted: None,
         };
         s.value = s.value.clamp(s.min, s.max);
         s.sync_field();
@@ -612,6 +616,11 @@ impl NumberInput {
     }
 
     /// `value` formatted exactly as [`Self::format_value`] would show it.
+    /// The value and the ends of its range, as the control shows them: what its width fits.
+    fn shown_values(&self) -> [String; 3] {
+        [self.value, self.min, self.max].map(|value| self.format_display(value))
+    }
+
     fn format_display(&self, value: f64) -> String {
         if let Some(format) = &self.formatter {
             return format(value);
@@ -841,13 +850,14 @@ impl Widget for NumberInput {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn adjust_layout_style(
+    /// Every value the control can show fits, so stepping never resizes it: its width follows
+    /// from what it shows, before the first solve.
+    fn size_before_solve(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
         text: &mut TextRenderer,
-    ) -> bool {
-        // Every value the control can show fits, so stepping never resizes it.
+    ) {
         let width = [self.value, self.min, self.max]
             .into_iter()
             .filter(|value| value.is_finite())
@@ -861,15 +871,19 @@ impl Widget for NumberInput {
                 )
             })
             .fold(self.minimum.width, f32::max);
+        self.fitted = Some(self.shown_values());
         let Ok(current) = tree.style(node) else {
-            return false;
+            return;
         };
         let mut style = current.clone();
         style.size.width = Dimension::length(width);
-        if style == *current {
-            return false;
+        if style != *current {
+            let _ = tree.set_style(node, style);
         }
-        tree.set_style(node, style).is_ok()
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.fitted.as_ref() != Some(&self.shown_values())
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

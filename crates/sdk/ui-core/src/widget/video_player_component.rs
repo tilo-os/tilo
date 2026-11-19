@@ -166,6 +166,10 @@ impl crate::widget::Widget for DeclaredVideo {
         self.player.needs_animation_frame()
     }
 
+    fn is_layout_dirty(&self) -> bool {
+        crate::widget::Widget::is_layout_dirty(&self.player)
+    }
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

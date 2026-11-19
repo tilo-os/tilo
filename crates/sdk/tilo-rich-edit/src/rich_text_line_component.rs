@@ -134,6 +134,14 @@ impl ui::widget::Widget for DeclaredLine {
         self.line.needs_animation_frame()
     }
 
+    fn is_layout_dirty(&self) -> bool {
+        self.line.is_layout_dirty()
+    }
+
+    fn layout_measured(&mut self) {
+        self.line.layout_measured();
+    }
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

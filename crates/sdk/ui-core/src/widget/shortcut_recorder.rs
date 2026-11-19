@@ -48,6 +48,9 @@ pub struct ShortcutRecorder {
     reset_edge: f64,
     gap: f64,
     layout_theme: Option<Theme>,
+    /// What its width was last fitted to: whether it is capturing, and the chord it shows.
+    /// While they stand, it asks for no layout.
+    fitted: Option<(bool, String)>,
     edits: Option<crate::component::Bound<String>>,
 
     /// Input or a new document value changed what this widget paints: it
@@ -75,6 +78,7 @@ impl ShortcutRecorder {
             platform: PlatformConventions::default(),
             interaction: InteractionEnvironment::default(),
             keys_width: 0.0,
+            fitted: None,
             height: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
             reset_edge: f64::from(crate::tokens::Metrics::BASE.bar_control_height),
             gap: f64::from(crate::tokens::Spacing::BASE.s2),
@@ -284,26 +288,33 @@ impl Widget for ShortcutRecorder {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn adjust_layout_style(
+    /// Its width is the chord it shows, measured before the first solve.
+    fn size_before_solve(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
         text: &mut TextRenderer,
-    ) -> bool {
+    ) {
         let Some(theme) = self.layout_theme.take() else {
-            return false;
+            return;
         };
         self.measure_keys(text, &theme);
         self.layout_theme = Some(theme);
+        self.fitted = Some((self.capturing, self.value.clone()));
         let Ok(current) = tree.style(node) else {
-            return false;
+            return;
         };
         let mut style = current.clone();
         style.size.width = Dimension::length(crate::num::f32_of_f64(self.content_width()));
-        if style == *current {
-            return false;
+        if style != *current {
+            let _ = tree.set_style(node, style);
         }
-        tree.set_style(node, style).is_ok()
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.fitted
+            .as_ref()
+            .is_none_or(|(capturing, value)| *capturing != self.capturing || *value != self.value)
     }
 
     crate::rect_geometry!();

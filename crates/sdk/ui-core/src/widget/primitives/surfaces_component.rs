@@ -588,6 +588,10 @@ impl Widget for DeclaredPopover {
         self.popover.apply_layout(taffy, node, origin);
     }
 
+    fn is_layout_dirty(&self) -> bool {
+        self.popover.is_layout_dirty()
+    }
+
     fn draw_overlay(
         &mut self,
         scene: &mut vello::Scene,

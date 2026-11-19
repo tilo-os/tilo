@@ -192,6 +192,7 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
     print_costs(&staged, "open")?;
     if options.times {
         print_times(&opened);
+        print_asking(&staged);
         for (when, resident) in [
             ("started", started),
             ("compiled", compiled_at),
@@ -215,6 +216,7 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
         print_costs(&staged, &format!("then {}", interaction.label()))?;
         if options.times {
             print_times(&scopes);
+            print_asking(&staged);
             println!("{:>10}  {}", "after", Resident::now());
         }
     }
@@ -269,6 +271,19 @@ fn print_times(scopes: &[tilo_resource::profiling::Sample]) {
             scope.calls,
             scope.phase
         );
+    }
+}
+
+/// The widgets still asking for layout once a step settled: each lays the window out again on the
+/// next input it handles.
+fn print_asking(staged: &stage::Staged) {
+    let asking = ui::profiling::layout_counts::asking_for_layout(staged.harness().root_widget());
+    if !asking.is_empty() {
+        let named: Vec<String> = asking
+            .iter()
+            .map(|(name, count)| format!("{name} {count}"))
+            .collect();
+        println!("    asking  {}", named.join(", "));
     }
 }
 

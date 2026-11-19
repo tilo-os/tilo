@@ -2373,6 +2373,11 @@ impl Widget for Button {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        // A button the solver places for the first time was measured as it stands: what it was
+        // handed before (a label, a detail) is in that measure, and asks for no second solve.
+        if !self.solver_placed {
+            self.layout_dirty = false;
+        }
         self.solver_placed = true;
         if self.face.resized(self.rect) {
             self.dirty = true;

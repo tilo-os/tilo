@@ -132,3 +132,33 @@ pub fn take_restyled() -> Vec<(&'static str, u64)> {
     restyled.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
     restyled
 }
+
+/// The widget types under `root` that ask for layout on their own: each reports
+/// [`crate::widget::Widget::is_layout_dirty`] while none of its children does, so a frame that
+/// handles any input lays the window out for them. A settled window names none.
+pub fn asking_for_layout(root: &dyn crate::widget::Widget) -> Vec<(&'static str, u64)> {
+    fn walk(widget: &dyn crate::widget::Widget, found: &mut Vec<(&'static str, u64)>) {
+        if !widget.is_layout_dirty() {
+            return;
+        }
+        let mut child_asks = false;
+        widget.for_each_child(&mut |child| {
+            if child.is_layout_dirty() {
+                child_asks = true;
+                walk(child, found);
+            }
+        });
+        if child_asks {
+            return;
+        }
+        let name = widget.concrete_type_name();
+        match found.iter_mut().find(|(held, _)| *held == name) {
+            Some((_, count)) => *count = count.saturating_add(1),
+            None => found.push((name, 1)),
+        }
+    }
+    let mut found = Vec::new();
+    walk(root, &mut found);
+    found.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    found
+}
