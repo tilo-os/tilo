@@ -24,6 +24,10 @@ struct Param {
     /// The collection whose items the place names (`place = "blocks"`).
     place_in: Option<String>,
     description: Option<String>,
+    /// The parameter's description as a key of the vocabulary's catalogue
+    /// (`label = "app-param-name"`), read in the person's language where the
+    /// action is published.
+    label: Option<String>,
     choices: Option<syn::Expr>,
     /// The argument's name where it differs from the field's (`name =
     /// "pageSize"`): a contract its callers already speak.
@@ -104,6 +108,8 @@ impl syn::parse::Parse for Param {
                 param.place_in = Some(input.parse::<syn::LitStr>()?.value());
             } else if key == "name" {
                 param.name = Some(input.parse::<syn::LitStr>()?.value());
+            } else if key == "label" {
+                param.label = Some(input.parse::<syn::LitStr>()?.value());
             } else if key == "choices" {
                 param.choices = Some(input.parse()?);
             } else if key == "resource" {
@@ -111,8 +117,8 @@ impl syn::parse::Parse for Param {
             } else {
                 return Err(syn::Error::new(
                     key.span(),
-                    "expected `choices = ...`, `place = \"field\"`, `resource = \"kind\"` or \
-                     `name = \"argument\"`",
+                    "expected `choices = ...`, `place = \"field\"`, `resource = \"kind\"`, \
+                     `name = \"argument\"` or `label = \"key\"`",
                 ));
             }
             if !input.is_empty() {
@@ -593,15 +599,27 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         }
         let params = fields.iter().map(|(field, ty, described)| {
             if described.flag == Flag::Flatten {
-                return quote!(#krate::__private::flat_params(
+                return Ok(quote!(#krate::__private::flat_params(
                     &<#ty as #krate::JsonSchema>::json_schema()
-                ));
+                )));
             }
             let param = described.name.clone().unwrap_or_else(|| field.to_string());
-            let description = described
-                .description
-                .clone()
-                .unwrap_or_else(|| humanize(&param));
+            let description = if let Some(key) = &described.label {
+                let (word, _) = catalogue.declared(
+                    &krate,
+                    field.span(),
+                    Some(key),
+                    &crate::words::key(&operation, &id),
+                    &humanize(&param),
+                )?;
+                quote!(#word.read())
+            } else {
+                let description = described
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| humanize(&param));
+                quote!(#description)
+            };
             let (param_ty, optional) = param_type(ty, false);
             let param_ty = if described.resource.is_some() {
                 quote!(#krate::__private::ParamType::Resource)
@@ -639,7 +657,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 Some(kind) => quote!(#declared.of_resource_kind(#kind)),
                 None => declared,
             };
-            quote!(::std::vec![#declared])
+            Ok(quote!(::std::vec![#declared]))
         });
         let answers = if options.job || options.cancellable {
             let cancellable = options.cancellable;
@@ -830,7 +848,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             }
             Some(param) => quote!(::core::option::Option::Some(#param)),
         };
-        let params: Vec<Tokens> = params.collect();
+        let params: Vec<Tokens> = params.collect::<syn::Result<Vec<_>>>()?;
         // Each parameter's surface type, when its Rust type describes one: a record or enum its
         // wire type (an object) says nothing of.
         let typed: Vec<Tokens> = fields
