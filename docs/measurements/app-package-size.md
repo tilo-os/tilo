@@ -248,7 +248,7 @@ of its 536,880-byte payload is its module, its surface and its locales (`apps/ca
 
 | app | module | tapp | budget before |
 | --- | --- | --- | --- |
-| chat | 509,894 | 5,205,504 | 4,587,520 |
+| chat | 509,894 | 5,211,648 | 4,587,520 |
 | calendar | 499,371 | 3,290,112 | 2,686,976 |
 | api-tester | 138,691 | 1,706,496 | 1,572,864 |
 | maps | 129,067 | 1,730,048 | 1,572,864 |
