@@ -1476,3 +1476,9 @@ reason = "The browser effect that reads what the tab did, which the window must 
 words = ["record"]
 identifiers = ["ReadPageRecord", "READ_PAGE_RECORD"]
 paths = ["apps/browser/src/browser_widget.rs"]
+
+[[allow]]
+reason = "The JSON field and variant in older filesystem capability lists, read in place so upgrading preserves the device's existing permissions."
+words = ["principal", "subject"]
+identifiers = ["Principal", "subject"]
+paths = ["crates/system/fs/src/caps_file.rs", "crates/system/fs/src/caps_file/legacy.rs"]
