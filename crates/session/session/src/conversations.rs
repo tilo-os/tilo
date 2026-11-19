@@ -772,12 +772,6 @@ fn turn_resource(question: &str, asked: &str) -> tilo_actions::ResourceSpec {
             "open",
         ))
         .into_resource();
-    // Chat's own words for a message's item, as its window publishes it.
-    spec = spec.with_type(tilo_actions::ResourceType {
-        noun: tilo_actions::Noun::new("answer", "answers"),
-        app: tilo_actions::Noun::new("Chat", "Chat"),
-        root: false,
-    });
     spec.app_id = Some("chat".to_owned());
     spec
 }
