@@ -99,6 +99,10 @@ pub struct Standalone {
     /// runtime runs, and the workspaces' store answered on the same router.
     _personal_links: tilo_workspace_service::apps::personal::Links,
     _personal_router: iroh::protocol::Router,
+    /// The workspace service this device keeps: the workspaces it holds for
+    /// the profile, member copies included. Its protocols are answered by the
+    /// person's router.
+    _service: Arc<tilo_workspace_service::service::WorkspaceService>,
     /// The MCP servers of the person's other devices, dialed from this
     /// runtime's endpoint as the device its store certifies.
     other_devices: Arc<tilo_device_mcp::OtherDevices>,
@@ -171,20 +175,11 @@ impl Standalone {
             (Arc::clone(&channels), Arc::clone(&fanout)),
             take_work.as_ref().map(|_| take_work::PORT),
         )?;
-        // The workspace host, when this device governs the profile's
-        // workspace, and what answers its record actions for the person's keys.
-        let placed = if workspace.governs() {
-            stage("placing the workspace on this device's workspace host");
-            Some(place_own_workspace(
-                root,
-                &workspace,
-                &joined,
-                &group_keys.keys,
-                (&apps, dev),
-            )?)
-        } else {
-            None
-        };
+        // The workspace service every device keeps, and what answers the
+        // profile's record actions for the person's keys when this device
+        // governs its own workspace.
+        stage("opening the workspace service");
+        let placed = open_service(root, &workspace, &joined, &group_keys.keys, (&apps, dev))?;
         // The joined workspaces' files, once the broker that carries their
         // records runs: where a member taking a workspace's work runs it.
         let replica_slot = files::ReplicaSlot::default();
@@ -198,7 +193,7 @@ impl Standalone {
             channels: Arc::clone(&channels),
             fanout: Arc::clone(&fanout),
             take_work,
-            host: placed.as_ref().map(|(host, _)| host.as_ref()),
+            host: Some(placed.host.as_ref()),
         })?;
         // What the person answers about this device's camera and microphone is kept in their own
         // store, where their other devices see it and can take it back.
@@ -237,7 +232,7 @@ impl Standalone {
         // Elsewhere nobody here answers, and such an action is refused.
         #[cfg(target_os = "macos")]
         confirm::ask_the_person(&broker, &actor, &apps);
-        if let Some((_, key_sessions)) = &placed {
+        if let Some(key_sessions) = &placed.key_sessions {
             serve_key_sessions(
                 key_sessions,
                 &broker,
@@ -269,6 +264,7 @@ impl Standalone {
             apps,
             other_devices: other_devices(&joined, &personal.sync),
             joined,
+            _service: placed.host,
             _workspace_keys: group_keys,
             _identity: identity_broker,
             workspace: workspace_id,
@@ -1307,26 +1303,34 @@ impl Standalone {
     }
 }
 
-/// Place the profile's own workspace, called `name`, on the workspace host
-/// this runtime runs in process, and hold it as a joined workspace from then on.
-/// Apps create records there in the kinds their installed manifests declare,
-/// or in dev mode (`apps`, `dev`) the kinds a build that is not installed
-/// names.
-fn place_own_workspace(
+/// The workspace service this device keeps for the profile, and what
+/// answers the profile's record actions for the person's keys when this
+/// device governs its own workspace.
+struct Placed {
+    host: Arc<tilo_workspace_service::service::WorkspaceService>,
+    key_sessions: Option<Arc<crate::key_sessions::KeySessions>>,
+}
+
+/// Open the workspace service this device keeps for the profile. When this
+/// device governs the profile's own workspace, the service hosts it, and
+/// apps create resources there in the kinds their installed manifests
+/// declare, or in dev mode (`apps`, `dev`) the kinds a build that is not
+/// installed names. Otherwise the profile's workspace is the desktop
+/// session's, and the service holds only the workspaces this device joined
+/// as a member.
+fn open_service(
     profile: &Path,
     workspace: &ProfileWorkspace,
     joined: &Arc<Joined>,
     keys: &tilo_workspace_service::apps::workspace_keys::KeyProvider,
     (apps, dev): (&Arc<apps::Apps>, bool),
-) -> io::Result<(
-    Arc<tilo_workspace_service::service::WorkspaceService>,
-    Arc<crate::key_sessions::KeySessions>,
-)> {
+) -> io::Result<Placed> {
     let workspace_id = workspace.workspace();
     let (key, cert) = tilo_identity::broker::trusted_current_device(&workspace_id)?;
     let workspace_id = WorkspaceId::parse(&workspace_id)
         .ok_or_else(|| io::Error::other("invalid runtime workspace"))?;
-    let key_sessions = crate::key_sessions::KeySessions::new();
+    let governs = workspace.governs();
+    let key_sessions = governs.then(crate::key_sessions::KeySessions::new);
     let store = profile.join(HOST_STORE);
     // The workspace service writes under a key of its own, which this device certifies: the
     // device and its service never number changes from one count.
@@ -1336,43 +1340,58 @@ fn place_own_workspace(
             tilo_workspace_service::service::ServiceIdentity::beside_device(&store, &cert, &key),
         )
         .map_err(io::Error::other)?;
-    let host = Arc::new(
-        tilo_rt::app()
-            .handle()
-            .block_on(tilo_workspace_service::service::WorkspaceService::open(
-                tilo_workspace_service::service::ServiceConfig {
-                    apps: Some(Arc::clone(&key_sessions)
-                        as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
-                    ..tilo_workspace_service::service::ServiceConfig::new(
-                        store,
-                        tilo_server_protocol::WorkSetting::none(),
-                    )
-                },
+    let config = tilo_workspace_service::service::ServiceConfig {
+        apps: key_sessions.as_ref().map(|sessions| {
+            Arc::clone(sessions) as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>
+        }),
+        member: Some(Arc::new(joined.service_device())),
+        ..tilo_workspace_service::service::ServiceConfig::new(
+            store,
+            tilo_server_protocol::WorkSetting::none(),
+        )
+    };
+    let device_groups = Some(workspace_keys::DeviceGroupKeys::device(
+        keys.clone(),
+        joined,
+    ));
+    let handle = tilo_rt::app().handle().clone();
+    let opened = if governs {
+        handle.block_on(tilo_workspace_service::service::WorkspaceService::open(
+            config,
+            identity,
+            joined.endpoint(),
+            device_groups,
+        ))
+    } else {
+        handle.block_on(
+            tilo_workspace_service::service::WorkspaceService::open_joining(
+                config,
                 identity,
                 joined.endpoint(),
-                Some(workspace_keys::DeviceGroupKeys::device(
-                    keys.clone(),
-                    joined,
-                )),
-            ))
-            .map_err(io::Error::other)?,
-    );
-    let apps = Arc::clone(apps);
-    joined
-        .install_host(
-            Arc::clone(&host),
-            RecordCreation {
-                declared_kinds: Box::new(move |app| apps.declared_resource_kinds(app)),
-                dev,
-            },
+                device_groups,
+            ),
         )
-        .map_err(io::Error::other)?;
-    tilo_rt::app()
-        .handle()
-        .block_on(joined.place(workspace_id, &workspace.name()))
-        .map_err(io::Error::other)?;
-    joined.hold_session(workspace_id);
-    Ok((host, key_sessions))
+    };
+    let host = Arc::new(opened.map_err(io::Error::other)?);
+    if let Some(key_sessions) = &key_sessions {
+        let apps = Arc::clone(apps);
+        joined
+            .install_host(
+                Arc::clone(&host),
+                RecordCreation {
+                    declared_kinds: Box::new(move |app| apps.declared_resource_kinds(app)),
+                    dev,
+                },
+            )
+            .map_err(io::Error::other)?;
+        tilo_rt::app()
+            .handle()
+            .block_on(joined.place(workspace_id, &workspace.name()))
+            .map_err(io::Error::other)?;
+        joined.hold_session(workspace_id);
+        let _ = key_sessions;
+    }
+    Ok(Placed { host, key_sessions })
 }
 
 /// Answer the record actions of the profile's workspace (`workspace`, as
