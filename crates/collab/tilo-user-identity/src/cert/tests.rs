@@ -1265,6 +1265,11 @@ tilo_test_env::scenario! {
         assert_eq!(service.signer_public_key(), device.device_public_key);
         assert!(service.capabilities.workspace_service);
         assert!(service.capabilities.can_own_workspaces);
+        // The service writes for the device that certified it, and that device for itself.
+        assert_eq!(service.writes_for(), device.device_public_key);
+        assert_eq!(device.writes_for(), device.device_public_key);
+        assert!(service.is_of_device(&device.device_public_key));
+        assert!(!device.is_of_device(&service.device_public_key));
         let wire = postcard::to_allocvec(&service).unwrap();
         assert_eq!(postcard::from_bytes::<DeviceCert>(&wire).unwrap(), service);
         let json = serde_json::to_string(&service).unwrap();

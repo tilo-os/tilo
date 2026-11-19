@@ -44,7 +44,7 @@ impl NativeWorkspaceOwner {
                 &hint,
             )
             .ok()?;
-        Some((hint.host.device_public_key, payload.endpoint_addr))
+        Some((hint.host.writes_for(), payload.endpoint_addr))
     }
 }
 
