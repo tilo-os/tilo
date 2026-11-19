@@ -1140,6 +1140,7 @@ fn settings_home() -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
     let root = tempfile::tempdir().expect("a directory for the settings");
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("XDG_CONFIG_HOME", root.path().join("config"))
+        .set("XDG_DATA_HOME", root.path().join("data"))
         .set("XDG_STATE_HOME", root.path().join("state"));
     (root, env)
 }
