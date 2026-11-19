@@ -273,6 +273,13 @@ where
                     return;
                 }
 
+                // The role object is gone (`xdg_toplevel.destroy`, `xdg_popup.destroy`) and its
+                // configures with it: an ack the client sent for one of them crossed the destroy,
+                // which the client cannot avoid. There is nothing left to apply it to.
+                if !data.has_active_role.load(Ordering::Acquire) {
+                    return;
+                }
+
                 // Find the correct configure state for the provided serial
                 // discard all configure states that are older than the provided
                 // serial.

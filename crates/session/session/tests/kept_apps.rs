@@ -51,7 +51,7 @@ extern "C" fn close_one(_: libc::c_int) {
 
 /// Not a test: the app a kept launch starts. It opens one window for each line of `titles` in its
 /// directory, writes its pid to `started` as it starts and the number of keys it was delivered to
-/// `keys`, and closes its last window on `SIGUSR1`. It ends with its keeper.
+/// `keys` (only those its open windows were delivered), and closes its last window on `SIGUSR1`. It ends with its keeper.
 #[test]
 fn kept_app() {
     let Ok(dir) = std::env::var(APP_DIR) else {
@@ -92,7 +92,18 @@ fn kept_app() {
             open -= 1;
             client.close(open);
         }
-        let pressed = client.seen.keys.iter().filter(|(_, down)| *down).count();
+        // A key for a window the app closed is lost, as a Windows program drops one for a window
+        // it hid: only the keys its open windows were delivered count.
+        let open_surfaces: Vec<_> = (0..open).map(|index| client.surface_id(index)).collect();
+        let pressed = client
+            .seen
+            .keys
+            .iter()
+            .zip(&client.seen.keys_on)
+            .filter(|((_, down), on)| {
+                *down && on.as_ref().is_some_and(|on| open_surfaces.contains(on))
+            })
+            .count();
         if pressed != keys {
             keys = pressed;
             fs::write(dir.join("keys"), keys.to_string()).expect("the keys recorded");
@@ -458,6 +469,45 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
     second.end(Teardown::Logout);
     tilo_test_env::exited("the kept app at logout", pid);
     assert!(!dir.exists(), "a logout removes the keeper's directory");
+}
+
+/// A kept program's second window closes while it has the keyboard, the way Wine closes a dialog
+/// (its role goes, its surface stays): the keyboard goes back to the program's window that is still
+/// open, and the next key reaches it.
+#[test]
+fn a_kept_apps_closed_window_hands_the_keyboard_to_its_window_still_open() {
+    let _settled = ui::motion::testing::settled();
+    let titles = ["Untitled", "Open"];
+    let rig = Rig::new(&titles);
+    let mut pass = rig.desktop(false);
+    rig.launch(&pass);
+    let placed = shown_and_told(&rig, &mut pass, &titles);
+    let focused = |session: &mut Session| {
+        session
+            .compositor()
+            .focused_window()
+            .and_then(|window| window.title)
+    };
+    assert!(pass.session.handle().focus_tab(placed[1].1));
+    crate::common::wait_for(
+        &mut pass.session,
+        "the second window has the keyboard",
+        |session| (focused(session).as_deref() == Some("Open")).then_some(()),
+    );
+    let (_, pid, _) = rig.kept();
+    signal(pid, libc::SIGUSR1);
+    crate::common::wait_for(
+        &mut pass.session,
+        "the window that stays has the keyboard",
+        |session| (focused(session).as_deref() == Some("Untitled")).then_some(()),
+    );
+    crate::common::window::tap_key(&mut pass.session, KEY_A);
+    until(
+        &mut pass.session,
+        "the window still open hears the key",
+        |_| rig.keys() == 1,
+    );
+    pass.end(Teardown::Logout);
 }
 
 /// The command line the session starts an app that is not Tilo's with is one the real launcher

@@ -1574,3 +1574,48 @@ fn a_desktop_restart_removes_the_devices_and_announces_the_next_desktops() {
     );
     assert_eq!(rig.keeper.describe().fault, None);
 }
+
+/// A program shows its next page as a new window and destroys the one before in the same flush,
+/// as a Windows installer's wizard does through Wine: whatever configure the old window was sent
+/// as the new one took the focus crosses its destroy, and the app stays connected. The new window
+/// has the keyboard and the next key reaches the app.
+#[test]
+fn a_window_that_replaces_the_one_before_keeps_the_keyboard() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Welcome", Some("setup"));
+    app.show(&mut rig, (100, 80), GREEN);
+    rig.pump(&mut [&mut app], |_, apps| apps[0].heard.keyboard_entered);
+    let welcome = app.toplevel.take().expect("the first page");
+    let configured = app.heard.configured;
+    app.open_window(&mut rig, "Folder", Some("setup"));
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.configured > configured
+    });
+    let folder = app.surface.clone().expect("the second page");
+    let _drawn = app.draw(&folder, (100, 80), BLUE);
+    welcome.destroy();
+    rig.pump(&mut [&mut app], |rig, apps| {
+        let windows = rig.windows();
+        windows.len() == 1
+            && windows[0].1.as_deref() == Some("Folder")
+            && apps[0].heard.keyboard_entered
+    });
+    rig.settle(&mut [&mut app]);
+    for pressed in [true, false] {
+        rig.desktop()
+            .input(InputEvent::Key {
+                keycode: 30,
+                pressed,
+            })
+            .expect("the key");
+    }
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0]
+            .heard
+            .keys
+            .iter()
+            .any(|(_, key, pressed)| *key == 30 && !pressed)
+    });
+    assert!(!app.broken, "the app is still connected");
+}

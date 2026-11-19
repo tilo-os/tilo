@@ -2070,6 +2070,8 @@ mod banners;
 mod bars;
 #[path = "session/chrome.rs"]
 mod chrome;
+#[path = "session/closed_windows.rs"]
+mod closed_windows;
 #[path = "session/gestures.rs"]
 mod gestures;
 #[path = "session/keyboard.rs"]

@@ -325,6 +325,7 @@ impl Rig {
     }
 
     /// Let desktop, keeper and apps talk until `done` holds.
+    #[track_caller]
     pub fn pump(
         &mut self,
         apps: &mut [&mut App],
