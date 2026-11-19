@@ -102,7 +102,8 @@ impl Pairing {
     }
 }
 
-#[cfg(all(test, not(target_os = "linux")))]
+#[cfg(test)]
+#[cfg(not(target_os = "linux"))]
 mod unsupported_tests {
     use super::*;
 

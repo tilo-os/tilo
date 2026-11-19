@@ -620,6 +620,37 @@ fn push_cookie(
     Ok(())
 }
 
+// The native fixture observes the canonical held-source snapshot; it never constructs a cookie
+// database or supplies encrypted rows to the reader.
+#[cfg(test)]
+#[cfg(all(target_os = "linux", feature = "native-capture-qualification"))]
+pub(super) fn verify_official_fixture_store(grant: &SourceGrant) -> Result<bool, SourceError> {
+    let (_stage, database, _digest) = snapshot(grant, Service::Slack)?;
+    let version: i64 = database
+        .query_row("SELECT value FROM meta WHERE key='version'", [], |row| {
+            Ok(match row.get_ref(0)? {
+                rusqlite::types::ValueRef::Integer(24) | rusqlite::types::ValueRef::Text(b"24") => {
+                    24
+                }
+                _ => 0,
+            })
+        })
+        .map_err(|_| SourceError::Unavailable)?;
+    let count: i64 = database
+        .query_row("SELECT count(*) FROM cookies", [], |row| row.get(0))
+        .map_err(|_| SourceError::Unavailable)?;
+    if version != 24 || count != 1 {
+        return Ok(false);
+    }
+    let (plain, encrypted): (String, Vec<u8>) = database.query_row(
+        "SELECT value, encrypted_value FROM cookies WHERE host_key='app.slack.com' AND name='__Host-tilo-source-fixture'", [],
+        |row| Ok((row.get(0)?, row.get(1)?))
+    ).map_err(|_| SourceError::Unavailable)?;
+    let plain = Zeroizing::new(plain);
+    let encrypted = Zeroizing::new(encrypted);
+    Ok(plain.is_empty() && encrypted.starts_with(b"v11") && encrypted.len() > 19)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -909,34 +940,4 @@ mod tests {
             before
         );
     }
-}
-
-// The native fixture observes the canonical held-source snapshot; it never constructs a cookie
-// database or supplies encrypted rows to the reader.
-#[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
-pub(super) fn verify_official_fixture_store(grant: &SourceGrant) -> Result<bool, SourceError> {
-    let (_stage, database, _digest) = snapshot(grant, Service::Slack)?;
-    let version: i64 = database
-        .query_row("SELECT value FROM meta WHERE key='version'", [], |row| {
-            Ok(match row.get_ref(0)? {
-                rusqlite::types::ValueRef::Integer(24) | rusqlite::types::ValueRef::Text(b"24") => {
-                    24
-                }
-                _ => 0,
-            })
-        })
-        .map_err(|_| SourceError::Unavailable)?;
-    let count: i64 = database
-        .query_row("SELECT count(*) FROM cookies", [], |row| row.get(0))
-        .map_err(|_| SourceError::Unavailable)?;
-    if version != 24 || count != 1 {
-        return Ok(false);
-    }
-    let (plain, encrypted): (String, Vec<u8>) = database.query_row(
-        "SELECT value, encrypted_value FROM cookies WHERE host_key='app.slack.com' AND name='__Host-tilo-source-fixture'", [],
-        |row| Ok((row.get(0)?, row.get(1)?))
-    ).map_err(|_| SourceError::Unavailable)?;
-    let plain = Zeroizing::new(plain);
-    let encrypted = Zeroizing::new(encrypted);
-    Ok(plain.is_empty() && encrypted.starts_with(b"v11") && encrypted.len() > 19)
 }

@@ -244,7 +244,7 @@ fn actual_firstboot_seeds_are_retained_only_while_unchanged() {
         let diagnosis = Command::new("/usr/bin/python3")
             .args([
                 "-c",
-                r#"
+                r"
 import ctypes, os
 from pathlib import Path
 for path in ('/etc', '/etc/passwd', '/etc/shadow', '/etc/.pwd.lock'):
@@ -262,7 +262,7 @@ result = libc.lckpwdf()
 print('fixture actual glibc lckpwdf', result, 'errno', ctypes.get_errno())
 if result == 0:
     print('fixture actual glibc ulckpwdf', libc.ulckpwdf())
-"#,
+",
             ])
             .output_locked()
             .expect("private namespace lock diagnosis starts");
@@ -341,12 +341,7 @@ if result == 0:
     let pin = PinnedDirectory::open_absolute(home).unwrap();
     // Actual durable partial-move boundary, then recover through the production journal.
     let (_, _, log_parent) = roots(&imported, home, &journal).unwrap();
-    let log = Log::create(
-        &log_parent,
-        journal.file_name().unwrap(),
-        review.plan.clone(),
-    )
-    .unwrap();
+    let log = Log::create(&log_parent, journal.file_name().unwrap(), review.plan).unwrap();
     seeds::preserve(&pin, Path::new(".bashrc"), entry.seed.as_ref().unwrap()).unwrap();
     drop(log);
     let recovered = PromotionReview::recover(&imported, home, &journal).unwrap();

@@ -499,7 +499,7 @@ fn actual_foreign_mounted_volume_record_binds_its_own_filesystem_and_kernel_call
             .is_err()
     );
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    std::fs::write(&volume_record, &volume_record_record_bytes).unwrap();
+    std::fs::write(&volume_record, &volume_record_bytes).unwrap();
     owner(&volume_record, 1000, 1001, 0o600);
     assert!(
         store

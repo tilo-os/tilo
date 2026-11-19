@@ -923,7 +923,8 @@ pub fn maybe_run_command(args: &[String]) -> io::Result<Option<i32>> {
     }
 }
 
-#[cfg(all(test, not(target_os = "linux")))]
+#[cfg(test)]
+#[cfg(not(target_os = "linux"))]
 mod unsupported_tests {
     use super::*;
 
@@ -947,7 +948,8 @@ mod unsupported_tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod factory_tests {
     use super::*;
 

@@ -553,10 +553,6 @@ impl FixtureExposure {
         outer: &std::process::Child,
         info: &[u8],
     ) -> io::Result<()> {
-        root()?;
-        if !self.inner.possible_delivery || self.inner.consumer.is_some() || info.len() > 16384 {
-            return Err(refused("Fixture consumer ownership state differs"));
-        }
         fn status(pid: u32) -> io::Result<String> {
             let mut text = String::new();
             File::open(format!("/proc/{pid}/status"))?
@@ -575,6 +571,10 @@ impl FixtureExposure {
                 .parse()
                 .map_err(io::Error::other)
         }
+        root()?;
+        if !self.inner.possible_delivery || self.inner.consumer.is_some() || info.len() > 16384 {
+            return Err(refused("Fixture consumer ownership state differs"));
+        }
         let outer_status = status(outer.id())?;
         if ppid(&outer_status)? != std::process::id() {
             return Err(refused("Fixture bwrap not owned child"));
@@ -587,10 +587,11 @@ impl FixtureExposure {
             .try_into()
             .map_err(io::Error::other)?;
         let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        let raw = i32::try_from(raw).map_err(io::Error::other)?;
         if raw < 0 {
             return Err(io::Error::last_os_error());
         }
-        let held = unsafe { OwnedFd::from_raw_fd(raw as i32) };
+        let held = unsafe { OwnedFd::from_raw_fd(raw) };
         let ns = File::open(format!("/proc/{pid}/ns/pid"))?;
         let st = status(pid)?;
         let nspid = st

@@ -159,7 +159,8 @@ pub fn with_proof_deadline_at<T>(
     })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::{io::Read, os::unix::net::UnixStream};

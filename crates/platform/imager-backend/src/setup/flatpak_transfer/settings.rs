@@ -129,7 +129,8 @@ pub(super) fn review(
     validate(Some(&result), refs)?;
     Ok(result)
 }
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 fn verify(root: &std::path::Path, expected: &[AdministratorSettings]) -> Result<(), String> {
     let apps: Vec<_> = expected
         .iter()
@@ -292,7 +293,8 @@ fn domains(text: &str) -> std::io::Result<Vec<SettingsDomain>> {
     Ok(domains.into_iter().collect())
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};

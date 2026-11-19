@@ -581,7 +581,7 @@ mod tests {
         assert!(scratch.allocate(1).is_err());
         drop(allocation);
         assert_eq!(*scratch.charged.lock().unwrap(), 0);
-        let scratch = InventoryScratch::review(pin.clone(), 64 * 1024).unwrap();
+        let scratch = InventoryScratch::review(pin, 64 * 1024).unwrap();
         let source = tempfile::Builder::new()
             .prefix("inventory-source-")
             .permissions(std::fs::Permissions::from_mode(0o700))

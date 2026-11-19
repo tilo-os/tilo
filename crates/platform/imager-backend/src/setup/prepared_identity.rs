@@ -99,6 +99,7 @@ pub struct TransportReceipt {
 /// A held restart generation lock, not a path-based grant.
 pub use advisory_lock::FileLock as DraftLock;
 
-#[cfg(all(test, not(unix)))]
+#[cfg(test)]
+#[cfg(not(unix))]
 #[path = "prepared_identity/unsupported_tests.rs"]
 mod unsupported_tests;

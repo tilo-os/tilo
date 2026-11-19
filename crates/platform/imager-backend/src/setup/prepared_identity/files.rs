@@ -77,7 +77,8 @@ pub fn read_avatar(_path: &Path) -> io::Result<Vec<u8>> {
     Err(super::unsupported())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 

@@ -16,7 +16,8 @@ use std::{
 };
 
 impl Broker {
-    #[cfg(all(test, feature = "native-capture-qualification"))]
+    #[cfg(test)]
+    #[cfg(feature = "native-capture-qualification")]
     pub fn run_command(
         &mut self,
         executable: &Path,

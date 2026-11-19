@@ -2,5 +2,6 @@
 pub(super) use crate::capture::runtime::PACKAGE;
 pub use crate::capture::runtime::TrustedCaptureService;
 pub use crate::capture::runtime::installed_original_consumer_facts;
-#[cfg(all(test, feature = "native-capture-qualification"))]
+#[cfg(test)]
+#[cfg(feature = "native-capture-qualification")]
 pub(super) use crate::capture::runtime::{CaptureServicePins, verify_sidecar};

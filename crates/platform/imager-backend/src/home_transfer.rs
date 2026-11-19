@@ -107,7 +107,8 @@ mod unsupported {
     }
 }
 
-#[cfg(all(test, not(target_os = "linux")))]
+#[cfg(test)]
+#[cfg(not(target_os = "linux"))]
 mod unsupported_tests {
     #[test]
     fn review_factory_refuses_before_resolving_paths() {
@@ -157,7 +158,8 @@ pub fn granted_root(path: &std::path::Path) -> std::io::Result<std::path::PathBu
     Ok(canonical)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod root_tests {
     use super::*;
     use std::os::unix::fs::symlink;

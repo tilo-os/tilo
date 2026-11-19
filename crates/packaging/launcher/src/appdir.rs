@@ -558,7 +558,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod private_service_tests {
     use super::*;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};

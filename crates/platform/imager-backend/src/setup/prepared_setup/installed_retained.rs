@@ -54,7 +54,8 @@ impl AuthenticatedInstalledRetained {
     pub(in crate::setup) fn open_installed(operation: &str) -> io::Result<Arc<Self>> {
         Self::open_at(Path::new("/"), operation)
     }
-    #[cfg(all(test, feature = "native-capture-qualification"))]
+    #[cfg(test)]
+    #[cfg(feature = "native-capture-qualification")]
     pub fn open_fixture(system: &Path, id: &str) -> io::Result<Arc<Self>> {
         Self::open_at(system, id)
     }

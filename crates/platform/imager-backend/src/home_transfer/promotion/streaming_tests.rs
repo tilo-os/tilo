@@ -108,7 +108,7 @@ fn streaming_v1_nested_spill_reopens_real_moves_and_keeps_native_fidelity() {
     assert!(q.join("later").exists());
     let durable = std::fs::read(&j).unwrap();
     let manifest = journal_manifest(&q, &h, &j);
-    let mut committed = canonical.clone();
+    let mut committed = canonical;
     committed.push(b'\n');
     assert_eq!(manifest.bytes, committed.len() as u64);
     assert_eq!(
@@ -225,7 +225,7 @@ fn streaming_replay_refuses_oversize_row_and_quota_without_publishing_receipts()
     );
     assert_eq!(std::fs::read(q.join("document")).unwrap(), b"owned data");
     assert!(!h.join("document").exists());
-    let scratch = crate::migration_review::InventoryScratch::review(parent.clone(), 4096).unwrap();
+    let scratch = crate::migration_review::InventoryScratch::review(parent, 4096).unwrap();
     let store = Store::new(scratch.clone(), Arc::new(AtomicBool::new(false))).unwrap();
     let mut rows = store.builder();
     rows.push(NativePath::encode(Path::new("one"))).unwrap();
@@ -294,7 +294,7 @@ fn checkpoint_membership_rebuilds_exact_durable_ordinals_under_shared_quota() {
         assert_eq!(std::fs::read(h.join(name)).unwrap(), name.as_bytes());
     }
     let scratch = review.plan.entries.store().scratch();
-    let mut derived = Done::new(3, scratch.clone()).unwrap();
+    let mut derived = Done::new(3, scratch).unwrap();
     assert!(derived.insert(2).unwrap());
     assert!(!derived.insert(2).unwrap());
     assert_eq!(derived.len(), 1);

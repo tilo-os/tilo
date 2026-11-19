@@ -1,5 +1,6 @@
 //! Native fixture inputs are compiled helpers, never an interpreter or an oracle.
-#![cfg(all(test, feature = "native-capture-qualification"))]
+#![cfg(test)]
+#![cfg(feature = "native-capture-qualification")]
 
 use sha2::{Digest as _, Sha256};
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};

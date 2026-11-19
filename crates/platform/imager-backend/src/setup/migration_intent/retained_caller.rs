@@ -80,7 +80,8 @@ impl MigrationIntent {
         })();
         controller.cancel_now();
         let stopped = controller.cancel_and_wait();
-        #[cfg(all(test, target_os = "linux"))]
+        #[cfg(test)]
+        #[cfg(target_os = "linux")]
         if std::env::var_os("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT").is_some() {
             eprintln!(
                 "native retained result: {:?}; retirement: {:?}",
@@ -100,7 +101,8 @@ impl MigrationIntent {
 }
 
 fn registration_stderr() -> Stdio {
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
     if std::env::var_os("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT").is_some() {
         // The native owner bounds the actor's combined diagnostic output.
         return Stdio::inherit();

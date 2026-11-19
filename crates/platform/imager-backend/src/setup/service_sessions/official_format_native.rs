@@ -93,8 +93,8 @@ fn stamp(facts: &std::fs::Metadata) -> (u64, u64, u64, i64, i64, i64, i64) {
 pub fn guarded_owner() -> u32 {
     let owner = rustix::process::getuid().as_raw();
     assert!(owner == 99 && owner == rustix::process::geteuid().as_raw());
-    assert!(unsafe { libc::getgid() } == 99 && unsafe { libc::getegid() } == 99);
-    assert!(unsafe { libc::getgroups(0, std::ptr::null_mut()) } == 0);
+    assert!(rustix::process::getgid().as_raw() == 99 && rustix::process::getegid().as_raw() == 99);
+    assert_eq!(unsafe { libc::getgroups(0, std::ptr::null_mut()) }, 0);
     assert!(
         unsafe { libc::getppid() } == 1,
         "requires exact owned receiving namespace init"
@@ -129,17 +129,26 @@ pub fn guarded_owner() -> u32 {
     );
     let receiver = unsafe { File::from_raw_fd(88) };
     let namespace = unsafe { File::from_raw_fd(89) };
-    assert!(unsafe { libc::fcntl(88, libc::F_SETFD, libc::FD_CLOEXEC) } == 0);
-    assert!(unsafe { libc::fcntl(89, libc::F_SETFD, libc::FD_CLOEXEC) } == 0);
-    assert!(guard.receiver_sha256 == held_executable_digest(&receiver));
+    assert_eq!(
+        unsafe { libc::fcntl(88, libc::F_SETFD, libc::FD_CLOEXEC) },
+        0
+    );
+    assert_eq!(
+        unsafe { libc::fcntl(89, libc::F_SETFD, libc::FD_CLOEXEC) },
+        0
+    );
+    assert_eq!(guard.receiver_sha256, held_executable_digest(&receiver));
     let actual_namespace = File::open("/proc/self/ns/pid").unwrap().metadata().unwrap();
     let held_namespace = namespace.metadata().unwrap();
-    assert!(
-        (actual_namespace.dev(), actual_namespace.ino())
-            == (held_namespace.dev(), held_namespace.ino())
+    assert_eq!(
+        (actual_namespace.dev(), actual_namespace.ino()),
+        (held_namespace.dev(), held_namespace.ino())
     );
-    assert!(unsafe { libc::ioctl(89, 0xb703) } == libc::CLONE_NEWPID);
-    assert!(guard.bridge_sha256 == executable_digest(Path::new("/proc/self/exe")));
+    assert_eq!(unsafe { libc::ioctl(89, 0xb703) }, libc::CLONE_NEWPID);
+    assert_eq!(
+        guard.bridge_sha256,
+        executable_digest(Path::new("/proc/self/exe"))
+    );
     owner
 }
 pub fn held_directory(slot: i32, path: &Path, owner: u32) -> File {
@@ -149,7 +158,10 @@ pub fn held_directory(slot: i32, path: &Path, owner: u32) -> File {
         "qualification handle absent"
     );
     let file = unsafe { File::from_raw_fd(slot) };
-    assert!(unsafe { libc::fcntl(slot, libc::F_SETFD, libc::FD_CLOEXEC) } == 0);
+    assert_eq!(
+        unsafe { libc::fcntl(slot, libc::F_SETFD, libc::FD_CLOEXEC) },
+        0
+    );
     let held = file
         .metadata()
         .expect("qualification handle facts unavailable");
@@ -161,7 +173,7 @@ pub fn held_directory(slot: i32, path: &Path, owner: u32) -> File {
         .expect("fixed qualification directory absent");
     let named = named.metadata().unwrap();
     assert!(named.is_dir() && named.uid() == owner && named.mode() & 0o777 == 0o700);
-    assert!((held.dev(), held.ino()) == (named.dev(), named.ino()));
+    assert_eq!((held.dev(), held.ino()), (named.dev(), named.ino()));
     file
 }
 #[cfg(test)]
@@ -222,7 +234,7 @@ fn official_electron_source_seals_and_imports_enrolled_receiver_ownership() {
     let home = PathBuf::from(std::env::var_os("HOME").expect("qualification HOME absent"));
     assert!(home.is_absolute() && home.file_name() == Some(std::ffi::OsStr::new("home")));
     let fixture = home.parent().expect("canonical fixture parent absent");
-    assert!(fixture.parent() == Some(Path::new("/var/tmp")));
+    assert_eq!(fixture.parent(), Some(Path::new("/var/tmp")));
     assert!(
         fixture
             .file_name()
@@ -236,11 +248,12 @@ fn official_electron_source_seals_and_imports_enrolled_receiver_ownership() {
             && parent.gid() == owner
             && parent.mode() & 0o7777 == 0o750
     );
-    assert!(
-        std::env::var_os("XDG_CONFIG_HOME").as_deref() == Some(fixture.join("config").as_os_str())
+    assert_eq!(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        Some(fixture.join("config").as_os_str())
     );
     let target = accounts::config_root().expect("private enrolled receiver root absent");
-    assert!(target == fixture.join("config/tilo"));
+    assert_eq!(target, fixture.join("config/tilo"));
     let slack = held_directory(SLACK_FD, &home.join("source-format/slack"), owner);
     let discord = held_directory(DISCORD_FD, &home.join("source-format/discord"), owner);
     let destination = held_directory(ACCOUNTS_FD, &target, owner);
@@ -313,7 +326,7 @@ fn official_electron_source_seals_and_imports_enrolled_receiver_ownership() {
     )
     .expect("canonical enrolled receiver account import refused");
     let store = accounts::AccountStore::load_in(&target);
-    assert!(store.len() == 2);
+    assert_eq!(store.len(), 2);
     let credential_store = account_credentials::CredentialStore::for_root(Some(target.clone()));
     for selected in &declaration.sessions {
         let session = credential_store
@@ -327,7 +340,10 @@ fn official_electron_source_seals_and_imports_enrolled_receiver_ownership() {
     }
     let final_named = File::open(&target).unwrap().metadata().unwrap();
     let held = destination.metadata().unwrap();
-    assert!((held.dev(), held.ino()) == (final_named.dev(), final_named.ino()));
+    assert_eq!(
+        (held.dev(), held.ino()),
+        (final_named.dev(), final_named.ino())
+    );
     assert!(
         unsafe { libc::fcntl(REPORT_FD, libc::F_GETFD) } >= 0,
         "qualification report handle absent"

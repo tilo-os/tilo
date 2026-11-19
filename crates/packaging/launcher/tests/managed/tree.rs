@@ -70,9 +70,10 @@ impl PinnedProcess {
         let identity = ProcessIdentity::read(pid).expect("live /proc start identity");
         let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
         assert!(raw >= 0, "pidfd_open: {}", std::io::Error::last_os_error());
+        let raw = i32::try_from(raw).expect("pidfd is a small descriptor");
         let result = Self {
             identity,
-            fd: unsafe { OwnedFd::from_raw_fd(raw as i32) },
+            fd: unsafe { OwnedFd::from_raw_fd(raw) },
         };
         assert!(
             identity.is_current(),
@@ -87,7 +88,7 @@ impl PinnedProcess {
             events: libc::POLLIN,
             revents: 0,
         };
-        let count = unsafe { libc::poll(&mut poll, 1, 0) };
+        let count = unsafe { libc::poll(&raw mut poll, 1, 0) };
         assert!(count >= 0, "pidfd poll failed");
         assert_eq!(poll.revents & (libc::POLLERR | libc::POLLNVAL), 0);
         poll.revents & libc::POLLIN != 0
@@ -183,7 +184,7 @@ type = "cli"
     let trust = PackageTrust {
         publishers: vec![public],
         attestors: vec![],
-        revoked: Default::default(),
+        revoked: tilo_app_package::trust::RevocationList::default(),
     };
     assert!(matches!(
         tilo_app_package::verify_with_trust(
@@ -199,10 +200,11 @@ type = "cli"
     std::fs::write(payload.join("manifest.toml"), &packed.meta.manifest_bytes).unwrap();
     let evidence = package_store::integrity::detached_record_dir(root, "so.tilo.agent");
     std::fs::create_dir_all(&evidence).unwrap();
+    let signed_root = packed.meta.signed_root_bytes();
     for (name, bytes) in [
-        ("signed-root", packed.meta.signed_root_bytes().to_vec()),
-        ("manifest.toml", packed.meta.manifest_bytes.clone()),
-        ("collection.qcl", packed.meta.collection_bytes.clone()),
+        ("signed-root", signed_root.as_slice()),
+        ("manifest.toml", packed.meta.manifest_bytes.as_slice()),
+        ("collection.qcl", packed.meta.collection_bytes.as_slice()),
     ] {
         std::fs::write(evidence.join(name), bytes).unwrap();
     }
@@ -284,23 +286,29 @@ fn started(launcher: &mut ManagedLauncher) -> VerifiedManagedSupervisor {
 }
 
 // Read exactly one private marker and its kernel credentials.
+// The cmsg payload is read with `read_unaligned`, which accepts the byte alignment.
+#[allow(
+    clippy::cast_ptr_alignment,
+    reason = "`read_unaligned` accepts a cmsg payload with no alignment"
+)]
 fn marker(socket: &UnixStream) -> (u8, u32) {
     let mut byte = 0u8;
     let mut iov = libc::iovec {
-        iov_base: (&mut byte as *mut u8).cast(),
+        iov_base: (&raw mut byte).cast(),
         iov_len: 1,
     };
     let mut control = [0usize; 16];
     let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
-    message.msg_iov = &mut iov;
+    message.msg_iov = &raw mut iov;
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
     message.msg_controllen = std::mem::size_of_val(&control);
-    let count = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut message, libc::MSG_CMSG_CLOEXEC) };
+    let count =
+        unsafe { libc::recvmsg(socket.as_raw_fd(), &raw mut message, libc::MSG_CMSG_CLOEXEC) };
     let mut rights = Vec::new();
     let mut credentials = Vec::new();
     let mut unexpected = false;
-    let mut header = unsafe { libc::CMSG_FIRSTHDR(&message) };
+    let mut header = unsafe { libc::CMSG_FIRSTHDR(&raw const message) };
     while !header.is_null() {
         let h = unsafe { &*header };
         if h.cmsg_level == libc::SOL_SOCKET && h.cmsg_type == libc::SCM_RIGHTS {
@@ -320,7 +328,12 @@ fn marker(socket: &UnixStream) -> (u8, u32) {
         } else if h.cmsg_level == libc::SOL_SOCKET
             && h.cmsg_type == libc::SCM_CREDENTIALS
             && h.cmsg_len
-                == unsafe { libc::CMSG_LEN(std::mem::size_of::<libc::ucred>() as u32) } as usize
+                == unsafe {
+                    libc::CMSG_LEN(
+                        u32::try_from(std::mem::size_of::<libc::ucred>())
+                            .expect("ucred size fits u32"),
+                    )
+                } as usize
         {
             credentials.push(unsafe {
                 libc::CMSG_DATA(header)
@@ -330,7 +343,7 @@ fn marker(socket: &UnixStream) -> (u8, u32) {
         } else {
             unexpected = true;
         }
-        header = unsafe { libc::CMSG_NXTHDR(&message, header) };
+        header = unsafe { libc::CMSG_NXTHDR(&raw const message, header) };
     }
     assert_eq!(
         count,
@@ -362,6 +375,10 @@ fn proc_number(pid: u32, label: &str) -> u32 {
         .unwrap()
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one qualification walks the whole process tree in the order it must happen"
+)]
 fn qualify_tree(owned_stop: bool) {
     let root = tempfile::tempdir().unwrap();
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();

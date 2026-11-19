@@ -1,7 +1,8 @@
 //! Immutable mounted-root registration on the existing protected source Store.
 //! No caller-authored group facts and no coherent epoch or output are minted.
 use super::*;
-#[cfg(all(test, feature = "native-capture-qualification"))]
+#[cfg(test)]
+#[cfg(feature = "native-capture-qualification")]
 use crate::setup::GrantedHomeRoots;
 mod epoch;
 mod volumes;
@@ -158,7 +159,8 @@ impl Store {
     /// Existing authenticated root service only. The old primary registration
     /// must already exist and match the fresh actual peer; sources may have
     /// different owners, but their owner IDs NEVER become reader credentials.
-    #[cfg(all(test, feature = "native-capture-qualification"))]
+    #[cfg(test)]
+    #[cfg(feature = "native-capture-qualification")]
     pub(in crate::setup::home_capture) fn register_mounted_roots(
         &self,
         home: &Path,
@@ -380,7 +382,8 @@ impl SourceReadContext {
     /// Actual source inputs for the namespace bootstrap. This callback retains
     /// protected record and readonly source ownership throughout use. Caller IDs
     /// remain the original admitted reader, not any mounted-entry owner.
-    #[cfg(all(test, feature = "native-capture-qualification"))]
+    #[cfg(test)]
+    #[cfg(feature = "native-capture-qualification")]
     pub(in crate::setup::home_capture) fn with_mounted_sources<T>(
         &self,
         proof: &MountedProof,
@@ -393,7 +396,8 @@ impl SourceReadContext {
 
     /// Native retained ownership for the later signed namespace admission. JSON
     /// proofs only select an exact independently verified protected record.
-    #[cfg(all(test, feature = "native-capture-qualification"))]
+    #[cfg(test)]
+    #[cfg(feature = "native-capture-qualification")]
     pub(in crate::setup::home_capture) fn retain_mounted_sources(
         &self,
         proof: &MountedProof,
@@ -425,7 +429,8 @@ impl SourceReadContext {
 
     /// Reopen the finite mounted record in this existing readonly same-source
     /// lease. Returned data contains metadata, not a group-setting capability.
-    #[cfg(all(test, feature = "native-capture-qualification"))]
+    #[cfg(test)]
+    #[cfg(feature = "native-capture-qualification")]
     pub(in crate::setup::home_capture) fn verify_mounted_proof(
         &self,
         proof: &MountedProof,

@@ -96,5 +96,6 @@ pub use unsupported::{
     preflight_handoff, read_prepared_handoff, seal_prepared_handoff, target_for_preparation,
 };
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests;

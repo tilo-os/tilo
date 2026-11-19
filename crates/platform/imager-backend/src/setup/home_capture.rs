@@ -49,7 +49,8 @@ pub use rpc::{Action as RpcAction, Listener as RpcListener, Rendezvous, Reply as
 pub use rpc::{MediaReadSession, RootMediaReadSession};
 pub use runtime::{TrustedCaptureService, installed_original_consumer_facts};
 pub use transport::validate_read_only_block_device;
-#[cfg(all(test, feature = "native-capture-qualification"))]
+#[cfg(test)]
+#[cfg(feature = "native-capture-qualification")]
 mod native_tests;
 mod store;
 #[cfg(test)]

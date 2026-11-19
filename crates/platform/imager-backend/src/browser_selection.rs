@@ -385,7 +385,8 @@ pub(crate) fn check_cancel(cancel: &std::sync::atomic::AtomicBool) -> io::Result
         Ok(())
     }
 }
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::fs;
