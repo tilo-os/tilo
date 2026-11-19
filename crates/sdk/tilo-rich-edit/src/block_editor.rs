@@ -3372,6 +3372,7 @@ impl BlockEditor {
                 .is_some_and(|group| group.iter().any(|block| block.indent() >= MAX_LIST_INDENT)),
             labels: labels.revision,
             control: labels.control.map(|control| control.key),
+            read_only: self.read_only,
         }
     }
 
@@ -3398,6 +3399,7 @@ impl BlockEditor {
             up_disabled,
             down_disabled,
             indent_disabled,
+            read_only,
             ..
         } = *inputs;
         let mut block_children = vec![
@@ -3429,6 +3431,10 @@ impl BlockEditor {
             && line.height() > 0.0
             && let Some(text) = block.line.accessibility()
         {
+            // Text shown to be read (a message's own text) is read, never typed into: assistive
+            // technology and a canvas's mirror offer no field to type in.
+            let mut text = text;
+            text.state.read_only |= read_only;
             block_children.insert(
                 0,
                 text.with_name(labels.text.clone())
@@ -5463,6 +5469,8 @@ struct AccessRowInputs<'a> {
     ordinal: u32,
     labels: u64,
     control: Option<u64>,
+    /// The editor shows its text to be read, not edited.
+    read_only: bool,
     line_state: ui::widget::document_line::TextAccessibilityState,
     kind: std::borrow::Cow<'a, BlockKind>,
     id: std::borrow::Cow<'a, str>,
@@ -5491,6 +5499,7 @@ impl AccessRowInputs<'_> {
             indent_disabled: self.indent_disabled,
             labels: self.labels,
             control: self.control,
+            read_only: self.read_only,
         }
     }
 }
@@ -5523,6 +5532,7 @@ impl AccessRowInputs<'static> {
         self.indent_disabled = inputs.indent_disabled;
         self.labels = inputs.labels;
         self.control = inputs.control;
+        self.read_only = inputs.read_only;
     }
 }
 

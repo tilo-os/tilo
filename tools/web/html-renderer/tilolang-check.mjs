@@ -46,6 +46,8 @@ const FIND = `((what) => {
   const dom = Boolean(root.querySelector('[data-path]'));
   for (const element of root.querySelectorAll(selector)) {
     if (dom && !element.closest('[data-path]')) continue;
+    // Text shown to be read is no field to type into.
+    if (what !== 'toggle' && (element.readOnly || element.getAttribute('aria-readonly') === 'true')) continue;
     const box = element.getBoundingClientRect();
     if (box.width < 4 || box.height < 4) continue;
     if (box.bottom < 0 || box.top > innerHeight) continue;

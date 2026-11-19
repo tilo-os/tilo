@@ -1642,3 +1642,43 @@ fn blocks_measured_first_in_another_tree_are_placed_at_the_width_they_stand_at()
         "each block stands at the height it takes at {width} px"
     );
 }
+
+/// Text an editor shows to be read (a message's own text) is no field to assistive technology or a
+/// canvas's mirror: its block's text says it is read-only, and a field again once it is editable.
+#[test]
+fn text_shown_to_be_read_says_it_is_read_only() {
+    let text_of = |fixture: &RetainedEditor| {
+        let document = ui::widget::Widget::accessibility(&*fixture.editor).expect("a document");
+        let row = document
+            .children
+            .iter()
+            .find(|row| row.role == ui::a11y::Role::ListItem)
+            .expect("the block's row");
+        row.children
+            .iter()
+            .find(|node| {
+                node.action_target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with("notes.block-text:"))
+            })
+            .map(|node| (node.role, node.state.read_only))
+            .expect("the block's text")
+    };
+    let mut fixture = RetainedEditor::with_editor(
+        BlockEditor::new().with_read_only(true),
+        400.0,
+        1.0,
+        vec![Block::paragraph(
+            "Lead with the sync fix, then the new board.",
+        )],
+    );
+    fixture.frame();
+    let (role, read_only) = text_of(&fixture);
+    assert!(
+        read_only,
+        "the text shown to be read is read-only, as a {role:?}"
+    );
+    fixture.editor.set_read_only(false);
+    fixture.frame();
+    assert!(!text_of(&fixture).1, "an editable block's text is a field");
+}
