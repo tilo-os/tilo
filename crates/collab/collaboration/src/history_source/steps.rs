@@ -1281,6 +1281,10 @@ fn bring_back(
     words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     let versions = tilo_resource::history::versions(doc);
+    let targets: Vec<Version> = built_on(doc, &versions, &targets, words)?
+        .into_iter()
+        .chain(targets)
+        .collect();
     let mut patches = Vec::new();
     let mut actions = Vec::new();
     let mut originals = Vec::new();
@@ -1326,6 +1330,101 @@ fn bring_back(
         }
     }
     Ok(targets)
+}
+
+/// The undos a redo of the undos `targets` brings back with them: those that took back a step
+/// what they redo was built on. A step that wrote in an object another step made is undone
+/// without it once it is undone itself, so the object can go while the step is undone; a redo
+/// of the step alone would write in an object that is gone, and bring nothing back. The redo
+/// brings the making back first, in the same change, and history lists both steps as what it
+/// brought back. Ordered as the redo writes them: what is built on before what builds on it.
+///
+/// # Errors
+/// Says why nothing was redone when a step it builds on is undone and no undo of it can be
+/// found to bring back.
+fn built_on(
+    doc: &AutoCommit,
+    versions: &[Version],
+    targets: &[Version],
+    words: &dyn HistoryWords,
+) -> Result<Vec<Version>, String> {
+    let undone = undone(doc);
+    let mut redoing: HashSet<String> = HashSet::new();
+    let mut unchecked: Vec<String> = Vec::new();
+    let take = |took: Vec<String>, redoing: &mut HashSet<String>, unchecked: &mut Vec<String>| {
+        for hash in took {
+            if redoing.insert(hash.clone()) {
+                unchecked.push(hash);
+            }
+        }
+    };
+    for target in targets {
+        if let Kind::Undo(took) = kind_of(doc, target) {
+            take(took, &mut redoing, &mut unchecked);
+        }
+    }
+    let reachable = |obj: &automerge::ObjId| {
+        doc.parents(obj)
+            .is_ok_and(|parents| parents.visible_path().is_some())
+    };
+    // What each undone step made: read only once a step being redone wrote in an object that is
+    // gone, which is rare.
+    let mut made: Option<Vec<(String, HashSet<automerge::ObjId>)>> = None;
+    let mut found: Vec<Version> = Vec::new();
+    while let Some(hash) = unchecked.pop() {
+        let Some(change) = recorded_hash(&hash) else {
+            continue;
+        };
+        let (_, wrote) = crate::history_source::revert::objects_of_change(doc, change);
+        let gone: Vec<automerge::ObjId> = wrote
+            .into_iter()
+            .filter(|obj| *obj != automerge::ROOT && !reachable(obj))
+            .collect();
+        if gone.is_empty() {
+            continue;
+        }
+        let made = made.get_or_insert_with(|| {
+            undone
+                .iter()
+                .filter_map(|hash| {
+                    let change = recorded_hash(hash)?;
+                    let (created, _) =
+                        crate::history_source::revert::objects_of_change(doc, change);
+                    (!created.is_empty()).then(|| (hash.clone(), created))
+                })
+                .collect()
+        });
+        for (prior, created) in made.iter() {
+            if redoing.contains(prior) || !gone.iter().any(|obj| created.contains(obj)) {
+                continue;
+            }
+            // The undo that took the step back is the newest undo naming it, while it stays
+            // undone.
+            let undo = versions
+                .iter()
+                .rev()
+                .find_map(|version| match kind_of(doc, version) {
+                    Kind::Undo(took) if took.contains(prior) => Some((version, took)),
+                    _ => None,
+                });
+            let Some((undo, took)) = undo else {
+                let label = versions
+                    .iter()
+                    .find(|version| version.hash.to_string() == *prior)
+                    .map_or_else(
+                        || prior.chars().take(12).collect(),
+                        |version| step_label(version, words),
+                    );
+                return Err(format!(
+                    "Nothing was redone: it builds on {label}, which was taken back since and cannot be brought back with it."
+                ));
+            };
+            found.push(undo.clone());
+            take(took, &mut redoing, &mut unchecked);
+        }
+    }
+    found.reverse();
+    Ok(found)
 }
 
 /// A named version.

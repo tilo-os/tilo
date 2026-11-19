@@ -267,6 +267,25 @@ fn objects_created(forward: &[Patch]) -> HashSet<ObjId> {
     out
 }
 
+/// What the one change `hash` did to `doc`'s objects: those it brought into existence, and those
+/// it wrote in (each object a patch of it lands in, and every object on the way to it).
+pub(crate) fn objects_of_change(
+    doc: &AutoCommit,
+    hash: ChangeHash,
+) -> (HashSet<ObjId>, HashSet<ObjId>) {
+    let doc = doc.committed_document();
+    let Some(meta) = doc.get_change_meta_by_hash(&hash) else {
+        return (HashSet::new(), HashSet::new());
+    };
+    let patches = doc.diff(&meta.deps, &[hash]);
+    let wrote = patches
+        .iter()
+        .flat_map(|p| std::iter::once(&p.obj).chain(p.path.iter().map(|(o, _)| o)))
+        .cloned()
+        .collect();
+    (objects_created(&patches), wrote)
+}
+
 /// What changes after a run wrote, by whom: [`later_writers`].
 struct Later {
     /// Each slot, with the first actor that wrote it.

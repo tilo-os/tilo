@@ -427,4 +427,41 @@ fn a_step_undone_since_holds_no_earlier_step_back() {
         doc.get(&nodes, "notes.md").unwrap().is_none(),
         "the file is gone once its write and its making are undone"
     );
+
+    // Bob's redo of his write brings the file's making back with it, in the same change: his
+    // write lands in the file again rather than in one nobody can see, and history says the redo
+    // brought back both steps.
+    doc.set_actor(ActorId::from(BOB));
+    let redone =
+        super::redo(&mut doc, &scope(BOB), 1, plain, &TestWords).expect("the redo is not refused");
+    doc.commit();
+    assert_eq!(
+        redone.len(),
+        2,
+        "the agent's undo and Bob's own are brought back"
+    );
+    let (_, file) = doc
+        .get(&nodes, "notes.md")
+        .unwrap()
+        .expect("the redo brings the file back");
+    assert_eq!(
+        doc.get(&file, "content")
+            .unwrap()
+            .and_then(|(value, _)| value.as_str().map(str::to_owned)),
+        Some("hello there".to_owned()),
+        "with Bob's write in it"
+    );
+    let redo = tilo_resource::history::versions(&mut doc).pop().unwrap();
+    let mut brought = brought_back(&doc, &redo);
+    brought.sort();
+    let mut both = vec![making.to_string(), writing.to_string()];
+    both.sort();
+    assert_eq!(
+        brought, both,
+        "history lists the making and the write as brought back"
+    );
+    assert!(
+        undos_in_effect(&doc, &|version| scope(AGENT).owns(version), 1).is_empty(),
+        "the agent's undo of the making no longer stands"
+    );
 }
