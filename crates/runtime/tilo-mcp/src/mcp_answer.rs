@@ -135,8 +135,10 @@ fn refused(failure: &Failure, retry_safe: bool) -> Value {
     json!({"status":"failed","error":error})
 }
 
-/// The codes a refusal is documented with (`docs/tilo-sh/errors.md`).
-const CODES: [&str; 13] = [
+/// The codes a refusal is documented with (`docs/tilo-sh/errors.md`), and the two a caller
+/// waits on and asks again after (`not_ready`, `unanswered`): a lookup refused with one of those
+/// keeps its code, rather than reading as a path that names nothing.
+const CODES: [&str; 15] = [
     "invalid_arguments",
     "unknown_action",
     "unknown_resource",
@@ -150,6 +152,8 @@ const CODES: [&str; 13] = [
     "action_failed",
     "unavailable",
     "stale_revision",
+    "not_ready",
+    "unanswered",
 ];
 
 /// `message` without the code it starts with: what a sentence embedding a

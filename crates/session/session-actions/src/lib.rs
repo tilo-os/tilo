@@ -152,13 +152,21 @@ struct Inner {
 }
 
 /// The waiting requests of a connection the session could not carry, as they
-/// are asked again on the connection that does.
+/// are asked again on the connection that does, or once the workspace moved on it.
 #[derive(Default)]
 struct Again {
-    /// The connection they were refused on, and when to look for a later one.
-    refused_on: Option<(u64, Instant)>,
+    /// Where they were refused, and when to look for a change of it.
+    refused_on: Option<RefusedOn>,
     /// How many times they were asked again.
     times: u8,
+}
+
+/// Where waiting requests were refused: the connection, and where the workspace stood on it.
+#[derive(Clone, Copy)]
+struct RefusedOn {
+    connection: u64,
+    workspace: Option<tilo_actions::remote::WorkspaceState>,
+    not_before: Instant,
 }
 
 /// A request waiting for its answer, and when it gives up.
@@ -865,8 +873,10 @@ impl Inner {
     }
 
     /// The session could not carry what waits: ask it again once a connection
-    /// later than the one that refused it carries. `false` when it was asked
-    /// again as often as it may be, so the refusal is the answer.
+    /// later than the one that refused it carries, or once the workspace moved
+    /// on this one (a server that was not serving the session yet refused it, and
+    /// says when it does). `false` when it was asked again as often as it may
+    /// be, so the refusal is the answer.
     fn refused(&self) -> bool {
         let mut again = self.again.lock_recover();
         if again.refused_on.is_some() {
@@ -878,22 +888,36 @@ impl Inner {
         let due = tilo_clock::now()
             .checked_add(ASK_AGAIN_AFTER)
             .unwrap_or_else(tilo_clock::now);
-        again.refused_on = Some((self.session.connections(), due));
+        again.refused_on = Some(RefusedOn {
+            connection: self.session.connections(),
+            workspace: self.workspace_state(),
+            not_before: due,
+        });
         true
     }
 
+    /// Where the workspace stands on the session now, as it says.
+    fn workspace_state(&self) -> Option<tilo_actions::remote::WorkspaceState> {
+        self.session
+            .session_state(self.workspace_id)
+            .map(|state| state.workspace)
+    }
+
     /// Ask what waits again, once a connection later than the one that refused
-    /// it carries the session.
+    /// it carries the session, or the workspace moved on it since: what the
+    /// session says of its workspace is the signal, never a timer.
     fn ask_again_if_due(&self) {
         {
             let mut again = self.again.lock_recover();
-            let Some((refused_on, not_before)) = again.refused_on else {
+            let Some(refused) = again.refused_on else {
                 return;
             };
-            if tilo_clock::now() < not_before
+            let moved = self.session.connections() > refused.connection
+                || self.workspace_state() != refused.workspace;
+            if tilo_clock::now() < refused.not_before
                 || again.times >= ASKED_AGAIN_AT_MOST
                 || !self.session.carrying()
-                || self.session.connections() <= refused_on
+                || !moved
             {
                 return;
             }
@@ -1448,6 +1472,123 @@ mod tests {
         fn on_change(&self, wake: Arc<dyn Fn() + Send + Sync>) {
             *self.wake.lock_recover() = Some(wake);
         }
+    }
+
+    /// A server that refused an ask because it did not serve the session yet, and then does.
+    struct Admitting {
+        serving: Mutex<bool>,
+        asked: Mutex<usize>,
+        heard: Mutex<Vec<Heard>>,
+        wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    }
+
+    impl Admitting {
+        fn hear(&self, heard: Heard) {
+            self.heard.lock_recover().push(heard);
+            self.woken();
+        }
+
+        fn woken(&self) {
+            let wake = self.wake.lock_recover().clone();
+            if let Some(wake) = wake {
+                wake();
+            }
+        }
+    }
+
+    impl RemoteSession for Admitting {
+        fn send_remote_action(
+            &self,
+            workspace_id: WorkspaceId,
+            to: [u8; 32],
+            frame: Vec<u8>,
+        ) -> Result<(), String> {
+            let message = RemoteActionFrame::decode(&frame)
+                .map_err(|error| error.to_string())?
+                .message;
+            let RemoteActionMessage::CatalogueRequest { correlation, .. } = message else {
+                return Ok(());
+            };
+            let mut asked = self.asked.lock_recover();
+            *asked = asked.saturating_add(1);
+            drop(asked);
+            if !*self.serving.lock_recover() {
+                self.hear(Heard::Undeliverable {
+                    workspace_id,
+                    to,
+                    refusal: Refusal::NotReady,
+                });
+                return Ok(());
+            }
+            let answer = RemoteActionMessage::CatalogueResponse {
+                correlation,
+                result: Ok(CataloguePage::default()),
+            };
+            self.hear(Heard::Action {
+                workspace_id,
+                user: DEVICE,
+                from: DEVICE,
+                frame: RemoteActionFrame::new(answer).encode().expect("encodes"),
+            });
+            Ok(())
+        }
+
+        fn take_heard(&self) -> Vec<Heard> {
+            std::mem::take(&mut *self.heard.lock_recover())
+        }
+
+        fn on_change(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+            *self.wake.lock_recover() = Some(wake);
+        }
+
+        fn session_state(&self, _: WorkspaceId) -> Option<tilo_actions::remote::SessionState> {
+            Some(tilo_actions::remote::SessionState {
+                workspace: if *self.serving.lock_recover() {
+                    tilo_actions::remote::WorkspaceState::Serving
+                } else {
+                    tilo_actions::remote::WorkspaceState::Open
+                },
+                sync: tilo_actions::remote::SyncState::Done,
+            })
+        }
+    }
+
+    /// A listing the server refused because it did not serve the session yet is asked again on
+    /// the same connection once the session says it does, and answered then: a computer's peer
+    /// that just started asks before its workspace serves it, and its first call waited out
+    /// its caller's whole wait instead.
+    #[test]
+    fn an_ask_refused_before_the_workspace_serves_the_session_is_answered_once_it_does() {
+        let server = Arc::new(Admitting {
+            serving: Mutex::new(false),
+            asked: Mutex::default(),
+            heard: Mutex::default(),
+            wake: Mutex::default(),
+        });
+        let actions = SessionActions::new(
+            Arc::clone(&server) as Arc<dyn RemoteSession>,
+            WorkspaceId::from_u128(1),
+            DEVICE,
+        );
+        let answered = actions.query(&caller(), CatalogueQuery::default());
+        assert_eq!(
+            *server.asked.lock_recover(),
+            1,
+            "asked once while not served"
+        );
+        *server.serving.lock_recover() = true;
+        server.woken();
+        let page = answered
+            .wait_timeout(Duration::from_secs(5))
+            .ok()
+            .flatten()
+            .expect("answered once the workspace serves the session");
+        assert!(page.is_ok(), "{page:?}");
+        assert_eq!(
+            *server.asked.lock_recover(),
+            2,
+            "asked again once, when it served"
+        );
     }
 
     fn write(invocation: InvocationId) -> InvokeRequest {

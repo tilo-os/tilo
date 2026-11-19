@@ -1522,8 +1522,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         )
         .await
         .map_err(|_| {
+            // No answer is not an answer that nothing is there: the caller hears it went
+            // unanswered, never that the path names nothing.
             BridgeError::from(format!(
-                "the desktop's actions did not answer within {} s",
+                "unanswered: the desktop's actions did not answer within {} s",
                 QUERY_ANSWER_WAIT.as_secs()
             ))
         })?
