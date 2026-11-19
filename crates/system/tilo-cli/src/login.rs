@@ -793,8 +793,8 @@ impl Reporter<'_> {
     }
 }
 
-/// Claim a sign-in code for the person `cert` (postcard, hex) certifies `key`'s device of: a
-/// device that may admit devices, which then certifies the tab itself.
+/// Claim a sign-in code for the person `cert` (postcard, hex) certifies `key`'s device of: one of
+/// their devices, which then certifies the tab itself.
 async fn claim(
     server: &dyn HttpClient,
     report: &str,
@@ -830,10 +830,9 @@ fn claim_said(refusal: &login_code::CodeRefusal) -> anyhow::Error {
             "This computer's Tilo login is damaged: its key doesn't match its certificate. Log \
              it in again with `tilo login`, {again}."
         ),
-        Some(ClaimRefused::CannotAdmit) => anyhow!(
-            "This computer can't add devices for you, so it can't sign the tab in. Use the code \
-             on the computer that holds your Tilo identity (where you ran `tilo login \
-             --new-identity`)."
+        Some(ClaimRefused::NotADevice) => anyhow!(
+            "This computer isn't one of your Tilo devices, so it can't sign the tab in. Set it \
+             up from your Tilo tab first (Set up with your agent)."
         ),
         None => match refusal.code() {
             "unknown" => anyhow!(
@@ -851,12 +850,83 @@ fn claim_said(refusal: &login_code::CodeRefusal) -> anyhow::Error {
 /// How often a computer that certifies a tab asks whether the tab's request is there.
 const TAB_ASKS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Certify, with the person's `root`, the request the tab whose code this computer claimed as
-/// `report` makes once it knows whom it signs in as, until `until_ms` (Unix ms).
+/// How this computer signs a tab's certificate: with the person's root, when
+/// it holds one, else with the device certificate the person's root gave it.
+enum Issuer {
+    Root(Box<crate::identity::Person>),
+    Device(Box<HeldDevice>),
+}
+
+/// A device certificate and the key it was made for, kept by a computer that
+/// holds no root.
+struct HeldDevice {
+    key: SigningKey,
+    cert: tilo_user_identity::DeviceCert,
+}
+
+impl Issuer {
+    /// The person whose tab this computer can sign in.
+    fn person(&self) -> [u8; 32] {
+        match self {
+            Self::Root(person) => person.public_key(),
+            Self::Device(held) => held.cert.user_public_key,
+        }
+    }
+
+    /// The key that signs the claim of the certificate [`Self::claim_cert`]
+    /// carries.
+    fn claim_key(&self) -> &SigningKey {
+        match self {
+            Self::Root(person) => &person.device,
+            Self::Device(held) => &held.key,
+        }
+    }
+
+    /// This computer's certificate, postcard as hex, as the claim carries it.
+    fn claim_cert(&self) -> Result<String> {
+        let cert = match self {
+            Self::Root(person) => &person.cert,
+            Self::Device(held) => &held.cert,
+        };
+        Ok(hex::encode(postcard::to_allocvec(cert)?))
+    }
+
+    /// The certificate of the tab that asked `request`, signed with what this
+    /// computer holds.
+    fn sign(
+        &self,
+        request: &tilo_user_identity::CertificationRequest,
+    ) -> Result<tilo_user_identity::DeviceCert> {
+        let policy = &tilo_user_identity::CertificationPolicy::browser();
+        let revocations = &tilo_user_identity::RevocationList::new();
+        let now = tilo_clock::unix_now_ns();
+        match self {
+            Self::Root(person) => tilo_user_identity::issue_device_cert(
+                request,
+                &person.root,
+                policy,
+                revocations,
+                now,
+            ),
+            Self::Device(held) => tilo_user_identity::issue_device_cert_as_device(
+                request,
+                &held.key,
+                &held.cert,
+                revocations,
+                now,
+            ),
+        }
+        .map_err(|error| anyhow!("This computer couldn't certify the tab: {error}."))
+    }
+}
+
+/// Certify, as `issuer`, the request the tab whose code this computer claimed
+/// as `report` makes once it knows whom it signs in as, until `until_ms`
+/// (Unix ms).
 async fn certify_tab(
     server: &dyn HttpClient,
     report: &str,
-    root: &(dyn tilo_user_identity::StatementSigner + Sync),
+    issuer: &Issuer,
     until_ms: u64,
 ) -> Result<()> {
     let request = loop {
@@ -883,17 +953,10 @@ async fn certify_tab(
         .ok()
         .and_then(|bytes| postcard::from_bytes(&bytes).ok())
         .ok_or_else(|| anyhow!("The server sent the tab's request garbled. Try again."))?;
-    if request.user_public_key != root.public_key() {
+    if request.user_public_key != issuer.person() {
         bail!("The tab asked to be signed in as someone else. Ask it for a new code (Try again).");
     }
-    let cert = tilo_user_identity::issue_device_cert(
-        &request,
-        root,
-        &tilo_user_identity::CertificationPolicy::browser(),
-        &tilo_user_identity::RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .map_err(|error| anyhow!("This computer couldn't certify the tab: {error}."))?;
+    let cert = issuer.sign(&request)?;
     login_code::certify(server, report, hex::encode(postcard::to_allocvec(&cert)?))
         .await
         .map_err(|refusal| {
@@ -1301,69 +1364,34 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
     Ok(ExitCode::SUCCESS)
 }
 
-/// How long the certificate this computer claims a sign-in code with lasts: the claim and the
-/// tab's certification are over well within it.
-const CLAIMING_CERT_NS: u64 = 15 * 60 * 1_000_000_000;
-
-/// Signing in: this computer, which holds the person's root, claims the tab's code as a device
-/// that may admit devices and certifies the tab itself.
+/// Signing in: this computer, a device of the person, claims the tab's code
+/// and signs the tab in with the authority the person gave it.
 async fn vouch(reporter: &Reporter<'_>, server: &dyn HttpClient) -> Result<ExitCode> {
-    let Some(person) = crate::identity::held()? else {
-        // A device that holds no root claims with what it is; the server
-        // says why it may not certify the tab.
+    let issuer = if let Some(person) = crate::identity::held()? {
+        Issuer::Root(Box::new(person))
+    } else {
         let Some((key, device)) = load(&device_dir()?)? else {
             bail!(
                 "This is a sign-in code, which needs a computer already logged in to Tilo, and \
                  this one isn't. In Tilo, choose \"Set up with your agent\" instead."
             );
         };
-        claim(server, &reporter.report, &key, device.cert.clone()).await?;
-        bail!(
-            "This computer may add devices but holds no Tilo identity to sign the tab with. Use \
-             the code on the computer that holds your Tilo identity."
-        );
+        let (cert, _) = device.certs()?;
+        Issuer::Device(Box::new(HeldDevice { key, cert }))
     };
-    // The server tells the tab it approved, as it approves: that step is
-    // never this computer's to report.
-    let cert = admitting_cert(&person)?;
     let claimed = claim(
         server,
         &reporter.report,
-        &person.device,
-        hex::encode(postcard::to_allocvec(&cert)?),
+        issuer.claim_key(),
+        issuer.claim_cert()?,
     )
     .await?;
+    // The server tells the tab it approved, as it approves: that step is
+    // never this computer's to report.
     eprintln!("Waiting for the person's tab to ask…");
-    certify_tab(
-        server,
-        &reporter.report,
-        &person.root,
-        claimed.expires_at_ms,
-    )
-    .await?;
+    certify_tab(server, &reporter.report, &issuer, claimed.expires_at_ms).await?;
     println!("Approved: your tab is signed in as you.");
     Ok(ExitCode::SUCCESS)
-}
-
-/// A certificate the person's root signs for this computer's device key, as a device that may
-/// admit devices, for as long as a sign-in takes.
-fn admitting_cert(person: &crate::identity::Person) -> Result<tilo_user_identity::DeviceCert> {
-    let now = tilo_clock::unix_now_ns();
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: person.public_key(),
-        device_public_key: person.device.verifying_key().to_bytes(),
-        device_label: person.cert.device_label.clone(),
-        capabilities: tilo_user_identity::DeviceCapabilities {
-            can_admit_devices: true,
-            ..tilo_user_identity::DeviceCapabilities::member()
-        },
-        issued_at_ns: now.saturating_sub(1_000_000_000),
-        expires_at_ns: Some(now.saturating_add(CLAIMING_CERT_NS)),
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &person.root)?;
-    Ok(cert)
 }
 
 /// `tilo login` on a computer that holds the person's root itself: no tab and no code. The root
@@ -1910,7 +1938,7 @@ mod tests {
             (ClaimRefused::Revoked, "removed from your devices"),
             (ClaimRefused::Clock, "clock"),
             (ClaimRefused::Signature, "key doesn't match"),
-            (ClaimRefused::CannotAdmit, "can't add devices for you"),
+            (ClaimRefused::NotADevice, "isn't one of your Tilo devices"),
         ];
         let mut seen = std::collections::HashSet::new();
         for (reason, says) in reasons {

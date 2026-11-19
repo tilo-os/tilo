@@ -439,6 +439,54 @@ pub fn issue_device_cert_as_stand_in(
     Ok(cert)
 }
 
+/// Have one of the person's devices (its key `device_key`, certified by
+/// `device_cert`, which the person's root signed) answer `request`: a
+/// certificate of a member device of that person for a browser's lifetime
+/// ([`CertificationPolicy::browser`]), signed by the device and carrying its
+/// certificate as the issuer. What a computer that is already the person's
+/// signs their browser tab in with; see [`crate::cert`].
+///
+/// # Errors
+///
+/// [`CertificationError::Certificate`] when `device_cert` is no live
+/// certificate of one of the person's devices at `now_ns` or not
+/// `device_key`'s, [`CertificationError::Revoked`] when `revocations` refuse
+/// the device or the tab, or the errors of [`prepare_valid_from`].
+pub fn issue_device_cert_as_device(
+    request: &CertificationRequest,
+    device_key: &dyn StatementSigner,
+    device_cert: &DeviceCert,
+    revocations: &RevocationList,
+    now_ns: u64,
+) -> Result<DeviceCert, CertificationError> {
+    verify_device_cert_at(device_cert, now_ns).map_err(|_| CertificationError::Certificate)?;
+    if !device_cert.is_root_signed_device()
+        || device_cert.device_public_key != device_key.public_key()
+    {
+        return Err(CertificationError::Certificate);
+    }
+    if revocations.refuses_at(device_cert, now_ns) {
+        return Err(CertificationError::Revoked);
+    }
+    // Dated as one the root issues is, since another machine reads it by its
+    // own clock: valid from the allowance before this device's clock, and
+    // never from before the device it comes from existed.
+    let valid_from_ns = now_ns
+        .saturating_sub(CERTIFICATION_CLOCK_ALLOWANCE_NS)
+        .max(device_cert.issued_at_ns);
+    let mut cert = prepare_valid_from(
+        request,
+        device_cert.user_public_key,
+        &CertificationPolicy::browser(),
+        revocations,
+        now_ns,
+        valid_from_ns,
+    )?;
+    cert.issuer = Some(Box::new(device_cert.clone()));
+    sign_device_cert(&mut cert, device_key).map_err(|_| CertificationError::Certificate)?;
+    Ok(cert)
+}
+
 /// Check that `cert` is a valid, unrevoked answer to exactly `request`
 /// within `policy`.
 pub fn verify_issued_cert(

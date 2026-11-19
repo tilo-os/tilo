@@ -533,18 +533,21 @@ pub(crate) fn decide_in(
 }
 
 /// Whether `cert` is a device of its person's own: certified by their root,
-/// or by the stand-in their browser holds for it ([`tilo_user_identity::DeviceCert::issuer`]).
-/// An agent's grant, or a key one minted, acts for the person and is no
-/// device of theirs: it comes in by the delegation that bounds it, never as
-/// the person. Nor is the stand-in itself, which approves devices and
-/// reaches no workspace.
+/// or by one of their devices or the stand-in their browser holds for it
+/// ([`tilo_user_identity::DeviceCert::issuer`]). An agent's grant, or a key
+/// one minted, acts for the person and is no device of theirs: it comes in by
+/// the delegation that bounds it, never as the person. Nor is the stand-in
+/// itself, which approves devices and reaches no workspace, nor a device's
+/// workspace service.
 pub fn person_device(cert: &tilo_user_identity::DeviceCert) -> bool {
-    cert.capabilities.agent.is_none()
-        && !cert.capabilities.stand_in
+    let capabilities = &cert.capabilities;
+    capabilities.agent.is_none()
+        && !capabilities.stand_in
+        && !capabilities.workspace_service
         && cert
             .issuer
             .as_ref()
-            .is_none_or(|issuer| issuer.capabilities.stand_in)
+            .is_none_or(|issuer| issuer.capabilities.stand_in || issuer.is_root_signed_device())
 }
 
 /// The rule for a hosted browser environment's device, whose scope the server

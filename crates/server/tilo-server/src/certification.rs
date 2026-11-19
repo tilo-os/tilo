@@ -287,10 +287,10 @@ impl CertificationProtocol {
     }
 
     /// Answer the request waiting here that names `user` and `invite` with
-    /// `cert`, which the person's root signed for exactly that request, as
-    /// a root holder's `Issue` answers it. `take` spends what expected the
-    /// request, once `cert` was found to answer it; nothing is answered when
-    /// it finds nothing to spend.
+    /// `cert`, which the person's root or one of their devices signed for
+    /// exactly that request, as an approver answers it. `take` spends what
+    /// expected the request, once `cert` was found to answer it; nothing is
+    /// answered when it finds nothing to spend.
     ///
     /// # Errors
     ///
@@ -311,9 +311,6 @@ impl CertificationProtocol {
             .values_mut()
             .find(|entry| named(entry, user, invite, now_ns))
             .ok_or("the tab's request is not waiting here")?;
-        if cert.issuer.is_some() {
-            return Err("only the person's root certifies this tab".into());
-        }
         verify_issued_cert(
             &entry.entry.request,
             &cert,

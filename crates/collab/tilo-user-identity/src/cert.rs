@@ -5,6 +5,18 @@
 //! The signing preimage constant [`DEVCERT_PREIMAGE_TAG`] is frozen
 //! wire ABI — see `signing_preimage_is_frozen_abi` in `lib.rs`.
 //!
+//! # A tab signed in by a device of its person
+//!
+//! A browser tab that holds no identity is signed in by one of the person's
+//! devices: the device signs the tab's [`DeviceCert`] with its own key,
+//! carrying its root-signed certificate as the tab's [`DeviceCert::issuer`].
+//! [`verify_device_cert`] accepts such a certificate only when it grants at
+//! most what a browser is granted
+//! ([`crate::CertificationPolicy::browser`]: a member, for 30 days), names the
+//! issuer's person, was issued while the issuer's certificate was valid, and
+//! the issuer is a device the person's root certified itself. The chain is one
+//! step: a certificate a device signed signs nothing.
+//!
 //! # A person's stand-in approver
 //!
 //! A person whose root lives in one browser tab only (they set Tilo up
@@ -812,9 +824,10 @@ pub struct DeviceCert {
     pub signature: [u8; 64],
 
     /// The root-signed certificate that signed this one, or `None` for one
-    /// the root signed itself: a person's stand-in approver (see the module),
-    /// or an all-workspaces agent's grant that minted a grant for one
-    /// workspace ([`prepare_minted_grant`]).
+    /// the root signed itself: a device of the person signing a browser tab
+    /// in (see the module), a person's stand-in approver, or an
+    /// all-workspaces agent's grant that minted a grant for one workspace
+    /// ([`prepare_minted_grant`]).
     /// Encoded only when present; its signed bytes include the issuer's whole
     /// certificate.
     pub issuer: Option<Box<DeviceCert>>,
@@ -1060,13 +1073,25 @@ impl DeviceCert {
         self.writes_for() == *device
     }
 
-    /// The key whose signature this certificate carries: its stand-in's
-    /// or grant's when one issued it, else the person's root.
+    /// The key whose signature this certificate carries: its issuer's when
+    /// one signed it, else the person's root.
     #[must_use]
     pub fn signer_public_key(&self) -> [u8; 32] {
         self.issuer
             .as_ref()
             .map_or(self.user_public_key, |issuer| issuer.device_public_key)
+    }
+
+    /// Whether the person's root signed this certificate itself, for one of
+    /// their devices: no issuer, and no agent's grant, workspace service or
+    /// stand-in. The root's own statement that the key is a device of theirs,
+    /// which is the authority to add another.
+    #[must_use]
+    pub fn is_root_signed_device(&self) -> bool {
+        self.issuer.is_none()
+            && self.capabilities.agent.is_none()
+            && !self.capabilities.stand_in
+            && !self.capabilities.workspace_service
     }
 
     /// Whether `self` is `held` reissued for the same device by the same
@@ -1207,8 +1232,8 @@ fn check_stand_in(cert: &DeviceCert) -> Result<(), DeviceCertError> {
 }
 
 /// Whether a certificate an issuer signed stays within what that issuer may
-/// issue: a stand-in's members, or a grant's one-workspace grants. The
-/// signatures are checked by the caller.
+/// issue: a device's or a stand-in's browser members, or a grant's
+/// one-workspace grants. The signatures are checked by the caller.
 fn check_issued(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCertError> {
     if issuer.capabilities.agent.is_some() {
         return check_minted(cert, issuer);
@@ -1220,13 +1245,17 @@ fn check_issued(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCert
     let issuer_valid_then = issuer.issued_at_ns <= cert.issued_at_ns
         && issuer
             .expires_at_ns
-            .is_some_and(|expiry| cert.issued_at_ns < expiry);
+            .is_none_or(|expiry| cert.issued_at_ns < expiry);
     let lifetime_bounded = cert.expires_at_ns.is_some_and(|expiry| {
         expiry > cert.issued_at_ns
             && expiry.saturating_sub(cert.issued_at_ns) <= browser.lifetime_ns
     });
-    if issuer.capabilities.stand_in
-        && issuer.issuer.is_none()
+    let may_issue = if issuer.capabilities.stand_in {
+        issuer.issuer.is_none() && check_stand_in(issuer).is_ok()
+    } else {
+        issuer.is_root_signed_device()
+    };
+    if may_issue
         && issuer.user_public_key == cert.user_public_key
         && issuer_valid_then
         && lifetime_bounded
@@ -1234,7 +1263,7 @@ fn check_issued(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCert
         && cert.device_public_key != issuer.device_public_key
         && cert.device_public_key != cert.user_public_key
     {
-        check_stand_in(issuer)
+        Ok(())
     } else {
         Err(DeviceCertError::InvalidIssuer)
     }
@@ -1317,10 +1346,7 @@ fn check_shape(cert: &DeviceCert) -> Result<(), DeviceCertError> {
 /// certificate, and its key is neither the device's nor the root's. The chain
 /// is never longer than one step.
 fn check_service(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCertError> {
-    let issuer_is_a_device = issuer.issuer.is_none()
-        && issuer.capabilities.agent.is_none()
-        && !issuer.capabilities.stand_in
-        && !issuer.capabilities.workspace_service;
+    let issuer_is_a_device = issuer.is_root_signed_device();
     let issuer_valid_then = issuer.issued_at_ns <= cert.issued_at_ns
         && issuer
             .expires_at_ns

@@ -1,7 +1,7 @@
 //! A host's login codes, through the one client of them
 //! (`tilo_server_client::login_code`) that both the tab (through the runtime) and `tilo login` ask
 //! with: the tab makes a code and follows it, the computer resolves it, reports its steps and
-//! claims a sign-in code as a device that may admit devices.
+//! claims a sign-in code as one of the person's devices.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,7 +17,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_server_client::invite::guest_certificate;
 use tilo_server_client::login_code;
 use tilo_server_protocol::login_code::{ClaimRefused, Report, Step};
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
+use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{enrol, enter as enter_as, entry_grant, start_workspace_host};
 
@@ -115,8 +115,9 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
     let spent = login_code::resolve(&*https, &made.code).await.unwrap_err();
     assert_eq!(spent.code(), "unknown", "{spent:?}");
 
-    // Signing in: a device of Bob's that may admit devices claims the code the fresh tab made;
-    // one that may not is refused, saying why.
+    // Signing in: a device of Bob's claims the code the fresh tab made; a
+    // certificate one of his devices signed is no device itself, and is
+    // refused, saying why.
     let asking = login_code::create(&*https, None).await.unwrap();
     login_code::follow(&*https, &asking.follow, Some(offer(&asking, None)))
         .await
@@ -132,30 +133,29 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
     )
     .await
     .unwrap();
-    let member = login_code::claim(
+    let signed_in_before = new_key();
+    let mut chained = member_cert.clone();
+    chained.device_public_key = signed_in_before.verifying_key().to_bytes();
+    chained.issued_at_ns = tilo_clock::unix_now_ns();
+    chained.expires_at_ns =
+        Some(chained.issued_at_ns + tilo_user_identity::CertificationPolicy::browser().lifetime_ns);
+    chained.issuer = Some(Box::new(member_cert.clone()));
+    tilo_user_identity::sign_device_cert(&mut chained, &laptop).unwrap();
+    let chained = login_code::claim(
         &*https,
         &resolved.report,
-        hex::encode(postcard::to_allocvec(&member_cert).unwrap()),
-        &laptop,
+        hex::encode(postcard::to_allocvec(&chained).unwrap()),
+        &signed_in_before,
         tilo_clock::unix_now_ns(),
     )
     .await
     .unwrap_err();
     assert_eq!(
-        member.claim_refused(),
-        Some(ClaimRefused::CannotAdmit),
-        "{member:?}"
+        chained.claim_refused(),
+        Some(ClaimRefused::NotADevice),
+        "{chained:?}"
     );
-    let mut laptop_cert = DeviceCert {
-        capabilities: DeviceCapabilities {
-            can_admit_devices: true,
-            ..DeviceCapabilities::member()
-        },
-        signature: [0; 64],
-        ..member_cert
-    };
-    tilo_user_identity::sign_device_cert(&mut laptop_cert, &bob).unwrap();
-    let postcard = hex::encode(postcard::to_allocvec(&laptop_cert).unwrap());
+    let postcard = hex::encode(postcard::to_allocvec(&member_cert).unwrap());
     login_code::claim(
         &*https,
         &resolved.report,
