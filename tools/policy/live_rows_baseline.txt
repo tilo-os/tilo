@@ -12,7 +12,6 @@ hand-bound-action 1 crates/session/session/src/session_package.rs
 hand-bound-action 3 crates/session/session/src/style_packages.rs
 hand-bound-action 1 crates/session/session/src/window_share.rs
 hand-built-tree 1 apps/chat/src/testing.rs
-hand-built-tree 2 crates/session/app-launch/src/downloaded.rs
 hand-built-tree 2 crates/session/audio-service/src/media.rs
 hand-built-tree 3 crates/session/audio-service/src/sound.rs
 hand-built-tree 9 crates/session/connectivity-service/src/lib.rs
