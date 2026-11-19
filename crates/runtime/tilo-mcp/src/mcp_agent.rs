@@ -1993,7 +1993,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // fleet compiles each app's surface in, so every installed app's types
         // are readable on a fresh workspace.
         if let Some(surface) = app_fleet::surface(app_id)
-            && let Some(kept) = collab_types::surface::canonical_json(surface)
+            && let Ok((_, kept)) = collab_types::surface::SurfaceFile::kept(surface.as_bytes())
         {
             return Some(kept.into_bytes());
         }
