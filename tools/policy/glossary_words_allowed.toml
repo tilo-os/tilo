@@ -1548,3 +1548,9 @@ reason = "The MCP server's own field for the action provider it serves from (`se
 words = ["host"]
 identifiers = ["host"]
 paths = ["crates/runtime/tilo-mcp/src/mcp_agent_list.rs"]
+
+[[allow]]
+reason = "YouTube's channels, which tube's model names as the product's API does (`Channel`, `channel_id`); what a person reads it by is the creator."
+words = ["channel"]
+identifiers = ["Channel", "channel_id"]
+paths = ["apps/tube/src/rows.rs", "apps/tube/src/actions.rs"]

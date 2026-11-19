@@ -1158,16 +1158,22 @@ fn seeking_and_skipping_a_segment_are_actions() {
         .settings
         .categories
         .insert(sponsor.clone(), SkipMode::Show);
+    let watch = "tube.current:vid_rust_async";
     let offers_skip = |app: &TubeApp| {
         let tube = app.tube();
-        crate::rows::live_rows(&tube.model, tube.device_sync_view())
+        let row = crate::rows::live_rows(&tube.model, tube.device_sync_view())
             .into_iter()
-            .find(|row| row.id() == "tube.current:vid_rust_async")
+            .find(|row| row.id() == watch)
             .expect("the open video is published")
-            .into_resource()
-            .actions
-            .iter()
-            .any(|action| action.id == TubeEffect::SKIP_SEGMENT.id)
+            .into_resource();
+        assert!(
+            row.actions
+                .iter()
+                .any(|action| action.id == TubeEffect::SKIP_SEGMENT.id),
+            "the watch page offers skipping, and with no segment its status says it cannot"
+        );
+        !crate::rows::row_status(&tube.model, tube.device_sync_view(), watch)
+            .contains(&no_segment.clone().on(watch))
     };
     assert!(!offers_skip(&app), "no segment plays at the start");
     assert!(statuses(&app).contains(&no_segment));

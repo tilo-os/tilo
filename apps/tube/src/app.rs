@@ -1079,7 +1079,7 @@ pub(crate) fn window(cx: &ViewCx<Library>, mut window: TubeApp) -> Element {
             // without an active device or a reachable Grayjay.
             .row_status(move |id| {
                 let tube = statuses.borrow();
-                crate::rows::row_status(tube.device_sync_view(), id)
+                crate::rows::row_status(&tube.model, tube.device_sync_view(), id)
             })
             .search_entries(move || entries.borrow().search_entries_of_model())
             .search_query(move |asked| query.borrow_mut().follow_palette_query(asked.text()))
