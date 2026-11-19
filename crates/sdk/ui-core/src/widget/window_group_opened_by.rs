@@ -133,6 +133,10 @@ impl super::WindowGroup {
         self.bar.set_opened_by(id, run)
     }
 
+    pub fn set_tab_opened_for(&mut self, id: u64, person: Option<String>) -> bool {
+        self.bar.set_opened_for(id, person)
+    }
+
     pub fn take_opened_by_press(&mut self) -> Option<(u64, String)> {
         self.bar.take_opened_by_press()
     }

@@ -8,6 +8,7 @@ tab-mute-named = Mute { $title }
 tab-search-in = Search in { $title }
 tab-held-by = { $name }’s window
 tab-opened-by = { $agent } opened this window
+tab-opened-by-for = { $agent } opened this window for { $person }
 tab-opened-by-run = { $run }
 standalone-search-title = Search
 history-mode-title = History

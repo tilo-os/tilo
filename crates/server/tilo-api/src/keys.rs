@@ -187,7 +187,7 @@ impl Server {
         ) else {
             return Err("no randomness is available; try again shortly");
         };
-        let shown = format!("API key \u{201c}{name}\u{201d}");
+        let shown = tilo_server_client::key_client(&name);
         let location = self.begin(
             Purpose::Key { name, poll },
             &shown,

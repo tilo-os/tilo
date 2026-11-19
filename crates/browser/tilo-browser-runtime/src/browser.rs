@@ -827,6 +827,20 @@ impl Desktop {
     /// opened, on a desktop shared through a workspace. Whether that changed
     /// anything.
     fn refresh_holders(&self, in_workspace: bool) -> bool {
+        // Whom each agent's window was opened for, by the name presence knows them by: a person
+        // not known here yet is named by no one rather than as a guest.
+        let opened_for = if in_workspace {
+            let here = self.here.borrow();
+            let people = self.people.borrow();
+            self.shared.opened_for(&mut |user: &str| {
+                here.person(user)
+                    .or_else(|| people.get(user).cloned())
+                    .map(|(name, _)| name)
+            })
+        } else {
+            std::collections::BTreeMap::new()
+        };
+        let named_for = self.handle.set_opened_for(opened_for);
         let holders = if in_workspace {
             let here = self.here.borrow();
             let mut people = self.people.borrow_mut();
@@ -865,7 +879,7 @@ impl Desktop {
         let opened = self.handle.set_opens(opens);
         let runs = in_workspace.then(|| self.shared.opened_by.borrow().clone());
         let named = self.handle.set_opened_by(runs.unwrap_or_default());
-        self.handle.set_holders(holders) | opened | named
+        self.handle.set_holders(holders) | opened | named | named_for
     }
 }
 

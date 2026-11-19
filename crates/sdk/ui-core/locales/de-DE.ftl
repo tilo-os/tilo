@@ -8,6 +8,7 @@ tab-mute-named = { $title } stummschalten
 tab-search-in = In { $title } suchen
 tab-held-by = Fenster von { $name }
 tab-opened-by = { $agent } hat dieses Fenster geöffnet
+tab-opened-by-for = { $agent } hat dieses Fenster für { $person } geöffnet
 tab-opened-by-run = { $run }
 standalone-search-title = Suchen
 

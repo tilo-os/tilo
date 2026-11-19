@@ -781,6 +781,21 @@ impl Shared {
             .collect()
     }
 
+    /// The person each window an agent opened was opened for, by tab, as `person` (by user root)
+    /// names them, when it does: the agent places a window as the person it acts for, so the window's
+    /// author is whom it works for. A window whose author is not known yet names no one.
+    pub fn opened_for(
+        &self,
+        person: &mut dyn FnMut(&str) -> Option<String>,
+    ) -> std::collections::BTreeMap<TabId, String> {
+        let authors = self.authors.borrow();
+        self.opened_by
+            .borrow()
+            .keys()
+            .filter_map(|tab| Some((*tab, person(authors.get(tab)?)?)))
+            .collect()
+    }
+
     /// The record each window of `tree` shows, in the spelling links and the shared shell use
     /// (empty for the app's primary record): bound, or still waiting for the record a link or a
     /// window named.

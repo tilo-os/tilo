@@ -873,3 +873,78 @@ async fn the_first_call_after_tilo_login_is_the_agents() {
     )
     .await;
 }
+
+/// An agent on a logged-in computer whose harness named its session ("Release prep") goes by
+/// that name on the workspace's server too: every change it makes is labelled and named by the
+/// session, not by the agent's product, whatever the server knows the agent's member as.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_logged_in_agents_session_name_reaches_its_server() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let server_device = enrol(&root, "home-server", DeviceCapabilities::member());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = crate::harness::hosted::start(
+        &root,
+        &server_device,
+        state.path(),
+        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+    )
+    .await;
+    let mut browser = Browser::open(&hosted, &browser_device, &server_device).await;
+    let agent = Browser::open(&hosted, &computer, &server_device).await;
+    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
+    let mcp = McpServer::new(
+        SessionActions::new(
+            &agent.peer,
+            agent.workspace,
+            server_device.cert.device_public_key,
+        ),
+        WORKSPACE.into(),
+        person_of(&root),
+    );
+    // What `tilo mcp` writes into the client's initialize when the harness named the session.
+    let opened = mcp
+        .handle(
+            json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {"experimental": {"so.tilo": {"session-name": "Release prep"}}},
+            "clientInfo": {"name": "claude-code", "version": "2"}}}),
+        )
+        .await
+        .expect("initialize is answered");
+    assert!(opened.get("result").is_some(), "initialize: {opened}");
+    let (made, failed) = tool(
+        &mcp,
+        "tilo_do",
+        json!({"path": "notes#new-note", "args": {"title": "Release notes"}}),
+    )
+    .await;
+    assert!(!failed, "notes#new-note: {made}");
+
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        browser.pump();
+        let groups: Vec<_> = browser
+            .documents
+            .iter()
+            .filter(|(route, _)| route.app_id == NOTES)
+            .flat_map(|(_, changes)| agent_groups(changes))
+            .collect();
+        if !groups.is_empty() {
+            assert!(
+                groups
+                    .iter()
+                    .all(|group| group.as_ref().is_some_and(|group| {
+                        group.kind == "agent-session"
+                            && group.session.as_deref() == Some("Release prep")
+                            && group.label.as_deref() == Some("Release prep")
+                    })),
+                "the agent's invocation goes by its session's name: {groups:?}"
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "the agent's note never arrived");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}

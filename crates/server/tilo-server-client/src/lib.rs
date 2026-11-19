@@ -84,6 +84,6 @@ pub use pairing::{
 };
 #[cfg(feature = "dial")]
 pub use pairing::{answer_pairing, decide_pairing, next_pairings, pending_pairings};
-pub use sign_in::{encode, grant_label, sign_in_proof};
+pub use sign_in::{encode, grant_holder, grant_label, key_client, sign_in_proof};
 pub use signer::{DeviceSigner, MaybeSendSync, SignError, SignFuture};
 pub use tilo_server_protocol::transport::{ContentPeerRegistration, Envelope};

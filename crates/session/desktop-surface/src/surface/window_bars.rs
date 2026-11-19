@@ -346,6 +346,19 @@ impl DesktopHandle {
         shared.changed();
         true
     }
+
+    /// Name the person each agent that opened a window opened it for, by tab, as its server knows
+    /// them: pointing at the agent's mark in the window's bar says whom it works for. Whether that
+    /// changed anything.
+    pub fn set_opened_for(&self, opened_for: std::collections::BTreeMap<u64, String>) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        if shared.opened_for == opened_for {
+            return false;
+        }
+        shared.opened_for = opened_for;
+        shared.changed();
+        true
+    }
 }
 
 impl DesktopSurface {

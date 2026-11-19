@@ -1,6 +1,6 @@
 //! The bar's mark of a window an agent opened for its person: the agent, by its mark and name in
-//! its presence colour, which opens the run that opened the window in History. Pointing at it, or
-//! reaching it with the keyboard, says which run that was.
+//! its presence colour, which opens the invocation that opened the window in History. Pointing at it, or
+//! reaching it with the keyboard, says whom the agent opened it for and which invocation that was.
 use super::{Point, Rect, TOOLBAR_LEAD_GAP, TabBar, TextRenderer, Theme};
 use crate::a11y::AccessNode;
 use crate::i18n::widget_format;
@@ -14,6 +14,8 @@ pub(super) const OPENED_BY_TARGET: &str = "tab-opened-by";
 #[derive(Debug, Default)]
 pub(super) struct OpenedByChip {
     runs: std::collections::HashMap<u64, OpenedBy>,
+    /// The person each window's agent opened it for, by the name this page knows them by.
+    opened_for: std::collections::HashMap<u64, String>,
     painted: Option<Rect>,
     focused: bool,
     pressed: Option<(u64, String)>,
@@ -27,12 +29,26 @@ fn agent_colour(opened: &OpenedBy) -> vello::peniko::Color {
     vello::peniko::Color::from_rgb8(red, green, blue)
 }
 
-fn opened_by_tip(run: &OpenedBy) -> String {
-    let title = run.title.trim();
-    if title.is_empty() || title == run.label {
-        widget_format("tab-opened-by", &[("agent", run.label.as_str().into())])
+/// What pointing at the mark says: who opened the window, and for whom when the page knows them,
+/// then on a line of its own the step that opened it, when the agent titled one.
+fn opened_by_tip(opened: &OpenedBy, opened_for: Option<&str>) -> String {
+    let agent = opened.label.as_str();
+    let who = match opened_for
+        .map(str::trim)
+        .filter(|person| !person.is_empty())
+    {
+        Some(person) => widget_format(
+            "tab-opened-by-for",
+            &[("agent", agent.into()), ("person", person.into())],
+        ),
+        None => widget_format("tab-opened-by", &[("agent", agent.into())]),
+    };
+    let title = opened.title.trim();
+    if title.is_empty() || title == opened.label {
+        who
     } else {
-        widget_format("tab-opened-by-run", &[("run", title.into())])
+        let step = widget_format("tab-opened-by-run", &[("run", title.into())]);
+        format!("{who}\n{step}")
     }
 }
 
@@ -50,6 +66,27 @@ impl TabBar {
 
     pub fn opened_by(&self, id: u64) -> Option<&OpenedBy> {
         self.opened.runs.get(&id)
+    }
+
+    /// Name the person the agent that opened `id` works for, as this page knows them, or forget
+    /// them. `true` when that changed.
+    pub fn set_opened_for(&mut self, id: u64, person: Option<String>) -> bool {
+        let changed = match person {
+            Some(person) => self.opened.opened_for.insert(id, person.clone()) != Some(person),
+            None => self.opened.opened_for.remove(&id).is_some(),
+        };
+        if changed {
+            self.touch();
+        }
+        changed
+    }
+
+    fn opened_tip(&self, id: u64) -> Option<String> {
+        let opened = self.opened_by(id)?;
+        Some(opened_by_tip(
+            opened,
+            self.opened.opened_for.get(&id).map(String::as_str),
+        ))
     }
 
     pub fn take_opened_by_press(&mut self) -> Option<(u64, String)> {
@@ -93,7 +130,7 @@ impl TabBar {
         let run = self.opened_by(self.active_id)?;
         let node = AccessNode::new(crate::a11y::Role::Button)
             .with_name(run.label.clone())
-            .with_description(opened_by_tip(run))
+            .with_description(self.opened_tip(self.active_id).unwrap_or_default())
             .with_action_target(OPENED_BY_TARGET)
             .with_bounds(rect);
         Some((rect, node))
@@ -119,13 +156,14 @@ impl TabBar {
             return;
         };
         let colour = theme.tokens.colors.presence.of(agent_colour(run));
+        let tip = self.opened_tip(self.active_id).unwrap_or_default();
         crate::widget::tooltip::draw_person_tooltip_on(
             scene,
             transform,
             tr,
             theme,
             (rect, crate::widget::tooltip::TooltipSide::Below),
-            (&opened_by_tip(run), colour),
+            (&tip, colour),
             spare,
         );
     }

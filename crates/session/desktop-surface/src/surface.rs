@@ -230,6 +230,9 @@ struct Shared {
     /// The agent run that opened each window an agent opened, by tab
     /// ([`DesktopHandle::set_opened_by`]).
     opened_by: std::collections::BTreeMap<TabId, tilo_desktop_model::ownership::OpenedBy>,
+    /// The person each of those agents opened its window for, by tab, by the name its server knows
+    /// them by ([`DesktopHandle::set_opened_for`]).
+    opened_for: std::collections::BTreeMap<TabId, String>,
     /// The resource each window shows, by tab, as the workspace's layout keeps it
     /// ([`DesktopHandle::set_window_resources`]): what a window's bar carries when a person picks
     /// it up, on every device that reads the layout.
@@ -1190,6 +1193,7 @@ impl DesktopSurface {
                 for tab in tabs {
                     changed |= group.set_tab_holder(tab, shared.holders.get(&tab).cloned());
                     changed |= group.set_tab_opened_by(tab, shared.opened_by.get(&tab).cloned());
+                    changed |= group.set_tab_opened_for(tab, shared.opened_for.get(&tab).cloned());
                     changed |= group.set_tab_attention(tab, shared.asking.contains(&tab));
                 }
                 runs.extend(group.take_opened_by_press().map(|(_, run)| run));
