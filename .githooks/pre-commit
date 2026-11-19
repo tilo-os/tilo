@@ -434,6 +434,7 @@ if [ -n "$tl_packages$tl_locked_packages" ]; then
   # platform cannot run here and one that is not the formatter does not know
   # `fmt`; both are skipped rather than failing the commit.
   tl_fmt=""
+  tl_failed=""
   tl_candidates=()
   tl_find_fmt() {
     local built=() c newer_count
@@ -471,7 +472,6 @@ if [ -n "$tl_packages$tl_locked_packages" ]; then
     # why, for an hour. It is this worktree's, never the clone's, so one tree
     # that cannot build now does not silence the others.
     tl_build_state="$(git rev-parse --path-format=absolute --git-dir)/tilolang-fmt-build"
-    tl_failed=""
     if [ -e "$tl_build_state" ]; then
       tl_when=$(cut -d' ' -f1 "$tl_build_state")
       case "$tl_when" in '' | *[!0-9]*) tl_when=0 ;; esac
@@ -505,7 +505,9 @@ if [ -n "$tl_packages$tl_locked_packages" ]; then
       fi
     fi
   fi
-  if [ -z "$tl_fmt" ]; then
+  if [ -z "$tl_packages" ]; then
+    : # Only locks and catalogues are staged: nothing to format.
+  elif [ -z "$tl_fmt" ]; then
     # No binary to format with, so these are left as they are: the compiler's
     # canonical-form tests, which CI runs, hold the invariant either way.
     note "tilolang fmt: no formatter for the staged .tl files: $tl_failed"
