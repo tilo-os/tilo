@@ -743,6 +743,13 @@ impl TypeMeta {
 pub use tilo_words::{in_words, plural, singular};
 
 impl PackageMeta {
+    /// Whether the package opens a document in the person's certified profile.
+    /// Older packages wrote the `.own` flag before profiles held app data.
+    #[must_use]
+    pub fn uses_personal_profile(&self) -> bool {
+        self.profile_resources || self.own_resources
+    }
+
     /// The declared type named `name` (a qualified name's last segment), or whose id is `name`.
     #[must_use]
     pub fn type_named(&self, name: &str) -> Option<&TypeMeta> {

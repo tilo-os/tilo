@@ -78,17 +78,14 @@ pub fn route_under(
     workspace: uuid::Uuid,
     person: &str,
 ) -> collaboration::RouteSpec {
-    if meta.profile_resources
+    if meta.uses_personal_profile()
         && let Some(profile) = collab_types::personal_cluster_of(person)
     {
         let kind = format!("tl.{}", meta.app);
         let id = collab_types::person_document_for_workspace(&kind, workspace);
         return collaboration::RouteSpec::document(records, profile, id);
     }
-    match tilolang_tilo::own_document(meta, person) {
-        Some(record) => collaboration::RouteSpec::document(records.to_owned(), workspace, record),
-        None => collaboration::RouteSpec::app(records.to_owned(), workspace),
-    }
+    collaboration::RouteSpec::app(records.to_owned(), workspace)
 }
 
 /// A restricted package closes its window when its read grant is removed.
@@ -702,7 +699,7 @@ impl TilolangProcess {
             .map_err(|_| AdmitError::Workspace(request.workspace.clone()))?;
         let identity =
             identity.ok_or_else(|| AdmitError::Join("no identity connection".to_owned()))?;
-        if bundle.meta.profile_resources
+        if bundle.meta.uses_personal_profile()
             && collab_types::personal_cluster_of(&request.person).is_none()
         {
             return Err(AdmitError::Join(
@@ -714,6 +711,11 @@ impl TilolangProcess {
         // one is what it was asked for.
         if let Some(asked) = request.document.as_deref()
             && !opens_document(&route, asked)
+            && !(bundle.meta.uses_personal_profile()
+                && [&records, &bundle.meta.app].into_iter().any(|app| {
+                    tilolang_tilo::member_document_of(app, &request.person).as_deref()
+                        == Some(asked)
+                }))
         {
             return Err(AdmitError::OtherResource {
                 app: request.app,
@@ -1276,6 +1278,41 @@ view saved_views(v: Views) {
         assert_eq!(route_of(&package, b, &ada).cluster_id, route.cluster_id);
         assert_ne!(route_of(&package, b, &ada).document, route.document);
         assert_ne!(route_of(&package, a, &bo).cluster_id, route.cluster_id);
+    }
+
+    #[test]
+    fn a_legacy_package_opens_in_the_certified_profile() {
+        let source = r#"
+app test.legacynotes "Earlier notes" (resources: .own)
+
+type Notes { title: Text }
+root Notes
+default view saved_notes for Notes
+
+view saved_notes(notes: Notes) {
+    ui.Text(notes.title)
+}
+"#;
+        let package = tilolang_tilo::tilolang::compile_package(source, &Default::default(), &[])
+            .expect("an earlier private package")
+            .meta;
+        assert!(package.own_resources);
+        let person = "ad".repeat(32);
+        let workspace = uuid::Uuid::from_u128(18);
+        let route = route_of(&package, workspace, &person);
+        assert_eq!(
+            route.cluster_id,
+            collab_types::personal_cluster_of(&person).unwrap()
+        );
+        let document = route.document.as_deref().unwrap();
+        assert_eq!(
+            collab_types::person_document_context(document),
+            Some(workspace)
+        );
+        assert_eq!(
+            collab_types::person_resource_type(document),
+            Some("tl.test.legacynotes")
+        );
     }
 
     /// A window asked for the workspace's document, or a member's own, opens on an instance whose

@@ -87,6 +87,9 @@ impl DocumentReads {
     #[must_use]
     pub fn address(&self, app: &str) -> Option<(String, String)> {
         let bundle = self.bundles.get(app)?;
+        if bundle.meta.uses_personal_profile() && app != "so.tilo.shell" {
+            return None;
+        }
         let under = self
             .documents_under
             .get(app)

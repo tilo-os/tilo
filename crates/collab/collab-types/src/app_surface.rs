@@ -220,7 +220,10 @@ pub fn person_resource_types(app_id: &str) -> Vec<String> {
         .map(|file| {
             file.resources
                 .iter()
-                .filter(|surface| surface.person)
+                .filter(|surface| {
+                    surface.person
+                        || surface.own && surface.kind.strip_prefix("tl.") == Some(app_id)
+                })
                 .map(|surface| surface.kind.clone())
                 .collect()
         })

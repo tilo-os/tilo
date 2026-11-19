@@ -47,7 +47,10 @@ earlier TiloLang Mail mailboxes remain private archives.
 Workspaces refuse new writes to archived per-member app documents. Those
 documents retain their original read rules so members can recover earlier data.
 Packages can use shared workspace documents or declare
-personal profile storage for private data.
+personal profile storage for private data. TiloLang packages built with
+`resources: .own` open in the certified profile. Recovery uses the locally
+held copy for that person and workspace and marks unconfirmed outside effects
+as unknown. The original archive remains available to its original reader.
 
 Signature profiles, saved TiloLang views, and facts from private agent turns
 live in the person's store outside workspaces. Views retain their workspace

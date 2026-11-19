@@ -66,3 +66,16 @@ fn contextual_views_can_join_the_profile_with_their_own_kind() {
     assert_eq!(person_document_join(app, &views), Ok(()));
     assert!(person_document_join("so.tilo.notes", &views).is_err());
 }
+
+#[test]
+fn a_legacy_package_can_join_its_declared_profile_document() {
+    let app = "test.legacy-lang-app";
+    let surface = b"[[resources]]\nkind = \"tl.test.legacy-lang-app\"\nlabel = \"Notes\"\nversion = 1\nown = true\n";
+    collab_types::app_surface::register_package(app, surface);
+    let document = collab_types::person_document_for_workspace(
+        "tl.test.legacy-lang-app",
+        uuid::Uuid::from_u128(96),
+    );
+    assert_eq!(person_document_join(app, &route(app, &document)), Ok(()));
+    assert!(person_document_join("test.other-app", &route(app, &document)).is_err());
+}

@@ -259,21 +259,34 @@ fn previous_profile_document(
     if collab_types::personal_cluster_of(person) != Some(route.cluster_id) {
         return Ok(None);
     }
-    let Some(context) = route
-        .document
-        .as_deref()
-        .and_then(collab_types::person_document_context)
+    let Some(document_id) = route.document.as_deref() else {
+        return Ok(None);
+    };
+    let Some(context) = collab_types::person_document_context(document_id) else {
+        return Ok(None);
+    };
+    let Some(app) =
+        collab_types::person_resource_type(document_id).and_then(|kind| kind.strip_prefix("tl."))
     else {
         return Ok(None);
     };
-    let Some(id) = crate::member_document_of(&route.app_id, person) else {
-        return Ok(None);
-    };
-    let previous = RouteSpec::document(route.app_id.clone(), context, id);
-    let document = route_document(documents, &previous)?
-        .load_complete()
-        .map_err(|error| DocumentError::Open(error.to_string()))?;
-    let Some(document) = document else {
+    // A renamed package wrote under its previous app id, but could name the
+    // member document using either version's kind.
+    let mut archive = None;
+    for name in std::iter::once(app).chain((app != route.app_id).then_some(route.app_id.as_str())) {
+        let Some(id) = crate::member_document_of(name, person) else {
+            continue;
+        };
+        let previous = RouteSpec::document(route.app_id.clone(), context, id);
+        if let Some(document) = route_document(documents, &previous)?
+            .load_complete()
+            .map_err(|error| DocumentError::Open(error.to_string()))?
+        {
+            archive = Some((previous, document));
+            break;
+        }
+    }
+    let Some((previous, document)) = archive else {
         return Ok(None);
     };
     let placement = Chunks::of(document.clone()).placement().chunks();
@@ -288,7 +301,42 @@ fn previous_profile_document(
             })?;
         parts.push((index, copy));
     }
+    let mut document = document;
+    retire_archived_effects(&mut document)?;
+    for (_, part) in &mut parts {
+        retire_archived_effects(part)?;
+    }
     Ok(Some((document, parts)))
+}
+
+/// An archive never resumes an effect on its new route. A connector may
+/// already have acted on the original job even if no result was saved.
+fn retire_archived_effects(doc: &mut Doc) -> Result<(), DocumentError> {
+    use crate::action::{OUTBOX_KEY, RESOURCES_KEY};
+    use crate::containers::maps;
+    use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
+
+    let map_children = |parent: &automerge::ObjId| {
+        doc.keys(parent)
+            .flat_map(|key| maps(doc, parent, &key))
+            .collect::<Vec<_>>()
+    };
+    let jobs: Vec<_> = maps(doc, &ROOT, RESOURCES_KEY)
+        .iter()
+        .flat_map(map_children)
+        .flat_map(|app| map_children(&app))
+        .flat_map(|item| maps(doc, &item, OUTBOX_KEY))
+        .flat_map(|outbox| map_children(&outbox))
+        .collect();
+    let open_error = |error: automerge::AutomergeError| DocumentError::Open(error.to_string());
+    for job in jobs {
+        if doc.get(&job, "settled").map_err(open_error)?.is_none() {
+            doc.put(&job, "settled", "unknown").map_err(open_error)?;
+            doc.put(&job, "reason", "Delivery was unconfirmed before migration")
+                .map_err(open_error)?;
+        }
+    }
+    Ok(())
 }
 
 /// The document `doc` of `route`, kept by `writer`, with every chunk its manifest names that this
@@ -2243,6 +2291,55 @@ mod profile_tests {
     use automerge::{ReadDoc as _, transaction::Transactable as _};
 
     use super::*;
+
+    #[test]
+    fn profile_recovery_keeps_data_and_retires_unconfirmed_effects() {
+        use crate::action::{OUTBOX_KEY, RESOURCES_KEY, outbox_entries};
+        use crate::containers::single;
+        use automerge::ROOT;
+
+        let documents: Rc<dyn DurableStore> = Rc::new(durable_store::MemoryStore::new());
+        let app = "test.legacy-notes";
+        let person = "ad".repeat(32);
+        let workspace = uuid::Uuid::from_u128(19);
+        let old = RouteSpec::document(
+            app,
+            workspace,
+            crate::member_document_of(app, &person).unwrap(),
+        );
+        let mut store = route_document(&documents, &old).unwrap();
+        let mut doc = store.new_document();
+        let resources = single(&mut doc, &ROOT, RESOURCES_KEY).unwrap();
+        let group = single(&mut doc, &resources, app).unwrap();
+        let item = single(&mut doc, &group, "draft").unwrap();
+        doc.put(&item, "body", "draft text").unwrap();
+        let outbox = single(&mut doc, &item, OUTBOX_KEY).unwrap();
+        let pending = single(&mut doc, &outbox, "queued").unwrap();
+        let sent = single(&mut doc, &outbox, "sent").unwrap();
+        for job in [&pending, &sent] {
+            doc.put(job, "capability", "test.send").unwrap();
+            doc.put(job, "payload", "{}").unwrap();
+            doc.put(job, "owner", "device").unwrap();
+        }
+        doc.put(&sent, "settled", "done").unwrap();
+        store.save(&mut doc).unwrap();
+        let current = RouteSpec::document(
+            app,
+            collab_types::personal_cluster_of(&person).unwrap(),
+            collab_types::person_document_for_workspace("tl.test.legacy-notes", workspace),
+        );
+
+        let (recovered, _) = previous_profile_document(&documents, &current, &person)
+            .unwrap()
+            .unwrap();
+        let entries = outbox_entries(&recovered, app, "draft");
+        assert_eq!(entries[0].settled.as_deref(), Some("unknown"));
+        assert_eq!(entries[1].settled.as_deref(), Some("done"));
+        let body = recovered.get(&item, "body").unwrap().unwrap().0;
+        assert_eq!(body.as_str(), Some("draft text"));
+        let original = store.load_complete().unwrap().unwrap();
+        assert!(outbox_entries(&original, app, "draft")[0].settled.is_none());
+    }
 
     #[test]
     fn previous_workspace_views_are_recovered_for_their_profile_only() {
