@@ -7,6 +7,38 @@ use wasm_bindgen::prelude::*;
 
 use crate::peer::js_error;
 
+/// The server an invitation names, read from the invitation alone.
+pub type InvitedServer = fn(&[u8]) -> Result<String, JsError>;
+
+ui::lazy_code! {
+    /// The invitation's own server reader: linked, or with `deferred-invited-server` fetched the
+    /// first time a page follows an invitation.
+    pub static INVITED_SERVER: InvitedServer = builtin_invited_server,
+        feature = "deferred-invited-server";
+}
+
+/// The only path to [`INVITED_SERVER`]'s code.
+#[must_use]
+pub fn builtin_invited_server() -> InvitedServer {
+    read_invited_server
+}
+
+/// The server an invitation names, read from the invitation alone: the entry page asks for it
+/// when it follows an invitation, and its code arrives then.
+///
+/// # Errors
+///
+/// The invitation is not a valid one now, names no server to dial, or the code that reads it
+/// could not be loaded.
+#[wasm_bindgen(js_name = invitedServer)]
+pub async fn invited_server(invitation: Vec<u8>) -> Result<String, JsError> {
+    let code = INVITED_SERVER
+        .wait()
+        .await
+        .ok_or_else(|| js_error("the code that reads an invitation could not be loaded"))?;
+    code(&invitation)
+}
+
 /// The server `invitation` (the signed invitation's bytes) admits into, as the invitation itself
 /// names it: the server's own signed iroh address and certificate in it, checked under the
 /// invitation's signature. A server reached only over iroh (behind a NAT, through a packet relay)
@@ -18,8 +50,7 @@ use crate::peer::js_error;
 /// # Errors
 ///
 /// The invitation is not a valid one now, or names no server to dial.
-#[wasm_bindgen(js_name = invitedServer)]
-pub fn invited_server(invitation: &[u8]) -> Result<String, JsError> {
+fn read_invited_server(invitation: &[u8]) -> Result<String, JsError> {
     use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
     let verified = tilo_workspace_join::decode_and_verify_invitation(
         invitation,

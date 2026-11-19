@@ -1597,7 +1597,7 @@ export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: f
 export async function invitedServer(invitation, {runtime} = {}) {
   runtime ??= await pageRuntime();
   if (typeof runtime.invitedServer !== 'function') return null;
-  const named = JSON.parse(runtime.invitedServer(invitationBytes(invitation)));
+  const named = JSON.parse(await runtime.invitedServer(invitationBytes(invitation)));
   return {info: named.info, endpoint: named.endpoint, offer: invitationOffer(named.offer)};
 }
 
