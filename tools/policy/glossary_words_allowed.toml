@@ -261,6 +261,7 @@ paths = [
     "crates/server/tilo-workspace-service/src/workspaces/person_settings.rs",
     "crates/server/tilo-workspace-service/src/workspaces/person_settings/sending.rs",
     "crates/agent/agent-session/tests/mail_for_agents.rs",
+    "crates/agent/agent-session/tests/workspace_actions/hosted_mail_delivery.rs",
     "crates/server/tilo-workspace-service/src/workspaces/actions/host/mail_assistant_tests.rs",
 ]
 
