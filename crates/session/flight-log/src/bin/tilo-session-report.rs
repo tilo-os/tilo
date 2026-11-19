@@ -1,9 +1,6 @@
 //! Summarises private Tilo session flight entries without controlling the
 //! desktop.
 
-use std::fs;
-use std::io::Write as _;
-use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -132,27 +129,6 @@ fn parse(args: &[String]) -> Result<Options, ExitCode> {
     Ok(options)
 }
 
-/// Writes the report readable by its owner only.
-fn write_private(path: &PathBuf, payload: &str) -> std::io::Result<()> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)?;
-    }
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(payload.as_bytes())
-}
-
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let options = match parse(&args) {
@@ -208,7 +184,8 @@ fn main() -> ExitCode {
     let payload = format!("{}\n", report.to_json());
     match &options.output {
         Some(path) => {
-            if let Err(error) = write_private(path, &payload) {
+            if let Err(error) = tilo_files::native::atomic::write_private(path, payload.as_bytes())
+            {
                 eprintln!(
                     "tilo-session-report: cannot write {}: {error}",
                     path.display()

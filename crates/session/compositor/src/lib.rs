@@ -239,8 +239,7 @@ fn publish_display(name: &str) -> Option<PublishedDisplay> {
 /// [`publish_display`] at `path`: left alone when it names another session that is running still,
 /// and replaced otherwise, so a session after a crash is found at the same place.
 fn publish_at(path: &Path, name: &str) -> Option<PublishedDisplay> {
-    use std::io::Write as _;
-    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+    use std::os::unix::fs::DirBuilderExt as _;
 
     if another_live_session_published(path, name) {
         tracing::info!(
@@ -261,21 +260,12 @@ fn publish_at(path: &Path, name: &str) -> Option<PublishedDisplay> {
     }
     // 0600: not a secret, but nothing else should write it. Written beside and renamed into
     // place, so a reader never sees a half-written name.
-    let beside = path.with_extension(format!("{}.tmp", std::process::id()));
-    let written = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&beside)
-        .and_then(|mut file| file.write_all(name.as_bytes()))
-        .and_then(|()| std::fs::rename(&beside, path));
-    match written {
+    match tilo_files::native::atomic::write_with_mode(path, name.as_bytes(), 0o600) {
         Ok(()) => Some(PublishedDisplay {
             file: path.to_owned(),
             name: name.to_owned(),
         }),
         Err(error) => {
-            let _ = std::fs::remove_file(&beside);
             tracing::warn!(%error, file = %path.display(), "the session's display is not published");
             None
         }

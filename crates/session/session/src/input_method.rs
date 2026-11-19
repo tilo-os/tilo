@@ -13,8 +13,6 @@
 //! keeper's cookie, so the session writes an authority file the engine reads: every kept display's
 //! cookie in one file, which `xcb_connect` picks from by the display it is asked for.
 
-use std::io::Write as _;
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -175,7 +173,9 @@ impl InputMethod {
                 ),
             }
         }
-        if let Err(error) = write_authority_file(&path, &contents) {
+        if let Err(error) =
+            tilo_files::native::atomic::write_creating_parent_with_mode(&path, &contents, 0o600)
+        {
             tracing::warn!(path = %path.display(), %error, "the input method's X authority was not written");
         }
     }
@@ -425,24 +425,6 @@ fn config_directory() -> Option<PathBuf> {
 /// The authority file the engine reads, in the session's directory.
 fn authority_file() -> Option<PathBuf> {
     Some(config_directory()?.join(AUTHORITY))
-}
-
-/// Write `contents` at `path` as this user's alone, all at once: the engine reads it as it
-/// connects, and a half-written file would refuse a display.
-fn write_authority_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let temporary = path.with_extension("new");
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    file.write_all(contents)?;
-    drop(file);
-    std::fs::rename(&temporary, path)
 }
 
 /// The XKB layout the engine's own key symbols stand on: the first layout of the source list, as

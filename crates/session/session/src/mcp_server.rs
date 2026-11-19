@@ -842,7 +842,7 @@ impl Loop {
             }
         };
         std::thread::spawn(move || {
-            if let Err(error) = write_private(&path, &bytes) {
+            if let Err(error) = tilo_files::native::atomic::write_private(&path, &bytes) {
                 tracing::warn!(
                     %error,
                     path = %path.display(),
@@ -1007,29 +1007,6 @@ pub(crate) fn bind_private(path: &Path) -> io::Result<UnixListener> {
     let _ = std::fs::remove_file(&staged);
     let _ = std::fs::remove_dir(&staging);
     bound
-}
-
-/// Write `bytes` to `path` , readable by this account only.
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
-    if let Some(parent) = path.parent() {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)?;
-    }
-    let staged = path.with_extension("json.tmp");
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&staged)?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    std::fs::rename(&staged, path)
 }
 
 /// What the kernel says about the process on the other end.

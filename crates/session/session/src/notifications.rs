@@ -128,18 +128,7 @@ pub(crate) fn save_history(notices: &DesktopNotifications, path: &std::path::Pat
             return;
         }
     };
-    if let Some(parent) = path.parent()
-        && let Err(error) = std::fs::create_dir_all(parent)
-    {
-        tracing::warn!(%error, "no place for the notification centre");
-        return;
-    }
-    // Written beside and moved over, so a session that ends mid-write never leaves half a file to
-    // be read back.
-    let beside = path.with_extension("json.new");
-    if let Err(error) =
-        std::fs::write(&beside, &encoded).and_then(|()| std::fs::rename(&beside, path))
-    {
+    if let Err(error) = tilo_files::native::atomic::write_creating_parent(path, &encoded) {
         tracing::warn!(%error, "the notification centre was not written");
     }
 }

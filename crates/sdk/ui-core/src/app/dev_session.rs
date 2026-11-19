@@ -83,13 +83,7 @@ pub(crate) fn write_dev_checkpoint(app: &App, dir: &Path) -> bool {
     if bytes.is_empty() {
         return false;
     }
-    replace_file(&dir.join(CHECKPOINT_FILE), &bytes)
-}
-
-/// Replace `destination` atomically, so a reader never sees a partial file.
-#[cfg(any(feature = "native", test))]
-fn replace_file(destination: &Path, bytes: &[u8]) -> bool {
-    tilo_files::native::atomic::write(destination, bytes).is_ok()
+    tilo_files::native::atomic::write(&dir.join(CHECKPOINT_FILE), &bytes).is_ok()
 }
 
 /// Appended to a reloaded library's path for the file that records where that
@@ -140,7 +134,8 @@ impl DevReloadTiming {
         });
         let mut path = self.library.as_os_str().to_os_string();
         path.push(RELOAD_TIMINGS_SUFFIX);
-        if !replace_file(Path::new(&path), line.to_string().as_bytes()) {
+        if tilo_files::native::atomic::write(Path::new(&path), line.to_string().as_bytes()).is_err()
+        {
             eprintln!(
                 "tilo: cannot record reload timings beside {}",
                 self.library.display()

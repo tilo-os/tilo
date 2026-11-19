@@ -14,7 +14,7 @@ use automerge::{AutoCommit, ObjId};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use taffy::{NodeId, Style, TaffyTree};
@@ -1160,7 +1160,8 @@ impl UiGraphHandle {
             };
             (path, state.document.to_json_pretty()?)
         };
-        write_live_graph_atomic(&path, &json)?;
+        tilo_files::native::atomic::write(&path, json.as_bytes())
+            .map_err(|error| UiGraphError::Io(format!("publishing {}: {error}", path.display())))?;
         let mtime = std::fs::metadata(&path)
             .and_then(|metadata| metadata.modified())
             .ok()
@@ -1170,11 +1171,6 @@ impl UiGraphHandle {
         drop(state);
         Ok(())
     }
-}
-
-fn write_live_graph_atomic(path: &Path, json: &str) -> Result<(), UiGraphError> {
-    tilo_files::native::atomic::write(path, json.as_bytes())
-        .map_err(|error| UiGraphError::Io(format!("publishing {}: {error}", path.display())))
 }
 
 fn advance_graph_revision(revision: &mut u64) -> Result<(), UiGraphError> {

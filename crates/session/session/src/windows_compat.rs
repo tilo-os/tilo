@@ -129,16 +129,7 @@ fn write_identities(identities: &BTreeMap<(String, String), String>) {
     let Ok(text) = serde_json::to_string(&seen) else {
         return;
     };
-    if let Some(dir) = path.parent()
-        && let Err(error) = std::fs::create_dir_all(dir)
-    {
-        tracing::warn!(%error, "the Windows programs' windows are not saved");
-        return;
-    }
-    // Written beside and moved over, so a start that reads it never sees half of one.
-    let beside = path.with_extension("json.new");
-    if let Err(error) = std::fs::write(&beside, text).and_then(|()| std::fs::rename(&beside, &path))
-    {
+    if let Err(error) = tilo_files::native::atomic::write_creating_parent(&path, text.as_bytes()) {
         tracing::warn!(%error, "the Windows programs' windows are not saved");
     }
 }

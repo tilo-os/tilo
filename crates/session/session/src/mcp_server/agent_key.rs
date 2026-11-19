@@ -165,7 +165,7 @@ impl AgentKey {
             let mut secret = [0_u8; 32];
             getrandom::fill(&mut secret).map_err(|error| io::Error::other(error.to_string()))?;
             let key = format!("{PREFIX}{}", hex::encode(secret));
-            super::write_private(file, format!("{key}\n").as_bytes())?;
+            tilo_files::native::atomic::write_private(file, format!("{key}\n").as_bytes())?;
             key
         };
         if key.len() > 128 || !key.bytes().all(|byte| byte.is_ascii_graphic()) {

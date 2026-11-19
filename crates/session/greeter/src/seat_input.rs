@@ -40,11 +40,7 @@ pub fn kind(capabilities: wl_seat::Capability) -> Option<&'static str> {
 /// # Errors
 /// When the record's directory cannot be written.
 pub fn write_record(path: &Path, kind: &str) -> std::io::Result<()> {
-    let mut staged = path.as_os_str().to_owned();
-    staged.push(".new");
-    let staged = PathBuf::from(staged);
-    std::fs::write(&staged, format!("{kind}\n"))?;
-    std::fs::rename(&staged, path)
+    tilo_files::native::atomic::write(path, format!("{kind}\n").as_bytes())
 }
 
 /// Watches the seats until one gives the sign-in screen a keyboard or touch

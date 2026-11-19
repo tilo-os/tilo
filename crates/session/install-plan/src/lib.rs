@@ -256,7 +256,8 @@ pub fn store_token(
         .map_err(|error| format!("cannot make {}: {error}", plans.display()))?;
     let token_file =
         token_file.map_or_else(|| plans.join(format!("{plan_id}.token")), Path::to_path_buf);
-    write_private(&token_file, token.as_bytes())?;
+    tilo_files::native::atomic::write_private(&token_file, token.as_bytes())
+        .map_err(|error| format!("cannot write {}: {error}", token_file.display()))?;
     Ok(token_file)
 }
 
@@ -264,25 +265,6 @@ pub fn store_token(
 #[must_use]
 pub fn plans_dir(identity_dir: &Path) -> PathBuf {
     identity_dir.join("install-plans")
-}
-
-/// Write `bytes` to `path`, readable and writable only by this account.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write as _;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
-        .map_err(|error| format!("cannot make {}: {error}", path.display()))?;
-    file.write_all(bytes)
-        .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
-    file.sync_all()
-        .map_err(|error| format!("cannot write {}: {error}", path.display()))
 }
 
 #[cfg(test)]
