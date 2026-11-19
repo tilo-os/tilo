@@ -1237,6 +1237,7 @@ words = ["host"]
 identifiers = ["host", "Host", "hosts", "Hosts", "tilo_wasm_host"]
 paths = [
     "Cargo.toml",
+    "crates/dev/workspace-unify/Cargo.toml",
     "docs/codemap.md",
     "docs/tilolang-engines.md",
     "crates/lang/tilolang-runtime/Cargo.toml",

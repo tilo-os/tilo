@@ -920,7 +920,6 @@ doc = false
 "read-fonts-0_41_0" = { package = "read-fonts", version = "^0.41.0", default-features = false, features = ["experimental_font_api", "std"] }
 "redb-4_1_0" = { package = "redb", version = "^4.1.0", default-features = false, features = [] }
 "ref-cast-1_0_25" = { package = "ref-cast", version = "^1.0.25", default-features = false, features = [] }
-"reflink-copy-0_1_28" = { package = "reflink-copy", version = "^0.1.28", default-features = false, features = [] }
 "regalloc2-0_15_2" = { package = "regalloc2", version = "^0.15.2", default-features = false, features = ["checker", "default", "enable-serde", "serde", "std"] }
 "regex-1_13_1" = { package = "regex", version = "^1.13.1", default-features = false, features = ["default", "perf", "perf-backtrack", "perf-cache", "perf-dfa", "perf-inline", "perf-literal", "perf-onepass", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
 "regex-automata-0_4_18" = { package = "regex-automata", version = "^0.4.18", default-features = false, features = ["alloc", "default", "dfa", "dfa-build", "dfa-onepass", "dfa-search", "hybrid", "meta", "nfa", "nfa-backtrack", "nfa-pikevm", "nfa-thompson", "perf", "perf-inline", "perf-literal", "perf-literal-multisubstring", "perf-literal-substring", "std", "syntax", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment", "unicode-word-boundary"] }
@@ -1180,7 +1179,7 @@ doc = false
 "tilo-app-launch" = { path = "../../../crates/session/app-launch", default-features = false, features = ["test-support"] }
 "tilo-app-module" = { path = "../../../crates/platform/tilo-app-module", default-features = false, features = [] }
 "tilo-app-package" = { path = "../../../crates/packaging/tilo-app-package", default-features = false, features = [] }
-"tilo-app-state" = { path = "../../../crates/system/app-state", default-features = false, features = [] }
+"tilo-app-state" = { path = "../../../crates/system/app-state", default-features = false, features = ["watch"] }
 "tilo-app-template-smoke" = { path = "../../../crates/dev/tilo-app-template-smoke", default-features = false, features = [] }
 "tilo-app-window" = { path = "../../../crates/platform/tilo-app-window", default-features = false, features = [] }
 "tilo-appearance" = { path = "../../../crates/platform/tilo-appearance", default-features = false, features = [] }
@@ -1347,6 +1346,7 @@ doc = false
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
 "tilo-render-service" = { path = "../../../crates/session/render-service", default-features = false, features = [] }
 "tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["test-support"] }
+"tilo-resource-store" = { path = "../../../crates/collab/resource-store", default-features = false, features = [] }
 "tilo-rich-edit" = { path = "../../../crates/sdk/tilo-rich-edit", default-features = false, features = ["test-support"] }
 "tilo-rich-text" = { path = "../../../crates/sdk/tilo-rich-text", default-features = false, features = [] }
 "tilo-rollback" = { path = "../../../crates/system/tilo-rollback", default-features = false, features = [] }
@@ -1414,6 +1414,7 @@ doc = false
 "tilo-vmd" = { path = "../../../crates/dev/tilo-vmd", default-features = false, features = [] }
 "tilo-wake" = { path = "../../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-wallpapers" = { path = "../../../crates/platform/tilo-wallpapers", default-features = false, features = [] }
+"tilo-wasm-host" = { path = "../../../crates/runtime/tilo-wasm-host", default-features = false, features = ["wasmtime"] }
 "tilo-wayland-ext" = { path = "../../../crates/session/wayland-ext", default-features = false, features = ["test-support"] }
 "tilo-web-desktop" = { path = "../../../crates/browser/tilo-web-desktop", default-features = false, features = [] }
 "tilo-web-search" = { path = "../../../crates/platform/tilo-web-search", default-features = false, features = ["fixture-servers"] }
@@ -2311,7 +2312,6 @@ doc = false
 "redb-4_1_0" = { package = "redb", version = "^4.1.0", default-features = false, features = [] }
 "ref-cast-1_0_25" = { package = "ref-cast", version = "^1.0.25", default-features = false, features = [] }
 "ref-cast-impl-1_0_25" = { package = "ref-cast-impl", version = "^1.0.25", default-features = false, features = [] }
-"reflink-copy-0_1_28" = { package = "reflink-copy", version = "^0.1.28", default-features = false, features = [] }
 "regex-1_13_1" = { package = "regex", version = "^1.13.1", default-features = false, features = ["default", "perf", "perf-backtrack", "perf-cache", "perf-dfa", "perf-inline", "perf-literal", "perf-onepass", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
 "regex-automata-0_4_18" = { package = "regex-automata", version = "^0.4.18", default-features = false, features = ["alloc", "default", "dfa", "dfa-build", "dfa-onepass", "dfa-search", "hybrid", "meta", "nfa", "nfa-backtrack", "nfa-pikevm", "nfa-thompson", "perf", "perf-inline", "perf-literal", "perf-literal-multisubstring", "perf-literal-substring", "std", "syntax", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment", "unicode-word-boundary"] }
 "regex-lite-0_1_9" = { package = "regex-lite", version = "^0.1.9", default-features = false, features = ["default", "std", "string"] }
@@ -2479,7 +2479,7 @@ doc = false
 "tilo-app-cli" = { path = "../../../crates/dev/tilo-app-cli", default-features = false, features = [] }
 "tilo-app-id" = { path = "../../../crates/platform/tilo-app-id", default-features = false, features = [] }
 "tilo-app-package" = { path = "../../../crates/packaging/tilo-app-package", default-features = false, features = [] }
-"tilo-app-state" = { path = "../../../crates/system/app-state", default-features = false, features = [] }
+"tilo-app-state" = { path = "../../../crates/system/app-state", default-features = false, features = ["watch"] }
 "tilo-automation" = { path = "../../../crates/collab/automation", default-features = false, features = ["model"] }
 "tilo-automerge" = { path = "../../../crates/doc/tilo-automerge", default-features = false, features = ["heap-probe"] }
 "tilo-automerge-fork-0_12_0" = { package = "tilo-automerge-fork", path = "../../../vendor/automerge", default-features = false, features = [] }
