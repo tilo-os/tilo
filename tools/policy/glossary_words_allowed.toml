@@ -69,10 +69,10 @@ identifiers = ["run_a", "run_b", "run_c"]
 paths = ["os/dev/test-nearby-pairing.sh", "os/dev/nearby-unlock-phase.sh", "os/dev/nearby-wake-phase.sh"]
 
 [[allow]]
-reason = "A check's `run` key: the shell command t runs for it."
+reason = "A check's `run` key: the shell command t, or the policy suite, starts for it."
 words = ["run"]
 identifiers = ["run"]
-paths = ["t.toml"]
+paths = ["t.toml", "tools/policy/steps.toml"]
 
 [[allow]]
 reason = "The hosted-VM service's load of the machine running its VMs, which the glossary keeps as host."

@@ -281,6 +281,11 @@ label = "Browser wasm32 builds stay off the workspace-hack"
 run = "python3 tools/policy/check_wasm_workspace_hack.py"
 
 [[step]]
+name = "cargo-install-pins"
+label = "Image tools install pinned releases"
+run = "python3 tools/policy/check_cargo_install_pins.py"
+
+[[step]]
 name = "image-interpreters"
 label = "No new interpreter scripts in the OS image"
 run = "python3 tools/policy/check_image_interpreters.py"
