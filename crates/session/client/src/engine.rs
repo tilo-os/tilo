@@ -2209,7 +2209,7 @@ mod tests {
             engine.note_link(workspace, lapses);
             assert!(engine.invitations_open(now), "one is");
             assert!(
-                !engine.invitations_open(now + std::time::Duration::from_secs(120)),
+                !engine.invitations_open(now + tilo_clock::time::Duration::from_secs(120)),
                 "it lapsed"
             );
             let listed = serde_json::json!([{ "expires_at_ns": lapses }]);
