@@ -162,6 +162,37 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
     }
 }
 
+/// A window opened again on a note with no title of its own names it by its first line, in its
+/// heading and its bar as the tree does: never by the word for a new note it started with.
+#[test]
+fn a_restored_window_names_its_untitled_note_by_its_first_line() {
+    let mut f = NotebookFixture::rich();
+    let child = f.child;
+    for page in &mut f.workspace.data.pages {
+        if page.id == child {
+            page.title.clear();
+        }
+    }
+    let _checkout = notebook(&f);
+    let lines: Vec<String> = f
+        .store
+        .read(&f.part(), |doc| {
+            read::page_block_snapshots(doc, f.child)
+                .into_iter()
+                .map(|(_, text)| text)
+                .collect()
+        })
+        .unwrap();
+    let named = notes::metadata::note_name("", lines.iter().map(String::as_str));
+    assert_ne!(
+        named,
+        notes::metadata::note_name("", []),
+        "the note says something"
+    );
+    let mut app = app_from_payload(&f, &payload(f.child, "None", None, None, 0, 0.0));
+    assert_eq!(app.main_panel_mut().name(), Some(named));
+}
+
 fn payload(
     page: notes::PageId,
     focus: &str,

@@ -10,7 +10,9 @@
 
 pub use tilo_resource::row::LiveRow;
 
-use tilo_actions::{ResourceSemanticIdentity, ResourceSpec};
+use tilo_actions::remote::ApplicationLaunch;
+use tilo_actions::{ActionBinding, ActionSpec, ResourceSemanticIdentity, ResourceSpec};
+use ui_core::widget::ActionEmitter;
 
 pub(crate) use tilo_resource::share::{outside_document, resolved_outside_document};
 
@@ -21,6 +23,58 @@ pub struct Application;
 impl tilo_resource::words::RowType for Application {
     const KIND: &'static str = "applications.app";
     const LABEL: &'static str = "Application";
+}
+
+/// Handing verified content to the app that owns it: the app's own typed
+/// `open`, one shape for every app that passes content on — Files handing a
+/// file to the app its bytes say opens it, Camera handing a capture to Photos
+/// or Video Player.
+#[derive(Clone, Debug)]
+pub struct ContentHandoff {
+    app: String,
+    label: String,
+    description: String,
+}
+
+impl ContentHandoff {
+    /// The handoff to `app`, offered as `label` and saying `description`.
+    pub fn new(
+        app: impl Into<String>,
+        label: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            app: app.into(),
+            label: label.into(),
+            description: description.into(),
+        }
+    }
+
+    /// The handoff opening the content `hash` names, as the action `id` on the
+    /// row of the entity that holds those bytes: immediate, taking nothing.
+    #[must_use]
+    pub fn spec(&self, id: &str, hash: &str) -> ActionSpec {
+        ApplicationLaunch::with_content(self.app.clone(), hash.to_owned()).spec(
+            id,
+            &self.label,
+            &self.description,
+        )
+    }
+
+    /// An emitter opening whatever content hash it is handed, in this app:
+    /// for bytes that arrive after the control that asked for them.
+    pub fn emitter(&self, id: &str) -> Option<ActionEmitter<String>> {
+        let spec = ApplicationLaunch::content_spec(&self.app, id, &self.label, &self.description);
+        let row = LiveRow::typed::<Application>(format!("{}.app", self.app), self.label.clone())
+            .operation(spec.clone());
+        ActionBinding::new(&row, &spec, |hash: String| {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("content_hash".into(), serde_json::Value::String(hash));
+            arguments
+        })
+        .ok()
+        .map(ActionEmitter::new)
+    }
 }
 
 /// Merge `rows` by id into `children`: a row naming an existing child adds
@@ -95,9 +149,45 @@ pub fn apply_statuses(resource: &mut ResourceSpec, statuses: &[crate::framework:
     }
 }
 
+/// Lay what the surface says of each row's effects over `rows`, the rows
+/// nested beneath them included: the operation every publication performs
+/// with [`Publishes::row_status`](super::Publishes::row_status), for a tree
+/// published outside one (a test's, a report's).
+pub fn apply_row_statuses(
+    rows: &mut [ResourceSpec],
+    statuses: &dyn Fn(&str) -> Vec<crate::framework::EffectStatus>,
+) {
+    for row in rows {
+        let said = statuses(row.id.as_str());
+        if !said.is_empty() {
+            apply_statuses(row, &said);
+        }
+        apply_row_statuses(&mut row.children, statuses);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_handoff_opens_the_content_it_is_given() {
+        let handoff = ContentHandoff::new("so.tilo.photos", "Open in Photos", "Open the capture");
+        let hash = "ab".repeat(32);
+        let spec = handoff.spec("open", &hash);
+        assert_eq!(spec.id, "open");
+        let encoded = spec
+            .encode_immediate()
+            .expect("a handoff bound to its content takes nothing");
+        let payload: serde_json::Value =
+            serde_json::from_slice(&encoded.payload).expect("the launch is its payload");
+        assert_eq!(payload["app_id"].as_str(), Some("so.tilo.photos"));
+        assert_eq!(payload["content_hash"].as_str(), Some(hash.as_str()));
+        assert!(
+            handoff.emitter("open").is_some(),
+            "the same handoff emits content that arrives later"
+        );
+    }
 
     tilo_test_env::scenario! {
         fn a_live_row_keeps_its_semantic_identity;

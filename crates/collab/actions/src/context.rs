@@ -1493,6 +1493,17 @@ impl ActionInvoker {
         Self::admitted(&Acting::automation(id))
     }
 
+    /// The view the invocation resolves against: its presence, else the member's default view.
+    /// `None` for an automation, which has no view.
+    #[must_use]
+    pub fn view(&self) -> Option<PresenceId> {
+        if let Some(presence) = &self.presence {
+            return Some(presence.clone());
+        }
+        let member = self.acting.by.member_id()?.actor_bytes();
+        PresenceId::new(String::from_utf8(member).ok()?).ok()
+    }
+
     #[must_use]
     pub fn with_presence(mut self, presence: PresenceId) -> Self {
         self.presence = Some(presence);

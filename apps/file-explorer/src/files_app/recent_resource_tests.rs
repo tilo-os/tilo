@@ -94,7 +94,7 @@ tilo_test_env::scenario! {
         let published = app
             .with_surface(|files: &mut FileExplorerWidget| files.state().published_row(&row).unwrap())
             .unwrap();
-        for expected in ["reveal", "forget-recent"] {
+        for expected in ["reveal-recent", "forget-recent"] {
             assert!(
                 published.operations().iter().any(|action| action.id == expected),
                 "Recent's {expected} must be available through the resource api"
@@ -111,7 +111,7 @@ tilo_test_env::scenario! {
             );
         }
         app.leave_workspace();
-        for action in ["reveal", "forget-recent"] {
+        for action in ["reveal-recent", "forget-recent"] {
             assert!(app.call_on(&row, action, serde_json::json!({})).is_err());
         }
         app.with_surface(|files: &mut FileExplorerWidget| {
@@ -120,7 +120,7 @@ tilo_test_env::scenario! {
         })
         .unwrap();
         app.set_role(ui::permissions::Role::Viewer);
-        invoke(&mut app, &row, "reveal");
+        invoke(&mut app, &row, "reveal-recent");
         app.with_surface(|files: &mut FileExplorerWidget| {
             assert_eq!(files.state().current_path(), reports);
             let selected = files.state().selected_index().unwrap();
@@ -201,7 +201,7 @@ tilo_test_env::scenario! {
             1
         );
         app.effect(&FilesEffect::Recent).unwrap();
-        for action in ["reveal", "forget-recent"] {
+        for action in ["reveal-recent", "forget-recent"] {
             assert!(
                 app.call_on(
                     &row,
@@ -213,7 +213,7 @@ tilo_test_env::scenario! {
             );
         }
         std::fs::remove_file(&target).unwrap();
-        for action in ["reveal", "forget-recent"] {
+        for action in ["reveal-recent", "forget-recent"] {
             assert!(
                 app.call_on(&row, action, serde_json::json!({})).is_err(),
                 "an unrefreshed but deleted row is stale"

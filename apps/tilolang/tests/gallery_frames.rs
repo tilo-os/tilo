@@ -2,8 +2,9 @@
 //! app as the shell shows it in-process): switching its page, dragging its sidebar's edge and
 //! turning the wheel over its content each do the work of what changed. What is held is counted,
 //! not timed, so the check reads the same on any machine at any load: a page switch rebuilds the
-//! window's structure once or twice, measures its leaves a bounded number of times and costs no
-//! more time or memory after many switches than after one, a drag step of the sidebar's edge is
+//! window's structure at most once, solves its layout a few times, measures its leaves a bounded
+//! number of times and costs no more time or memory after many switches than after one, a drag
+//! step of the sidebar's edge is
 //! one layout with no rebuild, no view evaluated and no sync, and a wheel step is one layout with
 //! no component synced.
 
@@ -138,17 +139,26 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
         resident.push(resident_kib());
         // A solve that answers a container from its cache measures each leaf a few times a
         // switch; one that solves nested grids again for every constraint probed measured
-        // the Feedback page alone some 12,000 times.
+        // the Feedback page alone some 12,000 times, and one whose controls state their own
+        // sizes only after a solve read them solved every page again for them.
         assert!(
-            solved.measures <= 16_000,
+            solved.measures <= 10_000,
             "a round of {} switches measures its leaves {} times",
             ROWS.len(),
             solved.measures
         );
         let rebuilds = calls(&scopes, "ui.rebuild_structure");
         assert!(
-            rebuilds <= ROWS.len().saturating_mul(2),
-            "a page switch rebuilds the window's structure at most twice: {}",
+            rebuilds <= ROWS.len(),
+            "a page switch rebuilds the window's structure at most once: {}",
+            said(&scopes)
+        );
+        // A page shown in the content lays its own part out again where it stands; the
+        // frames after it solve nothing: no control left asking to be measured every frame.
+        let laid_out = calls(&scopes, "ui.solve");
+        assert!(
+            laid_out <= ROWS.len().saturating_mul(3),
+            "a page switch solves the window's layout at most three times: {}",
             said(&scopes)
         );
         rounds.push(calls(&scopes, "ui.callback_scope"));

@@ -1416,11 +1416,11 @@ async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
 }
 
 /// Signing a person in again through their agent, the one way: a device of
-/// the person that may admit devices claims the tab's code, reads the tab's
-/// waiting request back through it, and answers it with a certificate the
-/// root signs. The tab is issued it over the ordinary certification path, and
-/// with it enters the person's workspace. A device that may not admit
-/// devices cannot claim, and says why.
+/// the person claims the tab's code, reads the tab's waiting request back
+/// through it, and answers it with a certificate it signs itself. The tab is
+/// issued it over the ordinary certification path, and with it enters the
+/// person's workspace. A certificate a device signed is no device, so it
+/// cannot claim, and says why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[expect(
     clippy::significant_drop_tightening,
@@ -1430,10 +1430,12 @@ async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
     clippy::too_many_lines,
     reason = "one sign-in, in order, from the claim to the tab entering"
 )]
-async fn a_device_that_may_admit_devices_certifies_the_tab_it_signs_in() {
+async fn a_device_of_the_person_signs_the_tab_in() {
     use tilo_server_client::certify::CertificationOutcome;
     use tilo_server_protocol::login_code as wire;
-    use tilo_user_identity::{CertificationPolicy, CertificationRequest, verify_device_cert_at};
+    use tilo_user_identity::{
+        CERTIFICATION_SCHEMA_VERSION, CertificationRequest, RevocationList, verify_device_cert_at,
+    };
 
     // The person's root is on their computer, which serves them too.
     let person = SigningKey::from_bytes(&[181; 32]);
@@ -1446,17 +1448,41 @@ async fn a_device_that_may_admit_devices_certifies_the_tab_it_signs_in() {
     let web = Arc::new(web_of(&server, &node));
     web.serve_code_requests();
     let (addr, serving) = serve_web(Arc::clone(&web)).await;
-    let admitting = DeviceCapabilities {
-        can_admit_devices: true,
-        ..DeviceCapabilities::member()
-    };
     let as_hex = |cert: &DeviceCert| hex::encode(postcard::to_allocvec(cert).unwrap());
-    let (cli_key, mut cli_cert) = device(&person, 183, admitting);
+    let (cli_key, mut cli_cert) = device(&person, 183, DeviceCapabilities::member());
     cli_cert.device_label = "Claude Code on laptop".into();
     tilo_user_identity::sign_device_cert(&mut cli_cert, &person).unwrap();
     let cli_cert_hex = as_hex(&cli_cert);
-    let (member_key, member_cert) = device(&person, 186, DeviceCapabilities::member());
-    let member_cert_hex = as_hex(&member_cert);
+    let (member_key, _) = device(&person, 186, DeviceCapabilities::member());
+
+    // A browser tab of that person, signed in by the laptop.
+    let tab_request = |key: &SigningKey| {
+        let now = tilo_clock::unix_now_ns();
+        CertificationRequest {
+            version: CERTIFICATION_SCHEMA_VERSION,
+            user_public_key: user,
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Firefox on phone".into(),
+            requested: DeviceCapabilities::member(),
+            nonce: rand::random(),
+            invite: [0; 16],
+            issued_at_ns: now,
+            expires_at_ns: now + 60_000_000_000,
+            signature: [0; 64],
+        }
+        .sign(key)
+        .unwrap()
+    };
+    let signed_in_before = SigningKey::from_bytes(&[187; 32]);
+    let chained = tilo_user_identity::issue_device_cert_as_device(
+        &tab_request(&signed_in_before),
+        &cli_key,
+        &cli_cert,
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    let chained_hex = as_hex(&chained);
 
     let sign_in_code = || async {
         let (_, _, created) =
@@ -1485,12 +1511,12 @@ async fn a_device_that_may_admit_devices_certifies_the_tab_it_signs_in() {
         })
     };
 
-    // A device that may not admit devices cannot certify the tab, so it
-    // cannot claim: refused, saying so by name. Nor can a claim signed by
-    // another key than the certificate's.
+    // A certificate one of the person's devices signed answers a tab and is
+    // no device itself, so it cannot claim: refused, saying so by name. Nor
+    // can a claim signed by another key than the certificate's.
     let (_, resolved) = sign_in_code().await;
     for (key, cert, reason) in [
-        (&member_key, &member_cert_hex, "cannot-admit"),
+        (&signed_in_before, &chained_hex, "not-a-device"),
         (&member_key, &cli_cert_hex, "signature"),
     ] {
         let (code, _, refused) = call_json(
@@ -1504,7 +1530,7 @@ async fn a_device_that_may_admit_devices_certifies_the_tab_it_signs_in() {
         assert_eq!(refused["reason"], reason, "{refused}");
     }
 
-    // A device that may admit devices claims, to certify the tab itself.
+    // The person's own device claims, to sign the tab in itself.
     let (created, resolved) = sign_in_code().await;
     let report = resolved.report.clone();
     let (code, _, claimed) = call_json(
@@ -1588,32 +1614,28 @@ async fn a_device_that_may_admit_devices_certifies_the_tab_it_signs_in() {
     let waited: CertificationRequest = postcard::from_bytes(&hex::decode(waited).unwrap()).unwrap();
     assert_eq!(waited, request);
 
-    // Only the root's certificate of exactly that request answers it.
+    // The claiming device's certificate of exactly that request answers it.
     let certify = |cert: &tilo_user_identity::DeviceCert| {
         serde_json::json!({
             "report": report,
             "cert": hex::encode(postcard::to_allocvec(cert).unwrap()),
         })
     };
-    let mut forged = tilo_user_identity::issue_device_cert(
-        &waited,
-        &person,
-        &CertificationPolicy::browser(),
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
+    let issue = || {
+        tilo_user_identity::issue_device_cert_as_device(
+            &waited,
+            &cli_key,
+            &cli_cert,
+            &RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )
+        .unwrap()
+    };
+    let mut forged = issue();
     forged.signature[0] ^= 1;
     let (code, _, _) = call_json(addr, wire::CERTIFY_ROUTE, &certify(&forged), None).await;
-    assert_eq!(code, 403, "a certificate the root did not sign");
-    let cert = tilo_user_identity::issue_device_cert(
-        &waited,
-        &person,
-        &CertificationPolicy::browser(),
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
+    assert_eq!(code, 403, "a certificate the device did not sign");
+    let cert = issue();
     let (code, _, said) = call_json(addr, wire::CERTIFY_ROUTE, &certify(&cert), None).await;
     assert_eq!(code, 204, "{said}");
     let (code, _, _) = call_json(addr, wire::CERTIFY_ROUTE, &certify(&cert), None).await;
@@ -1626,7 +1648,11 @@ async fn a_device_that_may_admit_devices_certifies_the_tab_it_signs_in() {
         panic!("the claiming device certifies the tab: {outcome:?}")
     };
     assert_eq!(issued, cert);
-    assert_eq!(issued.issuer, None, "the root signed it");
+    assert_eq!(
+        issued.issuer.as_deref(),
+        Some(&cli_cert),
+        "the claiming device signed it"
+    );
     verify_device_cert_at(&issued, tilo_clock::unix_now_ns()).unwrap();
     let (_, _, polled) = call_json(
         addr,

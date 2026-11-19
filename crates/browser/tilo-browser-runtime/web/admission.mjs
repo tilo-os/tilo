@@ -8,7 +8,9 @@
  * 2. an invitation is inspected (what the host verified: workspace, role,
  *    inviter, how many people it has), confirmed by the person, then
  *    redeemed. An invitation is the approval of whoever made it: the host
- *    admits it at once, and nobody in the workspace answers for it. A link
+ *    admits it at once, and nobody in the workspace answers for it. One sent
+ *    off the workspace's wait list opens the person's own workspace instead
+ *    (`deps.ownWorkspace`), unless the link names a place inside it. A link
  *    a site hands over (`https://<site>/i/<handle>#<key>`) names the site
  *    that keeps it, whose shelf answers with the invitation and the host it
  *    admits into (`viaSealedLink`); the long form names the invitation's own
@@ -75,16 +77,42 @@ async function openedAt({site, secret, deps}) {
 /** What `invitation` offers at `origin`, shown to the person, then joined
  * with: the invitation is the approval of whoever made it, so the host
  * admits it at once and nobody in the workspace answers for it. */
-async function viaInvitation({origin, invitation, offered = null, id = null, secrets, runtime, deps, onProgress}) {
+async function viaInvitation({origin, invitation, offered = null, id = null, deep = false, secrets, runtime, deps, onProgress}) {
   const offer = offered ?? await deps.inspectInvitation(origin, invitation);
   if (!runtime.admittedAsAsked(id ?? undefined, offer.workspace ?? undefined)) {
     throw new AdmissionError('mismatch', 'This invitation is for another workspace than the link names');
   }
   if (!await deps.confirmInvitation(offer, origin)) throw new AdmissionError('declined', 'You did not join');
-  return ready(await deps.joinWorkspace({
+  const joined = await deps.joinWorkspace({
     origin, invitation, admissionToken: secrets.token,
     onProgress: event => onProgress(event),
-  }), onProgress);
+  });
+  // An invitation sent off the wait list lets in someone new to the server:
+  // it opens their own workspace, made now with this device in it, rather
+  // than the one it let them into, which stays one switch away. Decided here,
+  // before anything mounts, so the page opens one workspace and loads once.
+  // A link that names a place inside the workspace (`deep`: an app, or a
+  // resource of one) opens that place.
+  if (!deep && offer.waitList && deps.ownWorkspace) {
+    const own = await deps.ownWorkspace(joined);
+    if (own?.workspace && own.workspace !== joined.workspace) {
+      // One device key per server for this tab: the workspace the invitation
+      // let them into lets it go before their own takes it.
+      await joined.dispose?.();
+      let entered = null;
+      try {
+        entered = await deps.reconnect?.({origin, workspace: own.workspace, onProgress});
+      } catch (error) {
+        if (deviceRemoved(error)) throw error;
+        console.warn('admission: your own workspace did not let this device in', error?.code ?? error?.name ?? 'error');
+      }
+      if (entered) return {...await ready(entered, onProgress), own: true};
+      const back = await deps.reconnect?.({origin, workspace: joined.workspace, onProgress});
+      if (!back) throw new AdmissionError('no-access', NO_ACCESS);
+      return ready(back, onProgress);
+    }
+  }
+  return ready(joined, onProgress);
 }
 
 /** A link a site hands over (`https://<site>/i/<handle>#<key>`): the site
@@ -92,7 +120,7 @@ async function viaInvitation({origin, invitation, offered = null, id = null, sec
  * never with the key, which only the link carries — and with where it admits
  * into. A shelf of a build that named no host is taken to mean the site's
  * home workspace's host, and the site itself where it has no home. */
-async function viaSealedLink({scope, secrets, home, runtime, deps, onProgress}) {
+async function viaSealedLink({scope, secrets, home, deep, runtime, deps, onProgress}) {
   const opened = await openedAt({site: scope.site, secret: `${scope.handle}${secrets.invite}`, deps});
   // A server the shelf names by its iroh endpoint alone answers no HTTP, and a browser that never
   // saw it knows no way to it: the invitation names where it is and what it offers, as a long
@@ -100,7 +128,7 @@ async function viaSealedLink({scope, secrets, home, runtime, deps, onProgress}) 
   const invited = opened.host && isInvitedServer(opened.host)
     ? await deps.invitedServer?.(opened.invitation, scope.site) : null;
   const origin = invited?.origin ?? opened.host ?? home?.host?.origin ?? scope.site;
-  return viaInvitation({origin, invitation: opened.invitation, offered: invited?.offer ?? null, secrets, runtime, deps, onProgress});
+  return viaInvitation({origin, invitation: opened.invitation, offered: invited?.offer ?? null, deep, secrets, runtime, deps, onProgress});
 }
 
 /** `{peer}` once `peer` is ready to use; `onProgress` hears the workspace
@@ -199,8 +227,9 @@ const REFUSED = {
  * every device takes) says from what the link carries and what this page
  * knows of the host; when a way fails, the next is the runtime's too
  * (`wayInAfter`). Taking each way, and what the person is shown, are the page's.
+ * `deep` says the link names a place inside the workspace (an app, a resource).
  */
-export async function admit({scope, secrets = {}, tickets, home = null, runtime, deps, onProgress = () => {}}) {
+export async function admit({scope, deep = false, secrets = {}, tickets, home = null, runtime, deps, onProgress = () => {}}) {
   const origin = scope.kind === 'workspace' ? scope.host : null;
   const id = scope.kind === 'workspace' ? scope.workspace : null;
   let listed = origin ? deps.workspaceAt?.(origin) ?? null : null;
@@ -247,7 +276,7 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
   for (;;) {
     switch (way) {
       case 'own-desktop': return ownDesktop({home, runtime, deps, onProgress});
-      case 'sealed-invitation': return viaSealedLink({scope, secrets, home, runtime, deps, onProgress});
+      case 'sealed-invitation': return viaSealedLink({scope, secrets, home, deep, runtime, deps, onProgress});
       case 'invitation': {
         // A link's `invite` names the invitation its host keeps, sealed under a
         // key in the link; the page opens it before anything reads it. An
@@ -258,7 +287,7 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
         const invited = opened.host ? null : await deps.invitedServer?.(opened.invitation, origin);
         return viaInvitation({
           origin: invited?.origin ?? opened.host ?? origin, invitation: opened.invitation, offered: invited?.offer ?? null,
-          id, secrets, runtime, deps, onProgress,
+          id, deep, secrets, runtime, deps, onProgress,
         });
       }
       case 'ticket':

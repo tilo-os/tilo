@@ -566,6 +566,11 @@ pub enum JoinReply {
         /// It makes whoever accepts it an owner: an administrator the
         /// workspace is kept for.
         owner: bool,
+        /// It was sent to someone who left their address at the workspace's
+        /// entry to be let in ([`WaitListEntry`]): a person new to this server,
+        /// whose page opens a workspace of their own first rather than the
+        /// one the invitation admits them to.
+        wait_list: bool,
     },
     /// The workspace admitted the device.
     Admitted {

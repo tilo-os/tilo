@@ -4,7 +4,9 @@
 
 use crate::area::AreaContext;
 use crate::channel;
-use crate::effects::{SettingsEffect, effect};
+#[cfg(test)]
+use crate::effects::SettingsEffect;
+use crate::effects::effect;
 use crate::replies::Replies;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -30,7 +32,7 @@ pub enum DiskUnlockEffect {
     #[effect(job, idempotent, returns)]
     RefreshDiskUnlock,
     /// Choose the whole list of Wi-Fi connections a volume may use at boot.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = UnlockNetwork)]
     #[effect(job, row, idempotent, returns)]
     SetDiskUnlockNetworks {
         #[param("The enrolled volume's LUKS UUID")]
@@ -317,27 +319,33 @@ pub(crate) struct UnlockVolumeRow;
 /// A saved network a volume may unlock over, as the pane publishes it: a row
 /// of the `settings.disk-unlock-network` type, offering to use it or not.
 #[derive(tilo_resource::Row)]
-#[row(kind = "settings.disk-unlock-network", label = "Unlocking network")]
+#[row(kind = "settings.disk-unlock-network", label = "Unlocking network",
+    effects = DiskUnlockEffect
+)]
 pub(crate) struct UnlockNetwork;
 
 fn network_resource(volume: &UnlockVolume, network: &str) -> LiveRow {
-    let mut row = LiveRow::typed::<UnlockNetwork>(
+    let (volume, networks) = network_arguments(
+        volume,
+        network,
+        !volume.networks.iter().any(|name| name == network),
+    );
+    let bindings = tilo_resource::RowBindings::new().bind(
+        DiskUnlockEffect::SET_DISK_UNLOCK_NETWORKS,
+        [
+            ("volume", serde_json::Value::from(volume.clone())),
+            ("networks", serde_json::Value::from(networks)),
+        ],
+    );
+    LiveRow::typed_with::<UnlockNetwork>(
         format!(
             "settings.disk-unlock-network:{}.{}",
-            volume.volume,
+            volume,
             hex::encode(network.as_bytes())
         ),
         network.to_owned(),
-    );
-    row = row.operation(
-        SettingsEffect::from(network_change(
-            volume,
-            network,
-            !volume.networks.iter().any(|name| name == network),
-        ))
-        .bound(),
-    );
-    row
+        &bindings,
+    )
 }
 
 #[must_use]

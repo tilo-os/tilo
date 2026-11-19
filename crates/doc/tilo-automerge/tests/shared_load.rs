@@ -69,6 +69,27 @@ fn bytes_a_reader_holds_load_as_a_copy_of_its_document() {
     assert_eq!(shared::kept(), 0);
 }
 
+/// A document kept in parts is read part after part by one reader, then by the next: every part
+/// the first reader loaded is still the next reader's copy, however many parts there are.
+#[test]
+fn every_part_one_reader_loaded_is_the_next_readers_copy() {
+    shared::clear();
+    let parts: Vec<Vec<u8>> = (0..24).map(|_| tracker(2_000).save()).collect();
+    assert!(parts.iter().all(|bytes| bytes.len() >= shared::MIN_BYTES));
+    for bytes in &parts {
+        shared::load(bytes).unwrap();
+    }
+    assert_eq!(shared::decoded(), parts.len());
+    for bytes in &parts {
+        shared::load(bytes).unwrap();
+    }
+    assert_eq!(
+        shared::decoded(),
+        parts.len(),
+        "the second reader loaded no part again"
+    );
+}
+
 #[test]
 fn a_small_document_is_not_kept() {
     shared::clear();

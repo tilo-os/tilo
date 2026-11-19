@@ -88,7 +88,7 @@ pub enum DevicesAccessEffect {
     /// Name a device of the person's: what their device lists read it by from
     /// then on. Two computers set up the same way enroll under one name, so
     /// the person tells them apart here.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Device, on = AgentGrant)]
     #[effect(job, row)]
     RenameDevice {
         #[param("The key, in hex")]
@@ -269,19 +269,13 @@ impl DevicesAccessArea {
     }
 }
 
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.device", label = "Device", effects = DevicesAccessEffect)]
 pub(crate) struct Device;
 
-impl tilo_resource::words::RowType for Device {
-    const KIND: &'static str = "settings.device";
-    const LABEL: &'static str = "Device";
-}
-
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.agent-grant", label = "Agent", effects = DevicesAccessEffect)]
 pub(crate) struct AgentGrant;
-
-impl tilo_resource::words::RowType for AgentGrant {
-    const KIND: &'static str = "settings.agent-grant";
-    const LABEL: &'static str = "Agent";
-}
 
 pub(crate) struct AskingDevice;
 
@@ -1408,21 +1402,26 @@ impl Removal {
 /// published on carries it, since the name the app reads is the row's.
 fn device_row(device: &DeviceView, draft: &str) -> LiveRow {
     let key = hex::encode(device.key);
-    let mut row = LiveRow::typed::<Device>(format!("settings.device:{key}"), device.label.clone());
-    row = row.operation(
+    let bindings = ui::tilo_resource::RowBindings::new()
         // Bound whole: a row whose action asks for text makes pressing the row
         // collect its label as that text, which renamed a device to the name it
         // already had. The name is the row's, published as the person types.
-        SettingsEffect::from(DevicesAccessEffect::RenameDevice {
-            device: key.clone(),
-            name: draft.to_owned(),
-        })
-        .bound(),
-    );
-    row.operation(revocation(DevicesAccessEffect::RevokeDevice {
-        device: key,
-        reason: REMOVED.to_owned(),
-    }))
+        .bind(
+            DevicesAccessEffect::RENAME_DEVICE,
+            [
+                ("device", key.clone().into()),
+                ("name", draft.to_owned().into()),
+            ],
+        )
+        .spec(revocation(DevicesAccessEffect::RevokeDevice {
+            device: key,
+            reason: REMOVED.to_owned(),
+        }));
+    LiveRow::typed_with::<Device>(
+        format!("settings.device:{}", hex::encode(device.key)),
+        device.label.clone(),
+        &bindings,
+    )
 }
 
 /// Taking a device or a browser back, as its row offers it: once, bound to
@@ -1544,14 +1543,17 @@ fn caption(text: &str) -> Element {
 }
 
 fn browser_row(browser: &BrowserEntry<'_>) -> LiveRow {
-    LiveRow::typed::<Device>(
+    let bindings = ui::tilo_resource::RowBindings::new().spec(revocation(
+        DevicesAccessEffect::RevokeBrowser {
+            browser: browser.id.to_owned(),
+            reason: REMOVED.to_owned(),
+        },
+    ));
+    LiveRow::typed_with::<Device>(
         format!("settings.device-browser:{}", browser.id),
         browser.label(),
+        &bindings,
     )
-    .operation(revocation(DevicesAccessEffect::RevokeBrowser {
-        browser: browser.id.to_owned(),
-        reason: REMOVED.to_owned(),
-    }))
 }
 
 fn browser_item(
@@ -1593,29 +1595,31 @@ fn browser_item(
 
 fn agent_row(agent: &AgentEntry<'_>, draft: &str) -> LiveRow {
     let id = agent.id();
-    let mut row = LiveRow::typed::<AgentGrant>(format!("settings.agent-grant:{id}"), agent.label())
-        .operation(
-            SettingsEffect::from(agent.removal())
-                .bound()
-                // What the person reads when they are asked before it runs.
-                .with_description(t("settings-access-remove-agent-consequence")),
-        );
+    let mut bindings = ui::tilo_resource::RowBindings::new().spec(
+        SettingsEffect::from(agent.removal())
+            .bound()
+            // What the person reads when they are asked before it runs.
+            .with_description(t("settings-access-remove-agent-consequence")),
+    );
     // A computer an agent works on is a device of the person's too: they name
     // it here, where two of them enrolled under one name.
     if let Some(key) = agent.key {
-        let key = hex::encode(key.key);
-        row = row.operation(
-            SettingsEffect::from(DevicesAccessEffect::RenameDevice {
-                device: key,
-                name: draft.to_owned(),
-            })
-            .bound(),
+        bindings = bindings.bind(
+            DevicesAccessEffect::RENAME_DEVICE,
+            [
+                ("device", hex::encode(key.key).into()),
+                ("name", draft.to_owned().into()),
+            ],
         );
     }
     if let Some(grant) = agent.grant.filter(|grant| !grant.sessions.is_empty()) {
-        row = row.operation(stop_session(&id, &grant.sessions));
+        bindings = bindings.spec(stop_session(&id, &grant.sessions));
     }
-    row
+    LiveRow::typed_with::<AgentGrant>(
+        format!("settings.agent-grant:{id}"),
+        agent.label(),
+        &bindings,
+    )
 }
 
 /// Ending one of an agent's open sessions, as its row offers it: once, bound
@@ -1708,11 +1712,7 @@ fn agent_item(
 /// the ask, asking whether it is let in. Approving and declining are the two
 /// values of that one parameter, never two actions under one address.
 fn asking_row(asking: &Asking) -> LiveRow {
-    LiveRow::typed::<AskingDevice>(
-        format!("settings.device-asking:{}", asking.ask),
-        asking.label.clone(),
-    )
-    .operation(
+    let bindings = ui::tilo_resource::RowBindings::new().spec(
         SettingsEffect::from(DevicesAccessEffect::AnswerDevice {
             ask: asking.ask.clone(),
             label: asking.label.clone(),
@@ -1723,6 +1723,11 @@ fn asking_row(asking: &Asking) -> LiveRow {
         .bound_asking(&["approve"])
         // Letting the device in wants its caller's confirmation.
         .with_risk(answering_risk),
+    );
+    LiveRow::typed_with::<AskingDevice>(
+        format!("settings.device-asking:{}", asking.ask),
+        asking.label.clone(),
+        &bindings,
     )
 }
 

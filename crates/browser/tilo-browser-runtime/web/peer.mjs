@@ -1597,7 +1597,7 @@ export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: f
 export async function invitedServer(invitation, {runtime} = {}) {
   runtime ??= await pageRuntime();
   if (typeof runtime.invitedServer !== 'function') return null;
-  const named = JSON.parse(runtime.invitedServer(invitationBytes(invitation)));
+  const named = JSON.parse(await runtime.invitedServer(invitationBytes(invitation)));
   return {info: named.info, endpoint: named.endpoint, offer: invitationOffer(named.offer)};
 }
 
@@ -1612,6 +1612,9 @@ export function invitationOffer(reply) {
     role: reply.owner ? 'owner' : reply.administrator ? 'administrator' : String(reply.role ?? '').toLowerCase(),
     workspace: reply.workspace, workspaceId: reply.workspaceId,
     expiresAtNs: reply.expiresAtNs, members: reply.members ?? null, inviter: reply.inviter ?? undefined,
+    // Sent to someone who left their address at the workspace's entry: a
+    // person new here, who opens a workspace of their own first.
+    waitList: reply.waitList === true,
   };
 }
 

@@ -609,3 +609,8 @@ reason = "tagged by name, not position: the remaining actions read as before, an
 file = "crates/session/network-actor/src/fabric/model.rs"
 enum = "PersonalFabricAction"
 reason = "sent between a person's devices as it happens and never kept; every device updates together, so no build reads another's numbering"
+
+[[break]]
+file = "crates/server/tilo-server-protocol/src/login_code.rs"
+enum = "ClaimRefused"
+reason = "the reason beside a 403 is read by the `tilo login` that asked a moment before, both from one build, and never kept: the one that meant 'may not admit devices' is 'not a device of the person' now"

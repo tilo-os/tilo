@@ -187,7 +187,7 @@ pub enum NetCmd {
     NativeReplay {
         ws: WorkspaceId,
     },
-    /// Ask the hosts of `ws` for the record on `channel` (a retained route's
+    /// Ask the holders of `ws` for the record on `channel` (a retained route's
     /// channel, `neighbour_wire::app_document_channel`): what they hold of it,
     /// and their changes to it from then on. A workspace that sends records
     /// when they are opened sends nothing of a record before this. `own` names it this device's
@@ -200,9 +200,14 @@ pub enum NetCmd {
     /// Hold an enrolled workspace's relay session over the iroh endpoint its
     /// hint names.
     NativeConnect(native_ingress::Connect),
-    /// This device's own workspace host opened: join the workspaces it hosts that
-    /// wait for it.
-    OwnServiceReady,
+    /// This device's own workspace service opened, or failed to open
+    /// ([`own_service::OwnService::failed_to_open`]): join the workspaces it
+    /// holds that wait for it, or say they cannot be served here.
+    OwnServiceSettled,
+    /// The person asked to dial the holders of workspace `ws` again now.
+    RedialWorkspace {
+        ws: WorkspaceId,
+    },
     NativePublish {
         ws: WorkspaceId,
     },
@@ -293,7 +298,7 @@ pub enum NetCmd {
 
 /// A piece of a record's content on its way to the device of the workspace that
 /// asked: over the direct peer network when that device is a live member of the
-/// workspace, else through the workspace's hosts, which hand it to that
+/// workspace, else through the workspace's holders, which hand it to that
 /// device alone and keep nothing.
 #[derive(Debug)]
 pub struct RecordContentDelivery {
@@ -504,6 +509,11 @@ enum InternalEvent {
         ws: WorkspaceId,
         via: Box<tilo_peer_state::join::TransportHint>,
         reason: String,
+    },
+    /// A workspace's hold dials none of its holders now, for `cause`.
+    NativeCannotDial {
+        ws: WorkspaceId,
+        cause: tilo_peer_state::owner::session::CannotDial,
     },
     Host {
         ws: WorkspaceId,
@@ -1168,7 +1178,8 @@ impl ActorState {
                 let _ = reply.send(Arc::clone(&self.tally));
             }
             Some(NetCmd::NativeConnect(connect)) => self.native_connect(connect),
-            Some(NetCmd::OwnServiceReady) => self.retry_native_routes(),
+            Some(NetCmd::OwnServiceSettled) => self.retry_native_routes(),
+            Some(NetCmd::RedialWorkspace { ws }) => self.redial_native_route(ws),
             Some(NetCmd::NativePublish { ws }) => self.drive_native_publication(ws),
             Some(NetCmd::JoinWorkspace { ws, on_event }) => {
                 self.handle_join_workspace(ws, on_event);
@@ -1923,6 +1934,9 @@ impl ActorState {
             }
             Some(InternalEvent::NativeDialFailed { ws, via, reason }) => {
                 self.native_dial_failed(ws, &via, &reason);
+            }
+            Some(InternalEvent::NativeCannotDial { ws, cause }) => {
+                self.native_cannot_dial(ws, cause);
             }
             Some(InternalEvent::Host {
                 ws,

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings@5869fcc6bba437ce";
+export const SURFACE = "so.tilo.settings@98cf1322ffad4c27";
 
 /** One of "none", "grayscale", "inverted", "grayscale_inverted". */
 export type ColorFilter = "none" | "grayscale" | "inverted" | "grayscale_inverted";
@@ -551,7 +551,6 @@ export interface Root extends tilo.Resource {
     query?: string;
     page?: number;
   }): Promise<void>;
-  inspectKeyboardMap(): Promise<void>;
   inspectKeyboardSources(): Promise<void>;
   setSourceOptionsVisible(args: {
     visible: boolean;
@@ -566,22 +565,16 @@ export interface Root extends tilo.Resource {
     query: string;
     format?: string;
   }): Promise<void>;
-  showHubModel(args: {
-    model: string;
-  }): Promise<void>;
   toggleMicrophoneTest(): Promise<void>;
   discoverThunderbirdAccounts(args: {
     prefs: string;
   }): Promise<void>;
-  chooseThunderbirdMetadata(): Promise<void>;
-  inspectThunderbirdImport(): Promise<void>;
-  inspectCalendarChoices(): Promise<void>;
   inspectDisplayConfiguration(): Promise<void>;
 }
 
 /** The actions `Root` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ROOT_ACTIONS = ["inspectInputSources", "inspectKeyboardMap", "inspectKeyboardSources", "setSourceOptionsVisible", "setSourceInspectionVisible", "openSourcePicker", "showLiveKeyboardMap", "storageSummary", "searchHubModels", "showHubModel", "toggleMicrophoneTest", "discoverThunderbirdAccounts", "chooseThunderbirdMetadata", "inspectThunderbirdImport", "inspectCalendarChoices", "inspectDisplayConfiguration"] as const;
+export const ROOT_ACTIONS = ["inspectInputSources", "inspectKeyboardSources", "setSourceOptionsVisible", "setSourceInspectionVisible", "openSourcePicker", "showLiveKeyboardMap", "storageSummary", "searchHubModels", "toggleMicrophoneTest", "discoverThunderbirdAccounts", "inspectDisplayConfiguration"] as const;
 
 /** The `settings.root` kind at `path`. */
 export function root(ws: tilo.Workspace, path: string): Root {

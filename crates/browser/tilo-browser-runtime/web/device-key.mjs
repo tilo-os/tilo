@@ -89,16 +89,15 @@ const CHANNEL = 'tilo-device-key';
  * by there: today's, and where pages asked before. A page asks and answers on both. */
 const ASKED_ON = [[CHANNEL, LOCK_PREFIX], ['tilo-device-custody', LOCK_PREFIX_BEFORE]];
 
-/** Takes the lock `name`: `{release, held}`, or `null` when another holds it
- * (or still does once `wait` ms passed, with `wait`). `held` settles once the
- * user agent let go of the lock, after `release()`. */
-async function takeLock(locks, name, wait = 0) {
+/** Takes the lock `name`: `{release, held}`, or `null` when another holds it (or
+ * still does when `signal` aborts, with `signal`). `held` settles once the user
+ * agent let go of the lock, after `release()`. */
+async function takeLock(locks, name, signal) {
   let release;
   const released = new Promise(resolve => { release = resolve; });
   let held;
-  const signal = wait ? AbortSignal.timeout(wait) : undefined;
   const acquired = await new Promise((resolve, reject) => {
-    held = locks.request(name, wait ? {mode: 'exclusive', signal} : {mode: 'exclusive', ifAvailable: true}, lock => {
+    held = locks.request(name, signal ? {mode: 'exclusive', signal} : {mode: 'exclusive', ifAvailable: true}, lock => {
       if (!lock) { resolve(false); return undefined; }
       resolve(true);
       return released;
@@ -110,10 +109,10 @@ async function takeLock(locks, name, wait = 0) {
 
 /** Takes the lock of the key `name` under both prefixes: `{release, held}`, or `null` when
  * another page holds it under either. */
-async function takeBoth(locks, name, wait = 0) {
-  const before = await takeLock(locks, LOCK_PREFIX_BEFORE + name, wait);
+async function takeBoth(locks, name, signal) {
+  const before = await takeLock(locks, LOCK_PREFIX_BEFORE + name, signal);
   if (!before) return null;
-  const now = await takeLock(locks, LOCK_PREFIX + name, wait);
+  const now = await takeLock(locks, LOCK_PREFIX + name, signal);
   if (!now) { before.release(); return null; }
   const held = Promise.all([now.held, before.held]);
   held.catch(() => {});
@@ -146,26 +145,66 @@ function answerForSlots(broadcast, events) {
   events?.addEventListener?.('pagehide', () => { holding.clear(); }, {once: true});
 }
 
-/** Whether a live tab answers that it holds the slot lock `name`. */
-async function liveHolder(broadcast, name) {
-  const channels = [];
+/** Asks the tabs live now whether one holds the device key `name`, and keeps
+ * listening after the ask: an answer comes on the holder's own event loop, and
+ * a busy machine can take longer over it than a page waits before deciding no
+ * one is there. `live` settles at the first answer; `close()` stops asking. */
+function askLiveTabs(broadcast, name) {
+  const listening = [];
+  let answered;
+  const live = new Promise(resolve => { answered = resolve; });
   try {
     for (const [asked, prefix] of ASKED_ON) {
       const opened = broadcast?.(asked);
-      if (opened) channels.push([opened, prefix]);
+      if (opened) listening.push([opened, prefix]);
     }
-  } catch { /* asked on the channel that opened */ }
-  if (!channels.length) return false;
+  } catch { /* asked on the one that opened */ }
+  for (const [opened, prefix] of listening) {
+    opened.onmessage = ({data}) => { if (data?.live === prefix + name) answered(true); };
+    opened.postMessage({ask: prefix + name});
+  }
+  return {live, asking: listening.length > 0, close() { for (const [opened] of listening) opened.close(); }};
+}
+
+/** `promise`'s answer, or `false` when it has not settled within `ms`. */
+async function settledWithin(promise, ms) {
+  let timer;
+  const late = new Promise(resolve => { timer = setTimeout(() => resolve(false), ms); });
   try {
-    return await new Promise(resolve => {
-      const timer = setTimeout(() => resolve(false), LIVE_ASK_MS);
-      for (const [opened, prefix] of channels) {
-        opened.onmessage = ({data}) => { if (data?.live === prefix + name) { clearTimeout(timer); resolve(true); } };
-        opened.postMessage({ask: prefix + name});
-      }
-    });
+    return await Promise.race([promise, late]);
   } finally {
-    for (const [opened] of channels) opened.close();
+    clearTimeout(timer);
+  }
+}
+
+/** The lock of the device key `name` this tab remembers, unless a live tab
+ * holds it: the lock itself where it is free, or where the page before a
+ * reload lets go of it before that wait ends. A tab that answers at any
+ * point before then is live, so this page takes a key of its own instead of
+ * waiting out a tab that never lets go: the answer decides, not the moment it
+ * arrives. */
+async function takeRememberedKey(locks, broadcast, name) {
+  const free = await takeBoth(locks, name);
+  if (free) return free;
+  const asked = askLiveTabs(broadcast, name);
+  try {
+    if (asked.asking && await settledWithin(asked.live, LIVE_ASK_MS)) return null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), OWN_SLOT_WAIT_MS);
+    try {
+      const waiting = takeBoth(locks, name, controller.signal);
+      const outcome = await Promise.race([waiting.then(lock => ({lock})), asked.live.then(() => ({live: true}))]);
+      if (outcome.live) {
+        controller.abort();
+        (await waiting.catch(() => null))?.release();
+        return null;
+      }
+      return outcome.lock;
+    } finally {
+      clearTimeout(timer);
+    }
+  } finally {
+    asked.close();
   }
 }
 
@@ -205,8 +244,7 @@ export async function takeSlot({profile, storage, locks, requireExisting = false
   const remembered = readSlot(session, profile);
   if (remembered !== null && (!requireExisting || await storage.get(keyRecord(profile, remembered)))) {
     const name = slotName(profile, remembered);
-    const lock = await takeBoth(locks, name)
-      ?? (await liveHolder(broadcast, name) ? null : await takeBoth(locks, name, OWN_SLOT_WAIT_MS));
+    const lock = await takeRememberedKey(locks, broadcast, name);
     if (lock) return {slot: remembered, ...lock};
   }
   const keyed = [];

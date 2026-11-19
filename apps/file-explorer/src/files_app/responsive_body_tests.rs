@@ -747,7 +747,7 @@ fn narrow_error_retry_uses_the_shared_button_and_recovers() {
     let intent = ui::widget::controls::take_control_invocation(&mut h.w)
         .expect("the shared button emits a resource action");
     assert_eq!(intent.address.resource, "files.retry");
-    assert_eq!(intent.address.action, "invoke");
+    assert_eq!(intent.address.action, "up");
     assert!(
         crate::files_app::published::invoke(
             &mut h.w,
@@ -758,7 +758,7 @@ fn narrow_error_retry_uses_the_shared_button_and_recovers() {
         )
         .unwrap()
         .is_some(),
-        "the retry row refreshes the folder"
+        "the retry row opens the enclosing folder"
     );
     assert!(
         h.w.state().error().is_none(),

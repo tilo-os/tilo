@@ -16,7 +16,7 @@ use settings_store::hardware::{
     TouchpadScrollMethod,
 };
 use ui::LocalState;
-use ui::framework::{Actions, Effect as _, EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
+use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::i18n::ArgValue;
 use ui::text_assistance::TextAssistancePrefs;
 #[cfg(test)]
@@ -497,7 +497,7 @@ pub enum InputEffect {
         source: String,
     },
     /// Inspect this device's mounted keyboard map and current physical feedback.
-    #[effect(returns, idempotent, kind = "read")]
+    #[effect(returns, idempotent, kind = "read", on = KeyboardMap)]
     InspectKeyboardMap,
     /// Read discovered keyboard scopes and their ordered configured sources.
     #[effect(returns, idempotent, kind = "read")]
@@ -1092,7 +1092,7 @@ pub struct InputArea {
 /// The pane's map of the keyboard's keys, as it publishes it: a row of the
 /// `settings.keyboard-map` type, offering to show the layout.
 #[derive(tilo_resource::Row)]
-#[row(kind = "settings.keyboard-map", label = "Keyboard map")]
+#[row(kind = "settings.keyboard-map", label = "Keyboard map", effects = InputEffect)]
 pub(crate) struct KeyboardMap;
 
 /// A tablet, as the pane publishes it: a row of the `settings.tablet` type,
@@ -1341,10 +1341,11 @@ impl InputArea {
     }
 
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
-        let mut inspection =
-            LiveRow::typed::<KeyboardMap>("settings.keyboard-map", t("input-map-title"));
-        inspection =
-            inspection.operation(SettingsEffect::from(InputEffect::InspectKeyboardMap).bound());
+        let inspection = LiveRow::typed_with::<KeyboardMap>(
+            "settings.keyboard-map",
+            t("input-map-title"),
+            &tilo_resource::RowBindings::new().offer(InputEffect::INSPECT_KEYBOARD_MAP),
+        );
         let Some(devices) = self.devices() else {
             return vec![inspection];
         };
@@ -1354,30 +1355,33 @@ impl InputArea {
                 ..ResourcePresentation::default()
             })
         };
-        let offer =
-            |row: LiveRow, decls: Vec<Option<tilo_resource::ActionDecl<InputDevicePrefs>>>| {
-                decls.into_iter().flatten().fold(row, |row, decl| {
-                    match self.sections.operation(&decl) {
-                        Some(operation) => row.operation(operation),
-                        None => row,
-                    }
-                })
-            };
+        // A tablet's and its pad's actions are the keyboard section's
+        // declarations, offered on the device's row as that section
+        // published them.
+        let offer = |decls: Vec<Option<tilo_resource::ActionDecl<InputDevicePrefs>>>| {
+            decls
+                .into_iter()
+                .flatten()
+                .filter_map(|decl| self.sections.operation(&decl))
+                .fold(
+                    tilo_resource::RowBindings::new(),
+                    tilo_resource::RowBindings::spec,
+                )
+        };
         std::iter::once(inspection)
             .chain(
                 devices
                     .of_kind(InputDeviceKind::Tablet)
                     .into_iter()
                     .map(|device| {
-                        offer(
-                            row(
-                                device,
-                                LiveRow::typed::<Tablet>(
-                                    tablet_resource_id(&device.key),
-                                    device_title(device),
-                                ),
+                        let bindings = offer(tablet::pen_operations(&device.key));
+                        row(
+                            device,
+                            LiveRow::typed_with::<Tablet>(
+                                tablet_resource_id(&device.key),
+                                device_title(device),
+                                &bindings,
                             ),
-                            tablet::pen_operations(&device.key),
                         )
                     })
                     .chain(
@@ -1385,15 +1389,14 @@ impl InputArea {
                             .of_kind(InputDeviceKind::TabletPad)
                             .into_iter()
                             .map(|device| {
-                                offer(
-                                    row(
-                                        device,
-                                        LiveRow::typed::<TabletPad>(
-                                            pad_resource_id(&device.key),
-                                            device_title(device),
-                                        ),
+                                let bindings = offer(tablet::pad_operations(&device.key));
+                                row(
+                                    device,
+                                    LiveRow::typed_with::<TabletPad>(
+                                        pad_resource_id(&device.key),
+                                        device_title(device),
+                                        &bindings,
                                     ),
-                                    tablet::pad_operations(&device.key),
                                 )
                             }),
                     ),

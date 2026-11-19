@@ -161,6 +161,9 @@ pub struct Text {
     /// children) keeps the face.
     dirty: bool,
     layout_dirty: bool,
+    /// A solve measured it: one that sized it to nothing (a part hidden, a text with no words)
+    /// does not ask for another.
+    measured: bool,
     interface: std::cell::Cell<Option<(u64, bool)>>,
 }
 
@@ -211,6 +214,7 @@ impl Text {
             drawn_color: None,
             dirty: true,
             layout_dirty: false,
+            measured: false,
             interface: std::cell::Cell::new(None),
         }
     }
@@ -1189,13 +1193,14 @@ impl Widget for Text {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        (self.rect == vello::kurbo::Rect::ZERO && !self.collapsed())
+        (!self.measured && self.rect == vello::kurbo::Rect::ZERO && !self.collapsed())
             || self.layout_dirty
             || self.shows_stale_copy()
     }
 
     fn layout_measured(&mut self) {
         self.layout_dirty = false;
+        self.measured = true;
     }
 
     fn needs_idle_sync(&self) -> bool {

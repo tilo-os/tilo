@@ -327,15 +327,18 @@ fn app_row(
             )
         })
         .chain(mute);
-    offered.fold(
-        LiveRow::typed::<NotificationApp>(
-            format!("settings.notification-app:{}", app.id),
-            app.name.clone(),
-        ),
-        |row, decl| match sections.operation(&decl) {
-            Some(operation) => row.operation(operation),
-            None => row,
-        },
+    let bindings =
+        offered.fold(
+            ui::tilo_resource::RowBindings::new(),
+            |bindings, decl| match sections.operation(&decl) {
+                Some(operation) => bindings.spec(operation),
+                None => bindings,
+            },
+        );
+    LiveRow::typed_with::<NotificationApp>(
+        format!("settings.notification-app:{}", app.id),
+        app.name.clone(),
+        &bindings,
     )
 }
 

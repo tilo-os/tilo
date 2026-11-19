@@ -1779,6 +1779,19 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
+    /// Every presence this window shows besides its person, and where.
+    pub fn presences(&mut self) -> Vec<ui_core::widget::ViewPresence> {
+        let doc = self
+            .read_document_of(&self.checkout().id, Clone::clone)
+            .unwrap_or_default();
+        let harness = self.harness();
+        harness
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                ui_core::collaboration::presences::Presences::presences(root, &doc)
+            })
+            .unwrap_or_default()
+    }
+
     /// What the system's persistent search index keeps of this window now:
     /// the entries the app publishes to it, found after it closes too.
     pub fn search_index_entries(&mut self) -> Vec<ui_core::search::index_publication::IndexEntry> {

@@ -11,7 +11,7 @@ use ui::LocalState;
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
-use ui::tilo_resource::{self, Effect};
+use ui::tilo_resource::{self, RowBindings};
 use ui::widget::{Button, ChipStyle, ControlSize, Element, Row, RowMenu, Widget};
 
 use crate::area::AreaContext;
@@ -109,18 +109,18 @@ pub enum PrinterEffect {
     #[effect(kind = "outside", on = NearbyPrinter)]
     #[effect(job, row)]
     AddPrinter {
-        #[param("The printer's row, or its address as found nearby")]
+        #[param("The printer's address, as found nearby")]
         uri: String,
     },
     /// Make a printer the one apps print to unless told otherwise.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Printer)]
     #[effect(job, row, idempotent, label = "settings-printers-make-default")]
     SetDefaultPrinter {
         #[param("The printer's queue name")]
         printer: String,
     },
     /// Pause a printer's queue, or let it print again.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Printer)]
     #[effect(job, row, idempotent)]
     SetPrinterPaused {
         #[param("The printer's queue name")]
@@ -132,18 +132,18 @@ pub enum PrinterEffect {
     #[effect(kind = "outside", on = Printer)]
     #[effect(job, row, destructive)]
     RemovePrinter {
-        #[param("The printer's row, or its queue name")]
+        #[param("The printer's queue name")]
         printer: String,
     },
     /// Cancel a print job.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = PrintJobRow)]
     #[effect(job, row, destructive)]
     CancelPrintJob {
         #[param("The job's id")]
         job: String,
     },
     /// Send a stopped or failed print job again.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = PrintJobRow)]
     #[effect(job, row)]
     RetryPrintJob {
         #[param("The job's id")]
@@ -156,18 +156,6 @@ pub(crate) fn answer(
     effect: PrinterEffect,
     cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
-    // A printer's or a nearby printer's row binds the row's id; a control
-    // names the queue's name or the printer's address. The service takes
-    // the name or the address.
-    let effect = match effect {
-        PrinterEffect::RemovePrinter { printer } => PrinterEffect::RemovePrinter {
-            printer: crate::effects::row_entity(&printer, "settings.printer").to_owned(),
-        },
-        PrinterEffect::AddPrinter { uri } => PrinterEffect::AddPrinter {
-            uri: crate::effects::row_entity(&uri, "settings.nearby-printer").to_owned(),
-        },
-        effect => effect,
-    };
     let model = crate::panes::printers::area(app)
         .ok_or_else(crate::area::missing)?
         .model();
@@ -376,51 +364,58 @@ impl PrintersArea {
 fn printer_live_row(printer: &PrinterQueue) -> LiveRow {
     let name = printer.name.clone();
     let paused = printer.state == QueueState::Paused;
-    let mut row = LiveRow::typed::<Printer>(format!("settings.printer:{name}"), name.clone());
-    row = row.operation(
-        SettingsEffect::from(PrinterEffect::SetPrinterPaused {
-            printer: name.clone(),
-            paused: !paused,
-        })
-        .bound(),
-    );
+    let mut bindings = RowBindings::new()
+        .bind(
+            PrinterEffect::SET_PRINTER_PAUSED,
+            [
+                ("printer", name.clone().into()),
+                ("paused", (!paused).into()),
+            ],
+        )
+        .bind(
+            PrinterEffect::REMOVE_PRINTER,
+            [("printer", name.clone().into())],
+        );
     if !printer.default {
-        row = row.operation(
-            SettingsEffect::from(PrinterEffect::SetDefaultPrinter { printer: name }).bound(),
+        bindings = bindings.bind(
+            PrinterEffect::SET_DEFAULT_PRINTER,
+            [("printer", name.clone().into())],
         );
     }
-    row
+    LiveRow::typed_with::<Printer>(format!("settings.printer:{name}"), name, &bindings)
 }
 
 fn nearby_live_row(printer: &DiscoveredPrinter) -> LiveRow {
-    LiveRow::typed::<NearbyPrinter>(
+    let bindings = RowBindings::new().bind(
+        PrinterEffect::ADD_PRINTER,
+        [("uri", printer.uri.clone().into())],
+    );
+    LiveRow::typed_with::<NearbyPrinter>(
         format!("settings.nearby-printer:{}", printer.uri),
         printer.name.clone(),
+        &bindings,
     )
 }
 
 fn job_live_row(job: &PrintJob) -> LiveRow {
-    let mut row = LiveRow::typed::<PrintJobRow>(
-        format!("settings.print-job:{}", job.id),
-        job.title.clone().unwrap_or_else(|| job.id.clone()),
-    );
+    let mut bindings = RowBindings::new();
     if retryable(job) {
-        row = row.operation(
-            SettingsEffect::from(PrinterEffect::RetryPrintJob {
-                job: job.id.clone(),
-            })
-            .bound(),
+        bindings = bindings.bind(
+            PrinterEffect::RETRY_PRINT_JOB,
+            [("job", job.id.clone().into())],
         );
     }
     if cancellable(job) {
-        row = row.operation(
-            SettingsEffect::from(PrinterEffect::CancelPrintJob {
-                job: job.id.clone(),
-            })
-            .bound(),
+        bindings = bindings.bind(
+            PrinterEffect::CANCEL_PRINT_JOB,
+            [("job", job.id.clone().into())],
         );
     }
-    row
+    LiveRow::typed_with::<PrintJobRow>(
+        format!("settings.print-job:{}", job.id),
+        job.title.clone().unwrap_or_else(|| job.id.clone()),
+        &bindings,
+    )
 }
 
 fn retryable(job: &PrintJob) -> bool {

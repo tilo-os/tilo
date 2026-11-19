@@ -438,6 +438,9 @@ pub enum Cmd {
     ConnectDevice(EndpointAddr),
     /// Ask the host of the joined workspace on `ws` to replay what it retains.
     Replay(Topic),
+    /// Dial the holders of the joined workspace on `ws` again now: the person asked to, after it
+    /// could not arrive.
+    Redial(Topic),
     /// Ask the hosts of the joined workspace on `ws` for the record on `channel`: what they hold of
     /// it, and their changes to it from then on; `own` names it this device's person's own record.
     OpenDocument {

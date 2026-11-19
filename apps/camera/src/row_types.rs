@@ -59,6 +59,15 @@ pub(crate) struct Photo;
 impl RowType for Photo {
     const KIND: &'static str = "camera.photo";
     const LABEL: &'static str = "Photo";
+
+    fn effects_with(
+        _id: &tilo_resource::Id,
+        bindings: &RowBindings,
+    ) -> Vec<ui::tilo_actions::ActionSpec> {
+        crate::actions::handoff_spec(false, bindings)
+            .into_iter()
+            .collect()
+    }
 }
 
 /// A recent video capture, as [`Photo`] is a still one.
@@ -67,4 +76,13 @@ pub(crate) struct Video;
 impl RowType for Video {
     const KIND: &'static str = "camera.video";
     const LABEL: &'static str = "Video";
+
+    fn effects_with(
+        _id: &tilo_resource::Id,
+        bindings: &RowBindings,
+    ) -> Vec<ui::tilo_actions::ActionSpec> {
+        crate::actions::handoff_spec(true, bindings)
+            .into_iter()
+            .collect()
+    }
 }

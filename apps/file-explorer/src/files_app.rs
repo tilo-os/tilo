@@ -41,6 +41,7 @@ mod clipboard_client;
 mod cloud_browse;
 mod drives;
 mod entry_rows;
+mod live_row_status;
 mod mounted_cloud;
 mod window;
 mod window_bar;
@@ -211,6 +212,22 @@ fn entry_answer(entry: &Entry) -> serde_json::Value {
     })
 }
 
+/// A nearby target handle as the text a choice names it by, when that text is
+/// a handle at all: whether this window issued it is the caller's check.
+fn nearby_target(text: &str) -> Option<ui::collaboration::NearbyTargetHandle> {
+    let bytes: [u8; 16] = hex::decode(text).ok()?.try_into().ok()?;
+    Some(ui::collaboration::NearbyTargetHandle::from_issued_bytes(
+        bytes,
+    ))
+}
+
+/// A nearby destination handle as the text a choice names it by, when that
+/// text is a handle at all.
+fn nearby_destination(text: &str) -> Option<ui::collaboration::NearbyDestinationHandle> {
+    let bytes: [u8; 16] = hex::decode(text).ok()?.try_into().ok()?;
+    Some(ui::collaboration::NearbyDestinationHandle::from_issued_bytes(bytes))
+}
+
 fn remote_folder_availability(account: &crate::remote_accounts::RemoteAccount) -> Availability {
     if account.health == crate::remote_accounts::RemoteAccountHealth::Disabled {
         return Availability::Unavailable {
@@ -292,13 +309,18 @@ pub(crate) fn template_resource_id(path: &str) -> String {
 const RETRY_ROW: &str = "files.retry";
 
 fn retry_row(may_pass: bool) -> LiveRow {
-    let (effect, label) = if may_pass {
-        (crate::effects::FilesEffect::Refresh, t("files-try-again"))
+    let (bindings, label) = if may_pass {
+        (
+            ui::tilo_resource::RowBindings::new().offer_id("refresh"),
+            t("files-try-again"),
+        )
     } else {
-        (crate::effects::FilesEffect::Up, t("files-open-enclosing"))
+        (
+            ui::tilo_resource::RowBindings::new().offer_id("up"),
+            t("files-open-enclosing"),
+        )
     };
-    LiveRow::typed::<crate::row_types::Retry>(RETRY_ROW, label.clone())
-        .operation(crate::effects::row_action(&effect, "invoke", label))
+    LiveRow::typed_with::<crate::row_types::Retry>(RETRY_ROW, label, &bindings)
 }
 
 fn failure_state(title: String, detail: String, may_pass: bool) -> EmptyState {
@@ -320,15 +342,15 @@ pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Ve
         .iter()
         .map(|favorite| {
             let resource_id = crate::search_provider::place_resource_id(&favorite.path);
-            let open = crate::effects::row_action(
-                &crate::effects::FilesEffect::OpenItem {
-                    item: resource_id.clone(),
-                },
-                crate::search_provider::OPEN_ACTION,
-                crate::i18n::CATALOG.t("files-shortcuts-open"),
+            let bindings = ui::tilo_resource::RowBindings::new().bind(
+                crate::effects::FilesEffect::OPEN,
+                [("item", serde_json::Value::String(resource_id.clone()))],
             );
-            LiveRow::typed::<crate::row_types::Place>(resource_id, favorite.label.clone())
-                .operation(open)
+            LiveRow::typed_with::<crate::row_types::Place>(
+                resource_id,
+                favorite.label.clone(),
+                &bindings,
+            )
         })
         .collect()
 }
@@ -339,18 +361,15 @@ pub(crate) fn published_template_resources(templates: Vec<PathBuf>) -> Vec<LiveR
         .map(|template| {
             let template_path = template.to_string_lossy().into_owned();
             let template_id = template_resource_id(&template_path);
-            let create = crate::effects::row_action(
-                &crate::effects::FilesEffect::NewFromTemplate {
-                    template: template_id.clone(),
-                },
-                "create",
-                templates::menu_label(&template),
+            let bindings = ui::tilo_resource::RowBindings::new().bind(
+                crate::effects::FilesEffect::NEW_FROM_TEMPLATE,
+                [("template", serde_json::Value::String(template_id.clone()))],
             );
-            LiveRow::typed::<crate::row_types::Template>(
+            LiveRow::typed_with::<crate::row_types::Template>(
                 template_id,
                 templates::menu_label(&template),
+                &bindings,
             )
-            .operation(create)
         })
         .collect()
 }
@@ -1910,14 +1929,14 @@ impl FilesState {
                 self.perform_empty_trash();
                 None
             }
-            FilesEffect::OpenItem { item } => {
+            FilesEffect::Open { item } => {
                 let target = self
                     .visible_open_path(&item)
                     .ok_or_else(|| crate::i18n::CATALOG.t("files-location-gone"))?;
                 self.open_path(target);
                 None
             }
-            FilesEffect::ReadEntry { entry } => {
+            FilesEffect::Read { entry } => {
                 let entry = self
                     .entry_by_resource_id(&entry)
                     .ok_or_else(|| crate::i18n::CATALOG.t("files-location-gone"))?;
@@ -2047,6 +2066,9 @@ impl FilesState {
                 let path = self
                     .visible_entry_path(&entry)
                     .ok_or_else(|| crate::i18n::CATALOG.t("files-entry-gone"))?;
+                let Some(target) = nearby_target(&target) else {
+                    return Err("nearby device is no longer available".into());
+                };
                 if !self
                     .nearby_send
                     .targets()
@@ -2097,14 +2119,17 @@ impl FilesState {
                 transfer,
                 destination,
             } => {
+                let Some(destination) = nearby_destination(&destination) else {
+                    return Err("that destination is no longer available".into());
+                };
                 self.decide_nearby(transfer, Some(destination))?;
                 None
             }
-            FilesEffect::DeclineNearby { transfer } => {
+            FilesEffect::Decline { transfer } => {
                 self.decide_nearby(transfer, None)?;
                 None
             }
-            FilesEffect::InspectNearby { transfer } => {
+            FilesEffect::Status { transfer } => {
                 let status = self
                     .nearby_send
                     .transfers()
@@ -2113,7 +2138,7 @@ impl FilesState {
                     .ok_or_else(|| t("files-nearby-transfer-unavailable"))?;
                 Some(serde_json::json!({"transfer": status}))
             }
-            FilesEffect::RetryNearby { transfer } => {
+            FilesEffect::Retry { transfer } => {
                 if !self.nearby_send.transfers().iter().any(|candidate| {
                     candidate.handle == transfer
                         && candidate.phase == ui::collaboration::NearbyTransferPhase::Failed
@@ -2124,7 +2149,7 @@ impl FilesState {
                 self.status = Some(t("files-nearby-retrying"));
                 None
             }
-            FilesEffect::CancelNearby { transfer } => {
+            FilesEffect::Cancel { transfer } => {
                 if !self.nearby_send.transfers().iter().any(|candidate| {
                     candidate.handle == transfer
                         && matches!(
@@ -2151,7 +2176,7 @@ impl FilesState {
                 }
                 None
             }
-            FilesEffect::AccountDetails { account } => {
+            FilesEffect::Details { account } => {
                 let account = self.account_named(&account)?;
                 self.show_remote_account_panel(&account, false);
                 None
@@ -2160,7 +2185,7 @@ impl FilesState {
                 self.open_drive(&drive)?;
                 None
             }
-            FilesEffect::UninstallApp { app } => {
+            FilesEffect::Uninstall { app } => {
                 let path = self
                     .visible_entry_path(&app)
                     .filter(|path| crate::applications::is_app(path))
@@ -6467,7 +6492,7 @@ impl FilesState {
     pub(crate) fn open_anchor(&mut self, anchor: &str) -> Result<(), String> {
         use crate::effects::FilesEffect;
         let effect = if anchor.starts_with("files.place:") {
-            FilesEffect::OpenItem {
+            FilesEffect::Open {
                 item: anchor.to_owned(),
             }
         } else if let Some(record) = anchor.strip_prefix("files.record:") {
@@ -6475,7 +6500,7 @@ impl FilesState {
                 record: record.to_owned(),
             }
         } else if let Some(account) = crate::remote_accounts::account_of_resource(anchor) {
-            FilesEffect::AccountDetails { account }
+            FilesEffect::Details { account }
         } else {
             return Err(format!("Files opens no `{anchor}`"));
         };
@@ -6956,95 +6981,51 @@ impl FilesState {
         self.nearby_send
             .transfers()
             .iter()
-            .map(|transfer| self.nearby_receiver_row(transfer))
+            .map(Self::nearby_receiver_row)
             .collect()
     }
 
-    fn nearby_receiver_row(&self, transfer: &ui::collaboration::NearbyTransferStatus) -> LiveRow {
+    fn nearby_receiver_row(transfer: &ui::collaboration::NearbyTransferStatus) -> LiveRow {
         use ui::collaboration::NearbyTransferPhase;
 
-        let mut resource = LiveRow::typed::<crate::row_types::NearbyTransfer>(
-            format!(
-                "nearby-transfer:{}",
-                nearby_action_locator("transfer", transfer.handle.as_bytes())
-            ),
-            transfer.name.clone(),
+        let resource_id = format!(
+            "nearby-transfer:{}",
+            nearby_action_locator("transfer", transfer.handle.as_bytes())
         );
-        let mut inspect = crate::effects::row_action(
-            &crate::effects::FilesEffect::InspectNearby {
-                transfer: transfer.handle,
-            },
-            "status",
-            t("files-nearby-status"),
+        let handle = serde_json::to_value(transfer.handle).unwrap_or(serde_json::Value::Null);
+        let mut bindings = ui::tilo_resource::RowBindings::new().bind(
+            crate::effects::FilesEffect::STATUS,
+            [("transfer", handle.clone())],
         );
-        inspect.type_mut().description = Some(t("files-nearby-status-detail"));
-        resource = resource.operation(inspect);
-        for action in self.nearby_decision_actions(transfer) {
-            resource = resource.operation(action);
+        let deciding = FilesState::nearby_deciding(transfer);
+        if deciding {
+            bindings = bindings
+                .bind(
+                    crate::effects::FilesEffect::ACCEPT_NEARBY,
+                    [("transfer", handle.clone())],
+                )
+                .bind(
+                    crate::effects::FilesEffect::DECLINE,
+                    [("transfer", handle.clone())],
+                );
         }
         if transfer.phase == NearbyTransferPhase::Failed {
-            resource = resource.operation(crate::effects::row_action(
-                &crate::effects::FilesEffect::RetryNearby {
-                    transfer: transfer.handle,
-                },
-                "retry",
-                t("files-nearby-retry"),
-            ));
+            bindings = bindings.bind(
+                crate::effects::FilesEffect::RETRY,
+                [("transfer", handle.clone())],
+            );
         }
         if matches!(
             transfer.phase,
             NearbyTransferPhase::Queued | NearbyTransferPhase::Transferring
         ) {
-            resource = resource.operation(crate::effects::row_action(
-                &crate::effects::FilesEffect::CancelNearby {
-                    transfer: transfer.handle,
-                },
-                "cancel",
-                t("files-nearby-cancelled"),
-            ));
+            bindings = bindings.bind(crate::effects::FilesEffect::CANCEL, [("transfer", handle)]);
         }
-        resource
-    }
-
-    fn nearby_decision_actions(
-        &self,
-        transfer: &ui::collaboration::NearbyTransferStatus,
-    ) -> Vec<ui::tilo_actions::ActionSpec> {
-        use ui::collaboration::{NearbyTransferDirection, NearbyTransferPhase};
-
-        if transfer.direction != NearbyTransferDirection::Receiving
-            || !matches!(
-                transfer.phase,
-                NearbyTransferPhase::AwaitingConsent | NearbyTransferPhase::AwaitingDestination
-            )
-        {
-            return Vec::new();
-        }
-        let mut actions = Vec::new();
-        for destination in self.nearby_send.destinations() {
-            actions.push(crate::effects::row_action(
-                &crate::effects::FilesEffect::AcceptNearby {
-                    transfer: transfer.handle,
-                    destination: destination.handle,
-                },
-                format!(
-                    "accept-{}",
-                    nearby_action_locator("destination", destination.handle.as_bytes())
-                ),
-                t_args(
-                    "files-nearby-save-to-destination",
-                    &[arg("destination", destination.label.clone())],
-                ),
-            ));
-        }
-        actions.push(crate::effects::row_action(
-            &crate::effects::FilesEffect::DeclineNearby {
-                transfer: transfer.handle,
-            },
-            "decline",
-            t("files-nearby-declined"),
-        ));
-        actions
+        LiveRow::typed_with::<crate::row_types::NearbyTransfer>(
+            resource_id,
+            transfer.name.clone(),
+            &bindings,
+        )
     }
 
     pub(crate) fn published_live_rows(&self) -> Vec<ui::framework::LiveRow> {
@@ -7078,40 +7059,30 @@ impl FilesState {
             .into_iter()
             .map(|account| {
                 let resource_id = crate::remote_accounts::resource_id(&account.id);
-                let availability = remote_folder_availability(&account);
-                let account_id = account.id.to_string();
-                let mut open = crate::effects::row_action(
-                    &crate::effects::FilesEffect::OpenAccount {
-                        account: account_id.clone(),
-                    },
-                    crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
-                    crate::i18n::CATALOG.t("files-shortcuts-open"),
-                );
-                open.type_mut().contract.availability = availability;
-                LiveRow::typed::<crate::row_types::RemoteAccount>(
+                let account_id = serde_json::Value::String(account.id.to_string());
+                let bindings = ui::tilo_resource::RowBindings::new()
+                    .bind(
+                        crate::effects::FilesEffect::OPEN_ACCOUNT,
+                        [("account", account_id.clone())],
+                    )
+                    .bind(
+                        crate::effects::FilesEffect::DETAILS,
+                        [("account", account_id.clone())],
+                    )
+                    .bind(
+                        crate::effects::FilesEffect::REAUTHENTICATE,
+                        [("account", account_id)],
+                    );
+                LiveRow::typed_with::<crate::row_types::RemoteAccount>(
                     resource_id,
                     account.label.clone(),
+                    &bindings,
                 )
                 .presentation(tilo_actions::ResourcePresentation {
                     detail: Some(format!("{} at {}", account.kind.label(), account.host)),
                     badge: account.badge(),
                     preview: None,
                 })
-                .operation(open)
-                .operation(crate::effects::row_action(
-                    &crate::effects::FilesEffect::AccountDetails {
-                        account: account_id.clone(),
-                    },
-                    "details",
-                    crate::i18n::CATALOG.t("files-account-status"),
-                ))
-                .operation(crate::effects::row_action(
-                    &crate::effects::FilesEffect::Reauthenticate {
-                        account: account_id,
-                    },
-                    "reauthenticate",
-                    crate::i18n::CATALOG.t("files-account-reauthenticate"),
-                ))
             })
             .collect()
     }
@@ -7882,6 +7853,7 @@ pub(crate) mod published {
         root.actions.extend(FilesEffect::specs());
         let _ = doc;
         root.children.extend(files.state().published_rows());
+        ui::framework::apply_row_statuses(&mut root.children, &|id| files.state().row_status(id));
         vec![root]
     }
 

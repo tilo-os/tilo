@@ -38,7 +38,7 @@ pub enum TubeEffect {
         video: String,
     },
     /// Open creator.
-    #[effect(screen, on = crate::model::Channel)]
+    #[effect(screen, on = crate::model::Channel, on = crate::model::Video)]
     OpenCreator {
         #[param("The creator's channel id")]
         creator: String,
@@ -56,7 +56,7 @@ pub enum TubeEffect {
         query: NonBlank,
     },
     /// Play or pause.
-    #[effect(screen)]
+    #[effect(screen, on = crate::model::Video)]
     TogglePlayback,
     /// Seek to seconds.
     ///
@@ -71,7 +71,7 @@ pub enum TubeEffect {
     ///
     /// Jumps to the end of the marked segment playing now, one you chose to
     /// see with a skip button rather than skip on its own.
-    #[effect(screen)]
+    #[effect(screen, on = crate::model::Video)]
     SkipSegment,
     /// Copy share link.
     #[effect(own_device, kind = "read", on = crate::model::Video)]

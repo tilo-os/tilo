@@ -17,6 +17,26 @@ function memorySession(rows = new Map()) {
  * here share one module, so none asks the others over a channel. */
 const tab = (locks, name, session = memorySession()) => ({locks: locks.manager(name), session, broadcast: null});
 
+/** The tabs' cross-tab messages over an in-process bus whose deliveries reach
+ * the other tabs `delay` ms after they are sent: a busy machine delivering an
+ * answer after a shorter window has passed. Messages are carried by name, as
+ * the browser carries them. */
+function delayedDeliveries(delay) {
+  const byName = new Map();
+  return name => {
+    const opened = {onmessage: null, closed: false};
+    opened.postMessage = data => {
+      for (const other of byName.get(name) ?? []) {
+        if (other === opened || other.closed) continue;
+        setTimeout(() => { if (!other.closed) other.onmessage?.({data}); }, delay);
+      }
+    };
+    opened.close = () => { opened.closed = true; };
+    byName.set(name, [...(byName.get(name) ?? []), opened]);
+    return opened;
+  };
+}
+
 function memoryStorage() {
   const rows = new Map();
   return {
@@ -208,6 +228,29 @@ test('a duplicated tab, whose remembered slot a live tab holds, takes a slot of 
     session: memorySession(new Map(session.rows)), broadcast, events: new EventTarget()});
   assert.deepEqual([original.slot, duplicate.slot, duplicate.created], [0, 1, true]);
   assert.ok(Date.now() - started < pageB.OWN_SLOT_WAIT_MS, 'it did not wait for the original to close');
+  await original.close(); await duplicate.close();
+});
+
+test('a duplicated tab whose live answer comes late still takes a key of its own, without waiting out the tab', async () => {
+  const storage = memoryStorage();
+  const locks = fakeLocks();
+  const pageA = await import('./device-key.mjs?page=late-answer');
+  const pageB = await import('./device-key.mjs?page=late-answer-reloaded');
+  // Each message reaches the other tab after the window a page at first waits
+  // for an answer: the holder is live, its answer is just slow.
+  const broadcast = delayedDeliveries(pageB.LIVE_ASK_MS + 100);
+  const session = memorySession();
+  const original = await pageA.openDeviceKey({profile: 'p', storage, locks: locks.manager('original'), session, broadcast, events: new EventTarget()});
+  assert.equal(original.created, true);
+  const started = Date.now();
+  const duplicate = await pageB.openDeviceKey({profile: 'p', storage, locks: locks.manager('duplicate'),
+    session: memorySession(new Map(session.rows)), broadcast, events: new EventTarget()});
+  const took = Date.now() - started;
+  assert.equal(duplicate.created, true, 'a key of its own, never the live tab’s');
+  assert.notDeepEqual(duplicate.publicKey, original.publicKey);
+  // Well before the wait a page gives the page that held the key before it:
+  // the late answer ended that wait.
+  assert.ok(took < 10_000, `it took ${took} ms`);
   await original.close(); await duplicate.close();
 });
 

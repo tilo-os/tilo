@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.file-explorer@528977fd1ca945e9";
+export const SURFACE = "so.tilo.file-explorer@7100e3bd69990d6b";
 
 export interface Bookmark {
   place: string;
@@ -205,7 +205,6 @@ export interface Folder extends tilo.Resource {
   revert(args: {
     op: string;
   }): Promise<unknown>;
-  // the app's `refresh` action is the SDK's own: run it with `action("refresh")`.
   handOver(args: {
     file: string;
   }): Promise<void>;

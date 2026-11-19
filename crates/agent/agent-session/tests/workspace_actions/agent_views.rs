@@ -13,6 +13,9 @@ use tilo_session_actions::SessionActions;
 const NOTES: &str = "so.tilo.notes";
 /// What the note in it says, which the agent must read off the window.
 const TITLE: &str = "Launch plan for Friday";
+/// The longest a read of a window may take, the first one included. Debug builds on a shared
+/// test machine draw several times slower than a release, so the bound allows for that.
+const READ_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
@@ -26,7 +29,7 @@ async fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
     // The person's page opens Notes.
     let mut page = Browser::open(&served, &page_device, &home).await;
     page.put_layout();
-    let _notes = page.create(NOTES);
+    let notes = page.create(NOTES);
     page.peer.barrier().unwrap().recv().unwrap().unwrap();
 
     // Their agent, on a computer of theirs, served over that computer's own session.
@@ -45,21 +48,75 @@ async fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
     .await;
     assert!(!failed, "{made}");
 
-    // The window is among what is open.
-    let (apps, failed) = tool(&mcp, "tilo_ls", json!({})).await;
-    assert!(!failed, "{apps}");
-    assert!(
-        apps.lines()
-            .any(|line| line.starts_with("notes ") && line.ends_with("running")),
-        "the person's Notes is listed as running: {apps}"
+    // The person works in that window: their page says so on the workspace's presence, as
+    // every page does.
+    let mut shell = tilo_session_client::presence::view(
+        1,
+        tilo_clock::unix_now_ms(),
+        "Ada",
+        [1, 2, 3],
+        None,
+        Some(&tilo_server_protocol::live::LiveResource {
+            app: NOTES.into(),
+            record: notes.document.clone(),
+        }),
+        None,
+    );
+    shell.agent = false;
+    let said = collab_types::presence::Presence::desktop(
+        notes.cluster_id.clone(),
+        collab_types::presence::Payload::Shell(Box::new(shell)),
     );
 
-    // Its lines say what it shows: the note the person wrote, as a control the agent can name.
+    // The window is among what is open, with the person working in it.
+    let deadline = tilo_test_env::hang_deadline();
+    let apps = loop {
+        page.peer
+            .send(tilo_session_client::Cmd::Presence(
+                page.workspace,
+                vec![said.clone()],
+            ))
+            .unwrap();
+        let (apps, failed) = tool(&mcp, "tilo_ls", json!({})).await;
+        assert!(!failed, "{apps}");
+        if apps.contains("Ada works in it") || std::time::Instant::now() > deadline {
+            break apps;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert!(
+        apps.lines()
+            .any(|line| line.starts_with("notes ") && line.ends_with("running, Ada works in it")),
+        "the person's Notes is listed as running, with them working in it: {apps}"
+    );
+
+    // Its lines say what it shows: the note the person wrote, as a control the agent can name,
+    // its title and not the word for a note that says nothing yet.
+    let first = std::time::Instant::now();
     let (lines, failed) = tool(&mcp, "tilo_view", json!({"path": "notes"})).await;
+    let first = first.elapsed();
     assert!(!failed, "{lines}");
     assert!(
         lines.contains(TITLE),
         "the view shows the person's note: {lines}"
+    );
+    assert!(
+        lines.lines().any(
+            |line| line.trim_start().starts_with("text_input \"Page title\"")
+                && line.contains(TITLE)
+        ),
+        "the note's heading is named by its title, never the word for a new note: {lines}"
+    );
+    // A read of a window answers about as fast as the person sees it: the first one included,
+    // and every one after it.
+    let again = std::time::Instant::now();
+    let (_, failed) = tool(&mcp, "tilo_view", json!({"path": "notes"})).await;
+    let again = again.elapsed();
+    assert!(!failed);
+    eprintln!("tilo_view notes: first {first:?}, again {again:?}");
+    assert!(
+        first < READ_BOUND && again < READ_BOUND,
+        "a view read answers within {READ_BOUND:?}: first {first:?}, again {again:?}"
     );
 
     // Its picture comes as an image, a PNG the agent looks at, beside the same lines.
@@ -96,5 +153,30 @@ async fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
             .as_str()
             .is_some_and(|text| text.contains(TITLE))),
         "the lines come with the picture: {answer}"
+    );
+
+    // Chat, opened on the page too: its conversations are read once each, and an empty one
+    // says what the person sees under it.
+    let _chat = page.create("so.tilo.chat");
+    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let (lines, failed) = tool(&mcp, "tilo_view", json!({"path": "chat"})).await;
+    assert!(!failed, "{lines}");
+    let items: Vec<&str> = lines
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("tree_item "))
+        .collect();
+    assert!(!items.is_empty(), "the conversations are listed: {lines}");
+    for item in &items {
+        let name = item.split('"').nth(1).unwrap_or_default();
+        assert_eq!(
+            lines.matches(&format!("\"{name}\"")).count(),
+            1,
+            "{name} is read once: {lines}"
+        );
+    }
+    assert!(
+        lines.contains("\"No messages yet\"") && lines.contains("sees it."),
+        "the empty conversation's title and the line under it are read: {lines}"
     );
 }

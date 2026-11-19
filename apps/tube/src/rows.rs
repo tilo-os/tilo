@@ -60,27 +60,48 @@ pub(crate) struct DeviceSync;
 #[row(kind = "tube.device", label = "Grayjay device", effects = TubeEffect)]
 pub(crate) struct Device;
 
+/// What a video's row offers about that video: open, share and mark watched,
+/// each naming it.
+fn video_bindings(video_id: &str) -> RowBindings {
+    let video = serde_json::Value::from(video_id);
+    RowBindings::new()
+        .bind(TubeEffect::OPEN_VIDEO, [("video", video.clone())])
+        .bind(TubeEffect::SHARE, [("video", video.clone())])
+        .bind(TubeEffect::MARK_WATCHED, [("video", video)])
+}
+
 fn video_row(model: &TubeModel, id: String, video_id: &str) -> Option<LiveRow> {
     let video = model.video(video_id)?;
-    Some(LiveRow::typed::<crate::model::Video>(
+    Some(LiveRow::typed_with::<crate::model::Video>(
         id,
         resource_label(&video.title),
+        &video_bindings(video_id),
     ))
 }
 
 fn creator_row(model: &TubeModel, id: String, channel_id: &str) -> Option<LiveRow> {
     let channel = model.channel(channel_id)?;
-    Some(LiveRow::typed::<crate::model::Channel>(
+    let bindings = RowBindings::new().bind(
+        TubeEffect::OPEN_CREATOR,
+        [("creator", serde_json::Value::from(channel_id))],
+    );
+    Some(LiveRow::typed_with::<crate::model::Channel>(
         id,
         resource_label(&channel.name),
+        &bindings,
     ))
 }
 
 fn playlist_row(model: &TubeModel, id: String, playlist_id: &str) -> Option<LiveRow> {
     let playlist = model.playlist(playlist_id)?;
-    Some(LiveRow::typed::<crate::model::Playlist>(
+    let bindings = RowBindings::new().bind(
+        TubeEffect::OPEN_PLAYLIST,
+        [("playlist", serde_json::Value::from(playlist_id))],
+    );
+    Some(LiveRow::typed_with::<crate::model::Playlist>(
         id,
         resource_label(&playlist.title),
+        &bindings,
     ))
 }
 
@@ -101,16 +122,21 @@ fn current_watch(model: &TubeModel) -> Option<LiveRow> {
         return None;
     };
     let video = model.video(video_id)?;
-    // The video's own effects are its type's; playing it and opening its
-    // creator are this page's, which offers them while it shows the video.
-    let mut row = video_row(model, format!("tube.current:{video_id}"), video_id)?
-        .effect(&TubeEffect::TogglePlayback)
-        .effect(&TubeEffect::OpenCreator {
-            creator: video.channel_id.clone(),
-        });
-    if model.show_skip_end().is_some() {
-        row = row.effect(&TubeEffect::SkipSegment);
-    }
+    // This page shows the video, so it offers what only a watch page can:
+    // playing it, opening its creator, and skipping the segment playing now
+    // (which its status says is not there when none is).
+    let bindings = video_bindings(video_id)
+        .offer(TubeEffect::TOGGLE_PLAYBACK)
+        .bind(
+            TubeEffect::OPEN_CREATOR,
+            [("creator", serde_json::Value::from(video.channel_id.clone()))],
+        )
+        .offer(TubeEffect::SKIP_SEGMENT);
+    let mut row = LiveRow::typed_with::<crate::model::Video>(
+        format!("tube.current:{video_id}"),
+        resource_label(&video.title),
+        &bindings,
+    );
     for comment in video.comments.iter().take(MAX_COMMENTS) {
         row = row.row(comment_row(video_id, comment));
     }
@@ -147,7 +173,15 @@ fn history_row(model: &TubeModel, video_id: &str) -> LiveRow {
         || format!("Watched video {video_id}"),
         |video| video.title.clone(),
     );
-    LiveRow::typed::<HistoryEntry>(format!("tube.history:{video_id}"), resource_label(&label))
+    let video = serde_json::Value::from(video_id);
+    let bindings = RowBindings::new()
+        .bind(TubeEffect::OPEN_VIDEO, [("video", video.clone())])
+        .bind(TubeEffect::FORGET_WATCHED, [("video", video)]);
+    LiveRow::typed_with::<HistoryEntry>(
+        format!("tube.history:{video_id}"),
+        resource_label(&label),
+        &bindings,
+    )
 }
 
 fn search_results(model: &TubeModel) -> LiveRow {
@@ -453,8 +487,20 @@ pub(crate) fn effect_statuses(model: &TubeModel, view: &SyncView) -> Vec<EffectS
 /// What one of Tube's rows offers right now: a device waiting for approval is
 /// not revoked, a device with access is not approved again, and nothing syncs
 /// without an active device or a reachable Grayjay.
-pub(crate) fn row_status(view: &SyncView, id: &str) -> Vec<EffectStatus> {
+pub(crate) fn row_status(model: &TubeModel, view: &SyncView, id: &str) -> Vec<EffectStatus> {
     let mut statuses = Vec::new();
+    if id.starts_with("tube.current:") && model.show_skip_end().is_none() {
+        // The watch page always offers to skip the segment playing now; with
+        // none playing there is nothing to skip.
+        statuses.push(
+            EffectStatus::unavailable(
+                TubeEffect::SKIP_SEGMENT,
+                "no_segment",
+                "No segment to skip is playing",
+            )
+            .on(id),
+        );
+    }
     if id == "tube.device-sync" {
         let reason = if matches!(view.status, SyncStatus::Unavailable) {
             Some(if view.summary.trim().is_empty() {

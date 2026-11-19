@@ -135,7 +135,7 @@ ForgetArgs = TypedDict("ForgetArgs", {
 
 class Folder(Resource):
     """Folder — `files.folder`."""
-    __surface__ = "so.tilo.file-explorer@528977fd1ca945e9"
+    __surface__ = "so.tilo.file-explorer@7100e3bd69990d6b"
     places: list[Entry[Bookmark]]
 
     def add_bookmark(self,
@@ -317,7 +317,6 @@ class Folder(Resource):
         """Runs the app's action."""
         return self.action("revert", op=op)
 
-    # the app's `refresh` action is the SDK's own: run it with `action("refresh")`.
     def hand_over(self, *, file: str) -> None:
         """Runs the app's action."""
         return self.action("hand-over", file=file)
@@ -357,7 +356,7 @@ class Folder(Resource):
 
 class Tree(Resource):
     """Files — `files.tree`."""
-    __surface__ = "so.tilo.file-explorer@528977fd1ca945e9"
+    __surface__ = "so.tilo.file-explorer@7100e3bd69990d6b"
     def new_folder(self,
         *,
         parent: Any,
@@ -451,7 +450,7 @@ class Tree(Resource):
 
 class Recent(Resource):
     """Recent files — `files.recent`."""
-    __surface__ = "so.tilo.file-explorer@528977fd1ca945e9"
+    __surface__ = "so.tilo.file-explorer@7100e3bd69990d6b"
     devices: dict[str, Any]
 
     def note(self,
@@ -504,7 +503,7 @@ class Recent(Resource):
 
 class Workspace(Resource):
     """Files window — `files.workspace`."""
-    __surface__ = "so.tilo.file-explorer@528977fd1ca945e9"
+    __surface__ = "so.tilo.file-explorer@7100e3bd69990d6b"
     folder: str
 
 

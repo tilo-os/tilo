@@ -923,7 +923,6 @@ fn a_stand_in_issues_member_certificates_bound_to_it() {
 fn a_stand_in_issues_nothing_beyond_its_bounds() {
     let (key, stand_in) = make_stand_in(1);
     let (other_key, other_person) = make_stand_in(11);
-    let golden_device;
     let mut refused: Vec<(DeviceCert, &ed25519_dalek::SigningKey)> = Vec::new();
 
     let mut more = issued_by(&stand_in, 2_000);
@@ -969,12 +968,6 @@ fn a_stand_in_issues_nothing_beyond_its_bounds() {
     let mut chained = issued_by(&member, 3_000);
     chained.device_public_key = [10; 32];
     refused.push((chained, &device_key));
-    // A root-signed member is no stand-in either.
-    let root_member = golden_cert(false);
-    golden_device = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
-    let mut under_member = issued_by(&root_member, 1_500_000);
-    under_member.device_public_key = [10; 32];
-    refused.push((under_member, &golden_device));
 
     for (cert, signer) in refused {
         let mut signed = cert.clone();
@@ -995,6 +988,126 @@ fn a_stand_in_issues_nothing_beyond_its_bounds() {
         verify_device_cert(&by_root),
         Err(DeviceCertError::BadSignature)
     );
+}
+
+/// A device of the person signs a browser tab in: a member certificate for
+/// at most a browser's lifetime, for its own person, while it is valid, with
+/// its own key; and nothing it issued can issue in turn.
+#[test]
+fn a_device_signs_a_browser_tab_in() {
+    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+    let device_key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+    let mut device = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: device_key.verifying_key().to_bytes(),
+        device_label: "Claude Code on build-box".to_owned(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1_000,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut device, &root).unwrap();
+    verify_device_cert(&device).unwrap();
+    assert!(device.is_root_signed_device());
+
+    // The tab's certificate verifies, binds the device as its issuer, and
+    // round-trips.
+    let mut tab = issued_by(&device, 2_000);
+    sign_device_cert(&mut tab, &device_key).unwrap();
+    verify_device_cert(&tab).unwrap();
+    verify_device_cert_at(&tab, 3_000).unwrap();
+    assert!(
+        !tab.is_root_signed_device(),
+        "it answers a tab, it is no device"
+    );
+    assert_eq!(tab.signer_public_key(), device.device_public_key);
+    assert_eq!(tab.issuer.as_deref(), Some(&device));
+    let json = serde_json::to_string(&tab).unwrap();
+    assert!(json.contains(r#""issuer":{"#));
+    assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), tab);
+    let wire = postcard::to_allocvec(&(&tab, [9u8; 32])).unwrap();
+    let (back, nonce): (DeviceCert, [u8; 32]) = postcard::from_bytes(&wire).unwrap();
+    assert_eq!((back, nonce), (tab.clone(), [9u8; 32]));
+
+    // Beyond a browser's bounds, for another person, outside the device's
+    // validity, its own key or the root's, or a chain of its own, it is
+    // refused.
+    let other_root = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+    let other_device_key = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+    let mut other_device = DeviceCert {
+        user_public_key: other_root.verifying_key().to_bytes(),
+        device_public_key: other_device_key.verifying_key().to_bytes(),
+        device_label: "Another person's laptop".to_owned(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1_000,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut other_device, &other_root).unwrap();
+    let mut bounded = device.clone();
+    bounded.expires_at_ns = Some(5_000);
+    sign_device_cert(&mut bounded, &root).unwrap();
+    let mut refused: Vec<(DeviceCert, &ed25519_dalek::SigningKey)> = Vec::new();
+    let mut more = issued_by(&device, 2_000);
+    more.capabilities = DeviceCapabilities::primary();
+    refused.push((more, &device_key));
+    for caps in [
+        DeviceCapabilities::administrator(),
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+        DeviceCapabilities::stand_in_approver(),
+    ] {
+        let mut cert = issued_by(&device, 2_000);
+        cert.capabilities = caps;
+        refused.push((cert, &device_key));
+    }
+    let mut longer = issued_by(&device, 2_000);
+    longer.expires_at_ns = longer.expires_at_ns.map(|expiry| expiry + 1);
+    refused.push((longer, &device_key));
+    let mut forever = issued_by(&device, 2_000);
+    forever.expires_at_ns = None;
+    refused.push((forever, &device_key));
+    let mut other_persons_tab = issued_by(&device, 2_000);
+    other_persons_tab.user_public_key = other_device.user_public_key;
+    refused.push((other_persons_tab, &device_key));
+    // Before the device was certified, and once it expired.
+    refused.push((issued_by(&device, 999), &device_key));
+    refused.push((issued_by(&bounded, 5_000), &device_key));
+    // Its own key, or the root's, as the tab.
+    let mut own = issued_by(&device, 2_000);
+    own.device_public_key = device.device_public_key;
+    refused.push((own, &device_key));
+    let mut root_key = issued_by(&device, 2_000);
+    root_key.device_public_key = device.user_public_key;
+    refused.push((root_key, &device_key));
+    // A tab the device signed signs nothing.
+    let mut chained = issued_by(&tab, 3_000);
+    chained.device_public_key = [10; 32];
+    refused.push((chained, &device_key));
+
+    for (cert, signer) in refused {
+        let mut signed = cert.clone();
+        assert!(sign_device_cert(&mut signed, signer).is_err(), "{cert:?}");
+        let forced = forced(cert, signer);
+        assert!(verify_device_cert(&forced).is_err(), "{forced:?}");
+    }
+
+    // A device that expires a day later signs a tab for a browser's
+    // lifetime, beyond its own.
+    let mut day = device.clone();
+    day.expires_at_ns = Some(1_000 + 24 * 60 * 60 * 1_000_000_000);
+    sign_device_cert(&mut day, &root).unwrap();
+    let mut beyond = issued_by(&day, 2_000);
+    eprintln!(
+        "signing beyond: {:?}",
+        sign_device_cert(&mut beyond, &device_key)
+    );
+
+    // A device that expires signs while it is valid and not at its end.
+    let mut before = issued_by(&bounded, 4_999);
+    sign_device_cert(&mut before, &device_key).unwrap();
+    verify_device_cert(&before).unwrap();
 }
 
 /// Root `[1; 32]`'s all-workspaces grant (key `[4; 32]`) from 1 000 ns,

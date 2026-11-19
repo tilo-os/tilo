@@ -1294,7 +1294,7 @@ test('an invitation is accepted as the root-certified device, through the shared
   // What the card says comes from here: the workspace, how many people are in
   // it, the part offered and who offers it.
   assert.deepEqual(offer, {workspaceName: 'Acme', role: 'editor', workspace: WORKSPACE, workspaceId: '7', expiresAtNs: '9',
-    members: 4, inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
+    members: 4, inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}, waitList: false});
 
   const progress = [];
   const peer = await joinWorkspace({

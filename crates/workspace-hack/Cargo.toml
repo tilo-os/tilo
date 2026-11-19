@@ -244,10 +244,6 @@ usvg = { version = "0.47" }
 uuid = { version = "1", features = ["serde", "v4", "v5", "v7"] }
 vte = { version = "0.15", features = ["ansi", "serde"] }
 wasm-encoder = { version = "0.252" }
-wasmi = { version = "1", default-features = false, features = ["simd", "std"] }
-wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }
-wasmi_ir = { version = "1", default-features = false, features = ["simd"] }
-wasmparser = { version = "0.239", default-features = false, features = ["features", "simd", "std", "validate"] }
 web-time = { version = "1", default-features = false, features = ["serde"] }
 wgpu = { path = "../../vendor/wgpu", features = ["custom", "noop"] }
 winnow = { version = "0.7" }
@@ -497,10 +493,6 @@ usvg = { version = "0.47" }
 uuid = { version = "1", features = ["serde", "v4", "v5", "v7"] }
 vte = { version = "0.15", features = ["ansi", "serde"] }
 wasm-encoder = { version = "0.252" }
-wasmi = { version = "1", default-features = false, features = ["simd", "std"] }
-wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }
-wasmi_ir = { version = "1", default-features = false, features = ["simd"] }
-wasmparser = { version = "0.239", default-features = false, features = ["features", "simd", "std", "validate"] }
 web-time = { version = "1", default-features = false, features = ["serde"] }
 wgpu = { path = "../../vendor/wgpu", features = ["custom", "noop"] }
 winnow = { version = "0.7" }

@@ -1023,3 +1023,27 @@ fn open_count(list: &mut VirtualList<Grouped>) -> Option<usize> {
         .clone();
     list.shown_heading_count(&band)
 }
+
+/// An agent's outline of a list reads each row once, as the list states it: the row widgets
+/// the list represents in its own nodes are never a second line beside them.
+#[test]
+fn an_agents_outline_reads_each_row_and_heading_once() {
+    let _settled = crate::motion::testing::settled();
+    let mut list = week();
+    let _ = settle(&mut list);
+    let outline = crate::semantic_outline::outline(&list);
+    for line in [
+        "\"Monday\"",
+        "\"Tuesday\"",
+        "\"row 0\"",
+        "\"row 2\"",
+        "\"Done\"",
+    ] {
+        assert_eq!(
+            outline.text.matches(line).count(),
+            1,
+            "{line} is one line of the outline:\n{}",
+            outline.text
+        );
+    }
+}

@@ -104,8 +104,9 @@ pub use cert::{
 pub use certification::{
     CERTIFICATION_CLOCK_ALLOWANCE_NS, CERTIFICATION_REQUEST_TAG, CERTIFICATION_SCHEMA_VERSION,
     CertificationError, CertificationPolicy, CertificationRequest,
-    MAX_CERTIFICATION_REQUEST_LIFETIME_NS, issue_device_cert, issue_device_cert_as_stand_in,
-    issue_device_cert_async, prepare_device_cert, verify_issued_cert,
+    MAX_CERTIFICATION_REQUEST_LIFETIME_NS, issue_device_cert, issue_device_cert_as_device,
+    issue_device_cert_as_stand_in, issue_device_cert_async, prepare_device_cert,
+    verify_issued_cert,
 };
 pub use clock::CertificateClockError;
 pub use directory::{

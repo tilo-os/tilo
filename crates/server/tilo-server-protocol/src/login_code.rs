@@ -16,12 +16,11 @@
 //!   already a device of the person resolves it ([`Resolved::sign_in`]) and
 //!   claims it for that person ([`Claim`]); the tab learns whom to ask
 //!   ([`Polled::claimed`]) and asks to be certified with that invite. The
-//!   claiming device is one that may admit devices (it holds the person's
-//!   root, or carries `can_admit_devices`): it reads the tab's request back
-//!   ([`WAITING_ROUTE`]) and answers it with a certificate it signs
-//!   ([`CERTIFY_ROUTE`]), as any approver answers a pairing. There is no
-//!   other approver: a person whose root lives in a tab approves from that
-//!   tab, as it approves any device of theirs.
+//!   claiming computer is one of the person's own devices, its certificate
+//!   signed by the person's root: it reads the tab's request back
+//!   ([`WAITING_ROUTE`]) and answers it with a certificate of the tab that
+//!   device signs itself ([`CERTIFY_ROUTE`]), as any approver answers a
+//!   pairing. There is no other approver, and no key the server holds.
 //!
 //! A code is only offered until its tab first follows it ([`Follow`]): the
 //! host keeps nothing for a visitor who never uses one. A code is single
@@ -202,14 +201,15 @@ pub struct Report {
     pub detail: Option<String>,
 }
 
-/// A device of a person that may admit devices claims a sign-in code for
-/// them: the tab then asks to be certified as that person's device, and the
-/// claiming device certifies it.
+/// A device of a person claims a sign-in code for them: the tab then asks
+/// to be certified as that person's device, and the claiming device signs
+/// its certificate.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Claim {
     pub report: String,
-    /// The claiming device's certificate, postcard as hex.
+    /// The claiming device's certificate, signed by the person's root,
+    /// postcard as hex.
     pub cert: String,
     /// Unix-epoch nanoseconds the claim was signed at.
     pub signed_at_ns: u64,
@@ -230,8 +230,9 @@ pub enum ClaimRefused {
     Clock,
     /// The claim is not signed by the device its certificate names.
     Signature,
-    /// The device may not admit devices, so it cannot certify the tab.
-    CannotAdmit,
+    /// The certificate is no device the person's root signed, so it cannot
+    /// certify the tab.
+    NotADevice,
 }
 
 impl ClaimRefused {
@@ -243,8 +244,8 @@ impl ClaimRefused {
             Self::Revoked => "this device is revoked",
             Self::Clock => "the claim is too old or from the future",
             Self::Signature => "the claim is not signed by this device",
-            Self::CannotAdmit => {
-                "this device may not admit devices, so it cannot certify this browser"
+            Self::NotADevice => {
+                "this is no device of the person, so it cannot certify this browser"
             }
         }
     }
@@ -273,7 +274,9 @@ pub struct WaitingRequest {
 #[serde(deny_unknown_fields)]
 pub struct Certify {
     pub report: String,
-    /// The root-signed certificate of the tab's device, postcard as hex.
+    /// The tab's certificate, signed by the person's root or by the claiming
+    /// device and carrying that device's certificate as its issuer, postcard
+    /// as hex.
     pub cert: String,
 }
 

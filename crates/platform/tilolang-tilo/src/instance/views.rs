@@ -344,7 +344,11 @@ impl Instance {
             // What the view reads changed: the tree may stand as it was (a row's control reads
             // the item's field it is bound to), and the window still needs the values it shows.
             let stale = view.view.borrow_mut().is_stale();
-            let patches = match view.view.borrow_mut().poll_patches() {
+            let polled = {
+                let _phase = tilo_resource::profiling::Phase::start("instance.views.evaluate");
+                view.view.borrow_mut().poll_patches()
+            };
+            let patches = match polled {
                 Ok(patches) => patches,
                 Err(error) => {
                     // The failing call draws a failed state where it stands (`shell.md` §6,
@@ -397,6 +401,7 @@ impl Instance {
                 });
             }
             if sorted.content {
+                let _phase = tilo_resource::profiling::Phase::start("instance.views.convert");
                 // A list inside the content may have rows the view has not rendered yet.
                 show_content_rows(&mut view.view.borrow_mut());
                 // Only what changed is converted, where it can be: a clock's minute converts
@@ -429,6 +434,7 @@ impl Instance {
             self.track_lists(level);
         }
         if changed {
+            let _phase = tilo_resource::profiling::Phase::start("instance.views.bound");
             self.send_bound(Level::Root);
             self.send_bound(Level::Detail);
         }

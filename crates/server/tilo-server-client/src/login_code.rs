@@ -177,8 +177,8 @@ pub async fn report(client: &dyn HttpClient, report: &Report) -> Result<(), Code
 }
 
 /// Claim the sign-in code resolved as `report` for the person `cert` (postcard, as hex) certifies
-/// this device of, `signer` holding its key. The device may admit devices: it certifies the tab's
-/// request itself ([`waiting`], [`certify`]).
+/// this device of, `signer` holding its key. The device signs the tab's request itself
+/// ([`waiting`], [`certify`]).
 ///
 /// # Errors
 /// The server was not reached, or refused it (`403` with a [`ClaimRefused`] reason in

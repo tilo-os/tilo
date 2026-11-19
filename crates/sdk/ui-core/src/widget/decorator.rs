@@ -604,6 +604,7 @@ decorator_trait! {
             available: taffy::Size<taffy::AvailableSpace>,
             text_renderer: &mut TextRenderer,
         ) -> taffy::Size<f32>;
+        fn size_before_solve(taffy: &mut TaffyTree<()>, node: NodeId, text: &mut TextRenderer);
         fn adjust_layout_style(
             taffy: &mut TaffyTree<()>,
             node: NodeId,

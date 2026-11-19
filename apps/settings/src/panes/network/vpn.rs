@@ -13,7 +13,7 @@ use os_actions::network_settings::{
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, LiveRow};
 use ui::icons::Icon;
-use ui::tilo_resource::{self, Effect};
+use ui::tilo_resource;
 use ui::widget::{Button, ButtonRole, ListRow, NumberInput, TextInput, Toggle};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -22,7 +22,7 @@ use super::{
     take_secret,
 };
 use crate::categories::Category;
-use crate::effects::{SettingsEffect, effect};
+use crate::effects::effect;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -172,7 +172,7 @@ pub enum VpnEffect {
     },
     /// Bring a VPN up or down.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = VpnConnection)]
     SetVpnConnected {
         #[param("The VPN's id or name")]
         connection: String,
@@ -180,14 +180,14 @@ pub enum VpnEffect {
     },
     /// Bring a VPN up.
     #[effect(kind = "outside")]
-    #[effect(job, row)]
+    #[effect(job, row, on = VpnConnection)]
     Connect {
         #[param("The VPN's id or name")]
         connection: String,
     },
     /// Bring a VPN down.
     #[effect(kind = "outside")]
-    #[effect(job, row)]
+    #[effect(job, row, on = VpnConnection)]
     Disconnect {
         #[param("The VPN's id or name")]
         connection: String,
@@ -201,7 +201,7 @@ pub enum VpnEffect {
     },
     /// Rename a VPN.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = VpnConnection)]
     SetVpnName {
         #[param("The VPN's id or name")]
         connection: String,
@@ -209,7 +209,7 @@ pub enum VpnEffect {
     },
     /// Bring a VPN up by itself, or not.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = VpnConnection)]
     SetVpnAutoconnect {
         #[param("The VPN's id or name")]
         connection: String,
@@ -217,7 +217,7 @@ pub enum VpnEffect {
     },
     /// Send every connection through a VPN, or only what it routes.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent, label = "net-vpn-all-traffic")]
+    #[effect(job, row, idempotent, label = "net-vpn-all-traffic", on = VpnConnection)]
     SetVpnAllTraffic {
         #[param("The VPN's id or name")]
         connection: String,
@@ -225,7 +225,7 @@ pub enum VpnEffect {
     },
     /// Have a VPN ask this name server too; without any it asks its own.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = VpnConnection)]
     AddVpnDnsServer {
         #[param("The VPN's id or name")]
         connection: String,
@@ -234,7 +234,7 @@ pub enum VpnEffect {
     },
     /// Stop a VPN asking this name server.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = VpnConnection)]
     RemoveVpnDnsServer {
         #[param("The VPN's id or name")]
         connection: String,
@@ -244,7 +244,7 @@ pub enum VpnEffect {
     /// The largest packet a VPN sends, in bytes; chosen automatically when
     /// omitted.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent, label = "net-vpn-mtu-size")]
+    #[effect(job, row, idempotent, label = "net-vpn-mtu-size", on = VpnConnection)]
     SetVpnMtu {
         #[param("The VPN's id or name")]
         connection: String,
@@ -253,7 +253,7 @@ pub enum VpnEffect {
     },
     /// Where a `WireGuard` tunnel's server is.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = VpnConnection)]
     SetVpnServer {
         #[param("The VPN's id or name")]
         connection: String,
@@ -262,7 +262,7 @@ pub enum VpnEffect {
     },
     /// Have a `WireGuard` tunnel route this address too.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = VpnConnection)]
     AddVpnRoutedAddress {
         #[param("The VPN's id or name")]
         connection: String,
@@ -271,7 +271,7 @@ pub enum VpnEffect {
     },
     /// Stop a `WireGuard` tunnel routing this address.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = VpnConnection)]
     RemoveVpnRoutedAddress {
         #[param("The VPN's id or name")]
         connection: String,
@@ -282,7 +282,7 @@ pub enum VpnEffect {
     /// connected, or not; and whether the local network stays reachable
     /// meanwhile (kept as it was when omitted).
     #[effect(kind = "outside")]
-    #[effect(idempotent, row, label = "net-vpn-kill-switch")]
+    #[effect(idempotent, row, label = "net-vpn-kill-switch", on = VpnConnection)]
     SetKillSwitch {
         #[param("The VPN's id or name")]
         connection: String,
@@ -292,7 +292,7 @@ pub enum VpnEffect {
     },
     /// How often a `WireGuard` tunnel tells its server it is there; 0 never.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = VpnConnection)]
     SetVpnKeepalive {
         #[param("The VPN's id or name")]
         connection: String,
@@ -309,7 +309,7 @@ pub enum VpnEffect {
     /// Send this device's traffic through another of the person's devices,
     /// or stop.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = devices::VpnDevice)]
     SetDeviceVpn {
         #[param("The other device's id")]
         device: String,
@@ -816,8 +816,6 @@ impl NetworkModel {
                 open(self, PAGE_VPN, t("net-vpn"))
             }
             VpnEffect::ShowVpnProfile { connection } => {
-                let connection =
-                    crate::effects::row_entity(&connection, "vpn.connection").to_owned();
                 let vpn = match self.vpn(&connection) {
                     Ok(vpn) => vpn,
                     Err(_) if !self.loaded => {
@@ -966,7 +964,7 @@ impl NetworkModel {
             VpnEffect::Connect { connection } => self.vpn_switch(&connection, true),
             VpnEffect::Disconnect { connection } => self.vpn_switch(&connection, false),
             VpnEffect::DeleteConnection { connection } => {
-                let vpn = self.vpn(crate::effects::row_entity(&connection, "vpn.connection"))?;
+                let vpn = self.vpn(&connection)?;
                 Ok(self.change(
                     NetworkChange::VpnDelete {
                         uuid: vpn.uuid,
@@ -1102,7 +1100,7 @@ impl NetworkModel {
                 },
             ),
             VpnEffect::ExportVpn { connection } => {
-                let vpn = self.vpn(crate::effects::row_entity(&connection, "vpn.connection"))?;
+                let vpn = self.vpn(&connection)?;
                 if self.vpn.export.is_none() {
                     let suggested = if vpn.kind == "wireguard" {
                         format!(
@@ -1130,9 +1128,7 @@ impl NetworkModel {
             VpnEffect::SetDeviceVpn { device, on } => self.route_through_device(&device, on),
             VpnEffect::SetDeviceVpnKillSwitch { on } => self.set_device_kill_switch(on),
             VpnEffect::SetDeviceExit { on } => self.share_device(on),
-            VpnEffect::StopDeviceExit { device } => {
-                self.stop_exit_user(crate::effects::row_entity(&device, "vpn.exit-user"))
-            }
+            VpnEffect::StopDeviceExit { device } => self.stop_exit_user(&device),
         }
     }
 
@@ -1217,132 +1213,81 @@ impl NetworkModel {
     }
 
     fn vpn_live(&self, vpn: &VpnInfo) -> LiveRow {
-        let offer = |effect: VpnEffect| SettingsEffect::from(effect).bound();
-        let asking =
-            |effect: VpnEffect, asking: &[&str]| SettingsEffect::from(effect).bound_asking(asking);
         let connection = vpn.uuid.clone();
         let on = self.set_to_connect(vpn);
-        let mut row = LiveRow::typed::<VpnConnection>(
+        let mut bindings = tilo_resource::RowBindings::new()
+            .bind(
+                VpnEffect::SHOW_VPN_PROFILE,
+                [("connection", connection.clone().into())],
+            )
+            .bind(
+                VpnEffect::SET_VPN_CONNECTED,
+                [("connection", connection.clone().into())],
+            )
+            .bind(
+                VpnEffect::SET_KILL_SWITCH,
+                [("connection", connection.clone().into())],
+            )
+            .bind(
+                if on {
+                    VpnEffect::DISCONNECT
+                } else {
+                    VpnEffect::CONNECT
+                },
+                [("connection", connection.clone().into())],
+            )
+            .bind(
+                VpnEffect::DELETE_CONNECTION,
+                [("connection", connection.clone().into())],
+            )
+            .bind(
+                VpnEffect::EXPORT_VPN,
+                [("connection", connection.clone().into())],
+            );
+        if let Some(settings) = self.vpn.settings.get(&vpn.uuid) {
+            bindings = Self::setting_bindings(bindings, &connection, settings);
+        }
+        LiveRow::typed_with::<VpnConnection>(
             format!("vpn.connection:{}", vpn.uuid),
             vpn.name.clone(),
-        );
-        row = row
-            .operation(asking(
-                VpnEffect::SetVpnConnected {
-                    connection: connection.clone(),
-                    on: !on,
-                },
-                &["on"],
-            ))
-            .operation(asking(
-                VpnEffect::SetKillSwitch {
-                    connection: connection.clone(),
-                    on: self.kill_switch(&vpn.uuid).is_none(),
-                    allow_local: None,
-                },
-                &["on", "allow_local"],
-            ))
-            .operation(offer(if on {
-                VpnEffect::Disconnect {
-                    connection: connection.clone(),
-                }
-            } else {
-                VpnEffect::Connect {
-                    connection: connection.clone(),
-                }
-            }));
-        if let Some(settings) = self.vpn.settings.get(&vpn.uuid) {
-            row = Self::setting_operations(row, connection, settings);
-        }
-        row
+            &bindings,
+        )
     }
 
-    fn setting_operations(
-        mut row: LiveRow,
-        connection: String,
+    fn setting_bindings(
+        mut bindings: tilo_resource::RowBindings,
+        connection: &str,
         settings: &VpnProfileSettings,
-    ) -> LiveRow {
-        let asking =
-            |effect: VpnEffect, asking: &[&str]| SettingsEffect::from(effect).bound_asking(asking);
-        row = row
-            .operation(asking(
-                VpnEffect::SetVpnName {
-                    connection: connection.clone(),
-                    name: settings.name.clone(),
-                },
-                &["name"],
-            ))
-            .operation(asking(
-                VpnEffect::SetVpnAutoconnect {
-                    connection: connection.clone(),
-                    on: !settings.autoconnect,
-                },
-                &["on"],
-            ))
-            .operation(asking(
-                VpnEffect::SetVpnAllTraffic {
-                    connection: connection.clone(),
-                    on: !settings.all_traffic,
-                },
-                &["on"],
-            ))
-            .operation(asking(
-                VpnEffect::AddVpnDnsServer {
-                    connection: connection.clone(),
-                    server: String::new(),
-                },
-                &["server"],
-            ))
-            .operation(asking(
-                VpnEffect::SetVpnMtu {
-                    connection: connection.clone(),
-                    mtu: None,
-                },
-                &["mtu"],
-            ));
-        if let Some(server) = settings.dns.first() {
-            row = row.operation(asking(
-                VpnEffect::RemoveVpnDnsServer {
-                    connection: connection.clone(),
-                    server: server.clone(),
-                },
-                &["server"],
-            ));
+    ) -> tilo_resource::RowBindings {
+        let profile = || serde_json::Value::from(connection);
+        bindings = bindings
+            .bind(VpnEffect::SET_VPN_NAME, [("connection", profile())])
+            .bind(VpnEffect::SET_VPN_AUTOCONNECT, [("connection", profile())])
+            .bind(VpnEffect::SET_VPN_ALL_TRAFFIC, [("connection", profile())])
+            .bind(VpnEffect::ADD_VPN_DNS_SERVER, [("connection", profile())])
+            .bind(VpnEffect::SET_VPN_MTU, [("connection", profile())]);
+        if !settings.dns.is_empty() {
+            bindings = bindings.bind(
+                VpnEffect::REMOVE_VPN_DNS_SERVER,
+                [("connection", profile())],
+            );
         }
         if settings.kind == "wireguard" {
-            row = row
-                .operation(asking(
-                    VpnEffect::SetVpnServer {
-                        connection: connection.clone(),
-                        endpoint: settings.endpoint.clone().unwrap_or_default(),
-                    },
-                    &["endpoint"],
-                ))
-                .operation(asking(
-                    VpnEffect::AddVpnRoutedAddress {
-                        connection: connection.clone(),
-                        address: String::new(),
-                    },
-                    &["address"],
-                ))
-                .operation(asking(
-                    VpnEffect::SetVpnKeepalive {
-                        connection: connection.clone(),
-                        seconds: settings.keepalive.unwrap_or(0),
-                    },
-                    &["seconds"],
-                ));
-            if let Some(address) = settings.allowed_ips.first() {
-                row = row.operation(asking(
-                    VpnEffect::RemoveVpnRoutedAddress {
-                        connection,
-                        address: address.clone(),
-                    },
-                    &["address"],
-                ));
+            bindings = bindings
+                .bind(VpnEffect::SET_VPN_SERVER, [("connection", profile())])
+                .bind(
+                    VpnEffect::ADD_VPN_ROUTED_ADDRESS,
+                    [("connection", profile())],
+                )
+                .bind(VpnEffect::SET_VPN_KEEPALIVE, [("connection", profile())]);
+            if !settings.allowed_ips.is_empty() {
+                bindings = bindings.bind(
+                    VpnEffect::REMOVE_VPN_ROUTED_ADDRESS,
+                    [("connection", profile())],
+                );
             }
         }
-        row
+        bindings
     }
 
     pub(super) fn vpn_rows(&self) -> Vec<LiveRow> {

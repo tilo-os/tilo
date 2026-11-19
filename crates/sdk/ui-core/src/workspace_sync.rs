@@ -20,6 +20,43 @@ pub enum WorkspaceSyncState {
     HostNeedsUpdate,
     DeviceNeedsUpdate,
     Synced,
+    /// This device dials none of the workspace's servers or devices, for this reason: nothing of
+    /// what the workspace holds arrives until it changes.
+    Unavailable(WorkspaceUnavailable),
+}
+
+/// Why this device dials none of a workspace's holders now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceUnavailable {
+    /// This device has no identity to take part in the workspace with.
+    NoIdentity,
+    /// The workspace no longer takes this device's certificate, and renewing it failed.
+    NotRenewed,
+    /// Which devices or servers hold the workspace could not be read.
+    HoldersUnreadable,
+    /// No device or server holds the workspace.
+    NoHolders,
+    /// The workspace is kept on this device, whose own workspace service did not open.
+    OwnServiceStopped,
+}
+
+impl WorkspaceUnavailable {
+    const fn message_id(self) -> &'static str {
+        match self {
+            Self::NoIdentity => "workspace-sync-no-identity",
+            Self::NotRenewed => "workspace-sync-not-renewed",
+            Self::HoldersUnreadable => "workspace-sync-holders-unreadable",
+            Self::NoHolders => "workspace-sync-no-holders",
+            Self::OwnServiceStopped => "workspace-sync-own-service-stopped",
+        }
+    }
+}
+
+impl std::fmt::Display for WorkspaceUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::i18n::I18nManager::lookup_plain(self.message_id()))
+    }
 }
 
 /// The workspace a window is in, and where it stands with its host.
@@ -63,12 +100,14 @@ struct Told {
     since: Instant,
 }
 
-/// Why what the workspace holds cannot arrive: nothing syncs until one side updates.
+/// Why what the workspace holds cannot arrive: nothing syncs until one side updates, or until
+/// this device can dial the workspace's holders again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkspaceUnreachable {
     HostNeedsUpdate,
     DeviceNeedsUpdate,
     ShellGone,
+    Unavailable(WorkspaceUnavailable),
 }
 
 impl std::fmt::Display for WorkspaceUnreachable {
@@ -77,6 +116,7 @@ impl std::fmt::Display for WorkspaceUnreachable {
             Self::HostNeedsUpdate => "workspace-sync-host-needs-update",
             Self::DeviceNeedsUpdate => "workspace-sync-device-needs-update",
             Self::ShellGone => "workspace-sync-shell-gone",
+            Self::Unavailable(cause) => cause.message_id(),
         }))
     }
 }
@@ -88,6 +128,7 @@ thread_local! {
     static LOST: Cell<bool> = const { Cell::new(false) };
     static HOLDINGS: RefCell<Option<Arriving<(), WorkspaceUnreachable>>> =
         const { RefCell::new(None) };
+    static RETRY: Cell<bool> = const { Cell::new(false) };
     static FOLLOWERS: RefCell<Vec<crate::permissions::WeakPermissions>> =
         const { RefCell::new(Vec::new()) };
     /// The spinner step an empty state painted last, and where (scene pixels) a new pose
@@ -141,12 +182,26 @@ pub fn holdings() -> Arriving<(), WorkspaceUnreachable> {
         holdings
             .borrow_mut()
             .get_or_insert_with(|| {
-                let arriving = Arriving::pending(Source::Local);
+                let arriving = Arriving::pending(Source::Local).on_retry(|_| retry());
                 arriving.stand(pending());
                 arriving
             })
             .clone()
     })
+}
+
+/// Ask the shell to dial the window's workspace again now, rather than at its own pace: the
+/// person pressed "Try again" on a workspace that could not arrive. The window waits for the
+/// shell's word on how that went ([`take_retry`]).
+pub fn retry() {
+    RETRY.with(|retry| retry.set(true));
+}
+
+/// Whether the window asked to dial its workspace again since this was last asked: the app's
+/// runner tells the shell so.
+#[must_use]
+pub fn take_retry() -> bool {
+    RETRY.with(|retry| retry.replace(false))
 }
 
 fn pending() -> Arrival<(), WorkspaceUnreachable> {
@@ -170,6 +225,9 @@ fn pending() -> Arrival<(), WorkspaceUnreachable> {
             }
             WorkspaceSyncState::DeviceNeedsUpdate => {
                 Arrival::Failed(WorkspaceUnreachable::DeviceNeedsUpdate)
+            }
+            WorkspaceSyncState::Unavailable(cause) => {
+                Arrival::Failed(WorkspaceUnreachable::Unavailable(cause))
             }
         },
     }
@@ -351,6 +409,13 @@ pub(crate) fn waiting() -> Option<Waiting> {
                 )),
                 spinner_since: None,
                 icon: crate::icons::Icon::Download,
+                keeps_action: false,
+            },
+            WorkspaceSyncState::Unavailable(cause) => Waiting {
+                title: crate::i18n::I18nManager::lookup_plain("arriving-failed"),
+                message: Some(cause.to_string()),
+                spinner_since: None,
+                icon: crate::icons::Icon::WifiOff,
                 keeps_action: false,
             },
             WorkspaceSyncState::Synced => return None,

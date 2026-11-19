@@ -106,7 +106,7 @@ pub enum NetworkEffect {
     /// Connect to a Wi-Fi network. Without a password a secure network uses
     /// one the person's devices share, else asks for it with the password
     /// prompt.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row)]
     ConnectNetwork {
         #[param("The network's name (SSID)")]
@@ -158,7 +158,7 @@ pub enum NetworkEffect {
         password: Option<String>,
     },
     /// Join a saved network by itself whenever it is in range, or not.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row, idempotent)]
     SetAutoconnect {
         #[param("The saved network's id")]
@@ -167,7 +167,7 @@ pub enum NetworkEffect {
     },
     /// Which of several known networks in range is joined first: the
     /// higher.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row, idempotent)]
     SetPriority {
         #[param("The saved network's id")]
@@ -177,7 +177,7 @@ pub enum NetworkEffect {
     },
     /// Count a saved network's data against a limit, never, or as the
     /// network says.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row, idempotent, label = "net-metered-connection")]
     SetMeteredPolicy {
         #[param("The saved network's id")]
@@ -186,7 +186,7 @@ pub enum NetworkEffect {
         policy: String,
     },
     /// Which hardware address this device shows a saved Wi-Fi network.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row, idempotent, label = "net-hardware-address")]
     SetMacAddress {
         #[param("The saved network's id")]
@@ -195,7 +195,7 @@ pub enum NetworkEffect {
         policy: String,
     },
     /// Join a saved network even when it does not broadcast its name.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row, idempotent, label = "net-hidden-network")]
     SetHiddenNetwork {
         #[param("The saved network's id")]
@@ -219,7 +219,7 @@ pub enum NetworkEffect {
     },
     /// Set a profile's IPv6 settings; what is omitted is what its form
     /// holds.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row, label = "net-apply-ipv6")]
     SetIpv6 {
         #[param("The saved profile's id")]
@@ -231,7 +231,7 @@ pub enum NetworkEffect {
         gateway: Option<String>,
     },
     /// Give a profile name servers of its own; none takes the network's.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row, idempotent, label = "net-dns-servers")]
     SetDns {
         #[param("The saved profile's id")]
@@ -241,7 +241,7 @@ pub enum NetworkEffect {
     },
     /// Send a profile's connections through a proxy, or not; what is
     /// omitted is what its form holds.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row, label = "net-apply-proxy")]
     SetProxy {
         #[param("The saved profile's id")]
@@ -253,7 +253,7 @@ pub enum NetworkEffect {
     },
     /// Change who a work or school network knows this device as; what is
     /// omitted is what its form holds.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row, label = "net-apply-identity")]
     SetEnterpriseIdentity {
         #[param("The saved network's id")]
@@ -264,7 +264,7 @@ pub enum NetworkEffect {
     },
     /// Show a saved network's password on its page, asking to authenticate
     /// first; or hide it.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row, label = "net-show-password")]
     ShowNetworkPassword {
         #[param("The saved network's id")]
@@ -272,7 +272,7 @@ pub enum NetworkEffect {
     },
     /// Change a saved network's password; without one, ask for it with the
     /// password prompt.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row, label = "net-change-password")]
     SetNetworkPassword {
         #[param("The saved network's id")]
@@ -281,14 +281,14 @@ pub enum NetworkEffect {
         password: Option<String>,
     },
     /// Show or hide the QR code a phone scans to join a network.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row)]
     ShowNetworkCode {
         #[param("The network's name (SSID)")]
         ssid: String,
     },
     /// Persist magic-packet wake for this saved connection. Enabled does not certify physical resume.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row, idempotent)]
     SetNetworkWake {
         #[param("The saved network's id")]
@@ -296,7 +296,7 @@ pub enum NetworkEffect {
         on: bool,
     },
     /// Forget a saved network and its password.
-    #[effect(kind = "outside", on = NetworkProfileRow)]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row, destructive)]
     #[effect(keywords = "remove network, forget wifi, delete network")]
     ForgetNetwork {
@@ -305,7 +305,7 @@ pub enum NetworkEffect {
     },
     /// Seal a saved Wi-Fi network's password for the person's other
     /// devices, so they join it too.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = WifiNetwork, on = NetworkProfileRow)]
     #[effect(job, row, label = "net-share-devices")]
     ShareNetwork {
         #[param("The saved network's id")]
@@ -2299,90 +2299,122 @@ impl NetworkModel {
     }
 
     fn wifi_live(&self, ssid: &str) -> LiveRow {
-        let offer = |effect: NetworkEffect| SettingsEffect::from(effect).bound();
-        let mut row = LiveRow::typed::<WifiNetwork>(wifi_row_id(ssid), ssid.to_owned());
+        let mut bindings = tilo_resource::RowBindings::new().bind(
+            NetworkEffect::OPEN_NETWORK_PAGE,
+            [("ssid", ssid.to_owned().into())],
+        );
         if let Some(network) = self.in_range(ssid) {
             if !network.connected {
-                row = row.operation(offer(NetworkEffect::ConnectNetwork {
-                    ssid: ssid.to_owned(),
-                    password: None,
-                }));
+                bindings = bindings.bind(
+                    NetworkEffect::CONNECT_NETWORK,
+                    [
+                        ("ssid", ssid.to_owned().into()),
+                        ("password", serde_json::Value::Null),
+                    ],
+                );
             }
-            row = row.operation(offer(NetworkEffect::ShowNetworkCode {
-                ssid: ssid.to_owned(),
-            }));
+            bindings = bindings.bind(
+                NetworkEffect::SHOW_NETWORK_CODE,
+                [("ssid", ssid.to_owned().into())],
+            );
         }
         let Some(profile) = self.saved_profile_of(ssid) else {
-            return row;
+            return LiveRow::typed_with::<WifiNetwork>(
+                wifi_row_id(ssid),
+                ssid.to_owned(),
+                &bindings,
+            );
         };
-        let uuid = profile.uuid.clone();
-        let settings = self.profile_settings.get(&uuid);
-        let asking = |effect: NetworkEffect, asking: &[&str]| {
-            SettingsEffect::from(effect).bound_asking(asking)
-        };
-        row = row
-            .operation(asking(
-                NetworkEffect::SetAutoconnect {
-                    profile: uuid.clone(),
-                    on: !profile.autoconnect,
-                },
-                &["on"],
-            ))
-            .operation(offer(NetworkEffect::ForgetNetwork {
-                profile: uuid.clone(),
-            }))
-            .operation(offer(NetworkEffect::ShareNetwork {
-                profile: uuid.clone(),
-            }))
-            .operation(offer(NetworkEffect::ShowNetworkPassword {
-                profile: uuid.clone(),
-            }))
-            .operation(offer(NetworkEffect::SetNetworkPassword {
-                profile: uuid.clone(),
-                password: None,
-            }));
-        if let Some(settings) = settings {
-            row = with_profile_settings(row, &uuid, settings);
+        bindings = Self::profile_bindings(bindings, profile);
+        if let Some(settings) = self.profile_settings.get(&profile.uuid) {
+            bindings = profile_settings_bindings(bindings, &profile.uuid, settings);
         }
-        self.with_wake(row, profile)
+        let (bindings, wake) = self.wake_bindings(bindings, profile);
+        let mut row =
+            LiveRow::typed_with::<WifiNetwork>(wifi_row_id(ssid), ssid.to_owned(), &bindings);
+        if let Some(wake) = wake {
+            row = row.presentation(wake);
+        }
+        row
+    }
+
+    /// The bindings with what a saved profile's row offers beside its
+    /// network: whether it joins by itself, and forgetting, sharing or
+    /// changing it.
+    fn profile_bindings(
+        mut bindings: tilo_resource::RowBindings,
+        profile: &SavedNetworkProfile,
+    ) -> tilo_resource::RowBindings {
+        let profile_id = profile.uuid.clone();
+        bindings = bindings
+            .bind(
+                NetworkEffect::SET_AUTOCONNECT,
+                [("profile", profile_id.clone().into())],
+            )
+            .bind(
+                NetworkEffect::FORGET_NETWORK,
+                [("profile", profile_id.clone().into())],
+            )
+            .bind(
+                NetworkEffect::SHARE_NETWORK,
+                [("profile", profile_id.clone().into())],
+            )
+            .bind(
+                NetworkEffect::SHOW_NETWORK_PASSWORD,
+                [("profile", profile_id.clone().into())],
+            )
+            .bind(
+                NetworkEffect::SET_NETWORK_PASSWORD,
+                [
+                    ("profile", profile_id.into()),
+                    ("password", serde_json::Value::Null),
+                ],
+            );
+        bindings
     }
 
     pub(crate) fn profile_live(&self, profile: &SavedNetworkProfile) -> LiveRow {
         if profile.kind == "802-11-wireless" {
             return self.wifi_live(&profile.name);
         }
-        let mut row = LiveRow::typed::<NetworkProfileRow>(
+        let bindings = Self::profile_bindings(tilo_resource::RowBindings::new(), profile);
+        let (bindings, wake) = self.wake_bindings(bindings, profile);
+        let mut row = LiveRow::typed_with::<NetworkProfileRow>(
             format!("settings.network-profile:{}", profile.uuid),
             profile.name.clone(),
+            &bindings,
         );
-        row = row.operation(
-            SettingsEffect::from(NetworkEffect::SetAutoconnect {
-                profile: profile.uuid.clone(),
-                on: !profile.autoconnect,
-            })
-            .bound_asking(&["on"]),
-        );
-        self.with_wake(row, profile)
-    }
-
-    fn with_wake(&self, mut row: LiveRow, profile: &SavedNetworkProfile) -> LiveRow {
-        if let Some(Ok(wake)) = self.wake_settings.get(&profile.uuid) {
-            row = row.presentation(ui::tilo_actions::ResourcePresentation {
-                detail: None,
-                badge: None,
-                preview: Some(t(wake_description(wake))),
-            });
-            if wake.configured || wake.supported == Some(true) {
-                row = row.operation(
-                    SettingsEffect::from(NetworkEffect::SetNetworkWake {
-                        profile: profile.uuid.clone(),
-                        on: !wake.configured,
-                    })
-                    .bound_asking(&["on"]),
-                );
-            }
+        if let Some(wake) = wake {
+            row = row.presentation(wake);
         }
         row
+    }
+
+    /// The bindings with whether waking this profile's device is offered,
+    /// and what the profile shows about it.
+    fn wake_bindings(
+        &self,
+        mut bindings: tilo_resource::RowBindings,
+        profile: &SavedNetworkProfile,
+    ) -> (
+        tilo_resource::RowBindings,
+        Option<ui::tilo_actions::ResourcePresentation>,
+    ) {
+        let Some(Ok(wake)) = self.wake_settings.get(&profile.uuid) else {
+            return (bindings, None);
+        };
+        let presentation = Some(ui::tilo_actions::ResourcePresentation {
+            detail: None,
+            badge: None,
+            preview: Some(t(wake_description(wake))),
+        });
+        if wake.configured || wake.supported == Some(true) {
+            bindings = bindings.bind(
+                NetworkEffect::SET_NETWORK_WAKE,
+                [("profile", profile.uuid.clone().into())],
+            );
+        }
+        (bindings, presentation)
     }
 
     fn change(&mut self, change: NetworkChange, notice: Option<String>) -> Begun {
@@ -2463,7 +2495,6 @@ impl NetworkModel {
                 Begun::Done
             }
             NetworkEffect::OpenNetworkPage { ssid } => {
-                let ssid = crate::effects::row_entity(&ssid, "network.wifi").to_owned();
                 if self.in_range(&ssid).is_none() && self.saved_profile_of(&ssid).is_none() {
                     return Err(format!("{ssid} is neither in range nor saved."));
                 }
@@ -2816,10 +2847,7 @@ impl NetworkModel {
                 )
             }
             NetworkEffect::ForgetNetwork { profile } => {
-                let profile = self.profile(crate::effects::row_entity(
-                    &profile,
-                    "settings.network-profile",
-                ))?;
+                let profile = self.profile(&profile)?;
                 self.change(
                     NetworkChange::Forget {
                         uuid: profile.uuid,
@@ -3642,83 +3670,25 @@ impl NetworkModel {
     }
 }
 
-fn with_profile_settings(
-    mut row: LiveRow,
+fn profile_settings_bindings(
+    mut bindings: tilo_resource::RowBindings,
     uuid: &str,
     settings: &os_actions::ConnectionProfileSettings,
-) -> LiveRow {
-    let asking =
-        |effect: NetworkEffect, asking: &[&str]| SettingsEffect::from(effect).bound_asking(asking);
-    let uuid = uuid.to_owned();
-    row = row
-        .operation(asking(
-            NetworkEffect::SetPriority {
-                profile: uuid.clone(),
-                priority: settings.priority.unwrap_or(0),
-            },
-            &["priority"],
-        ))
-        .operation(asking(
-            NetworkEffect::SetMeteredPolicy {
-                profile: uuid.clone(),
-                policy: settings.metered.map_or("Automatic", metered_id).into(),
-            },
-            &["policy"],
-        ))
-        .operation(asking(
-            NetworkEffect::SetMacAddress {
-                profile: uuid.clone(),
-                policy: settings
-                    .mac
-                    .map_or("Random for this network", mac_id)
-                    .into(),
-            },
-            &["policy"],
-        ))
-        .operation(asking(
-            NetworkEffect::SetHiddenNetwork {
-                profile: uuid.clone(),
-                on: !settings.hidden.unwrap_or(false),
-            },
-            &["on"],
-        ))
-        .operation(asking(
-            NetworkEffect::SetDns {
-                profile: uuid.clone(),
-                servers: settings
-                    .ipv4
-                    .as_ref()
-                    .map(|ipv4| ipv4.dns.join(", "))
-                    .unwrap_or_default(),
-            },
-            &["servers"],
-        ))
-        .operation(asking(
-            NetworkEffect::SetIpv6 {
-                profile: uuid.clone(),
-                method: None,
-                addresses: None,
-                gateway: None,
-            },
-            &["method", "addresses", "gateway"],
-        ))
-        .operation(asking(
-            NetworkEffect::SetProxy {
-                profile: uuid.clone(),
-                mode: None,
-                address: None,
-            },
-            &["mode", "address"],
-        ));
+) -> tilo_resource::RowBindings {
+    let profile = || serde_json::Value::from(uuid.to_owned());
+    bindings = bindings
+        .bind(NetworkEffect::SET_PRIORITY, [("profile", profile())])
+        .bind(NetworkEffect::SET_METERED_POLICY, [("profile", profile())])
+        .bind(NetworkEffect::SET_MAC_ADDRESS, [("profile", profile())])
+        .bind(NetworkEffect::SET_HIDDEN_NETWORK, [("profile", profile())])
+        .bind(NetworkEffect::SET_DNS, [("profile", profile())])
+        .bind(NetworkEffect::SET_IPV6, [("profile", profile())])
+        .bind(NetworkEffect::SET_PROXY, [("profile", profile())]);
     if settings.enterprise.is_some() {
-        row = row.operation(asking(
-            NetworkEffect::SetEnterpriseIdentity {
-                profile: uuid,
-                identity: None,
-                ca_certificate: None,
-            },
-            &["identity", "ca_certificate"],
-        ));
+        bindings = bindings.bind(
+            NetworkEffect::SET_ENTERPRISE_IDENTITY,
+            [("profile", profile())],
+        );
     }
-    row
+    bindings
 }

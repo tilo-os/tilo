@@ -75,9 +75,9 @@ pub struct Button {
     /// Stretch to the parent's width instead of sizing to the label.
     fill_width: bool,
     role: ButtonRole,
-    /// It wears the primary face while the pointer is over it or the keyboard is on it
-    /// ([`Self::primary_when_engaged`]): one of several equal answers, the one about to be given.
-    primary_when_engaged: bool,
+    /// It wears the primary face while the pointer is over it ([`Self::primary_on_hover`]): one of
+    /// several equal answers, the one a press there gives.
+    primary_on_hover: bool,
     toggled: Option<bool>,
     shortcut: Option<crate::platform::Shortcut>,
     /// The width `measure` settled on, pinned onto the node so a stretching
@@ -184,7 +184,7 @@ impl Button {
             count_size: vello::kurbo::Size::ZERO,
             fill_width: false,
             role: ButtonRole::Secondary,
-            primary_when_engaged: false,
+            primary_on_hover: false,
             toggled: None,
             opens_menu: false,
             shows_choice: false,
@@ -490,7 +490,7 @@ impl Button {
         if fresh.icon.is_some() != self.icon.is_some()
             || (!compact && fresh.label.is_empty() != self.label.is_empty())
             || fresh.role != self.role
-            || fresh.primary_when_engaged != self.primary_when_engaged
+            || fresh.primary_on_hover != self.primary_on_hover
             || fresh.control_size != self.control_size
             || fresh.faces != self.faces
             || fresh.avatar != self.avatar
@@ -717,11 +717,13 @@ impl Button {
         self.role
     }
 
-    /// Wear the primary face while the pointer is over it or the keyboard is on it, and its own
-    /// role otherwise: a row of equal answers, none suggested, shows which one a press gives.
+    /// Wear the primary face while the pointer is over it, and its own role otherwise: a row of
+    /// equal answers, none suggested, shows which one a click there gives. Keyboard focus stays
+    /// neutral and shows the ring alone, since an answer the person only reached is not yet chosen
+    /// over the others.
     #[must_use]
-    pub fn primary_when_engaged(mut self) -> Self {
-        self.primary_when_engaged = true;
+    pub fn primary_on_hover(mut self) -> Self {
+        self.primary_on_hover = true;
         self.dirty = true;
         self
     }
@@ -2028,10 +2030,12 @@ impl Button {
             disabled: !self.effectively_enabled(),
         };
         let on = self.is_toggled();
-        let engaged = (interact.hovered || interact.focused) && !interact.disabled;
+        // The pointer alone names the answer a press gives. Keyboard focus wears the ring, not the
+        // fill: a filled choice reads as the suggested one, and the keyboard has not suggested it.
+        let engaged = interact.hovered && !interact.disabled;
         FacePaint {
             rect: self.rect,
-            role: if self.primary_when_engaged && engaged {
+            role: if self.primary_on_hover && engaged {
                 ButtonRole::Primary
             } else {
                 self.role
@@ -2326,6 +2330,25 @@ impl Widget for Button {
                 .height
                 .unwrap_or_else(|| f32_of_f64(self.face_height())),
         }
+    }
+
+    /// The face's height and, for an intrinsic button, the label's width: both follow from what
+    /// the button shows, so the first solve has them.
+    fn size_before_solve(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) {
+        self.measure_count(text);
+        self.pin_face_height(taffy, node);
+        if self.fill_width {
+            return;
+        }
+        if self.measured_width.is_none() {
+            self.measured_width = Some(self.intrinsic_width(text));
+        }
+        self.pin_measured_width(taffy, node);
     }
 
     /// An intrinsic button's width is its measured content. Taffy only asks

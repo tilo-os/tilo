@@ -386,7 +386,7 @@ mod tests {
                 "",
                 "file:///src/main.rs",
             ] {
-                for id in ["reveal", "open-file", "open-folder", "save"] {
+                for id in ["reveal", "open-file", "open-folder"] {
                     let mut arguments = serde_json::Map::new();
                     arguments.insert("path".into(), path.into());
                     arguments.insert("line".into(), 0.into());

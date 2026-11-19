@@ -5,22 +5,26 @@ mod queue_tests;
 #[cfg(test)]
 mod tests;
 use super::{
-    AccountKind, AccountsEffect, AccountsPane, Button, Effect, LiveRow, ProbeJob, Row, Settings,
-    SettingsEffect, SettingsSection, Step, ViewCx, merge_config, note, row, rows, section,
-    setting_row_described, t, value_row,
+    AccountKind, AccountsEffect, AccountsPane, Button, LiveRow, ProbeJob, Row, Settings,
+    SettingsSection, Step, ViewCx, merge_config, note, row, rows, section, setting_row_described,
+    t, value_row,
 };
 use ui::tilo_resource;
 
 /// The calendars an account offers, as the pane publishes it: a row of the
 /// `settings.calendar-choices` type, holding each calendar beneath it.
 #[derive(ui::tilo_resource::Row)]
-#[row(kind = "settings.calendar-choices", label = "Calendar choices")]
+#[row(kind = "settings.calendar-choices", label = "Calendar choices",
+    effects = AccountsEffect
+)]
 pub(super) struct CalendarChoices;
 
 /// One calendar an account offers, as the pane publishes it: a row of the
 /// `settings.calendar-choice` type, offering to subscribe or not.
 #[derive(ui::tilo_resource::Row)]
-#[row(kind = "settings.calendar-choice", label = "Calendar choice")]
+#[row(kind = "settings.calendar-choice", label = "Calendar choice",
+    effects = AccountsEffect
+)]
 pub(super) struct CalendarChoiceRow;
 
 impl AccountsPane {
@@ -83,27 +87,28 @@ impl AccountsPane {
         if self.calendar_choices.is_empty() {
             return Vec::new();
         }
-        let mut root = LiveRow::typed::<CalendarChoices>(
+        let bindings = ui::tilo_resource::RowBindings::new()
+            .offer(AccountsEffect::INSPECT_CALENDAR_CHOICES)
+            .offer(AccountsEffect::SAVE_ACCOUNT_FORM)
+            .offer(AccountsEffect::CANCEL_ACCOUNT_FORM);
+        let mut root = LiveRow::typed_with::<CalendarChoices>(
             "settings.calendar-choices",
             t("accounts-calendars-title"),
+            &bindings,
         );
-        root = root
-            .operation(SettingsEffect::from(AccountsEffect::InspectCalendarChoices).bound())
-            .operation(SettingsEffect::from(AccountsEffect::SaveAccountForm).bound())
-            .operation(SettingsEffect::from(AccountsEffect::CancelAccountForm).bound());
         for (calendar, selected) in &self.calendar_choices {
-            let mut choice = LiveRow::typed::<CalendarChoiceRow>(
+            let bindings = ui::tilo_resource::RowBindings::new().bind(
+                AccountsEffect::SELECT_CALENDAR,
+                [
+                    ("href", calendar.href.clone().into()),
+                    ("selected", (!selected).into()),
+                ],
+            );
+            root = root.row(LiveRow::typed_with::<CalendarChoiceRow>(
                 format!("settings.calendar-choice:{}", calendar.href),
                 calendar.name.clone(),
-            );
-            choice = choice.operation(
-                SettingsEffect::from(AccountsEffect::SelectCalendar {
-                    href: calendar.href.clone(),
-                    selected: !selected,
-                })
-                .bound(),
-            );
-            root = root.row(choice);
+                &bindings,
+            ));
         }
         vec![root]
     }

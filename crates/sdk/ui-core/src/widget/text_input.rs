@@ -5816,6 +5816,11 @@ impl Widget for TextInput {
         }
         if !self.accessible_name.is_empty() {
             node = node.with_name(widget_text(&self.accessible_name));
+            // An empty field shows its placeholder where the text goes (a note's heading shows
+            // what the note is called until it is given a title): a reader is told it as well.
+            if self.text.is_empty() && !self.placeholder.is_empty() {
+                node = node.with_description(widget_text(&self.placeholder));
+            }
         } else if !self.placeholder.is_empty() {
             node = node.with_name(widget_text(&self.placeholder));
         }

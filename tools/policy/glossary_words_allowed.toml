@@ -635,6 +635,12 @@ paths = [
 ]
 
 [[allow]]
+reason = "A link's workspace scope names the server it is on in the field `host`, as the runtime's link grammar (`parseLink`, `formatLink`) spells it, and the boot tests build scopes in that shape."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/browser/tilo-browser-runtime/web/entry.test.mjs"]
+
+[[allow]]
 reason = "Plain English 'long-standing': an old problem, conjecture or surface the sample articles and a test's note name."
 words = ["standing"]
 paths = [
@@ -829,6 +835,21 @@ identifiers = ["record"]
 paths = ["crates/collab/tilo-peer-state/src/withdrawal_base_tests.rs"]
 
 [[allow]]
+reason = "The accessibility walk's words a parent has for its child (`with_slot_words`), which the agent's outline reads through the same walk, and the live resource's own `record` field a test names a window by."
+words = ["slot", "record"]
+identifiers = ["with_slot_words", "record"]
+paths = [
+    "crates/sdk/ui-core/src/semantic_outline.rs",
+    "crates/agent/agent-session/tests/workspace_actions/agent_views.rs",
+]
+
+[[allow]]
+reason = "The MCP server's own field for the action provider it serves from (`self.host`), which every tool reads."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_agent_list.rs"]
+
+[[allow]]
 reason = "The keys a mail account's settings keep its two servers' names under, as mail programs call them."
 words = ["host"]
 identifiers = ["imap_host", "smtp_host"]
@@ -961,7 +982,7 @@ paths = ["crates/server/tilo-workspace-service/src/workspaces/packaged_model_tes
 reason = "The service's test fixture starts a certified device (`test_host`), a name its other tests share."
 words = ["host"]
 identifiers = ["test_host"]
-paths = ["crates/server/tilo-workspace-service/src/workspaces/governed_grants_tests.rs"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/governed_grants_tests.rs", "crates/server/tilo-workspace-service/src/workspaces/authority/tests.rs"]
 
 [[allow]]
 reason = "The domain bytes a genesis change is hashed under, fixed before the word was retired; a different domain forks every resource created since."
@@ -1527,3 +1548,15 @@ reason = "The web size ratchet's test writes a raise's TOML with a helper named 
 words = ["record", "run"]
 identifiers = ["record", "run", "not_a_run"]
 paths = ["tools/tests/test_wasm_size_ratchet.py"]
+
+[[allow]]
+reason = "The MCP server's own field for the action provider it serves from (`self.host`), which every tool reads."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_agent_list.rs"]
+
+[[allow]]
+reason = "YouTube's channels, which tube's model names as the product's API does (`Channel`, `channel_id`); what a person reads it by is the creator."
+words = ["channel"]
+identifiers = ["Channel", "channel_id"]
+paths = ["apps/tube/src/rows.rs", "apps/tube/src/actions.rs"]

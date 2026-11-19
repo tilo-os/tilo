@@ -381,8 +381,8 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // The page hears which workspace it is getting into, under which entry,
   // and how its links read once the runtime is in, before admission.
   deps.onScope?.({scope: route.target.scope, entry, link: linked});
-  const {peer, idle} = await admit({
-    scope: route.target.scope, secrets, tickets: entry.tickets, runtime: await loaded,
+  const {peer, idle, own: ownFirst = false} = await admit({
+    scope: route.target.scope, deep: route.target.app != null, secrets, tickets: entry.tickets, runtime: await loaded,
     home: entry.home ? workspaceAt(workspaces, entry.home.host?.origin) ?? entry.home : null,
     deps: {...deps, workspaceAt: origin => workspaceAt(workspaces, origin)},
     onProgress: event => {
@@ -400,7 +400,9 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   if (peer) deps.onAdmitted?.(peer);
   // A sealed invitation's link admits into a workspace the page learns on the
   // way in: from here on it is in it, as a link to that workspace says.
-  const sealedAdmitted = Boolean(sealed && peer);
+  // So does a wait-list invitation that opened the person's own workspace in
+  // place of the one its link names.
+  const sealedAdmitted = Boolean((sealed || ownFirst) && peer);
   if (sealedAdmitted) {
     route = {mode: 'desktop', target: {scope: {kind: 'workspace', host: new URL(peer.origin).origin, workspace: peer.workspace}}};
   }
@@ -412,8 +414,9 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     route = {...route, target: {...route.target, scope: {...route.target.scope, host: new URL(peer.origin).origin}}};
   }
   // A link that names no workspace is let in through its server's entry: the workspace
-  // the entry admits to is that server's listed workspace.
-  const admittedWorkspace = peer && route.target.scope.kind === 'workspace' && (sealedAdmitted || !route.target.scope.workspace)
+  // the entry admits to is that server's listed workspace. Not the person's
+  // own one, which a wait-list invitation opened in its place.
+  const admittedWorkspace = peer && !ownFirst && route.target.scope.kind === 'workspace' && (sealedAdmitted || !route.target.scope.workspace)
     ? peer.workspace : null;
   configureFeedback(peer, entry.home, admittedWorkspace, {
     homePeer: entry.home && deps.homePeer

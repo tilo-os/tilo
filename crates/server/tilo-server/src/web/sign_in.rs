@@ -1,9 +1,10 @@
 //! Signing a person in again through their agent, the one way: a device of
-//! the person that may admit devices claims a sign-in code
+//! the person claims a sign-in code
 //! ([`tilo_server_protocol::login_code::Claim`]), reads back the one
 //! certification request that names the invite the claim minted, and
 //! answers it with a certificate it signs, as any approver answers a
-//! pairing.
+//! pairing. The device's certificate is the person's root's; the tab's is
+//! the claiming device's, carrying that certificate as its issuer.
 
 use std::sync::Arc;
 
@@ -65,8 +66,7 @@ impl Web {
             .set_code_requests(Arc::new(Expected(Arc::clone(&self.login_codes))));
     }
 
-    /// A device of a person that may admit devices claims a sign-in code
-    /// for them.
+    /// A device of a person claims a sign-in code for them.
     #[allow(
         clippy::result_large_err,
         reason = "the error is the response the handler sends as it is"
@@ -96,9 +96,12 @@ impl Web {
                 device.verify_strict(&digest, &ed25519_dalek::Signature::from_bytes(&signature))
             })
             .map_err(|_| claim_refused(ClaimRefused::Signature))?;
-        // The device that claims is the one that certifies the tab.
-        if !cert.capabilities.can_admit_devices {
-            return Err(claim_refused(ClaimRefused::CannotAdmit));
+        // The device that claims is the one that certifies the tab, with the
+        // authority the person's root gave it: the root's own certificate of
+        // that device. An agent's grant, a service or a certificate a device
+        // issued answers no sign-in.
+        if !cert.is_root_signed_device() {
+            return Err(claim_refused(ClaimRefused::NotADevice));
         }
         let expires_at_ms = self
             .login_codes

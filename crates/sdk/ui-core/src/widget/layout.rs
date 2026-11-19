@@ -579,6 +579,13 @@ unsafe fn solve_widget_layout(
             taffy.mark_dirty(node)?;
         }
     }
+    // What each widget knows of its own size goes into the first solve, so a solve does not have
+    // to be solved again for it: in the window's tree, and in a probe's, whose parts a region styles
+    // as it built them.
+    for &node in nodes.keys() {
+        // SAFETY: the same admission/lifetime checks as measurement below.
+        let _ = unsafe { sweep.layout(node, |widget| widget.size_before_solve(taffy, node, text)) };
+    }
     drop(sweep);
     // A region is solved again only when something it reads moved: the
     // allocation it is handed, a measure inside its own subtree, or a revision
@@ -665,7 +672,13 @@ unsafe fn solve_widget_layout(
             // SAFETY: same contract as measurement; no topology mutation is
             // permitted by adjust_layout_style.
             let adjusted = unsafe {
-                sweep.layout(node, |widget| widget.adjust_layout_style(taffy, node, text))
+                sweep.layout(node, |widget| {
+                    let adjusted = widget.adjust_layout_style(taffy, node, text);
+                    if adjusted {
+                        crate::profiling::layout_counts::restyled(widget.concrete_type_name());
+                    }
+                    adjusted
+                })
             }
             .unwrap_or(false);
             if adjusted {

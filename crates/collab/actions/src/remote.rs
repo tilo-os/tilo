@@ -82,7 +82,7 @@ pub mod task_programs;
 mod test_provider;
 mod wait;
 mod watch;
-pub use watch::{CHANGED_UNAVAILABLE, Here, WatchScope};
+pub use watch::{CHANGED_UNAVAILABLE, Here, HereWindow, WatchScope};
 mod window_actions;
 mod within;
 pub mod workspace_activity;

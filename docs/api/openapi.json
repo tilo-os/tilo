@@ -17108,12 +17108,6 @@
           "null"
         ]
       },
-      "files.folder.refresh.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "files.folder.hand-over.Arguments": {
         "type": "object",
         "properties": {
@@ -23811,12 +23805,6 @@
         "required": [],
         "description": ""
       },
-      "settings.root.inspect-keyboard-map.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "settings.root.inspect-keyboard-sources.Arguments": {
         "type": "object",
         "properties": {},
@@ -23872,16 +23860,6 @@
         ],
         "description": ""
       },
-      "settings.root.show-hub-model.Arguments": {
-        "type": "object",
-        "properties": {
-          "model": {}
-        },
-        "required": [
-          "model"
-        ],
-        "description": ""
-      },
       "settings.root.toggle-microphone-test.Arguments": {
         "type": "object",
         "properties": {},
@@ -23896,24 +23874,6 @@
         "required": [
           "prefs"
         ],
-        "description": ""
-      },
-      "settings.root.choose-thunderbird-metadata.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "settings.root.inspect-thunderbird-import.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "settings.root.inspect-calendar-choices.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
         "description": ""
       },
       "settings.root.inspect-display-configuration.Arguments": {
@@ -33307,12 +33267,6 @@
     {
       "app": "so.tilo.file-explorer",
       "resource": "files.folder",
-      "action": "refresh",
-      "arguments": "#/components/schemas/files.folder.refresh.Arguments"
-    },
-    {
-      "app": "so.tilo.file-explorer",
-      "resource": "files.folder",
       "action": "hand-over",
       "arguments": "#/components/schemas/files.folder.hand-over.Arguments"
     },
@@ -34681,12 +34635,6 @@
     {
       "app": "so.tilo.settings",
       "resource": "settings.root",
-      "action": "inspect-keyboard-map",
-      "arguments": "#/components/schemas/settings.root.inspect-keyboard-map.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.root",
       "action": "inspect-keyboard-sources",
       "arguments": "#/components/schemas/settings.root.inspect-keyboard-sources.Arguments"
     },
@@ -34729,12 +34677,6 @@
     {
       "app": "so.tilo.settings",
       "resource": "settings.root",
-      "action": "show-hub-model",
-      "arguments": "#/components/schemas/settings.root.show-hub-model.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.root",
       "action": "toggle-microphone-test",
       "arguments": "#/components/schemas/settings.root.toggle-microphone-test.Arguments"
     },
@@ -34743,24 +34685,6 @@
       "resource": "settings.root",
       "action": "discover-thunderbird-accounts",
       "arguments": "#/components/schemas/settings.root.discover-thunderbird-accounts.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.root",
-      "action": "choose-thunderbird-metadata",
-      "arguments": "#/components/schemas/settings.root.choose-thunderbird-metadata.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.root",
-      "action": "inspect-thunderbird-import",
-      "arguments": "#/components/schemas/settings.root.inspect-thunderbird-import.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.root",
-      "action": "inspect-calendar-choices",
-      "arguments": "#/components/schemas/settings.root.inspect-calendar-choices.Arguments"
     },
     {
       "app": "so.tilo.settings",

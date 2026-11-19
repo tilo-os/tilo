@@ -88,6 +88,147 @@ fn every_scenario_is_one_modal_dialog_named_by_its_question() {
     }
 }
 
+/// The colour the face of the control `id` paints, away from its ink and its
+/// ring: the one most of the pixels just inside its bounds agree on.
+fn face_fill(app: &mut HeadlessApp<PortalApp>, id: &str) -> (u8, u8, u8, u8) {
+    let bounds = app
+        .harness()
+        .targets()
+        .get(id)
+        .copied()
+        .unwrap_or_else(|| panic!("{id} is laid out"));
+    let (width, _) = VIEWPORT;
+    let pixels = app.harness().render_rgba();
+    let mut seen: std::collections::HashMap<(u8, u8, u8, u8), usize> =
+        std::collections::HashMap::new();
+    // Inside the face's rounded corners and its edge, and clear of the ring
+    // stroked on the outline: the label sits centred, so most of the inside
+    // is the fill.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "bounds inside the viewport"
+    )]
+    let (left, right) = (
+        (bounds.x0 as u32).saturating_add(6),
+        (bounds.x1 as u32).saturating_sub(6),
+    );
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "bounds inside the viewport"
+    )]
+    let (top, bottom) = (
+        (bounds.y0 as u32).saturating_add(6),
+        (bounds.y1 as u32).saturating_sub(6),
+    );
+    for y in top..bottom {
+        for x in left..right {
+            let count = seen
+                .entry(ui::offscreen::OffscreenRenderer::sample(
+                    &pixels, width, x, y,
+                ))
+                .or_default();
+            *count = count.saturating_add(1);
+        }
+    }
+    seen.into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map_or_else(|| panic!("{id} paints a face"), |(colour, _)| colour)
+}
+
+/// The primary face's fill, with the pointer away from it or over it, resolved
+/// from the theme the sheet draws with.
+fn primary_fill(theme: &ui::Theme, hovered: bool) -> (u8, u8, u8, u8) {
+    use ui::widget::{ButtonRole, Interaction, face_colors};
+    let (fill, _, _) = face_colors(
+        theme,
+        ButtonRole::Primary,
+        Interaction {
+            hovered,
+            ..Interaction::default()
+        },
+    );
+    let [red, green, blue, alpha] = fill.to_rgba8().to_u8_array();
+    (red, green, blue, alpha)
+}
+
+/// Write the frame under `TILO_UI_SCREENSHOT_DIR`, when the person running
+/// the test asked for pictures of it.
+fn keep_the_frame(app: &mut HeadlessApp<PortalApp>, name: &str) {
+    let Ok(dir) = ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = std::path::Path::new(&dir).join(format!("{name}.png"));
+    app.harness().render_png(&path);
+    eprintln!("wrote {}", path.display());
+}
+
+#[test]
+fn at_most_one_answer_wears_the_primary_face_when_the_pointer_is_on_another() {
+    // An agent's question with none of its answers suggested: the keyboard
+    // opens the sheet on the first, the pointer rests wherever it was.
+    let answers = Body::Answers {
+        choices: vec!["Berlin".to_owned(), "Munich".to_owned()],
+        suggested: usize::MAX,
+        remember: None,
+    };
+    for (name, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+        let (mut app, _state) = mounted(dialog(answers.clone()));
+        app.harness().set_theme(theme.clone());
+        // The pointer away from the answers, the keyboard on the first.
+        app.harness()
+            .send(&ui::synthetic_input::cursor_moved(10.0, 10.0));
+        app.settle();
+
+        let berlin_at_rest = face_fill(&mut app, "portal-answer-0");
+        let munich_at_rest = face_fill(&mut app, "portal-answer-1");
+        assert_eq!(
+            berlin_at_rest, munich_at_rest,
+            "{name}: the answer the keyboard is on is as plain as the others"
+        );
+        assert_ne!(
+            berlin_at_rest,
+            primary_fill(&theme, false),
+            "{name}: the keyboard's place among equal answers is not filled"
+        );
+
+        // The pointer onto the second answer, the keyboard still on the first.
+        let munich = app
+            .harness()
+            .targets()
+            .get("portal-answer-1")
+            .copied()
+            .expect("Munich is laid out")
+            .center();
+        app.harness()
+            .send(&ui::synthetic_input::cursor_moved(munich.x, munich.y));
+        app.settle();
+        keep_the_frame(&mut app, &format!("answer-hover-{name}"));
+
+        let berlin = face_fill(&mut app, "portal-answer-0");
+        let munich = face_fill(&mut app, "portal-answer-1");
+        let primary = primary_fill(&theme, true);
+        assert_eq!(
+            berlin, berlin_at_rest,
+            "{name}: the answer the keyboard is on keeps the plain face"
+        );
+        assert_eq!(
+            munich, primary,
+            "{name}: the answer under the pointer wears the primary face"
+        );
+        let primary_filled = [berlin, munich]
+            .into_iter()
+            .filter(|fill| *fill == primary)
+            .count();
+        assert_eq!(
+            primary_filled, 1,
+            "{name}: at most one answer looks primary"
+        );
+    }
+}
+
 tilo_test_env::scenario! {
     /// The keys each kind of question takes, and what each asks the shell.
     fn the_keyboard_answers_a_question_by_its_kind;

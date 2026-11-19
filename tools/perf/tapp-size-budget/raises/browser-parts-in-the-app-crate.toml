@@ -1,0 +1,8 @@
+# The browser's parts live in the app crate now: one module list for the app,
+# its rows declared and its state beside them, so its package carries what the
+# separate parts crate used to.
+reason = "the browser app carries its parts in its own crate now, with its rows declared and their state beside them"
+run = "r6d12cd51e7"
+
+[apps."so.tilo.browser"]
+x86_64 = 65536

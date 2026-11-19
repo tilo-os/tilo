@@ -701,3 +701,93 @@ fn a_host_refuses_a_lapsed_certificate_and_admits_its_renewal() {
         "and admits the renewal, as the same device"
     );
 }
+
+/// A browser tab one of the person's devices signed is a device of theirs; a
+/// workspace service its device made, an agent's grant, a stand-in and a
+/// certificate one of those signed are not.
+#[test]
+fn a_tab_a_device_signed_is_a_device_of_the_person() {
+    let root = SigningKey::from_bytes(&[0x31; 32]);
+    let device_key = SigningKey::from_bytes(&[0x32; 32]);
+    let device = signed_member(&root, &device_key, 1_000);
+    assert!(person_device(&device), "the root's own device");
+
+    let signed_by = |key: &SigningKey,
+                     capabilities: DeviceCapabilities,
+                     issuer: &DeviceCert,
+                     signer: &SigningKey| {
+        let mut cert = DeviceCert {
+            user_public_key: issuer.user_public_key,
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Firefox on phone".into(),
+            capabilities,
+            issued_at_ns: 2_000,
+            expires_at_ns: Some(2_000 + 30 * 24 * 60 * 60 * 1_000_000_000),
+            signature: [0; 64],
+            issuer: Some(Box::new(issuer.clone())),
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, signer).unwrap();
+        cert
+    };
+
+    let tab = signed_by(
+        &SigningKey::from_bytes(&[0x33; 32]),
+        DeviceCapabilities::member(),
+        &device,
+        &device_key,
+    );
+    assert!(
+        person_device(&tab),
+        "a tab one of the person's devices signed is theirs"
+    );
+
+    // A device's workspace service is that device's own, not a device of the
+    // person's, and nothing it signs is one.
+    let service_key = SigningKey::from_bytes(&[0x34; 32]);
+    let mut service = tilo_user_identity::prepare_service_cert(
+        &device,
+        service_key.verifying_key().to_bytes(),
+        "Apps on tilo-yoga",
+        2_000,
+    );
+    tilo_user_identity::sign_device_cert(&mut service, &device_key).unwrap();
+    assert!(!person_device(&service));
+    let mut under_service = DeviceCert {
+        user_public_key: service.user_public_key,
+        device_public_key: [0x35; 32],
+        device_label: "Firefox on phone".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 2_000,
+        expires_at_ns: Some(2_000 + 30 * 24 * 60 * 60 * 1_000_000_000),
+        signature: [0; 64],
+        issuer: Some(Box::new(service)),
+    };
+    assert!(
+        tilo_user_identity::sign_device_cert(&mut under_service, &service_key).is_err(),
+        "a service signs no device"
+    );
+    assert!(!person_device(&under_service));
+
+    // An agent's grant and a stand-in are keys made to act for the person.
+    let mut grant = DeviceCert {
+        user_public_key: device.user_public_key,
+        device_public_key: [0x36; 32],
+        device_label: "Jane Doe's agent".into(),
+        capabilities: DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+        issued_at_ns: 2_000,
+        expires_at_ns: Some(2_000 + 7 * 24 * 60 * 60 * 1_000_000_000),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut grant, &root).unwrap();
+    assert!(!person_device(&grant));
+    let mut stand_in = tilo_user_identity::prepare_stand_in_cert(
+        device.user_public_key,
+        [0x37; 32],
+        "Stand-in on tilo.example",
+        2_000,
+        2_000 + 24 * 60 * 60 * 1_000_000_000,
+    );
+    tilo_user_identity::sign_device_cert(&mut stand_in, &root).unwrap();
+    assert!(!person_device(&stand_in));
+}

@@ -202,6 +202,25 @@ impl<R: Resource> Live<R> {
         self.places.borrow().landed.at.get(presence).cloned()
     }
 
+    /// Where each presence was last placed, by presence.
+    pub(crate) fn landed(&self) -> Vec<(tilo_actions::PresenceId, Place)> {
+        let mut landed: Vec<_> = self
+            .places
+            .borrow()
+            .landed
+            .at
+            .iter()
+            .map(|(presence, place)| (presence.clone(), place.clone()))
+            .collect();
+        landed.sort_by(|a, b| a.0.cmp(&b.0));
+        landed
+    }
+
+    /// Forget where `presence` was: its view closed.
+    pub(crate) fn forget(&self, presence: &tilo_actions::PresenceId) {
+        self.places.borrow_mut().landed.at.remove(presence);
+    }
+
     /// The landings numbered `from` on, and the number to ask from next.
     pub(crate) fn landings_since(
         &self,

@@ -14,6 +14,8 @@
 use serde::Serialize;
 
 use crate::a11y::AccessNode;
+use crate::a11y_tree::HostedByIndex;
+use crate::a11y_tree::walk::{A11yVisitor, Visit, walk_synthetic_children};
 use crate::widget::Widget;
 
 /// The most nodes one outline carries: enough for a whole window's page, with the rest
@@ -22,9 +24,6 @@ pub const MAX_NODES: usize = 2_000;
 
 /// The most characters one outline's text carries.
 pub const MAX_TEXT_CHARS: usize = 16_000;
-
-/// The deepest one walk of the tree goes: a guard against a widget that hosts itself.
-const MAX_DEPTH: usize = 256;
 
 /// The most characters of one label or value an outline keeps.
 const MAX_WORDS: usize = 240;
@@ -56,6 +55,9 @@ pub struct OutlineNode {
     pub value: Option<String>,
     /// What its role says too little about, in the app's words ("Message").
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// What is said after its name: an empty state's hint, a dialog's situation.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Its state in words: `selected`, `checked`, `expanded`, `disabled`, `focused`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -84,14 +86,20 @@ impl OutlineNode {
 }
 
 /// The outline of what `view` shows: its semantic tree, in reading order.
+///
+/// It is read by the same walk the screen reader's tree is built by
+/// ([`crate::a11y_tree::walk`]): a child widget a list states as one of its own items is that
+/// item's line, never a second line beside it, and what a person's screen reader hides the
+/// outline leaves out.
 #[must_use]
 pub fn outline(view: &dyn Widget) -> Outline {
     let mut walk = Walk {
         nodes: 0,
         omitted: 0,
+        hidden: 0,
     };
     let mut tree = Vec::new();
-    walk.node(view, 0, &mut tree);
+    crate::a11y_tree::walk::walk::<true, _>(&mut walk, view, None, &mut tree);
     let mut text = String::new();
     for node in &tree {
         node_text(node, 0, &mut text);
@@ -111,73 +119,139 @@ pub fn outline(view: &dyn Widget) -> Outline {
 struct Walk {
     nodes: usize,
     omitted: usize,
+    /// How many hidden nodes the walk is under: nothing under one is a line.
+    hidden: usize,
+}
+
+/// A widget's line opened by the walk: the line, when the widget says anything of its own,
+/// and the nodes it publishes without a widget of their own.
+struct Opened {
+    line: Option<OutlineNode>,
+    hidden: bool,
+    synthetic: Vec<AccessNode>,
 }
 
 impl Walk {
-    /// Append what `widget` shows to `out`, `depth` lines in: its own line when it names
-    /// semantics, its children's lines in its place otherwise.
-    fn node(&mut self, widget: &dyn Widget, depth: usize, out: &mut Vec<OutlineNode>) {
-        if depth > MAX_DEPTH || self.nodes >= MAX_NODES {
+    /// Whether one more line fits: one that does not is counted as left out.
+    fn fits(&mut self) -> bool {
+        if self.nodes >= MAX_NODES {
             self.omitted = self.omitted.saturating_add(1);
-            return;
+            return false;
         }
-        if widget.accessibility_hidden() {
-            return;
-        }
-        // A widget whose component is closed answers nothing of itself: its box stands
-        // for what a person sees of a part still to arrive, and nothing under it reads.
-        let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
-            return;
-        };
-        let line = widget
-            .accessibility()
-            .map(|node| crate::a11y::with_synthetic_bounds(node, widget))
-            .filter(|node| !node.state.hidden)
-            .map(|node| {
-                let mut line = node_line(&node, widget.get_rect());
-                // The nodes the widget publishes with no widget of their own, while the
-                // outline has room for them: a page holds at most [`MAX_NODES`] of all.
-                let visible: Vec<&AccessNode> = node
-                    .children
-                    .iter()
-                    .filter(|child| !child.state.hidden)
-                    .collect();
-                let mut budget = MAX_NODES.saturating_sub(self.nodes);
-                line.children = visible
-                    .iter()
-                    .filter_map(|child| synthetic_line(child, &mut budget))
-                    .collect();
-                self.omitted = self
-                    .omitted
-                    .saturating_add(visible.len().saturating_sub(line.children.len()));
-                line
-            })
-            .filter(line_counts);
-        // A line's own children stand under it; a widget that names nothing passes its
-        // children up to the nearest line that does.
-        let (child_depth, children) = match line {
-            Some(mut line) => {
-                self.nodes = self.nodes.saturating_add(1);
-                line.children
-                    .extend(self.children(widget, depth.saturating_add(1)));
-                out.push(line);
-                return;
-            }
-            None => (depth, out),
-        };
-        children.extend(self.children(widget, child_depth));
+        true
     }
 
-    /// Every child line of `widget`, named ones included, at `depth`.
-    fn children(&mut self, widget: &dyn Widget, depth: usize) -> Vec<OutlineNode> {
-        let mut lines = Vec::new();
-        for child in widget.children() {
-            self.node(child, depth, &mut lines);
+    /// `line` and the lines under it, put in `parent`: a line that says nothing passes its
+    /// children up in its place.
+    fn place(
+        &mut self,
+        line: Option<OutlineNode>,
+        children: Vec<OutlineNode>,
+        parent: &mut Vec<OutlineNode>,
+    ) {
+        match line {
+            Some(mut line) if line_counts(&line) || !children.is_empty() => {
+                self.nodes = self.nodes.saturating_add(1);
+                line.children = children;
+                parent.push(line);
+            }
+            _ => parent.extend(children),
         }
-        widget.for_each_hosted_child(&mut |child| {
-            self.node(child, depth, &mut lines);
-        });
-        lines
+    }
+}
+
+impl A11yVisitor for Walk {
+    type Scope = Vec<OutlineNode>;
+    type Pending = Opened;
+    type SyntheticPending = (Option<OutlineNode>, bool);
+
+    fn open(
+        &mut self,
+        w: &dyn Widget,
+        parent_child: Option<(&dyn Widget, usize)>,
+        _parent: &mut Vec<OutlineNode>,
+    ) -> Visit<Opened, Vec<OutlineNode>> {
+        if self.hidden > 0 || w.accessibility_hidden() {
+            return Visit::Skip;
+        }
+        let Some(mut access) = w.accessibility() else {
+            return Visit::Collapse;
+        };
+        crate::a11y_tree::walk::with_slot_words(&mut access, parent_child.as_ref());
+        let mut access = crate::a11y::with_synthetic_bounds(access, w);
+        let synthetic = std::mem::take(&mut access.children);
+        let hidden = access.state.hidden;
+        if hidden {
+            self.hidden = self.hidden.saturating_add(1);
+        }
+        let line = (!hidden && self.fits()).then(|| node_line(&access, w.get_rect()));
+        Visit::Node(
+            Opened {
+                line,
+                hidden,
+                synthetic,
+            },
+            Vec::new(),
+        )
+    }
+
+    fn close<'w>(
+        &mut self,
+        w: &'w dyn Widget,
+        opened: Opened,
+        mut scope: Vec<OutlineNode>,
+        hosted: HostedByIndex<'w>,
+        _represented: Vec<&'w dyn Widget>,
+        parent: &mut Vec<OutlineNode>,
+    ) {
+        walk_synthetic_children::<true, Self>(self, w, &opened.synthetic, hosted, &mut scope);
+        if opened.hidden {
+            self.hidden = self.hidden.saturating_sub(1);
+        }
+        self.place(opened.line, scope, parent);
+    }
+
+    fn open_synthetic(
+        &mut self,
+        _owner: &dyn Widget,
+        _path: &[usize],
+        node: &AccessNode,
+        _parent: &mut Vec<OutlineNode>,
+    ) -> ((Option<OutlineNode>, bool), Vec<OutlineNode>) {
+        let hidden = self.hidden > 0 || node.state.hidden;
+        if hidden {
+            self.hidden = self.hidden.saturating_add(1);
+            return ((None, true), Vec::new());
+        }
+        let rect = node
+            .bounds
+            .map_or(vello::kurbo::Rect::ZERO, crate::a11y::AccessBounds::to_rect);
+        let line = self.fits().then(|| node_line(node, rect));
+        ((line, false), Vec::new())
+    }
+
+    fn close_synthetic(
+        &mut self,
+        _owner: &dyn Widget,
+        _path: &[usize],
+        _node: &AccessNode,
+        (line, hidden): (Option<OutlineNode>, bool),
+        scope: Vec<OutlineNode>,
+        parent: &mut Vec<OutlineNode>,
+    ) {
+        if hidden {
+            self.hidden = self.hidden.saturating_sub(1);
+            return;
+        }
+        // A node a widget publishes is a line even when it says nothing yet: it holds a place.
+        match line {
+            Some(mut line) => {
+                self.nodes = self.nodes.saturating_add(1);
+                line.children = scope;
+                parent.push(line);
+            }
+            None => parent.extend(scope),
+        }
     }
 }
 
@@ -185,6 +259,7 @@ impl Walk {
 fn line_counts(node: &OutlineNode) -> bool {
     node.name.is_some()
         || node.value.is_some()
+        || node.kind.is_some()
         || node.description.is_some()
         || !node.state.is_empty()
         || node.action.is_some()
@@ -203,7 +278,8 @@ fn node_line(node: &AccessNode, rect: vello::kurbo::Rect) -> OutlineNode {
         } else {
             words(node.value.as_deref())
         },
-        description: words(node.role_description.as_deref()),
+        kind: words(node.role_description.as_deref()),
+        description: words(node.description.as_deref()),
         state: states(node),
         rect: [bounds.x0, bounds.y0, bounds.width(), bounds.height()],
         action: node
@@ -215,24 +291,6 @@ fn node_line(node: &AccessNode, rect: vello::kurbo::Rect) -> OutlineNode {
         item: node.item.clone(),
         children: Vec::new(),
     }
-}
-
-/// A node the widget publishes without a widget of its own (a table's cells, a list's
-/// items): read as a line of its own, its bounds the node's, while `budget` nodes are
-/// left to show.
-fn synthetic_line(node: &AccessNode, budget: &mut usize) -> Option<OutlineNode> {
-    *budget = budget.checked_sub(1)?;
-    let rect = node
-        .bounds
-        .map_or(vello::kurbo::Rect::ZERO, crate::a11y::AccessBounds::to_rect);
-    let mut line = node_line(node, rect);
-    line.children = node
-        .children
-        .iter()
-        .filter(|child| !child.state.hidden)
-        .filter_map(|child| synthetic_line(child, budget))
-        .collect();
-    Some(line)
 }
 
 /// The states a reader sees, in words.
@@ -312,8 +370,11 @@ fn node_text(node: &OutlineNode, depth: usize, out: &mut String) {
     if let Some(value) = &node.value {
         let _ = write!(out, " = \"{value}\"");
     }
+    if let Some(kind) = &node.kind {
+        let _ = write!(out, " ({kind})");
+    }
     if let Some(description) = &node.description {
-        let _ = write!(out, " ({description})");
+        let _ = write!(out, " — \"{description}\"");
     }
     if !node.state.is_empty() {
         let _ = write!(out, " [{}]", node.state.join(", "));

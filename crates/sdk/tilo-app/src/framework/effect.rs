@@ -635,6 +635,34 @@ fn place_of<E: Effect>(
     place_from(effect.arguments().remove(param)?)
 }
 
+/// Where an effect that shows a row ([`tilo_actions::SCREEN_PLACE_TAG`]) is
+/// answered when someone other than this window's person, `me`, invoked it:
+/// in the invoker's own view, at the row its first parameter names. `None`
+/// for any other effect, and for this window's person, whose screen it moves.
+#[inline(never)]
+fn shown_elsewhere<E: Effect>(
+    decl: &tilo_resource::effect::EffectDecl,
+    effect: &E,
+    me: Option<&ui_core::permissions::MemberId>,
+) -> Option<(tilo_actions::PresenceId, tilo_resource::Place)> {
+    if !decl.tags.contains(&tilo_actions::SCREEN_PLACE_TAG) {
+        return None;
+    }
+    let invoker = ui_core::invocation_scope::current_invoker()?;
+    if invoker.acting.by.member_id() == me {
+        return None;
+    }
+    let view = invoker.view()?;
+    let row = match effect
+        .arguments()
+        .remove(decl.params.first()?.name.as_ref())?
+    {
+        serde_json::Value::String(row) => row,
+        other => other.to_string(),
+    };
+    Some((view, tilo_resource::Place::Item(row)))
+}
+
 /// The name of the parameter `decl` declares `#[param(place)]`, if any.
 #[inline(never)]
 fn place_param(decl: &tilo_resource::effect::EffectDecl) -> Option<&str> {
@@ -1658,6 +1686,17 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
             .as_ref()
             .and_then(|decl| place_of(decl, &effect));
         let job = admitted(declaration.as_ref(), id, request.kind)?;
+        // Another's view of this window shows the row: they are placed at
+        // it, and this person's screen does not move.
+        if let Some((view, row)) = declaration
+            .as_ref()
+            .and_then(|decl| shown_elsewhere(decl, &effect, self.env.dispatch.me()))
+        {
+            self.env.live.land(view, row);
+            return Ok(Some(ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
         let parts = invocation_parts(op, doc, place.clone())?;
         let mut cx = EffectCx::invoked(self.env.clone(), parts);
         let mut handling = Some((handle, effect));

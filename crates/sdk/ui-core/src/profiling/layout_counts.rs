@@ -107,3 +107,28 @@ pub(crate) fn copy() {
 pub(crate) fn measure() {
     counted(|counts| counts.measures = counts.measures.saturating_add(1));
 }
+
+thread_local! {
+    static RESTYLED: std::cell::RefCell<Vec<(&'static str, u64)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A widget of type `name` changed its own style after a solve read its size, so the tree was solved
+/// again: a size the widget could have stated before the first solve.
+pub(crate) fn restyled(name: &'static str) {
+    RESTYLED.with(|restyled| {
+        let mut restyled = restyled.borrow_mut();
+        match restyled.iter_mut().find(|(held, _)| *held == name) {
+            Some((_, count)) => *count = count.saturating_add(1),
+            None => restyled.push((name, 1)),
+        }
+    });
+}
+
+/// The widget types that changed their style after a solve on this thread since the last call, and
+/// how often, the most often first.
+pub fn take_restyled() -> Vec<(&'static str, u64)> {
+    let mut restyled = RESTYLED.with(|restyled| std::mem::take(&mut *restyled.borrow_mut()));
+    restyled.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    restyled
+}

@@ -4,7 +4,7 @@
 mod hold;
 mod reach;
 
-pub use hold::{Holder, Link, hold};
+pub use hold::{CannotDial, Holder, Link, hold};
 pub use reach::{Linked, OwnHost, Reach};
 
 use crate::direct::DirectSync;
@@ -102,7 +102,7 @@ impl Connect {
     /// governance names ([`crate::keeping_devices_of`]) in the order it holds
     /// them. A holder the workspace revoked, or another naming this device,
     /// is left out.
-    pub fn hosts(&self, own: &[u8; 32]) -> Result<Vec<TransportHint>, String> {
+    pub fn holders(&self, own: &[u8; 32]) -> Result<Vec<TransportHint>, String> {
         self.owner.with_current(self.workspace, |view| {
             let enrolled = view.transport_hint()?.clone();
             let revocations = view.peer().revocations();

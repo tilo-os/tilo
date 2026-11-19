@@ -25,9 +25,29 @@ use crate::Effect;
 /// offered on it with exactly the arguments it gives bound; an effect it
 /// does not name is not offered (`RowBindings::new()` offers none, and
 /// [`LiveRow::typed`] offers every declared one with just the id bound).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Default)]
 pub struct RowBindings {
-    arguments: BTreeMap<&'static str, serde_json::Map<String, serde_json::Value>>,
+    arguments: BTreeMap<&'static str, Vec<serde_json::Map<String, serde_json::Value>>>,
+    choices: BTreeMap<(&'static str, &'static str), Vec<String>>,
+    specs: Vec<ActionSpec>,
+}
+
+impl std::fmt::Debug for RowBindings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RowBindings")
+            .field("arguments", &self.arguments)
+            .field("choices", &self.choices)
+            .field(
+                "specs",
+                &self
+                    .specs
+                    .iter()
+                    .map(|spec| spec.id.as_str())
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 impl RowBindings {
@@ -57,8 +77,7 @@ impl RowBindings {
         I: IntoIterator<Item = (K, serde_json::Value)>,
         K: Into<String>,
     {
-        self.arguments.insert(
-            effect,
+        self.arguments.entry(effect).or_default().push(
             arguments
                 .into_iter()
                 .map(|(name, value)| (name.into(), value))
@@ -77,7 +96,10 @@ impl RowBindings {
     /// [`Self::offer`] of an effect known only when it invokes, by its id.
     #[must_use]
     pub fn offer_id(mut self, effect: &'static str) -> Self {
-        self.arguments.entry(effect).or_default();
+        self.arguments
+            .entry(effect)
+            .or_default()
+            .push(serde_json::Map::default());
         self
     }
 
@@ -86,21 +108,69 @@ impl RowBindings {
     #[must_use]
     pub fn extended(mut self, other: &Self) -> Self {
         for (effect, arguments) in &other.arguments {
-            self.arguments.insert(effect, arguments.clone());
+            self.arguments
+                .entry(effect)
+                .or_default()
+                .extend(arguments.iter().cloned());
         }
+        self.choices.extend(other.choices.clone());
+        self.specs.extend(other.specs.iter().cloned());
         self
     }
 
-    /// The arguments the row gives the effect `effect`, when it offers it.
+    /// Offer the parameter `param` of `effect`, which the row offers, with
+    /// the values the row's state knows it takes (a display's modes, the
+    /// scales it supports): what a control or the palette lists.
     #[must_use]
-    pub fn arguments(&self, effect: &str) -> Option<&serde_json::Map<String, serde_json::Value>> {
-        self.arguments.get(effect)
+    pub fn choices<R, A>(
+        mut self,
+        effect: crate::ActionRef<R, A>,
+        param: &'static str,
+        choices: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.choices
+            .insert((effect.id, param), choices.into_iter().collect());
+        self
+    }
+
+    /// Offer `spec` on the row: an action another resource declares, which
+    /// the row was given rather than declaring it itself (a settings
+    /// section's edit, the open of an installed app), published on the row
+    /// as that resource published it.
+    #[must_use]
+    pub fn spec(mut self, spec: ActionSpec) -> Self {
+        self.specs.push(spec);
+        self
+    }
+
+    /// The arguments the row gives the effect `effect`, once for each time it
+    /// offers it: an effect offered twice with different arguments (each
+    /// reviewed sign-in method) is two actions on the row.
+    #[must_use]
+    pub fn arguments(&self, effect: &str) -> Option<&[serde_json::Map<String, serde_json::Value>]> {
+        self.arguments.get(effect).map(Vec::as_slice)
+    }
+
+    /// The values the row says `param` of `effect` takes, when it says.
+    #[must_use]
+    pub(crate) fn chosen(&self, effect: &str, param: &str) -> Option<&[String]> {
+        self.choices
+            .iter()
+            .find(|((id, name), _)| *id == effect && *name == param)
+            .map(|(_, values)| values.as_slice())
+    }
+
+    /// The actions of another resource the row offers
+    /// ([`Self::spec`]), as published.
+    #[must_use]
+    pub(crate) fn declared(&self) -> &[ActionSpec] {
+        &self.specs
     }
 
     /// Whether the row offers no effect of its type's.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.arguments.is_empty()
+        self.arguments.is_empty() && self.specs.is_empty()
     }
 }
 
@@ -200,6 +270,9 @@ impl LiveRow {
         let row_id = crate::Id::from_raw(id);
         for operation in R::effects_with(&row_id, bindings) {
             row = row.operation(operation);
+        }
+        for operation in bindings.declared() {
+            row = row.operation(operation.clone());
         }
         row
     }

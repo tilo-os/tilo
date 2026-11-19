@@ -82,6 +82,7 @@ impl Watched {
             who: format!("person:{name}"),
             name: name.to_owned(),
             kind: "person".into(),
+            works_in: None,
         }]));
         self.roster.wake();
     }

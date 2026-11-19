@@ -1892,6 +1892,13 @@ impl Client {
             .map_err(|_| "the peer network is gone".to_owned())
     }
 
+    /// Dial the holders of workspace `ws` again now: the person pressed "Try again" in a window
+    /// whose workspace could not arrive.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn redial(&self, ws: tilo_desktop_model::WorkspaceId) {
+        let _ = self.outgoing.send(Cmd::Redial(ws));
+    }
+
     /// Dial one of the person's own devices, whose address this session was told: the session
     /// between the two carries their device fabric.
     #[cfg(target_os = "linux")]

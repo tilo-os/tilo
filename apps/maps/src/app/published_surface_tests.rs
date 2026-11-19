@@ -2,8 +2,9 @@
 //! actions act on are parameters of verbs of the map itself.
 
 use super::MapWindow;
+use ui::PresenceKey;
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::{ActionInvoker, Availability};
+use ui::tilo_actions::{ActionInvoker, PresenceId};
 
 use crate::MapsShell;
 use crate::model::{Category, LatLon, Place};
@@ -50,23 +51,40 @@ fn a_places_row_is_an_address_of_the_published_surface() {
             serde_json::json!({ "place": "cafe-glueck" }),
         )
     };
-    // The agent reads the row's address in the surface; the action answers
-    // with its own rule rather than as one the map does not have.
-    let refused = call(&mut app, ActionInvoker::agent("map-assistant"))
-        .expect_err("showing a place is the person's own");
+    // The agent opens the place in its own view of the map: the person's
+    // screen does not move, and the person sees the agent at the place.
+    let agent = PresenceId::new("map-assistant-view").unwrap();
+    call(
+        &mut app,
+        ActionInvoker::agent("map-assistant").with_presence(agent.clone()),
+    )
+    .unwrap();
+    app.settle();
+    let selected = |app: &mut TestApp<MapsShell>| {
+        app.with_surface(|window: &mut MapWindow| window.app().model.selected.clone())
+    };
+    assert_eq!(selected(&mut app), Some(None), "the person's view stays");
+    let presences = app.presences();
+    let shown = presences
+        .iter()
+        .find(|shown| shown.presence == agent)
+        .unwrap_or_else(|| panic!("the person sees the agent: {presences:?}"));
     assert!(
-        matches!(
-            &refused,
-            ui::tilo_actions::ApiError::Unavailable { code, .. }
-                if code == Availability::PRIVATE_VIEW
-        ),
-        "{refused:?}"
+        matches!(&shown.key, PresenceKey::Resource { id, .. } if id == "cafe-glueck"),
+        "the agent's view shows the place: {shown:?}"
+    );
+    // An agent with no presence of its own is answered in its default
+    // view, seen the same way.
+    call(&mut app, ActionInvoker::agent("map-helper")).unwrap();
+    app.settle();
+    assert_eq!(selected(&mut app), Some(None), "the person's view stays");
+    let helper = PresenceId::new("agent:map-helper").unwrap();
+    assert!(
+        app.presences().iter().any(|shown| shown.presence == helper),
+        "the person sees the agent's default view"
     );
     // The person's own caller opens the place with the same arguments.
     call(&mut app, ActionInvoker::person("test-author")).unwrap();
     app.settle();
-    assert_eq!(
-        app.with_surface(|window: &mut MapWindow| window.app().model.selected.clone()),
-        Some(Some("cafe-glueck".to_owned()))
-    );
+    assert_eq!(selected(&mut app), Some(Some("cafe-glueck".to_owned())));
 }

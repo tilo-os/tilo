@@ -4,8 +4,9 @@
 use serde_json::{Map, Value};
 use ui::framework::{EffectStatus, LiveRow};
 use ui::i18n::ArgValue;
-use ui::tilo_actions::{ActionOutput, ActionSpec, ResourcePresentation};
+use ui::tilo_actions::{ActionOutput, ResourcePresentation};
 use ui::tilo_resource::Effect as _;
+use ui::tilo_resource::RowBindings;
 use zeroize::Zeroizing;
 
 use super::{
@@ -17,7 +18,8 @@ use super::{
 };
 use crate::setup::destination::disk_row::capacity;
 use crate::setup::destination::effects::{
-    DestinationEffect, PROVIDER, REVIEW, STORAGE, disk_row, reference, region_row, reviewed_digest,
+    DestinationEffect, Disk, Network, PROVIDER, REVIEW, Region, Review, STORAGE, Session, Storage,
+    disk_row, reference, region_row, reviewed_digest,
 };
 use crate::setup::strings::{t, t_args};
 use imager_backend::destination::install::PowerAction;
@@ -48,16 +50,6 @@ impl Check {
         self.label = Some(label.into());
         self
     }
-
-    fn overlay(&self, mut spec: ActionSpec) -> ActionSpec {
-        if let Some(label) = &self.label {
-            spec.type_mut().label.clone_from(label);
-        }
-        match &self.blocked {
-            Some((code, reason)) => spec.unavailable(*code, reason.clone()),
-            None => spec,
-        }
-    }
 }
 
 struct Item {
@@ -65,7 +57,23 @@ struct Item {
     kind: ItemKind,
     label: String,
     presentation: ResourcePresentation,
-    operation: Option<ActionSpec>,
+    choice: Option<Choice>,
+}
+
+/// What an item's row offers: one declared effect with the arguments its
+/// state knows, and whether its state refuses it now.
+struct Choice {
+    effect: DestinationEffect,
+    bound: Vec<(&'static str, serde_json::Value)>,
+    prefill: Vec<(&'static str, serde_json::Value)>,
+    blocked: Blocked,
+    description: Option<String>,
+}
+
+impl Choice {
+    fn bindings(&self) -> RowBindings {
+        RowBindings::new().bind_id(self.effect.id(), self.bound.clone())
+    }
 }
 
 /// What an item is, as the type its row is an item of.
@@ -79,64 +87,28 @@ enum ItemKind {
 }
 
 impl ItemKind {
-    fn row(self, id: String, label: String) -> LiveRow {
-        match self {
-            Self::Network => LiveRow::typed::<Network>(id, label),
-            Self::Disk => LiveRow::typed::<Disk>(id, label),
-            Self::Region => LiveRow::typed::<Region>(id, label),
-            Self::Storage => LiveRow::typed::<Storage>(id, label),
-            Self::Review => LiveRow::typed::<Review>(id, label),
+    fn row(self, id: String, label: String, choice: Option<&Choice>) -> LiveRow {
+        let bindings = choice.map_or_else(RowBindings::new, Choice::bindings);
+        let row = match self {
+            Self::Network => LiveRow::typed_with::<Network>(id, label, &bindings),
+            Self::Disk => LiveRow::typed_with::<Disk>(id, label, &bindings),
+            Self::Region => LiveRow::typed_with::<Region>(id, label, &bindings),
+            Self::Storage => LiveRow::typed_with::<Storage>(id, label, &bindings),
+            Self::Review => LiveRow::typed_with::<Review>(id, label, &bindings),
+        };
+        match (self, choice) {
+            (Self::Storage, Some(choice)) if !choice.prefill.is_empty() => {
+                row.prefilled(DestinationEffect::SET_SIZE, choice.prefill.clone())
+            }
+            _ => row,
         }
     }
-}
-
-struct Network;
-impl ui::tilo_resource::words::RowType for Network {
-    const KIND: &'static str = "installer.network";
-    const LABEL: &'static str = "Network";
-}
-
-struct Disk;
-impl ui::tilo_resource::words::RowType for Disk {
-    const KIND: &'static str = "installer.disk";
-    const LABEL: &'static str = "Disk";
-}
-
-struct Region;
-impl ui::tilo_resource::words::RowType for Region {
-    const KIND: &'static str = "installer.region";
-    const LABEL: &'static str = "Install region";
-}
-
-struct Storage;
-impl ui::tilo_resource::words::RowType for Storage {
-    const KIND: &'static str = "installer.storage";
-    const LABEL: &'static str = "Storage";
-}
-
-struct Review;
-impl ui::tilo_resource::words::RowType for Review {
-    const KIND: &'static str = "installer.review";
-    const LABEL: &'static str = "Review";
 }
 
 struct Guidance;
 impl ui::tilo_resource::words::RowType for Guidance {
     const KIND: &'static str = "installer.guidance";
     const LABEL: &'static str = "Guidance";
-}
-
-struct Session;
-impl ui::tilo_resource::words::RowType for Session {
-    const KIND: &'static str = "installer.session";
-    const LABEL: &'static str = "Install";
-}
-
-fn guarded(spec: ActionSpec, blocked: Blocked) -> ActionSpec {
-    match blocked {
-        Some((code, reason)) => spec.unavailable(code, reason),
-        None => spec,
-    }
 }
 
 fn bounded(text: &str, limit: usize) -> String {
@@ -150,6 +122,48 @@ fn bounded(text: &str, limit: usize) -> String {
 pub(super) fn step_name(step: Step) -> String {
     let index = step_index(step).min(STEP_KEYS.len().saturating_sub(1));
     t(STEP_KEYS[index])
+}
+
+/// Apply each row's refusals to the row the tree publishes under that id.
+fn apply_refusals(
+    resource: &mut ui::tilo_actions::ResourceSpec,
+    refusals: &[(String, Vec<(&'static str, &'static str, String)>)],
+) {
+    if let Some((_, for_row)) = refusals.iter().find(|(id, _)| *id == resource.id.as_str()) {
+        for (effect, code, reason) in for_row {
+            if let Some(at) = resource
+                .actions
+                .iter()
+                .position(|action| action.id == *effect)
+            {
+                let spec = resource.actions.remove(at);
+                resource
+                    .actions
+                    .insert(at, spec.unavailable(*code, reason.clone()));
+            }
+        }
+    }
+    for child in &mut resource.children {
+        apply_refusals(child, refusals);
+    }
+}
+
+/// Say what each item's declared effect is for on this row (the review's own
+/// description of what it is about to do).
+fn apply_descriptions(resource: &mut ui::tilo_actions::ResourceSpec, items: &[Item]) {
+    if let Some(item) = items.iter().find(|item| item.id == resource.id.as_str())
+        && let Some(choice) = &item.choice
+        && let Some(description) = &choice.description
+    {
+        for action in &mut resource.actions {
+            if action.id == choice.effect.id() {
+                action.type_mut().description = Some(description.clone());
+            }
+        }
+    }
+    for child in &mut resource.children {
+        apply_descriptions(child, items);
+    }
 }
 
 fn with_guidance(row: LiveRow, guidance: &str) -> LiveRow {
@@ -313,12 +327,8 @@ impl InstallerApp {
                 };
                 let row = item
                     .kind
-                    .row(item.id, item.label)
+                    .row(item.id, item.label, item.choice.as_ref())
                     .presentation(item.presentation);
-                let row = match item.operation {
-                    Some(operation) => row.operation(operation),
-                    None => row,
-                };
                 match guidance {
                     Some(guidance) => with_guidance(row, &guidance),
                     None => row,
@@ -329,9 +339,14 @@ impl InstallerApp {
 
     pub fn published(&self) -> Vec<LiveRow> {
         let checks = self.checks();
-        let mut root = LiveRow::typed::<Session>(
+        let mut bindings = RowBindings::new();
+        for declaration in DestinationEffect::declarations() {
+            bindings = bindings.offer_id(declaration.id);
+        }
+        let mut root = LiveRow::typed_with::<Session>(
             PROVIDER,
             crate::resource::CATALOG.t("imager-installer-title"),
+            &bindings,
         )
         .presentation(ResourcePresentation {
             detail: Some(t_args(
@@ -350,17 +365,76 @@ impl InstallerApp {
             badge: Some(t(self.install_state_key())),
             preview: None,
         });
-        for spec in DestinationEffect::specs() {
-            let spec = match checks.iter().find(|check| check.id == spec.id) {
-                Some(check) => check.overlay(spec),
-                None => spec,
-            };
-            root = root.operation(spec);
+        for check in &checks {
+            if let Some(label) = &check.label {
+                root = root.labelled(reference(check.id), label.clone());
+            }
         }
+        let mut root = root.into_resource();
         for row in self.published_rows() {
-            root = root.row(row);
+            root.children.push(row.into_resource());
         }
-        vec![root]
+        apply_refusals(&mut root, &self.refusals());
+        apply_descriptions(&mut root, &self.items());
+        vec![LiveRow::from_resource(root)]
+    }
+
+    /// What each published row refuses now: its effect's id, the code a
+    /// program reads and the reason a person reads.
+    pub(crate) fn refusals(&self) -> Vec<(String, Vec<(&'static str, &'static str, String)>)> {
+        let mut by_row = Vec::new();
+        let root: Vec<(&'static str, &'static str, String)> = self
+            .checks()
+            .into_iter()
+            .filter_map(|check| check.blocked.map(|(code, reason)| (check.id, code, reason)))
+            .collect();
+        if !root.is_empty() {
+            by_row.push((PROVIDER.to_owned(), root));
+        }
+        for item in self.items() {
+            if let Some(choice) = &item.choice
+                && let Some((code, reason)) = &choice.blocked
+            {
+                by_row.push((
+                    item.id.clone(),
+                    vec![(choice.effect.id(), *code, reason.clone())],
+                ));
+            }
+        }
+        by_row
+    }
+
+    /// The row statuses that carry [`Self::refusals`] into the published
+    /// tree, and the review's own description.
+    pub(crate) fn row_statuses(&self) -> Vec<(String, Vec<EffectStatus>)> {
+        let mut by_row: Vec<(String, Vec<EffectStatus>)> = self
+            .refusals()
+            .into_iter()
+            .map(|(row, refusals)| {
+                (
+                    row,
+                    refusals
+                        .into_iter()
+                        .map(|(id, code, reason)| {
+                            EffectStatus::unavailable(reference(id), code, reason)
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        for item in self.items() {
+            if let Some(choice) = &item.choice
+                && let Some(description) = &choice.description
+            {
+                let status =
+                    EffectStatus::described(reference(choice.effect.id()), description.clone());
+                match by_row.iter_mut().find(|(row, _)| *row == item.id) {
+                    Some((_, statuses)) => statuses.push(status),
+                    None => by_row.push((item.id.clone(), vec![status])),
+                }
+            }
+        }
+        by_row
     }
 
     fn next_check(&self) -> Check {
@@ -541,12 +615,15 @@ impl InstallerApp {
                         .then(|| "selected".to_owned()),
                     ..ResourcePresentation::default()
                 },
-                operation: Some(guarded(
-                    DestinationEffect::SelectNetwork { ssid }.bound(),
-                    self.blocked(&DestinationEffect::SelectNetwork {
+                choice: Some(Choice {
+                    effect: DestinationEffect::SelectNetwork { ssid: ssid.clone() },
+                    bound: vec![("ssid", serde_json::Value::from(ssid.clone()))],
+                    prefill: Vec::new(),
+                    blocked: self.blocked(&DestinationEffect::SelectNetwork {
                         ssid: network.ssid.clone(),
                     }),
-                )),
+                    description: None,
+                }),
             });
         }
         for (index, disk) in self.disks.iter().enumerate() {
@@ -575,13 +652,15 @@ impl InstallerApp {
                     badge: Some(badge.to_owned()),
                     preview: None,
                 },
-                operation: Some(guarded(
-                    DestinationEffect::SelectDisk {
+                choice: Some(Choice {
+                    effect: DestinationEffect::SelectDisk {
                         device: disk.name.clone(),
-                    }
-                    .bound(),
-                    self.disk_blocked(disk),
-                )),
+                    },
+                    bound: vec![("device", serde_json::Value::from(disk.name.clone()))],
+                    prefill: Vec::new(),
+                    blocked: self.disk_blocked(disk),
+                    description: None,
+                }),
             });
         }
         let plans = self.guided_alongside_plans();
@@ -608,13 +687,18 @@ impl InstallerApp {
                             .then(|| "selected".to_owned()),
                         ..ResourcePresentation::default()
                     },
-                    operation: Some(guarded(
-                        DestinationEffect::SelectRegion {
+                    choice: Some(Choice {
+                        effect: DestinationEffect::SelectRegion {
                             index: i64::try_from(index).unwrap_or(i64::MAX),
-                        }
-                        .bound(),
-                        self.off_step(Step::Disk),
-                    )),
+                        },
+                        bound: vec![(
+                            "index",
+                            serde_json::Value::from(i64::try_from(index).unwrap_or(i64::MAX)),
+                        )],
+                        prefill: Vec::new(),
+                        blocked: self.off_step(Step::Disk),
+                        description: None,
+                    }),
                 });
             }
         }
@@ -630,9 +714,21 @@ impl InstallerApp {
                 }),
                 ..ResourcePresentation::default()
             },
-            operation: self
-                .capacity_effect()
-                .map(|effect| guarded(effect.bound_asking(&["gib"]), self.off_step(Step::Disk))),
+            choice: self.capacity_effect().map(|effect| {
+                let bound = match &effect {
+                    DestinationEffect::SetSize { extent, .. } => {
+                        vec![("extent", serde_json::Value::from(extent.clone()))]
+                    }
+                    _ => Vec::new(),
+                };
+                Choice {
+                    effect,
+                    bound,
+                    prefill: vec![("gib", serde_json::Value::from(0))],
+                    blocked: self.off_step(Step::Disk),
+                    description: None,
+                }
+            }),
         });
         items.push(self.review_item());
         items
@@ -718,14 +814,26 @@ impl InstallerApp {
             ),
             (None, _) => t("installer-item-review-no-target"),
         };
-        let mut begin = guarded(self.begin_effect().bound(), self.begin_blocked());
-        begin.type_mut().description = Some(description);
+        let effect = self.begin_effect();
+        let bound = match &effect {
+            DestinationEffect::Begin { target, allocation } => vec![
+                ("target", serde_json::Value::from(target.clone())),
+                ("allocation", serde_json::Value::from(allocation.clone())),
+            ],
+            _ => Vec::new(),
+        };
         Item {
             id: REVIEW.to_owned(),
             kind: ItemKind::Review,
             label: t("installer-item-review"),
             presentation: ResourcePresentation::default(),
-            operation: Some(begin),
+            choice: Some(Choice {
+                effect,
+                bound,
+                prefill: Vec::new(),
+                blocked: self.begin_blocked(),
+                description: Some(description),
+            }),
         }
     }
 

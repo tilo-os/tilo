@@ -395,6 +395,12 @@ fn geometry(
 }
 
 impl Widget for PictureChoice {
+    /// Its size follows from what it was made with and the theme, which builds its node anew:
+    /// a laid-out one asks for no solve of its own.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     /// A choice among pictures as a page's own radio group of tiles: each tile a
     /// button holding the widget's paint of it, named by its label.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {

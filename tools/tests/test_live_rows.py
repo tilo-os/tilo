@@ -36,6 +36,32 @@ fn control(effect: &MusicEffect) -> Option<ActionBinding<()>> {
 }
 """
 
+# A row a helper returned and a variable holds, given an operation there: the
+# helper's own definition is elsewhere, so only the call site names the row.
+BOUND_FROM_HELPER = """
+pub(super) fn published_rows(&self) -> Vec<LiveRow> {
+    self.items()
+        .into_iter()
+        .map(|item| {
+            let row = item.kind.row(item.id, item.label).presentation(item.presentation);
+            let row = match item.operation {
+                Some(operation) => row.operation(operation),
+                None => row,
+            };
+            row
+        })
+        .collect()
+}
+"""
+
+# A value that is not a row: its operations are the plan's, not a row's.
+NOT_A_ROW = """
+fn publish(plan: Plan) {
+    let batch = plan.batches();
+    batch.operation(sweep);
+}
+"""
+
 
 class LiveRowsTests(unittest.TestCase):
     def fixture(self, files: dict[str, str]) -> Path:
@@ -59,6 +85,14 @@ class LiveRowsTests(unittest.TestCase):
     def test_an_operation_added_to_a_rows_variable_is_counted(self):
         self.assertEqual(live_rows.count_file(BOUND_BY_VARIABLE), {"row-operation": 1},
                          "a row given operations through its variable is hand-built too")
+
+    def test_a_row_a_helper_returned_and_a_variable_holds_is_counted(self):
+        self.assertEqual(live_rows.count_file(BOUND_FROM_HELPER), {"row-operation": 1},
+                         "a helper-built row given an operation is hand-built too")
+
+    def test_an_operation_on_something_that_is_not_a_row_is_not_counted(self):
+        self.assertEqual(live_rows.count_file(NOT_A_ROW), {},
+                         "only a binding a row builder made is a row's variable")
 
     def test_an_untyped_row_is_counted_and_tests_are_not(self):
         code = (

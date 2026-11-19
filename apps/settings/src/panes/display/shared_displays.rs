@@ -1,16 +1,13 @@
 //! The person's other devices' screens, drawn on the placement canvas beside this device's own
 //! where the person's layout places them, through the Settings resource api.
 
-use super::{
-    DisplayEffect, DisplayModel, LiveRow, SettingsEffect, SettingsSection, effect, t, t_args,
-};
+use super::{DisplayEffect, DisplayModel, LiveRow, SettingsSection, effect, t, t_args};
 use crate::panes::display_placement::{PlacedDisplay, SharedDisplayState, placement::Placement};
 use provider_settings_ui::bound::SettingRows as _;
 use provider_settings_ui::widgets::{rows, section, value_row};
 use settings_store::person_displays::{Layout, Placements, Rect, ResolvedDisplay};
 use ui::framework::{Dispatcher, ViewCx};
 use ui::tilo_resource;
-use ui::tilo_resource::Effect as _;
 
 pub use crate::prefs::{AutomaticDisplayPrefs, SharedDisplayPrefs};
 use crate::resource::Settings;
@@ -21,7 +18,9 @@ type Move = (String, ui::tilo_actions::ActionBinding<(i32, i32)>);
 /// A screen of the person's layout on another device, as the pane publishes
 /// it: a row of the `settings.device-display` type, offering to move it.
 #[derive(ui::tilo_resource::Row)]
-#[row(kind = "settings.device-display", label = "Device display")]
+#[row(kind = "settings.device-display", label = "Device display",
+    effects = DisplayEffect
+)]
 pub(crate) struct DeviceDisplay;
 
 impl DisplayModel {
@@ -66,20 +65,21 @@ impl DisplayModel {
 
     /// A screen of the person's layout: dragging it moves its device's screens.
     fn device_screen_row(&self, display: &ResolvedDisplay) -> LiveRow {
-        let mut row = LiveRow::typed::<DeviceDisplay>(
+        let bindings = tilo_resource::RowBindings::new().bind(
+            DisplayEffect::MOVE_DEVICE_DISPLAY,
+            [
+                ("display", serde_json::Value::from(screen_key(display))),
+                (
+                    "revision",
+                    serde_json::Value::from(self.shared_revision(&display.device, &display.output)),
+                ),
+            ],
+        );
+        LiveRow::typed_with::<DeviceDisplay>(
             format!("settings.device-display:{}", screen_key(display)),
             display.name.clone(),
-        );
-        row = row.operation(
-            SettingsEffect::from(DisplayEffect::MoveDeviceDisplay {
-                display: screen_key(display),
-                revision: self.shared_revision(&display.device, &display.output),
-                x: display.rect.x,
-                y: display.rect.y,
-            })
-            .bound_asking(&["x", "y"]),
-        );
-        row
+            &bindings,
+        )
     }
 
     fn device_move(

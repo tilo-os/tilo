@@ -2200,12 +2200,36 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
             &crate::actions::calendar_resource_id(&calendar_id),
         )
         .expect("configured calendar is an exact resource");
-        assert!(
-            resource
-                .actions
-                .iter()
-                .any(|action| action.id == "set-visibility"),
-            "calendar resource exposes the visibility effect"
+        let (offer_id, applies) = if before {
+            (
+                "hide-calendar",
+                crate::resource::CalendarEffect::HideCalendar {
+                    id: crate::actions::calendar_resource_id(&calendar_id),
+                },
+            )
+        } else {
+            (
+                "show-calendar",
+                crate::resource::CalendarEffect::ShowCalendar {
+                    id: crate::actions::calendar_resource_id(&calendar_id),
+                },
+            )
+        };
+        let offer = resource
+            .actions
+            .iter()
+            .find(|action| action.id == offer_id)
+            .expect("the calendar's row offers the change that applies");
+        assert_eq!(
+            <crate::resource::CalendarEffect as ui::tilo_resource::Effect>::from_payload(
+                &offer
+                    .build_json(&serde_json::Map::new())
+                    .expect("the row binds the calendar it acts on")
+                    .payload
+            )
+            .expect("a calendar effect"),
+            applies,
+            "the row's change is aimed at the calendar it shows"
         );
         app.apply_action(
             Action::SetCalendarVisible {

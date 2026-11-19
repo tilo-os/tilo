@@ -1358,6 +1358,7 @@ impl Workspaces {
             members: self.people(&workspace).people(),
             administrator: join.administrator(),
             owner: self.owner_invitation(join.invite_id(), workspace.workspace()),
+            wait_list: workspace.wait_list.sent(join.invite_id(), now),
         })
     }
 

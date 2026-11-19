@@ -16,6 +16,9 @@
 //   3. the stranger follows the invitation's link and joins; the workspace
 //      opens, and the setup offered inside it sets Tilo up through their
 //      agent (`tilo login`, which adds Tilo's MCP server) in that workspace;
+//   3b. the same person on a browser new to the site signs in with their
+//      agent: the entry's wait list offers it, and the computer `tilo login`
+//      set up is a device of theirs, which signs the new tab in;
 //   4. they keep themselves with a passkey, their browser forgets the site,
 //      and the passkey brings them back into a workspace of their own;
 //   5. they make a second workspace and are in it;
@@ -679,6 +682,56 @@ try {
   await second.close();
   mark('a second tab of the person entered the workspace they are in, and the first stayed in');
   console.log('ok: a second tab of the person enters the workspace they are in, and the first stays in');
+
+  // -- 3b. the same person on a browser new to the site signs in with their agent
+  // The invite-only entry turns this browser away to its wait list; "Sign in
+  // with your agent" shows a sign-in prompt with its code, and the computer
+  // `tilo login` set up above claims it. That computer is a device of the
+  // person (their root stays in the tab that set it up), and a device of the
+  // person signs a browser tab of theirs in.
+  const returning = await visit('returning');
+  await arrive(returning, {expected: 'refused'});
+  await until(returning.tab, `document.documentElement.dataset.refusal === 'wait-list'`, 'the wait list for a browser new to the site', stepLimit(6));
+  await pressId(returning.tab, 'arrival-sign-in-agent');
+  // The prompt a person copies, read from what the screen shows: the code it
+  // names, once the screen is ready to be copied.
+  const signInShown = `(() => {
+    const text = (document.body?.innerText || '').replace(/\\s+/g, ' ');
+    const named = text.match(/(?:tilo|sh -s) login [2-9A-Z]{3}-[2-9A-Z]{4}(?: --site \\S+?)?(?:,|\\s|$)/);
+    return named ? named[0] : '';
+  })()`;
+  const signInPrompt = await poll(returning.tab, signInShown, stepLimit(6));
+  if (!signInPrompt) {
+    await dump(returning.tab, '5-sign-in-with-agent');
+    await fail(`"Sign in with your agent" showed no sign-in prompt: ${JSON.stringify(await state(returning.tab))} — ${await pageText(returning.tab)}`);
+  }
+  report.signInPrompt = signInPrompt;
+  await dump(returning.tab, '5-sign-in-with-agent');
+  const signIn = commandOf(signInPrompt);
+  if (!signIn) await fail(`the sign-in prompt names no tilo login code: ${signInPrompt}`);
+  const claimed = await tilo(env, ['login', signIn.code, '--site', signIn.site ?? site]);
+  report.signInLogin = claimed;
+  if (claimed.code !== 0) await fail(`tilo login of the sign-in code failed (${claimed.code}): ${claimed.stderr}${claimed.stdout}`);
+  // The person asked their agent to sign them in on this tab, so the tab asks
+  // them nothing about whose device it becomes: that card, which warns of a
+  // link someone else made, is for a link handed to a device.
+  const signedInOrAsked = await until(returning.tab, `(() => {
+    if (document.querySelector('[data-card="pair-whose"]')) return 'asked';
+    const mounted = globalThis.tiloMount?.state?.() ?? null;
+    return mounted?.phase === 'presented' ? ${JSON.stringify(report.joined.workspace)} : '';
+  })()`, 'the signed-in tab in the workspace the person is in', stepLimit(8));
+  if (signedInOrAsked === 'asked') {
+    await fail('the tab its person signed in with their agent asked whose device it becomes, as for a link someone else made');
+  }
+  const signedIn = await person(returning.tab);
+  report.signedIn = signedIn;
+  if (!report.landed?.user || signedIn.user !== report.landed.user) {
+    await fail(`the agent signed in ${signedIn.user ?? 'nobody'}, not ${report.landed?.user ?? 'the person who set up'}`);
+  }
+  await dump(returning.tab, '5-signed-in-with-agent');
+  await returning.browser.close().catch(() => {});
+  mark('a browser new to the site signed the person in with their agent');
+  console.log(`ok: "Sign in with your agent" showed its code, and the person's computer signed the tab in to ${signedIn.title}`);
 
   // -- 4. a passkey brings the same person back, to a workspace of theirs -----
   // Kept from the person's own desktop, as "Keep with passkey" does. A

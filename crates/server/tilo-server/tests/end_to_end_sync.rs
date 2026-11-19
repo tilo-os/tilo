@@ -71,8 +71,10 @@ async fn round_trip(client: &ServerClient, what: &str) {
     loop {
         match recv_reply(client, what).await {
             Envelope::Pong => return,
+            // A device's session also carries its person's workspace list.
             Envelope::Ready { .. }
             | Envelope::WorkspaceBootstrap { .. }
+            | Envelope::PersonalList { .. }
             | Envelope::Delta { .. } => {}
             other => panic!("{what}: unexpected envelope {other:?}"),
         }
@@ -92,6 +94,7 @@ async fn recv_delta_by(client: &ServerClient, what: &str, author: [u8; 32]) -> V
             Envelope::Delta { .. }
             | Envelope::Ready { .. }
             | Envelope::Pong
+            | Envelope::PersonalList { .. }
             | Envelope::WorkspaceBootstrap { .. } => {}
             other => panic!("{what}: unexpected envelope {other:?}"),
         }

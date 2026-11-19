@@ -108,8 +108,15 @@ async fn next(client: &ServerClient, who: &str) -> Envelope {
             .await
             .unwrap_or_else(|_| panic!("{who} timed out"))
             .unwrap_or_else(|| panic!("{who} connection closed"));
-        // A member's session also carries their workspace listing.
-        if !matches!(envelope, Envelope::PersonalList { .. }) {
+        // A member's session also carries their workspace listing, and the
+        // workspace's own changes, which are no answer to a frame.
+        if !matches!(
+            envelope,
+            Envelope::PersonalList { .. }
+                | Envelope::Delta { .. }
+                | Envelope::Ready { .. }
+                | Envelope::WorkspaceBootstrap { .. }
+        ) {
             return envelope;
         }
     }
@@ -171,8 +178,10 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
             }
             other => panic!("B expected a remote action, got {other:?}"),
         }
-        let stray = tokio::time::timeout(Duration::from_millis(300), c_client.recv()).await;
-        assert!(stray.is_err(), "a directed frame reaches no other device");
+        assert!(
+            crate::common::quiet(&c_client, Duration::from_millis(300)).await,
+            "a directed frame reaches no other device"
+        );
     }
     // Phase `undeliverable_frames_are_answered_not_stored`.
     {
@@ -198,8 +207,10 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
                 if to_device_public_key == b.device_pubkey()
         ));
         let b_client = subscribed(addr, &user, &b).await;
-        let replayed = tokio::time::timeout(Duration::from_millis(300), b_client.recv()).await;
-        assert!(replayed.is_err(), "remote actions are never replayed late");
+        assert!(
+            crate::common::quiet(&b_client, Duration::from_millis(300)).await,
+            "remote actions are never replayed late"
+        );
 
         a_client
             .send(directed(host_key, frame(invoke(InvocationId::new()))))
@@ -295,7 +306,8 @@ async fn refusal(client: &ServerClient, who: &str) -> Option<Refusal> {
         {
             None => return None,
             Some(Envelope::RemoteActionUndeliverable { refusal, .. }) => return Some(refusal),
-            Some(Envelope::NotAuthorised { .. }) => {}
+            // A member's session also carries their workspace listing.
+            Some(Envelope::NotAuthorised { .. } | Envelope::PersonalList { .. }) => {}
             Some(other) => panic!("{who} expected a refusal, got {other:?}"),
         }
     }

@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 36
+version = 37
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -197,6 +197,8 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceClientMessage::present" = "struct"
 "FloatingSurfaceClientMessage::present.request" = "FloatingSurfaceProtocolRequest"
 "FloatingSurfaceClientMessage::reopen_closed_tab" = "unit"
+"FloatingSurfaceClientMessage::retry_workspace" = "struct"
+"FloatingSurfaceClientMessage::retry_workspace.instance" = "Option<u64> optional"
 "FloatingSurfaceClientMessage::selection_capable" = "unit"
 "FloatingSurfaceClientMessage::set_capture_protection" = "struct"
 "FloatingSurfaceClientMessage::set_capture_protection.generation" = "Option<u64> optional"
@@ -764,4 +766,11 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "WorkspaceSyncState::device_needs_update" = "unit"
 "WorkspaceSyncState::host_needs_update" = "unit"
 "WorkspaceSyncState::synced" = "unit"
+"WorkspaceSyncState::unavailable" = "tuple(WorkspaceUnavailable)"
 "WorkspaceSyncState::unreachable" = "unit"
+"WorkspaceUnavailable" = "enum external"
+"WorkspaceUnavailable::holders_unreadable" = "unit"
+"WorkspaceUnavailable::no_holders" = "unit"
+"WorkspaceUnavailable::no_identity" = "unit"
+"WorkspaceUnavailable::not_renewed" = "unit"
+"WorkspaceUnavailable::own_service_stopped" = "unit"

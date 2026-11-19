@@ -783,6 +783,7 @@ fn lay_out_window(
         #[cfg(test)]
         let remount_probe = crate::profiling::frame_probe::span("layout.remount");
         let remounted_now = in_place && {
+            let _phase = tilo_resource::profiling::Phase::start("ui.remount");
             let _entry = app.enter_wake_scope();
             app.remount_in_place()
         };
@@ -850,6 +851,7 @@ fn lay_out_window(
         if must_compute || rebuild || remounted_now {
             #[cfg(test)]
             let _compute = crate::profiling::frame_probe::span("layout.compute");
+            let _phase = tilo_resource::profiling::Phase::start("ui.solve");
             let start = crate::time::now();
             #[allow(
                 clippy::cast_possible_truncation,

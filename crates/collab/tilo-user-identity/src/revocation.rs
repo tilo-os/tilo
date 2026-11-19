@@ -193,10 +193,10 @@ pub fn cert_refused(
 ) -> bool {
     let device = revoked_at(&cert.user_public_key, &cert.device_public_key)
         .is_some_and(|revoked| at_ns.is_none_or(|at| at >= revoked));
-    // A stand-in vouched for the person's own devices: what it issued before
-    // its revocation stays theirs. A grant's minted grants are the grant
-    // itself, narrowed, and a device's workspace service is the device's own:
-    // neither outlives what issued it.
+    // A stand-in, or one of the person's devices, vouched for the person's
+    // own devices: what it issued before its revocation stays theirs. A
+    // grant's minted grants are the grant itself, narrowed, and a device's
+    // workspace service is the device's own: neither outlives what issued it.
     let issuer = cert.issuer.as_ref().is_some_and(|issuer| {
         revoked_at(&issuer.user_public_key, &issuer.device_public_key).is_some_and(|revoked| {
             issuer.capabilities.agent.is_some()

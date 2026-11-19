@@ -12,12 +12,14 @@ use ntfs_mount::protocol::{self, Mode, Placement, RememberedDrive, Request, Resp
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, ViewCx};
 use ui::icons::Icon;
-use ui::tilo_resource::{self, Effect};
+use ui::tilo_resource::{self, Effect, RowBindings};
 use ui::widget::{ChipStyle, Element, RowMenu, Toggle};
 
 use crate::area::AreaContext;
 use crate::channel;
-use crate::effects::{SettingsEffect, effect};
+#[cfg(test)]
+use crate::effects::SettingsEffect;
+use crate::effects::effect;
 use crate::i18n::{t, t_args};
 use crate::replies::Replies;
 use crate::resource::Settings;
@@ -68,12 +70,12 @@ pub enum DrivesEffect {
     #[effect(kind = "outside", on = DriveRow)]
     #[effect(job, row, returns)]
     ForgetDrive {
-        #[param("The drive's row, or its grant as the drive list names it")]
+        #[param("The remembered drive, as the drive list names it")]
         grant: String,
     },
     /// Open a drive inside this computer safely (a confined driver, a bit
     /// slower) or with the faster kernel driver, from its next opening on.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DriveRow)]
     #[effect(job, row, idempotent, returns)]
     SetDriveOpensSafely {
         #[param("The remembered drive, as the drive list names it")]
@@ -82,16 +84,15 @@ pub enum DrivesEffect {
     },
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "each area receives its owned variant from the shared Settings effect vocabulary"
+)]
 pub(crate) fn answer(
     app: &SettingsApp,
-    mut operation: DrivesEffect,
+    operation: DrivesEffect,
     cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
-    // A drive's row binds the drive's row id; a control names its grant. The
-    // service takes the grant.
-    if let DrivesEffect::ForgetDrive { grant } = &mut operation {
-        *grant = crate::effects::row_entity(grant, "settings.drive").to_owned();
-    }
     let model = crate::panes::drives::area(app)
         .ok_or_else(crate::area::missing)?
         .model();
@@ -258,18 +259,24 @@ impl DrivesArea {
 }
 
 fn drive_live_row(drive: &RememberedDrive) -> LiveRow {
-    let mut row =
-        LiveRow::typed::<DriveRow>(format!("settings.drive:{}", drive.grant), drive_name(drive));
+    let mut bindings = RowBindings::new().bind(
+        DrivesEffect::FORGET_DRIVE,
+        [("grant", drive.grant.clone().into())],
+    );
     if drive.placement == Placement::Internal {
-        row = row.operation(
-            SettingsEffect::from(DrivesEffect::SetDriveOpensSafely {
-                grant: drive.grant.clone(),
-                safely: drive.mode != Mode::OpenSafely,
-            })
-            .bound(),
+        bindings = bindings.bind(
+            DrivesEffect::SET_DRIVE_OPENS_SAFELY,
+            [
+                ("grant", drive.grant.clone().into()),
+                ("safely", (drive.mode != Mode::OpenSafely).into()),
+            ],
         );
     }
-    row
+    LiveRow::typed_with::<DriveRow>(
+        format!("settings.drive:{}", drive.grant),
+        drive_name(drive),
+        &bindings,
+    )
 }
 
 fn drive_name(drive: &RememberedDrive) -> String {

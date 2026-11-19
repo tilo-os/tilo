@@ -11,7 +11,7 @@ use ui::LocalState;
 use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::i18n::ArgValue;
 use ui::tilo_actions::ResourcePresentation;
-use ui::tilo_resource::{self, Effect};
+use ui::tilo_resource;
 use ui::widget::{Button, Dropdown, Element};
 
 use crate::area::AreaContext;
@@ -51,7 +51,7 @@ fn personal(apps: &DefaultApps) -> PersonalDefaults {
 #[effect(operation = "settings.effect")]
 pub enum DefaultAppsEffect {
     /// Open a kind of file or link with an installed app.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DefaultAppCandidate)]
     #[effect(idempotent)]
     #[effect(own_device, keywords = "default app, open with, file association")]
     SetDefaultApp {
@@ -123,7 +123,9 @@ pub(crate) struct DefaultAppKind;
 /// An app that can open a kind, as the pane publishes it: a row of the
 /// `settings.default-app-candidate` type, offering to open the kind with it.
 #[derive(tilo_resource::Row)]
-#[row(kind = "settings.default-app-candidate", label = "App choice")]
+#[row(kind = "settings.default-app-candidate", label = "App choice",
+    effects = DefaultAppsEffect
+)]
 pub(crate) struct DefaultAppCandidate;
 
 impl DefaultAppsArea {
@@ -212,26 +214,28 @@ impl DefaultAppsArea {
                     });
                 }
                 for app in apps_for(candidates, &kind).into_iter().take(MAX_APP_ROWS) {
-                    let mut choose = SettingsEffect::from(DefaultAppsEffect::SetDefaultApp {
-                        kind: kind.as_str().to_owned(),
-                        app: app.package_id.clone(),
-                    })
-                    .bound();
-                    choose.type_mut().label = t_args(
+                    let label = t_args(
                         "settings-app-open-with",
                         &[
                             ("kind", ArgValue::Text(resource_label(&kind))),
                             ("app", ArgValue::Text(app.display_name.clone())),
                         ],
                     );
-                    row = row.row({
-                        let mut candidate = LiveRow::typed::<DefaultAppCandidate>(
+                    let bindings = ui::tilo_resource::RowBindings::new().bind(
+                        DefaultAppsEffect::SET_DEFAULT_APP,
+                        [
+                            ("kind", kind.as_str().to_owned().into()),
+                            ("app", app.package_id.clone().into()),
+                        ],
+                    );
+                    row = row.row(
+                        LiveRow::typed_with::<DefaultAppCandidate>(
                             format!("{id}/{}", app.package_id),
                             app.display_name.clone(),
-                        );
-                        candidate = candidate.operation(choose);
-                        candidate
-                    });
+                            &bindings,
+                        )
+                        .labelled(DefaultAppsEffect::SET_DEFAULT_APP, label),
+                    );
                 }
                 row
             })

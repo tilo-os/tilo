@@ -206,6 +206,18 @@ pub trait Widget {
         None
     }
 
+    /// Set on this node, in `taffy`, the size this widget knows before any solve: what follows
+    /// from its own content (a label's width, a face's height) rather than from the size it is
+    /// given. A size stated here is in the first solve; one stated only after it
+    /// ([`Self::adjust_layout_style`]) solves the window again.
+    fn size_before_solve(
+        &mut self,
+        _taffy: &mut TaffyTree<()>,
+        _node: NodeId,
+        _text: &mut TextRenderer,
+    ) {
+    }
+
     /// Adjust this node's style using its allocated size, before final geometry is applied.
     ///
     /// Decide from the `taffy` it is handed what to set there, never from

@@ -16,7 +16,8 @@ use ui::lock::RwLockRecover as _;
 
 pub const OPEN_ACTION: &str = "open";
 pub const REVEAL_ACTION: &str = "reveal";
-pub const REMOTE_ACCOUNT_OPEN_ACTION: &str = "open-remote-account";
+pub const REMOTE_ACCOUNT_OPEN_ACTION: &str = "open-account";
+pub const REMOTE_ACCOUNT_DETAILS_ACTION: &str = "details";
 
 pub fn place_resource_id(path: &std::path::Path) -> String {
     format!("files.place:{}", path_identity_suffix(path))
@@ -101,17 +102,15 @@ impl PlacesSearch {
             .find(|(place, _)| place == id)?
             .1
             .clone();
-        Some(
-            LiveRow::typed::<crate::row_types::Place>(id, favorite.label).operation(
-                crate::effects::row_action(
-                    &crate::effects::FilesEffect::OpenItem {
-                        item: id.to_owned(),
-                    },
-                    OPEN_ACTION,
-                    crate::i18n::CATALOG.t("files-shortcuts-open"),
-                ),
-            ),
-        )
+        let bindings = ui::tilo_resource::RowBindings::new().bind(
+            crate::effects::FilesEffect::OPEN,
+            [("item", serde_json::Value::String(id.to_owned()))],
+        );
+        Some(LiveRow::typed_with::<crate::row_types::Place>(
+            id,
+            favorite.label,
+            &bindings,
+        ))
     }
 
     pub(crate) fn entries(&self) -> Vec<SearchEntry> {
@@ -217,15 +216,17 @@ impl CollaborativeResourceSearch {
 
     pub(crate) fn resource(&self, id: &str) -> Option<LiveRow> {
         let record = self.snapshot.read().ok()?.records.get(id)?.clone();
+        let bindings = ui::tilo_resource::RowBindings::new().bind(
+            crate::effects::FilesEffect::REVEAL,
+            [(
+                "record",
+                serde_json::Value::String(record.document_id.to_string()),
+            )],
+        );
         Some(
-            LiveRow::typed::<crate::row_types::Document>(id, record.name).operation(
-                crate::effects::row_action(
-                    &crate::effects::FilesEffect::Reveal {
-                        record: record.document_id.to_string(),
-                    },
-                    REVEAL_ACTION,
-                    crate::i18n::CATALOG.t("files-reveal"),
-                ),
+            LiveRow::typed_with::<crate::row_types::Document>(id, record.name, &bindings).labelled(
+                crate::effects::FilesEffect::REVEAL,
+                crate::i18n::CATALOG.t("files-reveal"),
             ),
         )
     }
@@ -280,16 +281,16 @@ impl RemoteAccountSearch {
 
     pub(crate) fn resource(&self, id: &str) -> Option<LiveRow> {
         let account = self.snapshot.read().ok()?.accounts.get(id)?.clone();
+        let bindings = ui::tilo_resource::RowBindings::new().bind(
+            crate::effects::FilesEffect::DETAILS,
+            [("account", serde_json::Value::String(account.id.to_string()))],
+        );
         Some(
-            LiveRow::typed::<crate::row_types::RemoteAccount>(id, account.label).operation(
-                crate::effects::row_action(
-                    &crate::effects::FilesEffect::AccountDetails {
-                        account: account.id.to_string(),
-                    },
-                    REMOTE_ACCOUNT_OPEN_ACTION,
+            LiveRow::typed_with::<crate::row_types::RemoteAccount>(id, account.label, &bindings)
+                .labelled(
+                    crate::effects::FilesEffect::DETAILS,
                     crate::i18n::CATALOG.t("files-remote-details"),
                 ),
-            ),
         )
     }
 }
@@ -392,7 +393,7 @@ mod tests {
                 resource
                     .operations()
                     .iter()
-                    .any(|action| action.id == REMOTE_ACCOUNT_OPEN_ACTION)
+                    .any(|action| action.id == REMOTE_ACCOUNT_DETAILS_ACTION)
             );
         }
 
@@ -471,14 +472,14 @@ mod tests {
             }
 
             {
-                let address = crate::effects::FilesEffect::OPEN_ITEM
+                let address = crate::effects::FilesEffect::OPEN
                     .on(place_resource_id(PathBuf::from("/tmp/a\u{1f}b").as_path()));
                 assert_eq!(ActionAddress::parse(&address.encode()), Some(address));
             }
 
             {
                 let path = PathBuf::from("/tmp/a\u{1f}b");
-                let entry = crate::effects::FilesEffect::OPEN_ITEM.on(entry_resource_id(&path));
+                let entry = crate::effects::FilesEffect::OPEN.on(entry_resource_id(&path));
                 assert_eq!(ActionAddress::parse(&entry.encode()), Some(entry));
                 for id in [place_resource_id(&path), entry_resource_id(&path)] {
                     assert!(
@@ -604,7 +605,7 @@ mod tests {
                     resource
                         .operations()
                         .iter()
-                        .any(|spec| spec.id == REMOTE_ACCOUNT_OPEN_ACTION),
+                        .any(|spec| spec.id == REMOTE_ACCOUNT_DETAILS_ACTION),
                     "the anchored row opens the account"
                 );
             }

@@ -773,6 +773,7 @@ impl AppBrokerState {
                 who,
                 name,
                 kind: "person".into(),
+                works_in: None,
             })
             .collect();
         here.extend(
@@ -782,6 +783,7 @@ impl AppBrokerState {
                     who: format!("agent:{agent}"),
                     name: Self::agent_name(&listed, &agent),
                     kind: "agent".into(),
+                    works_in: None,
                 }),
         );
         Some(here)

@@ -112,6 +112,13 @@ pub trait RemoteSession: Send + Sync {
         0
     }
 
+    /// Who is in `workspace_id` now, as the session heard their presence, with the window each
+    /// works in; `None` for a session that hears no presence.
+    fn here(&self, workspace_id: WorkspaceId) -> Option<Vec<tilo_actions::remote::Here>> {
+        let _ = workspace_id;
+        None
+    }
+
     /// Where `workspace_id` and this device's writes stand on the session; `None` for a session
     /// that does not say.
     fn session_state(
@@ -976,10 +983,15 @@ impl ActionProvider for SessionActions {
         self.0.session.state_changed()
     }
 
+    /// Who is in the workspace, and the window each works in, as the session heard them.
+    fn here(&self, _caller: &Caller) -> Option<Vec<tilo_actions::remote::Here>> {
+        self.0.session.here(self.0.workspace_id)
+    }
+
     /// The next change of what a watch of the device's workspace follows, asked of the device
     /// that holds it: its records (`WatchScope::Records`) or who is in it (`WatchScope::Here`).
-    /// `None` for the roster: this device's session keeps no roster of its own to report one
-    /// from, so a watch of presence waits until its deadline instead.
+    /// `None` for the roster: the session reads who is here when asked rather than telling
+    /// when it moved, so a watch of presence waits until its deadline instead.
     fn changed(&self, _caller: &Caller, scope: WatchScope) -> Option<Pending<()>> {
         match scope {
             WatchScope::Records => Some(self.wait_for_change(scope)),

@@ -380,6 +380,49 @@ async fn a_mailed_address_is_listed_once_confirmed_mailed_its_invitation_and_lea
     server.shutdown().await;
 }
 
+/// An invitation sent to an address left at the entry says so to whoever
+/// opens it, so their page opens a workspace of their own first; one the
+/// owner made for anyone does not.
+#[tokio::test]
+async fn an_invitation_sent_off_the_wait_list_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+    let bo = bo_confirmed_beside_cy(workspaces, &owner, &workspace).await;
+    let issued = |request| async {
+        let WorkspacesReply::Invitation {
+            signed_invitation, ..
+        } = workspaces.page_workspaces(&owner, request).await
+        else {
+            panic!("the owner invites");
+        };
+        let JoinReply::Invitation { wait_list, .. } =
+            workspaces.inspect_invitation(&signed_invitation).await
+        else {
+            panic!("the server honours its own invitation");
+        };
+        wait_list
+    };
+    assert!(
+        issued(list_entry(&workspace, bo)).await,
+        "sent off the wait list"
+    );
+    let anyone = WorkspacesRequest::Invite {
+        workspace: workspace.clone(),
+        request_id: [42; 32],
+        role: Role::Editor,
+        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+        inviter_name: None,
+        wait_list_entry: None,
+        recipient: None,
+        administrator: false,
+    };
+    assert!(!issued(anyone).await, "made for anyone");
+    server.shutdown().await;
+}
+
 /// The entry `workspace` holds for the address `entry` names.
 fn list_entry(workspace: &str, entry: [u8; 32]) -> WorkspacesRequest {
     WorkspacesRequest::Invite {

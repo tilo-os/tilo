@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 //! The workspace's record an app keeps one of, not on this device when its
 //! window opens: the workspace may hold it, so the window shows what is on
@@ -14,7 +14,7 @@ use tilo_app::framework::testing::{TestApp, drive_live_window};
 use tilo_app::prelude::*;
 use tilo_app::winit::dpi::PhysicalSize;
 use tilo_app::winit::window::CursorIcon;
-use tilo_app::workspace_sync::{self, WorkspaceSync, WorkspaceSyncState};
+use tilo_app::workspace_sync::{self, WorkspaceSync, WorkspaceSyncState, WorkspaceUnavailable};
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Board {
@@ -192,4 +192,86 @@ fn a_button_works_after_a_first_sync_slow_enough_to_show_the_skeleton() {
         .expect("the button is pressed");
     app.settle();
     assert_eq!(app.state().cards, ["card"], "the press added the card");
+}
+
+/// Whether the window says `text` anywhere a person (or a screen reader) reads it.
+fn says(harness: &tilo_app::headless::FrameHarness, text: &str) -> bool {
+    harness.a11y_nodes().into_iter().any(|(_, node)| {
+        [node.label(), node.description(), node.value()]
+            .into_iter()
+            .flatten()
+            .any(|said| said.contains(text))
+    })
+}
+
+/// A workspace none of whose holders this device dials, for `cause`, never
+/// loads for ever: the window shows the failure card with the cause and a
+/// retry, the retry asks the shell to dial again, and once the workspace
+/// syncs the app's view takes the card's place on its own.
+fn a_workspace_that_cannot_be_dialled_says_why_and_recovers(cause: WorkspaceUnavailable) {
+    workspace_sync::hosted_by_shell();
+    workspace_sync::set(Some(sync(WorkspaceSyncState::Connecting)));
+    let mut app = TestApp::<Boards>::new().unwrap();
+    app.harness().relayout();
+    assert!(workspace_sync::set(Some(sync(
+        WorkspaceSyncState::Unavailable(cause)
+    ))));
+    let reason = cause.to_string();
+    assert!(
+        app.harness()
+            .wait_until(tilo_app::time::Duration::from_secs(30), |harness| says(
+                harness, &reason
+            )),
+        "the window shows why the workspace cannot arrive: {reason}"
+    );
+    assert_eq!(VIEWS.with(Cell::get), 0, "the view waits");
+    let retry = tilo_app::i18n::widget_text("arriving-retry");
+    let harness = app.harness();
+    let button = harness
+        .a11y_node_named(&retry)
+        .expect("the failure offers a retry");
+    harness
+        .perform_a11y_action(button, &tilo_app::a11y::Action::Activate)
+        .expect("the retry is pressed");
+    assert!(
+        workspace_sync::take_retry(),
+        "the retry asks the shell to dial the workspace again"
+    );
+    assert!(workspace_sync::set(Some(sync(WorkspaceSyncState::Synced))));
+    assert!(
+        app.harness()
+            .wait_until(tilo_app::time::Duration::from_secs(30), |_| VIEWS
+                .with(Cell::get)
+                > 0),
+        "once the workspace syncs, the view shows"
+    );
+}
+
+#[test]
+fn a_device_with_no_identity_says_so() {
+    a_workspace_that_cannot_be_dialled_says_why_and_recovers(WorkspaceUnavailable::NoIdentity);
+}
+
+#[test]
+fn a_failed_renewal_says_so() {
+    a_workspace_that_cannot_be_dialled_says_why_and_recovers(WorkspaceUnavailable::NotRenewed);
+}
+
+#[test]
+fn unreadable_holders_say_so() {
+    a_workspace_that_cannot_be_dialled_says_why_and_recovers(
+        WorkspaceUnavailable::HoldersUnreadable,
+    );
+}
+
+#[test]
+fn a_workspace_no_one_holds_says_so() {
+    a_workspace_that_cannot_be_dialled_says_why_and_recovers(WorkspaceUnavailable::NoHolders);
+}
+
+#[test]
+fn a_workspace_whose_own_service_did_not_open_says_so() {
+    a_workspace_that_cannot_be_dialled_says_why_and_recovers(
+        WorkspaceUnavailable::OwnServiceStopped,
+    );
 }

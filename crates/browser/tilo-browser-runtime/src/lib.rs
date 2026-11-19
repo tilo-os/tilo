@@ -192,6 +192,8 @@ mod invite;
 #[cfg(target_arch = "wasm32")]
 mod invited_server;
 #[cfg(target_arch = "wasm32")]
+pub use invited_server::{INVITED_SERVER, InvitedServer, builtin_invited_server};
+#[cfg(target_arch = "wasm32")]
 mod jobs_card;
 #[cfg(target_arch = "wasm32")]
 mod layers;

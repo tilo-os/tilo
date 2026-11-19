@@ -224,6 +224,11 @@ struct Gpu {
     node: DrmNode,
     /// Its render node, which names its renderer.
     render: DrmNode,
+    /// The node clients allocate the buffers they hand this GPU on: its render node, or, for a
+    /// display controller without one beside a separate GPU (a Rockchip board's display and its
+    /// Mali), the render node of the GPU its renderer draws with. Named the display card instead,
+    /// a client's GL finds no driver for it and draws in software.
+    alloc: DrmNode,
     path: PathBuf,
     manager: Manager,
     outputs: HashMap<crtc::Handle, Lit>,
@@ -1560,7 +1565,7 @@ fn drive_primary(
         .iter()
         .copied()
         .collect();
-    state.enable_dmabuf(formats, Some(primary.node));
+    state.enable_dmabuf(formats, Some(primary.alloc));
     // Shared memory is uploaded on the GPU that renders.
     let shm_formats: Vec<_> = inner
         .renderers
@@ -1579,7 +1584,7 @@ fn drive_primary(
         .iter()
         .copied()
         .collect();
-    state.enable_dmabuf_capture(primary.node.dev_id(), capture_formats);
+    state.enable_dmabuf_capture(primary.alloc.dev_id(), capture_formats);
     inner.gpus.insert(primary.node.dev_id(), primary);
     Ok(())
 }
@@ -1663,21 +1668,31 @@ fn open_gpu(
     let (device, notifier) = DrmDevice::new(fd.clone(), !following_restart)
         .map_err(|error| failed("DRM device", error))?;
     let gbm = GbmDevice::new(fd).map_err(|error| failed("GBM device", error))?;
-    let renderer_formats = {
+    let (renderer_formats, alloc) = {
         let mut inner = inner.borrow_mut();
         inner
             .renderers
             .as_mut()
             .add_node(render, gbm.clone())
             .map_err(|error| failed("EGL display", error))?;
-        inner
+        let mut renderer = inner
             .renderers
             .single_renderer(&render)
-            .map_err(|error| failed("renderer", error))?
+            .map_err(|error| failed("renderer", error))?;
+        let alloc = if render == node {
+            EGLDevice::device_for_display(renderer.as_mut().egl_context().display())
+                .ok()
+                .and_then(|device| device.try_get_render_node().ok().flatten())
+                .unwrap_or(render)
+        } else {
+            render
+        };
+        let formats = renderer
             .dmabuf_formats()
             .iter()
             .copied()
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        (formats, alloc)
     };
     let allocator = GbmAllocator::new(
         gbm.clone(),
@@ -1713,6 +1728,7 @@ fn open_gpu(
     Ok(Gpu {
         node,
         render,
+        alloc,
         path: path.to_path_buf(),
         manager,
         outputs: HashMap::new(),
@@ -2213,7 +2229,7 @@ fn light(
             .single_renderer(&primary)
             .ok()
             .and_then(|renderer| {
-                ScanoutFeedback::new(&surface, primary, gpu.node, &renderer.dmabuf_formats())
+                ScanoutFeedback::new(&surface, gpu.alloc, gpu.node, &renderer.dmabuf_formats())
             })
     } else {
         None

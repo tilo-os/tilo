@@ -1148,7 +1148,8 @@ fn files_view(cx: &ViewCx<FileExplorer>, mut window: FileExplorerWidget) -> Elem
         let bound = Rc::clone(&state);
         cx.bind_declarations(move |_| bound.borrow().bound_declarations());
     }
-    let (rows, row, edits, entries, intents) = (
+    let (rows, row, edits, entries, intents, statuses) = (
+        Rc::clone(&state),
         Rc::clone(&state),
         Rc::clone(&state),
         Rc::clone(&state),
@@ -1160,6 +1161,8 @@ fn files_view(cx: &ViewCx<FileExplorer>, mut window: FileExplorerWidget) -> Elem
             .live_rows(move || rows.borrow().published_live_rows())
             .live_row(move |id| row.borrow().published_row(id))
             .row_edits(move |row| edits.borrow().entry_declarations(row))
+            // What an entry's or a transfer's effects say on their row now.
+            .row_status(move |id| statuses.borrow().row_status(id))
             .search_entries(move || entries.borrow().search_entries_shown())
             .process_intents(move || intents.borrow_mut().take_process_intent()),
         Box::new(window),
@@ -1466,10 +1469,10 @@ fn local_person_only(effect: &FilesEffect) -> bool {
             | FilesEffect::ImportConverted { .. }
             | FilesEffect::ImportOnce { .. }
             | FilesEffect::OpenAccount { .. }
-            | FilesEffect::AccountDetails { .. }
+            | FilesEffect::Details { .. }
             | FilesEffect::Reauthenticate { .. }
             | FilesEffect::OpenDrive { .. }
-            | FilesEffect::UninstallApp { .. }
+            | FilesEffect::Uninstall { .. }
     )
 }
 

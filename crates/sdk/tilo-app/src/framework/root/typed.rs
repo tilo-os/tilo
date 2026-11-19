@@ -124,6 +124,13 @@ pub(crate) trait TypedRoot {
         action: &tilo_actions::EncodedAction,
     );
 
+    /// Each presence where its last action left it, shown under `app_id`'s
+    /// keys for the resource.
+    fn landed_presences(&self, app_id: &str) -> Vec<ui_core::widget::ViewPresence>;
+
+    /// Forget where `presence` was: its view closed.
+    fn forget(&self, presence: &tilo_actions::PresenceId);
+
     /// [`Resource::publication_cache_epoch`] of `state`.
     fn cache_epoch(&self, state: &dyn Any) -> Option<String>;
 
@@ -414,6 +421,27 @@ impl<R: Resource> TypedRoot for Typed<R> {
         for applied in own_actions::<R>(action) {
             self.live.note_applied(presence.clone(), applied);
         }
+    }
+
+    fn landed_presences(&self, app_id: &str) -> Vec<ui_core::widget::ViewPresence> {
+        self.live
+            .landed()
+            .into_iter()
+            .map(|(presence, place)| {
+                let (key, payload) =
+                    crate::framework::ResourceSelection::from(place).presence_of(R::KIND, app_id);
+                ui_core::widget::ViewPresence {
+                    presence,
+                    label: None,
+                    key,
+                    payload,
+                }
+            })
+            .collect()
+    }
+
+    fn forget(&self, presence: &tilo_actions::PresenceId) {
+        self.live.forget(presence);
     }
 
     fn cache_epoch(&self, state: &dyn Any) -> Option<String> {

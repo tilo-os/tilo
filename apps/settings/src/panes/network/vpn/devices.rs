@@ -15,12 +15,11 @@ use ui::LocalState;
 use ui::framework::LiveRow;
 use ui::icons::Icon;
 use ui::tilo_resource;
-use ui::tilo_resource::Effect as _;
 use ui::widget::{Button, ListRow, Toggle};
 
 use super::super::{Begun, Landed, NetworkModel, Page};
 use super::VpnEffect;
-use crate::effects::{SettingsEffect, effect};
+use crate::effects::effect;
 use crate::i18n::{t, t_args};
 use crate::prefs::DeviceVpnPrefs;
 use crate::watch::Watched;
@@ -97,7 +96,7 @@ fn exit_user_row_id(device: &str) -> String {
 /// Another of the person's devices this one can route through, as the pane
 /// publishes it: a row of the `vpn.device` type.
 #[derive(ui::tilo_resource::Row)]
-#[row(kind = "vpn.device", label = "VPN device")]
+#[row(kind = "vpn.device", label = "VPN device", effects = VpnEffect)]
 pub(crate) struct VpnDevice;
 
 /// A device using this one as its VPN, as the pane publishes it: a row of
@@ -176,20 +175,27 @@ impl NetworkModel {
     }
 
     fn through_live(row: &DeviceVpnRow) -> LiveRow {
-        let mut live =
-            LiveRow::typed::<VpnDevice>(through_row_id(&row.device), through_name(&row.label));
-        live = live.operation(
-            SettingsEffect::from(VpnEffect::SetDeviceVpn {
-                device: row.device.clone(),
-                on: !row.is_on(),
-            })
-            .bound_asking(&["on"]),
+        let bindings = tilo_resource::RowBindings::new().bind(
+            VpnEffect::SET_DEVICE_VPN,
+            [("device", row.device.clone().into())],
         );
-        live
+        LiveRow::typed_with::<VpnDevice>(
+            through_row_id(&row.device),
+            through_name(&row.label),
+            &bindings,
+        )
     }
 
     fn exit_user_live(user: &ExitUser) -> LiveRow {
-        LiveRow::typed::<ExitUserRow>(exit_user_row_id(&user.device), shown_label(&user.label))
+        let bindings = tilo_resource::RowBindings::new().bind(
+            VpnEffect::STOP_DEVICE_EXIT,
+            [("device", user.device.clone().into())],
+        );
+        LiveRow::typed_with::<ExitUserRow>(
+            exit_user_row_id(&user.device),
+            shown_label(&user.label),
+            &bindings,
+        )
     }
 }
 

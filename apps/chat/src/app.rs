@@ -245,6 +245,8 @@ pub struct ChatApp {
     pub(crate) timeline_total_height: f64,
     pub(crate) scroll_content: f64,
     pub(crate) scroll_viewport: f64,
+    /// Where the timeline last drew its empty state, while it shows one: read there too.
+    pub(crate) empty_messages: Option<Rect>,
     pub(crate) thread_open: Option<Id>,
     pub(crate) revealed_message: Option<Id>,
     pub(crate) revealed_range: Option<(Id, String, usize, usize)>,
@@ -707,6 +709,7 @@ impl ChatApp {
             timeline_total_height: 0.0,
             scroll_content: 0.0,
             scroll_viewport: 0.0,
+            empty_messages: None,
             thread_open: Some("m_concept".into()),
             revealed_message: None,
             revealed_range: None,

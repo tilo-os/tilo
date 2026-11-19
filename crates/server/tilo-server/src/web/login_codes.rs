@@ -25,8 +25,8 @@
 //! the minute. A budget spent refuses every resolve until the minute ends,
 //! so the guesses it would have let through are never looked up.
 //!
-//! A sign-in code is claimed by a device of a person that may admit devices;
-//! the claim mints the one invite that device certifies a request for, once.
+//! A sign-in code is claimed by a device of a person; the claim mints the
+//! one invite that device signs a request for, once.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
