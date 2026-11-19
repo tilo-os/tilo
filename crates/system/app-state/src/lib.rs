@@ -42,7 +42,7 @@ pub use doc_writer::{
     DEFAULT_DEBOUNCE, DecodedBytes, DocOwner, DocWriter, DurabilitySnapshot, StoredBytes,
     StoredLoad,
 };
-pub use fs_store::{FsStore, Held, INSTANCE_VIEWS_DIR, finish_writes, workspace_index_directory};
+pub use fs_store::{FsStore, INSTANCE_VIEWS_DIR, finish_writes, workspace_index_directory};
 pub mod held;
 mod save_plan;
 pub use save_plan::{Save, SavePlan};

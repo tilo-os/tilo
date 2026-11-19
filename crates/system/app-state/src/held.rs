@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub use crate::fs_store::Held;
 use crate::{DOCUMENT_FILE, FsStore};
 use durable_store::{DurableStore as _, StorageKey};
 

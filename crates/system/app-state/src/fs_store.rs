@@ -248,11 +248,8 @@ impl Owner {
     }
 }
 
-/// One key's exclusive writer lease ([`FsStore::lease`]); dropping it lets the key go.
-pub struct Held(#[allow(dead_code, reason = "held for the lock it keeps")] FsLease);
-
 /// One key's lease as [`FsStore::lease`] makes it: a document's owner, or a view's place.
-pub(crate) struct FsLease {
+struct FsLease {
     _view_lock: Option<Arc<advisory_lock::FileLock>>,
     key: StorageKey,
     owner: Option<Arc<Owner>>,
@@ -481,25 +478,42 @@ impl FsStore {
         &self.root
     }
 
-    /// The key's only writer, as [`DurableStore::lease`] makes one, with a lease any thread may
-    /// hold: a holder shared across threads keeps it beside the documents it writes. Only a
-    /// document has one.
+    /// The key's only writer, as [`DurableStore::lease`] makes one. A document or a view has one;
+    /// a document's shared writers are [`DurableStore::lease_shared`]'s.
     ///
     /// # Errors
     /// [`DurableError::Busy`] when another owner, in this process or another, holds the key; an
-    /// invalid key or one that is not a document.
-    pub fn lease(&self, key: &StorageKey) -> Result<Held, DurableError> {
-        let Target::Document(directory) = self.target(key)? else {
-            return Err(DurableError::InvalidKey {
-                key: key.to_string(),
-                reason: "only a document has one holder".into(),
-            });
-        };
-        if lock(&self.shared.state).owners.contains_key(key) {
-            return Err(DurableError::Busy(key.to_string()));
+    /// invalid key.
+    fn lease_lease(&self, key: &StorageKey) -> Result<FsLease, DurableError> {
+        match self.target(key)? {
+            Target::Document(directory) => {
+                if lock(&self.shared.state).owners.contains_key(key) {
+                    return Err(DurableError::Busy(key.to_string()));
+                }
+                let owner = Arc::new(open_owner(&directory)?);
+                self.register(key, owner)
+            }
+            Target::View(path) => {
+                let mut state = lock(&self.shared.state);
+                if state.view_leases.contains_key(key) {
+                    return Err(DurableError::Busy(key.to_string()));
+                }
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| io_err("creating view directory", e))?;
+                }
+                // Never unlink this check: an old handle and a new pathname
+                // must not admit two writers to the same bounded place.
+                let check = Arc::new(acquire_lock(&path.with_extension("lock"), true)?);
+                state.view_leases.insert(key.clone(), check.clone());
+                drop(state);
+                Ok(FsLease {
+                    _view_lock: Some(check),
+                    key: key.clone(),
+                    owner: None,
+                    shared: Arc::downgrade(&self.shared),
+                })
+            }
         }
-        let owner = Arc::new(open_owner(&directory)?);
-        Ok(Held(self.register(key, owner)?))
     }
 
     /// A app's directory.
@@ -966,29 +980,7 @@ impl DurableStore for FsStore {
                 .lease_without_waiting(key, &target, Access::Exclusive, &wake)
                 .map(|(lease, _)| lease);
         }
-        match target {
-            Target::Document(_) => Ok(Box::new(FsStore::lease(self, key)?)),
-            Target::View(path) => {
-                let mut state = lock(&self.shared.state);
-                if state.view_leases.contains_key(key) {
-                    return Err(DurableError::Busy(key.to_string()));
-                }
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent).map_err(|e| io_err("creating view directory", e))?;
-                }
-                // Never unlink this check: an old handle and a new pathname
-                // must not admit two writers to the same bounded slot.
-                let check = Arc::new(acquire_lock(&path.with_extension("lock"), true)?);
-                state.view_leases.insert(key.clone(), check.clone());
-                drop(state);
-                Ok(Box::new(FsLease {
-                    _view_lock: Some(check),
-                    key: key.clone(),
-                    owner: None,
-                    shared: Arc::downgrade(&self.shared),
-                }))
-            }
-        }
+        Ok(Box::new(self.lease_lease(key)?))
     }
 
     fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, DurableError> {

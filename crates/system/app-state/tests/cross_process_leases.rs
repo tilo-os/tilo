@@ -22,9 +22,7 @@ fn take(store: &FsStore, shared: bool) -> Result<(Lease, bool), StoreError> {
             .lease_shared(&key())
             .map(|shared| (shared.lease, shared.primary))
     } else {
-        store
-            .lease(&key())
-            .map(|lease| (Box::new(lease) as Lease, true))
+        store.lease(&key()).map(|lease| (lease, true))
     }
 }
 

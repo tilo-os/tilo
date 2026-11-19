@@ -21,9 +21,9 @@ use tilo_automerge::{ApplyIncoming as _, json};
 use tilo_lock::MutexRecover as _;
 
 use app_state::held::{Follow, Socket, Watch};
-use app_state::{FsStore, Held, Save, SavePlan};
+use app_state::{FsStore, Save, SavePlan};
 use automerge::ChangeHash;
-use durable_store::{DurableStore as _, StorageKey, WriteOp};
+use durable_store::{DurableStore as _, Lease, StorageKey, WriteOp};
 use tilo_paths::{PROFILE_DIR, PROFILE_SOCKET};
 
 use crate::placement::{self, Holder};
@@ -123,7 +123,7 @@ pub struct Store {
     follower: std::sync::atomic::AtomicBool,
     may_hold: bool,
     /// The leases of both documents while this process holds the profile.
-    lock: Mutex<Option<[Held; 2]>>,
+    lock: Mutex<Option<[Lease; 2]>>,
     refused: Mutex<Option<String>>,
     docs: Mutex<Docs>,
     snapshot: Mutex<Snapshot>,
@@ -145,7 +145,7 @@ impl std::fmt::Debug for Store {
 
 /// What holding a profile came to.
 enum Hold {
-    Held([Held; 2]),
+    Held([Lease; 2]),
     /// Another process holds it.
     Busy,
     /// Nothing here can be held (no files, or a target without locks): nobody else can hold it,

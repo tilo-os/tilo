@@ -190,7 +190,9 @@ pub enum StoreError {
     Failed { context: String, message: String },
 }
 
-pub type Lease = Box<dyn Any>;
+/// One key's exclusive writer lease. It may be held across threads, so a holder
+/// that shares the key between them keeps it beside what it writes.
+pub type Lease = Box<dyn Any + Send>;
 
 /// Called, from any thread, when work a caller must not wait for is done.
 pub type ReadyWake = std::sync::Arc<dyn Fn() + Send + Sync>;
