@@ -145,6 +145,12 @@ live = ["account-credentials/store", "dep:async-imap", "dep:lettre", "dep:tokio"
 # what talks to mail servers through this engine. Never in a release.
 fake-servers = ["live", "dep:rcgen", "ui/test-support"]
 
+[[example]]
+# A stand-in IMAP and SMTP server holding a few messages, for a rehearsal of connecting a mail
+# account on a local stack.
+name = "mail_server_stand_in"
+required-features = ["fake-servers"]
+
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:
 # a dependency named `mail` claims `--features mail/thin` in the

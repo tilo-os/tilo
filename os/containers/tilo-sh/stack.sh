@@ -715,11 +715,20 @@ env_args() { local line; while IFS= read -r line; do printf -- '--env\0%s\0' "$l
 # The bundle at the fixed path Tilo's binaries read: this machine's roots.
 # The stack's own addresses are plain HTTP, so it adds no authority of its
 # own; the services reach the internet (font catalog, releases) as this
-# machine does.
+# machine does. TILO_SH_EXTRA_ROOTS names a PEM file of more roots, on the
+# machine the stack is on, for a rehearsal against a stand-in server (a
+# mail server's own certificate), which only this stack then trusts.
 trust_bundle() {
   local system
   for system in /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem /etc/ssl/certs/ca-certificates.crt; do
-    [[ -f $system ]] && { cat "$system" > "$state/trust-bundle.pem"; return; }
+    if [[ -f $system ]]; then
+      cat "$system" > "$state/trust-bundle.pem"
+      if [[ -n ${TILO_SH_EXTRA_ROOTS:-} ]]; then
+        [[ -f $TILO_SH_EXTRA_ROOTS ]] || die "TILO_SH_EXTRA_ROOTS names no file: $TILO_SH_EXTRA_ROOTS"
+        cat "$TILO_SH_EXTRA_ROOTS" >> "$state/trust-bundle.pem"
+      fi
+      return
+    fi
   done
   die 'this machine has no CA bundle at /etc/pki/ca-trust or /etc/ssl/certs'
 }
