@@ -829,6 +829,21 @@ identifiers = ["record"]
 paths = ["crates/collab/tilo-peer-state/src/withdrawal_base_tests.rs"]
 
 [[allow]]
+reason = "The accessibility walk's words a parent has for its child (`with_slot_words`), which the agent's outline reads through the same walk, and the live resource's own `record` field a test names a window by."
+words = ["slot", "record"]
+identifiers = ["with_slot_words", "record"]
+paths = [
+    "crates/sdk/ui-core/src/semantic_outline.rs",
+    "crates/agent/agent-session/tests/workspace_actions/agent_views.rs",
+]
+
+[[allow]]
+reason = "The MCP server's own field for the action provider it serves from (`self.host`), which every tool reads."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_agent_list.rs"]
+
+[[allow]]
 reason = "The keys a mail account's settings keep its two servers' names under, as mail programs call them."
 words = ["host"]
 identifiers = ["imap_host", "smtp_host"]
