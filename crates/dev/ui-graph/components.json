@@ -4231,10 +4231,15 @@
         },
         {
           "name": "icon",
-          "doc": "A glyph instead of the label, on an icon-only button.",
+          "doc": "A glyph before the label, or instead of it when `icon_only`.",
           "type": {
             "option": "icon"
           }
+        },
+        {
+          "name": "icon_only",
+          "doc": "The glyph alone, with the label as its tooltip and accessible name.",
+          "type": "bool"
         },
         {
           "name": "side",

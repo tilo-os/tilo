@@ -774,6 +774,10 @@ pub struct Composed {
     /// It floats over what is under it, as a window or a panel does: its ground casts a shadow.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub floats: bool,
+    /// The one side a floating body set on a screen edge casts its shadow past (`top`,
+    /// `bottom`, `left`, `right`): a top bar's falls below it only. Unset, it falls all round.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_side: Option<&'static str>,
     /// Attributes its element carries beyond what its role gives it: an `<img>`'s `src` and
     /// `alt`, a `<time>`'s `datetime`, a `<progress>`'s value.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -812,6 +816,7 @@ impl Composed {
             semantics: None,
             ground: None,
             floats: false,
+            shadow_side: None,
             attrs: Vec::new(),
             own: None,
             focusable: false,

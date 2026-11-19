@@ -28,6 +28,9 @@ use crate::motion::{Direction, Disclose, ListChange, MotionSpec, Snap};
 
 #[path = "tabs_bar_layout.rs"]
 mod bar_layout;
+#[cfg(test)]
+#[path = "tabs_close_tests.rs"]
+mod close_tests;
 #[path = "tabs_new_tab.rs"]
 mod new_tab;
 #[path = "tabs_paint.rs"]

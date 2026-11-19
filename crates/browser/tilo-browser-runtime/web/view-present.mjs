@@ -233,6 +233,8 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       const shadows = node.floats ? [FLOATING_SHADOW] : [];
       if (edge) shadows.push(`inset 0 0 0 1px ${rgba(edge)}`);
       if (shadows.length) css += `box-shadow:${shadows.join(',')};`;
+      // A body set on a screen edge casts its shadow past its open side only.
+      if (node.floats && node.shadow_side) css += `clip-path:inset(${SHADOW_CLIP[node.shadow_side]});`;
       if (radius) css += `border-radius:${radius}px;`;
     }
     if (node.own?.kind === 'text') {
@@ -938,6 +940,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
 }
 
 // The lift a window or a panel stands at over the shell.
+const SHADOW_CLIP = {top: '-96px 0 0 0', bottom: '0 0 -96px 0', left: '0 0 0 -96px', right: '0 -96px 0 0'};
 const FLOATING_SHADOW = '0 1px 3px rgba(0,0,0,.07),0 8px 22px rgba(0,0,0,.09)';
 
 // How the rendered composition looks beyond what each widget declares: the
