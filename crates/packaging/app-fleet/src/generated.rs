@@ -5,7 +5,7 @@
 use super::{FleetAction, FleetApp};
 
 /// `(app, kind)` of each kind an app's members each keep as their own (`[resources] own`).
-pub(super) const OWN_KINDS: &[(&str, &str)] = &[("so.tilo.shell", "tl.so.tilo.shell")];
+pub(super) const OWN_KINDS: &[(&str, &str)] = &[];
 
 /// The apps whose window opens a kind each member keeps as their own.
 pub(super) const OWN_WINDOWS: &[&str] = &[];
