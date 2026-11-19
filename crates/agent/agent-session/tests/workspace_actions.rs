@@ -818,8 +818,9 @@ async fn after_a_marker(
     new_sheet: &ActionAddress,
     marker: &str,
 ) -> Vec<String> {
+    // A save still landing is answered accepted; it is followed until it ends, as a page does.
     let receipt = browser
-        .invoke(request(
+        .invoke_settled(request(
             &record_provider(record),
             new_sheet.clone(),
             sheet_named(marker),
