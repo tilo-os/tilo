@@ -65,12 +65,12 @@ impl RowMetrics {
     }
 
     /// The metrics of a row shown as a card: the row is its own surface, so nothing of it
-    /// bleeds past its box, and the padding inside that surface is its own — compact enough
-    /// that a card of one title line and its facts stands under a control's height.
+    /// bleeds past its box, and the padding inside that surface is its own: the same on every
+    /// side, so a card reads as a small document and never as a field one types into.
     pub(super) fn card(theme: &Theme) -> Self {
         let mut m = Self::new(theme);
         m.bleed = f64::from(theme.tokens.spacing.rhythm.sibling);
-        m.pad_y = f64::from(theme.tokens.spacing.rhythm.tight);
+        m.pad_y = m.bleed;
         m
     }
 

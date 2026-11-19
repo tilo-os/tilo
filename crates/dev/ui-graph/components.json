@@ -8084,7 +8084,7 @@
         },
         {
           "name": "done",
-          "doc": "The item is one the person has finished with — its box checked off — though its row may still stand in the list until they leave the place: a heading counts what is left to do, so it does not count this row ([`crate::widget::heading_count`]).",
+          "doc": "The item is one the person has finished with — its box checked off — though its row may still stand in the list until they leave the place: its title reads struck through, as a checked-off row's does, and a heading counts what is left to do, so it does not count this row ([`crate::widget::heading_count`]).",
           "type": "bool"
         },
         {

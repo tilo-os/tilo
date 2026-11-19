@@ -259,7 +259,7 @@ tilo_test_env::scenario! {
         let one = height(&mut text, "Book the van", 1);
         let several = height(&mut text, long, wrapped);
         assert!(
-            (44.0..=56.0).contains(&one),
+            (60.0..=70.0).contains(&one),
             "a card of one title line and its facts is {one} tall"
         );
         assert!(

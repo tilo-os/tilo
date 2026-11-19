@@ -522,6 +522,9 @@ pub(crate) fn value_item(id: &str, label: &str, detail: &str, value: f64) -> Plo
     )
 }
 
+/// How many ticks at most a value axis labels.
+pub(crate) const AXIS_TICKS: usize = 5;
+
 /// A value axis down the left of `plot`: a label per nice tick of `range`
 /// (bottom to top), named by `label`, with a grid line across when `grid`.
 pub(crate) struct ValueAxis<F> {
@@ -542,7 +545,7 @@ impl<F: Fn(f64) -> String> ValueAxis<F> {
         use crate::tokens::TextRole;
         use vello::kurbo::{Line, Stroke};
         let (plot, (min, max)) = (self.plot, self.range);
-        for value in crate::charts::nice_ticks(min, max, 5) {
+        for value in crate::charts::nice_ticks(min, max, AXIS_TICKS) {
             let fraction = if max > min {
                 (value - min) / (max - min)
             } else {

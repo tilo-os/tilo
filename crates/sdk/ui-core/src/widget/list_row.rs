@@ -1705,8 +1705,19 @@ impl ListRow {
     /// ([`ListRowFace::struck`]).
     #[must_use]
     pub fn struck(mut self) -> Self {
-        self.struck = true;
+        self.set_struck();
         self
+    }
+
+    /// [`Self::struck`], for a row already built.
+    pub fn set_struck(&mut self) {
+        self.dirty |= !self.struck;
+        self.struck = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn is_struck(&self) -> bool {
+        self.struck
     }
 
     /// The row reads as subordinate to the rows around it: its title in the weaker ink

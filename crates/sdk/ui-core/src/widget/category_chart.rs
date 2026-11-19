@@ -548,13 +548,30 @@ impl CategoryMarks {
     }
 }
 
+/// The value range a chart of values from `min` to `max` stands on: a little over them, and out to
+/// the axis's next round tick at either end, so the top line of the grid stands over the tallest bar
+/// and says its scale, never under it.
 fn safe_range(min: f64, max: f64) -> (f64, f64) {
     if min.is_finite() && max > min {
         let pad = (max - min) * 0.08;
-        (
+        let (mut low, mut high) = (
             if min == 0.0 { 0.0 } else { min - pad },
             if max == 0.0 { 0.0 } else { max + pad },
-        )
+        );
+        // Widening to a tick can make the axis pick a coarser step; a few rounds settle on one.
+        for _ in 0..3 {
+            let ticks = crate::charts::nice_ticks(low, high, crate::widget::plot::AXIS_TICKS);
+            let [first, second, ..] = ticks.as_slice() else {
+                break;
+            };
+            let step = second - first;
+            let (wide_low, wide_high) = ((low / step).floor() * step, (high / step).ceil() * step);
+            if (wide_low - low).abs() < step * 1e-9 && (wide_high - high).abs() < step * 1e-9 {
+                break;
+            }
+            (low, high) = (wide_low, wide_high);
+        }
+        (low, high)
     } else {
         (min.min(0.0) - 0.5, min.min(0.0) + 0.5)
     }
@@ -580,6 +597,30 @@ mod range_tests {
 
         positive_bars_keep_a_zero_baseline();
         negative_bars_keep_a_zero_ceiling();
+    }
+
+    /// The grid's top line stands over the tallest bar and names the scale: a week of 9 issues
+    /// stands under a 10, never over an 8 with no line above it.
+    #[test]
+    fn the_axis_ends_on_a_tick_over_the_tallest_bar() {
+        for (min, max) in [(0.0, 9.0), (0.0, 42.0), (0.0, 8.0), (-3.0, 7.0), (0.0, 0.7)] {
+            let (low, high) = safe_range(min, max);
+            let ticks = crate::charts::nice_ticks(low, high, crate::widget::plot::AXIS_TICKS);
+            let (first, last) = (ticks[0], ticks[ticks.len() - 1]);
+            assert!(
+                last >= max,
+                "{max}: the top tick {last} stands over the data"
+            );
+            assert!(
+                (last - high).abs() < 1e-9,
+                "{max}: the range ends on its top tick {last}, not {high}"
+            );
+            assert!(
+                (first - low).abs() < 1e-9,
+                "{min}: the range starts on its first tick {first}, not {low}"
+            );
+        }
+        assert_eq!(safe_range(0.0, 9.0), (0.0, 10.0));
     }
 }
 

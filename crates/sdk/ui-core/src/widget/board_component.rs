@@ -304,8 +304,11 @@ fn lists_of(lists: Vec<BoardListProps>) -> Lists {
         });
         let foot = foot.or_else(|| {
             let label = action?;
+            // Quiet under the cards: what adds to a list is always there, so it never
+            // outweighs the cards it adds to.
             let button = crate::widget::Button::new(&format!("{list_key}-act"), &label)
-                .with_icon(Icon::Plus);
+                .with_icon(Icon::Plus)
+                .role(crate::widget::ButtonRole::Plain);
             let button = match act {
                 Event::None => button,
                 Event::Action(binding) => button.on_action(binding),
@@ -681,7 +684,7 @@ mod tests {
             let root = host.root::<Board>();
             let card = root.card_rects(0)[0];
             assert!(
-                (44.0..=56.0).contains(&card.height()),
+                (60.0..=70.0).contains(&card.height()),
                 "a card of one title line and its facts is {} tall",
                 card.height()
             );
