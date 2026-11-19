@@ -85,9 +85,12 @@ pub(super) fn role(
 
 impl Desktop {
     /// Look for new mentions of this person in what reached the page, and open what they chose
-    /// from a notice.
+    /// from a notice. Nothing is looked at before the page's first frame is up: the code that
+    /// looks comes after it ([`tilo_session::mentions::STEP`]), and what reached the page waits.
     pub(super) fn tell_mentions(&self) {
-        self.mentions.borrow().step();
+        if super::first_frame_presented() {
+            self.mentions.borrow().step();
+        }
         self.open_chosen_mentions();
         self.show_asked_in_apps();
     }

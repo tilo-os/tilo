@@ -1334,8 +1334,72 @@ impl ActionArgs {
     }
 }
 
+/// Whether `value` is an RFC 3339 date and time, as JSON Schema's `date-time` names one:
+/// `2026-01-31T09:00:00Z`, with `T`, `t` or ` ` between the date and the time, any fraction of a
+/// second, a leap second, and `Z` or an offset such as `+01:00`. Read field by field rather than through a date
+/// library, whose whole calendar and time-zone parser a browser page would download for this one
+/// check.
 fn looks_like_rfc3339(value: &str) -> bool {
-    value.parse::<jiff::Timestamp>().is_ok()
+    let bytes = value.as_bytes();
+    let at = |index: usize| bytes.get(index).copied();
+    // The number the `count` digits from `start` spell, if they all are digits.
+    let digits = |start: usize, count: usize| -> Option<u32> {
+        bytes
+            .get(start..start.checked_add(count)?)?
+            .iter()
+            .try_fold(0_u32, |sum, digit| {
+                let digit = char::from(*digit).to_digit(10)?;
+                sum.checked_mul(10)?.checked_add(digit)
+            })
+    };
+    let (Some(year), Some(month), Some(day), Some(hour), Some(minute), Some(second)) = (
+        digits(0, 4),
+        digits(5, 2),
+        digits(8, 2),
+        digits(11, 2),
+        digits(14, 2),
+        digits(17, 2),
+    ) else {
+        return false;
+    };
+    let leap = (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    let separated = at(4) == Some(b'-')
+        && at(7) == Some(b'-')
+        && matches!(at(10), Some(b'T' | b't' | b' '))
+        && at(13) == Some(b':')
+        && at(16) == Some(b':');
+    if !separated || !(1..=days).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+        return false;
+    }
+    // Where the offset starts: after the seconds, or after their fraction.
+    let mut zone = 19;
+    if at(zone) == Some(b'.') {
+        let fraction = bytes
+            .iter()
+            .skip(20)
+            .take_while(|digit| digit.is_ascii_digit())
+            .count();
+        if fraction == 0 {
+            return false;
+        }
+        zone = fraction.saturating_add(20);
+    }
+    let rest = bytes.get(zone..).unwrap_or_default();
+    match rest {
+        [b'Z' | b'z'] => true,
+        [b'+' | b'-', _, _, b':', _, _] => {
+            digits(zone.saturating_add(1), 2).is_some_and(|hours| hours <= 23)
+                && digits(zone.saturating_add(4), 2).is_some_and(|minutes| minutes <= 59)
+        }
+        _ => false,
+    }
 }
 
 /// Distinct schema patterns kept compiled. A directory publishes a handful;
@@ -2631,6 +2695,23 @@ mod rich_schema_tests {
         let bound = ActionArgs::bind_json(&params, &supplied).unwrap();
         assert_eq!(bound.text("resource"), Some("files.entry:abc"));
         assert_eq!(bound.to_json(), supplied);
+        for moment in [
+            "2028-02-29t23:59:60.123456789z",
+            "2026-09-01 08:30:00-07:00",
+            "2026-12-31T23:59:59.5+14:00",
+        ] {
+            assert!(looks_like_rfc3339(moment), "{moment} is RFC 3339");
+        }
+        for not_a_moment in [
+            "2026-02-29T00:00:00Z",
+            "2026-09-01T24:00:00Z",
+            "2026-09-01T00:00:00.Z",
+            "2026-09-01T00:00:00+0100",
+            "2026-09-01T00:00:00+01:00x",
+            "2026-09-01T00:00Z",
+        ] {
+            assert!(!looks_like_rfc3339(not_a_moment), "{not_a_moment} is not");
+        }
 
         for invalid in [
             json!({"resource": "label only", "at": "2026-09-01T00:00:00Z", "token": "x"}),

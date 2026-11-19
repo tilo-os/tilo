@@ -19,6 +19,9 @@ headroom = 0.01
 # at 17244025 bytes once the renderer's shaders, the people panel's profile
 # card, the session's remote actions, its search sources and the shortcut
 # guide's sheet loaded after the start, the page read URLs with the browser's
-# parser and skrifa's outline code was compiled for one pen instead of five.
+# parser, skrifa's outline code was compiled for one pen instead of five and a
+# page read its local time from the browser; at 17014900 once an action's
+# date-and-time argument was checked without a date library and the pass that
+# finds a person's mentions loaded after the first frame.
 [bundles.desktop]
-bytes = 17432576
+bytes = 17235968
