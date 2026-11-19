@@ -5,7 +5,7 @@ use compat_catalogue::{Architecture, LaunchPlan, Layer, Runner};
 use launcher::capabilities::CapabilityPlan;
 use launcher::gpu::{IcdSearch, select_for_node};
 use launcher::sandbox::EgressProxyBind;
-use launcher::seccomp::SeccompProfile;
+use launcher::seccomp::{SeccompProfile, SyscallGrants};
 use thiserror::Error;
 
 use crate::store::{
@@ -81,6 +81,16 @@ impl RuntimeImage {
             None
         } else {
             Some(SeccompProfile::TiloJit)
+        }
+    }
+
+    /// Wine starts a 32-bit Windows program (every NSIS installer) inside its 64-bit process
+    /// and gives each of its threads a 32-bit segment with the one 32-bit system call that
+    /// sets one; without it such a program is killed before it starts.
+    fn seccomp_grants(&self) -> SyscallGrants {
+        SyscallGrants {
+            wow64_thread_area: self.seccomp_profile().is_some(),
+            ..SyscallGrants::default()
         }
     }
 
@@ -586,6 +596,8 @@ pub struct CapsuleCommandPlan {
     /// derived only from daemon configuration, capsule state, or resolved grants.
     pub bwrap_argv: Vec<String>,
     pub seccomp_profile: Option<SeccompProfile>,
+    /// What the filter of [`Self::seccomp_profile`] allows beyond it.
+    pub seccomp_grants: SyscallGrants,
     pub capsule_id: String,
     pub runner_label: String,
     pub network: NetworkShape,
@@ -867,6 +879,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         Ok(CapsuleCommandPlan {
             bwrap_argv: argv,
             seccomp_profile: runtime.seccomp_profile(),
+            seccomp_grants: runtime.seccomp_grants(),
             capsule_id: capsule.id.clone(),
             runner_label: format!("{} {}", capsule.runner.family, capsule.runner.version),
             network,
@@ -1345,6 +1358,11 @@ mod tests {
                             _ => Some(SeccompProfile::TiloJit),
                         };
                         assert_eq!(command.seccomp_profile, expected_filter);
+                        assert_eq!(
+                            command.seccomp_grants.wow64_thread_area,
+                            expected_filter.is_some(),
+                            "a Wine capsule may set its 32-bit thread area"
+                        );
                         assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
                         assert!(
                             command

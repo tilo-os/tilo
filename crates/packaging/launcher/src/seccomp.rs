@@ -31,6 +31,7 @@ pub fn syscall_grants(
     }
     SyscallGrants {
         io_uring: declared && granted,
+        ..SyscallGrants::default()
     }
 }
 
