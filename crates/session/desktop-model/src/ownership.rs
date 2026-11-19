@@ -56,8 +56,9 @@ pub struct OpenedBy {
     pub agent: String,
     /// What the run is called: the agent's name.
     pub label: String,
-    /// What the run was asked to do, as History names it ("Fill Jane Doe's
-    /// visa application"); empty when the agent said nothing of it.
+    /// What the agent called the step that opened the window ("Fill Jane Doe's
+    /// visa application"): its own words, never the agent's or its session's
+    /// name; empty when the agent titled no step.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
 }

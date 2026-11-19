@@ -5,7 +5,7 @@
 use super::{
     APPLICATION_OPEN_ACTION, ActionCallError, ActionOutput, Arc, Caller, DocumentMutation,
     DocumentRoute, InvokeRequest, Needs, Outcome, Worker, WorkspaceDocuments, WorkspaceId,
-    application_provider_resource, caller_context, commit_failed,
+    application_provider_resource, caller_context, commit_failed, said_invocation_title,
 };
 
 impl Worker {
@@ -75,7 +75,10 @@ impl Worker {
                 agent: caller.acting().agent_id().unwrap_or_default().to_owned(),
                 // The agent, by its own name; its session, by what it was asked.
                 label: caller.agent_called().unwrap_or_default().to_owned(),
-                title: group.label.unwrap_or_default(),
+                // Only what the agent called the step that opened it: the group's label
+                // also names a session asked nothing by its agent's name, which the mark
+                // already says.
+                title: said_invocation_title(request).unwrap_or_default(),
             });
         let title = self
             .catalogue
