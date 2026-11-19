@@ -15,7 +15,11 @@
 //!
 //! Only documents that load whole are kept, so a reader that would have refused a torn tail
 //! never receives one, and only documents large enough to be slow to load. What is kept is
-//! bounded, and the least recently used goes first.
+//! bounded by the bytes it was kept from, and the least recently used goes first. It is never
+//! bounded by how many documents there are: a document kept in parts (a tracker of thousands of
+//! issues is a dozen of them) is read part after part by each reader in turn, and a bound below
+//! the number of parts let each reader's pass push out the parts the next reader was about to
+//! read, so every reader loaded every part again.
 
 use std::cell::{Cell, RefCell};
 
@@ -27,9 +31,6 @@ pub const MIN_BYTES: usize = 64 * 1024;
 
 /// Most saved bytes the documents kept on one thread come to.
 const MAX_BYTES: usize = 32 * 1024 * 1024;
-
-/// Most documents kept on one thread.
-const MAX_DOCUMENTS: usize = 8;
 
 thread_local! {
     static HELD: RefCell<Held> = const { RefCell::new(Held { kept: Vec::new(), uses: 0 }) };
@@ -80,9 +81,7 @@ pub fn hold(bytes: &[u8], doc: &AutoCommit) {
             doc: kept,
             used,
         });
-        while held.kept.len() > MAX_DOCUMENTS
-            || held.kept.iter().map(|kept| kept.len).sum::<usize>() > MAX_BYTES
-        {
+        while held.kept.iter().map(|kept| kept.len).sum::<usize>() > MAX_BYTES {
             let Some(oldest) = held
                 .kept
                 .iter()
