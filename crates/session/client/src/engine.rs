@@ -1972,7 +1972,7 @@ impl Engine {
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer> {
-        self.founder.get()?.ask_host(action, arguments)
+        self.founders.get()?.ask_host(action, arguments)
     }
 
     /// Whether this device holds a link into a workspace that still admits someone: a person who

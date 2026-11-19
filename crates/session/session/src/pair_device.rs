@@ -328,8 +328,10 @@ impl crate::Shared {
             // it, as every one of the person's devices does.
             if !engine.is_holder(&admin) {
                 #[cfg(target_os = "linux")]
-                if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&admin) {
-                    engine.found(workspace, "Servers").await;
+                if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&admin)
+                    && let Err(error) = engine.found(workspace, "Servers").await
+                {
+                    tracing::warn!(%error, "the servers workspace was not founded");
                 }
             }
             let Some(asked) = engine.ask_own_host("machine.admit", arguments) else {

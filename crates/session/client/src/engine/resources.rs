@@ -13,7 +13,6 @@
 
 use std::collections::BTreeMap;
 
-use tilo_broker_core::owner_service::OwnerService as _;
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::owner::{AppWrite, WriteRefusal};
@@ -242,9 +241,7 @@ impl Engine {
     ) -> Result<Vec<AppWrite>, WriteRefusal> {
         let mut writes = Vec::with_capacity(written.len());
         for (write, founding) in written {
-            let sealed = if self.commits_documents(workspace) {
-                None
-            } else if write.readers == "*" {
+            let sealed = if write.readers == "*" {
                 match self.seal_keys(workspace).map_err(WriteRefusal::Refused)? {
                     SealKeys::Here(keys) => Some(keys),
                     SealKeys::Waiting | SealKeys::NoSecretStore => {
