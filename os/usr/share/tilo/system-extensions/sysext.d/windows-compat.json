@@ -6,7 +6,7 @@
   "hosts": ["code.tilo.so"],
   "parts": ["tilo-windows-compat"],
   "size": {
-    "download_bytes": 1900000000,
-    "installed_bytes": 3100000000
+    "download_bytes": 3400000000,
+    "installed_bytes": 3400000000
   }
 }
