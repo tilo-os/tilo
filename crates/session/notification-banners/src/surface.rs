@@ -693,14 +693,13 @@ impl ResourceSurface<Banners, BannerEffect> for BannerSurface {
             .rev()
             .map(|banner| {
                 let id = banner.id();
-                LiveRow::new(
+                let bindings = ui::tilo_resource::RowBindings::new()
+                    .bind(BannerEffect::OPEN, [("banner", id.to_string().into())]);
+                LiveRow::typed_with::<crate::resource::BannerRow>(
                     format!("notifications.banner/{id}"),
-                    "notifications.banner",
                     banner.notification.title.clone(),
+                    &bindings,
                 )
-                .effect(&BannerEffect::Open {
-                    banner: Some(id.to_string()),
-                })
             })
             .collect()
     }
