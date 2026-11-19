@@ -51,6 +51,7 @@ class BuildOsTests(unittest.TestCase):
         commands += [
             f"bash os/image/build-layer.sh image {image['name']} {ARCH} /target/os/{ARCH}/{image['name']}"
             for image in plan["image"]
+            if not image.get("extension")
         ]
         commands += [
             f"bash os/image/compile.sh /target/os/{ARCH}/compiled",

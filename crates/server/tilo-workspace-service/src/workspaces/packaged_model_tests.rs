@@ -238,6 +238,7 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
             action: "create-area",
             arguments: create_area("Ship it"),
             now: NOW_MS,
+            envelope: None,
         })
         .unwrap();
     let mut replayed_document = automerge::AutoCommit::load(&base).unwrap();
@@ -297,6 +298,7 @@ fn one_module_serves_every_resource_of_its_app() {
                 action,
                 arguments,
                 now: NOW_MS,
+                envelope: None,
             })
             .unwrap()
     };
@@ -345,6 +347,7 @@ fn one_module_serves_every_resource_of_its_app() {
         action: "",
         arguments: serde_json::Map::new(),
         now: NOW_MS,
+        envelope: None,
     });
     assert!(
         refused.is_err(),

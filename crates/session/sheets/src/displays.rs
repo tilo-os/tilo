@@ -46,21 +46,27 @@ impl DisplaySheet {}
 #[effect(operation = "so.tilo.display-sheet.choose")]
 pub enum DisplaysEffect {
     /// Spread the desktop across every display
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Extend,
     /// Show the same picture on every display
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Mirror,
     /// Show the desktop on the built-in screen only
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     BuiltinOnly,
     /// Show the desktop on external displays only
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     ExternalOnly,
     /// Keep the display change waiting for an answer
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     Keep,
     /// Revert the display change waiting for an answer
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Revert,
     /// Choose a wireless display to stream to
@@ -70,33 +76,39 @@ pub enum DisplaysEffect {
         receiver: String,
     },
     /// Stream the desktop to a wireless display
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Connect {
         #[param("The receiver, by its id in the list")]
         receiver: String,
     },
     /// Stop streaming to the wireless display
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Stop,
     /// Look for wireless displays again
     #[effect(own_device, kind = "read")]
     Search,
     /// Share the computer's sound with the wireless display
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     ShareAudio {
         #[param("Whether sound goes along")]
         on: bool,
     },
     /// Let the stream's quality follow the network
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     AdaptiveQuality {
         #[param("Whether quality adapts")]
         on: bool,
     },
     /// Step the stream's resolution limit to the next one
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     NextResolution,
     /// Set the stream's frame rate
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     FrameRate {
         #[param("Frames per second: 30 or 60")]

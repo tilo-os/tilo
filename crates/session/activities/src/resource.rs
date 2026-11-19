@@ -29,6 +29,7 @@ impl Activities {}
 #[effect(operation = "so.tilo.activities")]
 pub enum ActivityEffect {
     /// Press control
+    #[effect(kind = "outside")]
     #[effect(own_device, attended, icon = "play")]
     Control {
         #[param("The app showing the activity")]
@@ -39,6 +40,7 @@ pub enum ActivityEffect {
         control: String,
     },
     /// Close activity
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "x")]
     Close {
         #[param("The app showing the activity")]
@@ -47,6 +49,7 @@ pub enum ActivityEffect {
         activity: String,
     },
     /// Collapse activity card
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Collapse {
         #[param("The app showing the activity")]

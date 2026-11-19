@@ -266,6 +266,7 @@ impl Service for KeyboardService {
 #[effect(operation = "so.tilo.session.keyboard")]
 pub(crate) enum KeyboardAction {
     /// Show the keyboard, or put it away, until the field it was asked over is left
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     SetVisible {
         /// Whether the keyboard belongs on screen
@@ -273,6 +274,7 @@ pub(crate) enum KeyboardAction {
         visible: bool,
     },
     /// Type text into the field the person types into
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Type {
         /// The text to type

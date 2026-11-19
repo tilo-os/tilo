@@ -160,6 +160,70 @@ fn undo_call(
     }
 }
 
+/// History's undo of the one change `step` names (its `change` as Files' `history` lists it, or
+/// its whole id), in the document of the tree that keeps it, done as `context` says. The step is
+/// taken back as whoever made it: the agent session it was a step of, or the agent or app that
+/// wrote it, an agent's write through a mounted folder too. What somebody changed since stays
+/// theirs. How many changes were taken back: one.
+fn undo_step(
+    tree: &mut Namespace,
+    step: &str,
+    context: &tilo_actions::ActionContext,
+) -> Result<usize, String> {
+    use ui::framework::history::{EDIT_TYPE, HistoryEdit, ResourceHistoryEdit};
+    let step = step.to_ascii_lowercase();
+    if step.len() < 8 || !step.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "`{step}` names no change: `step` is a version's `change` as `history` lists it"
+        ));
+    }
+    let mut found = Vec::new();
+    for (chunk, mut doc) in super::read::chunk_documents(tree) {
+        for change in doc.get_changes_meta(&[]) {
+            if change.hash.to_string().starts_with(&step) {
+                let made = change
+                    .message
+                    .as_deref()
+                    .and_then(tilo_actions::ActionContext::from_change_message);
+                found.push((chunk, change.hash, made));
+            }
+        }
+    }
+    let (chunk, hash, made) = match found.len() {
+        0 => return Err(format!("the workspace's folder holds no change `{step}`")),
+        1 => found.remove(0),
+        _ => {
+            return Err(format!(
+                "`{step}` names more than one change: give more of it"
+            ));
+        }
+    };
+    let session = made
+        .as_ref()
+        .and_then(|made| made.group.as_ref())
+        .filter(|group| tilo_actions::context::names_a_session(&group.kind))
+        .map(|group| group.id.clone());
+    let by = made
+        .as_ref()
+        .and_then(|made| made.invoker.as_ref())
+        .map(|invoker| invoker.acting.by.clone());
+    let edit = HistoryEdit::Undo {
+        steps: None,
+        invocation: session,
+        by,
+        to: None,
+        step: Some(hash.to_string()),
+    };
+    let encoded = tilo_actions::EncodedAction {
+        type_id: EDIT_TYPE.to_owned(),
+        payload: serde_json::to_vec(&edit).map_err(|error| error.to_string())?,
+    };
+    let action = ResourceHistoryEdit::<fs_protocol::FilesTree>::new(edit);
+    tree.apply_history(chunk, (&action, encoded), context.clone())
+        .map_err(|error| error.to_string())?;
+    Ok(1)
+}
+
 /// What a verb answers: each entry it touched with where it was and where it is, the folders it
 /// made on the way, and the call it was, which `undo` takes back.
 fn answer(verb: &str, changed: &Changed, invocation: tilo_actions::InvocationId) -> Value {
@@ -234,16 +298,19 @@ impl Worker {
         // writing to it need.
         let (mut tree, held) = self.tree_in_workspace(workspace_id, named)?;
         let (value, writes) = if verb == tree::UNDO {
-            let invocation = word(&arguments, "invocation")
-                .and_then(|id| {
-                    uuid::Uuid::parse_str(&id)
-                        .map(tilo_actions::InvocationId)
-                        .map_err(|_| format!("`{id}` names no call"))
-                })
-                .map_err(refused)?;
             let before = tree.before_change();
             let context = super::acting_context(caller, request);
-            let taken = undo_call(&mut tree, invocation, &context).map_err(refused)?;
+            let taken = match arguments.get("step").and_then(Value::as_str) {
+                Some(step) => undo_step(&mut tree, step.trim(), &context),
+                None => word(&arguments, "invocation")
+                    .and_then(|id| {
+                        uuid::Uuid::parse_str(&id)
+                            .map(tilo_actions::InvocationId)
+                            .map_err(|_| format!("`{id}` names no call"))
+                    })
+                    .and_then(|invocation| undo_call(&mut tree, invocation, &context)),
+            }
+            .map_err(refused)?;
             let value = json!({
                 "action": verb,
                 "taken": taken,

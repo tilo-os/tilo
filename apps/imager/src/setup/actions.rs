@@ -17,13 +17,16 @@ pub enum SetupEffect {
     /// Read this computer's Desktop readiness and current installation phase.
     #[effect(returns, kind = "read")]
     ReadDesktopStatus,
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-setup-action-install-desktop")]
     InstallDesktop,
     /// Retry unfinished guided session preparation after verified package installation.
+    #[effect(kind = "outside")]
     #[effect(returns)]
     RetryDesktop,
     /// Cancel the current package download; no native transaction is cancelled.
+    #[effect(kind = "outside")]
     #[effect(returns)]
     CancelDesktopDownload,
     /// Recheck Desktop availability without installing anything.
@@ -32,24 +35,31 @@ pub enum SetupEffect {
     #[effect(returns, kind = "read")]
     #[effect(label = "imager-setup-action-next")]
     ContinueSetup,
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-setup-action-start-download")]
     StartInternalDownload,
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-setup-action-pause-download")]
     PauseInternalDownload,
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-setup-action-resume-download")]
     ResumeInternalDownload,
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-setup-action-cancel-download")]
     CancelInternalDownload,
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-setup-action-discard-download")]
     DiscardInternalDownload,
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-setup-action-release-download")]
     ReleaseInternalDownload,
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-set-target-size")]
     SetInternalTargetSize {
@@ -57,6 +67,7 @@ pub enum SetupEffect {
         gib: i64,
     },
     /// Attach an explicitly granted private migration intent to the next installation.
+    #[effect(kind = "outside")]
     #[effect(returns, privileged)]
     UseMigrationIntent {
         #[param(
@@ -65,33 +76,40 @@ pub enum SetupEffect {
         )]
         directory: String,
     },
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-install")]
     InstallInternal {
         #[param("Digest of the reviewed installation plan")]
         reviewed: String,
     },
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-restart")]
     RestartInternal,
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-restart-later")]
     RestartInternalLater,
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-retry")]
     RetryInternal {
         #[param("Id of the unfinished installer operation")]
         operation_id: String,
     },
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-remove")]
     RemoveInternal {
         #[param("Id of the unfinished installer operation")]
         operation_id: String,
     },
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-firmware-settings")]
     InternalFirmwareSettings,
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-setup-action-internal-disable-fast-startup")]
     InternalDisableFastStartup,

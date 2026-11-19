@@ -47,11 +47,13 @@ pub enum CalendarEffect {
     /// Sync calendars
     ///
     /// Pulls the calendars of this device's accounts from their servers.
+    #[effect(kind = "outside")]
     #[effect(job)]
     Sync,
     /// Export ICS
     ///
     /// Saves every event and task to an iCalendar file you choose.
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     ExportIcs,
     /// Export ICS content
@@ -68,6 +70,7 @@ pub enum CalendarEffect {
     /// Import ICS
     ///
     /// Imports the events and tasks of an iCalendar file you choose.
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     ImportIcs,
     /// Invite from Contacts
@@ -83,6 +86,7 @@ pub enum CalendarEffect {
     ///
     /// Answers with the arguments of Mail's invitation draft for one attendee;
     /// nothing is sent.
+    #[effect(kind = "outside")]
     #[effect(returns, audience = "agents")]
     PrepareInMail {
         #[param("Event id")]
@@ -94,6 +98,7 @@ pub enum CalendarEffect {
     ///
     /// A display choice of this person, which follows them to their other
     /// devices.
+    #[effect(kind = "outside")]
     SetColor {
         #[param("Calendar id")]
         id: String,
@@ -115,6 +120,7 @@ pub enum CalendarEffect {
     ///
     /// A display choice of this person, which follows them to their other
     /// devices.
+    #[effect(kind = "outside")]
     SetVisibility {
         #[param("Calendar id")]
         id: String,

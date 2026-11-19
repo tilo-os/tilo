@@ -77,15 +77,12 @@ mod signin_tests;
 #[effect(operation = "settings.effect")]
 pub enum AccountsEffect {
     /// Forget one selected website account through the browser, including its local lease.
+    #[effect(kind = "outside")]
     #[effect(row, job, returns, destructive)]
-    RemoveBrowserServiceSession {
-        session_id: String,
-    },
+    RemoveBrowserServiceSession { session_id: String },
     /// Discover only ordinary account metadata from a granted prefs.js path.
     #[effect(job, returns, kind = "read")]
-    DiscoverThunderbirdAccounts {
-        prefs: String,
-    },
+    DiscoverThunderbirdAccounts { prefs: String },
     /// Choose ordinary Thunderbird prefs through the existing file portal.
     #[effect(attended, job, returns, kind = "read")]
     ChooseThunderbirdMetadata,
@@ -101,25 +98,22 @@ pub enum AccountsEffect {
         revision: u64,
     },
     /// Import only selected configuration as pending sign-in metadata.
+    #[effect(kind = "outside")]
     #[effect(job, returns, idempotent)]
-    CommitThunderbirdImport {
-        revision: u64,
-    },
+    CommitThunderbirdImport { revision: u64 },
     /// Discard the metadata review and fence unfinished discovery callbacks.
     #[effect(view)]
     CancelThunderbirdImport,
     /// Show or hide public metadata in the browser identity picker.
+    #[effect(kind = "outside")]
     #[effect(row, idempotent)]
-    SetBrowserIdentityEnabled {
-        account: String,
-        enabled: bool,
-    },
+    SetBrowserIdentityEnabled { account: String, enabled: bool },
     /// Remove browser picker metadata; this does not revoke sign-in or access.
+    #[effect(kind = "outside")]
     #[effect(row, destructive)]
-    RemoveBrowserIdentity {
-        account: String,
-    },
+    RemoveBrowserIdentity { account: String },
     /// Publish the signed-in Tilo identity's public browser connection metadata.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     PublishBrowserIdentity {
         #[param("Canonical HTTPS origin of the existing Tilo host")]
@@ -137,6 +131,7 @@ pub enum AccountsEffect {
     /// the session's account credentials and never shown or read back; Mail,
     /// which keeps email accounts, is released it to sign in. Without a
     /// password the account waits for the person to sign it in.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     AddEmailAccount {
         #[param("The name shown for it")]
@@ -174,22 +169,19 @@ pub enum AccountsEffect {
         account: String,
     },
     /// Check and save the account form, or take the sign-in's next step.
+    #[effect(kind = "outside")]
     #[effect(label = "accounts-save")]
     SaveAccountForm,
     /// Choose calendars on an existing Nextcloud account, reusing its sign-in.
+    #[effect(kind = "outside")]
     #[effect(row, label = "accounts-nextcloud-calendars")]
-    ConnectNextcloudCalendars {
-        account: String,
-    },
+    ConnectNextcloudCalendars { account: String },
     /// Read the discovered, secret-free calendar choices for the current form.
     #[effect(returns, kind = "read")]
     InspectCalendarChoices,
     /// Select a discovered collection before saving this account.
     #[effect(view)]
-    SelectCalendar {
-        href: String,
-        selected: bool,
-    },
+    SelectCalendar { href: String, selected: bool },
     /// Select the services on the open provider connection form.
     #[effect(view)]
     SelectAccountServices {
@@ -198,21 +190,25 @@ pub enum AccountsEffect {
         #[param("Files mode: sync or import")]
         files_mode: String,
     },
+    #[effect(kind = "outside")]
     ConnectGoogleMail,
     /// Close the account form or sign-in without saving.
     #[effect(view)]
     CancelAccountForm,
+    #[effect(kind = "outside")]
     SaveNewPassword,
     /// Close the sign-in-again form without saving.
     #[effect(view)]
     CancelNewPassword,
     /// Check that an account's server accepts its saved sign-in.
+    #[effect(kind = "outside")]
     #[effect(job, returns, row, idempotent)]
     TestAccount {
         #[param("The account's id")]
         account: String,
     },
     /// Remove an account, its saved credential and its sync resource.
+    #[effect(kind = "outside")]
     #[effect(row, job, destructive)]
     RemoveAccount {
         #[param("The account's id")]
@@ -220,42 +216,48 @@ pub enum AccountsEffect {
     },
     /// Sync a mounted file account now; one that could not start is tried
     /// again.
+    #[effect(kind = "outside")]
     #[effect(row, job, idempotent, label = "accounts-sync-now")]
     SyncNow {
         #[param("The account's id")]
         account: String,
     },
     /// Pause a mounted file account's background sync and uploads.
+    #[effect(kind = "outside")]
     #[effect(row, job, idempotent, label = "accounts-pause-sync")]
     PauseSync {
         #[param("The account's id")]
         account: String,
     },
     /// Resume a paused file account's sync.
+    #[effect(kind = "outside")]
     #[effect(row, job, idempotent, label = "accounts-resume-sync")]
     ResumeSync {
         #[param("The account's id")]
         account: String,
     },
     /// Recover an interrupted Files mode change after closing the connection form.
+    #[effect(kind = "outside")]
     #[effect(row, job, idempotent, label = "accounts-recover-mode")]
-    RecoverCloudMode {
-        account: String,
-    },
+    RecoverCloudMode { account: String },
+    #[effect(kind = "outside")]
     LinkService {
         #[param("The connector's app id")]
         app: String,
     },
     /// Unlink your account with a service this workspace is connected to.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     UnlinkService {
         #[param("The connector's app id")]
         app: String,
     },
+    #[effect(kind = "outside")]
     AcceptService {
         #[param("The connector's app id")]
         app: String,
     },
+    #[effect(kind = "outside")]
     DeclineService {
         #[param("The connector's app id")]
         app: String,

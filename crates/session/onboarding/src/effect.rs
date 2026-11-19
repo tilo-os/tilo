@@ -49,16 +49,19 @@ pub enum OnboardingEffect {
     /// Continue
     ///
     /// Takes the page's main way forward.
+    #[effect(kind = "outside")]
     #[effect(label = "onboarding-continue", own_device)]
     Continue,
     /// Back
     ///
     /// Goes back a step.
+    #[effect(kind = "outside")]
     #[effect(label = "onboarding-back", own_device, idempotent)]
     Back,
     /// Choose
     ///
     /// Takes one of the other ways forward the page offers.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Choose {
         #[param("Which way forward", choices = CHOICES.iter().copied())]
@@ -67,12 +70,14 @@ pub enum OnboardingEffect {
     /// Acknowledge
     ///
     /// Ticks or unticks the page's acknowledgement.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Acknowledge {
         #[param("Whether it is acknowledged")]
         checked: bool,
     },
     /// Enter a value
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Enter {
         #[param("The field", choices = FIELDS.iter().copied())]
@@ -83,6 +88,7 @@ pub enum OnboardingEffect {
     /// Enter a secret
     ///
     /// Types a passphrase, password or recovery key into its field.
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     EnterSecret {
         #[param("The field", choices = SECRET_FIELDS.iter().copied())]
@@ -93,33 +99,40 @@ pub enum OnboardingEffect {
     /// Choose a file
     ///
     /// Opens the file chooser the page offers.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Browse,
     /// Pick a file
     ///
     /// Answers the open file chooser with a file.
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     Pick {
         #[param("The file")]
         path: String,
     },
     /// Close the file chooser
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     CloseChooser,
     /// Skip
     ///
     /// Leaves this step for later or skips it.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Skip,
     /// Try again
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Retry,
     /// Cancel
     ///
     /// Stops the work under way.
+    #[effect(kind = "outside")]
     #[effect(label = "onboarding-cancel", own_device)]
     Cancel,
     /// Enter the desktop
+    #[effect(kind = "outside")]
     #[effect(label = "onboarding-finish", own_device)]
     Finish,
 }

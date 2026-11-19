@@ -264,8 +264,9 @@ declaring it.
   parameters can only change the document: **Undoable**, decided when the
   macro expands.
 - A verb that takes `&mut Outbox<T>` records an outside consequence: **Outside**.
-- An effect (`#[derive(Effect)]`) is **Outside**, or **Read** when it is a view
-  effect (`#[effect(view)]`).
+- An effect (`#[derive(Effect)]`) states its kind: **Outside** with
+  `kind = "outside"`, **Read** with `kind = "read"` (a view reads) or
+  **Undoable** with `kind = "undoable"` (an edit is undoable).
 - The `read_content`, `facts` and view operations are **Read**.
 
 A lint covers what types cannot: no clock, randomness, file, network or process
@@ -561,6 +562,14 @@ change. A keystroke that continues its gesture writes only what differs
 (`tilo.cont/3 <gesture> <claim> <kept> <tail> <middle>`): the gesture, what
 the change claims and the bytes its payload changed; readers fold it into the
 gesture's first entry.
+
+A device replays a change it receives with the app's model module
+([apps.md](apps.md) §1): it opens the document at the change's parent heads,
+the module's verb reads and writes it through the device's document calls, the
+entry is written from the same committed history (the continuation reads the
+writer's earlier entries through the same calls), and the device compares the
+change that makes with the one it received. Two holders replaying one
+invocation reach the same heads.
 
 ### 5.2 Sentences are rendered by the reader
 

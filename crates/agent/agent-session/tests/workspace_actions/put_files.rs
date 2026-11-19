@@ -13,7 +13,7 @@
     reason = "an answer's ASCII prefix; a slip is the failure it reports"
 )]
 
-use super::hosted_documents::{content_in, form_pdf, put, tool};
+use super::hosted_documents::{content_in, form_pdf, json_in, put, tool};
 use super::*;
 use base64::Engine as _;
 use collab_types::DocumentMutation;
@@ -606,6 +606,182 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
         file_at(&tree, "", "contract.txt").is_some(),
         "the laptop's file is still there"
     );
+}
+
+/// In a public workspace, whose server sends a device a document only once it opens it, the tree a
+/// computer's mounted folder founds after the server's action service looked for it, and found
+/// none, is the tree the service then reads and writes: an agent lists the computer's file and
+/// makes a folder beside it. What an agent on the computer then writes through the mounted
+/// folder, Files' History names as that agent's for its person, and its undo takes it back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tree_a_computer_founds_after_the_service_found_none_is_read_and_written() {
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Owner", 1);
+    let serving = enrol(&owner, "lounge-server", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = crate::harness::hosted::start(
+        &owner,
+        &serving,
+        state.path(),
+        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+    )
+    .await;
+    let workspaces = hosted.server.workspaces().unwrap();
+    let lounge = workspaces.create("Lounge").await.unwrap();
+    workspaces
+        .publish(
+            &lounge.workspace,
+            &serving.cert,
+            tilo_server_protocol::directory::Listing {
+                description: "Everyone".into(),
+                default_role: tilo_peer_state::join::Role::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    let workspace = lounge.workspace.clone();
+    let computer = enrol(
+        &owner,
+        "Claude Code on laptop",
+        DeviceCapabilities::member(),
+    );
+    let laptop =
+        super::resource_support::open_admitted_peer(&hosted, &computer, &serving, &workspace).await;
+    let server = McpServer::new(
+        SessionActions::new(
+            &laptop.peer,
+            laptop.workspace,
+            serving.cert.device_public_key,
+        ),
+        workspace.clone(),
+        hex::encode(owner.verifying_key().to_bytes()),
+    );
+
+    // The service looks at the workspace's files before any folder wrote them: it finds none.
+    let before = tool(&server, "tilo_ls", json!({"path": "files"})).await;
+    assert!(!before.contains("contract.txt"), "{before}");
+
+    // The laptop's mounted folder founds the tree with a file in it.
+    let mut folder = tilo_fs::Namespace::new(hex::encode(computer.cert.device_public_key)).unwrap();
+    folder
+        .create_file(tilo_fs::ROOT_INO, "contract.txt", None, 0, 1)
+        .unwrap();
+    publish(&laptop, &mut folder).await;
+    assert!(
+        file_at(
+            &tree_when(&hosted, &workspace, |tree| file_at(
+                tree,
+                "",
+                "contract.txt"
+            )
+            .is_some())
+            .await,
+            "",
+            "contract.txt"
+        )
+        .is_some(),
+        "the server keeps the laptop's tree"
+    );
+
+    // The service reads the tree the laptop founded, and writes into it.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let listed = tool(&server, "tilo_ls", json!({"path": "files"})).await;
+        if listed.contains("contract.txt") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the service never lists the laptop's file: {listed}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tool(
+        &server,
+        "tilo_do",
+        json!({"path": "files#new-folder", "args": {"parent": "", "name": "Drafts"}}),
+    )
+    .await;
+    let tree = tree_when(&hosted, &workspace, |tree| {
+        file_at(tree, "", "Drafts").is_some()
+    })
+    .await;
+    assert!(
+        file_at(&tree, "", "Drafts").is_some(),
+        "the agent's folder is in the tree"
+    );
+    assert!(
+        file_at(&tree, "", "contract.txt").is_some(),
+        "beside the laptop's file"
+    );
+
+    // A coding agent on the laptop writes a file through the mounted folder, for its person.
+    let person = hex::encode(owner.verifying_key().to_bytes());
+    {
+        let agent = tilo_actions::ActionInvoker::admitted(
+            &tilo_actions::Acting::agent("claude")
+                .handed()
+                .in_session("0f3c"),
+        )
+        .named(Some("Claude Code".into()))
+        .acting_for(person.as_str());
+        let _acting = tilo_fs::namespace::acting_as(Some(
+            tilo_actions::ActionContext::default().with_invoker(agent),
+        ));
+        folder
+            .create_file(tilo_fs::ROOT_INO, "agent-notes.md", None, 0, 2)
+            .unwrap();
+    }
+    publish(&laptop, &mut folder).await;
+
+    // Files' History names the change by the file's path, the agent and its person.
+    let deadline = tilo_test_env::hang_deadline();
+    let version = loop {
+        let history = json_in(
+            &tool(
+                &server,
+                "tilo_do",
+                json!({"path": "files#history", "args": {"last": 20}}),
+            )
+            .await,
+        );
+        let found = history["versions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|version| version["path"] == "agent-notes.md")
+            .cloned();
+        if let Some(version) = found {
+            break version;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "History never lists the agent's file: {history}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(version["actor"]["name"], "Claude Code", "{version}");
+    assert!(
+        version.to_string().contains(&person),
+        "the change is the agent's for its person: {version}"
+    );
+
+    // Files' undo of that change takes the file back, and leaves the rest of the folder.
+    let undone = json_in(
+        &tool(
+            &server,
+            "tilo_do",
+            json!({"path": "files#undo", "args": {"step": version["change"]}}),
+        )
+        .await,
+    );
+    assert_eq!(undone["taken"], 1, "{undone}");
+    let tree = tree_when(&hosted, &workspace, |tree| {
+        file_at(tree, "", "agent-notes.md").is_none()
+    })
+    .await;
+    assert!(file_at(&tree, "", "agent-notes.md").is_none(), "{undone}");
+    assert!(file_at(&tree, "", "contract.txt").is_some());
+    assert!(file_at(&tree, "", "Drafts").is_some());
 }
 
 /// Files' verbs by a path in the workspace, on the tree the workspace's server keeps.

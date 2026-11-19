@@ -423,6 +423,22 @@ impl AutoCommit {
     /// The heads of the committed document ([`Self::committed_document`]),
     /// or of the isolated view when the document is isolated: what
     /// [`Self::get_heads`] answers once no transaction is open.
+    /// TILO(model-device): the metadata of the committed change `hash`, read
+    /// without closing the open transaction.
+    pub fn committed_change_meta(&self, hash: &ChangeHash) -> Option<ChangeMetadata<'_>> {
+        self.doc.get_change_meta_by_hash(hash)
+    }
+
+    /// TILO(model-device): the committed change number `seq` of `actor`.
+    pub fn committed_hash_of_actor_seq(&self, actor: &ActorId, seq: u64) -> Option<ChangeHash> {
+        self.doc.hash_of_actor_seq(actor, seq)
+    }
+
+    /// TILO(model-device): how many changes of `actor` are committed.
+    pub fn committed_applied_seq(&self, actor: &ActorId) -> u64 {
+        self.doc.applied_seq(actor)
+    }
+
     pub fn committed_heads(&self) -> Vec<ChangeHash> {
         self.isolation
             .clone()
@@ -534,6 +550,14 @@ impl AutoCommit {
         let read = read(self);
         self.isolation = view;
         read
+    }
+
+    /// TILO(model-device): read the document as at `view` (`None`: as it is)
+    /// until the next call of this, answering the view it was read at: what a
+    /// model module's [`Self::read_at`] asks its host for.
+    pub(crate) fn replace_view(&mut self, view: Option<Vec<ChangeHash>>) -> Option<Vec<ChangeHash>> {
+        self.ensure_transaction_closed();
+        std::mem::replace(&mut self.isolation, view)
     }
 
     pub fn integrate(&mut self) {

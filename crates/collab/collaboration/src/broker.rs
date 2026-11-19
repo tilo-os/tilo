@@ -741,6 +741,23 @@ impl CollabTransport for BrokerTransport {
         self.invocations_stopped
     }
 
+    fn resume_invocations(&mut self) -> Result<(), TransportError> {
+        if !self.state.is_healthy() {
+            return Err(TransportError::Closed);
+        }
+        {
+            let mut feeds = self.state.invocation_feeds.lock_recover();
+            if !feeds.stopping {
+                // Nothing to take back: the routes' streams were never ended.
+                return Ok(());
+            }
+            feeds.resume();
+        }
+        self.invocations_stopped = false;
+        // The ended streams stay ended: each joined route subscribes again.
+        self.enqueue(SdkCommand::ResumeInvocations)
+    }
+
     fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>, document_generation: u64) {
         self.state.document_reads.set_document_owner_routes(
             routes.iter().map(RouteSpec::channel_id).collect(),
@@ -1021,6 +1038,9 @@ enum SdkCommand {
     FlushSettings,
     /// Send the app's live activity over the primary route.
     FlushLiveActivity,
+    /// Subscribe each joined route's invocation stream again, after the
+    /// owner called off the close that asked for no more.
+    ResumeInvocations,
     /// Report the channel-key schedule once the key round in flight settles.
     #[cfg(test)]
     KeyScheduleProbe(mpsc::SyncSender<KeyScheduleSeen>),
@@ -4277,6 +4297,11 @@ async fn drive_shovel(
                     link.flush(false).await;
                 }
             }
+            SdkCommand::ResumeInvocations => {
+                for route in routes.values() {
+                    route.take_invocations_again(&inbound_tx);
+                }
+            }
             #[cfg(test)]
             SdkCommand::KeyScheduleProbe(reply) => {
                 if let Some(fetch) = key_fetch.take()
@@ -4525,6 +4550,14 @@ impl std::ops::Deref for SdkRoute {
 
     fn deref(&self) -> &DocumentRoute {
         &self.document
+    }
+}
+
+impl SdkRoute {
+    /// Subscribe this route's invocation stream again, after the owner called off the close
+    /// that asked for no more.
+    fn take_invocations_again(&self, inbound_tx: &InboundBridge) {
+        take_invocations_once_current(self.channel.clone(), self.spec.clone(), inbound_tx.clone());
     }
 }
 
@@ -5188,6 +5221,12 @@ impl InvocationFeeds {
         }
     }
 
+    /// Take invocations again: the streams [`Self::stop`] ended are replaced
+    /// by the ones the connection's joined routes subscribe to next.
+    fn resume(&mut self) {
+        self.stopping = false;
+    }
+
     /// Whether every stream ended after the owner asked for no more.
     fn stopped(&self) -> bool {
         self.stopping && self.open.is_empty()
@@ -5269,7 +5308,7 @@ async fn spawn_invocation_stream(
 ) {
     if let Ok(stream) = channel.subscribe_stable_invocations().await {
         let tx = inbound_tx.clone();
-        let cancellation_channel = channel.clone();
+        let connection = channel.clone();
         let key = spec.channel_id();
         let open = OpenInvocationFeed::open(&inbound_tx.state, &stream);
         tokio::task::spawn_local(async move {
@@ -5286,28 +5325,24 @@ async fn spawn_invocation_stream(
                     // why, and the stream goes on to the next. Only a failure
                     // the broker may or may not have kept leaves its outcome
                     // unknown, which stops collaboration.
-                    Err(error) => match fail_undelivered_invocation(
-                        &cancellation_channel,
-                        &invocation,
-                        &error,
-                    )
-                    .await
-                    {
-                        Ok(()) => continue,
-                        Err(lost) => {
-                            tx.state
-                                .fail_closed("native invocation capture; outcome unknown");
-                            tracing::warn!(
-                                %error,
-                                %lost,
-                                "accepted invocation retains unknown outcome"
-                            );
-                            break;
+                    Err(error) => {
+                        match fail_undelivered_invocation(&connection, &invocation, &error).await {
+                            Ok(()) => continue,
+                            Err(lost) => {
+                                tx.state
+                                    .fail_closed("native invocation capture; outcome unknown");
+                                tracing::warn!(
+                                    %error,
+                                    %lost,
+                                    "accepted invocation retains unknown outcome"
+                                );
+                                break;
+                            }
                         }
-                    },
+                    }
                 };
                 if turn.is_some() {
-                    match recheck_native_invocation(&cancellation_channel, &invocation).await {
+                    match recheck_native_invocation(&connection, &invocation).await {
                         Ok(true) => {}
                         Ok(false) => continue,
                         result => {
@@ -5343,11 +5378,11 @@ async fn spawn_invocation_stream(
                     break;
                 }
                 let cancellation_tx = tx.clone();
-                let channel = cancellation_channel.clone();
+                let watch = connection.clone();
                 tokio::task::spawn_local(async move {
                     loop {
                         tokio::time::sleep(crate::time::Duration::from_millis(100)).await;
-                        match channel.invocation_cancellation(id).await {
+                        match watch.invocation_cancellation(id).await {
                             Ok(false) => {}
                             Ok(true) => {
                                 let _ = cancellation_tx

@@ -122,13 +122,13 @@ pub enum InstallerPreviewEffect {
     #[effect(returns, kind = "read")]
     ReadPreview,
     /// Query native Windows root metadata without granting any folder.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     FindWindowsRoots,
     /// Select an exact folder through the platform picker.
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     ChooseWindowsRoot { role: String },
     /// Independently grant one exact Windows root, including redirected libraries.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SelectWindowsRoot {
         #[param(secret, "Absolute independently selected directory")]
         source: AbsolutePath,
@@ -145,14 +145,14 @@ pub enum InstallerPreviewEffect {
         expanded: bool,
     },
     /// Decide whether an inventoried root is copied, retained, or excluded.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewWindowsRoot {
         source_id: String,
         decision: String,
         reason: Option<String>,
     },
     /// Decide how one inventoried category is preserved.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewWindowsCategory {
         source_id: String,
         category: String,
@@ -160,19 +160,19 @@ pub enum InstallerPreviewEffect {
         reason: Option<String>,
     },
     /// Set the explicit reason used by exclusion controls.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetWindowsExclusionReason { value: String },
     /// Set the private encryption password for offline sign-in suggestions.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetWindowsPreparationPassword {
         #[param(secret, "Private export password, not a sign-in credential")]
         value: String,
     },
     /// Choose the mounted backup destination using the platform picker.
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     ChooseWindowsExport,
     /// Export verified local copies and encrypted suggestions to a granted directory.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ExportWindowsPreparation {
         #[param(
             secret,
@@ -181,46 +181,46 @@ pub enum InstallerPreviewEffect {
         destination: AbsolutePath,
     },
     /// Continue an unfinished preparation after verifying its exact identity storage.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ResumeInstallerPreparation,
     /// Retire the saved choices without deleting previous identity storage.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     StartNewInstallerPreparation,
     /// Check retained preparation again; no identity is adopted by this action.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     RetryInstallerPreparation,
     /// Choose your avatar with the system file picker.
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     ChoosePreviewAvatar,
     /// Select an already granted local avatar file without opening a picker.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SelectPreviewAvatar {
         #[param(secret, "Absolute selected image file")]
         source_file: AbsolutePath,
     },
     /// Choose the existing identity backup through the system file picker.
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     ChooseExistingIdentityBackup,
     /// Select an already granted backup file without opening a picker.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SelectExistingIdentityBackup {
         #[param(secret, "Absolute selected identity backup")]
         source_file: AbsolutePath,
     },
     /// Enter the backup passphrase in private device-local memory.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetExistingIdentityPassword {
         #[param(secret, "Backup passphrase")]
         value: String,
     },
     /// Ask a nearby Tilo device to approve this named future device.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     StartExistingDevicePairing,
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     #[effect(label = "installer-pairing-cancel")]
     CancelExistingDevicePairing,
     /// Choose an option on this page.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ChoosePreview {
         #[param(
             "Choice: computer, another, desktop; migrate, fresh; new, existing; device, backup"
@@ -228,7 +228,7 @@ pub enum InstallerPreviewEffect {
         choice: String,
     },
     /// Choose an option on this page and continue to the next page.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ChooseAndContinuePreview {
         #[param(
             "Choice: computer, another, desktop; migrate, fresh; new, existing; device, backup"
@@ -236,10 +236,10 @@ pub enum InstallerPreviewEffect {
         choice: String,
     },
     /// Set your display name.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewName { value: String },
     /// Name one identifying field of the other computer.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetTargetIdentityField {
         #[param("Field: manufacturer, model, variant, board or sku")]
         field: String,
@@ -247,141 +247,141 @@ pub enum InstallerPreviewEffect {
         value: String,
     },
     /// Select the architecture the prepared medium must start on.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetTargetArchitecture {
         #[param("Architecture: x86_64 or aarch64")]
         architecture: String,
     },
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     #[effect(label = "installer-preview-target-file-title")]
     ChooseTargetHardwareReport,
     /// Read a hardware report produced on the other computer from this exact file.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ImportTargetHardwareReport {
         #[param(secret, "Absolute selected hardware report file")]
         source_file: AbsolutePath,
     },
     /// Stop using an imported report and name a model instead.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ClearTargetHardwareReport,
     /// Check the other computer's description again; this computer is not probed.
     #[effect(returns, kind = "read")]
     RecheckTargetHardware,
     /// Set this device's name.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewDeviceName { value: String },
     /// Enter the destination unlock password, in private memory only.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewPassword {
         #[param(secret, "Unlock password; never persisted or returned")]
         value: String,
     },
     /// Confirm the destination unlock password.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewConfirmation {
         #[param(secret, "Unlock confirmation; never persisted or returned")]
         value: String,
     },
     /// Create the chosen new identity in fresh, durable private ownership.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CreatePreparedIdentity {
         private_ownership: AbsolutePath,
         avatar_color: String,
     },
     /// Update the prepared identity's public profile, retaining its signing key.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     UpdatePreparedIdentity { avatar_color: String },
     /// Export that identity encrypted with the chosen destination password.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ExportPreparedIdentity { destination: AbsolutePath },
     /// Export selected prepared accounts in an encrypted, operation-bound artifact.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ExportPreparedAccounts {
         destination: AbsolutePath,
         setup_binding: String,
     },
     /// Package the chosen identity and selected accounts for installation.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ExportPreparedSetup {
         destination: AbsolutePath,
         setup_binding: String,
     },
     /// Export the encrypted, source-checked preparation without installing it.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ExportPreparedBelongings {
         #[param(secret, "Absolute private destination for the encrypted preparation")]
         destination: AbsolutePath,
     },
     /// Include a migration category.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewCategory {
         #[param("Category: files, flatpak, accounts")]
         category: String,
         included: bool,
     },
     /// Include one discovered application in the selected migration plan.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewFlatpakApp { app: String, included: bool },
     /// Include an explicitly selected website sign-in source.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewServiceSession {
         source_id: String,
         service: String,
         included: bool,
     },
     /// Review website sign-ins grouped by their granted source.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewServiceSessions,
     /// Include or exclude a discovered source group.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewServiceSessionGroup { source_id: String, included: bool },
     /// Expand or collapse an existing sign-in source group.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ExpandServiceSessionGroup { source_id: String, expanded: bool },
     /// Select or exclude every eligible source in Your data.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetYourDataAll { included: bool },
     /// Select or exclude one recognizable source in Your data.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetYourDataSource {
         #[param("Source identity shown in Your data")]
         source: String,
         included: bool,
     },
     /// Select or exclude one nested source group in Your data.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetYourDataGroup {
         #[param("Nested group identity shown in Your data")]
         group: String,
         included: bool,
     },
     /// Select or exclude one eligible child in Your data.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetYourDataItem {
         #[param("Child identity shown in Your data")]
         item: String,
         included: bool,
     },
     /// Open or close one source's children without changing its selection.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ExpandYourDataSource { source: String, expanded: bool },
     /// Expand or collapse migration details.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     TogglePreviewDetails,
     /// Show or hide the selected file source’s full location.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ToggleMigrationSourceLocation,
     /// Expand or collapse the selected apps’ custom access details.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ToggleFlatpakAccessDetails,
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     #[effect(label = "installer-accounts-add")]
     AccountStep {
         step: String,
         selection: Option<String>,
     },
     /// Edit one private guided account field; credentials never enter shared state.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetAccountField {
         field: String,
         #[param(
@@ -391,58 +391,58 @@ pub enum InstallerPreviewEffect {
         value: String,
     },
     /// Import one reviewed reusable connection into an explicitly chosen target home.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ImportAccount {
         candidate: String,
         target_home: AbsolutePath,
     },
     /// Begin a provider's consent flow; returns its public consent URL.
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     ConnectAccount {
         provider: String,
         candidate: Option<String>,
         target_home: AbsolutePath,
     },
     /// Complete the consent flow using its private authorization handle.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CompleteAccountConnection { connection: String },
     /// Close an unfinished consent flow.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CancelAccountConnection { connection: String },
     /// Review exact source, target home and private journal grants. Does not copy.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewUserTransfer {
         source: AbsolutePath,
         destination: AbsolutePath,
         journals: AbsolutePath,
     },
     /// Grant the reviewed home directory for migration without opening a picker.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SelectMigrationHome {
         #[param(secret, "Explicit native home folder grant")]
         source: AbsolutePath,
     },
     /// Request a real platform grant for one discovered mounted Home location.
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     GrantMountedHomeLocation { location: String },
     /// Reattest all approved locations and retain original-source permission.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ContinueMountedHomeReview,
     /// Retire the active mounted-location chooser without accepting a late answer.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CancelMountedHomePermission,
     /// Re-discover mounted locations using the retained original Home grant.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     RestartMountedHomeReview,
     /// Save consent and stable Linux source identities for installation; no copy or mount.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SaveMigrationPlan {
         source: AbsolutePath,
         private_plans: AbsolutePath,
         operation: String,
     },
     /// Mount the retained Linux source read-only and review exact target/journal grants.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewInstalledTransfer {
         private_plans: AbsolutePath,
         operation: String,
@@ -452,13 +452,13 @@ pub enum InstallerPreviewEffect {
         flatpak_inventory: Option<AbsolutePath>,
     },
     /// Execute the reviewed data transfer; does not install or boot an OS.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     StartUserTransfer,
     /// Retry this reviewed transfer using its durable receipts.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     RetryUserTransfer,
     /// Review adoption of this completed whole-home copy into the user's existing home.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewHomePromotion {
         #[param(secret, "Explicit target user home grant")]
         target_home: AbsolutePath,
@@ -466,10 +466,10 @@ pub enum InstallerPreviewEffect {
         journal: AbsolutePath,
     },
     /// Adopt the reviewed copy without replacing existing files or selected identity.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     StartHomePromotion,
     /// Resume this same reviewed adoption using its durable receipts.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     RetryHomePromotion,
     /// Read a bounded page of this retained adoption result, including raw file names.
     #[effect(returns, kind = "read")]
@@ -479,94 +479,94 @@ pub enum InstallerPreviewEffect {
         limit: u64,
     },
     /// Stop adoption and retain imported items and receipts for retry.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CancelHomePromotion,
     /// Stop the current transfer, retaining verified copies for retry.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CancelUserTransfer,
     /// Recheck belongings after migration consent, without copying or signing in.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CheckBelongings,
     /// Choose a recovery directory using the ordinary folder picker for an exact Windows root.
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     ChooseRecoveryDestination { source_id: String },
     /// Select an exact recovery directory without opening a picker; creates a private durable receipt directory beside the output.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SelectRecoveryDirectory {
         source_id: String,
         directory: AbsolutePath,
     },
     /// Select an exact external recovery directory and private journal for a granted Windows root.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewRecoveryDestination {
         source_id: String,
         directory: AbsolutePath,
         journal: AbsolutePath,
     },
     /// Reattach exact source, saved output and journal grants after interruption or restart.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewExistingRecoveryCopy {
         source_id: String,
         output: AbsolutePath,
         journal: AbsolutePath,
     },
     /// Begin the reviewed durable recovery copy without deleting its source.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     StartRecoveryCopy,
     /// Resume the reviewed recovery output, rechecking hashes and source identity.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     RetryRecoveryCopy,
     /// Stop recovery and keep verified partial output for explicit retry.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CancelRecoveryCopy,
     /// Inspect this computer's disk again. Never writes to disk.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CheckStorage,
     /// Show or hide the inspected disk allocation breakdown.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ToggleStorageDetails,
     /// Choose the space reserved for Tilo, within the inspected disk's bounds.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetStorageSize { gib: u64 },
     /// Open the real USB media writer. Choosing and confirming a drive happens there.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     PrepareUsb,
     /// Renew the selected home review after its contents changed; preserve identity and accounts.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewChangedFiles,
     /// Stop preparation while retaining the chosen identity and account selection.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CancelMediaPreparation,
     /// Approve the exact receiving-computer request shown on this handoff.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ApproveSourceHandoff { approval: String },
     /// Stop serving the other-computer handoff.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CancelSourceHandoff,
     /// Prepare reviewed identity, accounts and original-source consent before choosing installation media.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     PrepareBelongings,
     /// Review actual system capacity and bind the prepared selected Apps
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewPreparedBelongings { target_gib: u64 },
 
     /// Prepare the reviewed installation on this computer, without writing its disk.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     PrepareDirectInstallation,
     /// Prepare the current user’s Tilo Desktop setup.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     PrepareDesktopInstallation,
     /// Change a section of the reviewed setup.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     EditPreview { section: String },
     /// Continue to the next relevant page.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ContinuePreview,
     /// Return to the preceding page.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     BackInPreview,
     /// Start the preview again.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     RestartPreview,
 }
 

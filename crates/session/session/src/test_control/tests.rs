@@ -80,7 +80,7 @@ tilo_test_env::scenario! {
         assert_eq!(path_in(true, None, Some(OsString::new()), None), None);
     }
 
-    phase the_owners_api_is_the_seats_own_and_a_headless_session_keeps_its_own;
+    phase the_owners_api_is_the_devices_own_and_a_headless_session_keeps_its_own;
     {
         let runtime = Some(OsString::from("/run/user/1000"));
         assert_eq!(

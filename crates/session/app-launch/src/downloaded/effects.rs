@@ -17,6 +17,7 @@ use tilo_resource::{AbsolutePath, Effect};
 #[effect(operation = "so.tilo.downloaded-apps")]
 pub enum DownloadedAppsAction {
     /// Add this program to your apps.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         audience = "agents",
@@ -30,6 +31,7 @@ pub enum DownloadedAppsAction {
         move_to_applications: Option<bool>,
     },
     /// Do not add this program, and do not ask about this file again.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -48,6 +50,7 @@ pub enum DownloadedAppsAction {
 #[effect(operation = "so.tilo.downloaded-app")]
 pub enum DownloadedAppAction {
     /// Point this app at its file, wherever it is now.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         audience = "agents",
@@ -59,6 +62,7 @@ pub enum DownloadedAppAction {
         path: AbsolutePath,
     },
     /// Take this app off your apps, and leave its file where it is.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -69,6 +73,7 @@ pub enum DownloadedAppAction {
     Remove,
     /// Move every copy of this program to the trash, and take it off your
     /// apps.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         destructive,

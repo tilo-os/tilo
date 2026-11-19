@@ -98,6 +98,7 @@ impl std::fmt::Debug for Answer {
 #[effect(operation = "so.tilo.session.question")]
 pub enum QuestionEffect {
     /// Answer the question
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     Answer {
         #[param("The choice made, counted from zero")]
@@ -108,6 +109,7 @@ pub enum QuestionEffect {
         remember: Option<bool>,
     },
     /// Decline the question
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Cancel,
 }

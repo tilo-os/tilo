@@ -1175,9 +1175,11 @@ pub enum BooksEffect {
     /// Open book
     ///
     /// Choose an EPUB through the system picker and open it.
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable)]
     OpenBook,
     /// Open a book the content store holds, putting it on the shelf.
+    #[effect(kind = "outside")]
     #[effect(job)]
     OpenStored {
         #[param("Content hash of the book's bytes")]
@@ -1326,11 +1328,13 @@ pub enum BooksEffect {
     ///
     /// Puts this device's copy of the book in the shared workspace, so
     /// members can open it.
+    #[effect(kind = "outside")]
     #[effect(row, job, cancellable, idempotent)]
     Share { book: String },
     /// Download and open
     ///
     /// Fetches a book a member shared from the workspace and opens it.
+    #[effect(kind = "outside")]
     #[effect(row, job, cancellable, idempotent)]
     Download { book: String },
 }

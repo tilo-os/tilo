@@ -26,9 +26,11 @@ const ENTRY_SEPARATOR: char = '/';
 #[effect(operation = "so.tilo.tray.item")]
 pub enum TrayAction {
     /// Do what clicking the item's icon does: usually show its window.
+    #[effect(kind = "outside")]
     #[effect(own_device, row, icon = "app-window")]
     Activate,
     /// Choose an entry of the item's menu.
+    #[effect(kind = "outside")]
     #[effect(own_device, row)]
     Choose {
         #[param("The entry's id in the item's menu")]

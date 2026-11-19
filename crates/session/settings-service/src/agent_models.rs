@@ -160,6 +160,7 @@ impl AgentModels {
 pub enum AgentModelsEffect {
     /// Answer with this model: make its provider the one agents use, and the
     /// model the one they plan with
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     UseModel {
         /// The provider's id
@@ -170,9 +171,11 @@ pub enum AgentModelsEffect {
         model: String,
     },
     /// Take back the last choice of a model, on either provider section
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     UndoModel,
     /// Make the last choice of a model again
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     RedoModel,
 }

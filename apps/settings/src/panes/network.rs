@@ -67,32 +67,30 @@ pub enum NetworkEffect {
     #[effect(view, returns, kind = "read")]
     InspectNetworkState,
     /// Scan for Wi-Fi networks and read this device's connections again.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     RefreshNetworks,
     /// Turn Wi-Fi on or off.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
-    SetWifi {
-        on: bool,
-    },
+    SetWifi { on: bool },
     /// Turn the wired connection on or off.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
-    SetWired {
-        on: bool,
-    },
+    SetWired { on: bool },
     /// Turn every radio off, or back on.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent, label = "net-airplane")]
-    SetAirplaneMode {
-        on: bool,
-    },
+    SetAirplaneMode { on: bool },
     /// Share this device's connection as a Wi-Fi hotspot, or stop.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     #[effect(keywords = "tethering, share internet, personal hotspot")]
-    SetHotspot {
-        on: bool,
-    },
+    SetHotspot { on: bool },
     /// Connect to a Wi-Fi network. Without a password a secure network uses
     /// one the person's devices share, else asks for it with the password
     /// prompt.
+    #[effect(kind = "outside")]
     #[effect(job, row)]
     ConnectNetwork {
         #[param("The network's name (SSID)")]
@@ -135,6 +133,7 @@ pub enum NetworkEffect {
     ShowHiddenNetwork,
     /// Join a network that does not broadcast its name; without its name,
     /// ask for it with the password prompt.
+    #[effect(kind = "outside")]
     #[effect(job)]
     JoinHiddenNetwork {
         #[param("The network's name (SSID)")]
@@ -143,6 +142,7 @@ pub enum NetworkEffect {
         password: Option<String>,
     },
     /// Join a saved network by itself whenever it is in range, or not.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetAutoconnect {
         #[param("The saved network's id")]
@@ -151,6 +151,7 @@ pub enum NetworkEffect {
     },
     /// Which of several known networks in range is joined first: the
     /// higher.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetPriority {
         #[param("The saved network's id")]
@@ -160,6 +161,7 @@ pub enum NetworkEffect {
     },
     /// Count a saved network's data against a limit, never, or as the
     /// network says.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent, label = "net-metered-connection")]
     SetMeteredPolicy {
         #[param("The saved network's id")]
@@ -168,6 +170,7 @@ pub enum NetworkEffect {
         policy: String,
     },
     /// Which hardware address this device shows a saved Wi-Fi network.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent, label = "net-hardware-address")]
     SetMacAddress {
         #[param("The saved network's id")]
@@ -176,6 +179,7 @@ pub enum NetworkEffect {
         policy: String,
     },
     /// Join a saved network even when it does not broadcast its name.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent, label = "net-hidden-network")]
     SetHiddenNetwork {
         #[param("The saved network's id")]
@@ -184,6 +188,7 @@ pub enum NetworkEffect {
     },
     /// Set a profile's IPv4 settings; what is omitted is what its form
     /// holds.
+    #[effect(kind = "outside")]
     #[effect(job, label = "net-apply-ip")]
     SetIpv4 {
         #[param("The saved profile's id")]
@@ -198,6 +203,7 @@ pub enum NetworkEffect {
     },
     /// Set a profile's IPv6 settings; what is omitted is what its form
     /// holds.
+    #[effect(kind = "outside")]
     #[effect(job, row, label = "net-apply-ipv6")]
     SetIpv6 {
         #[param("The saved profile's id")]
@@ -209,6 +215,7 @@ pub enum NetworkEffect {
         gateway: Option<String>,
     },
     /// Give a profile name servers of its own; none takes the network's.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent, label = "net-dns-servers")]
     SetDns {
         #[param("The saved profile's id")]
@@ -218,6 +225,7 @@ pub enum NetworkEffect {
     },
     /// Send a profile's connections through a proxy, or not; what is
     /// omitted is what its form holds.
+    #[effect(kind = "outside")]
     #[effect(job, row, label = "net-apply-proxy")]
     SetProxy {
         #[param("The saved profile's id")]
@@ -229,6 +237,7 @@ pub enum NetworkEffect {
     },
     /// Change who a work or school network knows this device as; what is
     /// omitted is what its form holds.
+    #[effect(kind = "outside")]
     #[effect(job, row, label = "net-apply-identity")]
     SetEnterpriseIdentity {
         #[param("The saved network's id")]
@@ -239,6 +248,7 @@ pub enum NetworkEffect {
     },
     /// Show a saved network's password on its page, asking to authenticate
     /// first; or hide it.
+    #[effect(kind = "outside")]
     #[effect(job, row, label = "net-show-password")]
     ShowNetworkPassword {
         #[param("The saved network's id")]
@@ -246,6 +256,7 @@ pub enum NetworkEffect {
     },
     /// Change a saved network's password; without one, ask for it with the
     /// password prompt.
+    #[effect(kind = "outside")]
     #[effect(job, row, label = "net-change-password")]
     SetNetworkPassword {
         #[param("The saved network's id")]
@@ -254,12 +265,14 @@ pub enum NetworkEffect {
         password: Option<String>,
     },
     /// Show or hide the QR code a phone scans to join a network.
+    #[effect(kind = "outside")]
     #[effect(job, row)]
     ShowNetworkCode {
         #[param("The network's name (SSID)")]
         ssid: String,
     },
     /// Persist magic-packet wake for this saved connection. Enabled does not certify physical resume.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetNetworkWake {
         #[param("The saved network's id")]
@@ -267,6 +280,7 @@ pub enum NetworkEffect {
         on: bool,
     },
     /// Forget a saved network and its password.
+    #[effect(kind = "outside")]
     #[effect(job, row, destructive)]
     #[effect(keywords = "remove network, forget wifi, delete network")]
     ForgetNetwork {
@@ -275,18 +289,22 @@ pub enum NetworkEffect {
     },
     /// Seal a saved Wi-Fi network's password for the person's other
     /// devices, so they join it too.
+    #[effect(kind = "outside")]
     #[effect(job, row, label = "net-share-devices")]
     ShareNetwork {
         #[param("The saved network's id")]
         profile: String,
     },
     /// Check the connection, its address, gateway and name servers.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     RunDiagnostics,
     /// Open the sign-in page of a network that asks for one.
+    #[effect(kind = "outside")]
     #[effect(job)]
     OpenNetworkSignIn,
     /// Start the hotspot; what is omitted is what the hotspot form holds.
+    #[effect(kind = "outside")]
     #[effect(job)]
     StartHotspot {
         #[param("The hotspot's network name")]
@@ -312,10 +330,12 @@ pub enum NetworkEffect {
     /// Show or hide the enterprise (802.1X) network setup.
     #[effect(view)]
     ShowEnterpriseSetup,
+    #[effect(kind = "outside")]
     ChooseCaCertificate,
     /// Save an enterprise (802.1X) Wi-Fi network and connect; what is
     /// omitted is what the setup form holds, and a password omitted is asked
     /// for with the password prompt.
+    #[effect(kind = "outside")]
     #[effect(job, label = "net-save-connect")]
     ConnectEnterpriseNetwork {
         #[param("The profile's name")]

@@ -13,6 +13,7 @@ pub const CONTEXTUAL_CHILD_LIMIT: usize = 64;
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "diffmerge.effects")]
 pub enum DiffmergeEffect {
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable)]
     /// Open files
     OpenFiles {
@@ -21,6 +22,7 @@ pub enum DiffmergeEffect {
         #[param("absolute right file path")]
         right: Option<tilo_resource::AbsolutePath>,
     },
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable)]
     /// Open one file against nothing
     OpenOne {
@@ -29,6 +31,7 @@ pub enum DiffmergeEffect {
         #[param("which side it takes (left or right)")]
         side: String,
     },
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable)]
     /// Save merged result
     SaveMerged {
@@ -37,9 +40,11 @@ pub enum DiffmergeEffect {
         )]
         path: Option<tilo_resource::AbsolutePath>,
     },
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable)]
     /// Save merged result as…
     SaveMergedAs,
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable)]
     /// Compare folders
     CompareFolders {
@@ -48,6 +53,7 @@ pub enum DiffmergeEffect {
         #[param("absolute right folder path")]
         right: Option<tilo_resource::AbsolutePath>,
     },
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     /// Load sample
     LoadSample,

@@ -1434,6 +1434,7 @@ mod tests {
     #[derive(Clone, Debug, tilo_resource::Effect)]
     #[effect(operation = "test.display", catalogue = "tests/locales")]
     enum TestEffect {
+        #[effect(kind = "outside")]
         #[effect(returns, row)]
         MoveDisplay { display: String, x: i32, y: i32 },
     }

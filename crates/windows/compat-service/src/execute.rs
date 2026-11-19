@@ -164,7 +164,7 @@ impl SandboxExecutor for BwrapExecutor {
         // down never overwrites the source of the next.
         let mut inherited = Vec::new();
         if let Some(profile) = plan.seccomp_profile {
-            let filter = launcher::seccomp::compile_baseline(profile)
+            let filter = launcher::seccomp::compile_app_baseline(profile, plan.seccomp_grants)
                 .map_err(|error| ExecutionError::Seccomp(error.to_string()))?;
             let mut file = create_memfd("tilo-compat-seccomp")?;
             file.write_all(&filter)?;

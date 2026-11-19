@@ -91,15 +91,19 @@ fn token(path: &str) -> String {
 #[effect(operation = "settings.effect")]
 pub enum BluetoothEffect {
     /// Turn the Bluetooth radio on or off.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     SetBluetooth { on: bool },
     /// Look for nearby devices, or stop looking.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     SetDiscovering { on: bool },
     /// Read the devices again.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     RefreshBluetooth,
     /// Pair with a nearby device; the device may ask to confirm a code.
+    #[effect(kind = "outside")]
     #[effect(job, row)]
     #[effect(keywords = "pair, connect headphones, add bluetooth device")]
     PairDevice {
@@ -107,24 +111,28 @@ pub enum BluetoothEffect {
         device: String,
     },
     /// Stop pairing with a device.
+    #[effect(kind = "outside")]
     #[effect(job, row, label = "settings-bluetooth-cancel-pairing")]
     CancelPairing {
         #[param("The device's object path")]
         device: String,
     },
     /// Connect a paired device.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     ConnectDevice {
         #[param("The device's object path")]
         device: String,
     },
     /// Disconnect a device.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     DisconnectDevice {
         #[param("The device's object path")]
         device: String,
     },
     /// Let a paired device connect without asking.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetDeviceTrusted {
         #[param("The device's object path")]
@@ -132,6 +140,7 @@ pub enum BluetoothEffect {
         trusted: bool,
     },
     /// Give a paired device another name on this device.
+    #[effect(kind = "outside")]
     #[effect(job, row)]
     RenamePairedDevice {
         #[param("The device's object path")]
@@ -140,6 +149,7 @@ pub enum BluetoothEffect {
         name: String,
     },
     /// Forget a paired device; it must pair again to connect.
+    #[effect(kind = "outside")]
     #[effect(job, row, destructive)]
     ForgetDevice {
         #[param("The device's object path")]

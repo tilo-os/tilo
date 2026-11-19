@@ -50,10 +50,12 @@ const MAX_GRANT_BYTES: usize = 64;
 #[effect(operation = "settings.effect")]
 pub enum DrivesEffect {
     /// Read the remembered drives again.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent, returns)]
     RefreshDrives,
     /// Forget a remembered drive: it is closed if open, and asked about
     /// again the next time.
+    #[effect(kind = "outside")]
     #[effect(job, row, returns)]
     ForgetDrive {
         #[param("The remembered drive, as the drive list names it")]
@@ -61,6 +63,7 @@ pub enum DrivesEffect {
     },
     /// Open a drive inside this computer safely (a confined driver, a bit
     /// slower) or with the faster kernel driver, from its next opening on.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent, returns)]
     SetDriveOpensSafely {
         #[param("The remembered drive, as the drive list names it")]

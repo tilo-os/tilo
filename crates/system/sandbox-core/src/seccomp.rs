@@ -193,6 +193,14 @@ pub const IO_URING_SYSCALLS: &[libc::c_long] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SyscallGrants {
     pub io_uring: bool,
+    /// The 32-bit `set_thread_area` (i386 system call 243, reached through `int 0x80`)
+    /// and no other call of the 32-bit system-call ABI. Wine keeps 32-bit Windows programs
+    /// inside its 64-bit process (`WoW64`) and makes this one call to give each thread the
+    /// 32-bit segment its Windows thread block is addressed by; the kernel has no 64-bit
+    /// call that sets one. Every other 32-bit call still ends the process, as it does for
+    /// every program without this grant. The call reads only a descriptor of the caller's
+    /// own thread-local storage entries.
+    pub wow64_thread_area: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -390,7 +398,79 @@ pub fn baseline_program_with(
     profile: SeccompProfile,
     grants: SyscallGrants,
 ) -> Result<BpfProgram, SeccompError> {
-    deny_list_program(baseline_rules(profile, grants)?)
+    let program = deny_list_program(baseline_rules(profile, grants)?)?;
+    if grants.wow64_thread_area {
+        allow_i386_set_thread_area(program)
+    } else {
+        Ok(program)
+    }
+}
+
+/// `program` with one exception to its architecture check: the i386 `set_thread_area`
+/// ([`SyscallGrants::wow64_thread_area`]) is allowed, every other i386 call is still killed.
+///
+/// seccompiler compiles for one architecture and kills a call of any other before its rules
+/// are checked, so the exception goes in ahead of them: the program's first three instructions (load
+/// the architecture, go on when it is `x86_64`, kill otherwise) become a check that also
+/// lets this one i386 call through. Jumps are relative and only go forward, so the rules
+/// after the check keep their meaning.
+#[cfg(target_os = "linux")]
+fn allow_i386_set_thread_area(program: BpfProgram) -> Result<BpfProgram, SeccompError> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use seccompiler::sock_filter;
+        const LOAD_WORD_ABSOLUTE: u16 = 0x20;
+        const JUMP_IF_EQUAL: u16 = 0x15;
+        const RETURN: u16 = 0x06;
+        const ARCH_OFFSET: u32 = 4;
+        const NR_OFFSET: u32 = 0;
+        const AUDIT_ARCH_X86_64: u32 = 0xc000_003e;
+        const AUDIT_ARCH_I386: u32 = 0x4000_0003;
+        const I386_SET_THREAD_AREA: u32 = 243;
+        let stmt = |code, k| sock_filter {
+            code,
+            jt: 0,
+            jf: 0,
+            k,
+        };
+        let jump = |k, jt, jf| sock_filter {
+            code: JUMP_IF_EQUAL,
+            jt,
+            jf,
+            k,
+        };
+        let expected = [
+            stmt(LOAD_WORD_ABSOLUTE, ARCH_OFFSET),
+            jump(AUDIT_ARCH_X86_64, 1, 0),
+            stmt(RETURN, libc::SECCOMP_RET_KILL_PROCESS),
+        ];
+        if program.get(..3) != Some(&expected[..]) {
+            return Err(SeccompError::Install(
+                "the compiled filter does not start with the architecture check the 32-bit \
+                 thread-area exception replaces"
+                    .to_string(),
+            ));
+        }
+        let mut patched = vec![
+            stmt(LOAD_WORD_ABSOLUTE, ARCH_OFFSET),
+            // x86_64 goes on to the rules (instruction 7).
+            jump(AUDIT_ARCH_X86_64, 5, 0),
+            // Any architecture but i386 is killed (instruction 6).
+            jump(AUDIT_ARCH_I386, 0, 3),
+            stmt(LOAD_WORD_ABSOLUTE, NR_OFFSET),
+            // An i386 call other than set_thread_area is killed (instruction 6).
+            jump(I386_SET_THREAD_AREA, 0, 1),
+            stmt(RETURN, libc::SECCOMP_RET_ALLOW),
+            stmt(RETURN, libc::SECCOMP_RET_KILL_PROCESS),
+        ];
+        patched.extend(program.into_iter().skip(3));
+        Ok(patched)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        // Only an x86_64 kernel takes i386 calls from a 64-bit process.
+        Ok(program)
+    }
 }
 
 /// Compatibility filter for modern glibc thread creation. Returning `ENOSYS`
@@ -1122,7 +1202,10 @@ mod tests {
             let rules = baseline_rules(SeccompProfile::TiloDefault, SyscallGrants::default()).unwrap();
             let granted = baseline_rules(
                 SeccompProfile::TiloDefault,
-                SyscallGrants { io_uring: true },
+                SyscallGrants {
+                    io_uring: true,
+                    ..SyscallGrants::default()
+                },
             )
             .unwrap();
             for nr in IO_URING_SYSCALLS {
@@ -1139,7 +1222,10 @@ mod tests {
                 SeccompProfile::TiloWebEngine,
             ] {
                 let mut denied = baseline_rules(profile, SyscallGrants::default()).unwrap();
-                let allowed = baseline_rules(profile, SyscallGrants { io_uring: true }).unwrap();
+                let allowed = baseline_rules(profile, SyscallGrants {
+                    io_uring: true,
+                    ..SyscallGrants::default()
+                }).unwrap();
                 for nr in IO_URING_SYSCALLS {
                     assert!(denied.remove(nr).is_some());
                 }
@@ -1154,7 +1240,10 @@ mod tests {
             let host = setup_errno();
             if host != libc::EPERM {
                 assert_eq!(
-                    under(SyscallGrants { io_uring: true }),
+                    under(SyscallGrants {
+                    io_uring: true,
+                    ..SyscallGrants::default()
+                }),
                     host,
                     "with the grant the kernel answers, as it does unconfined"
                 );
@@ -1180,6 +1269,104 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A 32-bit call through `int 0x80`, as Wine's `WoW64` mode makes it. `ebx` holds the one
+    /// argument; LLVM keeps `rbx` for itself, so it is swapped in and back around the call.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn i386_call(nr: i32, arg: u32) -> i32 {
+        let result: i32;
+        // SAFETY: `int 0x80` enters the kernel's 32-bit entry and returns; rbx is restored.
+        unsafe {
+            std::arch::asm!(
+                "xchg {arg:r}, rbx",
+                "int 0x80",
+                "xchg {arg:r}, rbx",
+                arg = inout(reg) u64::from(arg) => _,
+                inlateout("eax") nr => result,
+                options(nostack),
+            );
+        }
+        result
+    }
+
+    /// How a forked child ended.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[derive(Debug, PartialEq, Eq)]
+    enum Ended {
+        /// It exited with the call's result (its magnitude, at most 99).
+        Exited(i32),
+        /// A signal killed it.
+        Killed(i32),
+    }
+
+    /// How a forked child that installs `program` (or none) and makes one i386 call ended.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn i386_call_under(program: Option<&BpfProgram>, nr: i32) -> Ended {
+        // SAFETY: the child installs a filter, makes one call and exits without unwinding.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            if let Some(program) = program
+                && seccompiler::apply_filter(program).is_err()
+            {
+                // SAFETY: `_exit` does not unwind.
+                unsafe { libc::_exit(100) };
+            }
+            // A null descriptor: an allowed set_thread_area answers EFAULT.
+            let result = i386_call(nr, 0);
+            // SAFETY: `_exit` does not unwind.
+            unsafe { libc::_exit(i32::try_from(result.unsigned_abs().min(99)).unwrap_or(99)) };
+        }
+        let mut status = 0;
+        // SAFETY: waiting for the child forked above.
+        assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+        if libc::WIFSIGNALED(status) {
+            Ended::Killed(libc::WTERMSIG(status))
+        } else {
+            Ended::Exited(libc::WEXITSTATUS(status))
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn wine_may_set_its_32_bit_thread_area_and_make_no_other_32_bit_call() {
+        const I386_GETPID: i32 = 20;
+        const I386_SET_THREAD_AREA: i32 = 243;
+        if matches!(i386_call_under(None, I386_GETPID), Ended::Killed(_)) {
+            eprintln!("this kernel takes no 32-bit calls; nothing to check");
+            return;
+        }
+        let wine = baseline_program_with(
+            SeccompProfile::TiloJit,
+            SyscallGrants {
+                wow64_thread_area: true,
+                ..SyscallGrants::default()
+            },
+        )
+        .expect("compile the Wine filter");
+        let plain = baseline_program(SeccompProfile::TiloJit).expect("compile the baseline");
+        assert_eq!(
+            i386_call_under(Some(&wine), I386_SET_THREAD_AREA),
+            Ended::Exited(libc::EFAULT),
+            "the granted call reaches the kernel"
+        );
+        assert_eq!(
+            i386_call_under(Some(&wine), I386_GETPID),
+            Ended::Killed(libc::SIGSYS),
+            "every other 32-bit call is still killed"
+        );
+        assert_eq!(
+            i386_call_under(Some(&plain), I386_SET_THREAD_AREA),
+            Ended::Killed(libc::SIGSYS),
+            "without the grant the call is killed"
+        );
+        assert_eq!(
+            plain.len() + 4,
+            wine.len(),
+            "the grant adds only the exception ahead of the same rules"
+        );
+        assert_eq!(plain[3..], wine[7..]);
     }
 
     #[test]

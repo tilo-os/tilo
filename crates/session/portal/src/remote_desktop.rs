@@ -117,6 +117,7 @@ impl InputInjector for NoInput {
 #[effect(operation = "so.tilo.portal.remote-control")]
 pub enum ControlEffect {
     /// Stop the app controlling this computer
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     End,
 }

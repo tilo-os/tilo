@@ -16,6 +16,7 @@ pub enum DictationAction {
     /// Dictate into the field the person is typing in, or insert what was
     /// heard when a dictation is already listening. The person is asked to
     /// allow the microphone for that dictation first.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         attended,
@@ -24,6 +25,7 @@ pub enum DictationAction {
     )]
     Start,
     /// Stop recording and insert what was heard into the same field.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "microphone-off",
@@ -31,6 +33,7 @@ pub enum DictationAction {
     )]
     Finish,
     /// Stop recording and throw away what was heard.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -39,6 +42,7 @@ pub enum DictationAction {
     )]
     Cancel,
     /// Throw away a transcript that was not inserted.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,

@@ -7210,7 +7210,14 @@ impl FrameHarness {
             &address.address,
             Some(address.instance_id),
         )?
-        .ok_or_else(|| tilo_actions::ApiError::Unknown(address.address.clone()))?;
+        .ok_or_else(|| {
+            crate::bound_dispatch::unoffered(
+                self.root.as_ref(),
+                &self.state.doc,
+                &address.address,
+                address.instance_id,
+            )
+        })?;
         let started = crate::bound_dispatch::invoke_resource_action(
             self.root.as_mut(),
             &mut self.state.doc,

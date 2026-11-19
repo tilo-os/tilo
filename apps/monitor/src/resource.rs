@@ -47,17 +47,20 @@ pub enum MonitorEffect {
     },
     /// Asks the process to close, as quitting it would. Only the person's own apps
     /// and programs can be ended, never the system's services.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     EndProcess {
         #[param("The process row's id")]
         process: String,
     },
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     Kill {
         #[param("The process row's id")]
         process: String,
     },
     /// Asks every process of the app to close.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     EndApp {
         #[param("The app's id, as a process row names it")]

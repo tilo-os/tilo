@@ -1211,3 +1211,8 @@ identifiers = ["host_backend"]
 reason = "The `host-info` crate's name: facts about the machine a program runs on, such as whether a process is alive."
 words = ["host"]
 identifiers = ["host_info"]
+
+[[allow]]
+reason = "`podman run`, t's run of a publishing check and the publishing channel tools/ci/publish/lib.sh names (dev, release, branch): names those tools give them, not Tilo concepts."
+words = ["run", "channel"]
+paths = ["tools/ci/publish/extension-manifests.sh", "tools/ci/publish/windows-compat-sysext.sh"]

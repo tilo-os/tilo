@@ -293,14 +293,15 @@ pub(super) fn in_workspace_folder(
 }
 
 /// Whether `action` with `arguments` is one of Files' reads of the workspace's own folder by a
-/// path in the workspace: its `list`, and its `read-text` of a file whose path starts at the
+/// path in the workspace: its `list`, its `history`, and its `read-text` of a file whose path starts at the
 /// workspace's folder. A path that starts with `/` or `~` is a file on a computer's own disk,
 /// which Files on that computer reads.
 fn reads_workspace_folder(action: &str, arguments: &serde_json::Map<String, Value>) -> bool {
-    use fs_protocol::tree::{LIST, READ_TEXT};
+    use fs_protocol::tree::{HISTORY, LIST, READ_TEXT};
     // Content the workspace keeps is on no one computer either: a read of it by its address
     // (`content`) is the workspace's to answer.
     action == LIST
+        || action == HISTORY
         || (action == READ_TEXT
             && (arguments.contains_key("content")
                 || arguments

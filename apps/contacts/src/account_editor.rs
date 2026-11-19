@@ -45,6 +45,7 @@ pub enum AccountEffect {
     #[effect(view)]
     ReviewAccountRevocation { person: String, association: String },
     /// Confirm the exact pending account review.
+    #[effect(kind = "outside")]
     #[effect(row, destructive)]
     ConfirmAccountReview { token: String },
     /// Cancel the pending review without changing any account association.

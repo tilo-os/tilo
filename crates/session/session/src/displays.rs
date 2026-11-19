@@ -257,9 +257,11 @@ pub fn surface() -> tilo_resource::surface::Surface {
 #[effect(operation = "so.tilo.session.displays")]
 pub enum DisplaysAction {
     /// Use the displays together in the next mode
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "monitor")]
     NextMode,
     /// Use the displays together this way
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "monitor")]
     SetMode {
         /// One of [`NAMES`].
@@ -268,14 +270,17 @@ pub enum DisplaysAction {
     },
     /// Bring up the display sheet
     /// Where the layouts and the wireless displays are chosen.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "monitor")]
     OpenSheet,
     /// Take the display sheet down
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     CloseSheet,
     /// Make the display brighter
     /// The display the person works on, or with `all` every display that can be dimmed, each
     /// keeping its share of the brightest one.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "sun")]
     BrightnessUp {
         /// Whether every display moves together, as Shift does on the key.
@@ -285,16 +290,19 @@ pub enum DisplaysAction {
     /// Make the display dimmer
     /// The display the person works on, or with `all` every display that can be dimmed, each
     /// keeping its share of the brightest one.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "sun")]
     BrightnessDown { all: Option<bool> },
     /// Set the brightness
     /// The display the person works on, or the first one that can be dimmed.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent, icon = "sun")]
     SetBrightness {
         #[param("Brightness from 0 to 1")]
         level: f64,
     },
     /// Set one display's brightness
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent, icon = "sun")]
     SetDisplayBrightness {
         /// The display's connector, as the reading lists it.

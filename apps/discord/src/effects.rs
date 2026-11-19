@@ -69,6 +69,7 @@ pub enum DiscordEffect {
     ///
     /// Keeps the Discord bot token in this host's secret store, where the
     /// connector's worker reads it. It never reaches the resource.
+    #[effect(kind = "outside")]
     #[effect(privileged)]
     SetBotToken {
         #[param(secret)]
@@ -79,6 +80,7 @@ pub enum DiscordEffect {
     /// The Discord servers the bot with this token is in, by id and name,
     /// to choose the one this workspace bridges. The token is used for this one
     /// request and kept nowhere.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     FindServers {
         #[param(secret)]
@@ -90,6 +92,7 @@ pub enum DiscordEffect {
     /// Bridge for this server: the same setup the workspace's operator gives on
     /// the command line, through the workspace's own actions, which decide
     /// whether this person may add bots.
+    #[effect(kind = "outside")]
     #[effect(label = "discord-bridge-server")]
     BridgeServer {
         #[param(secret)]

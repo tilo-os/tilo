@@ -104,9 +104,11 @@ impl Work {
 #[effect(operation = "settings.effect")]
 pub enum PersonModelsEffect {
     /// Read the model providers again.
+    #[effect(kind = "outside")]
     #[effect(job)]
     ReadProviders,
     /// Link one of the model providers Tilo knows by name.
+    #[effect(kind = "outside")]
     #[effect(job)]
     LinkProvider {
         #[param("The provider: `gemini`, `anthropic`, `openai` or `openrouter`")]
@@ -116,6 +118,7 @@ pub enum PersonModelsEffect {
     #[effect(view)]
     NameOtherProvider,
     /// Link the model provider the form names.
+    #[effect(kind = "outside")]
     #[effect(job)]
     LinkOtherProvider,
     /// Show the protected field that takes a provider's API key.
@@ -125,30 +128,35 @@ pub enum PersonModelsEffect {
         provider: String,
     },
     /// Remove a provider's API key.
+    #[effect(kind = "outside")]
     #[effect(job, destructive)]
     ForgetProviderKey {
         #[param("The provider's id")]
         provider: String,
     },
     /// Remove a provider and its API key.
+    #[effect(kind = "outside")]
     #[effect(job, destructive)]
     UnlinkProvider {
         #[param("The provider's id")]
         provider: String,
     },
     /// Ask a provider which models it offers.
+    #[effect(kind = "outside")]
     #[effect(job)]
     AskProviderModels {
         #[param("The provider's id")]
         provider: String,
     },
     /// Add the model named in a provider's field.
+    #[effect(kind = "outside")]
     #[effect(job)]
     NameProviderModel {
         #[param("The provider's id")]
         provider: String,
     },
     /// Choose the model work runs on where no other is chosen.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     ChooseDefaultModel {
         #[param("The provider's id")]
@@ -158,6 +166,7 @@ pub enum PersonModelsEffect {
     },
     /// Choose the model one kind of work runs on; omit both to let it
     /// follow the default again.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     ChooseWorkModel {
         #[param("`main-thread`, `sub-agents` or `quick-judgments`")]

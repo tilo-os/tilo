@@ -51,6 +51,7 @@ pub const KIND: &str = "session.devices";
 #[effect(operation = "so.tilo.session.devices")]
 pub enum DevicesAction {
     /// Press one of the person's devices
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Press {
         /// The row's key, as the reading lists it.
@@ -62,6 +63,7 @@ pub enum DevicesAction {
         part: RowPart,
     },
     /// Move a paired Bluetooth accessory to another of the person's devices
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     HandOff {
         /// The accessory's address.

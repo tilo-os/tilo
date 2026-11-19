@@ -564,6 +564,7 @@ const KIND: &str = "session.quick-settings";
 #[effect(operation = "so.tilo.session.quick-settings")]
 pub(crate) enum LayoutAction {
     /// Show a control on the panel
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     ShowControl {
         /// The control's name, as the panel lists it
@@ -573,6 +574,7 @@ pub(crate) enum LayoutAction {
         control: String,
     },
     /// Take a control off the panel. Wi-Fi stays: it is how a desktop without a network gets online
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     HideControl {
         /// The control's name, as the panel lists it
@@ -580,6 +582,7 @@ pub(crate) enum LayoutAction {
         control: String,
     },
     /// Move a control to another place on the panel
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     MoveControl {
         /// The control's name, as the panel lists it
@@ -590,6 +593,7 @@ pub(crate) enum LayoutAction {
         before: Option<String>,
     },
     /// Put the panel's controls back as they were at first
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     ResetControls,
 }

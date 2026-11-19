@@ -114,12 +114,14 @@ impl Imager {
 #[effect(operation = "imager.write-plan")]
 pub enum ImagerEffect {
     /// Prepare an explicitly selected original-source migration for this medium.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, privileged)]
     PrepareOfflineMigration {
         #[param("Device path of the already reviewed external target drive")]
         device: String,
     },
     /// Complete an authenticated pending migration from the explicitly selected medium.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, privileged)]
     CompleteOfflineMigration {
         #[param("Device path of the explicitly selected Tilo installation medium")]
@@ -128,6 +130,7 @@ pub enum ImagerEffect {
         password: String,
     },
     /// Erase drive and write image. Offered on each drive it may write,
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, row, destructive, phrase = "Self::drive_name")]
     Write {
         #[param("Device path of the reviewed target drive, e.g. /dev/sdb")]
@@ -142,6 +145,7 @@ pub enum ImagerEffect {
     #[effect(returns, kind = "read")]
     ExportConfig,
     /// Set Wi-Fi password.
+    #[effect(kind = "outside")]
     SetWifiPsk {
         #[param(
             secret,
@@ -150,11 +154,13 @@ pub enum ImagerEffect {
         value: String,
     },
     /// Set the owner SSH public key for the next write on this machine.
+    #[effect(kind = "outside")]
     SetSshKey {
         #[param("OpenSSH public keys, one per line, without authorized_keys options")]
         value: String,
     },
     /// Customize a regular raw image file through the installed-root path.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     CustomizeImage {
         #[param("Absolute path of the regular raw disk image; devices and symlinks are refused")]
@@ -170,10 +176,12 @@ pub enum ImagerEffect {
         #[param("Absolute paths of files to place in the image account's home")]
         home_files: Vec<tilo_resource::AbsolutePath>,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "imager-drop-title")]
     ChooseImage,
     /// Cancel the installer download; what was verified is kept for resume.
+    #[effect(kind = "outside")]
     CancelDownload,
     #[effect(own_device, kind = "read")]
     #[effect(label = "imager-rescan-drives")]
@@ -185,21 +193,26 @@ pub enum ImagerEffect {
         drive: String,
     },
     /// Choose a mounted folder on the verified installer medium for prepared setup.
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     ChoosePreparedFilesystem,
     /// Retry automatic delivery to the verified installer's EFI filesystem.
+    #[effect(kind = "outside")]
     #[effect(returns)]
     RetryPreparedDelivery,
     /// Return to the preserved guided preparation and renew changed home contents.
+    #[effect(kind = "outside")]
     #[effect(returns)]
     ReviewChangedPreparedFiles,
     /// Deliver authenticated prepared setup to the exact verified medium.
+    #[effect(kind = "outside")]
     #[effect(returns)]
     DeliverPreparedSetup {
         #[param(secret, "Granted mounted root of the verified installer medium")]
         mounted_root: String,
     },
     /// Cancel prepared setup delivery and wait for cleanup.
+    #[effect(kind = "outside")]
     CancelPreparedDelivery,
 }
 

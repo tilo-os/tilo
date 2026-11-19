@@ -376,9 +376,11 @@ pub use crate::prefs::ClockPrefs;
 #[effect(operation = "settings.effect")]
 pub enum TimeDateEffect {
     /// Set this device's time automatically from the network, or stop.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     SetAutomaticTime { on: bool },
     /// Set this device's time zone, or have it follow where the device is.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     SetTimeZone {
         #[param(

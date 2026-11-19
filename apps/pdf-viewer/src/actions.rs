@@ -183,6 +183,7 @@ pub enum PdfEffect {
     /// Select text
     ///
     /// Selects `text` on a page, all of it when omitted.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     SelectText {
         #[param(
@@ -198,11 +199,13 @@ pub enum PdfEffect {
     /// Copy selection
     ///
     /// Copies the selected text to the clipboard and answers with it.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     CopySelection,
     /// Open PDF
     ///
     /// Opens a PDF on its own markup resource, in this window.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, destructive)]
     #[effect(label = "pdf-empty-open")]
     OpenPdf {
@@ -213,6 +216,7 @@ pub enum PdfEffect {
     ///
     /// Pages of the PDF or picture at `path`, all of them or those `pages` names,
     /// the first at position `at`.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     InsertPages {
         #[param("Absolute path of the PDF or picture")]
@@ -227,10 +231,12 @@ pub enum PdfEffect {
     /// Save annotated PDF
     ///
     /// Asks where with the system picker, which asks before it replaces a file.
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable)]
     #[effect(label = "pdf-bar-save")]
     SaveAs,
     /// Save annotated PDF to a file.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, destructive)]
     SaveTo {
         #[param("Absolute path")]

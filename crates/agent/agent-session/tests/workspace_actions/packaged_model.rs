@@ -470,6 +470,7 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
             action: "create-area",
             arguments: create_area("Ship it"),
             now: i64::try_from(now_ms).unwrap(),
+            envelope: None,
         })
         .unwrap();
     let mut replayed_document = automerge::AutoCommit::load(&before).unwrap();

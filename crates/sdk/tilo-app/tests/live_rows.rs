@@ -118,6 +118,7 @@ enum Raw {
 #[effect(operation = "test.tally.jobs", catalogue = "tests/locales")]
 enum JobEffect {
     /// Stop the job.
+    #[effect(kind = "outside")]
     #[effect(row, returns)]
     Stop { job: u32 },
     /// Inspect the total.

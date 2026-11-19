@@ -418,7 +418,7 @@ test('a host that has not answered a kept membership yet keeps it and is not ask
   const membership = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership});
   options.connect = async connected => ({workspace: connected.workspace, dispose: async () => {},
-    whenReady: async () => { throw new DOMException('Room admission timed out', 'TimeoutError'); }});
+    whenReady: async () => { throw new DOMException('Workspace admission timed out', 'TimeoutError'); }});
   await assert.rejects(joinViaHost(options), {name: 'TimeoutError'});
   assert.equal(calls.posted.length, 0);
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), membership);

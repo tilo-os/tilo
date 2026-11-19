@@ -167,6 +167,18 @@ pub trait CollabTransport: Send {
         false
     }
 
+    /// Take invocations again after [`Self::stop_invocations`]: what the
+    /// remote end still addresses to this connection reaches it, and
+    /// [`Self::invocations_stopped`] says no.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Closed`] when the transport is closed.
+    fn resume_invocations(&mut self) -> Result<(), TransportError> {
+        // A transport whose stop took nothing off has nothing to put back.
+        Ok(())
+    }
+
     /// The remote end's decision about the latest primary `Hello`, once.
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>>;
 

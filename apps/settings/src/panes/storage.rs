@@ -138,24 +138,30 @@ fn cache_size_from_label(label: &str) -> String {
 #[effect(operation = "settings.effect")]
 pub enum StorageEffect {
     /// Remove the apps' caches.
+    #[effect(kind = "outside")]
     #[effect(job, destructive, returns)]
     CleanUpCaches,
     /// Free the local copies of synced files that are safe on the server.
+    #[effect(kind = "outside")]
     #[effect(job, destructive, returns)]
     FreeSyncedFiles,
     /// Open Disks.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     #[effect(label = "settings-storage-open-disks")]
     OpenDisks,
     /// Open Backups.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     #[effect(label = "settings-storage-open-backups")]
     OpenBackups,
     /// Fetch the workspace files you are likely to open next before you
     /// open them, or only when opened.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent, returns)]
     SetPrefetch { on: bool },
     /// Set how much space fetched workspace files may use on this device.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent, returns)]
     SetCacheSize {
         #[param("The space to keep", choices = CACHE_SIZES.iter().copied())]
@@ -171,12 +177,14 @@ pub enum StorageEffect {
     ///
     /// Drops what this device fetched from another one; it downloads again
     /// when opened.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     FreeCache {
         #[param("The workspace, as the storage summary names it")]
         workspace: String,
     },
     /// Keep a whole workspace on this device, or stop keeping it.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent, returns)]
     KeepHere {
         #[param("The workspace, as the storage summary names it")]

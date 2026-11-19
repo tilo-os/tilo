@@ -664,6 +664,16 @@ impl<'a, A: Into<ScalarValue<'a>>> From<A> for ValueRef<'a> {
 }
 
 impl<'a> ValueRef<'a> {
+    /// TILO(model-device): a value as the host of a model module's document
+    /// read it.
+    #[cfg(tilo_model_guest)]
+    pub(crate) fn hosted(value: crate::Value<'static>) -> ValueRef<'static> {
+        match value {
+            crate::Value::Object(kind) => ValueRef::Object(kind),
+            crate::Value::Scalar(scalar) => ValueRef::Scalar(ScalarValue::from(scalar.into_owned())),
+        }
+    }
+
     pub(crate) fn from_action_value(action: Action, value: ScalarValue<'a>) -> Self {
         match action {
             Action::MakeMap => ValueRef::Object(ObjType::Map),

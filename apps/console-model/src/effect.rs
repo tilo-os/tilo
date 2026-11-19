@@ -19,18 +19,22 @@ pub enum ConsoleEffect {
     },
     #[effect(view, presence)]
     ViewConnect,
+    #[effect(kind = "outside")]
     StopAgent {
         #[param("The agent's client, by the name it goes by")]
         agent: String,
     },
+    #[effect(kind = "outside")]
     UndoAgentSession {
         #[param("The agent's client, by the name it goes by")]
         agent: String,
     },
+    #[effect(kind = "outside")]
     TakeOverAgent {
         #[param("The agent's client, by the name it goes by")]
         agent: String,
     },
+    #[effect(kind = "outside")]
     RevokeAgent {
         #[param("The agent's client, by the name it goes by")]
         agent: String,

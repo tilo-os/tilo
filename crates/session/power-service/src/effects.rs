@@ -8,6 +8,7 @@ use tilo_resource::Effect;
 #[effect(operation = "so.tilo.power.battery")]
 pub enum BatteryAction {
     /// Stop charging at `percent`, where the pack's driver offers a limit.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -25,6 +26,7 @@ pub enum BatteryAction {
 #[effect(operation = "so.tilo.power.sleep")]
 pub enum SleepAction {
     /// Stop the machine from sleeping on its own, until released.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "sun",
@@ -35,6 +37,7 @@ pub enum SleepAction {
         reason: String,
     },
     /// Let the machine sleep on its own again.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -46,6 +49,7 @@ pub enum SleepAction {
         ticket: String,
     },
     /// Put the machine to sleep now, whatever the idle timers say.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -54,6 +58,7 @@ pub enum SleepAction {
     )]
     Sleep,
     /// What pressing the power key does, as the policy resolves it.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "power",
@@ -61,12 +66,14 @@ pub enum SleepAction {
     )]
     PowerKey,
     /// What opening or closing the lid does, as the policy resolves it.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "laptop", keywords = "lid, close the lid, laptop")]
     Lid {
         #[param("Whether the lid is closed")]
         closed: bool,
     },
     /// Switch the machine to one of its power profiles
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "battery",

@@ -60,17 +60,21 @@ pub enum MobileEffect {
     #[effect(view, returns, kind = "read")]
     InspectMobileState,
     /// Read the modems and the mobile data connection again.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     RefreshMobile,
     /// Use mobile data, or stop.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent, label = "net-mobile-data")]
     SetMobileBroadband { on: bool },
     /// Use mobile data on other operators' networks, or only on the home
     /// network.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent, label = "net-mobile-roaming-setting")]
     SetDataRoaming { on: bool },
     /// Set the access point mobile data connects through; what is omitted is
     /// what the APN editor holds.
+    #[effect(kind = "outside")]
     #[effect(job)]
     SetMobileApn {
         #[param("Choose the APN from the operator database")]
@@ -79,18 +83,21 @@ pub enum MobileEffect {
         apn: Option<ui::tilo_resource::NonBlank>,
     },
     /// Count mobile data against a limit, or let the network say.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent, label = "net-metered-connection")]
     SetMobileMetered {
         #[param("automatic, metered or unmetered", choices = METERED.iter().map(|(key, _)| *key))]
         metered: String,
     },
     /// Choose the network types the modem may use.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent, label = "net-mobile-network-type")]
     SetPreferredNetwork {
         #[param("The network types, as listed: 4g-3g-2g, 5g-4g-prefer-5g, 4g …")]
         network: String,
     },
     /// Unlock a SIM with its PIN; without it, the PIN is asked for.
+    #[effect(kind = "outside")]
     #[effect(job, label = "net-unlock-sim")]
     UnlockSim {
         #[param("The SIM, as listed; the locked one when omitted")]
@@ -100,6 +107,7 @@ pub enum MobileEffect {
     },
     /// Unlock a SIM blocked after too many wrong PINs with its PUK, choosing
     /// a new PIN; without both, they are asked for.
+    #[effect(kind = "outside")]
     #[effect(job, label = "net-mobile-unblock")]
     UnblockSim {
         #[param("The SIM, as listed; the blocked one when omitted")]
@@ -111,6 +119,7 @@ pub enum MobileEffect {
     },
     /// Ask for the SIM's PIN when the device starts, or stop asking; without
     /// the PIN, it is asked for.
+    #[effect(kind = "outside")]
     #[effect(job)]
     SetSimPinLock {
         #[param("The SIM, as listed; the one in use when omitted")]
@@ -120,6 +129,7 @@ pub enum MobileEffect {
         pin: Option<String>,
     },
     /// Change the SIM's PIN; without both PINs, they are asked for.
+    #[effect(kind = "outside")]
     #[effect(job)]
     ChangeSimPin {
         #[param("The SIM, as listed; the one in use when omitted")]
@@ -130,6 +140,7 @@ pub enum MobileEffect {
         new_pin: Option<String>,
     },
     /// Use this SIM for mobile data, on a modem with several.
+    #[effect(kind = "outside")]
     #[effect(job, row)]
     UseSim {
         #[param("The SIM, as listed")]

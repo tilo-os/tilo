@@ -197,9 +197,11 @@ impl Library {
 #[effect(operation = "feeds.effects")]
 pub enum FeedsEffect {
     /// Refresh all subscriptions.
+    #[effect(kind = "outside")]
     #[effect(job)]
     RefreshAll,
     /// Import OPML…
+    #[effect(kind = "outside")]
     #[effect(attended)]
     ImportOpml,
     /// New folder…

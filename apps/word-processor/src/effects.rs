@@ -17,12 +17,14 @@ pub enum WordProcessorEffect {
     #[effect(content, kind = "read")]
     ShareImage,
     /// Open document.
+    #[effect(kind = "outside")]
     #[effect(job, destructive)]
     OpenDocument {
         #[param("Absolute filesystem path; omit to choose one")]
         path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Save document.
+    #[effect(kind = "outside")]
     #[effect(job, destructive)]
     Save {
         #[param("Absolute filesystem path; omit to save to the document's file")]
@@ -31,9 +33,11 @@ pub enum WordProcessorEffect {
     /// Save document as.
     ///
     /// Asks where with the system picker, which asks before it replaces a file.
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     SaveAs,
     /// Save document to a file.
+    #[effect(kind = "outside")]
     #[effect(job, destructive)]
     SaveTo {
         #[param("Absolute filesystem path")]
@@ -82,6 +86,7 @@ pub enum WordProcessorEffect {
     /// Convert a file.
     /// Writes a file again in another format beside it (PDF, Word, `OpenDocument`, Markdown,
     /// HTML, RTF, plain text) and answers with the new file's path.
+    #[effect(kind = "outside")]
     #[effect(returns)]
     ConvertFile {
         #[param("Absolute path of the file")]

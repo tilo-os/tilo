@@ -216,7 +216,13 @@ impl ChatApp {
     }
 
     pub(crate) fn declare_window_toolbar(&self) {
-        ui::window_toolbar::declare(Some(self.window_toolbar()));
+        // A view shown alone is all the window shows: nothing of Chat stands around it, neither
+        // its parts in the window's bar nor its places beside the view.
+        let alone = self.alone.is_some();
+        if let Some(bar) = &self.bar {
+            bar.show_content_alone(alone);
+        }
+        ui::window_toolbar::declare((!alone).then(|| self.window_toolbar()));
     }
 
     /// Run what the person did in the window's bar as the window's own hits.

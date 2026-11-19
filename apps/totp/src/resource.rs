@@ -151,6 +151,7 @@ pub enum TotpEffect {
         account: String,
     },
     /// Retry saving secrets.
+    #[effect(kind = "outside")]
     RetrySave,
 }
 

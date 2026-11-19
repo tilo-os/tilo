@@ -103,6 +103,7 @@ const CONSENT_PREFIX: &str = "portal:consent:";
 #[effect(operation = "so.tilo.portal.consent")]
 pub enum ConsentEffect {
     /// Take back what the app was allowed
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Forget,
 }

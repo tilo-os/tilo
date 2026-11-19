@@ -16,17 +16,21 @@ pub use disk_usage_model::{DiskUsage, Folders, RecentFolders};
 #[derive(Clone, Debug, PartialEq, ui::framework::Effect)]
 #[effect(operation = "disk-usage.effects")]
 pub enum DiskUsageEffect {
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     Analyze {
         #[param("Absolute path of the folder to analyze")]
         path: AbsolutePath,
     },
+    #[effect(kind = "outside")]
     #[effect(attended, job, returns)]
     Choose,
+    #[effect(kind = "outside")]
     #[effect(job)]
     Back,
     #[effect(view)]
     Home,
+    #[effect(kind = "outside")]
     #[effect(job)]
     OpenDisks,
 }

@@ -159,6 +159,7 @@ pub enum ShellEffect {
     /// Open the window menu
     /// The window in front's, or the one named; the same verb closes a menu it finds open for that
     /// window.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "menu")]
     Open {
         /// The window to open the menu for, by its tab's id.
@@ -169,10 +170,12 @@ pub enum ShellEffect {
         anchor: Option<String>,
     },
     /// Close the window menu
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Close,
     /// Choose a row
     /// Sends the command the row means, as the shell sends it from anywhere.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Choose {
         /// The row's id, as the reading lists it.
@@ -188,6 +191,7 @@ pub enum OverlayEffect {
     /// Open a surface
     /// Named as the reading names it; the session's own surfaces only. A surface already up moves
     /// to where it is asked to stand.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "layers")]
     OpenSurface {
         /// The surface, as the reading names it.
@@ -199,6 +203,7 @@ pub enum OverlayEffect {
         anchor: Option<String>,
     },
     /// Close a surface
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     CloseSurface {
         /// The surface, as the reading names it.
@@ -206,6 +211,7 @@ pub enum OverlayEffect {
         part: String,
     },
     /// Show the surface `surface` over the shell's windows, or close it when it is up.
+    #[effect(kind = "outside")]
     ShowSurface {
         #[param(
             "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`"
@@ -215,6 +221,7 @@ pub enum OverlayEffect {
     /// Open the window switcher, or walk it `steps` windows on.
     /// Alt+Tab walks the workspace's windows; Alt and the grave key the ones the app in front
     /// shows.
+    #[effect(kind = "outside")]
     WalkSwitcher {
         #[param("How far to walk; 1 the next window, -1 the one before")]
         steps: Option<i64>,
@@ -227,16 +234,20 @@ pub enum OverlayEffect {
     /// Choose the window the walk reached, without crossing the ones between: `at` is its place
     /// among the windows the walk crosses, `0` the first of them and `-1` the last. Home, End and a
     /// card under the pointer choose by place.
+    #[effect(kind = "outside")]
     SelectSwitcher {
         #[param("The window's place among the ones the walk crosses; -1 for the last")]
         at: i64,
     },
     /// Go to the window the switcher's walk reached, and close the switcher.
+    #[effect(kind = "outside")]
     CommitSwitcher,
     /// Answer the question waiting on the person's avatar
+    #[effect(kind = "outside")]
     #[effect(row, label = "session-answer-ask")]
     AnswerAsk,
     /// Put the question waiting on the person's avatar off for now
+    #[effect(kind = "outside")]
     #[effect(row, label = "session-ask-later")]
     PutOffAsk,
 }

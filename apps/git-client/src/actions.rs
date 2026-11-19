@@ -55,6 +55,7 @@ pub enum GitClientEffect {
     /// Open repository
     ///
     /// Open the git repository at a path on this device.
+    #[effect(kind = "outside")]
     OpenRepository {
         #[param("Absolute path of the repository's folder on this device")]
         path: AbsolutePath,
@@ -63,9 +64,11 @@ pub enum GitClientEffect {
     ///
     /// Pick the repository's folder with the system's file chooser, then
     /// open it.
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     ChooseRepository,
     /// Run approved project check
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, returns, untrusted)]
     RunApprovedCheck {
         #[param("Check ID approved by this exact project host")]
@@ -109,18 +112,22 @@ pub enum GitClientEffect {
         id: String,
     },
     /// Stage all changes
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     StageAll,
     /// Unstage all changes
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     UnstageAll,
     /// Stage file
+    #[effect(kind = "outside")]
     #[effect(row, idempotent)]
     StageFile {
         #[param("Path of the file in the repository")]
         path: String,
     },
     /// Unstage file
+    #[effect(kind = "outside")]
     #[effect(row, idempotent)]
     UnstageFile {
         #[param("Path of the file in the repository")]
@@ -131,6 +138,7 @@ pub enum GitClientEffect {
     /// The worktree's edits to this file are thrown away and the file goes
     /// back to what the index holds. Anything staged for it stays staged,
     /// and edits that were never staged are gone.
+    #[effect(kind = "outside")]
     #[effect(row, destructive)]
     DiscardFile {
         #[param("Path of the file in the repository")]
@@ -139,11 +147,13 @@ pub enum GitClientEffect {
     /// Commit staged changes
     ///
     /// Create a commit from the currently staged changes.
+    #[effect(kind = "outside")]
     Commit {
         #[param("Commit message")]
         message: String,
     },
     /// Create branch
+    #[effect(kind = "outside")]
     CreateBranch {
         #[param("Branch name")]
         name: ui::tilo_resource::NonBlank,
@@ -151,6 +161,7 @@ pub enum GitClientEffect {
     /// Create linked worktree
     ///
     /// Make a new branch at the selected commit and a separate working directory.
+    #[effect(kind = "outside")]
     #[effect(job)]
     CreateWorktree {
         #[param("Absolute path of the new working directory")]
@@ -161,6 +172,7 @@ pub enum GitClientEffect {
         start: String,
     },
     /// Check out branch
+    #[effect(kind = "outside")]
     #[effect(row, idempotent)]
     CheckoutBranch {
         #[param("Branch name")]
@@ -171,35 +183,41 @@ pub enum GitClientEffect {
     /// The branch's name goes and any commit only this branch holds is left
     /// with nothing pointing at it. Its commits stay in the repository for a
     /// while, but nothing here names them again.
+    #[effect(kind = "outside")]
     #[effect(row, destructive)]
     DeleteBranch {
         #[param("Branch name")]
         name: String,
     },
     /// Stash working changes
+    #[effect(kind = "outside")]
     SaveStash {
         #[param("Stash message")]
         message: String,
     },
     /// Apply stash
+    #[effect(kind = "outside")]
     #[effect(row)]
     ApplyStash {
         #[param("The stash's index")]
         index: usize,
     },
     /// Fetch remote
+    #[effect(kind = "outside")]
     #[effect(row, job, idempotent)]
     Fetch {
         #[param("Remote name")]
         remote: String,
     },
     /// Pull from remote
+    #[effect(kind = "outside")]
     #[effect(row, job)]
     Pull {
         #[param("Remote name")]
         remote: String,
     },
     /// Push to remote
+    #[effect(kind = "outside")]
     #[effect(row, job)]
     Push {
         #[param("Remote name")]

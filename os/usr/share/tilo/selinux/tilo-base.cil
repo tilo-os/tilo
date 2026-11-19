@@ -231,3 +231,12 @@
 (allow local_login_t unconfined_service_t (unix_stream_socket (connectto)))
 (allow sshd_session_t var_run_t (sock_file (getattr write)))
 (allow sshd_session_t unconfined_service_t (unix_stream_socket (connectto)))
+
+; Wine's 32-bit Windows libraries are PE files with relocations, so loading
+; one writes to its private mapping and makes it executable again (execmod).
+; /usr is composefs over overlayfs, and overlayfs checks that access a second
+; time with the mounter's credentials (kernel_t) against the lower file,
+; labelled usr_t. That second check denied every 32-bit program in a Wine
+; capsule ("avc: denied { execmod } ... scontext=kernel_t tcontext=usr_t").
+; The program's own domain still has to pass its own execmod check.
+(allow kernel_t usr_t (file (execmod)))

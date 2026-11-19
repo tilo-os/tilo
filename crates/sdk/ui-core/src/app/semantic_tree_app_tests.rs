@@ -1316,9 +1316,11 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         #[effect(operation = "test.counter", catalogue = "tests/locales")]
         enum Folder {
             /// Copy the folder to this computer's clipboard.
+            #[effect(kind = "outside")]
             #[effect(own_device)]
             CopyLocalFolder,
             /// Count the copies.
+            #[effect(kind = "outside")]
             Count,
         }
         let mut resource = ResourceSpec::new("test.folder", "test.folder", "Folder");

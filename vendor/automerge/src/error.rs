@@ -23,6 +23,10 @@ pub enum AutomergeError {
     DuplicateActorId(ActorId),
     #[error("general failure")]
     Fail,
+    /// TILO(model-device): what the host of a model module's document refused
+    /// a call of the module for (`crate::model_device`).
+    #[error("{0}")]
+    Device(String),
     #[error("invalid actor ID `{0}`")]
     InvalidActorId(String),
     #[error("invalid actor index `{0}`")]

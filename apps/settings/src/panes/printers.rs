@@ -67,24 +67,29 @@ const MAX_ROWS: usize = 64;
 #[effect(operation = "settings.effect")]
 pub enum PrinterEffect {
     /// Read the printers, jobs and scanners again.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     RefreshPrinters,
     /// Look for driverless printers on the network.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     FindPrinters,
     /// Add a nearby driverless printer as a queue.
+    #[effect(kind = "outside")]
     #[effect(job, row)]
     AddPrinter {
         #[param("The printer's address, as found nearby")]
         uri: String,
     },
     /// Make a printer the one apps print to unless told otherwise.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent, label = "settings-printers-make-default")]
     SetDefaultPrinter {
         #[param("The printer's queue name")]
         printer: String,
     },
     /// Pause a printer's queue, or let it print again.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetPrinterPaused {
         #[param("The printer's queue name")]
@@ -93,18 +98,21 @@ pub enum PrinterEffect {
         paused: bool,
     },
     /// Remove a printer's queue from this device.
+    #[effect(kind = "outside")]
     #[effect(job, row, destructive)]
     RemovePrinter {
         #[param("The printer's queue name")]
         printer: String,
     },
     /// Cancel a print job.
+    #[effect(kind = "outside")]
     #[effect(job, row, destructive)]
     CancelPrintJob {
         #[param("The job's id")]
         job: String,
     },
     /// Send a stopped or failed print job again.
+    #[effect(kind = "outside")]
     #[effect(job, row)]
     RetryPrintJob {
         #[param("The job's id")]

@@ -30,11 +30,13 @@ pub enum RemoteEffect {
         #[param("The saved connection's id")]
         connection: ConnectionId,
     },
+    #[effect(kind = "outside")]
     #[effect(row, idempotent, label = "remote-disconnect")]
     Disconnect {
         #[param("The saved connection's id")]
         connection: ConnectionId,
     },
+    #[effect(kind = "outside")]
     #[effect(job, privileged)]
     SendText {
         #[param("The saved connection whose session receives it")]
@@ -42,6 +44,7 @@ pub enum RemoteEffect {
         #[param("Text to deliver to the connected SSH terminal")]
         text: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, job, privileged)]
     PutFile {
         #[param("The saved connection whose SSH session receives it")]
@@ -51,6 +54,7 @@ pub enum RemoteEffect {
         #[param("Where to write it on the remote machine")]
         remote_path: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, job, privileged)]
     FetchFile {
         #[param("The saved connection whose SSH session reads it")]
@@ -61,6 +65,7 @@ pub enum RemoteEffect {
         local_path: AbsolutePath,
     },
     /// Trust SSH host key.
+    #[effect(kind = "outside")]
     #[effect(row, job, privileged)]
     TrustHostKey {
         #[param("The saved connection's id")]
@@ -69,6 +74,7 @@ pub enum RemoteEffect {
         observed: crate::ssh::HostKeyIdentity,
     },
     /// Forget SSH host key.
+    #[effect(kind = "outside")]
     #[effect(row, job, destructive)]
     ForgetHostKey {
         #[param("The saved connection's id")]

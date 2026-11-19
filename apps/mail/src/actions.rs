@@ -85,6 +85,7 @@ pub enum MailEffect {
     /// outside the resource, so an agent asking for it is put to the person in
     /// their tab first, as any agent's outside action is, unless they allowed
     /// it.
+    #[effect(kind = "outside")]
     #[effect(returns, audience = "agents")]
     AddAccount {
         #[param("The name shown for it")]
@@ -107,6 +108,7 @@ pub enum MailEffect {
         password: Option<String>,
     },
     /// Prepare a draft from this exact address-book recipient and sender.
+    #[effect(kind = "outside")]
     #[effect(row, destructive, returns)]
     PrepareContactDraft {
         person: String,
@@ -116,12 +118,14 @@ pub enum MailEffect {
         sender_email: String,
     },
     /// Refresh current folder
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     Refresh,
     /// Prepare calendar invitation
     ///
     /// Saves a bounded METHOD:REQUEST invitation as the draft and opens it
     /// for review; nothing is sent.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     PrepareCalendarInvitation {
         #[param("Invitation recipient")]
@@ -168,6 +172,7 @@ pub enum MailEffect {
     ///
     /// Saves a downloaded attachment where the person chooses on this
     /// device.
+    #[effect(kind = "outside")]
     #[effect(row, job, cancellable)]
     #[effect(label = "mail-save-attachment")]
     Save { message: String, index: usize },

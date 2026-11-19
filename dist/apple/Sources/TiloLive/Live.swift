@@ -231,7 +231,10 @@ public final class LiveStage: ObservableObject {
     /// Put the web view into a live thing's place, filling it.
     func stand(in place: LivePlatformView) {
         let view = engine.view
-        guard view.superview !== place else { return }
+        if view.superview === place {
+            if view.frame != place.bounds { view.frame = place.bounds }
+            return
+        }
         view.removeFromSuperview()
         view.frame = place.bounds
         view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -405,7 +408,7 @@ public struct TiloLiveView: View {
                 resting
             }
         }
-        .modifier(PageShape(keeps: shaped, ratio: size == .compact && asked == nil ? 16.0 / 10.0 : nil))
+        .modifier(PageShape(keeps: shaped, ratio: size == .compact && asked == nil ? 1.0 : nil))
         .frame(height: shaped && size == .compact ? asked : nil)
         .clipShape(RoundedRectangle(cornerRadius: shaped && size == .compact ? 10 : 0, style: .continuous))
         .accessibilityElement(children: .contain)
@@ -487,6 +490,6 @@ private struct PageShape: ViewModifier {
     let ratio: CGFloat?
 
     func body(content: Content) -> some View {
-        if keeps { content.aspectRatio(ratio, contentMode: .fit) } else { content }
+        if keeps, let ratio { content.aspectRatio(ratio, contentMode: .fit) } else { content }
     }
 }

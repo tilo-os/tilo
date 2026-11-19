@@ -11,6 +11,7 @@ pub enum SheetsEffect {
     /// Import CSV
     ///
     /// Adds a CSV file as a new sheet.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, opens_path = "csv")]
     ImportCsv {
         #[param("Absolute path of the file; omit to choose one")]
@@ -19,6 +20,7 @@ pub enum SheetsEffect {
     /// Import Excel workbook
     ///
     /// Adds every sheet of an `.xlsx` workbook.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, opens_path = "xlsx")]
     ImportXlsx {
         #[param("Absolute path of the file; omit to choose one")]
@@ -27,6 +29,7 @@ pub enum SheetsEffect {
     /// Import Notion export
     ///
     /// Adds every database of a Notion export as a sheet.
+    #[effect(kind = "outside")]
     #[effect(
         job,
         cancellable,
@@ -38,6 +41,7 @@ pub enum SheetsEffect {
         path: Option<tilo_resource::AbsolutePath>,
     },
     /// Adds every sheet of an `.ods` spreadsheet.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, opens_path = "ods")]
     ImportOds {
         #[param("Absolute path of the file; omit to choose one")]
@@ -46,6 +50,7 @@ pub enum SheetsEffect {
     /// Export CSV
     ///
     /// Saves what the active sheet shows as a CSV file.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, risk = "export_risk")]
     ExportCsv {
         #[param("Absolute path to write it to; omit to choose")]
@@ -54,12 +59,14 @@ pub enum SheetsEffect {
     /// Export Excel workbook
     ///
     /// Saves every sheet as an `.xlsx` workbook.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, risk = "export_risk")]
     ExportXlsx {
         #[param("Absolute path to write it to; omit to choose")]
         path: Option<tilo_resource::AbsolutePath>,
     },
     /// Saves every sheet as an `.ods` spreadsheet.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, risk = "export_risk")]
     ExportOds {
         #[param("Absolute path to write it to; omit to choose")]

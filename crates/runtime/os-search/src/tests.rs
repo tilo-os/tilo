@@ -16,7 +16,7 @@ use tilo_actions::{
 
 use crate::{EntryId, OpenError, OsSearch};
 
-pub(crate) const ROOM: &str = "0b7d9a3e-5c1f-4a8e-9d2b-7f6e5a4c3b21";
+pub(crate) const WORKSPACE: &str = "0b7d9a3e-5c1f-4a8e-9d2b-7f6e5a4c3b21";
 
 #[derive(Default)]
 pub(crate) struct Catalogue {
@@ -74,7 +74,7 @@ impl ActionProvider for Host {
                     providers.push(CatalogueProvider {
                         provider: row.provider.clone(),
                         app_id: row.app_id.clone(),
-                        workspace: ROOM.into(),
+                        workspace: WORKSPACE.into(),
                         document_id: String::new(),
                         browsable: true,
                     });
@@ -116,7 +116,7 @@ impl ActionProvider for Host {
 }
 
 pub(crate) fn owner() -> Caller {
-    Caller::local_person("owner").in_workspace(ROOM)
+    Caller::local_person("owner").in_workspace(WORKSPACE)
 }
 
 pub(crate) fn search(host: &Host) -> OsSearch {
@@ -212,7 +212,7 @@ async fn only_resources_with_a_quiet_opening_action_are_indexed() {
             disabled,
             hidden,
             row(
-                &workspace_provider(ROOM),
+                &workspace_provider(WORKSPACE),
                 "app.so.tilo.notes",
                 "Notes",
                 "open",

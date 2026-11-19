@@ -1171,6 +1171,7 @@ pub const KIND: &str = tilo_action_policy::roles::SESSION_KIND;
 #[effect(operation = "so.tilo.session.notifications")]
 pub enum CentreAction {
     /// Dismiss a notification, or every one an app grouped
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Dismiss {
         /// The notification's id, as the rows carry it.
@@ -1181,6 +1182,7 @@ pub enum CentreAction {
         group: Option<String>,
     },
     /// Run one of a notification's own actions
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Act {
         /// The notification's id, as the rows carry it.
@@ -1191,12 +1193,15 @@ pub enum CentreAction {
         action: String,
     },
     /// Clear the centre, keeping what the person pinned
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Clear,
     /// Bring back what the last Clear all took
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     UndoClear,
     /// Open one of the notifications the centre kept
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     OpenNotice {
         /// The notification's id, as the rows carry it.
@@ -1205,6 +1210,7 @@ pub enum CentreAction {
     },
     /// Tell the person something, as an app's `notify` does: it rises as a banner and waits in
     /// the centre until they dismiss it
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Notify {
         #[param("What happened, in a short sentence")]
@@ -1217,6 +1223,7 @@ pub enum CentreAction {
         kind: Option<String>,
     },
     /// Hold fresh banners back until turned off again
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     SetQuiet {
         /// Whether to hold them back

@@ -163,6 +163,7 @@ impl From<WidthPreset> for tilo_desktop_model::WindowWidth {
 #[effect(operation = "so.tilo.layout")]
 pub enum LayoutEffect {
     /// Bring its window to the front
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Focus {
         /// The tab to bring forward.
@@ -171,6 +172,7 @@ pub enum LayoutEffect {
     },
 
     /// Close its window
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     CloseTab {
         /// The tab's id.
@@ -180,6 +182,7 @@ pub enum LayoutEffect {
 
     /// Step through the windows
     /// Along the shown strip, onto the neighbouring display past either end.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     StepFocus {
         /// How many windows on; negative is back.
@@ -188,6 +191,7 @@ pub enum LayoutEffect {
     },
 
     /// Focus a display
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     FocusDisplay {
         /// The display's id.
@@ -196,6 +200,7 @@ pub enum LayoutEffect {
     },
 
     /// Move the window in front to another display
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     MoveToDisplay {
         /// How many displays on; negative is back.
@@ -206,6 +211,7 @@ pub enum LayoutEffect {
     /// Search the desktop
     /// Open the desktop's search, or close it when it is already open, as its key does; with
     /// `query` typed when given, into the search already open instead.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Search {
         /// What to type.
@@ -214,6 +220,7 @@ pub enum LayoutEffect {
     },
 
     /// Choose a search row
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     ChooseSearchRow {
         /// The row, counting from 0 as the reading lists them.
@@ -225,6 +232,7 @@ pub enum LayoutEffect {
     },
 
     /// Choose a launchpad card
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Launchpad {
         /// The card's slug, or `apps` for the applications.
@@ -235,6 +243,7 @@ pub enum LayoutEffect {
     /// Keep waiting for its app
     /// Give the app of a window that stopped answering its pings another period to answer before
     /// the window says so again.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     WaitWindow {
         /// The tab's id.
@@ -245,6 +254,7 @@ pub enum LayoutEffect {
     /// Force quit its app
     /// End the app of a window that stopped answering. Only that app's processes go; everything
     /// else stays as it was.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     ForceQuitApp {
         /// The tab's id.
@@ -265,6 +275,7 @@ pub enum LayoutEffect {
 pub enum ChromeEffect {
     /// Open an app
     /// In a new window of the shown strip, or beside the window named.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "app-window")]
     OpenApp {
         /// The app's id.
@@ -285,6 +296,7 @@ pub enum ChromeEffect {
     /// Show an app
     /// The shown strip's window of it when there is one, else a new window: what following a link
     /// to the app does.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     ShowApp {
         /// The app's id.
@@ -295,6 +307,7 @@ pub enum ChromeEffect {
     /// Open Settings
     /// At the page a link names (`settings://network`): what an app with no workspace of its own
     /// asks to send the person there.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     OpenSettings {
         /// The page.
@@ -306,6 +319,7 @@ pub enum ChromeEffect {
     /// Its window onto another strip of the workspace (or another place in its own), the tab alone
     /// into another workspace as a window of its own, its window onto another display, or the tab
     /// into a window of its strip.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     MoveTab {
         /// The tab whose window moves.
@@ -318,6 +332,7 @@ pub enum ChromeEffect {
 
     /// Close a window
     /// Every tab in it, as one close.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     CloseWindow {
         /// The window group's id.
@@ -327,6 +342,7 @@ pub enum ChromeEffect {
 
     /// Split right
     /// Detach the tab into a window of its own, right after the one it is in.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     SplitRight {
         /// The tab to detach.
@@ -336,6 +352,7 @@ pub enum ChromeEffect {
 
     /// New group
     /// Detach the tab into a window of its own at the end of its strip.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     NewGroup {
         /// The tab to detach.
@@ -345,6 +362,7 @@ pub enum ChromeEffect {
 
     /// Set width
     /// A preset share of its strip, or an exact share in permille.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     SetWidth {
         /// The window group whose width changes.
@@ -360,6 +378,7 @@ pub enum ChromeEffect {
 
     /// Equalize widths
     /// Every window of `strip` takes the same share of it.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Equalize {
         /// The strip whose windows even out.
@@ -368,6 +387,7 @@ pub enum ChromeEffect {
     },
 
     /// Maximize a window
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Maximize {
         /// The window group.
@@ -379,6 +399,7 @@ pub enum ChromeEffect {
     },
 
     /// Fill the display with a window
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Fullscreen {
         /// The window group.
@@ -392,6 +413,7 @@ pub enum ChromeEffect {
     /// Rename something
     /// A tab, a window, a strip or a workspace, by the one id given; a blank name gives a tab its
     /// own title back.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Rename {
         /// The tab to name.
@@ -413,6 +435,7 @@ pub enum ChromeEffect {
 
     /// New strip
     /// An empty strip at the end of the workspace shown.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     NewStrip {
         /// What to call it.
@@ -421,6 +444,7 @@ pub enum ChromeEffect {
     },
 
     /// Move a strip
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     MoveStrip {
         /// The strip to move.
@@ -433,6 +457,7 @@ pub enum ChromeEffect {
 
     /// Reopen what was closed last
     /// In the workspace shown, where it was, and focus it.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     ReopenClosed {
         /// Only a window of this app; any window when absent.
@@ -442,6 +467,7 @@ pub enum ChromeEffect {
 
     /// Share a window
     /// With the people of its workspace, or stop sharing it.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     ShareWindow {
         /// The window group.
@@ -453,6 +479,7 @@ pub enum ChromeEffect {
     },
 
     /// Take back the desktop control a window holds
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     StopDesktopControl {
         /// The window group holding it.
@@ -461,6 +488,7 @@ pub enum ChromeEffect {
     },
 
     /// Step through the strips
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     StepStrip {
         /// How many strips on; negative is back.
@@ -471,6 +499,7 @@ pub enum ChromeEffect {
     /// Switch workspace
     /// The one named, or that many on (back when negative); the overview's strip ribbon leaves
     /// `strip` shown.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     SwitchWorkspace {
         /// The workspace to go to.
@@ -483,6 +512,7 @@ pub enum ChromeEffect {
 
     /// Show a strip
     /// The strip of the workspace shown to put in front.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     ShowStrip {
         /// The workspace the strip is in.
@@ -500,6 +530,7 @@ pub enum ChromeEffect {
 
     /// Pan a strip
     /// Its horizontal offset, committed when the gesture ends.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Pan {
         /// The strip shown.
@@ -511,6 +542,7 @@ pub enum ChromeEffect {
     },
 
     /// Scroll a window
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Scroll {
         /// The window's primary region, as the snapshot names it.
@@ -522,6 +554,7 @@ pub enum ChromeEffect {
     },
 
     /// Move through a window's own history
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     History {
         /// The tab.
@@ -533,6 +566,7 @@ pub enum ChromeEffect {
     },
 
     /// Show a workspace's history
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Activity {
         /// The workspace shown.
@@ -547,6 +581,7 @@ pub enum ChromeEffect {
     },
 
     /// Close the workspace's history
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     CloseActivity {
         /// The workspace shown.
@@ -555,6 +590,7 @@ pub enum ChromeEffect {
     },
 
     /// Open or close the notification centre
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Notifications {
         /// Whether it is open.
@@ -565,6 +601,7 @@ pub enum ChromeEffect {
     /// New workspace
     /// An empty one, or one joined from the directory when `workspace` is given, named when a name
     /// is.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     NewWorkspace {
         /// The workspace to open here, by the id it is shared under.
@@ -582,6 +619,7 @@ pub enum ChromeEffect {
     /// A new workspace of the person's own that starts with everything the one named holds — its
     /// records, shell, files and Terminal environments — and goes on apart from it, with the person
     /// as its only member. Answers the new workspace's id; what it holds arrives as it is copied.
+    #[effect(kind = "outside")]
     #[effect(own_device, returns)]
     BranchWorkspace {
         /// The workspace to branch.
@@ -598,6 +636,7 @@ pub enum ChromeEffect {
 
     /// Leave a workspace
     /// Here on this computer: the one named, or the one shown.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     LeaveWorkspace {
         /// The workspace to leave.
@@ -609,6 +648,7 @@ pub enum ChromeEffect {
     /// The workspace shown, when it is the person's own and this computer is the only one holding
     /// it: it goes, with everything in it. Deleting is asked first, so nothing goes until the
     /// person says `confirmed` .
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     DeleteWorkspace {
         /// The workspace to delete.
@@ -625,6 +665,7 @@ pub enum ChromeEffect {
 
     /// Run a desktop shortcut
     /// By its id in the shortcut table, as its chord does.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Shortcut {
         /// The shortcut's id.
@@ -678,6 +719,7 @@ pub enum ChromeEffect {
     ///
     /// By its id in the shortcut catalogue: a chord Settings cannot rebind,
     /// such as closing the window in front or opening the capture studio.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     FixedShortcut {
         /// The fixed shortcut's id.
@@ -686,6 +728,7 @@ pub enum ChromeEffect {
     },
 
     /// Lift a window out of its strip, or put it back
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Float {
         /// The window group.

@@ -62,8 +62,10 @@ fn ns(at: SystemTime) -> u64 {
         .unwrap()
 }
 
+/// The moment this test reads, the clock the engines read with it: a test
+/// that holds the wall clock holds both sides of every exchange.
 fn now_ns() -> u64 {
-    ns(SystemTime::now())
+    ns(tilo_clock::wall())
 }
 
 /// One invocation of an action, as a caller on another device sends it.
@@ -398,7 +400,7 @@ async fn a_revoked_device_is_refused_from_that_moment_on() {
         signature: [0; 64],
     };
     sign_revocation_entry(&mut entry, &root).unwrap();
-    let now = SystemTime::now();
+    let now = tilo_clock::wall();
     assert!(
         engine
             .replica
@@ -437,7 +439,7 @@ async fn a_person_who_left_the_workspace_is_refused() {
     .await;
 
     // The guest joins through an invitation the workspace's authority issues.
-    let now = SystemTime::now();
+    let now = tilo_clock::wall();
     let redemption = guest(&a, &guest_root, &g, now);
     assert!(
         engine
@@ -530,8 +532,35 @@ fn guest(
     .unwrap()
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
+/// How long the root delegates the agent for: it acts inside this window and
+/// not one instant after it.
+const DELEGATION_WINDOW: Duration = Duration::from_millis(300);
+
+#[test]
+fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
+    // The answering engine reads the wall clock on its own threads, so the
+    // test takes the process to itself and moves the clock past the window
+    // instead of waiting for it: the window is exact at any machine speed.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_delegated_agent_acts_as_itself_and_not_once_its_window_closed",
+        || {
+            let process = tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime for this test alone")
+                .block_on(the_agent_acts_inside_its_window_and_not_after(process));
+        },
+    );
+}
+
+async fn the_agent_acts_inside_its_window_and_not_after(process: tilo_clock::testing::OwnProcess) {
+    // The clock as the engine reads it, at its own resolution: the held time
+    // is whole milliseconds, so every instant below is one the engine can be
+    // held at exactly.
+    let held = tilo_clock::testing::hold_wall_everywhere(process, tilo_clock::wall());
+    let started = tilo_clock::wall();
     let root = SigningKey::from_bytes(&[1; 32]);
     let a = device(&root, 2);
     let helper = agent_device(&root, 4);
@@ -545,7 +574,12 @@ async fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
     )
     .await;
 
-    let now = SystemTime::now();
+    let issued = started
+        .checked_sub(Duration::from_secs(1))
+        .expect("a time one second before the window opens");
+    let expires = started
+        .checked_add(DELEGATION_WINDOW)
+        .expect("a time the window ends");
     let delegation = Delegation::sign(
         &root,
         helper.1.device_public_key,
@@ -558,8 +592,8 @@ async fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
             workspaces: vec![WorkspaceId::parse(WORKSPACE).unwrap()],
             apps: Vec::new(),
         },
-        ns(now - Duration::from_secs(1)),
-        ns(now + Duration::from_millis(300)),
+        ns(issued),
+        ns(expires),
     )
     .unwrap();
     assert!(
@@ -569,7 +603,7 @@ async fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
                 helper.1.clone(),
                 delegation,
                 &a.0,
-                now
+                started
             ))
             .unwrap()
     );
@@ -582,7 +616,11 @@ async fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
         helper.1.device_public_key,
     );
     assert_eq!(queried(&remote, &caller).await, Ok(()));
-    let answered_as = dispatcher.callers()[0].clone();
+    let answered_as = dispatcher
+        .callers()
+        .first()
+        .expect("the agent's request reached the dispatcher")
+        .clone();
     assert_eq!(
         answered_as.acting().member_id(),
         Some(&tilo_action_policy::MemberId::agent("scribe")),
@@ -594,9 +632,11 @@ async fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
         "acting for the person whose root delegated it"
     );
 
-    // Past its window the same device is refused, though its identity stays
-    // on the roster to keep the history it wrote attributed.
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    // Once its window is over the same device is refused, though its identity
+    // stays on the roster to keep the history it wrote attributed. The clock is
+    // moved to the instant the window ends, not waited for.
+    drop(held);
+    let _lapsed = tilo_clock::testing::hold_wall_everywhere(process, expires);
     let refused = queried(&remote, &caller).await.unwrap_err();
     assert_eq!(
         refusal(&refused),

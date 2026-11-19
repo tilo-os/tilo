@@ -5598,6 +5598,51 @@ needs = ["os-release-image-lenovo-83ed"]
 outputs = ["/target/os/aarch64/release-size-lenovo-83ed/**"]
 default = false
 
+# The Windows compatibility system extension (os/image/layers.toml image `windows-compat`): built
+# like the OS image's own actions, published beside main's dev images for extension-manifests
+# to pin.
+[[check]]
+name = "os-windows-compat-x86_64"
+# Pulls the Windows guest and FEX inputs from registries no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash os/image/build-layer.sh image windows-compat x86_64 /target/os/x86_64/windows-compat"
+needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64"]
+image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/os/x86_64/windows-compat/**"]
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "os-windows-compat-aarch64"
+# Pulls the Windows guest and FEX inputs from registries no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash os/image/build-layer.sh image windows-compat aarch64 /target/os/aarch64/windows-compat"
+needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64"]
+image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
+requires = ["arch=arm64", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/os/aarch64/windows-compat/**"]
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "publish-windows-compat-{arch}"
+# Uploads to the package registry at its public address.
+egress = { to = ["code.tilo.so:443"] }
+run = "bash tools/ci/publish/windows-compat-sysext.sh publish {arch} /target/os/{arch}/windows-compat"
+needs = ["os-windows-compat-{arch}"]
+requires = ["disk-100g"]
+git = true
+cache = false
+timeout_secs = 3600
+on = ["idle", "dispatch"]
+secrets = ["TILO_PACKAGES_TOKEN"]
+dispatch_inputs = { revision = "" }
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
 [[check]]
 name = "extension-manifests-{arch}"
 # dnf installs from Fedora's mirrors, which are no fixed host list.

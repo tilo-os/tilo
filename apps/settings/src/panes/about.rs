@@ -31,6 +31,7 @@ crate::effects::effect_family!(AboutEffect => answer);
 pub enum AboutEffect {
     /// Open the identity backup, to carry the person's identity to a new
     /// device.
+    #[effect(kind = "outside")]
     #[effect(job)]
     BackUpIdentity,
     /// Open a problem's page: what happened, when, and the report's text.

@@ -45,12 +45,15 @@ type ShortcutWire = (String, HashMap<String, OwnedValue>);
 #[effect(operation = "so.tilo.portal.shortcut")]
 pub enum ShortcutEffect {
     /// Press the app's shortcut
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Activate,
     /// Release the app's shortcut
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Deactivate,
     /// Unbind the app's shortcut
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Unbind,
 }

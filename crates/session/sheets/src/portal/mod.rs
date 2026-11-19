@@ -69,6 +69,7 @@ pub enum PortalEffect {
         index: u32,
     },
     /// Tick or untick one of the sheet's rows: a device, or a yes-or-no field of a draft
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Toggle {
         #[param("The request it answers")]
@@ -77,12 +78,14 @@ pub enum PortalEffect {
         index: u32,
     },
     /// Tick or untick Remember
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Remember {
         #[param("The request it answers")]
         handle: String,
     },
     /// Choose the icon a launcher shows
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Icon {
         #[param("The request it answers")]
@@ -91,6 +94,7 @@ pub enum PortalEffect {
         index: u32,
     },
     /// Bind the highlighted shortcut to keys
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Bind {
         #[param("The request it answers")]
@@ -99,6 +103,7 @@ pub enum PortalEffect {
         keys: String,
     },
     /// Clear the highlighted shortcut
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Unbind {
         #[param("The request it answers")]
@@ -117,12 +122,14 @@ pub enum PortalEffect {
         handle: String,
     },
     /// Answer the question with what the sheet shows
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     Confirm {
         #[param("The request it answers")]
         handle: String,
     },
     /// Answer the question with one of its answers
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     Answer {
         #[param("The request it answers")]
@@ -132,6 +139,7 @@ pub enum PortalEffect {
     },
     /// Type into one of the sheet's fields: a launcher's name, a step's
     /// answer or a draft's text
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Type {
         #[param("The request it answers")]
@@ -142,6 +150,7 @@ pub enum PortalEffect {
         text: String,
     },
     /// Type into one of the secret prompt's fields
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     TypeSecret {
         #[param("The request it answers")]
@@ -152,12 +161,14 @@ pub enum PortalEffect {
         value: String,
     },
     /// Answer with what was typed into the secret prompt
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     Submit {
         #[param("The request it answers")]
         handle: String,
     },
     /// Decline the question
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Cancel {
         #[param("The request it answers")]

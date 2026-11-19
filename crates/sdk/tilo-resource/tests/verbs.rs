@@ -805,6 +805,7 @@ pub struct Opaque {
 #[effect(operation = "test.shelf.cards", catalogue = "tests/locales")]
 pub enum CardEffect {
     /// Show a card.
+    #[effect(kind = "outside")]
     Show {
         card: CardKey,
         colour: Option<Colour>,
@@ -947,9 +948,11 @@ const PRINTED_TAG: &str = "test:printed";
 #[effect(operation = "test.shelf.press", catalogue = "tests/locales")]
 pub enum PressEffect {
     /// Print the shelf.
+    #[effect(kind = "outside")]
     #[effect(job, returns, host_render, tag = PRINTED_TAG)]
     Print,
     /// Count the cards.
+    #[effect(kind = "outside")]
     #[effect(returns)]
     Count,
     /// Export the shelf.
@@ -1421,12 +1424,14 @@ impl PrivateImport {
 #[effect(operation = "test.shelf.wipe", catalogue = "tests/locales")]
 pub enum WipeEffect {
     /// Wipe a drive. Offered on each drive.
+    #[effect(kind = "outside")]
     #[effect(row, destructive, phrase = "Self::drive")]
     Wipe {
         #[param("Device path of the drive")]
         device: String,
     },
     /// Rescan drives.
+    #[effect(kind = "outside")]
     Rescan,
 }
 

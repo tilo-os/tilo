@@ -58,6 +58,7 @@ pub enum LauncherEffect {
         #[param("Rows to move by; negative moves up")]
         by: i64,
     },
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     Choose {
         #[param("The result to choose; the selected one when left out")]
@@ -65,6 +66,7 @@ pub enum LauncherEffect {
         #[param("How to open it: here (as a tab here), beside, or more (its other actions)")]
         how: Option<String>,
     },
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     Adjust {
         #[param("The result whose value to step; the selected one when left out")]
@@ -72,6 +74,7 @@ pub enum LauncherEffect {
         #[param("1 steps up, -1 down")]
         delta: i64,
     },
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     Answer {
         #[param("The value the step asks for")]

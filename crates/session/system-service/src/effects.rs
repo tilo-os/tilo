@@ -9,6 +9,7 @@ use crate::model::PowerMode;
 #[effect(operation = "so.tilo.system.power")]
 pub enum PowerAction {
     /// Choose the power mode.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -20,6 +21,7 @@ pub enum PowerAction {
         mode: String,
     },
     /// Lock the screen: unlocking asks for the password.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -28,6 +30,7 @@ pub enum PowerAction {
     )]
     Lock,
     /// Leave this session running and let someone else sign in.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "users",
@@ -35,6 +38,7 @@ pub enum PowerAction {
     )]
     SwitchUser,
     /// Put the device to sleep.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "moon",
@@ -42,6 +46,7 @@ pub enum PowerAction {
     )]
     Suspend,
     /// Restart the device.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         destructive,
@@ -50,6 +55,7 @@ pub enum PowerAction {
     )]
     Restart,
     /// Turn the device off.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         destructive,
@@ -58,6 +64,7 @@ pub enum PowerAction {
     )]
     PowerOff,
     /// Log out of this session.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         destructive,
@@ -72,6 +79,7 @@ pub enum PowerAction {
 #[effect(operation = "so.tilo.system.update")]
 pub enum UpdateAction {
     /// Fetch and apply the newest system now.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "download",
@@ -80,6 +88,7 @@ pub enum UpdateAction {
     UpdateNow,
     /// Restart the desktop onto the new interface to finish the system
     /// update, with the windows it has open reopened.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "rotate-cw",
@@ -87,6 +96,7 @@ pub enum UpdateAction {
     )]
     RestartDesktop,
     /// Restart the device to finish the system update.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         destructive,
@@ -101,6 +111,7 @@ pub enum UpdateAction {
 #[effect(operation = "so.tilo.system.time")]
 pub enum TimeAction {
     /// Set the time zone; it no longer follows where the device is.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -112,6 +123,7 @@ pub enum TimeAction {
         zone: String,
     },
     /// Let the time zone follow where the device is, or stop.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -123,6 +135,7 @@ pub enum TimeAction {
         on: bool,
     },
     /// Set the clock from the network, or stop.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent, icon = "clock", keywords = "ntp, network time")]
     SetNetworkTime {
         #[param("Whether the clock is set from the network")]
@@ -135,6 +148,7 @@ pub enum TimeAction {
 #[effect(operation = "so.tilo.system.keyboard-backlight")]
 pub enum KeyboardLightAction {
     /// Light the keyboard a step brighter.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "sun",
@@ -142,12 +156,15 @@ pub enum KeyboardLightAction {
     )]
     Brighter,
     /// Light the keyboard a step dimmer.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "sun-dim", keywords = "keyboard light, backlight")]
     Dimmer,
     /// Turn the keyboard light off when lit, and full on when dark.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "keyboard", keywords = "keyboard light, backlight")]
     Toggle,
     /// Set the keyboard light's level.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,

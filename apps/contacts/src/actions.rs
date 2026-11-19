@@ -53,6 +53,7 @@ pub enum ContactsEffect {
     /// Open website.
     ///
     /// Opens the contact's website in this device's browser.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     OpenWebsite {
         #[param("The contact's id")]
@@ -70,12 +71,15 @@ pub enum ContactsEffect {
         source: uuid::Uuid,
     },
     /// Import vCard.
+    #[effect(kind = "outside")]
     #[effect(job)]
     ImportVcard,
     /// Export all contacts.
+    #[effect(kind = "outside")]
     #[effect(job, sensitive)]
     ExportAllVcard,
     /// Export contact.
+    #[effect(kind = "outside")]
     #[effect(sensitive)]
     ExportContact {
         #[param("The contact's id")]
@@ -95,12 +99,14 @@ pub enum ContactsEffect {
         name: Option<String>,
     },
     /// Keep existing contact.
+    #[effect(kind = "outside")]
     #[effect(row, idempotent)]
     KeepExisting {
         #[param("The pending import review")]
         token: String,
     },
     /// Import as new contact.
+    #[effect(kind = "outside")]
     #[effect(row, destructive)]
     ImportAsNew {
         #[param("The pending import review")]

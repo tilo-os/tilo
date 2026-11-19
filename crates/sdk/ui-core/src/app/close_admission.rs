@@ -122,6 +122,13 @@ impl App {
     /// Each pass the close waits on it takes it a step further ([`Self::service_close_admission`]).
     fn left_invocations(&mut self) -> bool {
         use crate::close_admission::Leaving;
+        // The window left takes no more of what the broker hands out, though it answers what
+        // it was handed: the process goes on serving its other windows, and once none takes
+        // them it lets go of its link, so work that comes from now on goes to a process of
+        // its own rather than to this one, which is on its way out.
+        if matches!(self.close_admission.leaving, Leaving::Staying) {
+            crate::window_link::window_stops_taking_invocations();
+        }
         loop {
             let manager = &mut self.collaboration.manager;
             // Without a connection nothing more reaches this window, nor leaves it.
@@ -130,9 +137,6 @@ impl App {
             }
             match &self.close_admission.leaving {
                 Leaving::Staying => {
-                    // The process goes with its last window: work that comes from now on goes
-                    // to a process of its own, not to this one.
-                    crate::window_link::stop_serving_with_last_window();
                     self.close_admission.leaving = match manager.stop_invocations() {
                         Ok(()) => Leaving::Stopping,
                         Err(_) => Leaving::Left,
@@ -248,7 +252,7 @@ impl App {
             return Err("close decision is stale or unavailable".into());
         }
         match command.choice {
-            Choice::KeepEditing => self.close_admission.dismiss(),
+            Choice::KeepEditing => self.keep_editing(),
             Choice::Retry => {
                 self.close_admission.retire_presentation();
                 self.request_close();
@@ -272,6 +276,20 @@ impl App {
         }
         self.invalidate_close_presentation();
         Ok(())
+    }
+
+    /// The person keeps editing: the close this window had begun is called off. It takes
+    /// invocations again, and a save of its own that later succeeds closes nothing.
+    fn keep_editing(&mut self) {
+        use crate::close_admission::Leaving;
+        self.close_admission.dismiss();
+        if matches!(self.close_admission.leaving, Leaving::Staying) {
+            return;
+        }
+        self.close_admission.leaving = Leaving::Staying;
+        if let Err(error) = self.collaboration.manager.resume_invocations() {
+            tracing::warn!(%error, "the window could not take invocations again");
+        }
     }
 
     fn start_close_save(&mut self) -> Result<(), String> {
@@ -724,11 +742,13 @@ mod tests {
     }
 
     /// The broker's end of a window's invocations: once asked to stop, it hands over the last
-    /// one it holds when the test says so. It keeps the wire id of each answer it was sent.
+    /// one it holds when the test says so. It keeps the wire id of each answer it was sent,
+    /// and takes the window back when it is asked to.
     struct Invocations {
         stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
         handed_over: std::sync::Arc<std::sync::atomic::AtomicBool>,
         answered: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+        resumed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl crate::collaboration::CollabTransport for Invocations {
@@ -754,7 +774,15 @@ mod tests {
             Ok(())
         }
         fn invocations_stopped(&self) -> bool {
-            self.handed_over.load(std::sync::atomic::Ordering::SeqCst)
+            self.stopping.load(std::sync::atomic::Ordering::SeqCst)
+                && self.handed_over.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn resume_invocations(&mut self) -> Result<(), crate::collaboration::TransportError> {
+            self.stopping
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            self.resumed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
         }
         fn take_primary_route_result(
             &mut self,
@@ -794,6 +822,7 @@ mod tests {
                 stopping: ends.0.clone(),
                 handed_over: ends.1.clone(),
                 answered: ends.2.clone(),
+                resumed: std::sync::Arc::default(),
             }));
         assert!(app.collaboration.manager.is_connected());
         (app, saves, ends)
@@ -967,6 +996,97 @@ mod tests {
             *answered.lock().unwrap(),
             [21],
             "its answer went before the window"
+        );
+    }
+
+    /// Keep Editing calls off the close a refused write stopped: the window takes invocations
+    /// again, and the save that later succeeds closes nothing.
+    #[test]
+    fn keep_editing_calls_off_a_close_the_disk_refused() {
+        use automerge::{ReadDoc as _, transaction::Transactable as _};
+        use durable_store::{DurableStore, waiting::forbid_strictly_on_this_thread};
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let tmp = tempfile::tempdir().unwrap();
+        let store: std::rc::Rc<dyn DurableStore> =
+            std::rc::Rc::new(app_state::FsStore::new(tmp.path()));
+        let key = durable_store::StorageKey::document("so.tilo.test", "workspace", "note");
+        let owner = std::rc::Rc::new(
+            app_state::DocOwner::acquire(std::rc::Rc::clone(&store), key.clone()).unwrap(),
+        );
+        let mut app = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Text::new("body")),
+        )
+        .with_autosave(app_state::DocWriter::try_start(&owner).unwrap());
+        app.state.doc.put(automerge::ROOT, "body", "kept").unwrap();
+        let path = store.local_path(&key).unwrap();
+        std::fs::create_dir_all(&path).unwrap();
+
+        let stopping = std::sync::Arc::new(AtomicBool::new(false));
+        let handed_over = std::sync::Arc::new(AtomicBool::new(false));
+        let resumed = std::sync::Arc::new(AtomicBool::new(false));
+        app.collaboration.manager =
+            crate::collaboration::CollaborationManager::with_transport(Box::new(Invocations {
+                stopping: stopping.clone(),
+                handed_over: handed_over.clone(),
+                answered: std::sync::Arc::default(),
+                resumed: resumed.clone(),
+            }));
+        // The broker holds nothing more for this window: stopping ends its invocations.
+        handed_over.store(true, SeqCst);
+
+        {
+            let _loop = forbid_strictly_on_this_thread();
+            assert!(!app.admit_native_close_request());
+        }
+        assert!(stopping.load(SeqCst), "the close stops the invocations");
+        let _ = store.flush(None);
+        {
+            let _loop = forbid_strictly_on_this_thread();
+            app.service_close_admission();
+            assert!(
+                !app.finish_close_if_ready(),
+                "a refused write keeps the window"
+            );
+        }
+        assert!(app.close_admission.dialog.is_some(), "the refusal asks");
+
+        {
+            let _loop = forbid_strictly_on_this_thread();
+            close_choice(&mut app, Choice::KeepEditing);
+        }
+        assert!(resumed.load(SeqCst), "Keep Editing takes invocations again");
+        assert!(
+            !app.collaboration.manager.invocations_stopped(),
+            "the window answers what reaches it"
+        );
+
+        // The disk is fixed and the window's own save succeeds: nothing closes.
+        std::fs::remove_dir(&path).unwrap();
+        {
+            let _loop = forbid_strictly_on_this_thread();
+            app.autosave_flush();
+        }
+        let _ = store.flush(None);
+        {
+            let _loop = forbid_strictly_on_this_thread();
+            app.service_close_admission();
+            assert!(
+                !app.finish_close_if_ready(),
+                "a save after Keep Editing closes nothing"
+            );
+        }
+        assert!(!app.close_admission.admitted);
+        let saved = automerge::AutoCommit::load(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved
+                .get(automerge::ROOT, "body")
+                .unwrap()
+                .unwrap()
+                .0
+                .as_str(),
+            Some("kept"),
+            "the later save went through"
         );
     }
 

@@ -187,21 +187,25 @@ pub enum MusicEffect {
     /// Choose music source
     ///
     /// Opens the source picker without starting sign-in or changing a grant.
+    #[effect(kind = "outside")]
     Sources,
     /// Enable full Spotify library and device controls
     ///
     /// Explicitly requests editing, playlist, followed-artist and remote-device permissions.
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     ConnectSpotifyLibrary,
     /// Connect Spotify
     ///
     /// Requests profile and saved-library read access, without editing or remote control.
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     #[effect(label = "music-connect-spotify")]
     ConnectSpotify,
     /// Authorize Spotify playback
     ///
     /// Separately grants native streaming for the same Premium account.
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     ConnectSpotifyPlayback,
     /// Inspect Spotify account eligibility
@@ -209,33 +213,40 @@ pub enum MusicEffect {
     #[effect(job, returns, idempotent, kind = "read")]
     SpotifyAccountStatus,
     /// Refresh Spotify devices
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     SpotifyDevices,
     /// Show Spotify's remote queue
     ///
     /// Reads a provider snapshot; never replaces this device's queue.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     SpotifyQueue,
     /// Load more Spotify library collections
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     SpotifyLibraryMore,
     /// Name a new private Spotify playlist
+    #[effect(kind = "outside")]
     NewSpotifyPlaylist,
     /// Create private Spotify playlist
     ///
     /// Creates an empty private playlist. Refresh before retrying an uncertain result.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     SpotifyCreatePlaylist {
         #[param("Playlist name")]
         name: String,
     },
     /// Transfer Spotify playback
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     SpotifyTransfer {
         #[param("Spotify Connect device ID")]
         device: String,
     },
     /// Play on a Spotify device
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     SpotifyRemotePlay {
         #[param("Spotify Connect device ID")]
@@ -244,24 +255,28 @@ pub enum MusicEffect {
         track: String,
     },
     /// Pause a Spotify device
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     SpotifyRemotePause {
         #[param("Spotify Connect device ID")]
         device: String,
     },
     /// Save to Spotify library
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     SpotifySave {
         #[param("Spotify track, album, artist or playlist URI")]
         uri: String,
     },
     /// Remove from Spotify library
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     SpotifyUnsave {
         #[param("Spotify track, album, artist or playlist URI")]
         uri: String,
     },
     /// Rename Spotify playlist
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     SpotifyRenamePlaylist {
         #[param("Spotify playlist URI")]
@@ -270,6 +285,7 @@ pub enum MusicEffect {
         name: String,
     },
     /// Add to Spotify playlist
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     SpotifyPlaylistAdd {
         #[param("Spotify playlist URI")]
@@ -280,6 +296,7 @@ pub enum MusicEffect {
     /// Remove from Spotify playlist
     ///
     /// Removes every occurrence of the track from this Spotify playlist.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     SpotifyPlaylistRemove {
         #[param("Spotify playlist URI")]
@@ -290,14 +307,17 @@ pub enum MusicEffect {
     /// Disconnect Spotify
     ///
     /// Forgets the local grant. Revoke Tilo in Spotify account settings to remove provider-side access.
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "music-disconnect-spotify")]
     DisconnectSpotify,
     /// Browse Spotify
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "music-browse-spotify")]
     BrowseSpotify,
     /// Browse `YouTube` Music
+    #[effect(kind = "outside")]
     #[effect(job)]
     BrowseYouTube,
 
@@ -312,6 +332,7 @@ pub enum MusicEffect {
     /// Open audio file
     ///
     /// Plays a local audio file the person chooses on this device.
+    #[effect(kind = "outside")]
     #[effect(attended, job, returns)]
     #[effect(label = "music-open-audio-file")]
     OpenFile,
@@ -336,6 +357,7 @@ pub enum MusicEffect {
     ///
     /// Plays a track on its own, or (with `queued`) this exact occurrence of
     /// it in the queue, which a stale queue result cannot select.
+    #[effect(kind = "outside")]
     #[effect(row, job, returns)]
     #[effect(label = "music-recommendations-play")]
     Play {
@@ -353,62 +375,79 @@ pub enum MusicEffect {
     #[effect(row, edit)]
     ToggleLikePlaying,
     /// Add to queue
+    #[effect(kind = "outside")]
     #[effect(row)]
     AddToQueue { track: String },
     /// Play next
+    #[effect(kind = "outside")]
     #[effect(row, job, returns)]
     PlayNext { track: String },
     /// Keep offline
     ///
     /// Downloads the tracks' media to this device only.
+    #[effect(kind = "outside")]
     #[effect(row, job, cancellable, idempotent, returns)]
     KeepOffline { tracks: Vec<String> },
     /// Remove from offline cache
+    #[effect(kind = "outside")]
     #[effect(row)]
     RemoveOffline { tracks: Vec<String> },
     /// Play or pause
+    #[effect(kind = "outside")]
     #[effect(row, job, returns)]
     PlayPause,
     /// Previous track
+    #[effect(kind = "outside")]
     #[effect(row, job, returns)]
     Previous,
     /// Next queued track
+    #[effect(kind = "outside")]
     #[effect(row, job, returns)]
     Next,
     /// Toggle mute
+    #[effect(kind = "outside")]
     #[effect(row)]
     ToggleMute,
     /// Toggle shuffle
+    #[effect(kind = "outside")]
     #[effect(row)]
     ToggleShuffle,
     /// Change repeat mode
+    #[effect(kind = "outside")]
     #[effect(row)]
     CycleRepeat,
     /// Remove from queue
+    #[effect(kind = "outside")]
     #[effect(row, destructive)]
     Remove { index: usize, track: String },
     /// Move queue item up
+    #[effect(kind = "outside")]
     #[effect(row)]
     MoveUp { index: usize, track: String },
     /// Move queue item down
+    #[effect(kind = "outside")]
     #[effect(row)]
     MoveDown { index: usize, track: String },
     /// Seek playback
+    #[effect(kind = "outside")]
     Seek {
         #[param("absolute playback position in milliseconds")]
         position_ms: u64,
     },
     /// Set volume
+    #[effect(kind = "outside")]
     SetVolume {
         #[param("volume from 0 to 100")]
         volume: u8,
     },
     /// Add track to queue
+    #[effect(kind = "outside")]
     QueueAdd {
         #[param("stable music.track resource address")]
         track: String,
     },
     /// Remove track from queue
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     QueueRemove {
         #[param("stable music.track resource address")]

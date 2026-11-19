@@ -803,6 +803,7 @@ fn a_typed_pairing_pin_is_masked() {
 #[effect(operation = "so.tilo.portal.consent", catalogue = "tests/locales")]
 enum Consent {
     /// Forget what the app was allowed
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Forget,
 }

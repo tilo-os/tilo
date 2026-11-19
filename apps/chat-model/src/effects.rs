@@ -50,6 +50,7 @@ pub fn item_views(field: &str, _item: &tilo_resource::Id) -> Vec<ResourceViewSpe
 #[effect(operation = "chat.effects")]
 pub enum ChatEffect {
     /// Ask the device's model about the latest message.
+    #[effect(kind = "outside")]
     #[effect(row, returns, item = channels)]
     ModelControl {
         channel: String,
@@ -103,6 +104,7 @@ pub enum ChatEffect {
     #[effect(view, audience = "agents", presence)]
     OpenDirectConversation { public_key: String },
     /// Send to the direct conversation with a certified person public key.
+    #[effect(kind = "outside")]
     #[effect(job, returns, audience = "agents")]
     SendDirectMessage { public_key: String, text: String },
     /// Send a message
@@ -148,6 +150,7 @@ pub enum ChatEffect {
     /// this device's attachment store and the message carries them by
     /// reference. Without a path, the conversation opens and the system's
     /// file chooser asks which files.
+    #[effect(kind = "outside")]
     AttachFile {
         #[param("Id of the conversation")]
         channel: String,
@@ -159,18 +162,23 @@ pub enum ChatEffect {
     /// Share live Chat context
     ///
     /// Opt in to publishing the open conversation, thread and scroll position.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     ShareLiveContext,
     /// Stop sharing live Chat context
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     StopSharingLiveContext,
     /// Live context status
+    #[effect(kind = "outside")]
     #[effect(idempotent, returns, audience = "agents")]
     LiveContextStatus,
     /// Open Slack channel in browser
+    #[effect(kind = "outside")]
     #[effect(job)]
     OpenSlackChannel { workspace: String, channel: String },
     /// Open Discord channel in browser
+    #[effect(kind = "outside")]
     #[effect(job)]
     OpenDiscordChannel { server: String, channel: String },
     /// Join call

@@ -2005,6 +2005,36 @@ fn discover_bound_resources_with_filter(
     Ok(snapshots)
 }
 
+/// What a call of `address` that no component offers its caller is told: `permission_denied`,
+/// saying why, where a component of `instance` publishes the action and the permissions there keep
+/// it from them, as the workspace's own API says it; [`tilo_actions::ApiError::Unknown`] where
+/// nothing publishes it.
+pub(crate) fn unoffered(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    address: &tilo_actions::ActionAddress,
+    instance: crate::application::InstanceId,
+) -> tilo_actions::ApiError {
+    let published = discover_bound_resources_with_filter(widget, doc, Some(address), false)
+        .ok()
+        .and_then(|snapshots| {
+            snapshots
+                .iter()
+                .filter(|snapshot| snapshot.binding.instance_id == instance)
+                .find_map(|snapshot| {
+                    tilo_actions::api::resolve(snapshot.resources(), address)
+                        .map(|spec| spec.label.to_lowercase())
+                })
+        });
+    match published {
+        Some(label) => tilo_actions::ApiError::Unavailable {
+            code: "permission_denied".into(),
+            reason: format!("your permissions in this workspace don't let you {label} here"),
+        },
+        None => tilo_actions::ApiError::Unknown(address.clone()),
+    }
+}
+
 pub(crate) fn select_bound_target(
     snapshots: &[BoundResourceSnapshot],
     address: &tilo_actions::ActionAddress,

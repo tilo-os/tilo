@@ -55,9 +55,11 @@ crate::effects::effect_family!(PersonModelsEffect => answer_models);
 pub enum PersonSettingsEffect {
     /// Add the mail account the form names, once the host's sign-in check
     /// passed.
+    #[effect(kind = "outside")]
     #[effect(job)]
     AddMailAccount,
     /// Remove a mail account and the secret kept with it.
+    #[effect(kind = "outside")]
     #[effect(job, destructive)]
     RemoveMailAccount {
         #[param("The account's id, as the list names it")]

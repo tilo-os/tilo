@@ -1364,6 +1364,20 @@ impl CollaborationManager {
         }
     }
 
+    /// Take invocations again after [`Self::stop_invocations`]: what earlier
+    /// asked this window to stop and answered yes takes it back. Nothing
+    /// reaches a connection without a transport either way.
+    ///
+    /// # Errors
+    ///
+    /// The transport is closed.
+    pub fn resume_invocations(&mut self) -> Result<(), TransportError> {
+        match &mut self.backend {
+            Backend::Disabled(_) => Ok(()),
+            Backend::Transport(transport) => transport.resume_invocations(),
+        }
+    }
+
     /// Ask the transport for a completion receipt covering every document
     /// mutation submitted before this call. The receipt reports that the
     /// transport finished publishing them, not that peers applied them.

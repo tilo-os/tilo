@@ -831,4 +831,48 @@ mod tests {
             "what the view draws is said through the window: {names:?}"
         );
     }
+
+    /// A view shown alone is all its window shows. A program that mounts Chat in a message's
+    /// place for its view (a person's app, in the conversation it keeps itself) gets the view
+    /// and nothing of Chat's window around it: Chat declares no parts for the window's bar and
+    /// asks its shell for the one thing alone, so no sidebar stands beside the view. A
+    /// conversation shown again brings both back.
+    #[test]
+    fn a_view_shown_alone_has_nothing_of_chats_window_around_it() {
+        views_are_shown();
+        let mut workspace = crate::testing::demo_doc();
+        let message = posted(&mut workspace);
+        let shell = ui::widget::NavShell::new().with_window_toolbar();
+        let bar = shell.window_bar_link();
+        let mut app = window(&workspace, aria()).in_shell(&ui::widget::NavFeed::new(), bar.clone());
+        Widget::sync(&mut app, &workspace.chat, &ROOT);
+        assert!(
+            ui::window_toolbar::declared().is_some(),
+            "a conversation's window declares its parts for the bar"
+        );
+        assert!(!bar.shows_content_alone());
+
+        app.answer_effect(ChatEffect::ShowView { message })
+            .expect("the view is shown alone");
+        Widget::sync(&mut app, &workspace.chat, &ROOT);
+        assert!(
+            ui::window_toolbar::declared().is_none(),
+            "nothing of Chat stands in the bar over a view shown alone"
+        );
+        assert!(
+            bar.shows_content_alone(),
+            "the shell is asked for the view alone: no sidebar beside it"
+        );
+
+        app.answer_effect(ChatEffect::OpenChannel {
+            channel: GENERAL.to_owned(),
+        })
+        .expect("the conversation is shown again");
+        Widget::sync(&mut app, &workspace.chat, &ROOT);
+        assert!(
+            ui::window_toolbar::declared().is_some(),
+            "the conversation's parts stand in the bar again"
+        );
+        assert!(!bar.shows_content_alone());
+    }
 }
