@@ -154,3 +154,4 @@ passwords-vault = Password vault
 
 ## What the app is called in a window and in the launcher
 passwords-app-title = Passwords
+passwords-effect-toggle-favorite = Toggle favorite

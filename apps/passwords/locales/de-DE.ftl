@@ -154,3 +154,4 @@ passwords-vault = Passwort-Tresor
 
 ## What the app is called in a window and in the launcher
 passwords-app-title = Passwörter
+passwords-effect-toggle-favorite = Favorit umschalten

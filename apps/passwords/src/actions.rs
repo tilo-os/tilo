@@ -1,27 +1,88 @@
-//! What Passwords does with the vault, as a typed effect vocabulary, and the live rows it
+//! What Passwords does with the vault, as a typed effect vocabulary, and the rows it
 //! publishes for the vault's items. The vault is this device's encrypted credential store
 //! ([`accounts::SecretStore`]), never a document: every change to it is an effect the
-//! surface answers.
+//! surface answers, and every row is an item of a declared type that offers that type's
+//! effects, bound to the item.
 
 use accounts::{SecretItem, SecretItemKind};
 use ui::framework::LiveRow;
 use ui::tilo_actions::ActionBinding;
-use ui::tilo_resource::{self, Effect};
+use ui::tilo_resource;
 
 pub const ITEM_PREFIX: &str = "passwords:item:";
+
+/// A saved login: an item row of its kind, whose effects are
+/// [`PasswordsEffect`]'s.
+#[derive(tilo_resource::Row)]
+#[row(kind = "passwords.login", label = "Login", effects = PasswordsEffect)]
+pub struct Login;
+
+/// A saved API key.
+#[derive(tilo_resource::Row)]
+#[row(kind = "passwords.api-key", label = "API key", effects = PasswordsEffect)]
+pub struct ApiKey;
+
+/// A saved secure note.
+#[derive(tilo_resource::Row)]
+#[row(kind = "passwords.note", label = "Secure note", effects = PasswordsEffect)]
+pub struct SecureNote;
+
+/// A saved Wi-Fi password.
+#[derive(tilo_resource::Row)]
+#[row(kind = "passwords.wifi", label = "Wi-Fi network", effects = PasswordsEffect)]
+pub struct WifiNetwork;
+
+/// A saved secret of any other kind.
+#[derive(tilo_resource::Row)]
+#[row(kind = "passwords.secret", label = "Secret", effects = PasswordsEffect)]
+pub struct Secret;
+
+/// An app's request for one vault item, which the person allows or declines.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "passwords.credential-request",
+    label = "Credential request",
+    effects = PasswordsEffect
+)]
+pub struct CredentialRequest;
+
+/// One app's permission to an item until the person revokes it.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "passwords.credential-permission",
+    label = "Credential permission",
+    effects = PasswordsEffect
+)]
+pub struct CredentialPermission;
 
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "passwords.effect")]
 pub enum PasswordsEffect {
     #[effect(view, idempotent, kind = "read", label = "passwords-show-access")]
     ShowAccess,
-    #[effect(kind = "outside")]
+    #[effect(
+        kind = "outside",
+        on = CredentialPermission
+    )]
     #[effect(destructive, idempotent, label = "passwords-revoke-access")]
     RevokeAccess { grant: String },
     #[effect(kind = "outside")]
     #[effect(attended, privileged, label = "passwords-approve-access")]
     ApproveAccess { proposal: String, lifetime: String },
-    #[effect(idempotent, attended, kind = "read", label = "passwords-deny-access")]
+    /// Allow the requesting app this session, as the request's row offers it.
+    #[effect(
+        kind = "outside",
+        on = CredentialRequest
+    )]
+    #[effect(attended, privileged, label = "passwords-approve-access")]
+    ApproveForSession { proposal: String },
+    #[effect(
+        idempotent,
+        attended,
+        kind = "read",
+        on = CredentialRequest
+    )]
+    #[effect(label = "passwords-deny-access")]
     DenyAccess { proposal: String },
     #[effect(screen)]
     Add,
@@ -45,14 +106,43 @@ pub enum PasswordsEffect {
     Cancel,
     #[effect(kind = "outside")]
     Generate,
-    #[effect(kind = "outside")]
+    #[effect(row, screen, on = Login, on = ApiKey, on = SecureNote, on = WifiNetwork, on = Secret)]
+    Open {
+        #[param("Opaque id of the vault item")]
+        item: String,
+    },
+    /// Adds the item to the person's favorites, or takes it out: an item's row offers
+    /// whichever this item is not.
+    #[effect(
+        kind = "outside",
+        idempotent,
+        on = Login,
+        on = ApiKey,
+        on = SecureNote,
+        on = WifiNetwork,
+        on = Secret
+    )]
+    ToggleFavorite {
+        #[param("Opaque id of the vault item")]
+        item: String,
+    },
+    #[effect(kind = "outside", on = Login, on = ApiKey, on = SecureNote, on = WifiNetwork, on = Secret)]
     Edit {
         #[param("Opaque id of the vault item")]
         item: String,
     },
     /// Copies the item's password, key or note to the clipboard, which clears after 30
     /// seconds.
-    #[effect(attended, privileged, kind = "read")]
+    #[effect(
+        attended,
+        privileged,
+        kind = "read",
+        on = Login,
+        on = ApiKey,
+        on = SecureNote,
+        on = WifiNetwork,
+        on = Secret
+    )]
     Copy {
         #[param("Opaque id of the vault item")]
         item: String,
@@ -72,7 +162,16 @@ pub enum PasswordsEffect {
         item: String,
     },
     /// Reveal secret for 10 seconds.
-    #[effect(attended, privileged, kind = "read")]
+    #[effect(
+        attended,
+        privileged,
+        kind = "read",
+        on = Login,
+        on = ApiKey,
+        on = SecureNote,
+        on = WifiNetwork,
+        on = Secret
+    )]
     Reveal {
         #[param("Opaque id of the vault item")]
         item: String,
@@ -82,7 +181,14 @@ pub enum PasswordsEffect {
         #[param("Opaque id of the vault item")]
         item: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(
+        kind = "outside",
+        on = Login,
+        on = ApiKey,
+        on = SecureNote,
+        on = WifiNetwork,
+        on = Secret
+    )]
     #[effect(destructive)]
     Delete {
         #[param("Opaque id of the vault item")]
@@ -107,46 +213,38 @@ pub enum PasswordsEffect {
         #[param("all | favorites | login | api-key | note | wifi | other")]
         filter: String,
     },
-    #[effect(row, screen)]
-    Open {
-        #[param("Opaque id of the vault item")]
-        item: String,
-    },
 }
 
 pub(crate) const GRANT_PREFIX: &str = "passwords:grant:";
 pub(crate) const PROPOSAL_PREFIX: &str = "passwords:request:";
+
+/// The item `value` names, whether it is the row's published id or the
+/// vault's own.
+pub(crate) fn item_of(value: &str) -> &str {
+    value.strip_prefix(ITEM_PREFIX).unwrap_or(value)
+}
+
+/// The request `value` names, as a row's id or the request's own.
+pub(crate) fn proposal_of(value: &str) -> &str {
+    value.strip_prefix(PROPOSAL_PREFIX).unwrap_or(value)
+}
+
+/// The permission `value` names, as a row's id or the grant's own.
+pub(crate) fn grant_of(value: &str) -> &str {
+    value.strip_prefix(GRANT_PREFIX).unwrap_or(value)
+}
+
 pub(crate) fn proposal_row(proposal: &accounts::CredentialProposal) -> LiveRow {
-    LiveRow::new(
+    LiveRow::typed::<CredentialRequest>(
         format!("{PROPOSAL_PREFIX}{}", proposal.id),
-        "passwords.credential-request",
         crate::CATALOG.t("passwords-credential-request"),
     )
-    .operation(
-        PasswordsEffect::ApproveAccess {
-            proposal: proposal.id.clone(),
-            lifetime: "session".into(),
-        }
-        .bound(),
-    )
-    .operation(
-        PasswordsEffect::DenyAccess {
-            proposal: proposal.id.clone(),
-        }
-        .bound(),
-    )
 }
+
 pub(crate) fn grant_row(grant: &accounts::CredentialGrant) -> LiveRow {
-    LiveRow::new(
+    LiveRow::typed::<CredentialPermission>(
         format!("{GRANT_PREFIX}{}", grant.id()),
-        "passwords.credential-permission",
         crate::CATALOG.t("passwords-credential-permission"),
-    )
-    .operation(
-        PasswordsEffect::RevokeAccess {
-            grant: grant.id().into(),
-        }
-        .bound(),
     )
 }
 
@@ -154,63 +252,37 @@ pub fn item_resource_id(id: &str) -> String {
     format!("{ITEM_PREFIX}{id}")
 }
 
+/// How an item of `kind` names copying its secret and revealing it for a
+/// while, which its row offers labelled.
+pub(crate) fn copy_label(kind: SecretItemKind) -> &'static str {
+    match kind {
+        SecretItemKind::Login => "Copy password",
+        SecretItemKind::ApiKey => "Copy API key",
+        SecretItemKind::SecureNote => "Copy note",
+        SecretItemKind::Wifi => "Copy Wi-Fi password",
+        SecretItemKind::Other => "Copy secret",
+    }
+}
+
+/// How an item of `kind` names revealing its secret for ten seconds.
+pub(crate) fn reveal_label(kind: SecretItemKind) -> &'static str {
+    match kind {
+        SecretItemKind::Login | SecretItemKind::Wifi => "Reveal password for 10 seconds",
+        SecretItemKind::ApiKey => "Reveal API key for 10 seconds",
+        SecretItemKind::SecureNote => "Reveal note for 10 seconds",
+        SecretItemKind::Other => "Reveal secret for 10 seconds",
+    }
+}
+
 pub fn item_row(item: &SecretItem) -> LiveRow {
-    let id = item.id.0.clone();
-    let (kind, name, copy, reveal) = match item.kind {
-        SecretItemKind::Login => (
-            "passwords.login",
-            "Saved login",
-            "Copy password",
-            "Reveal password for 10 seconds",
-        ),
-        SecretItemKind::ApiKey => (
-            "passwords.api-key",
-            "Saved API key",
-            "Copy API key",
-            "Reveal API key for 10 seconds",
-        ),
-        SecretItemKind::SecureNote => (
-            "passwords.note",
-            "Saved secure note",
-            "Copy note",
-            "Reveal note for 10 seconds",
-        ),
-        SecretItemKind::Wifi => (
-            "passwords.wifi",
-            "Saved Wi-Fi password",
-            "Copy Wi-Fi password",
-            "Reveal password for 10 seconds",
-        ),
-        SecretItemKind::Other => (
-            "passwords.secret",
-            "Saved secret",
-            "Copy secret",
-            "Reveal secret for 10 seconds",
-        ),
-    };
-    let mut copy_spec = PasswordsEffect::Copy { item: id.clone() }.bound();
-    copy.clone_into(&mut copy_spec.type_mut().label);
-    let mut reveal_spec = PasswordsEffect::Reveal { item: id.clone() }.bound();
-    reveal.clone_into(&mut reveal_spec.type_mut().label);
-    let favorite = crate::vault::is_favorite(item);
-    let mut favorite_spec = PasswordsEffect::Favorite {
-        item: id.clone(),
-        favorite: !favorite,
+    let id = item_resource_id(&item.id.0);
+    match item.kind {
+        SecretItemKind::Login => LiveRow::typed::<Login>(id, "Saved login"),
+        SecretItemKind::ApiKey => LiveRow::typed::<ApiKey>(id, "Saved API key"),
+        SecretItemKind::SecureNote => LiveRow::typed::<SecureNote>(id, "Saved secure note"),
+        SecretItemKind::Wifi => LiveRow::typed::<WifiNetwork>(id, "Saved Wi-Fi password"),
+        SecretItemKind::Other => LiveRow::typed::<Secret>(id, "Saved secret"),
     }
-    .bound();
-    if favorite {
-        "Remove from favorites"
-    } else {
-        "Add to favorites"
-    }
-    .clone_into(&mut favorite_spec.type_mut().label);
-    LiveRow::new(item_resource_id(&id), kind, name)
-        .operation(PasswordsEffect::Open { item: id.clone() }.bound())
-        .operation(favorite_spec)
-        .operation(PasswordsEffect::Edit { item: id.clone() }.bound())
-        .operation(copy_spec)
-        .operation(reveal_spec)
-        .operation(PasswordsEffect::Delete { item: id }.bound())
 }
 
 /// A control's binding to `action` of the item's published row ([`item_row`]): pressing it
@@ -250,9 +322,21 @@ mod tests {
         let ids: Vec<&str> = resource.actions.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(
             ids,
-            ["open", "favorite", "edit", "copy", "reveal", "delete"]
+            [
+                "open",
+                "toggle-favorite",
+                "edit",
+                "copy",
+                "reveal",
+                "delete"
+            ]
         );
-        assert!(public.contains("Reveal password"));
+        assert!(public.contains("Reveal secret"));
+        assert_eq!(
+            reveal_label(item.kind),
+            "Reveal password for 10 seconds",
+            "the row says what a login's secret is"
+        );
         let delete = resource.actions.iter().find(|a| a.id == "delete").unwrap();
         assert_eq!(
             delete.contract.risk,

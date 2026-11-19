@@ -68,7 +68,6 @@ row-operation 8 apps/maps/src/app/window.rs
 row-operation 16 apps/music/src/actions.rs
 row-operation 12 apps/music/src/app.rs
 row-operation 17 apps/osk/src/actions.rs
-row-operation 9 apps/passwords/src/actions.rs
 row-operation 2 apps/pdf-viewer/src/actions.rs
 row-operation 1 apps/photos/src/app.rs
 row-operation 2 apps/print-centre/src/surface.rs
@@ -132,7 +131,6 @@ untyped-live-row 5 apps/maps/src/app/window.rs
 untyped-live-row 9 apps/music/src/actions.rs
 untyped-live-row 2 apps/music/src/app.rs
 untyped-live-row 6 apps/osk/src/actions.rs
-untyped-live-row 3 apps/passwords/src/actions.rs
 untyped-live-row 3 apps/pdf-viewer/src/actions.rs
 untyped-live-row 2 apps/photos/src/app.rs
 untyped-live-row 4 apps/print-centre/src/surface.rs
