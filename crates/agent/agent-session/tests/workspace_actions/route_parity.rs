@@ -434,6 +434,7 @@ fn claimed_run() -> tilo_actions::ActionContext {
             label: Some("Not me".into()),
             kind: tilo_actions::context::AGENT_SESSION_GROUP.into(),
             declared_id: None,
+            session: None,
         }),
         ..tilo_actions::ActionContext::default()
     }

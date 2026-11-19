@@ -858,6 +858,7 @@ fn in_run(
     if let Some(run) = run {
         context.group = Some(tilo_actions::WorkGroup {
             declared_id: None,
+            session: None,
             ..run.clone()
         });
     }

@@ -3,9 +3,11 @@
 //! `tilo` command and the API serve it without the app toolkit.
 
 pub mod agent_tools;
+
 pub mod devices;
 mod images;
 pub mod lines;
+mod session;
 pub mod session_api;
 pub mod task_hosts;
 #[cfg(any(test, feature = "test-support"))]
@@ -73,23 +75,7 @@ pub type Observation = std::sync::Arc<
 /// a place offering no read of its own.
 type SweptRead = Option<(String, tilo_actions::ActionDescriptor)>;
 
-/// What a connection's invocations are attributed to.
-enum Session {
-    /// A session this connection named, labelled as the caller the provider
-    /// admitted it as says ([`Caller::session_group`]).
-    Named(String),
-    /// A group a host gave the connection, kept as it gave it.
-    Given(tilo_actions::WorkGroup),
-}
-
-impl Session {
-    fn group(&self, caller: &Caller) -> tilo_actions::WorkGroup {
-        match self {
-            Self::Named(id) => caller.session_group(id.clone()),
-            Self::Given(group) => group.clone(),
-        }
-    }
-}
+pub(crate) use session::Session;
 
 /// One MCP session. Its requests are answered through `&self`, so a client
 /// may overlap them: a `tilo_status`, reading or cancelling, answers while a
@@ -1255,7 +1241,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Attribute every invocation of this connection to one agent session, so
     /// history, undo and activity tell concurrent agents apart. The session is
     /// labelled as its caller is, and a client that names its session in
-    /// `initialize` ([`SURFACE_SESSION_NAME`]) settles the label then.
+    /// `initialize` (the session-name it sends) settles the label then.
     /// Provenance only: authority stays the profile actor's.
     #[must_use]
     pub fn with_agent_session(mut self, id: impl Into<String>) -> Self {
@@ -1486,28 +1472,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 *session = Some(Session::Named(id));
             }
         }
-        // The session the client says it is ("Office Hours"), as its own harness names it: what
-        // the workspace shows the agent by, in place of its product's name. A name, never
-        // authority.
-        let named: Option<String> = params
-            .pointer(SURFACE_SESSION_NAME)
-            .and_then(Value::as_str)
-            .map(|name| {
-                name.trim()
-                    .chars()
-                    .filter(|character| !character.is_control())
-                    .take(MAX_SESSION_NAME)
-                    .collect::<String>()
-            })
-            .filter(|name| !name.is_empty());
-        if let Some(named) = named {
-            let mut held = self.agent_session.lock_recover();
-            let group = held.as_ref().map(|session| session.group(&self.caller));
-            if let Some(mut group) = group {
-                group.label = Some(named);
-                *held = Some(Session::Given(group));
-            }
-        }
+        session::name_from_initialize(&self.caller, &mut self.agent_session.lock_recover(), params);
         let session = self.session_id();
         let mut server = json!({"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")});
         // The agent this session is (a server connection's task agent), so it
@@ -2849,12 +2814,6 @@ const SURFACE_DETAIL: &str = "/capabilities/experimental/so.tilo.mcp/detail";
 /// Provenance only: it names whose steps `undo` takes back, never what the
 /// connection may do.
 const SURFACE_SESSION: &str = "/capabilities/experimental/so.tilo.mcp/session";
-/// The session the client says it is: `{"so.tilo": {"session-name": "Office Hours"}}`, as
-/// `tilo mcp` writes what its agent's harness names the session. Display only: what the workspace
-/// shows the agent by, never what the connection may do.
-const SURFACE_SESSION_NAME: &str = "/capabilities/experimental/so.tilo/session-name";
-/// The most characters of a session name a client may say.
-const MAX_SESSION_NAME: usize = 64;
 /// The longest session id a client may name.
 const MAX_SESSION_ID: usize = 96;
 

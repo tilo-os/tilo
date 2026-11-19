@@ -1944,6 +1944,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
                 label: None,
                 kind: ui_core::history_source::steps::AGENT_SESSION.to_owned(),
                 declared_id: None,
+                session: None,
             }),
             ..tilo_actions::ActionContext::default()
         };

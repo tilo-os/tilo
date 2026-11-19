@@ -55,6 +55,7 @@ impl tilo_api::session::Here for Desktop {
                     label: Some(label.to_owned()),
                     kind: "api".into(),
                     declared_id: None,
+                    session: None,
                 })
                 .with_task_hosts(Some(person_tasks(&self.services))),
         ))
