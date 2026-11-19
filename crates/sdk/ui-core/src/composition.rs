@@ -846,6 +846,14 @@ impl Composed {
             version: hash.finish(),
         });
     }
+
+    /// [`Self::painted`], at the version `what` it shows names: drawn again when that changes.
+    pub fn painted_of(&mut self, what: &impl std::hash::Hash) {
+        use std::hash::Hasher;
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        what.hash(&mut hash);
+        self.painted(hash.finish());
+    }
 }
 
 /// `widget`, laid out and drawn, composed alone at `path` as a host would compose it in its window,

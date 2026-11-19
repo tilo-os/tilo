@@ -379,3 +379,81 @@ fn a_button_on_a_card_wears_the_cards_on_ground_colours() {
         "on the card it takes the card's colours"
     );
 }
+
+/// Your own lines read together in one minute say "Read" and their time once, under the last.
+#[test]
+fn a_conversation_says_read_once_under_lines_read_together() {
+    use crate::widget::conversation::{ConversationLine, DeliveryState};
+    let at = 1_700_000_000_000;
+    let lines = ["One.", "Two.", "Three."]
+        .into_iter()
+        .enumerate()
+        .map(|(n, body)| {
+            ConversationLine::outgoing(
+                format!("{n}"),
+                at + 1_000 * i64::try_from(n).unwrap_or(0),
+                body,
+            )
+            .with_delivery(DeliveryState::Read)
+        })
+        .collect();
+    let conversation = crate::widget::conversation::ConversationList::new(lines);
+    let composition = composed(Box::new(conversation), (500, 400));
+    let captions: Vec<&Composed> = nodes(&composition.root)
+        .into_iter()
+        .filter(|node| node.widget == "ConversationCaption")
+        .collect();
+    assert_eq!(captions.len(), 1, "one caption for the group: {captions:?}");
+    let said = captions[0]
+        .semantics
+        .as_ref()
+        .and_then(|node| node.name.clone())
+        .unwrap_or_default();
+    assert!(
+        said.starts_with("Read"),
+        "it says the state, then the time: {said}"
+    );
+}
+
+/// A change stands on one line as the canvas draws it: its sentence, and its time at the
+/// trailing edge beside it; a change nobody is named for wears no face.
+#[test]
+fn a_history_change_composes_on_one_line_with_its_time_beside_it() {
+    use crate::widget::history::{EntryKind, HistoryAuthor, HistoryEntry, HistoryEntryId};
+    let entry = HistoryEntry {
+        id: HistoryEntryId([1; 16]),
+        author: HistoryAuthor::new("", 0.0, ""),
+        entry_kind: EntryKind::Details,
+        artifact_kind: collab_types::ArtifactKind::Note,
+        timestamp: crate::time::SystemTime::UNIX_EPOCH,
+        summary: "Moved to Done".into(),
+        text_delta: None,
+        diff_payload: None,
+        redaction: None,
+        context: None,
+        target: None,
+    };
+    let timeline = crate::widget::ActivityTimeline::with_entries(vec![entry]);
+    let composition = composed(Box::new(timeline), (600, 300));
+    let all = nodes(&composition.root);
+    let part = |key: &str| {
+        all.iter()
+            .copied()
+            .find(|node| node.path.ends_with(key))
+            .unwrap_or_else(|| panic!("a {key} part: {all:?}"))
+    };
+    let (body, time) = (part("#body"), part("#time"));
+    assert_eq!(words(body).as_deref(), Some("Moved to Done"));
+    assert!(
+        time.rect[0] >= body.rect[0] + body.rect[2] - 0.5,
+        "the time stands after the sentence"
+    );
+    assert!(
+        (body.rect[1] - time.rect[1]).abs() < 0.5,
+        "on the same line: {body:?} {time:?}"
+    );
+    assert!(
+        !all.iter().any(|node| node.widget == "ActivityAuthor"),
+        "no face for nobody"
+    );
+}

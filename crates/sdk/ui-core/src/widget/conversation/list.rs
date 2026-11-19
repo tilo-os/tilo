@@ -1011,7 +1011,7 @@ impl Widget for ConversationList {
                         Rect::new(self.rect.x0, y0, self.rect.x1, y1),
                     );
                     part.tag = Some("li");
-                    part.painted(hash_of(label));
+                    part.painted_of(label);
                     part.semantics = Some(
                         crate::a11y::AccessNode::new(crate::a11y::Role::Heading { level: 3 })
                             .with_name(label.clone()),
@@ -1086,7 +1086,7 @@ impl Widget for ConversationList {
                         spoken.push(ConversationClock::local().clock(seconds(line.at_ms)));
                     }
                     let part = item.part("caption", "ConversationCaption", *caption_rect);
-                    part.painted(hash_of(&spoken));
+                    part.painted_of(&spoken);
                     part.semantics = Some(
                         crate::a11y::AccessNode::new(crate::a11y::Role::StaticText)
                             .with_name(spoken.join(", ")),
@@ -1259,12 +1259,4 @@ mod geometry_tests {
         }
         assert_eq!(checked, 2);
     }
-}
-
-/// A version for a picture showing `what`.
-fn hash_of(what: &impl std::hash::Hash) -> u64 {
-    use std::hash::Hasher;
-    let mut hash = std::collections::hash_map::DefaultHasher::new();
-    what.hash(&mut hash);
-    hash.finish()
 }
