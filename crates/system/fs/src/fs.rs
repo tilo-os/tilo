@@ -1087,9 +1087,10 @@ impl QuickFS {
         stage.lock().set_len(new_size)?;
         self.fill_stage(&stage)?;
         let mut guard = stage.lock();
+        let workspace = guard.workspace();
         let committed = guard
             .source()
-            .and_then(|source| self.commit_version_at(ino, source, now_ms(), None));
+            .and_then(|source| self.commit_version_at(ino, source, now_ms(), None, workspace));
         drop(guard);
         committed
     }
@@ -1107,8 +1108,9 @@ impl QuickFS {
         };
         let digest = stage.digest().map_err(|_| EIO)?;
         let copy_name = unsaved_copy_name_for(name.as_bytes(), &digest);
+        let workspace = stage.workspace();
         let source = stage.source().map_err(|_| EIO)?;
-        self.create_preserved_copy(parent, &copy_name, source)
+        self.create_preserved_copy(parent, &copy_name, source, workspace)
     }
 
     fn create_preserved_copy(
@@ -1116,6 +1118,7 @@ impl QuickFS {
         parent: u64,
         copy_name: &[u8],
         source: VersionSource<'_>,
+        workspace: Option<collab_types::WorkspaceId>,
     ) -> Result<String, i32> {
         self.check_new_name(parent, copy_name)?;
         let existing = self.ns().lookup(parent, copy_name).map(|attr| attr.ino.0);
@@ -1128,7 +1131,7 @@ impl QuickFS {
             self.publish();
             ino
         };
-        self.commit_version_at(ino, source, now_ms(), None)
+        self.commit_version_at(ino, source, now_ms(), None, workspace)
             .map_err(|error| commit_errno(&error))?;
         self.ns().path_for(ino).ok_or(EIO)
     }
@@ -1224,7 +1227,13 @@ impl QuickFS {
                 && self.ns().hash_for(ino) == entry.base()
                 && self.check_access(ino, Access::Write).is_ok()
             {
-                match self.commit_content(ino, &item.bytes) {
+                match self.commit_version_at(
+                    ino,
+                    VersionSource::Bytes(&item.bytes),
+                    now_ms(),
+                    None,
+                    workspace,
+                ) {
                     Ok(()) => {
                         let _ = store.remove(&entry.key);
                         placed = placed.saturating_add(1);
@@ -1258,8 +1267,12 @@ impl QuickFS {
             let (parent, name) = location
                 .unwrap_or_else(|| (crate::namespace::ROOT_INO, entry.key.clone().into_bytes()));
             let copy_name = unsaved_copy_name(&name, &item.bytes);
-            match self.create_preserved_copy(parent, &copy_name, VersionSource::Bytes(&item.bytes))
-            {
+            match self.create_preserved_copy(
+                parent,
+                &copy_name,
+                VersionSource::Bytes(&item.bytes),
+                workspace,
+            ) {
                 Ok(path) => {
                     eprintln!("staged bytes for {label} were restored as {path}");
                     let _ = store.remove(&entry.key);
@@ -1635,10 +1648,11 @@ impl QuickFS {
     /// from its file). Returns the errno the writer should see when the bytes did not become
     /// the file's committed content.
     fn commit_buffer(&self, ino: u64, stage: &mut WriteStage) -> Result<(), i32> {
+        let workspace = stage.workspace();
         Self::commit_retrying(ino, || {
             stage
                 .source()
-                .and_then(|source| self.commit_version_at(ino, source, now_ms(), None))
+                .and_then(|source| self.commit_version_at(ino, source, now_ms(), None, workspace))
         })?;
         self.remember_staged_metadata(ino, stage);
         Ok(())
@@ -3154,7 +3168,13 @@ impl QuickFS {
     }
 
     fn commit_content_at(&self, ino: u64, data: &[u8], mtime_ms: u64) -> io::Result<()> {
-        self.commit_version_at(ino, VersionSource::Bytes(data), mtime_ms, None)
+        self.commit_version_at(
+            ino,
+            VersionSource::Bytes(data),
+            mtime_ms,
+            None,
+            self.inode_workspace(ino),
+        )
     }
 
     /// [`Self::commit_content_at`] with the version's content from `source`, and for a version
@@ -3169,6 +3189,7 @@ impl QuickFS {
         source: VersionSource<'_>,
         mtime_ms: u64,
         fence: Option<crate::namespace::VersionFence>,
+        workspace: Option<collab_types::WorkspaceId>,
     ) -> io::Result<()> {
         #[cfg(test)]
         if let Some((fault_ino, errno)) = *self.commit_fault.lock_recover()
@@ -3176,8 +3197,16 @@ impl QuickFS {
         {
             return Err(io::Error::from_raw_os_error(errno));
         }
-        let previous = self.ns().hash_for(ino);
-        let workspace = self.inode_workspace(ino);
+        let previous = {
+            let ns = self.ns();
+            let actual = ns
+                .path_for(ino)
+                .and_then(|path| self.hydrator.scoped_workspace(&path));
+            if actual != workspace {
+                return Err(io::Error::from_raw_os_error(libc::EXDEV));
+            }
+            ns.hash_for(ino)
+        };
         let (hash, byte_len) = match self.store_version_blocking(source, previous, workspace)? {
             Some((hash, len)) => (Some(hash), len),
             None => (None, 0),

@@ -1308,7 +1308,6 @@ async fn serve(
             hydrator.with_scoped_file_keys(socket, policy.clone(), *reader)
         }
         None if managed_service
-            && backend.backend == BackendChoice::Fuse
             && session_link.is_some()
             && mount_point == Path::new(tilo_paths::WORKSPACE_MOUNT) =>
         {

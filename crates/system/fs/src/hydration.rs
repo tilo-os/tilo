@@ -513,6 +513,7 @@ impl Hydrator {
         priority: Priority,
         workspace: Option<collab_types::WorkspaceId>,
     ) -> Result<Vec<u8>> {
+        self.authorize_scoped_read(workspace)?;
         let manifest = self.manifest_index(manifest_hash).await?;
         let end = offset.saturating_add(size).min(manifest.total_len());
         let start = offset.min(end);
@@ -616,6 +617,7 @@ impl Hydrator {
         size: u64,
         workspace: Option<collab_types::WorkspaceId>,
     ) -> Option<Vec<u8>> {
+        self.authorize_scoped_read(workspace).ok()?;
         let manifest = self.local_manifest_index(manifest_hash).await?;
         let end = offset.saturating_add(size).min(manifest.total_len());
         let start = offset.min(end);

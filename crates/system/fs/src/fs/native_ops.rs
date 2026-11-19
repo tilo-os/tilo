@@ -219,6 +219,7 @@ impl QuickFS {
         let Some((name, parents)) = components.split_last() else {
             return Err(EISDIR);
         };
+        let workspace = self.hydrator.native_workspace(rel);
         let existing = self.ino_at(&components);
         self.admit_as(
             None,
@@ -234,13 +235,17 @@ impl QuickFS {
             Some((ino, FileType::RegularFile)) => ino,
             Some((_, FileType::Directory)) => {
                 self.remove_subtree(parent, name)?;
-                return self.create_local_file(parent, name, source, mtime_ms, attrs, fence);
+                return self
+                    .create_local_file(parent, name, source, mtime_ms, attrs, fence, workspace);
             }
             Some(_) => return Err(libc::EINVAL),
-            None => return self.create_local_file(parent, name, source, mtime_ms, attrs, fence),
+            None => {
+                return self
+                    .create_local_file(parent, name, source, mtime_ms, attrs, fence, workspace);
+            }
         };
         self.set_posix(ino, attrs, false)?;
-        self.commit_version_at(ino, source, mtime_ms, fence)
+        self.commit_version_at(ino, source, mtime_ms, fence, workspace)
             .map_err(|e| to_errno(&e))
     }
 
@@ -254,19 +259,16 @@ impl QuickFS {
         mtime_ms: u64,
         attrs: PosixAttrs,
         fence: Option<VersionFence>,
+        workspace: Option<collab_types::WorkspaceId>,
     ) -> Result<(), i32> {
         if fence.is_some() {
             let ino = self.create_empty_file_stamped(parent, name, mtime_ms)?;
             self.publish();
             self.set_posix(ino, attrs, false)?;
             return self
-                .commit_version_at(ino, source, mtime_ms, fence)
+                .commit_version_at(ino, source, mtime_ms, fence, workspace)
                 .map_err(|e| to_errno(&e));
         }
-        let workspace = self.ns().path_for(parent).and_then(|path| {
-            self.hydrator
-                .scoped_workspace(&super::child_path(&path, name))
-        });
         let (hash, byte_len) = self
             .store_version_blocking(source, None, workspace)
             .map_err(|e| to_errno(&e))?
@@ -362,6 +364,13 @@ impl QuickFS {
             Ok(()) | Err(ENOENT) => Ok(()),
             Err(e) => Err(e),
         }
+    }
+
+    /// Changes to the native mount's filtered view independent of file edits.
+    pub(crate) fn file_policy_revisions(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.enforcement
+            .as_ref()
+            .map(|(policy, _)| policy.subscribe_revision())
     }
 
     /// Every file and directory this mount may read, parents before children. Taken while no changeset

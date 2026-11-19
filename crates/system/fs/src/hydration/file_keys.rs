@@ -144,7 +144,7 @@ pub(super) struct ScopedFileKeys {
 }
 
 impl ScopedFileKeys {
-    fn source(&self, workspace: WorkspaceId, access: Access) -> Result<FileKeys> {
+    fn authorize(&self, workspace: WorkspaceId, access: Access) -> Result<()> {
         let root = tilo_paths::workspace_tree(Path::new("/"), &workspace.to_string())
             .ok_or_else(|| anyhow!("invalid workspace folder"))?;
         ensure!(
@@ -152,6 +152,11 @@ impl ScopedFileKeys {
                 .permits_workspace_tree(&self.reader, &root.to_string_lossy(), access),
             "workspace Files access was refused"
         );
+        Ok(())
+    }
+
+    fn source(&self, workspace: WorkspaceId, access: Access) -> Result<FileKeys> {
+        self.authorize(workspace, access)?;
         Ok(self
             .sources
             .lock_recover()
@@ -228,6 +233,39 @@ impl Hydrator {
         }
         let workspace = components.next()?;
         WorkspaceId::parse(workspace).filter(|id| id.to_string() == workspace)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn has_scoped_file_keys(&self) -> bool {
+        self.scoped_file_keys.is_some()
+    }
+
+    pub(crate) fn native_workspace(&self, relative: &Path) -> Option<WorkspaceId> {
+        use std::path::Component;
+
+        self.scoped_file_keys.as_ref()?;
+        let mut components = relative.components();
+        let Component::Normal(root) = components.next()? else {
+            return None;
+        };
+        let Component::Normal(workspace) = components.next()? else {
+            return None;
+        };
+        if root != tilo_paths::WORKSPACE_TREES_DIR {
+            return None;
+        }
+        let workspace = workspace.to_str()?;
+        WorkspaceId::parse(workspace).filter(|id| id.to_string() == workspace)
+    }
+
+    pub(crate) fn authorize_scoped_read(&self, workspace: Option<WorkspaceId>) -> Result<()> {
+        if let Some(workspace) = workspace {
+            self.scoped_file_keys
+                .as_ref()
+                .ok_or_else(|| anyhow!("this mount has no workspace file policy"))?
+                .authorize(workspace, Access::Read)?;
+        }
+        Ok(())
     }
 
     pub(super) async fn decoder(
@@ -374,6 +412,41 @@ async fn write_sealed_chunks(
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    async fn native_range(
+        hydration: Arc<Hydrator>,
+        hash: Hash,
+        workspace: WorkspaceId,
+        len: u64,
+    ) -> std::io::Result<Vec<u8>> {
+        use std::os::fd::AsFd as _;
+
+        use crate::native::fetch::ContentFetcher;
+        use fs_native::hydrate::{Cancel, Fetcher as _};
+
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            let dir = tempfile::tempdir()?;
+            let relative = Path::new(".workspaces").join(workspace.to_string());
+            let parent = dir.path().join(relative);
+            std::fs::create_dir_all(&parent)?;
+            let path = parent.join("placeholder");
+            let file = std::fs::File::create(&path)?;
+            let fetch = ContentFetcher::new(hydration, runtime, 1)
+                .with_tree(dir.path().to_path_buf(), dir.path().join("mount"));
+            fetch.fill(
+                hash.as_bytes(),
+                0..len,
+                file.as_fd(),
+                false,
+                &Cancel::default(),
+            )?;
+            std::fs::read(path)
+        })
+        .await
+        .unwrap()
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scoped_mounts_open_file_content_only_inside_its_workspace() {
         use crate::acl::WorkspaceAcl;
@@ -479,8 +552,29 @@ mod tests {
         );
         assert!(hydrator.read(hash, 0, len).await.is_err());
 
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(
+                native_range(hydrator.clone(), hash, workspace, len)
+                    .await
+                    .unwrap(),
+                data
+            );
+            assert!(
+                native_range(hydrator.clone(), hash, another, len)
+                    .await
+                    .is_err()
+            );
+        }
+
         policy.replace(acl(false));
         assert!(fs.read_path(&path).is_err());
+        #[cfg(target_os = "linux")]
+        assert!(
+            native_range(hydrator.clone(), hash, workspace, len)
+                .await
+                .is_err()
+        );
         assert!(
             hydrator
                 .read_scoped(hash, 0, len, Some(workspace))
