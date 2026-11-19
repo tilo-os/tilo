@@ -230,3 +230,52 @@ dependency its tapp carries alone (the bundled SQLite, and the SSH client with i
 t's app-sizes-x86_64 run rf7bc66b852 re-measured the x86_64 tapps at 1b82c14d6b8: all of them are
 within their budgets, and each budget is already the smallest 64 KiB step above its measurement
 plus the 1 % headroom, so none falls.
+
+## What the packages' model modules added, 2026-11-18
+
+Every app's package now carries the app's model module, the WebAssembly a device
+holding the workspace's keys applies its actions with (docs/architecture/apps.md). `t test
+app-models` cuts each app's module out of one combined build, and both packs write it into the
+package as `model.wasm`, so the module's own bytes count against the app's budget. A module is
+the app's own model code: 21,846 bytes for Assistant, 138,691 for Api Tester, 509,894 for Chat.
+
+Nothing was linked twice to pay for it. Calendar's named code is 1,594,816 bytes at ce691a3c2e
+against 1,605,089 at 1b82c14d6b8, measured with `tools/perf/tapp_symbol_sizes.py`: its resource
+moved from `calendar` into `calendar_model`, and `jiff` with `tilo_recurrence` replaced `rrule`
+and `chrono`. Its binary grew about 40 KB of `.text`, unwind tables and `.data.rel.ro`; the rest
+of its 536,880-byte payload is its module, its surface and its locales (`apps/calendar/surface.toml`,
+`apps/calendar/locales`).
+
+| app | module | tapp | budget before |
+| --- | --- | --- | --- |
+| chat | 509,894 | 5,205,504 | 4,587,520 |
+| calendar | 499,371 | 3,290,112 | 2,686,976 |
+| api-tester | 138,691 | 1,706,496 | 1,572,864 |
+| maps | 129,067 | 1,730,048 | 1,572,864 |
+| poker | 107,158 | 885,248 | 786,432 |
+| browser | 106,793 | 4,066,304 | 3,932,160 |
+| clocks | 101,405 | 1,656,320 | 1,572,864 |
+| firewall | 98,535 | 1,433,600 | 1,376,256 |
+| diffmerge | 97,556 | 1,272,320 | 1,179,648 |
+| tube | 81,047 | 2,155,008 | 2,097,152 |
+| git-client | 79,982 | 4,099,584 | 4,063,232 |
+| db-client | 65,022 | 4,529,152 | 4,456,448 |
+| calculator | 64,835 | 966,656 | 917,504 |
+| hex-editor | 63,863 | 914,432 | 851,968 |
+| remote | 59,781 | 3,022,848 | 3,014,656 |
+| camera | 51,336 | 1,780,736 | 1,703,936 |
+| disk-usage | 41,105 | 951,808 | 917,504 |
+| containers | 31,632 | 1,488,384 | 1,441,792 |
+| publisher | 30,333 | 867,328 | 851,968 |
+| logs | 28,822 | 932,864 | 917,504 |
+| backups | 26,779 | 1,246,720 | 1,245,184 |
+| print-centre | 25,401 | 1,277,440 | 1,245,184 |
+| assistant | 21,846 | 998,912 | 983,040 |
+| passwords | 21,837 | 1,654,784 | 1,638,400 |
+
+Seven apps over budget keep no model: Imager, Launcher, Store, Terminal, Typst Editor, Video
+Player and Windows gained 2 to 52 KB of their own code. `raises/models-in-packages.toml` carries
+each overage plus the headroom, and `tools/perf/runtime-size-budget/raises/models-in-packages.toml`
+the runtime the modules share, which grew as more of them joined the combined build. The whole
+collection is still inside the fleet's targets: p50 1,686,016 bytes, p90 3,822,592, max
+5,205,504.
