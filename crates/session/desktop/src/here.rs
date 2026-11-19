@@ -18,6 +18,8 @@ use collab_types::{Member, MemberId, PersonId};
 use tilo_desktop_model::{Layout, Present, Status, TabId, TileContent, Workspace};
 use ui::presence::{PresenceCtx, PresenceKey};
 
+use tilo_session_core::presence::Place;
+
 mod agent_work;
 mod following;
 mod screen;
@@ -211,6 +213,26 @@ impl Person {
     pub fn followed_app(&self) -> Option<&str> {
         self.focus_app.as_deref()
     }
+
+    /// Where this person is, as following reads them.
+    #[must_use]
+    pub fn place(&self) -> Place<'_> {
+        Place {
+            id: &self.id,
+            tab: self.tab,
+            app: self.followed_app(),
+        }
+    }
+}
+
+/// The member following `id` follows, as among `people`: `id` is the person's own live publisher or
+/// one of their devices', and following any of them follows the person.
+#[must_use]
+pub fn followed_member(people: &[Person], id: &str) -> Option<MemberId> {
+    people
+        .iter()
+        .find(|person| person.id == id || person.devices.iter().any(|device| device.id == id))
+        .and_then(Person::member_id)
 }
 
 /// What the page told the desktop about the workspace.

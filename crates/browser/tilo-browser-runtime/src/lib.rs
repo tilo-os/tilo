@@ -246,6 +246,13 @@ mod files;
     )
 )]
 mod fixed_chords;
+// Whom the page's person follows reaches the windows' apps; a device proves it too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser page follows anyone")
+)]
+mod follow;
 #[cfg(target_arch = "wasm32")]
 mod frame_metrics;
 #[cfg(target_arch = "wasm32")]

@@ -128,6 +128,16 @@ impl Presence {
         self.set_own(own)
     }
 
+    /// This person follows nobody now: what their own press or the roster's Stop says, and what
+    /// following someone who left ends with. Answers whether their word changed.
+    pub fn stop_following(&self) -> bool {
+        let mut own = self.own();
+        if own.following.take().is_some() {
+            return self.set_own(own);
+        }
+        false
+    }
+
     /// Whether this device's view was asked to follow someone and the gesture carrying the ask is
     /// still in flight: what keeps it from ending the following it began.
     #[must_use]

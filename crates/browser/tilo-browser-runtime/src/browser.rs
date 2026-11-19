@@ -2728,6 +2728,14 @@ impl Mount {
         // Who is here, placed in the windows this frame lays out.
         self.place_here();
         self.place_presence();
+        // Whom this page's person follows, told to the windows' apps as a native shell's apps
+        // hear it: the window of theirs shows where they work.
+        if let Some(desktop) = &self.desktop {
+            crate::follow::tell(
+                &mut desktop.shared.follow_to_tell.borrow_mut(),
+                &mut self.frame,
+            );
+        }
         // A frame whose semantics will be built draws every window: one it
         // replayed instead (a pan frame may) would have to be drawn again
         // before its tree could be read.

@@ -425,6 +425,9 @@ pub(crate) struct Shared {
     pub peer: Option<u32>,
     /// The workspace it shows: whose live session those windows' pages travel.
     pub workspace: String,
+    /// Whom this page's person follows, where the windows' apps have not heard it yet
+    /// ([`crate::follow::Told`]).
+    pub follow_to_tell: RefCell<Option<crate::follow::Told>>,
     /// The workspace's agents, as Chat's agents resource names each: an agent is a member of
     /// the workspace like a person is, so a page names it to its windows whether or not a
     /// device of its works here now. `None` until the code that reads them is in and the

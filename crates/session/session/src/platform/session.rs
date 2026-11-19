@@ -1703,7 +1703,6 @@ impl Session {
             chrome,
             people,
             follow: RefCell::default(),
-            apps_told_following: RefCell::default(),
             fullscreen,
             invitable,
             hide_top_bar,
