@@ -65,8 +65,8 @@ done
 [[ "$release_tag" =~ ^imager-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die '--release-tag must be imager-vMAJOR.MINOR.PATCH'
 [ -n "$fedora_sha256" ] || fedora_sha256="$default_fedora_sha256"
 [[ "$fedora_sha256" =~ ^[0-9a-f]{64}$ ]] || die '--fedora-sha256 must pin the Fedora Cloud Base image'
-[ -n "$fedora_image$fedora_url" ] && [ -z "$fedora_image" -o -z "$fedora_url" ] \
-  || die 'pass exactly one of --fedora-image or --fedora-url'
+[ -n "$fedora_image" ] && [ -n "$fedora_url" ] \
+  && die 'pass at most one of --fedora-image or --fedora-url'
 [ -n "$fedora_image" ] || fedora_url="${fedora_url:-$default_fedora_url}"
 
 export TILO_VM_ARCH="${TILO_VM_ARCH:-$(uname -m)}"
