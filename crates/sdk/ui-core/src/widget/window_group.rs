@@ -2051,6 +2051,13 @@ impl WindowGroup {
         self.bar.drag_in_flight()
     }
 
+    /// Whether the press that lifted this window landed on a tab — a window of one tab shows it
+    /// as the bar's title — rather than on the bar's empty area.
+    #[must_use]
+    pub fn pressed_a_tab(&self) -> bool {
+        self.bar.pressed_a_tab()
+    }
+
     pub fn dragged_tab(&self) -> Option<u64> {
         self.bar.dragged_tab()
     }

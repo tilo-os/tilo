@@ -38,6 +38,7 @@ pub use hint_places::HintPlaces;
 mod canvas;
 #[path = "group_row_crossing.rs"]
 mod crossing;
+use crossing::LetGo;
 #[path = "group_row_floats.rs"]
 mod floats;
 pub use floats::{FLOAT_CARD_MARGIN, FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, keep_float_inside};
@@ -128,6 +129,10 @@ struct GroupDrag {
     /// Someone else holds a window of the group: it follows the drag a little and springs back, and
     /// never moves.
     held: bool,
+    /// The press landed on a tab — a window of one tab shows it as the bar's title — so the window
+    /// carried from there joins one it is let go over, where one carried by its empty bar
+    /// rearranges the strip.
+    from_tab: bool,
 }
 
 fn resisted(delta: vello::kurbo::Vec2) -> vello::kurbo::Vec2 {
@@ -3050,6 +3055,7 @@ impl GroupRow {
                 moved: false,
                 touch,
                 held,
+                from_tab: false,
             });
         }
     }
@@ -3106,8 +3112,14 @@ impl GroupRow {
             return false;
         };
         let claimed = drag.moved;
-        if !self.let_the_window_go(drag.group_id) {
-            return claimed;
+        match self.let_the_window_go(drag.group_id, commit && drag.from_tab) {
+            LetGo::Here => {}
+            LetGo::CarriedAway => return claimed,
+            LetGo::Joined => {
+                self.group_reorder_target = None;
+                self.group_reorder_section = None;
+                return claimed;
+            }
         }
         if drag.held {
             if drag.moved && !self.reduce_motion {
@@ -4602,6 +4614,20 @@ impl Widget for GroupRow {
         }
         if !new_tab_owned && !*ctx.handled {
             self.dispatch_to_groups(event, ctx);
+        }
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) && let Some(drag) = self.group_drag.as_mut()
+        {
+            drag.from_tab = self
+                .groups
+                .get(drag.src_idx)
+                .is_some_and(WindowGroup::pressed_a_tab);
         }
         self.prune_closed_groups();
         self.resolve_tab_detaches(ctx.handled);

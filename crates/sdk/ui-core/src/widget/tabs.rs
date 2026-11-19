@@ -3034,6 +3034,14 @@ impl TabBar {
         self.pending_drag.is_some()
     }
 
+    /// Whether the bar's press under way landed on a tab: a window of one tab shows it as the
+    /// bar's title, so a window lifted from there is the tab's, where one lifted from the empty
+    /// bar is the strip's to rearrange.
+    #[must_use]
+    pub fn pressed_a_tab(&self) -> bool {
+        self.press_origin.is_some()
+    }
+
     pub fn dragged_tab(&self) -> Option<u64> {
         match self.pending_drag {
             Some(DragPayload::Tab { tab, .. }) => Some(tab),

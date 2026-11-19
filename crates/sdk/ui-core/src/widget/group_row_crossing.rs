@@ -9,6 +9,17 @@ use crate::widget::Widget as _;
 /// the window it lifted, never by the row.
 const DROP: &str = "strip";
 
+/// What letting go of a window's bar came to.
+pub(super) enum LetGo {
+    /// The drag is this screen's to finish: nothing took it, and the strip rearranges it.
+    Here,
+    /// The flight left with the pointer for another of the person's devices: nothing here moves.
+    CarriedAway,
+    /// Let go over another window of this strip after a press on a tab or a lone window's title:
+    /// its place joins that window as a tab, and the strip does not also rearrange the window.
+    Joined,
+}
+
 /// What a bar drag carries, and what it took from the bus.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Carried {
@@ -45,17 +56,51 @@ impl GroupRow {
     /// Take the window the drag carried off the bus: whether the drag is still this screen's to
     /// finish. A flight taken off it already left with the pointer for another of the person's
     /// devices, so nothing here is rearranged and no window floats.
-    pub(super) fn let_the_window_go(&mut self, id: u64) -> bool {
+    ///
+    /// Let go over another window of this strip, a window carried from a tab or a lone window's
+    /// title lands as a place of that window: the same drop another of the person's devices'
+    /// windows lands by ([`Self::take_window_drop`]), so a window tabbed in by the pointer and one
+    /// carried between devices join the same way. A window carried by its bar's empty area
+    /// rearranges the strip instead.
+    pub(super) fn let_the_window_go(&mut self, id: u64, land: bool) -> LetGo {
         if !self.carried.published {
-            return true;
+            return LetGo::Here;
         }
-        let here = crate::widget::drag_bus::current().is_some();
-        crate::widget::drag_bus::end(None);
         self.carried.published = false;
-        if !here {
+        if crate::widget::drag_bus::current().is_none() {
+            crate::widget::drag_bus::end(None);
             self.put_back_drag(id);
+            return LetGo::CarriedAway;
         }
-        here
+        // A window stands where it is let go: on the canvas a place keeps its point, and a float
+        // keeps its own drag, so only a window among the strip's own joins one beside it, and only
+        // one carried from a tab or a lone window's title: the empty bar rearranges.
+        let onto = land
+            && self.canvas.is_none()
+            && self.float_drag_from.is_none()
+            && self
+                .groups
+                .iter()
+                .any(|group| group.id != id && group.get_rect().contains(self.last_cursor));
+        let carries = self
+            .groups
+            .iter()
+            .find(|group| group.id == id)
+            .and_then(|group| group.carries())
+            .map(str::to_owned);
+        if let Some(carries) = carries.filter(|_| onto) {
+            crate::widget::drag_bus::end(Some(crate::widget::drag_bus::Landed {
+                source: format!("window:{id}"),
+                payload: crate::dnd::DragPayload::Custom {
+                    kind: crate::widget::drag_source::RESOURCE_PAYLOAD.to_owned(),
+                    blob: carries.into_bytes(),
+                },
+                pointer: self.last_cursor,
+            }));
+            return LetGo::Joined;
+        }
+        crate::widget::drag_bus::end(None);
+        LetGo::Here
     }
 
     /// A window carried here by another of the person's devices was let go: the window of this row

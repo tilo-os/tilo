@@ -2900,3 +2900,72 @@ fn the_desktop_composes_as_its_strips() {
     assert_eq!(hints.len(), 1, "the arrival hints stand over the strips");
     assert_eq!(hints[0].tag, Some("aside"));
 }
+
+/// A window carried by its bar and let go over another joins it as a tab, as a person drags one
+/// window onto another's bar. A window of one tab shows it as the bar's title, so the drag lifts
+/// the whole window: the place it carries lands in the window it is let go over.
+#[test]
+fn a_window_let_go_over_another_joins_it_as_a_tab() {
+    let (surface, handle) = tabbed_shell(1, 1);
+    let resources = handle.read(|tree| {
+        tree.tabs()
+            .map(|tab| (tab.id, resource_of(tab.id)))
+            .collect()
+    });
+    handle.set_window_resources(resources);
+    let mut frame =
+        ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let (from, to, carried, kept) = {
+        let row = frame.widget_mut::<GroupRow>().expect("the strip's row");
+        assert_eq!(row.groups.len(), 2, "two windows stand, one tab each");
+        let source = row.groups.get(1).expect("the carried window");
+        let target = row.groups.first().expect("the window it is let go over");
+        let pill = source
+            .tab_rects()
+            .first()
+            .copied()
+            .expect("the carried window's title");
+        let bar = target.bar_rect();
+        let from = pill.center();
+        let to = Point::new(f64::midpoint(bar.x0, bar.x1), from.y);
+        let carried = source.tabs().first().map(|tab| tab.id).expect("a tab");
+        let kept = target.tabs().first().map(|tab| tab.id).expect("a tab");
+        (from, to, carried, kept)
+    };
+    frame.send(&ui::synthetic_input::cursor_moved(from.x, from.y));
+    frame.send(&ui::synthetic_input::mouse_press());
+    for step in 1..=20 {
+        let t = f64::from(step) / 20.0;
+        frame.send(&ui::synthetic_input::cursor_moved(
+            from.x + (to.x - from.x) * t,
+            from.y + (to.y - from.y) * t,
+        ));
+    }
+    let dragging = frame
+        .widget_mut::<GroupRow>()
+        .is_some_and(|row| row.group_drag_active());
+    frame.send(&ui::synthetic_input::mouse_release());
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let groups: Vec<(u64, Vec<u64>)> = handle.read(|tree| {
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .map(|group| (group.id, group.tabs.iter().map(|tab| tab.id).collect()))
+            .collect()
+    });
+    assert!(
+        dragging,
+        "the press on the title carries the window: {from:?} to {to:?}"
+    );
+    assert!(
+        groups
+            .iter()
+            .any(|(_, tabs)| tabs.contains(&carried) && tabs.contains(&kept)),
+        "the carried window joins the one it is let go over: {groups:?}",
+    );
+}
