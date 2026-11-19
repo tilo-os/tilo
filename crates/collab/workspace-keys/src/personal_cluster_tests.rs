@@ -37,7 +37,7 @@ fn a_workspace_admits_the_readers_its_directory_names_and_no_one_else() {
         "the founding device is handed the group's keys: {access:?}"
     );
     second.service.access(workspace_id, now);
-    run(&mut [&mut first, &mut second], &mut now, 5);
+    drive(&mut [&mut first, &mut second], &mut now, 5);
     assert!(second.service.existing_keys(workspace_id).is_some());
     assert!(
         outsider.service.existing_keys(workspace_id).is_none(),

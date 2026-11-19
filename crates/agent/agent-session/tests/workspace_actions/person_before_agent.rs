@@ -62,6 +62,7 @@ fn agent_creates(
                 label: Some("Bring the tracker in".into()),
                 kind: tilo_actions::context::AGENT_SESSION_GROUP.into(),
                 declared_id: None,
+                session: None,
             }),
             ..tilo_actions::ActionContext::default()
         }),

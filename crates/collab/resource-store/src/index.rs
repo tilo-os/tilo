@@ -1078,6 +1078,7 @@ impl Index {
                 .kinds
                 .get_mut(&kind)
                 .and_then(|tables| tables.get_mut(&held.readers))
+                && table.rows.get(&id).is_some_and(|stored| stored.doc == doc)
             {
                 table.remove(&id);
             }

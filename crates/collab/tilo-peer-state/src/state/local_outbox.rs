@@ -9,8 +9,8 @@ use crate::state::facades::{PeerOutbox, PeerOutboxMut};
 
 /// A channel key holder's renewal of a sealed write: the encryption and
 /// payload a renewal carries under the channel's current epoch, or a refusal.
-pub type Reseal<'a> =
-    dyn FnMut(&SignedOp) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> + 'a;
+pub type Reseal<'a> = dyn FnMut((&str, &str), &SignedOp) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String>
+    + 'a;
 
 struct LocalDocument {
     admission: DocumentAdmission,
@@ -237,7 +237,10 @@ impl PeerOutbox<'_> {
                 let NeighbourMsg::AppDocument { envelope, .. } = original else {
                     return Err("retained local publication requires AppDocument".into());
                 };
-                let (encryption, payload) = reseal(envelope)?;
+                let route = (local.route.app.as_str(), local.route.record.as_str());
+                let (encryption, payload) = reseal(route, envelope)?;
+                self.peer
+                    .check_document_key_scope(route, Some(encryption), now, false)?;
                 let floor = drafted.get(&local.route).copied().unwrap_or_else(|| {
                     self.peer
                         .core

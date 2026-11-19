@@ -249,8 +249,17 @@ pub(crate) fn named_by(
     documents: &[(Route, Vec<u8>)],
     read: &impl Fn(&str) -> Option<Vec<u8>>,
 ) -> Result<BTreeSet<String>, String> {
+    named_by_matching(documents, &|_| true, read)
+}
+
+/// The content named by the selected apps, with the content their manifests name.
+pub(super) fn named_by_matching(
+    documents: &[(Route, Vec<u8>)],
+    include: &impl Fn(&str) -> bool,
+    read: &impl Fn(&str) -> Option<Vec<u8>>,
+) -> Result<BTreeSet<String>, String> {
     let mut live = BTreeSet::new();
-    for ((app, record), document) in documents {
+    for ((app, record), document) in documents.iter().filter(|((app, _), _)| include(app)) {
         named_in(document, &mut live).map_err(|why| format!("{record} of {app}: {why}"))?;
     }
     made_of(read, &mut live);

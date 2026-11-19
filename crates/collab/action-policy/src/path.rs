@@ -431,7 +431,8 @@ impl fmt::Display for TreePath {
     /// The form a path is stored and sent in: `workspace:r/app:mail/
     /// kind:mail.message/resource:*/action:send`, `**` for any depth, `/` for
     /// the root. Ids escape `%` and `/` as `%25` and `%2F`, and an id that is
-    /// exactly `*` as `%2A`.
+    /// exactly `*` as `%2A`. An empty resource id names the app's package
+    /// primary document.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.write_with(f)
     }
@@ -469,7 +470,7 @@ impl FromStr for TreePath {
                 Level::from_tag(tag).ok_or_else(|| PathError(format!("unknown level `{tag}`")))?;
             if id == "*" {
                 path = path.any(level);
-            } else if id.is_empty() {
+            } else if id.is_empty() && level != Level::Resource {
                 return Err(PathError(format!("segment `{part}` has no id")));
             } else {
                 path = path.push(level, unescape(id)?);

@@ -18,7 +18,7 @@ use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
 use ui::search::index_publication::{IndexEntry, IndexKind, IndexPerson, IndexWeight};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind, provider_score};
 
-use crate::content_index::{AppContentIndex, Contents, IndexedEntry, SlotKey};
+use crate::content_index::{AppContentIndex, Contents, IndexKey, IndexedEntry};
 use crate::model::{Hit, InvokeTarget, LaunchPlace, Source, Target};
 
 pub use crate::model::{OPEN_ACTION, OPEN_ANCHOR};
@@ -70,8 +70,8 @@ impl Snapshot {
             .iter()
             .map(|indexed| {
                 (
-                    indexed.slot.app.clone(),
-                    indexed.slot.workspace.clone(),
+                    indexed.key.app.clone(),
+                    indexed.key.workspace.clone(),
                     indexed.entry.resource.clone(),
                 )
             })
@@ -81,7 +81,7 @@ impl Snapshot {
             .filter(|indexed| indexed.entry.boost != 0)
             .map(|indexed| {
                 (
-                    entry_id(&indexed.slot, &indexed.entry.key),
+                    entry_id(&indexed.key, &indexed.entry.key),
                     indexed.entry.boost,
                 )
             })
@@ -120,11 +120,11 @@ fn titles_of(entries: &[IndexedEntry]) -> HashMap<(String, String), Vec<(String,
     for indexed in entries {
         titles
             .entry((
-                indexed.slot.workspace.clone(),
+                indexed.key.workspace.clone(),
                 indexed.entry.resource.clone(),
             ))
             .or_default()
-            .push((indexed.slot.app.clone(), indexed.entry.title.clone()));
+            .push((indexed.key.app.clone(), indexed.entry.title.clone()));
     }
     titles
 }
@@ -149,7 +149,7 @@ fn names_of(entries: &[IndexedEntry]) -> HashMap<(String, String), String> {
         .filter_map(|indexed| {
             let person = indexed.entry.people.first()?;
             Some((
-                (indexed.slot.workspace.clone(), person.identity.clone()),
+                (indexed.key.workspace.clone(), person.identity.clone()),
                 indexed.entry.title.clone(),
             ))
         })
@@ -195,7 +195,7 @@ fn field_weight(weight: IndexWeight) -> FieldWeight {
 
 /// A row's id: where its entry was published from, then its key.
 #[must_use]
-pub fn entry_id(slot: &SlotKey, key: &str) -> String {
+pub fn entry_id(slot: &IndexKey, key: &str) -> String {
     format!(
         "{}{ID_SEPARATOR}{}{ID_SEPARATOR}{}{ID_SEPARATOR}{key}",
         slot.app, slot.workspace, slot.record
@@ -210,14 +210,14 @@ pub fn unlock_app(id: &str) -> Option<&str> {
 
 /// The slot and key a row id names.
 #[must_use]
-pub fn parse_entry_id(id: &str) -> Option<(SlotKey, &str)> {
+pub fn parse_entry_id(id: &str) -> Option<(IndexKey, &str)> {
     let mut parts = id.splitn(4, ID_SEPARATOR);
     let app = parts.next()?;
     let workspace = parts.next()?;
     let record = parts.next()?;
     let key = parts.next()?;
     Some((
-        SlotKey {
+        IndexKey {
             app: app.to_owned(),
             workspace: workspace.to_owned(),
             record: record.to_owned(),
@@ -228,7 +228,7 @@ pub fn parse_entry_id(id: &str) -> Option<(SlotKey, &str)> {
 
 /// What running `entry` of `slot` invokes ([`crate::model::entry_opening`]).
 #[must_use]
-pub fn opening(slot: &SlotKey, entry: &IndexEntry) -> InvokeTarget {
+pub fn opening(slot: &IndexKey, entry: &IndexEntry) -> InvokeTarget {
     crate::model::entry_opening(&slot.app, &slot.workspace, entry)
 }
 
@@ -285,7 +285,7 @@ impl IndexedContent {
         let Some(app) = self.app.as_deref() else {
             return contents;
         };
-        let mine = |indexed: &&IndexedEntry| indexed.slot.app == app;
+        let mine = |indexed: &&IndexedEntry| indexed.key.app == app;
         Contents {
             visible: contents.visible.iter().filter(mine).cloned().collect(),
             locked: contents.locked.iter().filter(mine).cloned().collect(),
@@ -341,7 +341,7 @@ impl IndexedContent {
         self.current()
             .visible
             .iter()
-            .find(|indexed| indexed.slot == slot && indexed.entry.key == key)
+            .find(|indexed| indexed.key == slot && indexed.entry.key == key)
             .cloned()
     }
 
@@ -350,7 +350,9 @@ impl IndexedContent {
     /// it happens to begin.
     #[must_use]
     pub fn row(&self, indexed: &IndexedEntry, score: i32, needle: &str) -> Hit {
-        let IndexedEntry { slot, entry, .. } = indexed;
+        let IndexedEntry {
+            key: slot, entry, ..
+        } = indexed;
         let subtitle = entry.subtitle.clone().or_else(|| match entry.kind {
             Some(_) => self.under_name(slot, entry),
             None => entry
@@ -416,7 +418,7 @@ impl IndexedContent {
     /// it beside its name.
     fn shown(
         &self,
-        slot: &SlotKey,
+        slot: &IndexKey,
         entry: &IndexEntry,
     ) -> (Option<(String, String)>, Vec<ui::search::RowFace>) {
         let people: Vec<(String, &IndexPerson)> = entry
@@ -444,7 +446,7 @@ impl IndexedContent {
 
     /// What `person` is called: the name the record gave, else what the
     /// resource that holds them is called now.
-    fn named(&self, slot: &SlotKey, person: &IndexPerson) -> Option<String> {
+    fn named(&self, slot: &IndexKey, person: &IndexPerson) -> Option<String> {
         let name = person.name.trim();
         if !name.is_empty() {
             return Some(name.to_owned());
@@ -463,7 +465,7 @@ impl IndexedContent {
 
     /// What the entry says under its name when its app left it unsaid: who
     /// keeps an agent, and who a message is from, where, and how long ago.
-    fn under_name(&self, slot: &SlotKey, entry: &IndexEntry) -> Option<String> {
+    fn under_name(&self, slot: &IndexKey, entry: &IndexEntry) -> Option<String> {
         match entry.kind {
             Some(IndexKind::Agent) => {
                 let keeper = entry.keeper.as_ref()?;
@@ -571,9 +573,9 @@ impl IndexedContent {
                 continue;
             };
             let score = provider_score(hit.rank.unwrap_or(0));
-            match best.iter_mut().find(|(app, _)| *app == indexed.slot.app) {
+            match best.iter_mut().find(|(app, _)| *app == indexed.key.app) {
                 Some((_, held)) => *held = (*held).max(score),
-                None => best.push((indexed.slot.app.clone(), score)),
+                None => best.push((indexed.key.app.clone(), score)),
             }
         }
         best.into_iter()
@@ -723,7 +725,7 @@ impl Source for IndexedContent {
                     .ok()
                     .and_then(|at| snapshot.visible.get(at))?;
                 shown
-                    .insert((indexed.slot.app.as_str(), indexed.entry.key.as_str()))
+                    .insert((indexed.key.app.as_str(), indexed.entry.key.as_str()))
                     .then(|| {
                         let score =
                             provider_score(hit.rank.unwrap_or(0)).clamp(1, MAX_PROVIDER_SCORE);

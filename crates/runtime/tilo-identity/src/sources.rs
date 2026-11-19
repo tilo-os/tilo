@@ -24,6 +24,18 @@ pub trait GroupKeySource: collab_types::signer::MaybeSendSync + 'static {
         workspace: WorkspaceId,
         known_generation: u64,
     ) -> Option<Result<GroupKeys, String>>;
+
+    /// Keys for an admitted app document. Services without document groups
+    /// continue to serve workspace keys.
+    fn document_access(
+        &self,
+        workspace: WorkspaceId,
+        _app: &str,
+        _document: &str,
+        known_generation: u64,
+    ) -> Option<Result<GroupKeys, String>> {
+        self.access(workspace, known_generation)
+    }
 }
 
 /// The records of the person's own an app keeps in, or reads from, their

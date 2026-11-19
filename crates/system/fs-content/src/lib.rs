@@ -29,7 +29,8 @@ mod tier;
 
 pub use chunker::{ChunkStats, Cutter, Streamed, build, build_in_tier, build_reader, rebuild};
 pub use manifest::{
-    ChunkRef, DecodeError, FORMAT, HEADER_MAGIC, MAX_CHUNK_LEN, Manifest, is_manifest, whole,
+    ChunkRef, DecodeError, FORMAT, HEADER_MAGIC, MAX_CHUNK_LEN, Manifest, SealedChunks,
+    is_manifest, whole, whole_with,
 };
 pub use ranges::RangeSet;
 pub use tier::ChunkTier;
