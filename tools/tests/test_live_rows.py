@@ -32,7 +32,8 @@ class LiveRowsTests(unittest.TestCase):
         return root
 
     def test_a_typed_row_is_not_counted(self):
-        self.assertEqual(live_rows.count_file(TYPED), 0)
+        self.assertEqual(live_rows.count_file(TYPED), {},
+                         "a declared row offers its type's effects")
 
     def test_an_untyped_row_is_counted_and_tests_are_not(self):
         code = (
@@ -40,7 +41,8 @@ class LiveRowsTests(unittest.TestCase):
             "#[cfg(test)]\n"
             "mod tests { fn t() { LiveRow::new(\"a\", \"b\", \"c\"); } }\n"
         )
-        self.assertEqual(live_rows.count_file(code), 1, "a test's row is not production")
+        self.assertEqual(live_rows.count_file(code), {"untyped-live-row": 1},
+                         "a test's row is not production")
 
     def test_a_new_untyped_row_fails_and_a_migrated_one_lowers_the_baseline(self):
         root = self.fixture({
