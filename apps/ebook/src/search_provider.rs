@@ -33,13 +33,32 @@ pub const LOCATION_KIND: &str = "Passages";
 
 /// A passage a search found, as the type its row is an item of.
 #[derive(ui::tilo_resource::Row)]
-#[row(kind = "ebook.location", label = "Passage")]
-struct Passage;
+#[row(kind = "ebook.location", label = "Passage", effects = crate::resource::BooksEffect)]
+pub(crate) struct Passage;
 
 /// A chapter a search found, as the type its row is an item of.
 #[derive(ui::tilo_resource::Row)]
-#[row(kind = "ebook.chapter", label = "Chapter")]
-struct Chapter;
+#[row(kind = "ebook.chapter", label = "Chapter", effects = crate::resource::BooksEffect)]
+pub(crate) struct Chapter;
+
+fn open_bindings(
+    book: &str,
+    chapter: usize,
+    block: Option<usize>,
+) -> ui::tilo_resource::RowBindings {
+    ui::tilo_resource::RowBindings::new().bind(
+        crate::resource::BooksEffect::OPEN,
+        [
+            ("book", serde_json::Value::from(book.to_owned())),
+            ("chapter", serde_json::Value::from(chapter)),
+            ("page", serde_json::Value::from(0)),
+            (
+                "block",
+                block.map_or(serde_json::Value::Null, serde_json::Value::from),
+            ),
+        ],
+    )
+}
 
 /// The filter naming the book a result is in.
 pub const BOOK_FACET: &str = "book";
@@ -573,15 +592,17 @@ impl BookSearch {
         };
         let chapter_data = book.chapters.get(chapter)?;
         chapter_data.blocks.get(block)?;
-        let chapter_title = chapter_label(chapter_data, chapter);
+        let (chapter_title, bindings) = (
+            chapter_label(chapter_data, chapter),
+            open_bindings(&book.id, chapter, Some(block)),
+        );
         Some(
-            LiveRow::typed::<Passage>(id, format!("{chapter_title} in {}", Self::book_title(book)))
-                .operation(crate::actions::open_at(
-                    &book.id,
-                    chapter,
-                    Some(block),
-                    "Open match",
-                )),
+            LiveRow::typed_with::<Passage>(
+                id,
+                format!("{chapter_title} in {}", Self::book_title(book)),
+                &bindings,
+            )
+            .labelled(crate::resource::BooksEffect::OPEN, "Open match"),
         )
     }
 
@@ -593,8 +614,12 @@ impl BookSearch {
                 let book = self.books.get(book)?;
                 book.chapters.get(chapter)?;
                 return Some(Found::Row(
-                    LiveRow::typed::<Chapter>(id, &entry.result.title)
-                        .operation(crate::actions::open_at(&book.id, chapter, None, "Open")),
+                    LiveRow::typed_with::<Chapter>(
+                        id,
+                        &entry.result.title,
+                        &open_bindings(&book.id, chapter, None),
+                    )
+                    .labelled(crate::resource::BooksEffect::OPEN, "Open"),
                 ));
             }
             SearchTarget::Book(index) => self.books.get(index)?.id.clone(),
