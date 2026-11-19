@@ -60,11 +60,21 @@ impl Person {
     }
 }
 
-/// Where the identity is kept: [`DIR_ENV`], else
-/// `$XDG_STATE_HOME/tilo/identity`.
+/// Where the identity is kept: [`DIR_ENV`], else this account's own device
+/// identity when it holds one — the one their session is, in the
+/// profile's `tilo/identity` — else `$XDG_STATE_HOME/tilo/identity`, where
+/// `tilo login --new-identity` keeps one a computer has not signed in with.
 pub fn dir() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os(DIR_ENV).filter(|dir| !dir.is_empty()) {
         return Ok(PathBuf::from(dir));
+    }
+    if let Some(config) = tilo_paths::xdg::config_home().filter(|dir| dir.is_absolute()) {
+        let dir = config.join("tilo").join("identity");
+        // The session's own device key is what makes it this account's
+        // identity: a profile without one never signed in.
+        if IdentityPaths::under(&dir).device_privkey.exists() {
+            return Ok(dir);
+        }
     }
     Ok(tilo_paths::state_dir()
         .context("this account has no state directory (no HOME)")?
@@ -433,6 +443,33 @@ mod tests {
                 .unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_signed_in_accounts_own_identity_is_the_one_the_command_uses() {
+        let home = tempfile::tempdir().unwrap();
+        let profile = home.path().join("config/tilo/identity");
+        std::fs::create_dir_all(&profile).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path())
+            .set("XDG_CONFIG_HOME", home.path().join("config"))
+            .set("XDG_STATE_HOME", home.path().join("state"))
+            .remove(DIR_ENV);
+        assert_eq!(
+            dir().unwrap(),
+            home.path().join("state/tilo/identity"),
+            "a computer with no device identity keeps one under its state"
+        );
+        let paths = IdentityPaths::under(&profile);
+        paths.ensure_directories().unwrap();
+        tilo_device_identity::persist::write_device_key(
+            &paths.device_privkey,
+            &SigningKey::from_bytes(&[3; 32]),
+        )
+        .unwrap();
+        assert_eq!(dir().unwrap(), profile);
+        env.set(DIR_ENV, profile.join("named"));
+        assert_eq!(dir().unwrap(), profile.join("named"));
     }
 
     #[test]

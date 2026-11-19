@@ -243,6 +243,19 @@ open. If the machine cannot enroll, the install fails: a disk that can only be
 opened by typing a recovery key at a console nobody is at is not an install
 that finished.
 
+The disk's recovery key travels with that enrollment: the installer reads it
+from `tilo-disk-encrypt` and hands it to `tilo-enroll enroll
+--recovery-key-file`, never to a screen, a log or a command argument. The
+request carries it sealed to the device that issued the token, and the person's
+own store keeps it — the store their devices already sync, beside their own
+list of their devices, under `identity.machines`, one entry per machine keyed by the
+machine's device key. Only devices the person's root certified are handed that
+store, so only they can read the key. The installed machine keeps no copy: the
+installer shreds the file once the enrollment took it, and a plan-driven
+install writes no recovery-key card at all. On one of their devices the person
+reads whether a key is saved (`tilo server list`) and what it is (`tilo server
+recovery-key <server>`).
+
 ### Host transaction record
 
 - Windows: `%ProgramData%\Tilo\staging\<operation_id>.json`, with the ACL

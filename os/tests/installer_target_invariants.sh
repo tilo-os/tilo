@@ -647,6 +647,9 @@ if grep -Fq -- '--install-plan) INSTALL_PLAN=1' "$backend" \
    && grep -Fq 'enrol_planned_sibling' "$backend" \
    && grep -Fq 'TILO_IDENTITY_ROOT="$PLAN_ENROLLED_IDENTITY" "$DISK_ENCRYPT" enrol' "$backend" \
    && grep -Fq 'apply_plan_network' "$backend" \
+   && grep -Fq -- '--recovery-key-file "$PLAN_RECOVERY_KEY_FILE"' "$backend" \
+   && grep -Fq 'shred -u "$PLAN_RECOVERY_KEY_FILE"' "$backend" \
+   && ! grep -Fq 'plan_recovery_key_path' "$repo_root/apps/imager/src/setup/destination/unattended.rs" \
    && grep -Fq 'only a Tilo Server installs from a staged plan without a person' \
       "$repo_root/apps/imager/src/setup/staging/helper.rs" \
    && grep -Fq 'pub install_plan: bool' \

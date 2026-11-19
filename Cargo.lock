@@ -18889,6 +18889,7 @@ dependencies = [
  "tilo-mcp",
  "tilo-net",
  "tilo-paths",
+ "tilo-peer-state",
  "tilo-server-client",
  "tilo-server-protocol",
  "tilo-server-session",

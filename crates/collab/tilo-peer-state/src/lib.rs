@@ -72,7 +72,10 @@ pub use state::GovernanceHeads;
 pub use state::mail_send_lease;
 pub use state::person_workspace_seed;
 /// The person's own documents between their devices, with no host in between.
-pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync, device_resource, resource_owner};
+pub use state::{
+    AdmittedFrame, MachineRecovery, PERSONAL_ALPN, PersonalSync, device_resource, machines,
+    resource_owner, store_path, update_person_resource,
+};
 pub use state::{
     BOT_SCHEDULES_KEY, CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus,
     DEVICE_FACTS, DONE_KEY, DelegateInactive, DocumentRow, Done, ENROLLMENT_KIND, GovernedAccess,

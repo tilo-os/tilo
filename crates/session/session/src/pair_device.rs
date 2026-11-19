@@ -663,6 +663,7 @@ mod tests {
                     hardware: String::new(),
                     code: "123-456".into(),
                     nonce,
+                    recovery_key: None,
                 },
             )
             .expect("the ask is kept in the person's store");

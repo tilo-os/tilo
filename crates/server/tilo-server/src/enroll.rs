@@ -163,6 +163,11 @@ enum Command {
         /// for one behind a network address translation.
         #[arg(long)]
         relay: Option<String>,
+        /// The disk recovery key this machine installs with, root-only: a
+        /// machine planned to install with nobody at its screen hands it to
+        /// the person's devices with its enrollment, and keeps no copy.
+        #[arg(long)]
+        recovery_key_file: Option<PathBuf>,
     },
     /// Join an existing identity as an ordinary personal device.
     PairDevice {
@@ -941,6 +946,24 @@ fn discover(timeout: u64, kind: EnrollmentKind) -> anyhow::Result<()> {
 // step so an envelope for one step never opens as another. Bytes without
 // that prefix are refused.
 
+/// The disk recovery key a machine installs with, read from the root-only file
+/// the installer kept: one bounded line of text, never a log or a command
+/// argument.
+fn read_recovery_key(path: &std::path::Path) -> anyhow::Result<String> {
+    const MAX: u64 = 1024;
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("read {}: no such file", path.display()))?;
+    if !metadata.is_file() || metadata.len() > MAX {
+        bail!("{} is not a recovery key file", path.display());
+    }
+    let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let key = text.trim();
+    if key.is_empty() || key.chars().any(char::is_control) {
+        bail!("{} holds no recovery key", path.display());
+    }
+    Ok(key.to_owned())
+}
+
 fn validate_requester(lease: Option<tilo_server::ProcessLease>) -> anyhow::Result<()> {
     if let Some(lease) = lease {
         lease
@@ -950,18 +973,40 @@ fn validate_requester(lease: Option<tilo_server::ProcessLease>) -> anyhow::Resul
     Ok(())
 }
 
+/// What `tilo-enroll enroll` was asked to do: the machine it enrolls, where its
+/// identity and handoff go, and the two secrets it may carry — the token's
+/// nonce's destination and the disk recovery key to hand over.
+#[derive(Clone, Copy)]
+struct EnrollRequest<'a> {
+    token_file: &'a std::path::Path,
+    identity_root: &'a std::path::Path,
+    label: &'a str,
+    timeout: u64,
+    home_peer_output: &'a std::path::Path,
+    nonce_output: Option<&'a std::path::Path>,
+    method: Option<tilo_identity::enrollment::Method>,
+    relay: Option<&'a str>,
+    recovery_key_file: Option<&'a std::path::Path>,
+}
+
 /// The one enrollment every image uses: with the token the machine was given,
 /// or by showing a code a device of the person's approves.
-fn enroll(
-    token_file: &std::path::Path,
-    identity_root: &std::path::Path,
-    label: &str,
-    timeout: u64,
-    home_peer_output: &std::path::Path,
-    nonce_output: Option<&std::path::Path>,
-    method: Option<tilo_identity::enrollment::Method>,
-    relay: Option<&str>,
-) -> anyhow::Result<()> {
+fn enroll(request: EnrollRequest<'_>) -> anyhow::Result<()> {
+    let EnrollRequest {
+        token_file,
+        identity_root,
+        label,
+        timeout,
+        home_peer_output,
+        nonce_output,
+        method,
+        relay,
+        recovery_key_file,
+    } = request;
+    let recovery_key = recovery_key_file
+        .map(read_recovery_key)
+        .transpose()
+        .context("read the disk recovery key to hand over")?;
     let token = tilo_identity::enrollment::given_token(token_file)
         .with_context(|| format!("read {}", token_file.display()))?;
     let method = declared_methods()
@@ -976,6 +1021,7 @@ fn enroll(
         identity_dir: None,
         requester_lease: None,
         port: NEARBY_PORT,
+        recovery_key: recovery_key.as_deref(),
     };
     match method {
         tilo_identity::enrollment::Method::Token => {
@@ -1051,6 +1097,7 @@ fn prepare_join(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<Pr
         kind,
         identity_dir,
         requester_lease,
+        recovery_key,
         ..
     } = options;
     validate_requester(requester_lease)?;
@@ -1077,6 +1124,7 @@ fn prepare_join(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<Pr
         label: label.chars().take(80).collect(),
         hardware: hardware_summary(),
         kind,
+        recovery_key: recovery_key.map(str::to_owned),
     };
     let (request_bytes, response_secret) =
         encrypt_request(&request, token.issuer_device_public_key)?;
@@ -1552,6 +1600,10 @@ struct JoinOptions<'a> {
     identity_dir: Option<&'a std::path::Path>,
     requester_lease: Option<tilo_server::ProcessLease>,
     port: u16,
+    /// The disk recovery key this machine installs with, when it installs
+    /// with nobody at its screen: it travels with the request, and the
+    /// person's devices keep it in their own store.
+    recovery_key: Option<&'a str>,
 }
 
 fn handle_solicitation(
@@ -1935,6 +1987,7 @@ fn pair_device_cli(
                     identity_dir: Some(identity_dir),
                     requester_lease,
                     port: NEARBY_PORT,
+                    recovery_key: None,
                 },
                 status_file,
             )
@@ -1976,16 +2029,18 @@ fn run() -> anyhow::Result<()> {
             nonce_output,
             method,
             relay,
-        } => enroll(
-            &token_file,
-            &identity_root,
-            &label,
+            recovery_key_file,
+        } => enroll(EnrollRequest {
+            token_file: &token_file,
+            identity_root: &identity_root,
+            label: &label,
             timeout,
-            &home_peer_output,
-            nonce_output.as_deref(),
+            home_peer_output: &home_peer_output,
+            nonce_output: nonce_output.as_deref(),
             method,
-            relay.as_deref(),
-        ),
+            relay: relay.as_deref(),
+            recovery_key_file: recovery_key_file.as_deref(),
+        }),
         Command::PairDevice {
             identity_root,
             identity_dir,

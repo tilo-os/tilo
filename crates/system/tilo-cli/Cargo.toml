@@ -53,6 +53,9 @@ iroh-base.workspace = true
 # HTTPS to a site and a host, as every client of the server makes its requests.
 tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+# The person's own store: their machines' disk recovery keys, which only
+# their devices keep.
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # `tilo login <invitation link>` reads the signed invitation and the server's iroh address in it.
 tilo-workspace-join = { path = "../../collab/workspace-join" }
 tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }

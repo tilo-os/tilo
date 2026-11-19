@@ -25,6 +25,10 @@ pub struct WaitingMachine {
     /// machine's entry is known by.
     #[serde(default)]
     pub nonce: String,
+    /// The disk recovery key the machine handed over with its ask, for the
+    /// person's devices to keep: what opens a disk nothing else can.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_key: Option<String>,
 }
 
 impl WaitingMachine {
@@ -43,6 +47,7 @@ impl WaitingMachine {
             hardware: hardware.to_owned(),
             code: pairing_code(device, service),
             nonce: String::new(),
+            recovery_key: None,
         }
     }
 
@@ -51,6 +56,13 @@ impl WaitingMachine {
     #[must_use]
     pub fn with_nonce(mut self, nonce: [u8; 16]) -> Self {
         self.nonce = hex::encode(nonce);
+        self
+    }
+
+    /// The disk recovery key the machine handed over with its ask.
+    #[must_use]
+    pub fn with_recovery_key(mut self, key: Option<String>) -> Self {
+        self.recovery_key = key;
         self
     }
 }

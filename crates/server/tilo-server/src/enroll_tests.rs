@@ -499,6 +499,7 @@ fn a_home_peer_keeps_the_persons_devices_from_its_enrollment() {
         identity_dir: None,
         requester_lease: None,
         port: 0,
+        recovery_key: None,
     };
     let prepared = prepare_join(&token_text, options).unwrap();
     let machine = prepared.device.verifying_key().to_bytes();
@@ -720,6 +721,7 @@ tilo_test_env::scenario! {
             label: "NAS".into(),
             hardware: "8 cores · 16 GB memory".into(),
             kind: EnrollmentKind::HomePeer,
+            recovery_key: None,
         };
         let (encrypted, _) = encrypt_request(&request, issuer.verifying_key().to_bytes()).unwrap();
         assert!(
@@ -1130,6 +1132,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
                     identity_dir: Some(identity_dir.path()),
                     requester_lease: Some(lease),
                     port: 0,
+                    recovery_key: None,
                 },
                 None,
             )
@@ -1264,6 +1267,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
             identity_dir: Some(new_identities.path()),
             requester_lease: Some(requester),
             port,
+            recovery_key: None,
         },
         None,
     )
@@ -1477,6 +1481,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
             identity_dir: Some(new_identities.path()),
             requester_lease: Some(tilo_server::ProcessLease::capture(std::process::id()).unwrap()),
             port,
+            recovery_key: None,
         },
         None,
     )
@@ -1917,6 +1922,7 @@ fn sample_request() -> Request {
         label: "NAS".into(),
         hardware: "8 cores · 16 GB memory".into(),
         kind: EnrollmentKind::HomePeer,
+        recovery_key: None,
     }
 }
 

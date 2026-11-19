@@ -55,6 +55,11 @@ pub struct Request {
     #[serde(default)]
     pub hardware: String,
     pub kind: EnrollmentKind,
+    /// The disk recovery key the machine installs with, when it installs
+    /// without a person at its screen: the person's devices keep it in their
+    /// own store, and the installed system keeps no copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_key: Option<String>,
 }
 
 /// Plaintext of a v2 request: the request plus the key its response is
