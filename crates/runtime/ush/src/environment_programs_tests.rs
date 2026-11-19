@@ -150,7 +150,9 @@ impl Followed {
         }
     }
 
-    /// Look until the program printed `words`.
+    /// Look until the program printed `words`. One that ended after printing them is as good as
+    /// one still running: the words are what the test waits for, and a program kept only while
+    /// its server asks ends by itself as soon as that is up.
     fn until_printed(
         &mut self,
         member: &EnvironmentCommands,
@@ -160,8 +162,13 @@ impl Followed {
     ) {
         tilo_test_env::wait_for("the program to print", || {
             self.look(member, caller, id);
-            assert!(self.ended.is_none(), "it ended: {:?}", self.ended);
-            self.printed.contains(words).then_some(())
+            let printed = self.printed.contains(words);
+            assert!(
+                printed || self.ended.is_none(),
+                "it ended before printing {words:?}: {:?}",
+                self.ended
+            );
+            printed.then_some(())
         });
     }
 
