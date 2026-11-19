@@ -415,8 +415,9 @@ fn the_pointer_and_the_keyboard_cross_to_the_device_beside_this_one_and_come_bac
     picture(&phone, "3-phone-after");
 }
 
-/// A point on the bar of the window titled `title` on `device`'s screen: just above what the
-/// window draws, toward its start, clear of its controls.
+/// A point on the bar of the window titled `title` on `device`'s screen: on the tab the bar
+/// shows for a window of one tab, just above what the window draws. The app's own parts stand
+/// past the tab, and the window's controls at the bar's end.
 fn bar(device: &Device, title: &str) -> Option<(f64, f64)> {
     let windows = device.ask(&json!({"op": "windows"}));
     let rect: Vec<f64> = windows["answer"]["windows"]
@@ -430,7 +431,7 @@ fn bar(device: &Device, title: &str) -> Option<(f64, f64)> {
     let [x, y, _, _] = rect[..] else {
         return None;
     };
-    Some((x + 48.0, y - 20.0))
+    Some((x + 12.0, y - 20.0))
 }
 
 /// The row `device` lists for the window titled `title`.
@@ -475,6 +476,33 @@ fn a_window_lifted_by_its_bar_crosses_with_the_pointer_and_lands_on_the_phone() 
     picture(&laptop, "drag-1-laptop-before");
     picture(&phone, "drag-1-phone-before");
 
+    // Both devices lay the workspace's shell out alike, and the phone's own view is the one the
+    // window is let go on: read where the other window's bar stands there now. The drag scrolls
+    // the laptop's strip after this, which moves its windows and not the phone's.
+    waited(
+        "the laptop and the phone laying the workspace's windows out alike",
+        &[&laptop, &phone],
+        || {
+            let alike = |title: &str| {
+                matches!(
+                    (window_of(&laptop, title), window_of(&phone, title)),
+                    (Some(left), Some(right))
+                        if left["group"] == right["group"] && left["strip"] == right["strip"]
+                )
+            };
+            // Chat's window is open on both: its rectangle says the strip split the windows alike.
+            let (Some(here), Some(there)) = (window_of(&laptop, CHAT), window_of(&phone, CHAT))
+            else {
+                return false;
+            };
+            here["rect"].is_array()
+                && here["rect"] == there["rect"]
+                && alike(CHAT)
+                && alike("Stays behind")
+        },
+    );
+    let onto = bar(&laptop, "Stays behind").expect("the other window's bar");
+
     // The laptop's pointer takes Chat's window by its bar and carries it to the edge toward the
     // phone, a step at a time, as a hand does.
     let from = bar(&laptop, CHAT).unwrap_or_else(|| {
@@ -514,9 +542,7 @@ fn a_window_lifted_by_its_bar_crosses_with_the_pointer_and_lands_on_the_phone() 
         "the laptop carries nothing any more"
     );
     // Over the bar of the phone's other window the button comes up: that window takes Chat as a
-    // tab, and shows it, as a drop of one window's bar on another's does on one device. Both
-    // devices lay the workspace's shell out alike, so the laptop says where that bar stands.
-    let onto = bar(&laptop, "Stays behind").expect("the other window's bar");
+    // tab, and shows it, as a drop of one window's bar on another's does on one device.
     let there = pointer(&phone);
     let parked = pointer(&laptop);
     move_to(
