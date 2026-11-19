@@ -175,6 +175,10 @@ impl LaunchResourceBroker for SystemResourceBroker {
         })
     }
 
+    fn release_ended(&self) {
+        self.remove_ended();
+    }
+
     fn revoke(&self, lease_id: &str) {
         // The network proxy ends with the program it serves, so the program's end revokes it.
         if let Some(graph) = self

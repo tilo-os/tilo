@@ -584,6 +584,13 @@ where
         self.displays.taken_back()
     }
 
+    /// What a program taken back after a restart gives back when it ends: the lease the desktop
+    /// before this one lent it, which this one knows only as one whose program ended.
+    pub(crate) fn release_taken_back(&self) -> Box<dyn FnOnce() + Send> {
+        let resources = Arc::clone(&self.resources);
+        Box::new(move || resources.release_ended())
+    }
+
     /// The display a program launched into `workspace_id` shows its windows
     /// on, as the caller gives it now.
     fn display_for(&self, workspace_id: &str) -> Result<LaunchDisplay, PlanError> {

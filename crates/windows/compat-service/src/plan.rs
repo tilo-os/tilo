@@ -591,6 +591,9 @@ impl LaunchLease {
 pub trait LaunchResourceBroker: Send + Sync {
     fn materialize(&self, request: ResourceRequest<'_>) -> Result<LaunchLease, ResourceError>;
     fn revoke(&self, lease_id: &str);
+    /// Give back the leases of programs a desktop before this one started that have ended since:
+    /// this desktop never held their lease ids, so it cannot revoke them one by one.
+    fn release_ended(&self) {}
 }
 
 #[derive(Debug)]

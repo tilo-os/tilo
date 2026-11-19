@@ -220,7 +220,7 @@ where
                 taken.program,
                 // An appliance program closes inside Windows, as it did before the restart.
                 !crate::vm_adapter::is_appliance_entry(&taken.entry_id),
-                Box::new(|| {}),
+                self.service.release_taken_back(),
             ) {
                 tracing::warn!(%error, "a kept Windows program is not watched");
             }
@@ -2126,6 +2126,82 @@ mod tests {
             auth.take_handoff(pid, started),
             Err(SessionError::UnauthenticatedPeer)
         ));
+    }
+
+    /// A program the desktop before a restart started ends under this one: the lease that desktop
+    /// lent it (its private sound daemons' directory) is given back as it ends, not left until
+    /// some later launch happens to look.
+    #[test]
+    fn a_program_taken_back_after_a_restart_gives_its_lease_back_when_it_ends() {
+        #[derive(Default)]
+        struct Released(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+        impl LaunchResourceBroker for Released {
+            fn materialize(
+                &self,
+                _: crate::plan::ResourceRequest<'_>,
+            ) -> Result<crate::plan::LaunchLease, crate::plan::ResourceError> {
+                Err(crate::plan::ResourceError::Unavailable)
+            }
+
+            fn revoke(&self, _: &str) {}
+
+            fn release_ended(&self) {
+                *self.0.0.lock().unwrap() = true;
+                self.0.1.notify_all();
+            }
+        }
+
+        struct Ended;
+
+        impl crate::StartedProgram for Ended {
+            fn wait(&self) -> Result<crate::ExecutionOutcome, crate::execute::ExecutionError> {
+                Ok(crate::ExecutionOutcome::exited(Some(0)))
+            }
+
+            fn stop(&self) {}
+        }
+
+        struct Kept(Mutex<Vec<crate::TakenBack>>);
+
+        impl crate::LaunchDisplays for Kept {
+            fn display_for(&self, _: &str) -> Result<LaunchDisplay, String> {
+                Err("no display in this test".to_owned())
+            }
+
+            fn taken_back(&self) -> Vec<crate::TakenBack> {
+                std::mem::take(&mut self.0.lock().unwrap())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let released = Released::default();
+        let heard = Arc::clone(&released.0);
+        let managed = ManagedCompatibility::new(
+            Catalogue::from_json(r#"{"schema_version":1}"#).unwrap(),
+            CapsuleStore::new(dir.path()).unwrap(),
+            crate::plan::SystemRuntimeRegistry::assuming_provider(),
+            released,
+            IdleExecutor,
+            IdleVm,
+            Arc::new(Kept(Mutex::new(vec![crate::TakenBack {
+                entry_id: "entry".to_owned(),
+                workspace_id: "workspace".to_owned(),
+                display_name: "Kept".to_owned(),
+                program: Box::new(Ended),
+            }]))),
+        )
+        .unwrap();
+
+        managed.take_back();
+
+        let (given_back, _) = heard
+            .1
+            .wait_timeout_while(heard.0.lock().unwrap(), Duration::from_secs(10), |given| {
+                !*given
+            })
+            .unwrap();
+        assert!(*given_back, "the ended program's lease is given back");
     }
 
     #[test]
