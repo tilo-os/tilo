@@ -120,7 +120,7 @@ impl Model for Id {
 }
 
 pub(crate) const ORDER: &str = "k";
-pub(crate) const VALUE: &str = "v";
+pub const VALUE: &str = "v";
 
 /// The keys from the document's root down to the map `obj`, as a model names its fields: an
 /// item's id for each collection on the way, never the entry key its value is kept under (`issues/<issue>/comments`
@@ -779,7 +779,8 @@ pub(crate) fn store_in_order(
         put_entry(doc, &map, id, key, order_only, &|doc, value| {
             item.store_to(doc, value)?;
             if new {
-                note_stored(value, &|| shared(index));
+                let doc = &*doc;
+                note_stored(value, &|entry| shared(index, doc, entry));
             }
             Ok(())
         })?;
@@ -787,16 +788,16 @@ pub(crate) fn store_in_order(
     Ok(())
 }
 
-/// The item at a position as its collection shares it, when it reads back as
-/// it is written ([`Entries::shared_at`]); `None` for one that does not.
-pub(crate) type SharedAt<'a> = dyn Fn(usize) -> Option<Box<dyn Any>> + 'a;
+/// The item at a position, just stored whole into the new entry given, as
+/// reading it back gives ([`shared_item`]); `None` when that cannot be told.
+pub(crate) type SharedAt<'a> = dyn Fn(usize, &Doc, &ObjId) -> Option<Box<dyn Any>> + 'a;
 
 /// The item `shared` gives was just stored whole as `value`, an entry's:
 /// kept for the reader that follows this write
 /// ([`crate::apply_cache::note_stored`]).
-fn note_stored(value: Slot<'_>, shared: &dyn Fn() -> Option<Box<dyn Any>>) {
+fn note_stored(value: Slot<'_>, shared: &dyn Fn(&ObjId) -> Option<Box<dyn Any>>) {
     if let Slot::Key(entry, _) = value {
-        crate::apply_cache::note_stored(entry, shared);
+        crate::apply_cache::note_stored(entry, &|| shared(entry));
     }
 }
 
@@ -1656,6 +1657,13 @@ pub(crate) trait Entries {
     /// The item at `at` as this collection shares it: an `Arc` of it, with
     /// how to copy it.
     fn shared_at(&self, at: usize) -> Option<Box<dyn Any>>;
+    /// A copy of the item at `at`, changed by `settle`, as [`Self::shared_at`]
+    /// gives an item; `None` when `settle` fails.
+    fn settled_at(
+        &self,
+        at: usize,
+        settle: &mut dyn FnMut(&mut dyn Any) -> bool,
+    ) -> Option<Box<dyn Any>>;
     /// Put `stored`, an item as [`Self::shared_at`] gave it, at `at` or
     /// appended, as `entry`: its id and order key. Whether it was one of this
     /// collection's items.
@@ -1771,6 +1779,17 @@ impl<T: 'static> Entries for Collection<T> {
         Some(Box::new((Arc::clone(&entry.item), copy)))
     }
 
+    fn settled_at(
+        &self,
+        at: usize,
+        settle: &mut dyn FnMut(&mut dyn Any) -> bool,
+    ) -> Option<Box<dyn Any>> {
+        let entry = self.items.get(at)?;
+        let copy = *self.copier.0.get()?;
+        let mut item = copy(&entry.item);
+        settle(&mut item).then(|| Box::new((Arc::new(item), copy)) as Box<dyn Any>)
+    }
+
     fn put_shared(
         &mut self,
         at: Option<usize>,
@@ -1798,14 +1817,22 @@ impl<T: 'static> Entries for Collection<T> {
     }
 }
 
-/// The item at `at` of `entries`, of the type `item`, as they share it, when it
-/// reads back as it is written: an item holding rich text reads back as the
-/// document's own structure, and is read.
-fn shared_item(item: &ModelTable, entries: &dyn Entries, at: usize) -> Option<Box<dyn Any>> {
-    if item.has_ops {
-        return None;
+/// The item at `at` of `entries`, of the type `item`, just stored whole into
+/// `entry`, as reading it back gives: as they share it, or, for an item
+/// holding what reads back as the document's own structure (rich text), a
+/// copy with that read again ([`crate::table::settle`]).
+fn shared_item(
+    item: &ModelTable,
+    entries: &dyn Entries,
+    at: usize,
+    (doc, entry): (&Doc, &ObjId),
+) -> Option<Box<dyn Any>> {
+    if !item.has_ops {
+        return entries.shared_at(at);
     }
-    entries.shared_at(at)
+    entries.settled_at(at, &mut |value| {
+        crate::table::settle(item, value, doc, (entry, VALUE)).is_ok()
+    })
 }
 
 /// What `Collection<T>`'s table reaches into one with.
@@ -2081,9 +2108,9 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
         for (id, item) in &held {
             items.push((*id, item as &dyn Stores));
         }
-        let shared = |at: usize| {
+        let shared = |at: usize, doc: &Doc, entry: &ObjId| {
             let at = entries.find(held.get(at)?.0)?;
-            shared_item(desc.item, entries, at)
+            shared_item(desc.item, entries, at, (doc, entry))
         };
         store_in_order(doc, slot, &items, (order_only(desc.item), &shared), &|id| {
             entries.is_quarantined(id)
@@ -2153,7 +2180,8 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
                         return Ok(());
                     };
                     (item.ops.store)(item, value, doc, into)?;
-                    note_stored(into, &|| shared_item(item, now, at_now));
+                    let doc = &*doc;
+                    note_stored(into, &|entry| shared_item(item, now, at_now, (doc, entry)));
                     Ok(())
                 },
                 changed: &|at_now, at_was, doc, entry, dirty| match (

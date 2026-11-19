@@ -1482,6 +1482,51 @@ fn refresh_key(
     Ok(())
 }
 
+/// Make `target`, a value of `table`'s type just stored whole under `key` of
+/// the map `obj`, what reading it back gives. A value reads back as it was
+/// written but for what holds operations ([`ModelTable::has_ops`]): rich text
+/// reads back as the structure the document made of it. So of a struct's
+/// fields only those are read again, from where they were written; any other
+/// value holding operations is read again whole.
+///
+/// # Errors
+/// Why what was written does not read.
+pub(crate) fn settle(
+    table: &ModelTable,
+    target: &mut dyn Any,
+    doc: &Doc,
+    (obj, key): (&ObjId, &str),
+) -> Result<(), ModelError> {
+    if !table.has_ops {
+        return Ok(());
+    }
+    let stored = automerge::ReadDoc::get(doc, obj, key)?;
+    let (Ok(desc), Some((Value::Object(ObjType::Map), map))) = (described(table), &stored) else {
+        let stored = stored.as_ref().map(|(value, id)| (value, id));
+        return (table.ops.reload)(table, target, doc, stored);
+    };
+    for (index, field) in desc.fields.iter().enumerate() {
+        if !field.table.has_ops {
+            continue;
+        }
+        let inner = field_of_mut(desc, target, index)?;
+        let written = automerge::ReadDoc::get(doc, map, field.key)
+            .map_err(ModelError::from)
+            .located(field.key)?;
+        (field.table.ops.reload)(
+            field.table,
+            inner,
+            doc,
+            written.as_ref().map(|(value, id)| (value, id)),
+        )
+        .located(field.key)?;
+        if field.whole {
+            (field.table.ops.read_whole)(field.table, inner, doc).located(field.key)?;
+        }
+    }
+    Ok(())
+}
+
 /// Bring `target`, read earlier from `key` of the map `obj`, up to date
 /// after `delta`, through `table`: what [`crate::model::refresh_key`] does.
 ///

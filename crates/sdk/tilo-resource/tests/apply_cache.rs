@@ -411,8 +411,8 @@ impl Model for MergedText {
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::default())
     }
-    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        if let Slot::Key(parent, key) = slot
+    fn store(&self, doc: &mut Doc, into: Slot<'_>) -> Result<(), ModelError> {
+        if let Slot::Key(parent, key) = into
             && doc.pending_ops() == 0
             && doc.get(parent, key)?.is_none()
         {
@@ -426,7 +426,7 @@ impl Model for MergedText {
             doc.merge_incoming(&mut made)?;
             return Ok(());
         }
-        self.0.store(doc, slot)
+        self.0.store(doc, into)
     }
 }
 
@@ -716,4 +716,157 @@ fn the_view_after_a_group_takes_the_items_it_stored() {
     live.apply(Checklist::TOGGLE.with(added.clone())).unwrap();
     live.apply(Checklist::MOVE_TASK.with((added, 0))).unwrap();
     assert_eq!(live.live().unwrap().clone(), live.state().unwrap());
+}
+
+thread_local! {
+    static DRAFT_LOADS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Text that reads back as something else than it was written, as rich text
+/// reads back as the structure the document made of it: written from what it
+/// was given, read as what the document holds.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Drafted {
+    given: Option<String>,
+    read: Option<String>,
+}
+
+impl Drafted {
+    fn text(&self) -> &str {
+        self.given.as_deref().or(self.read.as_deref()).unwrap_or("")
+    }
+}
+
+impl Model for Drafted {
+    tilo_resource::leaf_paths!();
+    const OPS: bool = true;
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::Value::String(self.text().to_owned())
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        String::from_json(value).map(|given| Self {
+            given: Some(given),
+            read: None,
+        })
+    }
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        DRAFT_LOADS.with(|loads| loads.set(loads.get() + 1));
+        String::load(doc, value, id).map(|read| Self {
+            given: None,
+            read: Some(read),
+        })
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(Self::default())
+    }
+    fn store(&self, doc: &mut Doc, into: Slot<'_>) -> Result<(), ModelError> {
+        match &self.given {
+            Some(given) => given.store(doc, into),
+            None => Ok(()),
+        }
+    }
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Page {
+    pub title: String,
+    pub body: Drafted,
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Notebook {
+    pub pages: Collection<Page>,
+}
+
+#[resource(kind = "test.cached-notebook", catalogue = "tests/locales")]
+impl Notebook {
+    /// Write pages.
+    #[action]
+    pub fn write_pages(&mut self, cx: &mut ActionCx, bodies: Vec<String>) {
+        for body in bodies {
+            let page = Page {
+                title: body.clone(),
+                body: Drafted {
+                    given: Some(body),
+                    read: None,
+                },
+            };
+            self.pages.push(cx.id(), page);
+        }
+    }
+
+    /// Retitle a page.
+    #[action]
+    pub fn retitle_page(&mut self, page: &Id, title: String) -> Result<(), &'static str> {
+        self.pages.get_mut(page).ok_or("no such page")?.title = title;
+        Ok(())
+    }
+}
+
+fn draft_loads<T>(act: impl FnOnce() -> T) -> (T, usize) {
+    let before = DRAFT_LOADS.with(Cell::get);
+    let result = act();
+    (result, DRAFT_LOADS.with(Cell::get) - before)
+}
+
+/// A write that made items holding what reads back as something else than it
+/// was written keeps each as it reads back: the view following it and the next
+/// action take them rather than reading the pages back, however large the
+/// change, and that next action still makes the change a replica with nothing
+/// kept makes.
+#[test]
+fn items_that_read_back_otherwise_are_kept_as_they_read_back() {
+    let mut live = Replica::<Notebook>::new();
+    live.apply(Notebook::WRITE_PAGES.with(vec!["first".into()]))
+        .unwrap();
+    let mut cold = live.fork();
+    live.live().unwrap();
+    for round in 0..3 {
+        let bodies: Vec<String> = (0..300).map(|n| format!("page {round}.{n}")).collect();
+        let (_, loads) = draft_loads(|| live.apply(Notebook::WRITE_PAGES.with(bodies)).unwrap());
+        assert_eq!(
+            loads, 300,
+            "round {round}: the write reads back each body it wrote, and no other"
+        );
+        let (followed, loads) = draft_loads(|| live.live().unwrap().clone());
+        assert_eq!(loads, 0, "round {round}: the view reads no page back");
+        let whole = live.state().unwrap();
+        assert_eq!(
+            followed, whole,
+            "round {round}: the view holds what a read holds"
+        );
+        assert!(
+            whole
+                .pages
+                .iter()
+                .all(|(_, page)| page.body.given.is_none()),
+            "round {round}: a read gives each body as it reads back"
+        );
+        let envelope = live.log().last().unwrap().clone();
+        forget_all();
+        cold.replay(&envelope).unwrap();
+        assert_eq!(
+            live.heads(),
+            cold.heads(),
+            "round {round}: the replayed change differs"
+        );
+    }
+    let page = live.state().unwrap().pages.ids().last().unwrap().clone();
+    let (_, loads) = draft_loads(|| {
+        live.apply(Notebook::RETITLE_PAGE.with((page, "renamed".into())))
+            .unwrap()
+    });
+    assert_eq!(
+        loads, 0,
+        "the next action starts from the pages as they read back"
+    );
+    let envelope = live.log().last().unwrap().clone();
+    forget_all();
+    cold.replay(&envelope).unwrap();
+    assert_eq!(
+        live.heads(),
+        cold.heads(),
+        "the retitle replays identically"
+    );
+    assert_eq!(live.state().unwrap(), cold.state().unwrap());
 }

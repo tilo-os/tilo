@@ -373,3 +373,55 @@ fn a_list_answers_the_issues_it_made() {
     }
     assert_eq!(output.resources.len(), 2, "{:?}", output.resources);
 }
+
+/// Lists of new issues cost the same however many issues the tracker already holds: each list
+/// reads back the bodies it wrote and none of the issues before it, and the lists made once the
+/// tracker holds a thousand issues take about as long as the first ones did.
+#[test]
+fn each_list_of_new_issues_costs_the_same_however_many_came_before() {
+    const LIST: usize = 200;
+    const LISTS: usize = 7;
+    let mut app = open();
+    let mut lists = Vec::with_capacity(LISTS);
+    for list in 0..LISTS {
+        let issues: Vec<Value> = (list * LIST..(list + 1) * LIST)
+            .map(|at| {
+                json!({
+                    "title": format!("Issue {at}"),
+                    "body": format!("## Issue {at}\n\nWhat it is about, with a step or two.\n"),
+                    "labels": ["Migration"],
+                })
+            })
+            .collect();
+        let began = std::time::Instant::now();
+        let ((), observed) = ui::tilo_resource::profiling::observe(|| {
+            app.call_on(&chain(), "create-many", json!({ "issues": issues }))
+                .expect("the issues are made");
+        });
+        let took = began.elapsed();
+        let bodies = observed
+            .iter()
+            .find(|sample| sample.phase == "rich_text.read.parts")
+            .map_or(0, |sample| sample.calls);
+        lists.push((took, bodies));
+    }
+    assert_eq!(held(&app).len(), LIST * LISTS);
+    let read: Vec<usize> = lists.iter().map(|(_, bodies)| *bodies).collect();
+    assert!(
+        read.iter().all(|bodies| *bodies == LIST),
+        "each list reads back its own {LIST} bodies, no more: {read:?}"
+    );
+    // The first list also opens the part; the median of three steadies a busy machine.
+    let median = |lists: &[(std::time::Duration, usize)]| {
+        let mut took: Vec<_> = lists.iter().map(|(took, _)| *took).collect();
+        took.sort_unstable();
+        took[took.len() / 2]
+    };
+    let early = median(&lists[1..4]);
+    let late = median(&lists[LISTS - 3..]);
+    assert!(
+        late < early * 3 / 2,
+        "the lists after {} issues took {late:?}, the early ones {early:?}: {lists:?}",
+        LIST * (LISTS - 3)
+    );
+}
