@@ -102,7 +102,7 @@ pub(crate) mod seed;
 mod workspace_name;
 mod workspace_settings;
 use held::Held;
-pub use held::{MAX_HELD_BYTES, MAX_HELD_INPUTS};
+pub use held::{MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS};
 pub use native_publication::NativePublicationCut;
 pub use personal::device_grants::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept, Refusal};
 pub use personal::link::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};

@@ -2486,3 +2486,92 @@ fn only_a_device_of_the_member_signs_the_cut_of_their_withdrawal() {
         assert!(!taken, "{who} raised the cut: {answer}");
     }
 }
+
+/// A replay reaching a peer ahead of the role change its writes were made
+/// under (a server's session that just started, caught up by its server)
+/// holds a writer's first writes and lets the rest go: none of them is
+/// refused, and once the role arrives the held ones apply and the server is
+/// asked to replay the ones let go, which apply then too.
+#[test]
+fn writes_ahead_of_their_role_change_are_asked_for_again_once_it_arrives() {
+    let (mut peer, guest_key, guest) = workspace_with(Role::Viewer);
+    let (owner_key, owner) = owner();
+    let mut governor = peer.clone();
+    governor
+        .governance_mut()
+        .set_member_role(guest.user_public_key, Role::Editor, &owner_key, now())
+        .unwrap();
+    let named: Vec<[u8; 4]> = governor
+        .governance()
+        .heads()
+        .iter()
+        .map(collab_types::governance_head)
+        .collect();
+    let count = u64::try_from(crate::MAX_HELD_FOR_GOVERNANCE_PER_WRITER).unwrap() + 4;
+    // One after the other, as a page writes them: the governor, which holds
+    // the role, takes each in, and the next is written on top of it.
+    let writes: Vec<NeighbourMsg> = (1..=count)
+        .map(|seq| {
+            let edit = format!("edit {seq}");
+            let mut message = guest_write_at(
+                &governor,
+                &guest_key,
+                |doc| doc.put(ROOT, "value", edit).unwrap(),
+                edit_value(),
+                None,
+                seq,
+            );
+            let NeighbourMsg::AppDocument { envelope, .. } = &mut message else {
+                panic!("a document write")
+            };
+            envelope.governance.clone_from(&named);
+            collab_types::sign_op(envelope, &guest_key).unwrap();
+            receive(&mut governor, &guest, message.clone()).expect("the governor takes it in");
+            message
+        })
+        .collect();
+    let origin = TransportOrigin::ServerDelta(guest.device_public_key);
+    let mut let_go = Vec::new();
+    for write in &writes {
+        let report = peer
+            .receive_from(origin, write.clone(), now())
+            .expect("a write ahead of its role change is not refused");
+        for dropped in &report.dropped {
+            assert!(
+                !matches!(dropped.reason, crate::DropReason::Refused(_)),
+                "let go to be asked for again, never refused: {dropped}"
+            );
+        }
+        let_go.extend(report.dropped);
+    }
+    assert!(
+        !let_go.is_empty(),
+        "past its share of the queue a write is let go"
+    );
+
+    let arrived = peer
+        .receive_from(
+            TransportOrigin::ServerDelta(owner.device_public_key),
+            governor.workspace_message(),
+            now(),
+        )
+        .unwrap();
+    assert!(
+        arrived.replay_wanted,
+        "the role arrived: what was let go waiting for it is asked for again"
+    );
+    for dropped in &let_go {
+        let replayed = &writes[usize::try_from(dropped.sequence).unwrap() - 1];
+        let report = peer.receive_from(origin, replayed.clone(), now()).unwrap();
+        assert!(
+            !report.deferred && report.dropped.is_empty(),
+            "write {} applies once replayed",
+            dropped.sequence
+        );
+    }
+    assert_eq!(
+        value(&peer),
+        format!("\"edit {count}\""),
+        "every write of the replay is taken in"
+    );
+}
