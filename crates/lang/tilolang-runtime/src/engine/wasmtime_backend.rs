@@ -20,7 +20,7 @@ use super::{
 use crate::abi::{self, IMPORTS};
 
 pub(super) struct Wasmtime {
-    engine: wasmtime::Engine,
+    engine: shared::Engine,
 }
 
 impl Wasmtime {
@@ -36,7 +36,7 @@ impl Wasmtime {
         Ok(Self { engine })
     }
 
-    pub(super) const fn engine(&self) -> &wasmtime::Engine {
+    pub(super) fn engine(&self) -> &wasmtime::Engine {
         &self.engine
     }
 
@@ -266,6 +266,8 @@ impl Backend for Wasmtime {
         modules: &[Module],
         limits: &EngineLimits,
     ) -> Result<Pooled, Failure> {
+        // Instantiation calls each module's start function inside the guest.
+        let _starting = shared::in_call(&self.engine);
         let mut store = shared::store(
             &self.engine,
             Slot {
@@ -313,6 +315,7 @@ impl Backend for Wasmtime {
     }
 
     fn call(
+        &self,
         pooled: &mut Pooled,
         export: &str,
         args: &[Wasm],
@@ -320,7 +323,7 @@ impl Backend for Wasmtime {
         cx: Cx,
     ) -> Result<Option<Wasm>, CallError> {
         pooled.store.data_mut().cx = Some(cx);
-        let outcome = call_export(pooled, export, args, limits);
+        let outcome = call_export(&self.engine, pooled, export, args, limits);
         // What the call spent, charged to the unit that made it: a call that ran out spent it
         // all.
         let spent = limits
@@ -335,12 +338,13 @@ impl Backend for Wasmtime {
 }
 
 fn call_export(
+    engine: &shared::Engine,
     pooled: &mut Pooled,
     export: &str,
     args: &[Wasm],
     limits: &EngineLimits,
 ) -> Result<Option<Wasm>, CallError> {
-    shared::begin(&mut pooled.store, limits)?;
+    let _call = shared::begin(engine, &mut pooled.store, limits)?;
     let found = if let Some(found) = pooled.funcs.get(export) {
         found.clone()
     } else {

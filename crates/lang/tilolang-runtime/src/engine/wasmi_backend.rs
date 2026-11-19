@@ -248,6 +248,7 @@ impl Backend for Wasmi {
     }
 
     fn call(
+        &self,
         pooled: &mut Pooled,
         export: &str,
         args: &[Wasm],
