@@ -1,5 +1,6 @@
 //! Same-barrier native outgoing ownership; server queue acceptance is never an ACK.
 use super::answers::AnswerSignature;
+use super::backlog::Ownership;
 use crate::StatePeer;
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, enrollment, stored};
 use crate::owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
@@ -222,14 +223,12 @@ impl Hosted {
 struct HostedWrite(#[serde(with = "crate::owner::stored::base64_bytes")] Vec<u8>);
 impl HostedHistory {
     /// Keep all but the newest writes in runs, as ownership keeps its backlog.
-    fn spill(&mut self, (store, workspace): Runs<'_>) -> Result<(), String> {
-        let runs = spill(&mut self.writes, |write| write.0.len(), store, workspace)?;
-        self.runs.extend(runs.into_iter().map(|(hash, _)| hash));
+    fn spill(&mut self, (store, workspace, _): Ownership<'_>) -> Result<(), String> {
+        let kept = spill(&mut self.writes, |write| write.0.len(), store, workspace)?;
+        self.runs.extend(kept.into_iter().map(|(hash, _)| hash));
         Ok(())
     }
 }
-/// The store that keeps a workspace's runs, and the workspace.
-type Runs<'a> = (&'a dyn super::Store, WorkspaceId);
 /// How many writes of what this device knows of its hosts' histories `view`'s record holds
 /// itself, and how many runs beside it hold the rest.
 #[cfg(test)]
@@ -250,9 +249,9 @@ pub(crate) fn hosted_in_document(view: &NativeCommittedView) -> (usize, usize) {
 /// ([`super::Store::put_ownership`]), and how many of them moved to ownership's head already.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SpilledRun {
-    hash: [u8; 32],
-    writes: u32,
-    taken: u32,
+    pub(crate) hash: [u8; 32],
+    pub(crate) writes: u32,
+    pub(crate) taken: u32,
 }
 /// The server host's answers to this device's writes to one record, kept with the ownership they
 /// left.
@@ -354,7 +353,7 @@ impl Default for StoredPublication {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoredOutgoing {
     ordinal: u64,
-    id: [u8; 32],
+    pub(crate) id: [u8; 32],
     /// Base64 text in the owner's JSON files, like the record's other
     /// opaque bytes; entries written before that held JSON arrays of
     /// numbers, one line per byte pretty-printed, and still read back.
@@ -1120,29 +1119,28 @@ fn spill<T: Serialize>(
     Ok(runs)
 }
 
-/// Keep `workspace`'s ownership in shape before its record is published: its head takes the
-/// oldest writes waiting behind it while it has room, and a tail that grew long becomes a run
-/// `store` keeps beside the record. Every write stays in the order it was committed.
+/// Keep `workspace`'s ownership in shape before it is published: its head takes the oldest writes
+/// waiting behind it while it has room, and a tail that grew long becomes a stretch the store keeps
+/// beside the workspace. Every write stays in the order it was committed.
 ///
 /// # Errors
-/// A run could not be kept or read back.
+/// A stretch could not be kept or read back.
 pub(crate) fn settle(
     view: &mut stored::StoredWorkspace,
-    store: &dyn super::Store,
+    (store, workspace, read): Ownership<'_>,
 ) -> Result<(), String> {
-    let workspace = view.workspace;
     let Some(publication) = view.publication.as_mut() else {
         return Ok(());
     };
     let mut held = bounds(publication)?;
     let mut changed = false;
-    let mut run: Option<Vec<StoredOutgoing>> = None;
+    let mut run: Option<std::sync::Arc<Vec<StoredOutgoing>>> = None;
     while publication.entries.len() < MAX_ENTRIES {
         let next = match publication.spilled.first() {
             Some(front) => {
                 let writes = match &mut run {
                     Some(writes) => writes,
-                    None => run.insert(read_run(store, workspace, front)?),
+                    None => run.insert(read.read(store, workspace, front)?),
                 };
                 writes
                     .get(usize::try_from(front.taken).map_err(|e| e.to_string())?)
@@ -1198,18 +1196,6 @@ pub(crate) fn settle(
     Ok(())
 }
 
-/// The runs of ownership's backlog `view` names, which its store keeps while it does.
-pub(crate) fn kept_runs(view: &stored::StoredWorkspace) -> impl Iterator<Item = [u8; 32]> + '_ {
-    view.publication.iter().flat_map(|publication| {
-        publication.spilled.iter().map(|run| run.hash).chain(
-            publication
-                .hosted
-                .iter()
-                .flat_map(|held| held.runs.iter().copied()),
-        )
-    })
-}
-
 /// The name a store keeps the run of `workspace`'s ownership named `hash` under
 /// ([`super::Store::put_ownership`]). It is the name stores have kept such writes under since
 /// they kept any, which is not what the code calls them: a store finds what it wrote by it.
@@ -1238,7 +1224,7 @@ impl stored::NativeAuthorityStorage {
     /// Each is named twice, by the two names a store may hold it under.
     pub fn ownership_runs(&self) -> impl Iterator<Item = String> + '_ {
         self.workspaces.iter().flat_map(|(workspace, stored)| {
-            kept_runs(stored).flat_map(|hash| {
+            kept_hashes(stored).flat_map(|hash| {
                 [
                     ownership_run_name(*workspace, hash),
                     ownership_name_between(*workspace, hash),
@@ -1248,39 +1234,57 @@ impl stored::NativeAuthorityStorage {
     }
 }
 
-/// The writes of `run`, read back from `store` and checked against its record.
-fn read_run(
-    store: &dyn super::Store,
-    workspace: WorkspaceId,
-    run: &SpilledRun,
+/// The writes of every stretch `publication` keeps beside its record that are not at its head yet.
+pub(crate) fn spilled_writes(
+    publication: &StoredPublication,
+    (store, workspace, read): Ownership<'_>,
 ) -> Result<Vec<StoredOutgoing>, String> {
-    let bytes = store.read_ownership(workspace, run.hash)?;
-    if bytes.len() > MAX_RUN_BYTES || *blake3::hash(&bytes).as_bytes() != run.hash {
-        return Err("a kept run of ownership differs from its record".into());
-    }
-    let writes: Vec<StoredOutgoing> = postcard::from_bytes(&bytes).map_err(|e| e.to_string())?;
-    if usize::try_from(run.writes).ok() != Some(writes.len())
-        || writes
-            .iter()
-            .any(|write| write.id != *blake3::hash(&write.bytes).as_bytes())
-    {
-        return Err("a kept run of ownership differs from its record".into());
+    let mut writes = Vec::new();
+    for spilled in &publication.spilled {
+        let taken = usize::try_from(spilled.taken).map_err(|e| e.to_string())?;
+        writes.extend(
+            read.read(store, workspace, spilled)?
+                .iter()
+                .skip(taken)
+                .cloned(),
+        );
     }
     Ok(writes)
 }
 
-/// The writes of every run `publication` keeps beside its record that are not at its head yet.
-fn spilled_writes(
+/// The ids of every write `publication` holds, in the order it sends them.
+pub(crate) fn ownership_ids(
     publication: &StoredPublication,
-    store: &dyn super::Store,
-    workspace: WorkspaceId,
-) -> Result<Vec<StoredOutgoing>, String> {
-    let mut writes = Vec::new();
-    for run in &publication.spilled {
-        let taken = usize::try_from(run.taken).map_err(|e| e.to_string())?;
-        writes.extend(read_run(store, workspace, run)?.into_iter().skip(taken));
+    (store, workspace, read): Ownership<'_>,
+) -> Result<Vec<[u8; 32]>, String> {
+    let mut ids: Vec<[u8; 32]> = publication.entries.iter().map(|entry| entry.id).collect();
+    for spilled in &publication.spilled {
+        let taken = usize::try_from(spilled.taken).map_err(|e| e.to_string())?;
+        ids.extend(
+            read.read(store, workspace, spilled)?
+                .iter()
+                .skip(taken)
+                .map(|write| write.id),
+        );
     }
-    Ok(writes)
+    ids.extend(publication.tail.iter().map(|entry| entry.id));
+    Ok(ids)
+}
+
+/// The stretches of ownership's backlog `view` names, which its store keeps while it does.
+pub(crate) fn kept_hashes(view: &stored::StoredWorkspace) -> impl Iterator<Item = [u8; 32]> + '_ {
+    view.publication.iter().flat_map(|publication| {
+        publication
+            .spilled
+            .iter()
+            .map(|spilled| spilled.hash)
+            .chain(
+                publication
+                    .hosted
+                    .iter()
+                    .flat_map(|held| held.runs.iter().copied()),
+            )
+    })
 }
 pub(crate) fn append_local(
     view: &mut stored::StoredWorkspace,
@@ -1291,20 +1295,14 @@ pub(crate) fn append_local(
 pub(crate) fn has_exact(
     view: &stored::StoredWorkspace,
     bytes: &[u8],
-    store: &dyn super::Store,
+    runs: Ownership<'_>,
 ) -> Result<bool, String> {
     let publication = state_of(view)?;
-    if publication
-        .entries
-        .iter()
-        .chain(&publication.tail)
-        .any(|entry| entry.bytes == bytes)
-    {
+    let found = |kept: &[StoredOutgoing]| kept.iter().any(|entry| entry.bytes == bytes);
+    if found(&publication.entries) || found(&publication.tail) {
         return Ok(true);
     }
-    Ok(spilled_writes(publication, store, view.workspace)?
-        .iter()
-        .any(|entry| entry.bytes == bytes))
+    Ok(found(&spilled_writes(publication, runs)?))
 }
 // qps validates historical ownership separately from current send/sign permission.
 fn validate_exact(
@@ -1522,7 +1520,7 @@ impl StoredPublication {
     /// `(store, workspace)` keep its runs.
     fn hosted(
         &self,
-        (store, workspace): Runs<'_>,
+        (store, workspace, _): Ownership<'_>,
         (app, record): (&str, &str),
     ) -> Result<Option<Hosted>, String> {
         let Some(held) = self
@@ -1550,7 +1548,7 @@ impl StoredPublication {
     }
     fn set_hosted(
         &mut self,
-        runs: Runs<'_>,
+        runs: Ownership<'_>,
         (app, record): (&str, &str),
         hosted: Option<&Hosted>,
     ) -> Result<(), String> {
@@ -1584,7 +1582,7 @@ impl StoredPublication {
     fn hosted_write(
         &mut self,
         live: &StatePeer,
-        runs: Runs<'_>,
+        runs: Ownership<'_>,
         (app, record): (&str, &str),
         write: &SignedOp,
     ) -> Result<(), String> {
@@ -1712,14 +1710,7 @@ impl NativeWorkspaceOwner {
     pub fn owed_writes(&self, workspace: WorkspaceId) -> Result<Vec<[u8; 32]>, String> {
         self.with_current(workspace, |view| {
             let publication = state(view)?;
-            let spilled = spilled_writes(publication, self.0.store.as_ref(), workspace)?;
-            Ok(publication
-                .entries
-                .iter()
-                .chain(&spilled)
-                .chain(&publication.tail)
-                .map(|entry| entry.id)
-                .collect())
+            ownership_ids(publication, self.ownership(workspace))
         })
     }
     #[cfg(any(test, feature = "test-support"))]
@@ -1766,7 +1757,7 @@ impl NativeWorkspaceOwner {
         let _turn = self.0.mutation.lock();
         let candidate = self.view(workspace)?;
         let now = tilo_clock::wall();
-        let runs = (self.0.store.as_ref(), workspace);
+        let runs = self.ownership(workspace);
         let (changed, mut record) = candidate.change(|live, record| {
             let publication = record.publication.as_mut().ok_or("publication absent")?;
             // A refused compaction keeps its place, and is drafted again there against what
@@ -1872,7 +1863,7 @@ impl NativeWorkspaceOwner {
                     )
                 })
                 .collect();
-            let spilled = spilled_writes(publication, self.0.store.as_ref(), workspace)?;
+            let spilled = spilled_writes(publication, self.ownership(workspace))?;
             for entry in publication
                 .entries
                 .iter()
@@ -2074,7 +2065,7 @@ impl NativeWorkspaceOwner {
         };
         let failed = std::sync::Mutex::new(Vec::new());
         let folded = std::sync::Mutex::new(Vec::new());
-        let runs = (self.0.store.as_ref(), workspace);
+        let runs = self.ownership(workspace);
         let draft = |view: &NativeCommittedView| {
             let device = view.device().device_public_key;
             let mut due = view.peer.publication().sealed_to_compact();
@@ -2152,7 +2143,7 @@ impl NativeWorkspaceOwner {
         keys: &dyn SealedHistoryKeys,
         now: SystemTime,
     ) -> Result<(), String> {
-        let runs = (self.0.store.as_ref(), workspace);
+        let runs = self.ownership(workspace);
         let next = self.with_current(workspace, |view| next_drafted(view, runs, keys, now))?;
         let Some((id, message, drafted)) = next else {
             return Ok(());
@@ -2385,7 +2376,7 @@ impl NativeWorkspaceOwner {
         {
             return None;
         }
-        let runs = (self.0.store.as_ref(), candidate.record.workspace);
+        let runs = self.ownership(candidate.record.workspace);
         let mut live = candidate.live();
         // A compaction in segments is taken once all of its pieces are here.
         let gathered;
@@ -2449,7 +2440,7 @@ impl NativeWorkspaceOwner {
 fn compacted_here(
     live: &mut StatePeer,
     publication: &mut StoredPublication,
-    runs: Runs<'_>,
+    runs: Ownership<'_>,
     (app, record): (&str, &str),
     ops: Vec<SignedOp>,
     now: SystemTime,
@@ -2495,7 +2486,7 @@ type NextDrafted = (
 );
 fn next_drafted(
     view: &NativeCommittedView,
-    runs: Runs<'_>,
+    runs: Ownership<'_>,
     keys: &dyn SealedHistoryKeys,
     now: SystemTime,
 ) -> Result<Option<NextDrafted>, String> {
@@ -2550,7 +2541,7 @@ fn next_drafted(
 fn drafted_here(
     live: &mut StatePeer,
     publication: &mut StoredPublication,
-    runs: Runs<'_>,
+    runs: Ownership<'_>,
     (route, history): ((&str, &str), &[SignedOp]),
     message: NeighbourMsg,
     ops: Vec<SignedOp>,
@@ -2697,10 +2688,10 @@ fn covers(compaction: &SignedOp, write: &SignedOp) -> bool {
 /// sends them.
 fn owed_to(
     publication: &StoredPublication,
-    (store, workspace): Runs<'_>,
+    runs: Ownership<'_>,
     (app, record): (&str, &str),
 ) -> Result<Vec<SignedOp>, String> {
-    let spilled = spilled_writes(publication, store, workspace)?;
+    let spilled = spilled_writes(publication, runs)?;
     Ok(publication
         .entries
         .iter()
@@ -2722,7 +2713,7 @@ fn owed_to(
 fn host_history(
     live: &StatePeer,
     publication: &StoredPublication,
-    runs: Runs<'_>,
+    runs: Ownership<'_>,
     (app, record): (&str, &str),
 ) -> Result<Vec<SignedOp>, String> {
     let held = live.publication().sealed_history(app, record);
@@ -2753,7 +2744,7 @@ fn host_history(
 fn take_hosted(
     live: &mut StatePeer,
     publication: &mut StoredPublication,
-    runs: Runs<'_>,
+    runs: Ownership<'_>,
     route: (&str, &str),
     compaction: &SignedOp,
     owed: &[SignedOp],
