@@ -3575,8 +3575,10 @@ impl FrameHarness {
                     None,
                 );
                 // The header the rebuild builds hears whether the frame's row
-                // presents search, so it never shows a second search control.
-                if self.part_row.is_some() {
+                // presents search, so it never shows a second search control. A
+                // frame whose own header row is the window's bar keeps only a
+                // notice card over it, which presents none: the row keeps its own.
+                if self.parts_row_shown() {
                     crate::widget::window_header::offer_window_search(self.root.as_mut(), true);
                 }
                 self.root.set_interaction_environment(self.interaction);
