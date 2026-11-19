@@ -14,6 +14,11 @@ paths = [
 # of. A use of Tilo's own concept never goes here: rename it.
 
 [[allow]]
+reason = "The page runtime's existing names for what the browser serves a mounted desktop (its notices, models and services) and what the desktop asks of it."
+words = ["host"]
+identifiers = ["host_services", "HostRequest"]
+
+[[allow]]
 reason = "The render service's existing name for whether a row is drawn on the device running the app rather than in its worker; code that asks it keeps that name."
 words = ["host"]
 identifiers = ["host_rendered"]

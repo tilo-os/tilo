@@ -77,11 +77,15 @@ mod page_files;
 #[cfg(target_arch = "wasm32")]
 pub use drops_code::{DROPS, MakeDrops, builtin_drops};
 #[cfg(target_arch = "wasm32")]
+mod told_code;
+#[cfg(target_arch = "wasm32")]
 pub use layout::{MakePageLayout, PAGE_LAYOUT, builtin_page_layout};
 #[cfg(target_arch = "wasm32")]
 pub use page_files::{PDF_WORDS, PdfWords, builtin_pdf_words};
 #[cfg(target_arch = "wasm32")]
 pub use page_search::{MakePageSearch, PAGE_SEARCH, builtin_page_search};
+#[cfg(target_arch = "wasm32")]
+pub use told_code::{TOLD_NOTICES, ToldNotices, builtin_told_notices};
 /// Install an already-admitted feedback transport before mounting its desktop.
 /// This Rust host hook is intentionally absent from URL/JSON launch options.
 /// # Errors

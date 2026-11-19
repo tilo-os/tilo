@@ -82,7 +82,6 @@ pub(crate) fn install() {
         committed_record,
         changes,
         resource_document,
-        record_since,
         record_heads,
         ask_resource,
         resource_answer,
@@ -412,61 +411,6 @@ pub(crate) fn resource_document(id: u32, app: &str, wire: &str) -> Option<AutoCo
         .record(&joined.uuid, app, wire)
         .ok()??;
     tilo_automerge::shared::load(&bytes).ok()
-}
-
-/// What changed of `wire` of `app` since `heads`, as the workspace holds it: its changes alone
-/// where it holds those heads, and the document whole otherwise.
-pub(crate) fn record_since(
-    id: u32,
-    app: &str,
-    wire: &str,
-    heads: &[ui::automerge::ChangeHash],
-) -> tilo_session::platform::records::Since {
-    use tilo_session::platform::records::Since;
-    let Some(joined) = replica_of(id) else {
-        return Since::Whole;
-    };
-    let held = sorted_heads(&heads.iter().map(|head| head.0).collect::<Vec<_>>());
-    if held.is_empty() {
-        return Since::Whole;
-    }
-    // A window here holds this document open: what it holds answers, without opening its sealed
-    // history again for what is already on this page. A person's edit reads here before it
-    // paints, and a document of many notes opens once, not once per reader.
-    if let Some(mut doc) = open_resource(id, app, wire) {
-        let base = held
-            .iter()
-            .copied()
-            .map(ui::automerge::ChangeHash)
-            .collect::<Vec<_>>();
-        if base.iter().all(|head| doc.has_change(head)) {
-            let mut at = doc.get_heads();
-            at.sort();
-            if at == base {
-                return Since::Unchanged;
-            }
-            let mut bytes = Vec::new();
-            for change in doc.get_changes(&base) {
-                bytes.extend_from_slice(change.raw_bytes());
-            }
-            if !bytes.is_empty() {
-                return Since::Changes { heads: at, bytes };
-            }
-        }
-    }
-    let joined = joined.borrow();
-    match joined
-        .peer
-        .engine()
-        .record_update(&joined.uuid, app, wire, Some(&held))
-    {
-        Ok(ResourceReading::Changes { heads, bytes, .. }) => Since::Changes {
-            heads: heads.into_iter().map(ui::automerge::ChangeHash).collect(),
-            bytes,
-        },
-        Ok(ResourceReading::Unchanged(_) | ResourceReading::Pending) => Since::Unchanged,
-        Ok(ResourceReading::Captured { .. }) | Err(_) => Since::Whole,
-    }
 }
 
 /// The heads the workspace last delivered `record` of `app` at, as the page read it.

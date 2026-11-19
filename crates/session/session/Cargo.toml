@@ -61,9 +61,6 @@ lazy-search-feed = []
 # (`activity::SAY_DOING`) is handed over by the bundling crate rather than
 # linked: the browser desktop fetches it as its own module.
 lazy-say-doing = []
-# The code that looks for the person's mentions and tells them (`mentions::STEP`) is handed over
-# by the bundling crate rather than linked: the browser desktop fetches it as its own module.
-lazy-mentions = []
 
 [dependencies]
 # The device's one store, which apps write and read their resources in.

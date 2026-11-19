@@ -18,7 +18,7 @@
 //! which opening it asks for, the people roster, which the bar's faces
 //! open, the server an invitation names, which the entry page fetches when it
 //! follows an invitation, what the page's person is doing and the code that
-//! tells them of their mentions, which the page fetches once its first frame
+//! follows what they are told, which the page fetches once its first frame
 //! is up, the HTML presenter, which a page mounted
 //! with `dom: true` asks for, the directory and invite sheets and the
 //! shortcut guide, which opening one asks for, a hosted window's page, which
@@ -276,10 +276,10 @@ split_code! {
 }
 
 split_code! {
-    /// The code that looks for the person's mentions and tells them: fetched once the first frame
-    /// is up, the first time the page looks.
-    mod mentions: tilo_session::mentions::StepMentions = tilo_session::mentions::builtin_step()
-        => tilo_session::mentions::STEP, module = "mentions", hash = "b37d0e95a2c4f618";
+    /// The code that follows what the person's workspace server tells them (their mentions):
+    /// fetched once the first frame is up, the first time the page follows it.
+    mod told_notices: tilo_browser_runtime::ToldNotices = tilo_browser_runtime::builtin_told_notices()
+        => tilo_browser_runtime::TOLD_NOTICES, module = "told_notices", hash = "5d82c1f4a09e7b36";
 }
 
 split_code! {
@@ -443,7 +443,7 @@ pub(crate) fn register() {
     pdf_words::register();
     written_views::register();
     say_doing::register();
-    mentions::register();
+    told_notices::register();
     prepare_settings_keeper_after_first_frame();
     prepare_page_drops_after_first_frame();
     prepare_page_search_after_first_frame();

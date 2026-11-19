@@ -292,21 +292,6 @@ impl Held {
     }
 }
 
-/// One pass over the person's mentions at a moment ([`Mentions::step`]).
-pub type StepMentions = fn(&Mentions, ui::time::Instant);
-
-ui::lazy_code! {
-    /// The code that looks for mentions and tells them: linked, or with `lazy-mentions` fetched
-    /// the first time they are stepped.
-    pub static STEP: StepMentions = builtin_step, feature = "lazy-mentions";
-}
-
-/// The only path to [`STEP`]'s code.
-#[must_use]
-pub fn builtin_step() -> StepMentions {
-    Mentions::step_at
-}
-
 /// What the person's mentions are looked at among: the records a change reached, and what tells
 /// the person of them.
 #[derive(Clone)]
@@ -386,12 +371,9 @@ impl Mentions {
     }
 
     /// Look for mentions in the records a change reached since the last pass, and open what the
-    /// person chose from a notice. Where the code that looks is still on its way ([`STEP`]), what
-    /// changed waits for the first pass once it is in.
+    /// person chose from a notice.
     pub fn step(&self) {
-        if let Some(step) = STEP.get() {
-            step(self, ui::time::now());
-        }
+        self.step_at(ui::time::now());
     }
 
     /// [`Self::step`] at `now`, as a host's pass reads the clock.

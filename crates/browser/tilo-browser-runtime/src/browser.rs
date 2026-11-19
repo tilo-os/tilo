@@ -639,8 +639,6 @@ pub(crate) struct Desktop {
     /// The session's search, which the shell's palette asks beyond the shell's own windows and
     /// commands: the bundle's apps and what the layout publishes.
     search: crate::page_search::PageSearch,
-    /// Mentions of this person in the workspace's records, and what was told.
-    mentions: RefCell<tilo_session::mentions::Mentions>,
     /// What this person may do here, which decides what the session opens
     /// as the workspace broker decides it on a native desktop.
     permissions: SharedPermissions,
@@ -1505,7 +1503,7 @@ fn present_desktop(
 ) -> Result<Presentation, JsValue> {
     let opening_permissions = permissions.clone();
     let dyn_history_store = Rc::clone(&dyn_store);
-    let mentions_store = Rc::clone(&dyn_store);
+    let asks_store = Rc::clone(&dyn_store);
     // What the palette reads the workspace's records and files in, and the content those files are.
     let (records_store, content_store) = (Rc::clone(&dyn_store), content(config));
     let wake = proxy()?;
@@ -1566,15 +1564,7 @@ fn present_desktop(
         &persistence,
         (&here, &session, (&owners, &opening_permissions)),
     )?;
-    let asks = session_asks::Asks::new(config.peer, &openings, Rc::clone(&mentions_store));
-    let mentions = mention_notices::over(
-        mentions_store,
-        &asks,
-        &config.author(),
-        &people,
-        &here,
-        (&handle, &shared.woken),
-    );
+    let asks = session_asks::Asks::new(config.peer, &openings, asks_store);
     let files = files_of_the_workspace(config, &shared, &content_store);
     let search = mount_search(
         id,
@@ -1614,7 +1604,6 @@ fn present_desktop(
             revoked,
             asks,
             search,
-            mentions: RefCell::new(mentions),
 
             permissions: opening_permissions,
             workspace: config.workspace.clone(),
@@ -3470,7 +3459,6 @@ mod frame_loop;
 mod here_exports;
 mod live_layout;
 mod live_signals;
-mod mention_notices;
 mod pacing;
 mod page_exports;
 pub(crate) mod presence;
@@ -3478,6 +3466,7 @@ mod publication;
 mod scale;
 mod scene;
 mod session_asks;
+pub(crate) mod told_notices;
 pub(crate) mod uploads;
 use crate::first_frame::{self, GpuStep};
 pub(crate) use frame_loop::sleep_ms;
