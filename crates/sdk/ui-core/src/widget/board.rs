@@ -402,19 +402,15 @@ impl Board {
         f64::from(theme.tokens.metrics.board_list_width).max(CardWidth::Regular.min_width(theme))
     }
 
-    /// The width a list takes on a board `width` wide: a list's comfortable measure, the same
-    /// on every board and at every window width, so lists stand left-aligned with the width a
-    /// wider pane leaves open beside them. Only a pane too narrow for one list and the board's
-    /// gutters narrows it, and then to the pane, so a narrow board shows one whole list per
-    /// page rather than one list and a sliver of the next.
-    pub(crate) fn list_width(theme: &Theme, width: f64) -> f32 {
-        Self::lists_width(theme, width, 1)
-    }
-
-    /// The width each of `lists` lists takes on a board `width` wide: [`Self::list_width`], except
-    /// that lists which fall a little short of fitting side by side narrow, never below the
-    /// measure a card needs, so every list stands whole in the pane rather than the last one cut
-    /// off at its edge. Lists that do not fit even then keep their comfortable measure and scroll.
+    /// The width each of `lists` lists takes on a board `width` wide: a comfortable measure,
+    /// the same on every board and at every window width, so lists stand left-aligned with the
+    /// width a wider pane leaves open beside them. Only a pane too narrow for one list and the
+    /// board's gutters narrows it, and then to the pane, so a narrow board shows one whole list
+    /// per page rather than one list and a sliver of the next.
+    ///
+    /// Lists that fall a little short of fitting side by side narrow, never below the measure a
+    /// card needs, so every list stands whole in the pane rather than the last one cut off at its
+    /// edge; lists that do not fit even then keep their comfortable measure and scroll.
     pub(crate) fn lists_width(theme: &Theme, width: f64, lists: usize) -> f32 {
         let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
         let gap = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Sibling));
@@ -908,7 +904,7 @@ mod tests {
         // open beside them at the trailing edge.
         {
             let theme = Theme::dark();
-            let list = f64::from(Board::list_width(&theme, 1280.0));
+            let list = f64::from(Board::lists_width(&theme, 1280.0, 1));
             let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
             let gap = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Sibling));
             let pane = 1280u32;

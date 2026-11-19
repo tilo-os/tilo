@@ -54,7 +54,7 @@ fn board_on_a_pane(board: Board, pane: u32) -> Framed<Scrollable> {
 
 fn list_pitch() -> f32 {
     let theme = Theme::dark();
-    Board::list_width(&theme, 390.0) + theme.tokens.spacing.rhythm.get(Rhythm::Sibling)
+    Board::lists_width(&theme, 390.0, 1) + theme.tokens.spacing.rhythm.get(Rhythm::Sibling)
 }
 
 /// Move the content by `dx` over `steps` samples `16 ms` apart, as a finger or
