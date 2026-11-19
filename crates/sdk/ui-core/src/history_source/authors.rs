@@ -181,9 +181,20 @@ impl AuthorDirectory {
             let author = author_coloured(name, short_id(member.id()), rgb);
             if let Some(person) = member.person_id() {
                 self.register(person, author.clone());
+                // The handle string an action's context names the person by,
+                // which an agent's change reads "for" ([`Self::resolve_handle`]).
+                self.register(&hex::encode(person.as_bytes()), author.clone());
             }
             self.register(&hex::encode(member.actor_bytes()), author);
         }
+    }
+
+    /// The author of the member whose handle is `handle` (a member id, as an
+    /// action's context names the person it acted for): what a delegated
+    /// agent's change reads as having been made for.
+    #[must_use]
+    pub fn resolve_handle(&self, handle: &str) -> HistoryAuthor {
+        self.resolve(&hex::encode(handle.as_bytes()))
     }
 
     /// Bind the actor id `actor_hex` a delegated agent writes as (its own
@@ -466,7 +477,7 @@ impl AuthorDirectory {
         };
         let for_person = on_behalf_of
             .as_deref()
-            .map(|person| self.resolve(&hex::encode(person.as_bytes())).name);
+            .map(|person| self.resolve_handle(person).name);
         let for_reader = on_behalf_of.is_some()
             && reader.as_ref().and_then(tilo_actions::MemberId::person_id)
                 == on_behalf_of.as_deref();
