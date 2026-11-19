@@ -339,6 +339,41 @@ tilo_test_env::scenario! {
         assert!(!kept.is_open(), "nothing stays open for a removed member");
     }
 
+    phase a_read_refused_while_the_history_is_still_arriving_keeps_what_opened;
+    {
+        let f = fixture();
+        let keys = f.keys();
+        let reader = f.authority.device_public_key;
+        let Fixture {
+            host: mut peer,
+            owner,
+            now,
+            ..
+        } = f;
+        let mut author = Author::new(&peer);
+        let mut kept = KeptDocument::default();
+        for value in ["one", "two", "three"] {
+            let message = write(&peer, &owner, &keys, &author.edit("value", value), now);
+            admit(&mut peer, &owner, message, now);
+        }
+        let (_, opened) = read_kept(&peer, reader, &[&keys], &mut kept).unwrap();
+        assert_eq!(opened, 3);
+        // The workspace's admissions are not all here yet, as while a page catches up: the read
+        // is refused, and what it opened before stays kept.
+        peer.core.exact_selected = false;
+        assert!(matches!(
+            read_kept(&peer, reader, &[&keys], &mut kept),
+            Err(crate::PeerDocumentReadError::Incomplete)
+        ));
+        assert!(kept.is_open(), "a history still arriving keeps what opened");
+        peer.core.exact_selected = true;
+        let message = write(&peer, &owner, &keys, &author.edit("value", "four"), now);
+        admit(&mut peer, &owner, message, now);
+        let (mut document, opened) = read_kept(&peer, reader, &[&keys], &mut kept).unwrap();
+        assert_eq!(opened, 1, "only the write admitted since, not the history again");
+        same(&mut document, &mut read_whole(&peer, reader, &[&keys]));
+    }
+
     phase a_write_whose_segments_are_still_arriving_keeps_what_opened_before_it;
     {
         let mut f = fixture();
@@ -418,9 +453,9 @@ tilo_test_env::scenario! {
         assert!(frames.len() > 1, "the write goes out as segments");
         let message = write(&f.host, &f.owner, &keys, &frames[0], f.now);
         admit(&mut f.host, &f.owner, message, f.now);
-        let compacted = |host: &StatePeer| {
+        let compacted = |peer: &StatePeer| {
             super::super::sealed_compaction::merge_sealed(
-                &host.core.documents[&route()],
+                &peer.core.documents[&route()],
                 &mut |op| open(&keys, op),
             )
         };
