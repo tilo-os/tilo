@@ -441,11 +441,7 @@ fn with_host_scheme(
 /// toolkit clock.
 #[must_use]
 pub fn local_moment() -> settings_store::day_schedule::LocalMoment {
-    // Through the epoch offset: std's clock type is not the toolkit clock in the browser.
-    let since_ms = i64::try_from(crate::time::unix_now_ms()).unwrap_or(i64::MAX);
-    let local = jiff::Timestamp::from_millisecond(since_ms)
-        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
-        .to_zoned(jiff::tz::TimeZone::system());
+    let local = crate::clock::local_now();
     settings_store::day_schedule::LocalMoment {
         day_of_year: u16::try_from(local.day_of_year()).unwrap_or(1),
         minute_of_day: u16::try_from(

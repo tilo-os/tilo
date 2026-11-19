@@ -275,7 +275,7 @@ pub(crate) fn time_in(text: Option<&str>) -> Option<Time> {
         "a value that is no time is shown as no time",
         text.parse::<jiff::Timestamp>()
             .ok()
-            .map(|at| at.to_zoned(jiff::tz::TimeZone::system()).time())
+            .map(|at| crate::clock::at(at).time())
     )
 }
 
