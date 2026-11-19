@@ -2606,3 +2606,5 @@ mod iroh_connect_tests;
 mod late_admission_tests;
 #[cfg(test)]
 mod opened_records_tests;
+#[cfg(test)]
+mod resumed_governance_tests;
