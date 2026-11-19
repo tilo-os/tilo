@@ -573,6 +573,27 @@ impl Resource for FilesTree {
                 })
             })
             .describe("Take a file or folder out of the trash, back where it was."),
+            ActionDecl::new(
+                verbs::LIST_CHUNK,
+                "List a part of the tree",
+                vec![ActionParam::required(
+                    "chunk",
+                    ParamType::Integer,
+                    "The number of the part, as a node's document id names it",
+                )],
+                |args, _| {
+                    let chunk = args
+                        .whole("chunk")
+                        .and_then(|chunk| TreeChunk::try_from(chunk).ok())
+                        .filter(|chunk| *chunk >= crate::files::FIRST_TREE_CHUNK)
+                        .ok_or("`chunk` is the number of a part of the tree, from 1")?;
+                    Ok(FileAction::ListChunk { chunk })
+                },
+            )
+            .describe(
+                "Make a part of the tree known to everyone who opens it, before the first \
+                 file or folder is made in it; in the tree's own document.",
+            ),
         ]
     }
 }

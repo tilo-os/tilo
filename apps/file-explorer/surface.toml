@@ -279,6 +279,13 @@ params = [
   { name = "node", required = true },
 ]
 
+[[resources.verbs]]
+id = "list-chunk"
+kind = "undoable"
+params = [
+  { name = "chunk", required = true },
+]
+
 [[resources]]
 kind = "files.recent"
 label = "Recent files"
@@ -319,5 +326,13 @@ name = "RecentUse"
 cases = [
   { name = "opened" },
   { name = "changed" },
+]
+
+[[resources]]
+kind = "files.workspace"
+label = "Files window"
+version = 1
+fields = [
+  { path = "folder", type = "text" },
 ]
 

@@ -155,6 +155,9 @@ struct Held {
     /// The tree's own document and every chunk it lists have been read: what the window
     /// shows is the tree, not part of it on its way.
     arrived: bool,
+    /// Nodes this window made that the workspace did not take, as they were taken
+    /// (some only once the store was free): what was asked and why it failed.
+    failed: Rc<RefCell<Vec<Notice>>>,
 }
 
 /// One chunk of the tree, read as its resource changes.
@@ -179,7 +182,13 @@ impl Held {
             tree: Tree::default(),
             revision: 0,
             arrived: false,
+            failed: Rc::default(),
         }
+    }
+
+    /// What this window asked of the tree that failed since it last looked.
+    fn take_failed(&self) -> Vec<Notice> {
+        std::mem::take(&mut self.failed.borrow_mut())
     }
 
     /// The whole tree, every chunk read so far.
@@ -223,6 +232,7 @@ impl Held {
         name: &str,
         kind: FileNodeKind,
         content: Option<(String, u64)>,
+        failed_title: String,
     ) -> Result<String, String> {
         let chunk = self.tree.chunk_for_new();
         let resource = match self.chunks.get(&chunk) {
@@ -250,21 +260,43 @@ impl Held {
         };
         let invoke = ui::tilo_resource::Invoke::<fs_protocol::tree::FilesTree>::apply(&action)
             .map_err(|error| error.to_string())?;
-        resource
-            .invoke(&invoke)
-            .map_err(|error| error.to_string())?;
-        // The tree's own document lists every chunk a node is in, so every member opens it.
-        let listed = self
+        // The tree's own document lists every chunk a node is in, so every member opens it: a
+        // chunk nobody listed yet is listed first, with the tree's own action. Both wait for the
+        // store when the window's own effect holds it (a chooser that answers), and
+        // what fails says so on the window's next refresh.
+        let unlisted = !self
             .index
             .read(fs_protocol::tree::listed_chunks)
-            .unwrap_or_default();
-        if !listed.contains(&chunk) {
-            self.index.record().edit(false, |doc| {
-                fs_protocol::tree::list_chunk(doc, chunk)
-                    .map(drop)
-                    .map_err(|error| error.to_string())
-            })?;
+            .unwrap_or_default()
+            .contains(&chunk);
+        if unlisted {
+            let list = ui::tilo_resource::Invoke::<fs_protocol::tree::FilesTree>::apply(
+                &FileAction::ListChunk { chunk },
+            )
+            .map_err(|error| error.to_string())?;
+            let failed = Rc::clone(&self.failed);
+            let failed_title = failed_title.clone();
+            self.index.invoke_then(&list, move |listed| {
+                if let Err(why) = listed {
+                    tracing::warn!("listing part {chunk} of the workspace's tree: {why}");
+                    failed.borrow_mut().push(Notice {
+                        title: failed_title,
+                        reason: Some(why.to_string()),
+                    });
+                }
+            });
         }
+        let failed = Rc::clone(&self.failed);
+        let made_name = name.clone();
+        resource.invoke_then(&invoke, move |made| {
+            if let Err(why) = made {
+                tracing::warn!("making {made_name} in the workspace's tree: {why}");
+                failed.borrow_mut().push(Notice {
+                    title: failed_title,
+                    reason: Some(why.to_string()),
+                });
+            }
+        });
         self.chunks.entry(chunk).or_insert_with(|| HeldChunk {
             resource,
             revision: None,
@@ -412,8 +444,6 @@ pub struct TreeBrowser {
     naming: Option<ui::LocalState<String>>,
     /// What the window could not do, said above its rows until the next thing it does.
     notice: Option<Notice>,
-    /// Files chosen to upload that wait for the tree to arrive.
-    chosen: Vec<ChosenFile>,
     /// The window's bar: where it is, and New folder and Upload.
     bar: WindowBar<FilesWindow>,
     /// What the rows asked of the window.
@@ -466,7 +496,6 @@ impl TreeBrowser {
             since: ui::time::now(),
             naming: None,
             notice: None,
-            chosen: Vec::new(),
             bar: cx.toolbar(),
             asks: Asks::default(),
             people,
@@ -519,10 +548,9 @@ impl TreeBrowser {
         // A chunk of the tree that moved is the only one read again.
         if let Some(tree) = self.tree.as_mut() {
             tree.follow();
-        }
-        if self.arrived() && !self.chosen.is_empty() {
-            let chosen = std::mem::take(&mut self.chosen);
-            self.upload(chosen);
+            if let Some(failed) = tree.take_failed().pop() {
+                self.notice = Some(failed);
+            }
         }
         let folder = self.folder(self.tree.as_ref().map(Held::tree));
         self.declare_bar(&folder);
@@ -668,13 +696,18 @@ impl TreeBrowser {
                     &t("files-tree-upload-accept"),
                 )
                 .max_contents_bytes(MAX_UPLOAD_BYTES);
+                // The files go in as the chooser answers, outside the window's frame, as a new
+                // folder does: the action that adds each needs the tree's store to itself.
                 Ok(cx.choose_files(request, |browser: &mut Self, files, _| {
                     if let Some(held) = browser.tree.as_mut() {
                         held.open_next_chunk();
                     }
-                    browser.chosen.extend(files);
+                    browser.upload(files);
                     browser.refresh();
-                    Ok(Effected::done())
+                    match &browser.notice {
+                        Some(notice) => Err(notice.title.clone()),
+                        None => Ok(Effected::done()),
+                    }
                 }))
             }
         }
@@ -692,13 +725,25 @@ impl TreeBrowser {
             return;
         };
         let Some(held) = self.tree.as_mut() else {
-            self.chosen = chosen;
+            self.notice = Some(Notice {
+                title: t("files-tree-not-here"),
+                reason: None,
+            });
             return;
         };
         for file in chosen {
             let made = ui::content::manifest::keep(&content, &file.bytes).and_then(|hash| {
                 let size = u64::try_from(file.bytes.len()).unwrap_or(u64::MAX);
-                held.create(&folder, &file.name, FileNodeKind::File, Some((hash, size)))
+                held.create(
+                    &folder,
+                    &file.name,
+                    FileNodeKind::File,
+                    Some((hash, size)),
+                    t_args(
+                        "files-tree-upload-failed",
+                        &[arg("name", file.name.clone())],
+                    ),
+                )
             });
             if let Err(why) = made {
                 tracing::warn!("uploading {}: {why}", file.name);
@@ -723,7 +768,13 @@ impl TreeBrowser {
         let Some(held) = self.tree.as_mut() else {
             return;
         };
-        match held.create(&folder, name, FileNodeKind::Directory, None) {
+        match held.create(
+            &folder,
+            name,
+            FileNodeKind::Directory,
+            None,
+            t("files-new-folder-failed-title"),
+        ) {
             Ok(_) => {
                 self.naming = None;
                 self.notice = None;
