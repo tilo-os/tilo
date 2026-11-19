@@ -153,6 +153,14 @@ pub(crate) trait RootPublishes {
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::ResourceSpec>;
+    /// An action of the resource `id` as this root publishes it now
+    /// ([`ui_core::resources::PublishesResources::published_action`]), built from the surfaces' own
+    /// statuses rather than a publication.
+    fn published_action(
+        &self,
+        id: &str,
+        spec: tilo_actions::ActionSpec,
+    ) -> tilo_actions::ActionSpec;
     fn document_action_result(
         &self,
         doc: &AutoCommit,
@@ -547,6 +555,14 @@ impl PublishesResources for RootWidget {
         id: &str,
     ) -> Option<tilo_actions::ResourceSpec> {
         self.0.resource_for(presence, doc, id)
+    }
+
+    fn published_action(
+        &self,
+        id: &str,
+        spec: tilo_actions::ActionSpec,
+    ) -> tilo_actions::ActionSpec {
+        self.0.published_action(id, spec)
     }
 
     fn document_action_result(

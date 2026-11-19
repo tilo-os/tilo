@@ -2557,6 +2557,28 @@ impl RootPublishes for ResourceRoot {
         ui_core::resources::resource_for(self.app_view(), None, doc, id)
             .map(super::rows::resolved_outside_document)
     }
+    fn published_action(
+        &self,
+        id: &str,
+        mut spec: tilo_actions::ActionSpec,
+    ) -> tilo_actions::ActionSpec {
+        // The resource's own actions take the effects whose status is about
+        // the resource; a row takes what the surfaces say of that row.
+        let own = id == self.dispatch.resource_id();
+        self.surfaces(&mut |surface| {
+            let statuses = if own {
+                surface.availability()
+            } else {
+                surface.row_status(id)
+            };
+            for status in &statuses {
+                if status.id() == spec.id && (!own || status.item().is_none()) {
+                    status.overlay(&mut spec);
+                }
+            }
+        });
+        spec
+    }
     fn document_action_result(
         &self,
         doc: &AutoCommit,

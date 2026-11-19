@@ -131,6 +131,18 @@ pub trait PublishesResources: Widget {
         self.resource(doc, id)
     }
 
+    /// `spec`, an action of the resource `id` as the document declares it, as this widget publishes
+    /// it now: what its surfaces say of that row laid over it (whether the effect can be used there,
+    /// how it is named, the parameters it narrows). A caller resolving one address asks this, not the
+    /// published tree, whose building no invocation may cost.
+    fn published_action(
+        &self,
+        _id: &str,
+        spec: tilo_actions::ActionSpec,
+    ) -> tilo_actions::ActionSpec {
+        spec
+    }
+
     /// Explicit disclosure authority for an actionless resource container in the broker pull directory.
     fn action_directory_visibility(
         &self,
@@ -188,6 +200,18 @@ pub fn resources(
     doc: &AutoCommit,
 ) -> Vec<tilo_actions::ResourceSpec> {
     capability::<dyn PublishesResources>(widget).map_or_else(Vec::new, |w| w.resources(doc))
+}
+
+/// [`PublishesResources::published_action`] of `widget`.
+pub fn published_action(
+    widget: &(impl Widget + ?Sized),
+    id: &str,
+    spec: tilo_actions::ActionSpec,
+) -> tilo_actions::ActionSpec {
+    match capability::<dyn PublishesResources>(widget) {
+        Some(publisher) => publisher.published_action(id, spec),
+        None => spec,
+    }
 }
 
 /// The resource roots a walk holds: a widget answering for the widget below it and that widget
