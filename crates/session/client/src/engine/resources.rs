@@ -8,9 +8,8 @@
 //! person may read.
 //!
 //! The store of a workspace declares the types and verbs of every app's surface this process
-//! knows, which a peer's change is judged by. It is filled on its first use from the store
-//! documents this device's replica holds, and a document the replica took a peer's change to
-//! since is read again before the store answers from it.
+//! knows, which a peer's change is judged by. Before serving a read it discovers the documents
+//! this device may read, refreshes changed documents, and drops those it can no longer read.
 
 use std::collections::BTreeMap;
 
@@ -28,7 +27,6 @@ pub(super) struct Resources {
     /// Each store document read from the replica: the app it is written under, and the revision
     /// it was read at.
     read: BTreeMap<String, (String, Option<[u8; 32]>)>,
-    filled: bool,
     /// How many surfaces this process had named when the store last declared them
     /// ([`collab_types::app_surface::registered`]).
     declared: u64,
@@ -51,12 +49,9 @@ impl Engine {
         let id = workspace.to_string();
         let mut stores = self.stores.lock_recover();
         let resources = stores.entry(workspace).or_default();
-        if !resources.filled {
-            resources.filled = true;
-            for (app, doc) in self.documents(&id).unwrap_or_default() {
-                if collab_types::is_store_document(&doc) {
-                    resources.read.insert(doc, (app, None));
-                }
+        for (app, doc) in self.documents(&id).unwrap_or_default() {
+            if collab_types::is_store_document(&doc) {
+                resources.read.entry(doc).or_insert((app, None));
             }
         }
         // Every app's types and verbs this process knows, which a peer's change is judged by.
@@ -75,7 +70,13 @@ impl Engine {
             .iter()
             .map(|(doc, (app, revision))| (doc.clone(), app.clone(), *revision))
             .collect();
+        let may_read = self.document_read_policy(workspace);
         for (doc, app, revision) in documents {
+            if !may_read(&app, &doc) {
+                resources.store.forget_document(&doc);
+                resources.read.insert(doc, (app, None));
+                continue;
+            }
             let now = self.document_revision(&id, &app, &doc).ok().flatten();
             if now.is_none() || now == revision {
                 continue;
@@ -231,6 +232,31 @@ impl Engine {
         })
     }
 
+    fn store_write_keys(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        document: &str,
+        readers: &str,
+    ) -> Result<SealKeys, String> {
+        if readers == collab_types::EVERY_MEMBER {
+            return self.resource_write_keys(workspace, (app, document));
+        }
+        let isolated = self.owner.with_current(workspace, |view| {
+            view.peer()
+                .requires_document_keys(app, document, tilo_clock::wall())
+        })?;
+        if !isolated {
+            return self.reader_keys(workspace, readers);
+        }
+        let route = tilo_peer_state::document_frame::DocumentRoute {
+            app_id: app.to_owned(),
+            cluster_id: workspace.to_string(),
+            document: document.to_owned(),
+        };
+        self.scoped_keys(&route, Some(readers))
+    }
+
     /// Publishes each change the store made as this device's write of its document, sealed for
     /// the document's reader set.
     async fn publish_written(
@@ -241,10 +267,8 @@ impl Engine {
     ) -> Result<Vec<AppWrite>, WriteRefusal> {
         let mut writes = Vec::with_capacity(written.len());
         for (write, founding) in written {
-            let sealed = match self
-                .reader_keys(workspace, &write.readers)
-                .map_err(WriteRefusal::Refused)?
-            {
+            let keys = self.store_write_keys(workspace, app, &write.doc, &write.readers);
+            let sealed = match keys.map_err(WriteRefusal::Refused)? {
                 SealKeys::Here(keys) => keys,
                 SealKeys::Waiting | SealKeys::NoSecretStore => {
                     return Err(WriteRefusal::Refused(

@@ -59,6 +59,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The fast image has Clippy in the toolchain, without a Cargo shim.
+          export PATH="$(dirname "$(rustup which cargo-clippy)"):$PATH"
           base='${{ steps.merge.outputs.main }}'
           if [ -z "$base" ]; then
             base=$(git rev-parse HEAD^)

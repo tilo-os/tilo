@@ -36,7 +36,7 @@ fn a_device_every_member_hears_ask_is_added_by_one_commit() {
     create(&mut site, workspace_id, now);
     ada.service.access(workspace_id, now);
     bob.service.access(workspace_id, now);
-    run(&mut [&mut site, &mut ada, &mut bob], &mut now, 20);
+    drive(&mut [&mut site, &mut ada, &mut bob], &mut now, 20);
     let before = ready_epoch(&site.service.access(workspace_id, now)).unwrap();
     for member in [&mut ada, &mut bob] {
         assert_eq!(
@@ -79,7 +79,7 @@ fn devices_asking_close_together_are_admitted_in_one_commit() {
     let mut ada = device(&workspace, workspace_id, 1, 2, &policy, dirs[1].path());
     create(&mut site, workspace_id, now);
     ada.service.access(workspace_id, now);
-    run(&mut [&mut site, &mut ada], &mut now, 20);
+    drive(&mut [&mut site, &mut ada], &mut now, 20);
     let before = ready_epoch(&site.service.access(workspace_id, now)).unwrap();
 
     let step = |devices: &mut [&mut Device], now: &mut Instant| {
@@ -108,7 +108,7 @@ fn devices_asking_close_together_are_admitted_in_one_commit() {
         &mut now,
     );
     dan.service.access(workspace_id, now);
-    run(
+    drive(
         &mut [&mut site, &mut ada, &mut bob, &mut cyd, &mut dan],
         &mut now,
         5,

@@ -90,7 +90,14 @@ pub(super) async fn authorize_state_frame(
     let Some((id, subscribed)) = state_frame_workspace(frame) else {
         return Ok(());
     };
-    authorize_state_recipient(id, subscribed, peer, session).await
+    let workspace = state_workspace(id, session).await?;
+    let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
+    check_state_recipient(&runtime, subscribed, peer, session)?;
+    if !super::records::DocumentRead::of(&runtime, peer).allows(&runtime.store, frame) {
+        return Err(PeerError::Protocol("document access changed".into()));
+    }
+    drop(runtime);
+    Ok(())
 }
 
 /// The workspace a state frame goes to, and whether it needs this connection to
@@ -115,16 +122,32 @@ pub(super) async fn authorize_state_recipient(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
 ) -> Result<(), PeerError> {
-    let ws = session
+    let workspace = state_workspace(id, session).await?;
+    let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
+    check_state_recipient(&runtime, subscribed, peer, session)
+}
+
+async fn state_workspace(
+    id: WorkspaceId,
+    session: &SessionCtx<'_>,
+) -> Result<SharedWorkspace, PeerError> {
+    session
         .workspaces
         .lock()
         .await
         .get(&id)
         .cloned()
-        .ok_or_else(|| PeerError::Protocol("workspace disappeared".into()))?;
-    let wr = crate::workspace_io::fresh_membership(&ws).await?;
-    if !session.admits(&wr, peer, WorkspaceOperation::State)
-        || (subscribed && !current_session(&wr, peer, session.outbound))
+        .ok_or_else(|| PeerError::Protocol("workspace disappeared".into()))
+}
+
+fn check_state_recipient(
+    runtime: &crate::workspace::WorkspaceRuntime,
+    subscribed: bool,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<(), PeerError> {
+    if !session.admits(runtime, peer, WorkspaceOperation::State)
+        || (subscribed && !current_session(runtime, peer, session.outbound))
     {
         return Err(PeerError::Protocol(
             "state recipient authorization changed".into(),
@@ -254,18 +277,20 @@ struct ReplayFilter {
     /// What knows each record's person.
     store: crate::store::WorkspaceStore,
     payloads: Arc<dyn crate::payloads::ShellPayloads>,
+    document_read: super::records::DocumentRead,
     every_frame: bool,
     channel_reader: bool,
 }
 
 impl ReplayFilter {
     async fn new(run: ReplayRun<'_>, peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> Self {
-        let store = run.workspace.lock().await.store.clone();
+        let runtime = run.workspace.lock().await;
         Self {
             device: peer.device_public_key,
             person: peer.user_public_key,
-            payloads: store.payloads().clone(),
-            store,
+            payloads: runtime.store.payloads().clone(),
+            store: runtime.store.clone(),
+            document_read: super::records::DocumentRead::of(&runtime, peer),
             every_frame: run.authority.every_document(),
             channel_reader: session
                 .channel_reader
@@ -290,6 +315,9 @@ impl ReplayFilter {
     fn leaves_out(&self, frame: &Envelope, catchup: &ReplayCatchup) -> bool {
         if self.every_frame {
             return false;
+        }
+        if !self.document_read.allows(&self.store, frame) {
+            return true;
         }
         let Envelope::Delta { delta, .. } = frame else {
             return false;

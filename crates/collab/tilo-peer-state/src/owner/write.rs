@@ -493,6 +493,7 @@ impl NativeWorkspaceOwner {
                     app,
                     document,
                     envelope,
+                    readers,
                     ..
                 } = &request.operation
                 else {
@@ -534,7 +535,13 @@ impl NativeWorkspaceOwner {
                     return Err("sealed record history is full".into());
                 }
                 publication::append_local(stored, outgoing)?;
-                if let Err(declined) = Self::admit_local_write(live, app, document, envelope, now) {
+                if let Err(declined) = Self::admit_local_write(
+                    live,
+                    (app, document),
+                    readers.as_deref(),
+                    envelope,
+                    now,
+                ) {
                     if matches!(declined, WriteRefusal::ChangeRefused(_)) {
                         *refused = Some(NeighbourMsg::AppDocument {
                             peer: crate::peer_handle(envelope.author.as_bytes()),
@@ -610,12 +617,12 @@ impl NativeWorkspaceOwner {
     /// workspace has not admitted it here yet.
     fn admit_local_write(
         live: &mut crate::StatePeer,
-        app: &str,
-        record: &str,
+        route: (&str, &str),
+        readers: Option<&str>,
         envelope: &collab_types::SignedOp,
         now: SystemTime,
     ) -> Result<(), WriteRefusal> {
-        match live.admit_new_local_document(app, record, envelope.clone(), now) {
+        match live.admit_new_local_document_read_by(route, readers, envelope.clone(), now) {
             Ok(()) => Ok(()),
             Err(crate::NotAdmitted::Waiting(prerequisite)) => {
                 Err(WriteRefusal::Waiting(prerequisite))

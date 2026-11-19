@@ -5,8 +5,8 @@
 //! described by a self-contained `HashSeq` manifest.
 
 pub use fs_content::{
-    ChunkRef, ChunkStats, ChunkTier, DecodeError, MAX_CHUNK_LEN, Manifest, RangeSet, build,
-    build_reader, rebuild,
+    ChunkRef, ChunkStats, ChunkTier, DecodeError, MAX_CHUNK_LEN, Manifest, RangeSet, SealedChunks,
+    build, build_reader, rebuild,
 };
 
 /// Content larger than this lives in the store's file-backed area; smaller
@@ -16,7 +16,7 @@ pub const FILE_BACKED_MIN: u64 = 1024 * 1024;
 
 /// Whether `manifest`'s content lives in the file-backed area.
 pub fn is_file_backed(manifest: &Manifest) -> bool {
-    manifest.total_len() > FILE_BACKED_MIN
+    manifest.sealed().is_none() && manifest.total_len() > FILE_BACKED_MIN
 }
 
 /// `(hash, offset, len)` of every chunk, for the area's chunk index.

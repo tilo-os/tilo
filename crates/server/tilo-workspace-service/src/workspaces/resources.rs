@@ -323,7 +323,23 @@ impl GovernedWorkspace {
                 let Some(readers) = &known else {
                     return Ok(false);
                 };
-                let Some(Ok(keys)) = self.reader_keys(readers).await else {
+                let keys = match metadata.scheme {
+                    collab_types::EncryptionScheme::DocumentContentKey { group, .. } => {
+                        let Some(device) = &self.device else {
+                            return Ok(false);
+                        };
+                        let workspace = collab_types::WorkspaceId::parse(self.workspace())
+                            .ok_or("invalid resource workspace")?;
+                        let named =
+                            (readers != collab_types::EVERY_MEMBER).then_some(readers.as_str());
+                        let scope = neighbour_wire::KeyScope::document(workspace, app, doc, named)
+                            .filter(|scope| scope.group() == group)
+                            .ok_or("the encryption group belongs to another document")?;
+                        device.group_keys(&scope.to_string(), readers, false).await
+                    }
+                    _ => self.reader_keys(readers).await,
+                };
+                let Some(Ok(keys)) = keys else {
                     return Ok(false);
                 };
                 let ciphertext =

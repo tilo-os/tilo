@@ -30,6 +30,7 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
             .map_err(|error| error.to_string())?;
         let envelope = view.peer().draft_write(
             (APP, ""),
+            None,
             &frame,
             None,
             crate::owner::testing::member_key()

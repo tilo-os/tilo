@@ -10,7 +10,7 @@ use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::{
     Button, ButtonRole, ChipStyle, Column, ControlSize, Element, EmptyState, ListRow, MenuItem,
-    Row, Section,
+    Row, Section, TextInput,
 };
 
 use super::general::caption;
@@ -38,6 +38,7 @@ pub struct Person {
     pub role: String,
     /// Their role's key among [`People::roles`], where it is one of them.
     pub role_key: Option<String>,
+    pub additional_roles: Vec<String>,
     /// Their extra permissions, only when they have any.
     pub extra: Option<String>,
     pub offers: Offers,
@@ -98,6 +99,18 @@ pub struct Decision {
     pub confirm: String,
 }
 
+/// Controls for maintaining the workspace's custom roles.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RoleEditor {
+    pub manage: bool,
+    pub title: String,
+    pub create: String,
+    pub name: String,
+    pub rename: String,
+    pub save: String,
+    pub remove_decision: Decision,
+}
+
 /// Everything the People tab shows, in the person's words.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct People {
@@ -110,6 +123,8 @@ pub struct People {
     pub people: Vec<Person>,
     /// The roles a person's role button offers.
     pub roles: Vec<RoleChoice>,
+    pub custom_roles: Vec<RoleChoice>,
+    pub role_editor: RoleEditor,
     /// What an empty list says instead: its title and detail.
     pub empty: (String, String),
     pub note: Option<String>,
@@ -149,6 +164,9 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
                 .collect(),
         )));
     }
+    if people.role_editor.manage || !people.custom_roles.is_empty() {
+        groups.push(roles(people, parts));
+    }
     if let Some(note) = &people.note {
         groups.push(caption(note));
     }
@@ -179,6 +197,87 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
     )
 }
 
+fn roles(people: &People, parts: &Parts) -> Element {
+    let editor = &people.role_editor;
+    let mut rows: Vec<Element> = people
+        .custom_roles
+        .iter()
+        .map(|role| {
+            let mut row = ListRow::new(format!("ws-custom-role-{}", role.key), role.label.clone());
+            if editor.manage {
+                let edit = parts.clone();
+                let key = role.key.clone();
+                let name = role.label.clone();
+                let remove = parts.clone();
+                let change = Confirm::RemoveRole {
+                    role: key.clone(),
+                    name: name.clone(),
+                };
+                row = row.trailing(Box::new(
+                    Row::new()
+                        .with_rhythm(Rhythm::Related)
+                        .push(Box::new(
+                            Button::new(&format!("ws-role-rename-{}", role.key), &editor.rename)
+                                .on_effect(move || {
+                                    edit.role_name.set(name.clone());
+                                    edit.local
+                                        .update(|local| local.editing_role = Some(key.clone()));
+                                }),
+                        ))
+                        .push(Box::new(
+                            Button::new(&format!("ws-role-remove-{}", role.key), &people.remove)
+                                .role(ButtonRole::Destructive)
+                                .on_effect(move || remove.confirm(change.clone())),
+                        )),
+                ));
+            }
+            Box::new(row) as Element
+        })
+        .collect();
+    if editor.manage {
+        let create = parts.clone();
+        rows.push(Box::new(
+            Button::new("ws-role-create", &editor.create).on_effect(move || {
+                create.role_name.set(String::new());
+                create
+                    .local
+                    .update(|local| local.editing_role = Some(String::new()));
+            }),
+        ));
+        if let Some(role) = parts.local.get().editing_role {
+            let edit = parts.clone();
+            let save = move || {
+                let name = edit.role_name.get().trim().to_owned();
+                if !name.is_empty() {
+                    edit.ask(WorkspaceSettingsEffect::SaveCustomRole {
+                        role: role.clone(),
+                        name,
+                    });
+                    edit.local.update(|local| local.editing_role = None);
+                }
+            };
+            let submit = save.clone();
+            rows.push(Box::new(
+                Row::new()
+                    .with_rhythm(Rhythm::Related)
+                    .push(Box::new(
+                        TextInput::from_state(&parts.role_name)
+                            .with_id("ws-role-name")
+                            .with_placeholder(editor.name.clone())
+                            .with_accessible_name(editor.name.clone())
+                            .on_submit_view(move |_| submit()),
+                    ))
+                    .push(Box::new(
+                        Button::new("ws-role-save", &editor.save)
+                            .role(ButtonRole::Primary)
+                            .on_effect(save),
+                    )),
+            ));
+        }
+    }
+    Box::new(Section::titled(editor.title.clone(), rows))
+}
+
 /// One person's row: their role and Remove trail the name where both fit
 /// and wrap under it where they do not, so the name is never cut short.
 fn row(people: &People, person: &Person, parts: &Parts) -> Element {
@@ -191,8 +290,15 @@ fn row(people: &People, person: &Person, parts: &Parts) -> Element {
     if person.you {
         row = row.tags(&[(people.you_tag.as_str(), ChipStyle::Neutral)]);
     }
-    if let Some(extra) = &person.extra {
-        row = row.secondary(extra.clone());
+    let details: Vec<&str> = people
+        .custom_roles
+        .iter()
+        .filter(|role| person.additional_roles.contains(&role.key))
+        .map(|role| role.label.as_str())
+        .chain(person.extra.as_deref())
+        .collect();
+    if !details.is_empty() {
+        row = row.secondary(details.join(" · "));
     }
     if person.offers == Offers::Nothing {
         return Box::new(row.value(person.role.clone()));
@@ -210,6 +316,17 @@ fn row(people: &People, person: &Person, parts: &Parts) -> Element {
                 .with_detail(choice.allows.clone())
                 .with_checked(person.role_key.as_deref() == Some(choice.key.as_str()))
         })
+        .chain(people.custom_roles.iter().map(|choice| {
+            let press = parts.clone();
+            let assigned = person.additional_roles.contains(&choice.key);
+            let effect = WorkspaceSettingsEffect::SetCustomRole {
+                member: person.key.clone(),
+                role: choice.key.clone(),
+                assigned: !assigned,
+            };
+            MenuItem::action(choice.label.clone(), move || press.ask(effect.clone()))
+                .with_checked(assigned)
+        }))
         .collect();
     let mut controls = Row::new()
         .with_rhythm(Rhythm::Related)
@@ -318,6 +435,7 @@ pub(super) fn sample() -> People {
         you: key == "owner",
         role: role.to_owned(),
         role_key: Some(role.to_lowercase()),
+        additional_roles: Vec::new(),
         extra: None,
         offers,
         can_manage: offers != Offers::Nothing,
@@ -337,6 +455,8 @@ pub(super) fn sample() -> People {
             person("bo", "Bo Li Andersson", "Viewer", Offers::RoleAndRemove),
         ],
         roles: sample_roles(),
+        custom_roles: Vec::new(),
+        role_editor: RoleEditor::default(),
         empty: (
             "Just you".to_owned(),
             "Invite people from the General tab.".to_owned(),

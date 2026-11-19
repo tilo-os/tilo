@@ -1,3 +1,4 @@
+use super::read::BufferedRead;
 use super::*;
 
 mod availability_control_tests {
@@ -2120,7 +2121,7 @@ mod write_stage_tests {
             ReadPlan::Local(data) => data,
             ReadPlan::Error(errno) => panic!("the read failed with errno {errno}"),
             ReadPlan::Buffered(_) => panic!("a closed file was read from a stage"),
-            ReadPlan::Remote(_) => panic!("locally written content was asked of a peer"),
+            ReadPlan::Remote(..) => panic!("locally written content was asked of a peer"),
         }
     }
 
@@ -2273,7 +2274,7 @@ mod read_lock_tests {
             ReadPlan::Local(data) => Reply::Data(data),
             ReadPlan::Error(errno) => Reply::Errno(errno),
             ReadPlan::Buffered(_) => panic!("a file with no stage was answered from a buffer"),
-            ReadPlan::Remote(_) => panic!("locally stored content was sent to a peer"),
+            ReadPlan::Remote(..) => panic!("locally stored content was sent to a peer"),
         }
     }
 
