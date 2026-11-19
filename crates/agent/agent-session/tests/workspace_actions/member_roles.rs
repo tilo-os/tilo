@@ -1086,6 +1086,78 @@ async fn the_first_write_into_an_empty_chain_is_taken() {
     ended(browser, site).await;
 }
 
+/// A member's first write founds the part of a chain the workspace holds none of: the host
+/// answers the chain's head, and the part the view wants, that it holds none of either, and the
+/// write founds them here rather than waiting for a part that never comes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_members_first_write_founds_a_chain_the_workspace_holds_no_part_of() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = start(&root, &host, state.path()).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let tasks = browser.create(TASKS);
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let membership = Membership::of(
+        &hosted,
+        &host,
+        &guest_device,
+        state.path().join("member-content"),
+    );
+    let actions = tilo_agent_session::WorkspaceActions::new(Arc::new(crate::common::catalogue));
+    actions.attach(membership.clone()).unwrap();
+    super::resource_support::admit_person(
+        &hosted,
+        &host,
+        WORKSPACE,
+        &guest_device,
+        tilo_peer_state::join::Role::Editor,
+    )
+    .await;
+    membership.becomes(Role::Editor).await;
+    let workspace = browser.workspace;
+    let member = Caller::authenticated(
+        guest_device.cert.user_public_key,
+        guest_device.cert.device_public_key,
+    )
+    .in_workspace(WORKSPACE);
+    // Nobody filed an issue: the workspace holds no part of the issues' chain, and the member
+    // writes the first.
+    let issues = ui::resource::chain_resource_id(&ui::resource::DocumentId::derived(
+        "issues",
+        &ui::resource::DocumentId::workspace_default(),
+    ));
+    let created = invoked(
+        &actions,
+        workspace,
+        &member,
+        &request(
+            &format!(
+                "{}:{TASKS}:{}",
+                tilo_actions::remote::RESOURCE_PROVIDER,
+                tasks.document
+            ),
+            ActionAddress::new(issues, "create"),
+            json(serde_json::json!({"title": "The first issue"})),
+        ),
+    );
+    let ReceiptStatus::Completed { output } = created else {
+        panic!("the first write founds the chain: {created:?}");
+    };
+    assert!(
+        output
+            .value
+            .as_ref()
+            .and_then(|value| value.get("made"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|made| made.len() == 1),
+        "the create answers the issue it made: {output:?}"
+    );
+}
+
 // What an app keeps for its whole workspace is reached the same way and judged by the same
 // membership, so its tests stand below this fixture.
 #[path = "workspace_documents.rs"]
