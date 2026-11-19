@@ -204,6 +204,61 @@ tilo_test_env::scenario! {
         assert_eq!(held.authors, older.authors);
     }
 
+    phase a_person_who_only_looks_keeps_their_view_to_themselves;
+    // A person whose role is Viewer brings another tab of a window group in front and gives the
+    // group their own width. Nothing of that reaches the workspace's layout, which carries no
+    // view of it; their own view keeps it.
+    {
+        use tilo_action_policy::Role;
+        use tilo_desktop_model::commands::policy;
+        use tilo_desktop_model::person_view::PersonView;
+
+        let held = shared(layout());
+        let SharedDesktop { tree, records, authors, .. } = held;
+        let mut doc = AutoCommit::new();
+        // A page of an older build wrote the layout and how it shows it into one document.
+        desktop_doc::seed(&mut doc, &tree);
+        doc.commit();
+        assert!(
+            desktop_doc::write_shared(&mut doc, &tree, &records, &authors),
+            "the layout sheds the view the older page put in it"
+        );
+        doc.commit();
+        for key in ["view_v1", "active"] {
+            assert!(
+                doc.get(automerge::ROOT, key).ok().flatten().is_none(),
+                "the workspace's layout holds no `{key}`"
+            );
+        }
+
+        let mut theirs_tree = tree.clone();
+        theirs_tree.workspaces[0].strips[0].window_groups[0].active_tab = 101;
+        theirs_tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Normal;
+        theirs_tree.workspaces[0].strips[0].window_groups[0].maximized = false;
+
+        assert!(
+            !policy::writes(Some(Role::Viewer)),
+            "a viewer writes nothing in the workspace"
+        );
+        assert!(
+            !desktop_doc::write_shared(&mut doc, &theirs_tree, &records, &authors),
+            "changing their view writes nothing of the workspace's layout"
+        );
+
+        // Their own view keeps what they changed: the other tab in front, the width theirs.
+        let theirs = PersonView::of(&theirs_tree, identity());
+        let mut view = AutoCommit::new();
+        assert!(theirs.write(&mut view).expect("the view is kept"));
+        assert_eq!(PersonView::read(&view), theirs);
+        assert_eq!(theirs.front_tab.get(&10), Some(&101));
+        assert_eq!(theirs.widths.get(&10), Some(&WindowWidth::Normal));
+        assert_eq!(
+            windows(&opened(&doc).tree),
+            windows(&tree),
+            "every member still shows the layout as the workspace has it"
+        );
+    }
+
     phase two_peers_each_change_the_shell_and_keep_both_changes;
     // Two peers each change the layout and merge: the layout holds both changes,
     // by both of them, and each peer reads the same layout.

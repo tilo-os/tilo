@@ -1390,7 +1390,10 @@ impl Joined {
     /// Withdraw what the host refused of `route` from the open record that
     /// sent it, which tells its app, and move the record's replication
     /// frontier back to what it keeps. The raw `reason` is for the log; the
-    /// app shows a person its plain form.
+    /// app shows a person its plain form. The layout is no open document and
+    /// nothing of it is withdrawn: what the person changed stays on their
+    /// page, which sends nothing their role does not allow
+    /// ([`Self::send_desktop`]).
     fn withdraw(
         &mut self,
         route: &DocumentRoute,
@@ -1402,9 +1405,6 @@ impl Joined {
             "{}/{}: the workspace refused a change: {refusal}",
             route.app_id, route.document
         ));
-        if route.app_id == DESKTOP_APP {
-            return;
-        }
         if changes.is_empty() {
             return;
         }
@@ -2028,6 +2028,13 @@ impl Joined {
     }
 
     fn send_desktop(&mut self) {
+        // A person who only looks at the workspace writes nothing of its layout: what they
+        // change of how they see it is their own view, kept on their page, and the workspace
+        // refuses every other write their role makes. A role not answered yet sends nothing
+        // either.
+        if !tilo_desktop_model::commands::policy::writes(self.role.role()) {
+            return;
+        }
         let Some((desktop, author)) = self.mounts.values().find_map(|mounted| {
             mounted.attachment.desktop.as_ref().map(|(handle, shared)| {
                 (

@@ -17,7 +17,9 @@
 //! strips: [ { id, name, window_groups: [ { id, tabs: [ { id, title, app_title?, tile_json } ] } ] } ] } ] }`.
 //! Canvas places and floats are the workspace's layout, `local_v1` is what only
 //! this device reads, and `view_v1` is how this device shows the layout; none reaches
-//! another device, all are here because it is the one store of the layout.
+//! another device, all are here because it is the one store of the layout. A document a
+//! workspace shares ([`write_shared`]) holds neither `view_v1` nor `active`: how a person
+//! shows the layout is theirs, and stays in the document their own device keeps.
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
@@ -517,16 +519,15 @@ pub fn seed_of_the_view(doc: &mut AutoCommit, desktop: &Layout) -> bool {
     let _ = doc.put_str_if_changed(&ROOT, ACTIVE_KEY, &active);
     put_json_if_changed(doc, &ROOT, VIEW_KEY, &View::of(desktop));
     let after_view = doc.pending_ops();
-    if let Some(list) = child_object(doc, &ROOT, WORKSPACES_KEY, ObjType::List) {
-        sync_list(
-            doc,
-            &list,
-            &desktop.workspaces,
-            Workspace::id,
-            write_workspace,
-        );
-    }
+    write_workspaces(doc, desktop);
     after_view > before && doc.pending_ops() == after_view
+}
+
+/// Write the workspaces `tree` holds, with their strips, groups and windows, into `doc`.
+fn write_workspaces(doc: &mut AutoCommit, tree: &Layout) {
+    if let Some(list) = child_object(doc, &ROOT, WORKSPACES_KEY, ObjType::List) {
+        sync_list(doc, &list, &tree.workspaces, Workspace::id, write_workspace);
+    }
 }
 
 fn read_blob_map<T: serde::de::DeserializeOwned>(
@@ -1055,13 +1056,15 @@ pub fn note_opened_by(
     doc.pending_ops() > before
 }
 
-/// The root keys a workspace's desktop record kept when every window was its own
-/// entry there, before the layout was one document.
-const RECORD_KEYS: [&str; 3] = ["strips", "groups", "windows"];
+/// The root keys a workspace's desktop kept when every window was its own entry
+/// there, before the layout was one document.
+const ENTRY_KEYS: [&str; 3] = ["strips", "groups", "windows"];
 
-/// Write a shared desktop — its workspaces, the record each window shows and who made
-/// each strip and opened each window — into `doc`. A document that kept the layout the
-/// old way becomes the layout document here. Returns whether it wrote anything.
+/// Write what a workspace shares of a layout — its workspaces, the resource each window
+/// shows and who made each strip and opened each window — into `doc`. How this device
+/// shows it is the person's own ([`crate::person_view`]) and is never written here. A
+/// document that kept the layout the old way becomes the layout document here. Returns
+/// whether it wrote anything.
 pub fn write_shared(
     doc: &mut AutoCommit,
     tree: &Layout,
@@ -1069,10 +1072,10 @@ pub fn write_shared(
     authors: &crate::ownership::Authors,
 ) -> bool {
     let before = doc.pending_ops();
-    seed(doc, tree);
+    write_workspaces(doc, tree);
     set_records(doc, records);
     set_window_authors(doc, authors);
-    for key in RECORD_KEYS {
+    for key in ENTRY_KEYS.into_iter().chain([ACTIVE_KEY, VIEW_KEY]) {
         if doc.get(&ROOT, key).ok().flatten().is_some() {
             let _ = doc.delete(&ROOT, key);
         }

@@ -44,8 +44,17 @@ impl Requester<'_> {
     /// Whether they write in the workspace at all.
     #[must_use]
     pub fn writes(&self) -> bool {
-        self.role >= Some(Role::Editor)
+        writes(self.role)
     }
+}
+
+/// Whether a person holding `role` writes in the workspace: what they change of its layout is
+/// the workspace's. One who only looks changes their own view of it, which is theirs
+/// ([`crate::person_view`]), and nothing of the workspace's. A role not known yet is no writer:
+/// their device sends nothing the workspace did not answer that it allows.
+#[must_use]
+pub fn writes(role: Option<Role>) -> bool {
+    role >= Some(Role::Editor)
 }
 
 /// What a workspace's governors alone may change.
@@ -440,6 +449,20 @@ mod tests {
             }
             assert_eq!(may_create_workspace(&MODERATOR), Ok(()));
             assert_eq!(may_create_workspace(&OWNER), Ok(()));
+        }
+
+        phase the_roles_that_write_in_a_workspace;
+        {
+            for role in [None, Some(Role::Viewer), Some(Role::Commenter)] {
+                assert!(!writes(role), "{role:?} writes nothing");
+            }
+            for role in [
+                Some(Role::Editor),
+                Some(Role::Moderator),
+                Some(Role::Owner),
+            ] {
+                assert!(writes(role), "{role:?} writes");
+            }
         }
 
         phase writers_open_windows_and_watchers_do_not;
