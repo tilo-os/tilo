@@ -188,9 +188,19 @@ async function fixture({boot, remembered = [], own = false, search = '', session
 /** A workspace of the host other than its listed one (the Lounge), which a link names. */
 const STUDIO = '7d7cf1fb-7214-4cce-9b34-1b5fdf9c0d3c';
 /** The way-in rules for a link to such a workspace, by a browser with no account there
- * (tilo-session-client's `way_in`, tested there): come back as the person, or sign in first. */
-const studioRules = {wayIn: (_link, here) => (JSON.parse(here).person ? 'reconnect' : 'sign-in'),
-  wayInAfter: () => 'no-access', admittedAsAsked: () => true};
+ * (tilo-session-client's `way_in`, tested there): come back as the person, take the
+ * workspace's own entry where it lets anyone in, or sign in first. */
+const studioRules = {wayIn: (_link, here) => {
+  const known = JSON.parse(here);
+  return known.person ? 'reconnect' : known.listed ? 'entry' : 'sign-in';
+}, wayInAfter: () => 'no-access', admittedAsAsked: () => true};
+/** A directory each server answers (`<origin>/peer/v1/directory`), by origin: the
+ * public workspaces it lists, as `publicListings` reads them. */
+const directories = listed => async (url, init) => {
+  const at = new URL(url);
+  if (at.pathname !== '/peer/v1/directory' || init?.method !== 'POST') return {ok: true};
+  return {ok: true, json: async () => ({workspaces: listed[at.origin] ?? []})};
+};
 /** A page that opens `#/@node.example/w/<STUDIO>/so.tilo.chat`: the real admission, with the page's own deps. */
 const studioLink = ({reconnected = []} = {}) => async ({deps, onStep}, booted) => {
   const scope = {kind: 'workspace', host: ORIGIN, workspace: STUDIO};
@@ -252,6 +262,49 @@ test('a signed-out browser at a link to a workspace is asked to sign in, and com
     for (const [name, descriptor] of [['PublicKeyCredential', before.credential], ['navigator', before.navigator]]) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete globalThis[name];
     }
+  }
+});
+
+test('a signed-out browser at a link to a public workspace is let in through that workspace’s own entry, not asked to sign in', async () => {
+  const before = globalThis.fetch;
+  const joins = [];
+  try {
+    globalThis.fetch = directories({[ORIGIN]: [{workspace: STUDIO, name: 'Studio', entry: `directory/${STUDIO}/`, invitationOnly: false}]});
+    const {failure} = await fixture({identity: null, kept: null, entryParts: true, boot: studioLink(),
+      join: async options => { joins.push(options); return {workspace: STUDIO}; }});
+    assert.equal(failure, null);
+    assert.deepEqual(joins.map(({workspace}) => [workspace.workspace, workspace.admission, workspace.name]),
+      [[STUDIO, `${ORIGIN}/peer/v1/directory/${STUDIO}/`, 'Studio']], 'its own entry, never the site’s listed one');
+    assert.equal(document.documentElement.dataset.refusal, undefined, 'no sign-in screen');
+    assert.equal(document.documentElement.dataset.entry, 'open', 'the linked workspace opens');
+  } finally {
+    globalThis.fetch = before;
+  }
+});
+
+test('the sign-in screen at a closed workspace offers someone with no Tilo identity the site’s wait list, as its front page does', async () => {
+  const before = globalThis.fetch;
+  const asked = [];
+  try {
+    const read = directories({'https://home.example': [{workspace: 'lounge', name: 'Lounge', entry: 'directory/lounge/', invitationOnly: true,
+      waitList: {contact: null, mail: true}}]});
+    globalThis.fetch = async (url, init) => { asked.push(new URL(url).origin); return read(url, init); };
+    const {failure, screen} = await fixture({identity: null, kept: null, entryParts: true, boot: studioLink(),
+      join: async () => { throw new Error('nothing joins'); }});
+    assert.equal(failure, null);
+    assert.deepEqual([...new Set(asked)].sort(), ['https://home.example', ORIGIN].sort(), 'the link’s server and the home’s directory');
+    assert.equal(screen['arrival-refusal-heading'].textContent, 'Sign in to open this workspace');
+    assert.match(screen['arrival-refusal-body'].textContent, /New to Tilo\? It’s invite-only right now: leave your email/);
+    assert.equal(document.documentElement.dataset.refusal, 'wait-list');
+    assert.equal(screen['arrival-invite'].hidden, true, 'pasting an invite waits behind its toggle, as on the front page');
+    // A site that keeps no wait list asks only for a sign-in or an invite.
+    globalThis.fetch = directories({});
+    const plain = await fixture({identity: null, kept: null, entryParts: true, boot: studioLink(),
+      join: async () => { throw new Error('nothing joins'); }});
+    assert.match(plain.screen['arrival-refusal-body'].textContent, /Sign in as one of them, or paste an invite link/);
+    assert.equal(document.documentElement.dataset.refusal, 'invite');
+  } finally {
+    globalThis.fetch = before;
   }
 });
 

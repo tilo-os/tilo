@@ -170,6 +170,15 @@ pub struct DirectoryEntry {
     /// The site's own community workspace, listed first.
     #[serde(default)]
     pub community: bool,
+    /// Its entry lets in only people invited or already in it: anyone else it
+    /// turns away, where [`Self::wait_list`] says how to ask for an invite.
+    #[serde(default)]
+    pub invitation_only: bool,
+    /// The wait list a person without an invitation may leave an address on,
+    /// as the entry's refusal names it ([`EntryRefused::wait_list`]): a page
+    /// offers it before anyone asks the entry.
+    #[serde(default)]
+    pub wait_list: Option<EntryWaitList>,
 }
 
 /// What a directory answers.
@@ -275,7 +284,8 @@ impl EntryRefused {
 /// The wait list an entry keeps for a workspace that takes people by
 /// invitation: what its page offers someone it turns away, in the refusal's
 /// [`EntryRefused::wait_list`] (`workspaces::Workspaces::offer_wait_list`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EntryWaitList {
     /// Where someone asks to be taken off the list (`TILO_WORKSPACES_CONTACT`).
     pub contact: Option<String>,
@@ -415,6 +425,8 @@ mod tests {
             members: 0,
             last_active_ms: None,
             community: false,
+            invitation_only: false,
+            wait_list: None,
         }
     }
 

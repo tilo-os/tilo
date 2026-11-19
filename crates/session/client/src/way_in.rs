@@ -60,7 +60,9 @@ pub struct Here {
     /// The host's listed workspace has an entry that admits people by itself.
     #[serde(default)]
     pub entry: bool,
-    /// The link names that listed workspace (or none, which its entry names).
+    /// The workspace the link names (or the listed one, for a link naming none) has an entry
+    /// that lets anyone in: the site's listed workspace, or one its server's directory lists as
+    /// open to everyone.
     #[serde(default)]
     pub listed: bool,
     /// What the device holds of the person and the workspace.
@@ -187,12 +189,12 @@ pub fn way_in(link: &Link, here: &Here) -> Way {
     }
 }
 
-/// A device without an account for the host: the listed workspace's entry, which lets anyone in,
+/// A device without an account there: the workspace's own entry where it lets anyone in,
 /// unless the device entered this workspace before (the person's own, say). Any other workspace
 /// it comes back to as the person it holds, and the host decides; with nobody signed in, the
 /// person signs in first rather than arrive as a stranger no entry lets in.
 fn without_account(here: &Here) -> Way {
-    if here.entry && here.listed && !here.held.entered {
+    if here.listed && !here.held.entered {
         Way::Entry
     } else if here.held.person || here.held.entered {
         Way::Reconnect
@@ -240,7 +242,8 @@ mod tests {
     fn here(entry: bool, entered: bool, accounts: usize) -> Here {
         Here {
             entry,
-            listed: true,
+            // The link names the workspace that entry is for.
+            listed: entry,
             held: Held {
                 person: true,
                 entered,
@@ -383,7 +386,7 @@ mod tests {
             assert_eq!(way_in(&named, &here(false, false, 0)), Way::Reconnect);
         }
 
-        phase nobody_signed_in_signs_in_before_any_workspace_but_the_listed_one;
+        phase nobody_signed_in_signs_in_before_any_workspace_but_a_public_one;
         {
             let named = at(Some("r"));
             let signed_out = |entry, listed| Here {
@@ -397,6 +400,8 @@ mod tests {
             // Another workspace of the host, or one at a host listing none: sign in first.
             assert_eq!(way_in(&named, &signed_out(true, false)), Way::SignIn);
             assert_eq!(way_in(&named, &signed_out(false, false)), Way::SignIn);
+            // A public one, on a server the site lists nothing on: its own entry lets them in.
+            assert_eq!(way_in(&named, &signed_out(false, true)), Way::Entry);
             // Signed in, the device comes back as the person, and the host decides; one the
             // host turns away still asks that workspace's entry.
             let signed_in = Here {

@@ -93,6 +93,7 @@ arrival-refusal-body = Ask someone in it for an invite link, then paste it here.
 arrival-refusal-sign-in-heading = Sign in to open { $workspace }
 arrival-refusal-sign-in-heading-unnamed = Sign in to open this workspace
 arrival-refusal-sign-in-body = Only the people in this workspace can open it. Sign in as one of them, or paste an invite link someone sent you.
+arrival-refusal-sign-in-wait-body = Only the people in this workspace can open it. If you’re one of them, sign in. New to Tilo? It’s invite-only right now: leave your email and we’ll send you an invite.
 arrival-invite-link = Invite or pairing link
 arrival-invite-placeholder = Paste an invite or pairing link
 arrival-invite-open = Open

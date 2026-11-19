@@ -77,6 +77,7 @@ arrival-refusal-body = Bitte jemanden darin um einen Einladungslink und füge ih
 arrival-refusal-sign-in-heading = Melde dich an, um { $workspace } zu öffnen
 arrival-refusal-sign-in-heading-unnamed = Melde dich an, um diesen Arbeitsbereich zu öffnen
 arrival-refusal-sign-in-body = Nur die Leute darin können diesen Arbeitsbereich öffnen. Melde dich als eine von ihnen an, oder füge einen Einladungslink ein, den dir jemand geschickt hat.
+arrival-refusal-sign-in-wait-body = Nur die Leute darin können diesen Arbeitsbereich öffnen. Wenn du dazugehörst, melde dich an. Neu bei Tilo? Gerade geht es nur mit Einladung: Hinterlass deine E-Mail-Adresse, und wir schicken dir eine.
 arrival-invite-link = Einladungs- oder Kopplungslink
 arrival-invite-placeholder = Einladungs- oder Kopplungslink einfügen
 arrival-invite-open = Öffnen
