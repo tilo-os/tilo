@@ -20,6 +20,10 @@ const KEEPER_ARGS: &str = "TILO_TEST_KEEPER_ARGS";
 ///
 /// # Errors
 /// The keeper's arguments do not read, or the keeper failed.
+#[expect(
+    clippy::exit,
+    reason = "a test keeper's process ends as the real one's does, with the harness's report kept off a launch's streams"
+)]
 pub fn serve_keeper() -> io::Result<()> {
     let Ok(args) = std::env::var(KEEPER_ARGS) else {
         return Ok(());

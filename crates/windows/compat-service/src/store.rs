@@ -496,14 +496,8 @@ impl CapsuleStore {
                 // an installer keeps for itself) is not one a person opens.
                 if extension.eq_ignore_ascii_case("lnk") {
                     let relative_lower = relative.to_string_lossy().to_ascii_lowercase();
-                    if relative_lower.contains("start menu")
-                        && shortcuts.len() < MAX_SHORTCUTS
-                        && let Some(name) = entry_path.file_stem().and_then(|name| name.to_str())
-                    {
-                        let target = shortcut_target(&entry_path)
-                            .and_then(|target| prefix_relative(&prefix_root, &target))
-                            .map(|relative| relative.to_string_lossy().to_ascii_lowercase());
-                        shortcuts.push((name.to_owned(), target));
+                    if relative_lower.contains("start menu") && shortcuts.len() < MAX_SHORTCUTS {
+                        keep_shortcut(&entry_path, &prefix_root, &mut shortcuts);
                     }
                     continue;
                 }
@@ -527,11 +521,7 @@ impl CapsuleStore {
                     }
                     continue;
                 }
-                let installed_location = relative_lower.contains("program files")
-                    || (relative_lower.contains("appdata") && relative_lower.contains("local"));
-                if !installed_location
-                    || relative_lower.contains("tilo-installers")
-                    || relative_lower.starts_with("drive_c/windows/")
+                if !is_application_location(&relative_lower)
                     || is_helper_executable(&lower)
                     || candidates.len() >= MAX_PROGRAMS
                     || is_wine_placeholder(&entry_path)
@@ -556,33 +546,7 @@ impl CapsuleStore {
                 });
             }
         }
-        // Only what a Start menu shortcut opens is an application; the shortcut's own name is
-        // the one Windows shows, which is what the person reads.
-        let mut listed: Vec<CapsuleProgram> = candidates
-            .into_iter()
-            .filter_map(|mut program| {
-                let executable = program
-                    .prefix_relative_executable
-                    .to_string_lossy()
-                    .to_ascii_lowercase();
-                let stem = program
-                    .prefix_relative_executable
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                let shortcut = shortcuts
-                    .iter()
-                    .find(|(_, target)| target.as_deref() == Some(executable.as_str()))
-                    .or_else(|| {
-                        shortcuts
-                            .iter()
-                            .find(|(name, _)| name.to_ascii_lowercase() == stem)
-                    })?;
-                program.display_name = shortcut.0.clone();
-                Some(program)
-            })
-            .collect();
+        let mut listed = listed_by_shortcuts(candidates, &shortcuts);
         listed.sort_by(|left, right| left.display_name.cmp(&right.display_name));
         listed.dedup_by(|left, right| {
             left.prefix_relative_executable == right.prefix_relative_executable
@@ -903,6 +867,52 @@ fn is_helper_executable(lower_stem: &str) -> bool {
     .any(|word| lower_stem == *word || lower_stem.ends_with(word))
 }
 
+/// Keep the Start menu shortcut at `path` as what it opens: its name, and the path its link
+/// information gives under the capsule's prefix, lowercased for matching as Windows does.
+fn keep_shortcut(path: &Path, prefix: &Path, shortcuts: &mut Vec<(String, Option<String>)>) {
+    let Some(name) = path.file_stem().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let target = shortcut_target(path)
+        .and_then(|target| prefix_relative(prefix, &target))
+        .map(|relative| relative.to_string_lossy().to_ascii_lowercase());
+    shortcuts.push((name.to_owned(), target));
+}
+
+/// What the shortcuts open, as the applications a person has: each candidate whose executable a
+/// shortcut targets — or, for one an MSI advertises with no path, whose name matches the
+/// shortcut's — named as its shortcut shows.
+fn listed_by_shortcuts(
+    candidates: Vec<CapsuleProgram>,
+    shortcuts: &[(String, Option<String>)],
+) -> Vec<CapsuleProgram> {
+    candidates
+        .into_iter()
+        .filter_map(|mut program| {
+            let executable = program
+                .prefix_relative_executable
+                .to_string_lossy()
+                .to_ascii_lowercase();
+            let stem = program
+                .prefix_relative_executable
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let shortcut = shortcuts
+                .iter()
+                .find(|(_, target)| target.as_deref() == Some(executable.as_str()))
+                .or_else(|| {
+                    shortcuts
+                        .iter()
+                        .find(|(name, _)| name.to_ascii_lowercase() == stem)
+                })?;
+            program.display_name.clone_from(&shortcut.0);
+            Some(program)
+        })
+        .collect()
+}
+
 /// The path the Start menu shortcut at `path` names, as Windows wrote it: its local base path and
 /// the common suffix beside it. A shortcut an MSI advertises carries no path — its target lives in
 /// the installer — and answers `None`.
@@ -921,7 +931,7 @@ fn shortcut_target(path: &Path) -> Option<String> {
 fn shell_link_target(bytes: &[u8]) -> Option<String> {
     let word = |at: usize| -> Option<usize> {
         let value = u32::from_le_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?);
-        Some(usize::try_from(value).ok()?)
+        usize::try_from(value).ok()
     };
     if bytes.get(0..4)? != [0x4c, 0, 0, 0] {
         return None;
@@ -962,7 +972,7 @@ fn shell_link_target(bytes: &[u8]) -> Option<String> {
         if unicode {
             let units: Vec<u16> = field
                 .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .map_while(|pair| Some(u16::from_le_bytes([*pair.first()?, *pair.get(1)?])))
                 .take_while(|unit| *unit != 0)
                 .collect();
             Some(String::from_utf16_lossy(&units))
@@ -1017,6 +1027,16 @@ fn prefix_relative(prefix: &Path, target: &str) -> Option<PathBuf> {
             .path();
     }
     path.strip_prefix(prefix).ok().map(Path::to_path_buf)
+}
+
+/// Whether a file's path under the prefix is where an application is installed: Program Files,
+/// or the person's per-user `Local AppData`, and never Wine's own tree or the retained installers.
+fn is_application_location(relative_lower: &str) -> bool {
+    let installed = relative_lower.contains("program files")
+        || (relative_lower.contains("appdata") && relative_lower.contains("local"));
+    installed
+        && !relative_lower.contains("tilo-installers")
+        && !relative_lower.starts_with("drive_c/windows/")
 }
 
 pub(crate) fn validate_id(label: &'static str, value: &str) -> Result<(), CapsuleError> {
@@ -1373,10 +1393,12 @@ mod tests {
     fn shortcut_to(target: &str) -> Vec<u8> {
         let header = 0x1c_u32;
         let volume = 0x11_u32;
-        let base_offset = header + volume;
+        let base_offset = header.saturating_add(volume);
         let base = target.as_bytes();
-        let suffix_offset = base_offset + u32::try_from(base.len()).unwrap() + 1;
-        let size = suffix_offset + 1;
+        let suffix_offset = base_offset
+            .saturating_add(u32::try_from(base.len()).unwrap())
+            .saturating_add(1);
+        let size = suffix_offset.saturating_add(1);
         let mut link_info = Vec::new();
         link_info.extend_from_slice(&size.to_le_bytes());
         link_info.extend_from_slice(&header.to_le_bytes());

@@ -60,15 +60,15 @@ struct Keeper {
 impl Keeper {
     /// A keeper whose app runs until `<scratch>/stop` exists, then exits 3.
     fn start() -> Self {
-        Self::with_script("while [ ! -e '{stop}' ]; do sleep 0.02; done; exit 3")
+        Self::with_script("while [ ! -e '@@STOP@@' ]; do sleep 0.02; done; exit 3")
     }
 
-    /// [`Self::start`] with the app's `script`, whose `{stop}` is the file that ends it.
+    /// [`Self::start`] with the app's `script`, whose `@@STOP@@` is the file that ends it.
     fn with_script(script: &str) -> Self {
         let scratch = tempfile::tempdir().expect("a directory");
         let dir = scratch.path().join("keeper");
         let stop = scratch.path().join("stop");
-        let script = script.replace("{stop}", &stop.display().to_string());
+        let script = script.replace("@@STOP@@", &stop.display().to_string());
         let child = Command::new(env!("CARGO_BIN_EXE_tilo-app-keeper"))
             .arg("--dir")
             .arg(&dir)
@@ -273,7 +273,7 @@ fn a_later_session_hears_the_end(keeper: &mut Keeper) {
 #[test]
 fn a_keeper_that_logs_leaves_the_apps_streams_alone() {
     let mut keeper = Keeper::with_script(
-        "printf 'said out\\n'; printf 'said err\\n' >&2; while [ ! -e '{stop}' ]; do sleep 0.02; done; exit 3",
+        "printf 'said out\\n'; printf 'said err\\n' >&2; while [ ! -e '@@STOP@@' ]; do sleep 0.02; done; exit 3",
     );
     let desktop = Desktop::new();
     let mut control = Control::greet(&keeper.dir);

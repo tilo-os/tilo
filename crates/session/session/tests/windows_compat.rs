@@ -2341,6 +2341,17 @@ impl SandboxExecutor for SetUp {
             fs::create_dir_all(program_files.join(folder))?;
             fs::write(program_files.join(folder).join(name), bytes)?;
         }
+        // The Start menu is what a person sees: the shortcut setup wrote for the program.
+        let start_menu = prefix.join(
+            "drive_c/users/root/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Example",
+        );
+        fs::create_dir_all(&start_menu)?;
+        let mut shortcut = vec![0_u8; 0x4c];
+        shortcut[0] = 0x4c;
+        shortcut[0x14..0x18].copy_from_slice(&1_u32.to_le_bytes()); // HasLinkTargetIDList
+        shortcut.extend_from_slice(&4_u16.to_le_bytes());
+        shortcut.extend_from_slice(&[0; 4]);
+        fs::write(start_menu.join("Example.lnk"), shortcut)?;
         Ok(SandboxCommand::new(
             PathBuf::from("/usr/bin/true"),
             Vec::<String>::new(),

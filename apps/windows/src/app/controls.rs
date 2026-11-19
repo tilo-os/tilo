@@ -1,7 +1,8 @@
 //! What a click on a control does when the window is part of an app's API: the effect it asks the
 //! session for, and nothing when the window must carry it out itself.
 
-use super::*;
+use super::{Intent, LifecycleAction, Notice, WindowsApp, strings};
+use crate::actions;
 
 impl WindowsApp {
     /// Ask the host for `effect` as the live row `row` offers it, or on the manager when

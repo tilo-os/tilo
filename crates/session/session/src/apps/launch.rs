@@ -189,16 +189,8 @@ impl Apps {
                     Got::Closed
                 },
             );
-            // A stop the person asked for is theirs, as closing the app's last window is: the
-            // tab closes quietly, and nothing stands where the window was to say it stopped
-            // working. A tab the shell held for a window that was not coming is closed with it.
             if event.asked_to_end {
-                tracing::info!(app = %event.app, end = %event.end, "an app the person ended closed");
-                if could_not_open
-                    && let Some(tab) = launch.as_ref().and_then(|launch| launch.instance)
-                {
-                    self.close_tab(tab);
-                }
+                self.person_ended(&event, launch.as_ref(), could_not_open);
                 continue;
             }
             // An app that ran with no window at all (an action's run) and one whose window came
@@ -218,28 +210,15 @@ impl Apps {
             } else {
                 tracing::warn!(app = %event.app, end = %event.end, "an app stopped");
             }
-            // What the app itself said before it ended, at warn beside the end: a launch that never
-            // opened is otherwise a warning with no reason in it, and the app's own account is the
-            // only one there is.
-            for said in &event.said.stderr {
-                tracing::warn!(
-                    target: tilo_startup_metrics::APP_OUTPUT_TARGET,
-                    app = %event.app,
-                    stream = "stderr",
-                    "{}",
-                    tilo_app_launch::output::line(&event.app, "stderr", said)
-                );
-            }
+            log_what_it_said(&event);
             // Reopen asks for the app the way it was asked for this time: a host app by its desktop
             // id, a Tilo app by its package id.
             let asked = launch
                 .as_ref()
                 .map_or_else(|| event.app.clone(), |launch| launch.asked.clone());
-            // A Windows program is asked by its entry in the manager's list, which is no name a
-            // person reads, and one that never showed a window never had a place on the shell.
-            let windows_program = asked
-                .strip_prefix(crate::windows_compat::ASKED_PREFIX)
-                .is_some();
+            // A Windows program is asked by its entry in the manager's list, an identifier no
+            // person reads; one that never showed a window never had a place on the shell.
+            let windows_program = asked.starts_with(crate::windows_compat::ASKED_PREFIX);
             if launch.is_none() {
                 tracing::warn!(app = %event.app, "a stopped app this session did not start");
             }
@@ -372,6 +351,32 @@ impl Apps {
             Got::Arriving => LaunchState::Arriving,
             Got::CouldNotOpen { why } => LaunchState::CouldNotOpen { why: why.clone() },
         })
+    }
+}
+
+impl Apps {
+    /// A stop the person asked for is theirs, as closing the app's last window is: the tab closes
+    /// quietly, and nothing stands where the window was to say it stopped working. A tab the shell
+    /// held for a window that was not coming is closed with it.
+    fn person_ended(&self, event: &Event, launch: Option<&Launching>, could_not_open: bool) {
+        tracing::info!(app = %event.app, end = %event.end, "an app the person ended closed");
+        if could_not_open && let Some(tab) = launch.and_then(|launch| launch.instance) {
+            self.close_tab(tab);
+        }
+    }
+}
+
+/// What the app itself said before it ended, at warn beside the end: a launch that never opened is
+/// otherwise a warning with no reason in it, and the app's own account is the only one there is.
+fn log_what_it_said(event: &Event) {
+    for said in &event.said.stderr {
+        tracing::warn!(
+            target: tilo_startup_metrics::APP_OUTPUT_TARGET,
+            app = %event.app,
+            stream = "stderr",
+            "{}",
+            tilo_app_launch::output::line(&event.app, "stderr", said)
+        );
     }
 }
 
