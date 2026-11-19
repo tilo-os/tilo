@@ -356,7 +356,8 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     for (name, rect, _) in &listed {
         assert!(
             (rect[3] - listed[0].1[3]).abs() < 0.5,
-            "{name} keeps the row's height"
+            "{name} keeps the row's height: {rect:?} against {:?}",
+            listed[0].1
         );
         // What it says leads the line under the title: the face stands at the row's left, where
         // the words start, and not on the trailing edge.
