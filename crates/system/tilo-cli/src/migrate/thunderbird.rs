@@ -149,32 +149,46 @@ fn account_items(
         .as_ref()
         .map(|servers| answers(&servers.imap_host, servers.imap_port));
     let cache = format!("{CACHE}{key}");
-    if let Some(servers) = &servers {
+    let provider = signs_in_with(account);
+    let title = match (provider, &servers) {
+        (Some(provider), _) => Some(format!(
+            "connect {} with {provider}'s sign-in, in Settings > External accounts; the \
+             sign-in Thunderbird keeps for it is Thunderbird's own and is not reused",
+            account.display_name
+        )),
+        (None, Some(servers)) => Some(format!(
+            "connect {} ({}:{}, sends by {}:{}); Mail syncs it from its server",
+            account.display_name,
+            servers.imap_host,
+            servers.imap_port,
+            servers.smtp_host,
+            servers.smtp_port
+        )),
+        (None, None) => None,
+    };
+    if let Some(title) = title {
         items.push(Item {
             key,
             kind: "account".into(),
-            title: format!(
-                "connect {} ({}:{}, sends by {}:{}); Mail syncs it from its server",
-                account.display_name,
-                servers.imap_host,
-                servers.imap_port,
-                servers.smtp_host,
-                servers.smtp_port
-            ),
+            title,
             count: 0,
             counts: String::new(),
             within: None,
             chosen: false,
-            note: (answering == Some(false)).then(|| {
-                format!(
-                    "{}:{} did not answer: if the account is gone, copy what Thunderbird \
-                     keeps instead (tilo migrate choose thunderbird {cache})",
-                    servers.imap_host, servers.imap_port
-                )
-            }),
+            note: servers
+                .as_ref()
+                .filter(|_| answering == Some(false))
+                .map(|servers| {
+                    format!(
+                        "{}:{} did not answer: if the account is gone, copy what Thunderbird \
+                         keeps instead (tilo migrate choose thunderbird {cache})",
+                        servers.imap_host, servers.imap_port
+                    )
+                }),
         });
     }
     let note = match answering {
+        None if provider.is_some() => None,
         None => Some(format!(
             "{} is no account Mail syncs from a server ({}): copying is the way to keep \
              its mail",
@@ -400,6 +414,9 @@ fn connect_account(
     logins: &[migration_sources::thunderbird::SavedLogin],
     lander: &mut Lander<'_>,
 ) -> Result<()> {
+    if let Some(provider) = signs_in_with(account) {
+        return through_provider(account, provider, lander);
+    }
     let Some(adding) = account_arguments(account, logins) else {
         bail!(
             "{} has no server Mail can sync from (a local or POP account): copy its messages \
@@ -409,6 +426,47 @@ fn connect_account(
         );
     };
     connect_mail(adding, lander)
+}
+
+/// An account that signs in with its provider's own sign-in (`provider`: Google, Microsoft):
+/// connected only by that sign-in, which the person gives in Settings, never with the token
+/// Thunderbird keeps, which Thunderbird's own sign-in made for Thunderbird alone. Told as such,
+/// and noted nowhere, so a later migration looks again; one the server lists already is.
+fn through_provider(
+    account: &migration_sources::thunderbird::ThunderbirdAccount,
+    provider: &str,
+    lander: &mut Lander<'_>,
+) -> Result<()> {
+    let address = account_key(account);
+    let kept = lander.person(MAIL_ACCOUNTS, "list", json!({}))?;
+    if keeps(&kept, &address) {
+        lander.say(&format!("{address} is connected already"));
+        return lander.noted(
+            &format!("connected:{address}"),
+            "accounts",
+            &Landed::Already,
+        );
+    }
+    lander.say(&format!(
+        "{address} is not connected: it signs in with {provider}'s own sign-in. Connect it in \
+         Settings > External accounts with {provider}; Mail then syncs it from its server."
+    ));
+    Ok(())
+}
+
+/// The provider whose own sign-in `account` uses (Google, Microsoft), when Thunderbird signs in
+/// to it that way rather than with a password.
+fn signs_in_with(
+    account: &migration_sources::thunderbird::ThunderbirdAccount,
+) -> Option<&'static str> {
+    let candidate = account.settings.as_ref()?.candidate.as_ref()?;
+    candidate
+        .requires_oauth()
+        .then(|| match candidate.provider() {
+            Some("google") => "Google",
+            Some("microsoft") => "Microsoft",
+            _ => "its mail provider",
+        })
 }
 
 /// Connect the mail account `adding` describes (as `person/mail-accounts#add` takes it), once

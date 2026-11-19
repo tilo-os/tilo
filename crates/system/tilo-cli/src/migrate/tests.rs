@@ -312,6 +312,61 @@ fn a_live_account_is_connected_and_nothing_is_copied_from_its_cache() {
     assert_eq!(journal.already_there, 1);
 }
 
+#[test]
+fn an_account_that_signs_in_with_google_is_left_to_google_s_sign_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    migration_sources::thunderbird::fixture::write_live_profile(
+        &home,
+        &migration_sources::thunderbird::fixture::LiveAccount {
+            name: "Ada Lovelace".into(),
+            email: "ada@gmail.com".into(),
+            also_sends_as: None,
+            imap_host: "imap.gmail.com".into(),
+            imap_port: 993,
+            smtp_host: "smtp.gmail.com".into(),
+            smtp_port: 465,
+            password: "a-token-thunderbird-made-for-itself".into(),
+        },
+    );
+    let place = Place::at(&dir.path().join("state"));
+    let mut review = thunderbird::review_with(&home, None, &answering).unwrap();
+    let account = review
+        .items
+        .iter_mut()
+        .find(|item| item.kind == "account")
+        .expect("the account is offered");
+    assert!(
+        account.title.contains("Google's sign-in"),
+        "{}",
+        account.title
+    );
+    account.chosen = true;
+    place.keep_review(&review).unwrap();
+
+    // Nothing goes to the server with what Thunderbird keeps, nothing is counted, and the
+    // person is told how it is connected; the migration itself is not a failure.
+    let mut workspace = Recorded::default();
+    let mut told = Told::default();
+    let journal = migrate_saying(&home, &place, &mut workspace, true, &mut told).unwrap();
+    assert!(workspace.added.is_empty(), "{:#?}", workspace.added);
+    assert!(told.asked.is_empty(), "{:?}", told.asked);
+    assert_eq!(journal.brought.get("accounts"), None);
+    assert!(
+        told.lines
+            .iter()
+            .any(|line| line.contains("not connected") && line.contains("Google")),
+        "{:?}",
+        told.lines
+    );
+    for said in &told.lines {
+        assert!(
+            !said.contains("a-token-thunderbird-made-for-itself"),
+            "{said}"
+        );
+    }
+}
+
 /// Every file under `dir`.
 fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut found = Vec::new();
