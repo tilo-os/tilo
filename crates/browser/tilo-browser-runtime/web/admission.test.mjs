@@ -274,6 +274,52 @@ test('a link a site hands over whose server has no web origin is dialled as its 
   assert.equal(calls[2][1].origin, 'https://lounge.tilo.sh', 'joined where the invitation says its server is');
 });
 
+test('an invitation sent off the wait list opens the person’s own workspace in its place, unless its link names a place inside the workspace', async () => {
+  const sealed = {kind: 'sealed', site: 'https://tilo.sh', handle: 'abcdefghijklmnop'};
+  const key = 'A'.repeat(43);
+  // A shelf that names no server: the invitation admits at the site's own.
+  const server = sealed.site;
+  const offer = waitList => ({workspaceName: 'Lounge', role: 'editor', workspace: 'lounge-id', members: 4, waitList});
+  const open = async ({waitList, scope = sealed, deep = false, secrets = {invite: key}, way = 'sealed-invitation', own = {workspace: 'own-id', name: 'Ada'},
+    reconnect = async ({workspace}) => ({joined: 'again', workspace})}) => {
+    const steps = [];
+    const lounge = {joined: 'lounge', workspace: 'lounge-id', dispose: async () => steps.push('dispose lounge')};
+    const {deps} = entries({
+      openInvitation: async () => ({invitation: 'the invitation'}),
+      inspectInvitation: async () => offer(waitList),
+      joinWorkspace: async () => { steps.push('join lounge'); return lounge; },
+      ownWorkspace: async peer => { steps.push(['own of', peer.workspace]); return own; },
+      reconnect: async options => { steps.push(['enter', options.origin, options.workspace]); return reconnect(options); },
+    });
+    const landed = await admit({scope, deep, secrets, runtime: rules([way]).runtime, deps});
+    return {landed, steps, lounge};
+  };
+  // Off the wait list: joined, then their own workspace made and entered,
+  // with the joined one let go first, before anything is shown.
+  const wait = await open({waitList: true});
+  assert.deepEqual(wait.landed, {peer: {joined: 'again', workspace: 'own-id'}, own: true});
+  assert.deepEqual(wait.steps, ['join lounge', ['own of', 'lounge-id'], 'dispose lounge', ['enter', server, 'own-id']]);
+  // An ordinary invitation into the Lounge stays there.
+  const plain = await open({waitList: false});
+  assert.equal(plain.landed.peer, plain.lounge);
+  assert.deepEqual(plain.steps, ['join lounge']);
+  // The long link a wait-list mail carries names the workspace it admits
+  // to, and nothing inside it: their own workspace still opens.
+  const long = {...target, workspace: 'lounge-id'};
+  const named = await open({waitList: true, scope: long, secrets: {invite: 'AAEC'}, way: 'invitation'});
+  assert.deepEqual(named.landed, {peer: {joined: 'again', workspace: 'own-id'}, own: true});
+  // A link to a place inside the workspace (its chat, a message) opens that place.
+  const deep = await open({waitList: true, scope: long, deep: true, secrets: {invite: 'AAEC'}, way: 'invitation'});
+  assert.equal(deep.landed.peer, deep.lounge);
+  assert.deepEqual(deep.steps, ['join lounge']);
+  // A server that keeps no workspace of their own leaves them where they were let in.
+  const none = await open({waitList: true, own: null});
+  assert.equal(none.landed.peer, none.lounge);
+  // Their own workspace that does not let this device in: back where the invitation let them in.
+  const refused = await open({waitList: true, reconnect: async ({workspace}) => (workspace === 'own-id' ? null : {joined: 'again', workspace})});
+  assert.deepEqual(refused.landed, {peer: {joined: 'again', workspace: 'lounge-id'}});
+});
+
 test('a link a site hands over opens at the site, and asks the host the invitation names', async () => {
   const sealed = {kind: 'sealed', site: 'https://tilo.sh', handle: 'abcdefghijklmnop'};
   const key = 'A'.repeat(43);

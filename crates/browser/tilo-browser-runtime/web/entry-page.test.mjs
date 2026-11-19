@@ -976,6 +976,61 @@ test('an invited newcomer on an invite-only site stays in the site’s home work
   }
 });
 
+/** A page opened at a site's short invitation link into the Lounge, through
+ * the real admission with the page's own deps: the invitation sent off the
+ * wait list (`waitList`) or not. `steps` hears what the page asked. */
+const shortInvitation = ({waitList, steps}) => async ({deps, onStep}, booted) => {
+  const scope = {kind: 'sealed', site: 'https://web.example', handle: 'abcdefghijklmnop'};
+  const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
+  deps.onScope({scope, entry: {base: 'https://web.example/', home}});
+  onStep('join');
+  const lounge = {...booted.peer, workspace: 'current', workspaceName: 'Lounge',
+    enterOwnWorkspace: async () => { steps.push('make own'); return {workspace: OWN, workspace_id: 'own-id', name: 'Ada’s workspace'}; },
+    dispose: async () => steps.push('dispose lounge')};
+  const {peer} = await admit({scope, secrets: {invite: 'K'.repeat(43)}, runtime: {wayIn: () => 'sealed-invitation', wayInAfter: () => 'no-access', admittedAsAsked: () => true},
+    deps: {...deps,
+      openInvitation: async () => ({invitation: 'the invitation', host: ORIGIN}),
+      inspectInvitation: async () => ({workspaceName: 'Lounge', role: 'editor', workspace: 'current', members: 3, waitList}),
+      confirmInvitation: async () => true,
+      joinWorkspace: async () => { steps.push('join lounge'); return lounge; },
+      reconnect: async ({workspace}) => { steps.push(['enter', workspace]); return {...booted.peer, workspace}; }}});
+  deps.onAdmitted(peer);
+  booted.peer = peer;
+  booted.router.route.target.scope = {kind: 'workspace', host: ORIGIN, workspace: peer.workspace};
+  return booted;
+};
+const OWN = '0b1d8f52-5d0e-4a8e-9c1b-6f3e2a7d4c19';
+
+test('a person invited off the wait list opens their own workspace, made as they come in, loading the page once', async () => {
+  // Someone the Lounge let in off its wait list is new here: their own
+  // workspace is where they start, and the Lounge stays one switch away.
+  // Where to land is decided while they are let in, so nothing loads twice.
+  const steps = [];
+  const {calls, failure, at} = await fixture({remembered: [], boot: shortInvitation({waitList: true, steps}),
+    local: {'tilo-setup': JSON.stringify({step: 'later', at: 1})}});
+  assert.equal(failure, null);
+  assert.deepEqual(steps, ['join lounge', 'make own', 'dispose lounge', ['enter', OWN]],
+    'joined the Lounge, then their own workspace made and entered in its place');
+  assert.deepEqual(calls.filter(call => call === 'reload' || call === 'assign'), [], 'the page is not loaded again');
+  assert.equal(at(), null, 'the page goes nowhere');
+  assert.equal(document.documentElement.dataset.entry, 'open', 'their own workspace opens');
+  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, workspace: OWN}, 'a bare entry reopens it');
+  assert.equal(enteredWorkspaces().find(kept => kept.workspace === OWN)?.name, 'Ada’s workspace', 'remembered under its own name');
+  assert.ok(!enteredWorkspaces().some(kept => kept.workspace === OWN && kept.name === 'Lounge'), 'never under the Lounge’s');
+});
+
+test('a person invited into the Lounge by a short link opens the Lounge, loading the page once', async () => {
+  // An ordinary invitation names its place, and the person stays there.
+  const steps = [];
+  const {calls, failure} = await fixture({remembered: [], boot: shortInvitation({waitList: false, steps}),
+    local: {'tilo-setup': JSON.stringify({step: 'later', at: 1})}});
+  assert.equal(failure, null);
+  assert.deepEqual(steps, ['join lounge'], 'no workspace of their own is made');
+  assert.deepEqual(calls.filter(call => call === 'reload' || call === 'assign'), [], 'the page is not loaded again');
+  assert.equal(document.documentElement.dataset.entry, 'open', 'the Lounge opens');
+  assert.equal(chosenWorkspace(), null, 'a bare entry opens the site’s home');
+});
+
 test('a person already set up keeps the workspace a link into the site’s own home opened', async () => {
   const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
   const {failure, at} = await fixture({entry: {base: 'https://web.example/', home},

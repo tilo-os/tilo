@@ -412,6 +412,51 @@ test('an address that names no server opens its workspace at the server the site
   page.router.stop?.();
 });
 
+test('a wait-list invitation’s link opens the person’s own workspace, and the address names it from then on; a link into the workspace’s chat opens the chat', async () => {
+  // The mail a wait-list address is sent carries `#/w/<lounge>?invite=…`:
+  // the page joins the Lounge with it, then opens the person's own workspace
+  // in its place, once, with no load of its own.
+  const walk = async target => {
+    const scope = {kind: 'workspace', host: 'https://tilo.example', workspace: 'LOUNGE'};
+    const formatted = [];
+    const replaced = [];
+    const runtime = runtimeFake({
+      parseLink: () => JSON.stringify({mode: 'desktop', target: {scope, ...target}}),
+      formatLink: route => { formatted.push(JSON.parse(route)); return `https://tilo.example/#/w/${JSON.parse(route).target.scope.workspace}`; },
+      ...entering('invitation'),
+    });
+    const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+    const peerOf = workspace => ({workspace, origin: 'https://tilo.example', whenReady: async () => {}, dispose: async () => {},
+      mountDesktop: async (element, options) => { options.onNavigation?.(navigation); return {navigation}; }});
+    const window = {
+      __tiloLinkSecrets: Object.freeze({invite: 'SIGNED'}),
+      location: {href: 'https://tilo.example/#/w/LOUNGE', hash: '#/w/LOUNGE'},
+      history: {state: null, replaceState: (state, title, url) => replaced.push(url), pushState() {}},
+      addEventListener() {}, removeEventListener() {},
+    };
+    const deps = {
+      loadRuntime: async () => runtime,
+      fetch: async () => ({ok: false}),
+      readAccounts: async () => [],
+      openInvitation: async (site, secret) => ({invitation: secret}),
+      inspectInvitation: async () => ({workspace: 'LOUNGE', role: 'editor', waitList: true}),
+      confirmInvitation: async () => true,
+      joinWorkspace: async () => peerOf('LOUNGE'),
+      ownWorkspace: async () => ({workspace: 'OWN', name: 'Ada'}),
+      reconnect: async ({workspace}) => peerOf(workspace),
+      // Where it lands is all this asks: nothing is drawn.
+      rendererUnavailable: async () => 'no renderer here',
+    };
+    const page = await boot({mode: 'desktop', window, status: null, deps});
+    return {page, replaced};
+  };
+  const own = await walk({});
+  assert.equal(own.page.peer.workspace, 'OWN');
+  assert.equal(own.replaced.at(-1), 'https://tilo.example/#/w/OWN', 'the address names their own workspace');
+  const chat = await walk({app: 'so.tilo.chat'});
+  assert.equal(chat.page.peer.workspace, 'LOUNGE', 'a link into the chat opens it');
+});
+
 test('a workspace no listing of the page names is mounted under the name it answered admission with', async () => {
   // The person's own workspace on a host, reached by a link that names no
   // workspace, on a site whose entry lists none: the shell the page starts has

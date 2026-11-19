@@ -660,10 +660,11 @@ fn join_reply_json(reply: tilo_server_protocol::workspaces::JoinReply) -> serde_
             members,
             administrator,
             owner,
+            wait_list,
         } => serde_json::json!({
             "kind": "invitation", "workspace": workspace, "workspaceId": workspace_id.to_string(),
             "name": name, "role": role, "expiresAtNs": expires_at_ns.to_string(),
-            "members": members, "administrator": administrator, "owner": owner,
+            "members": members, "administrator": administrator, "owner": owner, "waitList": wait_list,
             "inviter": inviter.map(|inviter| serde_json::json!({
                 "name": inviter.name, "userPublicKey": hex::encode(inviter.user_public_key),
             })),

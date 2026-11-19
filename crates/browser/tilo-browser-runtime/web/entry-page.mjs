@@ -957,6 +957,8 @@ export async function startEntryPage({mode}) {
   let admitting = null;
   /** The name the host signed into an invitation this page redeemed. */
   let invitedTo = null;
+  /** The person's own workspace, made as a wait-list invitation let them in (`deps.ownWorkspace`). */
+  let ownFirst = null;
   /** Whether this page came in on a guest ticket, which is not remembered as membership. */
   let viaTicket = false;
   /** The workspace in front, remembered as one this browser entered, until the desktop names it. */
@@ -1148,7 +1150,17 @@ export async function startEntryPage({mode}) {
       if (!listingsRead.has(at)) listingsRead.set(at, publicListings(at));
       return listingsRead.get(at);
     },
-    onAdmitted: peer => { admitted = peer; letIn(peer); },
+    onAdmitted: peer => {
+      admitted = peer;
+      // Their own workspace opened in place of the invitation's: named as
+      // itself, and what a bare entry reopens from now on.
+      if (ownFirst && peer?.workspace === ownFirst.id) {
+        workspaceName = ownFirst.name ?? workspaceName;
+        invitedTo = ownFirst.name;
+        remembering(() => chooseWorkspace({origin: ownFirst.origin, workspace: ownFirst.id}));
+      }
+      letIn(peer);
+    },
     prefetchApplication,
     prefetchDesktop,
     // An embed always shows the workspace the embedding site names.
@@ -1264,7 +1276,10 @@ export async function startEntryPage({mode}) {
       // dialled at the site's origin for it, so every link this person hands out from then on
       // names a host any browser reaches.
       const named = siteNames(invited.info);
-      if (named) return named === new URL(origin).origin ? null : {origin: named, offer: invited.offer};
+      // Asked there what the invitation offers, as a link the site seals is: the server
+      // answers the workspace's name, its people and whether it sent the invitation off its
+      // wait list, which the invitation alone does not say.
+      if (named) return named === new URL(origin).origin ? null : {origin: named, offer: null};
       const at = invitedOrigin(invited.endpoint);
       if (!at) return null;
       nameInvitedServer(at, invited.info);
@@ -1430,6 +1445,22 @@ export async function startEntryPage({mode}) {
         device: deviceKey.slot ? profileDevice(profile, globalThis.localStorage, deviceKey.slot) : device,
         runtime, requireExistingCertificate: true}));
     },
+  };
+  /**
+   * The person's own workspace, for someone a wait-list invitation just let
+   * into `peer`'s workspace (admission.mjs): the server makes it with this
+   * device in it, and the page enters it in place of the one the invitation
+   * let them into, which stays among theirs. `null` where the server keeps
+   * none for them: they stay where they were let in.
+   */
+  deps.ownWorkspace = async peer => {
+    try {
+      ownFirst = await ensureOwnWorkspace(peer);
+      return {workspace: ownFirst.id, name: ownFirst.name};
+    } catch (error) {
+      console.warn('wait-list invitation: your own workspace was not made', error?.code ?? error?.message ?? error);
+      return null;
+    }
   };
 
   /** The directory sheet's Join: its entry granted this page an invitation

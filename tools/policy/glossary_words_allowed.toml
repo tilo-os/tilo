@@ -635,6 +635,12 @@ paths = [
 ]
 
 [[allow]]
+reason = "A link's workspace scope names the server it is on in the field `host`, as the runtime's link grammar (`parseLink`, `formatLink`) spells it, and the boot tests build scopes in that shape."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/browser/tilo-browser-runtime/web/entry.test.mjs"]
+
+[[allow]]
 reason = "Plain English 'long-standing': an old problem, conjecture or surface the sample articles and a test's note name."
 words = ["standing"]
 paths = [
@@ -976,7 +982,7 @@ paths = ["crates/server/tilo-workspace-service/src/workspaces/packaged_model_tes
 reason = "The service's test fixture starts a certified device (`test_host`), a name its other tests share."
 words = ["host"]
 identifiers = ["test_host"]
-paths = ["crates/server/tilo-workspace-service/src/workspaces/governed_grants_tests.rs"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/governed_grants_tests.rs", "crates/server/tilo-workspace-service/src/workspaces/authority/tests.rs"]
 
 [[allow]]
 reason = "The domain bytes a genesis change is hashed under, fixed before the word was retired; a different domain forks every resource created since."

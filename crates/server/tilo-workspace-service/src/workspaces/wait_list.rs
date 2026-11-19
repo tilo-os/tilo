@@ -436,6 +436,13 @@ impl WaitList {
             .any(|entry| entry.request_id == request_id && entry.confirmed_at_ns.is_some())
     }
 
+    /// Whether the invitation `invite_id` was sent for a request still on
+    /// the list: whoever holds it asked to join at the entry, and is new here.
+    pub(super) fn sent(&self, invite_id: [u8; 32], now_ns: u64) -> bool {
+        self.live(now_ns)
+            .any(|entry| entry.invites.contains(&invite_id))
+    }
+
     /// Note that the invitation `invite_id` was sent for `request_id` at
     /// `now_ns`; whether that entry is on the list.
     pub(super) fn invited(
