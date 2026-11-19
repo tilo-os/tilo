@@ -416,6 +416,23 @@ impl DescribedRows {
         self.removed.iter().any(|item| item.key == key)
     }
 
+    /// Whether the rows the list holds lead with a control — a box or a glyph — so a row the
+    /// list builds itself, the struck row of an item removed unseen, keeps their title column.
+    /// The first row speaks for them, as a list's rows read alike.
+    fn leads_with_a_control(&self) -> bool {
+        let Some(first) = self.key_at(0) else {
+            return false;
+        };
+        if self.is_removed(&first) {
+            return false;
+        }
+        self.with_item(&first, |item| match &item.row {
+            ItemRow::Row(props) => props.checkbox.is_some() || props.icon.is_some(),
+            ItemRow::View(_) | ItemRow::None => false,
+        })
+        .unwrap_or(false)
+    }
+
     /// How many items the list holds, before the removed items' rows.
     fn held_len(&self) -> usize {
         match &self.held {
@@ -1009,6 +1026,11 @@ fn bare_row(
                 }
                 if removed || done {
                     row = row.struck();
+                }
+                if removed && rows.leads_with_a_control() {
+                    // The row stands in for one that had a leading control; it keeps the title
+                    // column of the rows around it with that column left empty.
+                    row = row.leading_empty(true);
                 }
                 if let Some(mark) = change.and_then(ChangeMarkProps::row) {
                     row = row.change(mark.by, mark.spoken, mark.said, mark.show);

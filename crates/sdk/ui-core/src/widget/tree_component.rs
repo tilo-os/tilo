@@ -40,6 +40,10 @@ use crate::widget::virtual_list::by_hand;
 /// height, shorter than a list's row of the same theme.
 pub const TREE_ROW_HEIGHT: f32 = crate::tokens::Density::Compact.rows().single;
 
+/// The height a tree's row stands at when it carries a line beside its name: the compact row's
+/// two-line height, so the line under the name is as tall as a list row's line.
+pub const TREE_ROW_DOUBLE_HEIGHT: f32 = crate::tokens::Density::Compact.rows().double;
+
 /// What one row of a tree shows besides its label: a leading glyph, the tone its title reads
 /// in, trailing text and what assistive technology says of it.
 #[derive(Clone, Component, Debug, Default, PartialEq)]
