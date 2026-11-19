@@ -18,7 +18,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use super::OverviewPanel;
 use super::layout::{Picture, SHARES_MAX_ROWS};
 use crate::i18n::{t, t_args};
-use crate::overview::{ShownPerson, WorkspaceCard, WorkspacePerson, WorkspaceShare};
+use crate::overview::{HolderKind, ShownPerson, WorkspaceCard, WorkspacePerson, WorkspaceShare};
 use crate::overview_picture::{Tile, draw_empty_strip, draw_strip_name, draw_tile_title};
 use crate::window_flight::WindowPicture;
 use crate::window_switcher::{PreviewWell, WindowApp, draw_preview_well};
@@ -406,6 +406,7 @@ impl OverviewPanel {
                 .map(|person| ShownPerson {
                     id: person.id.clone(),
                     name: person.name.clone(),
+                    kind: HolderKind::Person,
                 })
                 .collect();
             let x = content.x0 + f64::from(lead_w) + m.s2;
@@ -1412,12 +1413,18 @@ fn paint_chips(
     let mut left = x;
     for person in people.iter().take(shown) {
         let fill = face_colour(look.colours, &person.id);
-        ui::widget::AvatarFace::new(&person.name, &person.id)
-            .presence(fill)
-            .paint(
-                ctx,
-                Rect::new(left, mid - face / 2.0, left + face, mid + face / 2.0),
-            );
+        // An agent wears its mark and a bot its square, as they do on every other row.
+        let avatar = ui::widget::AvatarFace::new(&person.name, &person.id);
+        match person.kind {
+            HolderKind::Person => avatar,
+            HolderKind::Agent => avatar.agent(),
+            HolderKind::Bot => avatar.square(),
+        }
+        .presence(fill)
+        .paint(
+            ctx,
+            Rect::new(left, mid - face / 2.0, left + face, mid + face / 2.0),
+        );
         let name = ctx
             .text
             .elide_to_width_style(&person.name, f32_of_f64(name_width), &style);

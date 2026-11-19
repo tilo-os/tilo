@@ -74,7 +74,9 @@ impl TabBar {
             *handled = true;
             return;
         }
-        if self.active_toolbar().is_some() && self.toolbar_row.press(cursor_pos) {
+        if self.active_toolbar().is_some()
+            && self.toolbar_row.press(cursor_pos, self.lifts_the_window())
+        {
             *handled = true;
             return;
         }

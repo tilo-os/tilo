@@ -404,6 +404,14 @@ pub struct Ground {
     pub edge: Option<[u8; 4]>,
     /// Its corners, logical pixels.
     pub radius: f64,
+    /// How far the fill stands in from the element's sides and from its top and bottom, logical
+    /// pixels: a row's lift, inset from the list's edges, while the row still reaches them.
+    #[serde(skip_serializing_if = "edge_to_edge")]
+    pub inset: [f64; 2],
+}
+
+fn edge_to_edge(inset: &[f64; 2]) -> bool {
+    inset.iter().all(|side| side.abs() < f64::EPSILON)
 }
 
 /// An icon: Lucide-style outlines in a 24 × 24 box, as SVG path data.
@@ -521,6 +529,9 @@ pub struct TextLook {
     pub max_lines: Option<u32>,
     /// Monospaced rather than the interface face.
     pub mono: bool,
+    /// Struck through, as a done or removed item's words are painted.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub struck: bool,
 }
 
 impl TextLook {
@@ -551,7 +562,15 @@ impl TextLook {
             },
             max_lines: None,
             mono: matches!(style.family, FontChoice::Monospace),
+            struck: false,
         }
+    }
+
+    /// Struck through when `struck`.
+    #[must_use]
+    pub fn struck(mut self, struck: bool) -> Self {
+        self.struck = struck;
+        self
     }
 
     /// Set to `align`: `start`, `center` or `end`.

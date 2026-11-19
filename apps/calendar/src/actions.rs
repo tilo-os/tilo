@@ -7,12 +7,27 @@
 
 pub use calendar_model::actions::*;
 
+use calendar_model::model::Palette;
+
+use crate::resource::CalendarEffect;
+
 pub(crate) fn calendar_collection_row(
     calendar: &CalendarCollectionResource,
 ) -> ui::framework::LiveRow {
     ui::framework::LiveRow::typed::<crate::rows::CalendarRow>(
         calendar_resource_id(&calendar.id),
         calendar.label.clone(),
+    )
+    // Recolouring asks for the colour beside the one it has now.
+    .prefilled(
+        CalendarEffect::SET_COLOR,
+        [(
+            "color",
+            Palette::from_index(calendar.color.unwrap_or_default())
+                .name()
+                .to_ascii_lowercase()
+                .into(),
+        )],
     )
 }
 

@@ -7,12 +7,8 @@ use ui::widget::toast::ToastKind;
 impl Music {
     /// The invocation of the library's Open audio file, as the bar's slot runs it.
     pub(super) fn open_file_invocation() -> Option<tilo_actions::ControlInvocation> {
-        let row = ui::framework::LiveRow::typed::<crate::row_types::Library>(
-            "music.library",
-            crate::i18n::CATALOG.t("music-resource-library"),
-        )
-        .effect(&crate::actions::MusicEffect::OpenFile);
-        tilo_actions::ActionBinding::unit_for(&row, "open-file")
+        crate::actions::MusicEffect::OPEN_FILE
+            .binding("music.library")
             .ok()?
             .invoke(())
             .ok()

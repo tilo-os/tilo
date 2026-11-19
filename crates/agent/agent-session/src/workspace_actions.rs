@@ -84,6 +84,7 @@ mod part_wait;
 mod person_ask;
 mod placed;
 mod publish;
+mod queue;
 mod reads;
 mod run_context;
 mod search_access;
@@ -1376,9 +1377,9 @@ impl Worker {
     }
 
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
-        // What came and waits for this thread, taken most urgent first ([`job::Job::urgency`]):
-        // a listing never waits behind writes, or the names they left to read, that came before.
-        let mut queued = job::Queued::default();
+        // What came and waits for this thread: a person's first, then an agent's, each most
+        // urgent first ([`queue`]).
+        let mut queue = queue::Queue::default();
         loop {
             // What the index's own thread read since the last pass is taken here, and the
             // next documents asked for; the folder's chunks are read here, between requests.
@@ -1389,10 +1390,8 @@ impl Worker {
                 let files = self.warm_files(index::WARM_SLICE);
                 self.warming = !(entries && files);
             }
-            while let Ok((at, job)) = jobs.try_recv() {
-                queued.push(at, job);
-            }
-            if let Some((at, job)) = queued.take() {
+            queue.take_sent(jobs, &self.shared.log);
+            if let Some((at, job)) = queue.next() {
                 self.expire_watchers();
                 self.admit(at, job);
                 // Requests that keep coming never hold back a run's word:
@@ -1404,10 +1403,15 @@ impl Worker {
                 }
                 continue;
             }
+            if queue.closed() {
+                break;
+            }
             let due = [
                 self.joining_until(),
                 session_voice::next_due(&self.workspaces),
                 self.watchers_until(),
+                // An agent's request waits a moment for the person's next one.
+                queue.paused_until(),
             ]
             .into_iter()
             .flatten()
@@ -1424,13 +1428,14 @@ impl Worker {
             };
             self.expire_watchers();
             match next {
-                Ok((at, job)) => queued.push(at, job),
+                Ok(job) => queue.put(job, &self.shared.log),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     self.give_up_joining();
                     self.tick_voices();
                     self.expire_watchers();
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                // What waits is still served, then the thread ends.
+                Err(mpsc::RecvTimeoutError::Disconnected) => queue.close(),
             }
         }
     }

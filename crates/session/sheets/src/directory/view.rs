@@ -151,6 +151,8 @@ mod tests {
             members: 12,
             last_active_ms: None,
             community: false,
+            invitation_only: false,
+            wait_list: None,
         }
     }
 

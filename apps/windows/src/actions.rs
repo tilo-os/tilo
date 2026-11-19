@@ -413,6 +413,18 @@ mod tests {
                     .any(|action| action.id == "delete-data")
             );
             assert!(prefix.actions.iter().any(|action| action.id == "uninstall"));
+            let delete = prefix
+                .actions
+                .iter()
+                .find(|action| action.id == "delete-data")
+                .unwrap();
+            assert_eq!(
+                delete.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Phrase {
+                    phrase: crate::rows::app_of_row(prefix.id.as_str()).to_owned(),
+                },
+                "an agent or a script must type what it loses, as a person does"
+            );
         }
         {
             let rows = sample_rows();

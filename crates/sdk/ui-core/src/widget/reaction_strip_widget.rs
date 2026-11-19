@@ -275,6 +275,7 @@ impl Widget for ReactionStripWidget {
                 fill: Some(rgba8(raised)),
                 edge: Some(rgba8(crate::surface::edge_on(raised))),
                 radius: pill.rect.height() / 2.0,
+                inset: [0.0; 2],
             });
             part.semantics = Some(
                 AccessNode::new(Role::ToggleButton)

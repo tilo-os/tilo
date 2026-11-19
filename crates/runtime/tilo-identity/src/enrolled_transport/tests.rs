@@ -10,7 +10,7 @@ const PASSWORD: &[u8] = b"a private device transport password";
 struct Fixture {
     source: tempfile::TempDir,
     system: PathBuf,
-    record: PathBuf,
+    member_file: PathBuf,
     output: PathBuf,
     root: [u8; 32],
     device: [u8; 32],
@@ -53,9 +53,9 @@ fn fixture() -> Fixture {
     persist::write_device_key(&paths.device_privkey, &device_signer).unwrap();
     persist::write_public_key(&paths.user_pubkey, &root).unwrap();
     persist::write_device_cert(&paths.device_cert, &cert).unwrap();
-    let record = identity.join("member.json");
+    let member_file = identity.join("member.json");
     let bytes = crate::store::public_member_record("Ada", [88, 101, 242], root).unwrap();
-    tilo_files::native::atomic::write_with_mode(&record, &bytes, 0o600).unwrap();
+    tilo_files::native::atomic::write_with_mode(&member_file, &bytes, 0o600).unwrap();
     let mut fleet = DeviceFleet::new(hex::encode(root));
     fleet.certificates.push(cert);
     tilo_files::native::atomic::write_with_mode(
@@ -69,7 +69,7 @@ fn fixture() -> Fixture {
     Fixture {
         source: temp,
         system,
-        record,
+        member_file,
         output,
         root,
         device,
@@ -81,7 +81,7 @@ impl Fixture {
     fn review(&self) -> std::io::Result<EnrolledDevice> {
         EnrolledDevice::review(
             &self.system,
-            &self.record,
+            &self.member_file,
             self.root,
             self.device,
             tilo_clock::unix_now_ns(),
@@ -162,7 +162,6 @@ tilo_test_env::scenario! {
         assert_eq!(imported.device_public_key, fixture.device);
         let paths = IdentityPaths::under(&system);
         assert!(persist::joined_device_is_ready(&paths, tilo_clock::unix_now_ns()).unwrap());
-        assert!(!paths.user_privkey.exists());
         assert_eq!(
             persist::read_device_key(&paths.device_privkey)
                 .unwrap()
@@ -239,9 +238,19 @@ tilo_test_env::scenario! {
         let before = snapshot(target.path());
         assert!(authenticated.import_into(&system, &identity).is_err());
         assert_eq!(snapshot(target.path()), before);
-        let source = IdentityPaths::under(&fixture.system);
-        let human_root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
-        persist::write_signing_key(&source.user_privkey, &human_root).unwrap();
+        // A source identity that keeps a root secret never travels.
+        let mut member: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&fixture.member_file).unwrap()).unwrap();
+        member["secret_ref"] = serde_json::json!({
+            "backend": "broker-file-v1",
+            "locator": hex::encode(fixture.root),
+        });
+        tilo_files::native::atomic::write_with_mode(
+            &fixture.member_file,
+            &serde_json::to_vec(&member).unwrap(),
+            0o600,
+        )
+        .unwrap();
         assert!(fixture.review().is_err());
     }
 }
@@ -249,7 +258,7 @@ tilo_test_env::scenario! {
 #[cfg(feature = "native-current-device-qualification")]
 fn current_owner_reference_roundtrip_uses_existing_member_without_exporting_private_keys() {
     let fixture = fixture();
-    let identity = fixture.record.parent().unwrap();
+    let identity = fixture.member_file.parent().unwrap();
     crate::store::set_active_identity(identity, "member").unwrap();
     let before = snapshot(fixture.source.path());
     let reviewed = CurrentDeviceReference::review(&fixture.system, identity).unwrap();
@@ -308,7 +317,7 @@ fn current_owner_reference_roundtrip_uses_existing_member_without_exporting_priv
 #[cfg(feature = "native-current-device-qualification")]
 fn current_owner_reference_refuses_other_owner_and_changed_current_key_before_activation() {
     let fixture = fixture();
-    let identity = fixture.record.parent().unwrap();
+    let identity = fixture.member_file.parent().unwrap();
     crate::store::set_active_identity(identity, "member").unwrap();
     let reviewed = CurrentDeviceReference::review(&fixture.system, identity).unwrap();
     let sealed = fixture.output.join("current-device.sealed");
@@ -348,7 +357,7 @@ fn current_owner_reference_refuses_other_owner_and_changed_current_key_before_ac
 #[cfg(feature = "native-current-device-qualification")]
 fn current_owner_reference_refuses_changed_original_record_and_never_replaces_it() {
     let fixture = fixture();
-    let identity = fixture.record.parent().unwrap();
+    let identity = fixture.member_file.parent().unwrap();
     crate::store::set_active_identity(identity, "member").unwrap();
     let reviewed = CurrentDeviceReference::review(&fixture.system, identity).unwrap();
     let sealed = fixture.output.join("current-device.sealed");
@@ -359,7 +368,7 @@ fn current_owner_reference_refuses_changed_original_record_and_never_replaces_it
         .open_current(&sealed, "current-owner-operation")
         .unwrap();
     tilo_files::native::atomic::write_with_mode(
-        &fixture.record,
+        &fixture.member_file,
         &crate::store::public_member_record(
             "Changed owner presentation",
             [88, 101, 242],
@@ -472,7 +481,7 @@ fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activat
         "requires actual native root/original-user qualification"
     );
     let fixture = fixture();
-    let identity = fixture.record.parent().unwrap();
+    let identity = fixture.member_file.parent().unwrap();
     crate::store::set_active_identity(identity, "member").unwrap();
     fn ownership(path: &Path, uid: u32, gid: u32) {
         use std::os::unix::ffi::OsStrExt as _;
@@ -546,7 +555,7 @@ fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activat
 #[test]
 fn current_owner_reference_refuses_corrupt_selector_and_non_root_namespace() {
     let fixture = fixture();
-    let identity = fixture.record.parent().unwrap();
+    let identity = fixture.member_file.parent().unwrap();
     tilo_files::native::atomic::write_with_mode(&identity.join("active"), b"../../member", 0o600)
         .unwrap();
     let before = snapshot(fixture.source.path());

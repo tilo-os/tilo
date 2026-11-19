@@ -5,8 +5,7 @@
 //! ```text
 //! /var/lib/tilo/
 //! ├── user-identity/
-//! │   ├── pubkey.bin      # 32-byte Ed25519 public key (present on every device)
-//! │   └── privkey.bin     # 32-byte Ed25519 secret seed (ONLY on primary devices)
+//! │   └── pubkey.bin      # 32-byte Ed25519 public key (present on every device)
 //! ├── device-private/
 //! │   └── keypair.bin     # 32-byte Ed25519 secret seed (per-device, always present)
 //! └── device/
@@ -21,7 +20,8 @@
 //! Secret files must not be reachable by users who are not entitled to
 //! them, and the mode is checked at read time — a permissive secret file
 //! returns [`PersistError::InsecurePermissions`] rather than being read.
-//! `privkey.bin` is user-scoped and must be 0600. `keypair.bin` is the
+//! The person's root is never here: it lives in their identity store.
+//! `keypair.bin` is the
 //! device key, read by two components running as two uids, so it may
 //! additionally be group-readable ([`DEVICE_KEY_MODE`]) but must be owned by
 //! root (or the reader for an injected/test store) and never reachable by
@@ -230,8 +230,6 @@ static DEVICE_KEY_CLAIM_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub struct IdentityPaths {
     /// `<root>/user-identity/pubkey.bin`
     pub user_pubkey: std::path::PathBuf,
-    /// `<root>/user-identity/privkey.bin`
-    pub user_privkey: std::path::PathBuf,
     /// `<root>/device-private/keypair.bin`
     pub device_privkey: std::path::PathBuf,
     /// `<root>/device/cert.bin`
@@ -264,7 +262,6 @@ impl IdentityPaths {
         let root = root.as_ref();
         Self {
             user_pubkey: root.join("user-identity/pubkey.bin"),
-            user_privkey: root.join("user-identity/privkey.bin"),
             device_privkey: root.join("device-private/keypair.bin"),
             device_cert: root.join("device/cert.bin"),
             device_key_ownership: DeviceKeyOwnership::File,
@@ -1321,12 +1318,6 @@ pub fn provision_joined_device(
     }
     write_device_cert(&paths.device_cert_for_user(&cert.user_public_key), &cert)?;
     write_device_cert(&paths.device_cert, &cert)?;
-    if paths.user_privkey.exists() {
-        return Err(PersistError::Io(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "setup must not place the human root secret on the target",
-        )));
-    }
     Ok(cert)
 }
 /// A certificate that did not verify, as the refusal it is. One refused only because the wall clock
@@ -1365,12 +1356,6 @@ pub fn install_device_cert(
     now_ns: u64,
 ) -> Result<(), PersistError> {
     let refused = |kind, message: String| PersistError::Io(io::Error::new(kind, message));
-    if paths.user_privkey.exists() {
-        return Err(refused(
-            io::ErrorKind::AlreadyExists,
-            "this device holds a user root".into(),
-        ));
-    }
     let device = read_device_key(&paths.device_privkey)?;
     if cert.device_public_key != device.verifying_key().to_bytes() {
         return Err(refused(
@@ -1401,7 +1386,7 @@ pub fn install_device_cert(
     Ok(())
 }
 
-/// Whether `paths` holds a device enrollment and no human root, whether or
+/// Whether `paths` holds a device enrollment, whether or
 /// not its certificate is inside its validity right now: a certificate
 /// that ran out is still this device's, and is the one a renewal replaces.
 ///
@@ -1415,9 +1400,6 @@ pub fn install_device_cert(
 /// Returns [`PersistError`] when a present identity file cannot be read, the
 /// device key is not accessible, or the certificate does not match its keys.
 pub fn joined_device_is_enrolled(paths: &IdentityPaths) -> Result<bool, PersistError> {
-    if paths.user_privkey.exists() {
-        return Ok(false);
-    }
     if !(paths.user_pubkey.is_file() && paths.device_cert.is_file()) {
         return Ok(false);
     }
@@ -1438,9 +1420,8 @@ pub fn joined_device_is_enrolled(paths: &IdentityPaths) -> Result<bool, PersistE
     let device = read_device_key(&paths.device_privkey)?;
     let cert = read_device_cert(&paths.device_cert)?;
     // A primary device can admit further devices. That is an ordinary
-    // machine, not one the imager already enrolled, even when its root
-    // secret lives in the identity record rather than
-    // user-identity/privkey.bin, so first-boot provisioning must still run
+    // machine, not one the imager already enrolled, so first-boot
+    // provisioning must still run
     // for each OS user: it verifies the certificate, and renews one that
     // is due before it is ever refused for having expired.
     if cert.capabilities.can_admit_devices {
@@ -1462,7 +1443,7 @@ pub fn joined_device_is_enrolled(paths: &IdentityPaths) -> Result<bool, PersistE
     Ok(true)
 }
 
-/// Whether `paths` already holds a device enrollment and no human root: one
+/// Whether `paths` already holds a device enrollment: one
 /// made by a setup machine, or a nearby pairing approved from another device.
 ///
 /// Missing files are `Ok(false)`, so ordinary first boot still creates an
@@ -1706,7 +1687,6 @@ mod tests {
                     .to_bytes(),
                 cert.device_public_key
             );
-            assert!(!paths.user_privkey.exists());
             assert!(
                 provision_joined_device(
                     &paths,
@@ -2260,7 +2240,7 @@ mod tests {
             {
                 use std::os::unix::fs::PermissionsExt;
                 let tmp = identity_tempdir();
-                let path = tmp.path().join("privkey.bin");
+                let path = tmp.path().join("user-secret.bin");
                 let sk = SigningKey::from_bytes(&[8u8; 32]);
                 write_signing_key(&path, &sk).unwrap();
                 assert_eq!(

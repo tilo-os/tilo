@@ -18883,10 +18883,13 @@ dependencies = [
  "tilo-device-identity",
  "tilo-files",
  "tilo-fs",
+ "tilo-identity",
+ "tilo-identity-client",
  "tilo-lock",
  "tilo-mcp",
  "tilo-net",
  "tilo-paths",
+ "tilo-peer-state",
  "tilo-server-client",
  "tilo-server-protocol",
  "tilo-server-session",
@@ -18929,7 +18932,6 @@ dependencies = [
  "libc",
  "raw-window-handle",
  "smithay-client-toolkit",
- "smithay-clipboard",
  "tilo-clock",
  "tilo-mime",
  "tilo-platform-caps",
@@ -18937,6 +18939,7 @@ dependencies = [
  "tilo-test-env",
  "tracing",
  "wasm-bindgen",
+ "wayland-backend",
  "wayland-server",
  "workspace-hack",
 ]
@@ -21897,6 +21900,7 @@ dependencies = [
  "serde_json",
  "tilo-actions",
  "tilo-automerge-fork",
+ "workspace-hack",
 ]
 
 [[package]]

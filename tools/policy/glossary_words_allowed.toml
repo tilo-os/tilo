@@ -14,6 +14,17 @@ paths = [
 # of. A use of Tilo's own concept never goes here: rename it.
 
 [[allow]]
+reason = "The identity registry's field naming the file an identity is kept in."
+words = ["record"]
+identifiers = ["record_path"]
+paths = ["crates/runtime/tilo-runtime/src/standalone/mcp_admission_tests.rs"]
+
+[[allow]]
+reason = "The native test pair's serving daemon runs under the profile `host`, which names its cache and identity directories."
+words = ["host"]
+paths = ["crates/system/fs/tests/native_tier1.rs", "crates/system/fs/tests/native_sync_bench.rs"]
+
+[[allow]]
 reason = "logind's seats a dev VM account's session sits on, and the running of commands in tilo-vm's command-line help."
 words = ["seat", "run"]
 paths = ["crates/dev/tilo-vm/src/cli.rs"]
@@ -296,6 +307,7 @@ paths = [
     "apps/chat-model-wasm/*",
     "apps/tl/chat/*",
     "crates/agent/agent-session/tests/workspace_actions/carried_names.rs",
+    "crates/agent/agent-session/tests/workspace_actions/chat_group.rs",
     "crates/agent/agent-session/tests/workspace_actions/held_roles.rs",
     "crates/sdk/ui-core/src/mentions.rs",
     "crates/session/session/src/mentions.rs",
@@ -568,7 +580,10 @@ paths = ["crates/agent/agent-session/src/workspace_actions/index.rs"]
 reason = "The helper that names a document's action provider, as the action service knows it."
 words = ["record"]
 identifiers = ["record_provider"]
-paths = ["crates/agent/agent-session/tests/workspace_actions/search_beside_requests.rs"]
+paths = [
+    "crates/agent/agent-session/tests/workspace_actions/search_beside_requests.rs",
+    "crates/agent/agent-session/tests/workspace_actions/person_before_agent.rs",
+]
 
 [[allow]]
 reason = "A LUKS key slot: the one of a volume's keys a boot asks a sibling to unlock with."
@@ -607,7 +622,7 @@ paths = ["crates/runtime/device-mcp/src/lib.rs"]
 [[allow]]
 reason = "The helper that drives a test phase's async body on a current-thread runtime."
 words = ["run"]
-paths = ["crates/runtime/tilo-mcp/src/mcp_put_tests.rs"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_put_tests.rs", "crates/runtime/tilo-mcp/src/mcp_agent_tests.rs"]
 
 [[allow]]
 reason = "tokio's mpsc constructor, the queue a test's stand-in page answers through."
@@ -672,6 +687,8 @@ paths = [
     "crates/server/tilo-workspace-service/src/workspaces.rs",
     "crates/server/tilo-workspace-service/src/workspaces/device_actions.rs",
     "crates/server/tilo-workspace-service/src/workspaces/device_actions_tests.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/names.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/authority/tests.rs",
     "docs/architecture/workspace.md",
     "os/tests/host_image.sh",
     "os/tests/server_update_policy_test.sh"
@@ -1310,7 +1327,7 @@ paths = ["crates/sdk/ui-core/src/widget/group_row*.rs"]
 [[allow]]
 reason = "The overview's `OverviewHost`, the desktop it is drawn for, which its functions take as `host`."
 words = ["host"]
-identifiers = ["host"]
+identifiers = ["host", "OverviewHost"]
 paths = ["crates/session/desktop/src/overview.rs"]
 
 [[allow]]

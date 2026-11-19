@@ -45,6 +45,12 @@ pub struct Workspace {
     /// control socket's state dump.
     #[serde(skip_deserializing, default)]
     pub members: Vec<Member>,
+    /// The name each person goes by, as the workspace's governance keeps it, by their root: the
+    /// name they gave themselves, which every surface showing someone who is not here reads
+    /// ([`Self::person_name`]). Projected by the device showing the workspace from the governance
+    /// it holds ([`Self::named_people`]); never stored or sent with the layout.
+    #[serde(skip)]
+    pub people_names: BTreeMap<UserId, String>,
     /// How each of them is here now: where they are, what they say they are
     /// doing, how available they are. Said again on every frame and never
     /// written: presence, not the workspace's document.
@@ -156,6 +162,7 @@ impl From<StoredWorkspace> for Workspace {
             bots: Vec::new(),
             shared_surfaces: stored.shared_surfaces,
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
+            people_names: BTreeMap::new(),
         }
     }
 }
@@ -445,6 +452,42 @@ impl Workspace {
         }
         name.clone_into(&mut self.name);
         true
+    }
+
+    /// Project the names the workspace's governance gives its people, `names` (person root, hex,
+    /// to the name they go by), onto this shell. A blank name names nobody. Whether the shell
+    /// changed.
+    pub fn named_people<'a>(
+        &mut self,
+        names: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> bool {
+        let names: BTreeMap<UserId, String> = names
+            .into_iter()
+            .map(|(person, name)| (person.to_owned(), name.trim().to_owned()))
+            .filter(|(_, name)| !name.is_empty())
+            .collect();
+        if self.people_names == names {
+            return false;
+        }
+        self.people_names = names;
+        true
+    }
+
+    /// The name the person `person` (root, hex) goes by here: the one they show by while here,
+    /// else the one the workspace's governance keeps for them. `None` for someone nobody named,
+    /// never their key.
+    #[must_use]
+    pub fn person_name(&self, person: &str) -> Option<&str> {
+        fn shown(name: &str) -> Option<&str> {
+            let name = name.trim();
+            let key = name.len() >= 32 && name.bytes().all(|byte| byte.is_ascii_hexdigit());
+            (!name.is_empty() && !key).then_some(name)
+        }
+        self.members
+            .iter()
+            .find(|member| member.id.person_id() == Some(person))
+            .and_then(|member| shown(&member.name))
+            .or_else(|| self.people_names.get(person).and_then(|name| shown(name)))
     }
 
     /// A person's own authority in this workspace.
@@ -890,6 +933,7 @@ impl Workspace {
             bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
+            people_names: BTreeMap::new(),
         }
     }
 
@@ -915,6 +959,7 @@ impl Workspace {
             strips: _,
             layout: _,
             members,
+            people_names,
             present,
             policy,
             sandbox,
@@ -944,6 +989,7 @@ impl Workspace {
             bots: bots.clone(),
             shared_surfaces: shared_surfaces.clone(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
+            people_names: people_names.clone(),
         }
     }
 
@@ -993,6 +1039,41 @@ fn mint_capability_id() -> String {
 mod tests {
     use super::*;
     use crate::WorkspaceId;
+
+    /// Someone is called what they show by while here, else what the workspace's governance
+    /// names them: never their key, and nobody named stays unnamed.
+    #[test]
+    fn a_person_goes_by_their_given_name_here_or_not() {
+        let ada = "ad".repeat(32);
+        let bo = "b0".repeat(32);
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Lounge");
+        assert!(workspace.named_people([(ada.as_str(), " Ada "), (bo.as_str(), bo.as_str())]));
+        assert!(
+            !workspace.named_people([(ada.as_str(), "Ada"), (bo.as_str(), bo.as_str())]),
+            "the same names change nothing"
+        );
+        assert_eq!(
+            workspace.person_name(&ada),
+            Some("Ada"),
+            "governance names someone not here"
+        );
+        assert_eq!(workspace.person_name(&bo), None, "a key is never a name");
+        assert_eq!(workspace.person_name("someone"), None);
+        workspace.member_here(Member::named(
+            collab_types::MemberId::person(ada.clone()),
+            "Ada Lovelace",
+        ));
+        assert_eq!(
+            workspace.person_name(&ada),
+            Some("Ada Lovelace"),
+            "who is here says their own"
+        );
+        assert!(
+            workspace.named_people([]),
+            "names leave with the people the workspace names"
+        );
+        assert_eq!(workspace.person_name(&bo), None);
+    }
 
     /// A shell takes the name its workspace's governance records, whether it
     /// landed before anything named the workspace or its copy is older.

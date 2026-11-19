@@ -2065,6 +2065,7 @@ mod local_document_report_tests {
                     label: Some("Private work".into()),
                     kind: "issue".into(),
                     declared_id: None,
+                    session: None,
                 }),
                 source_invocation: Some(tilo_actions::InvocationId(uuid::Uuid::from_bytes(
                     [2; 16],

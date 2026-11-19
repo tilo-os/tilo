@@ -407,6 +407,7 @@ impl Widget for ProgressBar {
             fill: Some(rgba8(theme.tokens.colors.intent.value_track)),
             edge: None,
             radius,
+            inset: [0.0; 2],
         });
         let filled = face.filled(theme, track);
         if !filled.is_zero_area() {
@@ -415,6 +416,7 @@ impl Widget for ProgressBar {
                 fill: Some(rgba8(face.fill_colour(theme))),
                 edge: None,
                 radius,
+                inset: [0.0; 2],
             });
         }
     }

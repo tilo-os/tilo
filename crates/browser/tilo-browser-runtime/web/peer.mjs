@@ -1211,7 +1211,16 @@ async function connect({
       // Asked after a failure too, when the session may be gone.
       try { return peer?.workspaceName?.() ?? admittedName ?? undefined; } catch { return admittedName ?? undefined; }
     },
+    /** The name the page shows this person by from now on: the one they gave
+     * themselves, or one drawn from their key while they give none. It stays
+     * the page's: only `nameSelf` tells the workspace a name. */
     setDisplayName: name => rename(name),
+    /** The person named themselves `name`: their server keeps it as theirs and
+     * names them by it in every workspace it keeps. Never a name the page drew. */
+    nameSelf: name => {
+      const given = fitDisplayName(name);
+      if (given) peer?.nameSelf?.(given);
+    },
     /** Issue an invitation to the workspace (`workspaces.rs`): resolves to its
      * text, when the person's role lets them invite. */
     createInvitation: options => membership.createInvitation(options),

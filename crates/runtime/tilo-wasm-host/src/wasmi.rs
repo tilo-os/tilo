@@ -1,6 +1,10 @@
 //! wasmi behind the shared layer: the interpreter every host has, and the browser build's only
 //! engine. It executes a module from the bytes, so a host can load and call one before any
 //! compile finishes.
+//!
+//! wasmi counts the fuel a call spends and nothing else: it has no epoch, no interrupt and no
+//! way to reach into a running instance from outside, so [`Limits::deadline`](crate::Limits)
+//! cannot stop a call here and every call is bounded by its fuel alone.
 
 use wasmi::{
     CompilationMode, Config, Engine, Module, ResourceLimiter, Store, StoreLimits,
@@ -56,7 +60,7 @@ impl Limited for StoreLimits {
     }
 }
 
-/// A store holding `data`, enforcing `limits` and starting with a whole call's fuel.
+/// A store holding `data`, enforcing `limits` and starting with a whole call's budget.
 ///
 /// # Errors
 ///
@@ -68,19 +72,20 @@ pub fn store<D: Limited + 'static>(
 ) -> Result<Store<D>, Failure> {
     let mut store = Store::new(engine, data);
     store.limiter(D::limits);
-    refuel(&mut store, limits.fuel_per_call)?;
+    begin(&mut store, limits)?;
     Ok(store)
 }
 
-/// Give the store a whole call's budget: every call starts with `fuel`, whatever the last one
-/// left.
+/// Give the store a whole call's budget: every call starts with the call's fuel, whatever the
+/// last one left. The deadline has nothing to act on here (see this module's note), so it is
+/// the fuel alone that bounds a call.
 ///
 /// # Errors
 ///
 /// The engine does not meter fuel, which a host cannot make: [`engine`] always turns it on.
-pub fn refuel<D>(store: &mut Store<D>, fuel: u64) -> Result<(), Failure> {
+pub fn begin<D>(store: &mut Store<D>, limits: &Limits) -> Result<(), Failure> {
     store
-        .set_fuel(fuel)
+        .set_fuel(limits.fuel_per_call)
         .map_err(|error| Failure::Link(error.to_string()))
 }
 

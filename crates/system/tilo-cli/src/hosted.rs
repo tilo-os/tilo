@@ -316,12 +316,15 @@ pub enum PeopleCmd {
         /// The address's entry, as `tilo workspace people wait-list` names it.
         entry: String,
     },
-    /// How the workspace shows you from now on: the name its people and the
-    /// invitations you make say for you.
+    /// Your name from now on: what every workspace you are in, its people and
+    /// the invitations you make say for you, and every device of yours shows.
     #[command(
         after_help = "Example:\n  tilo workspace people name \"Quinten Wolff\" -w Acme\n\n\
-                      Any device or key of yours sets it: the workspace knows you by it before a \
-                      browser of yours joins, and whoever you invite sees who asked them in."
+                      Any device or key of yours sets it, asked in any workspace of yours: the \
+                      server keeping it keeps the name with your profile, which your browsers \
+                      and other devices show, and names you by it in every workspace it keeps. \
+                      Each workspace knows you by it before a browser of yours joins, and whoever \
+                      you invite sees who asked them in."
     )]
     Name {
         /// The name to go by, as your teammates will read it.

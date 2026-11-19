@@ -1059,6 +1059,7 @@ impl Widget for ConversationList {
                         fill: Some(crate::composition::rgba8(fill)),
                         edge: None,
                         radius: f64::from(theme.tokens.radii.control),
+                        inset: [0.0; 2],
                     });
                     let body_part = item.part(
                         "body",

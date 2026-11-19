@@ -1192,7 +1192,7 @@ impl Layout {
     /// rather than placing a second time.
     #[must_use]
     pub fn place_of(&self, resource: &str) -> Option<u64> {
-        let records = self.records();
+        let records = self.window_resources();
         self.handle.read(|tree| {
             tree.workspaces
                 .iter()
@@ -1210,7 +1210,7 @@ impl Layout {
     /// goes to it"). Opening the root and then one view inside it is one thing open, not two.
     #[must_use]
     pub fn place_of_root(&self, resource: &str) -> Option<u64> {
-        let records = self.records();
+        let records = self.window_resources();
         let root = root_of(resource);
         self.handle.read(|tree| {
             tree.workspaces
@@ -1365,7 +1365,7 @@ impl Layout {
     /// publishes on its api for a shell to draw, read off the layout as it stands.
     #[must_use]
     pub fn reading(&self) -> Reading {
-        let records = self.records();
+        let records = self.window_resources();
         let catalog = self.catalog.borrow();
         let mut reading = self
             .handle
@@ -1430,9 +1430,11 @@ impl Layout {
         self.query_held.borrow().get(&place.to_string()).cloned()
     }
 
-    /// The record each window shows, by tab, as the layout keeps it: what a place put on a record was
-    /// placed on, and what a window took up.
-    fn records(&self) -> BTreeMap<TabId, String> {
+    /// The resource each window shows, by tab, as the layout keeps it: what a place put on a
+    /// resource was placed on, what a window took up, and what its bar carries when a person picks
+    /// it up, on every device of theirs that reads this layout.
+    #[must_use]
+    pub fn window_resources(&self) -> BTreeMap<TabId, String> {
         self.layouts.shown()
     }
 
@@ -1442,7 +1444,7 @@ impl Layout {
     /// workspace of the layout, not only the one in front.
     #[must_use]
     pub fn records_by_workspace(&self) -> BTreeMap<String, std::collections::BTreeSet<String>> {
-        let records = self.records();
+        let records = self.window_resources();
         self.handle.read(|tree| {
             tree.workspaces
                 .iter()

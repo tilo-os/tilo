@@ -2474,6 +2474,52 @@ tilo_test_env::scenario! {
         });
     }
 
+    phase a_connection_goes_by_the_session_the_client_names;
+    // The client's own harness names its session ("Office Hours"): the initialize says it, and
+    // every change of the connection is attributed to that name, which is what history and
+    // presence show. A client naming none keeps the name the shell gave the connection.
+    {
+        let notes = Notes::new(true);
+        run(async {
+            let call = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+                "name":"tilo_do",
+                "arguments":{"path":"notes/Todo/body#append-paragraph","args":{"text":"milk"}}}});
+            let initialize = |session_name: Option<&str>| {
+                let mut params = json!({
+                    "protocolVersion":"2025-06-18",
+                    "capabilities":{},
+                    "clientInfo":{"name":"Claude Code","version":"2"}
+                });
+                if let Some(name) = session_name {
+                    params["capabilities"] = json!({"experimental":{"so.tilo":{"session-name":name}}});
+                }
+                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":params})
+            };
+
+            let named = agent(&notes);
+            named.handle(initialize(Some("Office Hours"))).await.unwrap();
+            named.handle(call.clone()).await.unwrap();
+            assert_eq!(
+                notes.contexts()
+                    .first()
+                    .and_then(|(_, label, _)| label.clone())
+                    .as_deref(),
+                Some("Office Hours")
+            );
+
+            let unnamed = agent(&notes);
+            unnamed.handle(initialize(None)).await.unwrap();
+            unnamed.handle(call).await.unwrap();
+            assert_eq!(
+                notes.contexts()
+                    .last()
+                    .and_then(|(_, label, _)| label.clone()),
+                None,
+                "a client that names no session labels nothing of its own"
+            );
+        });
+    }
+
     phase a_refused_action_says_why_and_what_it_takes;
     {
         let host = Notes::new(true);

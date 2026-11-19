@@ -173,11 +173,13 @@ pub mod noun;
 pub mod offload;
 pub mod outcome;
 pub mod params;
+pub mod prefill;
 pub mod protocol;
 pub mod published;
 pub mod registry;
 pub mod remote;
 pub mod resource;
+pub mod row_status;
 pub mod run;
 pub mod schema;
 pub mod selection;
@@ -262,6 +264,7 @@ pub use resource::{
     in_words, kind_is_a_drawn_control, kind_mirrors_a_control, listed_for_people, listed_row,
     listed_row_problems, plural, singular, sole_text_argument,
 };
+pub use row_status::{RowStatus, apply_row_statuses};
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PRESENCE_VIEW_TAG, REQUIRES_TAG_PREFIX,
     catalogue_schema, catalogue_schema_bytes,

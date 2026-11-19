@@ -470,6 +470,7 @@ impl Caller {
                 .or_else(|| self.agent_name().map(str::to_owned)),
             kind: crate::context::AGENT_SESSION_GROUP.to_owned(),
             declared_id: None,
+            session: None,
         }
     }
 

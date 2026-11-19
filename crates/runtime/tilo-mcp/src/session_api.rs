@@ -39,12 +39,99 @@ pub fn desktop_server() -> io::Result<Option<PathBuf>> {
     }
 }
 
-/// Carry this process's stdio to the desktop server at `server`, until either side closes: what an
-/// MCP client on a Tilo desktop talks to.
+/// What the agent's harness calls this session ([`SESSION_NAME`]), when it calls it anything: the
+/// name a person or harness set for it (`T_SESSION_NAME`, as a session is named), else the title
+/// Claude Code keeps for its session in the file it writes for the process
+/// (`<config>/sessions/<pid>.json`), which its own interface shows. `None` when neither says: the
+/// agent is then shown by its product's name.
+///
+/// The file is read for this process's nearest ancestor that has one, so a `tilo mcp` started by
+/// an agent is that agent's session, and an agent started from its commands is its own (Claude
+/// Code writes its file anew, with the session it holds after `/clear` too).
+#[must_use]
+pub fn session_name() -> Option<String> {
+    session_name_in(&|name| std::env::var(name).ok())
+}
+
+/// [`session_name`], from the environment `var` reads and this process's ancestors.
+fn session_name_in(var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let named = var("T_SESSION_NAME")
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty());
+    let name = named.or_else(|| fallback_name(var))?;
+    Some(name.chars().take(MAX_SESSION_NAME).collect())
+}
+
+/// The title Claude Code gives this session, when `T_SESSION_NAME` named none: the name in its
+/// file for the nearest ancestor, if that file has one yet.
+fn fallback_name(var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let config = var("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| Some(PathBuf::from(var("HOME")?).join(".claude")))?;
+    let ancestors = ancestor_pids(std::os::unix::process::parent_id);
+    claude_title(&config.join("sessions"), ancestors)
+}
+
+/// The session title Claude Code's file for the nearest of `pids` in `sessions` holds. The
+/// nearest file is the agent's, whether or not it has named its session yet: a file under it is
+/// another agent's.
+fn claude_title(sessions: &Path, pids: impl IntoIterator<Item = u32>) -> Option<String> {
+    let text = pids
+        .into_iter()
+        .find_map(|pid| std::fs::read_to_string(sessions.join(format!("{pid}.json"))).ok())?;
+    title_in(&text)
+}
+
+/// What one of Claude Code's session files says the session is called: its `name`, when it has one
+/// yet (Claude Code names a session after its first exchange, and renames it as the work moves on).
+fn title_in(text: &str) -> Option<String> {
+    let file: serde_json::Value = serde_json::from_str(text).ok()?;
+    let name = file.get("name")?.as_str()?.trim();
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// This process's ancestors' pids, nearest first, as far as the platform can say them.
+#[cfg(target_os = "linux")]
+fn ancestor_pids(mut parent: impl FnMut() -> u32) -> Vec<u32> {
+    /// How far up the process tree to look for the agent that started this one.
+    const ANCESTORS: usize = 16;
+    let mut found = Vec::new();
+    let mut pid = parent();
+    while pid > 1 && found.len() < ANCESTORS {
+        found.push(pid);
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            break;
+        };
+        // `pid (comm) state ppid …`: the name may hold whitespace and parentheses.
+        let Some(next) = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().nth(1))
+            .and_then(|ppid| ppid.parse().ok())
+        else {
+            break;
+        };
+        if next == pid {
+            break;
+        }
+        pid = next;
+    }
+    found
+}
+
+/// Elsewhere only the direct parent is read: nothing here walks another platform's process tree.
+#[cfg(not(target_os = "linux"))]
+fn ancestor_pids(mut parent: impl FnMut() -> u32) -> Vec<u32> {
+    let pid = parent();
+    (pid > 1).then_some(pid).into_iter().collect()
+}
+
+/// Bridge this process's stdio to the desktop's MCP server at `server`, whose `initialize` also
+/// says the session the client is (`session_name`, when it knows one): the desktop shows the agent
+/// by that name rather than by its product's name.
 ///
 /// # Errors
 /// Nothing answers at `server`, or the lines could not be carried.
-pub fn bridge(server: &Path) -> io::Result<()> {
+pub fn bridge(server: &Path, session_name: Option<String>) -> io::Result<()> {
     let stream = tilo_files::native::socket::connect(server)
         .map_err(|error| unreachable_server(server, &error))?;
     bridge_stdio(
@@ -52,6 +139,7 @@ pub fn bridge(server: &Path) -> io::Result<()> {
         Asking {
             workspace: None,
             key: agent_key()?,
+            session_name,
         },
     )
 }
@@ -191,6 +279,8 @@ pub fn unreachable_server(path: &Path, error: &io::Error) -> io::Error {
 const MAX_HELLO: usize = 64 * 1024;
 /// The most of a client's own name the person is shown.
 const MAX_CLIENT_NAME: usize = 64;
+/// The most of a session's own name the person is shown.
+const MAX_SESSION_NAME: usize = 64;
 
 /// What a connecting client said about itself in its `initialize`. It is
 /// shown to the person who decides; it is never authority: the client
@@ -212,6 +302,10 @@ pub struct Hello {
     /// for an agent, which admits it as that key's agent without asking them; one the session does
     /// not hold, or one taken back, is refused. Kept out of [`Self::request`].
     pub key: Option<String>,
+    /// What the client calls its session ([`SESSION_NAME`]), as its own harness names it ("Office
+    /// Hours"): what the person's shell shows the agent by, instead of the product's name. Never
+    /// authority: it names nothing the client may act as.
+    pub session_name: Option<String>,
 }
 
 /// Where a client's `initialize` names the workspace it asks to work in, by id:
@@ -221,6 +315,10 @@ pub const WORKSPACE: &str = "/params/capabilities/experimental/so.tilo/workspace
 /// Where a client's `initialize` presents an agent key: `params.capabilities.experimental
 /// ["so.tilo"].key`. `--connect` and `tilo mcp` write the key [`AGENT_KEY_ENV`] names.
 pub const KEY: &str = "/params/capabilities/experimental/so.tilo/key";
+
+/// Where a client's `initialize` names the session it is: `params.capabilities.experimental
+/// ["so.tilo"]["session-name"]`, as its own harness names it. `tilo mcp` writes it.
+pub const SESSION_NAME: &str = "/params/capabilities/experimental/so.tilo/session-name";
 
 /// The provider the session's own resources (its shell, layout, windows and notices) are
 /// published under on its servers: what the catalogue lists them under and an invocation names.
@@ -308,6 +406,7 @@ pub fn parse_hello(line: &[u8]) -> Result<Hello, HelloError> {
         client_name: bounded_text(info.and_then(|info| info.get("name")))
             .unwrap_or_else(|| "MCP client".to_owned()),
         client_version: bounded_text(info.and_then(|info| info.get("version"))),
+        session_name: bounded_text(request.pointer(SESSION_NAME)),
         workspace: bounded_text(request.pointer(WORKSPACE)),
         request,
     })
@@ -582,12 +681,15 @@ where
             return Ok(());
         }
     };
-    // The connection is one task: its run, whose programs run in a tilolang host of the task's
-    // own (docs/designs/app-language/agents.md, "How a program runs"), each as the agent.
-    let run = format!("server-{}", uuid::Uuid::new_v4().simple());
+    // The connection is one task: its own group, whose programs a tilolang host of the task's own
+    // takes (docs/designs/app-language/agents.md), each as the agent. The group goes by the
+    // session the client named, when it did: that is the name history shows and undo groups by;
+    // else by the name the person's shell gave the connection.
+    let group = format!("server-{}", uuid::Uuid::new_v4().simple());
+    let shown = hello.session_name.clone().unwrap_or_else(|| name.clone());
     let server = crate::McpServer::for_agent(provider, workspace, &agent, &person)
-        .agent_named(&name)
-        .with_agent_session(run);
+        .agent_named(&shown)
+        .with_agent_session(group);
     let server = std::sync::Arc::new(server.with_task_hosts(tasks).with_devices(devices));
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     if let Some(reply) = runtime
@@ -610,22 +712,24 @@ where
 
 /// What the relay writes into a client's `initialize`, under
 /// `params.capabilities.experimental["so.tilo"]`: the workspace it asks for
-/// ([`WORKSPACE`]) and the agent key it presents
-/// ([`KEY`]).
+/// ([`WORKSPACE`]), the agent key it presents ([`KEY`]) and the session it is
+/// ([`SESSION_NAME`]).
 #[derive(Clone, Debug, Default)]
 pub struct Asking {
     pub workspace: Option<String>,
     pub key: Option<String>,
+    pub session_name: Option<String>,
 }
 
 impl Asking {
     fn is_empty(&self) -> bool {
-        self.workspace.is_none() && self.key.is_none()
+        self.workspace.is_none() && self.key.is_none() && self.session_name.is_none()
     }
 
     /// `line` with what this asks written in, when it is the client's `initialize`; `None` for
     /// any other line, which goes to the server as it is.
-    fn written_into(&self, line: &[u8]) -> Option<Vec<u8>> {
+    #[must_use]
+    pub fn written_into(&self, line: &[u8]) -> Option<Vec<u8>> {
         let mut request: serde_json::Value = serde_json::from_slice(line).ok()?;
         if request.get("method").and_then(serde_json::Value::as_str) != Some("initialize") {
             return None;
@@ -647,6 +751,9 @@ impl Asking {
         }
         if let Some(key) = &self.key {
             ours.insert("key".into(), serde_json::json!(key));
+        }
+        if let Some(name) = &self.session_name {
+            ours.insert("session-name".into(), serde_json::json!(name));
         }
         serde_json::to_vec(&request).ok()
     }
@@ -735,6 +842,39 @@ pub fn relay(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Result<u6
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The session's name is what its harness calls it: `T_SESSION_NAME` when one is set (the way
+    /// a session is named), else the title Claude Code keeps for it in the file it writes for the
+    /// process, which is what its thread shows. A file with no name yet, or one that is no file
+    /// of Claude Code's, names nothing: the agent is then shown by its product.
+    #[test]
+    fn a_sessions_name_comes_from_its_harness() {
+        let named = |vars: &'static [(&'static str, &'static str)]| {
+            session_name_in(&move |name| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).to_owned())
+            })
+        };
+        assert_eq!(
+            named(&[("T_SESSION_NAME", "  Office Hours ")]).as_deref(),
+            Some("Office Hours"),
+            "the name a harness set wins, trimmed"
+        );
+        let file = r#"{"pid":7,"sessionId":"8e41","name":"Office Hours","nameSource":"auto"}"#;
+        assert_eq!(title_in(file).as_deref(), Some("Office Hours"));
+        assert_eq!(
+            title_in(r#"{"pid":7,"sessionId":"8e41"}"#),
+            None,
+            "unnamed yet"
+        );
+        assert_eq!(
+            title_in(r#"{"name":"  "}"#),
+            None,
+            "a blank name names nothing"
+        );
+        assert_eq!(title_in("not JSON"), None);
+    }
 
     tilo_test_env::scenario! {
         fn a_client_is_routed_to_its_logins_server_and_opens_it_with_initialize;

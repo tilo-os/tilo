@@ -99,6 +99,20 @@ pub enum ServerCmd {
         /// The server.
         server: String,
     },
+    /// The disk recovery key of a server whose install had nobody at its
+    /// screen: the person's own devices keep it, and this computer is one of
+    /// them. Prints it, or whether one is saved with `--json`.
+    #[command(
+        after_help = "Examples:\n  tilo server recovery-key ryzen\n  tilo server recovery-key ryzen --json"
+    )]
+    RecoveryKey {
+        /// The server: the name it was enrolled under, its device key, or its
+        /// machine key.
+        server: String,
+        /// The saved key and its machine as one JSON object.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub fn serve(cmd: ServerCmd) -> Result<std::process::ExitCode> {
@@ -129,6 +143,7 @@ pub fn serve(cmd: ServerCmd) -> Result<std::process::ExitCode> {
                     (server, ServerOperation::SetDefaultStart, false)
                 }
                 ServerCmd::List => return list(),
+                ServerCmd::RecoveryKey { server, json } => return recovery_key(&server, json),
             };
             let result = ask(&server, &operation)?;
             print(&result, json)?;
@@ -144,8 +159,82 @@ fn list() -> Result<std::process::ExitCode> {
             "this computer knows no servers; enroll one from your desktop (`tilo device enroll`)"
         );
     }
+    let saved = saved_recovery_keys().unwrap_or_default();
     for peer in peers {
-        println!("{}\t{}", peer.label, peer.device_node_id);
+        let each = saved
+            .iter()
+            .find(|entry| entry.machine == peer.device_node_id)
+            .map(|_| "\trecovery key saved");
+        println!(
+            "{}\t{}{}",
+            peer.label,
+            peer.device_node_id,
+            each.unwrap_or_default()
+        );
+    }
+    Ok(std::process::ExitCode::SUCCESS)
+}
+
+/// The disk recovery keys this computer's person keeps in their own store, as
+/// the devices that approved an install wrote them there: nothing when this
+/// computer holds none or cannot open the store, which is a store that has
+/// not reached it yet.
+fn saved_recovery_keys() -> Result<Vec<tilo_peer_state::MachineRecovery>> {
+    let state = tilo_paths::state_dir().context("this account has no state directory (no HOME)")?;
+    let dir = identity::dir()?;
+    let paths = IdentityPaths::under(&dir);
+    let user = persist::read_public_key(&paths.user_pubkey)
+        .context("this computer holds no identity; there is no store to read")?;
+    let cert = persist::read_device_cert(&paths.device_cert_for_user(&user))
+        .or_else(|_| persist::read_device_cert(&paths.device_cert))
+        .context("this computer holds no certificate for its device")?;
+    let store =
+        tilo_peer_state::PersonalStore::open_at(&state, user, cert, std::time::SystemTime::now())
+            .map_err(|error| anyhow::anyhow!(error))?;
+    Ok(store
+        .person_resource(tilo_peer_state::machines::KIND)
+        .map(|bytes| tilo_peer_state::machines::read(&bytes))
+        .unwrap_or_default())
+}
+
+/// The saved recovery key of `server`: the person's own device keeps it, and
+/// this computer is one of them.
+fn recovery_key(server: &str, json: bool) -> Result<std::process::ExitCode> {
+    let asked = server.trim();
+    let peers = peers().unwrap_or_default();
+    let peer = peers
+        .iter()
+        .find(|peer| peer.label == asked || peer.device_node_id == asked);
+    let keys = saved_recovery_keys()?;
+    let entry = keys
+        .iter()
+        .find(|entry| {
+            entry.machine == asked || peer.is_some_and(|peer| entry.machine == peer.device_node_id)
+        })
+        .or_else(|| {
+            let named = peer.map_or(asked, |peer| peer.label.as_str());
+            keys.iter().find(|entry| entry.label == named)
+        });
+    let Some(entry) = entry else {
+        bail!(
+            "no recovery key is saved here for {asked}: one of your own devices that approved its \
+             install keeps it, and this computer is one of them once their stores have met"
+        );
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "machine": entry.machine,
+                "label": entry.label,
+                "key": entry.key,
+                "at_ns": entry.at_ns,
+            })
+        );
+    } else {
+        println!("{}", entry.label);
+        println!("  machine:      {}", entry.machine);
+        println!("  recovery key: {}", entry.key);
     }
     Ok(std::process::ExitCode::SUCCESS)
 }

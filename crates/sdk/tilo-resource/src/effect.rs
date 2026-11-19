@@ -547,21 +547,14 @@ fn kept_specs(
 }
 
 fn offered_specs(check: Check, decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionSpec> {
+    // Offered on an item or a row (`item = field`, `on = Row`) as well as
+    // here: the declaration's own audience, unchanged. Whether a listing
+    // shows the unbound action beside the bound ones is the listing's, never
+    // a silent change of who the action is for.
     decls
         .into_iter()
         .filter(|decl| !decl.row)
-        .map(|decl| {
-            let mut spec = decl.spec_checked(operation, check);
-            // Offered on each item it acts on (`item = field`), its item
-            // bound, it stays published here for scripts that name the item,
-            // out of the palette's way, as an item verb does.
-            if !decl.items.is_empty() && spec.audience() == tilo_actions::Audience::Everyone {
-                spec.type_mut()
-                    .contract
-                    .set_audience(tilo_actions::Audience::Agents);
-            }
-            spec
-        })
+        .map(|decl| decl.spec_checked(operation, check))
         .collect()
 }
 
@@ -634,10 +627,23 @@ fn target_specs(
         .into_iter()
         .filter_map(|decl| {
             let target = *decl.items.iter().find(|target| matches(target))?;
+            let mut refused = None;
             let bound = match decl.params.first() {
                 Some(first) => BoundArguments::from_iter([(
                     first.name.to_string(),
-                    serde_json::Value::String(entity.as_str().to_owned()),
+                    match (target, decl.row_id) {
+                        (EffectTarget::Row(_), Some(parse)) => match parse(entity.as_str()) {
+                            Ok(value) => value,
+                            // The row's id is not what the effect acts on: it
+                            // is published, refused with the reason, so an
+                            // agent sees why rather than a broken call.
+                            Err(reason) => {
+                                refused = Some(reason);
+                                serde_json::Value::String(entity.as_str().to_owned())
+                            }
+                        },
+                        _ => serde_json::Value::String(entity.as_str().to_owned()),
+                    },
                 )]),
                 None => BoundArguments::new(),
             };
@@ -646,8 +652,20 @@ fn target_specs(
                 let build = encoder(check, operation, decl.id, Bound::OverCaller);
                 Arc::clone(decl.spec_with(operation, rest, build).action_type())
             });
-            let fixed = bound.clone().into_iter().collect();
-            Some(ty.bind(Target::new(bound)).with_bound(fixed))
+            let fixed: Vec<(String, serde_json::Value)> = bound.clone().into_iter().collect();
+            let arguments: serde_json::Map<String, serde_json::Value> =
+                fixed.iter().cloned().collect();
+            let mut spec = ty.bind(Target::new(bound)).with_bound(fixed);
+            if let Some(phrase) = decl.phrase {
+                spec = asking_phrase(spec, phrase(&arguments));
+            }
+            if let Some(reason) = refused {
+                spec.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
+                    code: "row_id".to_owned(),
+                    reason,
+                };
+            }
+            Some(spec)
         })
         .collect()
 }
@@ -687,8 +705,13 @@ fn target_specs_with(
                     .collect::<Vec<_>>(),
             );
             let build = encoder(check, operation, decl.id, Bound::OverCaller);
-            let fixed = bound.clone().into_iter().collect();
-            let spec = decl.spec_with(operation, asked, build);
+            let fixed: Vec<(String, serde_json::Value)> = bound.clone().into_iter().collect();
+            let arguments: serde_json::Map<String, serde_json::Value> =
+                fixed.iter().cloned().collect();
+            let mut spec = decl.spec_with(operation, asked, build);
+            if let Some(phrase) = decl.phrase {
+                spec = asking_phrase(spec, phrase(&arguments));
+            }
             Some(
                 spec.action_type()
                     .bind(Target::new(bound))
@@ -791,10 +814,29 @@ pub struct EffectRow {
     /// The kinds of entity its rows are offered on
     /// ([`EffectTarget`]): none for an effect offered on the resource alone.
     pub items: &'static [EffectTarget],
+    /// How the row id becomes the first parameter's value when the effect is
+    /// offered on a row (`#[effect(on = Row)]`): the row id parsed as that
+    /// field's own type (`u64` counts, an identity parses), so a row whose id
+    /// is not one is offered unavailable with the reason. Absent for an
+    /// effect offered on a collection's items, whose id is bound as it is.
+    pub row_id: Option<RowIdOf>,
+    /// The phrase its caller types for a bound invocation (offered on a row
+    /// or an item), from the arguments it is bound with, when the effect
+    /// declares `phrase`: `#[effect(phrase = "Self::data_name")]` names what
+    /// one invocation loses wherever the effect is offered.
+    pub phrase: Option<PhraseOf>,
     pub offload: Option<EffectOffload>,
     pub tags: &'static [&'static str],
     pub outside_with: Option<&'static str>,
 }
+
+/// The phrase a bound invocation's caller types, from the arguments it is
+/// bound with: what one invocation loses.
+pub type PhraseOf = fn(&serde_json::Map<String, serde_json::Value>) -> Option<String>;
+
+/// An effect's row id read as the field it acts with: the value bound, or
+/// why this row's id is not one.
+pub type RowIdOf = fn(&str) -> Result<serde_json::Value, String>;
 
 /// An effect's `#[effect(offload(...))]`: the signed package entrypoint
 /// that performs the same content transform on another of the invoker's
@@ -940,6 +982,12 @@ pub struct EffectDecl {
     /// HistoryItem)]`) is offered on each, bound to the row it was offered on;
     /// one with no parameters is offered on them as it is.
     pub items: &'static [EffectTarget],
+    /// How a row id becomes the first parameter's value, when the effect is
+    /// offered on rows ([`EffectRow::row_id`]).
+    pub row_id: Option<RowIdOf>,
+    /// The phrase its caller types for a bound invocation
+    /// ([`EffectRow::phrase`]).
+    pub phrase: Option<PhraseOf>,
     /// A content transform the system may run on the invoker's best-placed
     /// device (`#[effect(offload(...))]`); the handler is its local run.
     pub offload: Option<EffectOffload>,
@@ -1054,6 +1102,8 @@ impl EffectDecl {
             edits: row.edits,
             member: row.member,
             items: row.items,
+            row_id: row.row_id,
+            phrase: row.phrase,
             offload: row.offload,
             tags: row.tags,
             outside_with: row.outside_with,

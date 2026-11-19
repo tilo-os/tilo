@@ -177,6 +177,9 @@ struct Request {
     workspace: Option<String>,
     /// The agent key it presents ([`agent_key`]), which decides it without asking the person.
     key: Option<String>,
+    /// What the client calls its session ([`tilo_mcp::session_api::SESSION_NAME`]), as its own
+    /// harness names it ("Office Hours"): what the shell shows the agent by. Display only.
+    session_name: Option<String>,
     session: AgentSessionId,
     /// Answered by the loop once the person decided and the agent is a member the broker's roster
     /// lists ([`Members`]); dropped by the connection when its client leaves, which withdraws the
@@ -193,6 +196,8 @@ struct Waiting {
     session: AgentSessionId,
     /// The program the answer is remembered for (`claude-code`).
     agent: String,
+    /// What the client calls its session, when it named one: what the shell shows it by.
+    session_name: Option<String>,
     /// The question up for it; dropping it withdraws the question.
     asked: Option<Asked>,
     decide: tokio::sync::oneshot::Sender<Consent>,
@@ -661,6 +666,7 @@ impl Loop {
             facts,
             workspace: asked,
             session,
+            session_name,
             decide,
             ..
         } = request;
@@ -691,7 +697,12 @@ impl Loop {
         });
         if let Some(agent) = ahead {
             tracing::info!(client = %facts.client, pid = facts.pid, %agent, %workspace, "MCP server: what the person said ahead of time admits this client");
-            let consent = as_member(members, &facts, (&workspace, person));
+            let consent = as_member(
+                members,
+                &facts,
+                (&workspace, person),
+                session_name.as_deref(),
+            );
             self.sessions.admit(&session, &consent, &agent, &name);
             let _ = decide.send(consent);
             return;
@@ -723,6 +734,7 @@ impl Loop {
             workspace_name: name,
             session,
             agent,
+            session_name,
             asked: Some(asked),
             decide,
         });
@@ -772,7 +784,12 @@ impl Loop {
         let Some(remembered) = Lifetime::chosen(choice, tilo_clock::unix_now_ms()) else {
             return Consent::Refuse(word("mcp-server-declined"));
         };
-        let consent = as_member(members, &waiting.facts, (&waiting.workspace, person));
+        let consent = as_member(
+            members,
+            &waiting.facts,
+            (&waiting.workspace, person),
+            waiting.session_name.as_deref(),
+        );
         self.sessions.admit(
             &waiting.session,
             &consent,
@@ -860,16 +877,24 @@ impl Loop {
 pub(crate) type Members<'a> = dyn Fn(&str, &str) -> Result<(String, String), String> + 'a;
 
 /// Admit the client `facts` describes, in `workspace` for `person`, as the person's agent member
-/// for its client, under the name the workspace calls that member by: every connection of it reads
-/// as the member, and the shell tells two of them apart by where each works from, beside the name.
-/// Refused where that member cannot be found, added or listed.
-fn as_member(members: &Members<'_>, facts: &Facts, (workspace, person): (&str, &str)) -> Consent {
+/// for its client, under the name the workspace calls that member by — or the session the client
+/// itself named, when its harness names one ("Office Hours"), which is what presence, notices and
+/// history show it by: every connection of it reads as the member, and the shell tells two of them
+/// apart by where each works from, beside the name. Refused where that member cannot be found,
+/// added or listed.
+fn as_member(
+    members: &Members<'_>,
+    facts: &Facts,
+    (workspace, person): (&str, &str),
+    session_name: Option<&str>,
+) -> Consent {
+    let named = session_name.map(str::trim).filter(|name| !name.is_empty());
     match members(workspace, &facts.client) {
         Ok((agent, name)) => Consent::Admit {
             workspace: workspace.to_owned(),
             agent,
             person: person.to_owned(),
-            name,
+            name: named.map_or(name, str::to_owned),
         },
         Err(reason) => {
             tracing::warn!(client = %facts.client, %workspace, %reason, "MCP server: the client's agent member is not added");
@@ -2703,6 +2728,7 @@ fn ask(
         facts,
         workspace: hello.workspace.clone(),
         key: hello.key.clone(),
+        session_name: hello.session_name.clone(),
         session,
         decide,
     };
@@ -2770,6 +2796,46 @@ pub(crate) fn awaited_sentence(name: &str, host: &str) -> String {
         "this device hasn't been admitted to {name} yet: {host}, the workspace's host, must be \
          reachable once to take it in"
     )
+}
+
+#[cfg(test)]
+mod sessions_in_the_shells_words {
+    use super::environments::Origin;
+    use super::{Consent, Facts, as_member};
+
+    /// A connection is admitted under the session its own harness names, when its client names
+    /// one: that is the name presence, notices and history show it by. A connection that names
+    /// none keeps the name the workspace calls its agent member by.
+    #[test]
+    fn a_named_session_is_admitted_by_its_own_name() {
+        let facts = Facts {
+            client: "Claude Code".to_owned(),
+            version: None,
+            pid: std::process::id(),
+            exe: None,
+            app: None,
+            origin: None,
+            entrance: Origin::Host,
+        };
+        let member =
+            |_: &str, _: &str| Ok(("agent:claude-code".to_owned(), "Claude Code".to_owned()));
+        let admitted = |named: Option<&str>| match as_member(
+            &member,
+            &facts,
+            ("workspace", "person"),
+            named,
+        ) {
+            Consent::Admit { name, .. } => name,
+            Consent::Refuse(why) => panic!("refused: {why}"),
+        };
+        assert_eq!(admitted(Some("Office Hours")), "Office Hours");
+        assert_eq!(
+            admitted(Some("  ")),
+            "Claude Code",
+            "a blank name names nothing"
+        );
+        assert_eq!(admitted(None), "Claude Code");
+    }
 }
 
 #[cfg(test)]

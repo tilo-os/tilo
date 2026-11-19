@@ -121,7 +121,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(row.parts().actions.len(), 1, "and is not among the actions");
         let button = row.parts().notice[0].center();
-        assert!(row.press(button));
+        assert!(row.press(button, false));
         assert!(row.release(button));
         assert_eq!(
             row.take_events(),
@@ -309,7 +309,7 @@ tilo_test_env::scenario! {
                     "{name} is the notice's button"
                 );
                 let pressed = vec![(3, ToolbarEvent::Action { id: (*id).into() })];
-                assert!(row.press(button.center()));
+                assert!(row.press(button.center(), false));
                 assert!(row.release(button.center()));
                 assert_eq!(row.take_events(), pressed, "{name} runs by pointer");
                 assert!(row.perform(&target));
@@ -337,13 +337,13 @@ tilo_test_env::scenario! {
     {
         let mut row = row();
         let back = row.parts().back.center();
-        assert!(row.press(back));
+        assert!(row.press(back, false));
         assert!(row.release(back));
         let forward = row.parts().forward.center();
-        assert!(row.press(forward));
+        assert!(row.press(forward, false));
         assert!(row.release(forward));
         let reload = row.parts().actions[0].center();
-        assert!(row.press(reload));
+        assert!(row.press(reload, false));
         assert!(row.release(reload));
         assert_eq!(
             row.take_events(),
@@ -364,7 +364,7 @@ tilo_test_env::scenario! {
     {
         let mut row = row();
         let location = row.parts().location.center();
-        assert!(row.press(location));
+        assert!(row.press(location, false));
         assert!(row.is_editing());
         assert_eq!(row.field_text(), Some("https://duckduckgo.com/"));
         assert!(row.cancel_edit());
@@ -394,7 +394,7 @@ tilo_test_env::scenario! {
         row.set_popup_area(Rect::new(0.0, 0.0, 800.0, 600.0));
         row.lay_out(Rect::new(40.0, 0.0, 640.0, 40.0));
         let location = row.parts().location.center();
-        assert!(row.press(location));
+        assert!(row.press(location, false));
         assert!(!row.is_editing(), "a picker never turns into a field");
         assert!(!row.choices_open(), "it opens as the press ends");
         assert!(row.release(location));
@@ -752,7 +752,7 @@ tilo_test_env::scenario! {
         );
         row.lay_out(Rect::new(0.0, 0.0, 800.0, 40.0));
         let format = row.parts().actions[0].center();
-        assert!(row.press(format) && row.release(format));
+        assert!(row.press(format, false) && row.release(format));
         assert!(
             row.take_events().is_empty(),
             "a menu button sends nothing itself"
@@ -948,7 +948,7 @@ tilo_test_env::scenario! {
         assert!(toggle.state.disabled, "and says it cannot act");
         assert!(!unavailable.perform(SIDEBAR_TARGET));
         let center = unavailable.parts().sidebar.center();
-        unavailable.press(center);
+        unavailable.press(center, false);
         unavailable.release(center);
         assert!(
             unavailable.take_events().is_empty(),
@@ -1096,10 +1096,10 @@ tilo_test_env::scenario! {
     {
         let mut row = calendar_row(1000.0);
         let month = row.parts().views[0].center();
-        assert!(row.press(month));
+        assert!(row.press(month, false));
         assert!(row.release(month));
         let today = row.parts().leading[2].center();
-        assert!(row.press(today));
+        assert!(row.press(today, false));
         assert!(row.release(today));
         assert_eq!(
             row.take_events(),
@@ -1164,7 +1164,7 @@ tilo_test_env::scenario! {
             "the location picks the view"
         );
         assert!(parts.views.is_empty(), "no switcher beside it");
-        assert!(picker.press(parts.location.center()));
+        assert!(picker.press(parts.location.center(), false));
         assert!(picker.release(parts.location.center()));
         assert_eq!(picker.menu_labels(), ["Month", "Week", "Day"]);
         assert_eq!(
@@ -1335,7 +1335,7 @@ tilo_test_env::scenario! {
         );
         row.menu.close();
 
-        assert!(row.press(menu.center()));
+        assert!(row.press(menu.center(), false));
         assert!(row.release(menu.center()));
         assert_eq!(row.menu_labels(), ["Month", "Week", "Day"]);
         let nodes = row.accessibility();

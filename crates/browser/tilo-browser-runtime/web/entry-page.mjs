@@ -46,7 +46,7 @@ import {isInvitedServer, invitedOrigin, nameInvitedServer, siteServer} from './s
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces,
   heldWorkspaces, hostDeviceOf, hostToReconnect, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
-  keptMembership, listedWorkspaces,
+  keptMembership, listedWorkspaces, publicListings,
   membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
   settleFailedWorkspace, unmarkOwnPairing, workspaceActions as workspaceSwitchActions, workspaceAt, workspaceChoices,
 } from './workspaces.mjs';
@@ -967,6 +967,8 @@ export async function startEntryPage({mode}) {
   let openInTab = null;
   /** The peer the host let in, once it did: it knows the workspace's name as its people last set it. */
   let admitted = null;
+  /** Each server's public directory, as `deps.listings` read it, by origin. */
+  const listingsRead = new Map();
   /** Whether the page's store last committed every change: a mount that
    * presented says so with its `persistence`, and a store that stops saving
    * later takes the bar (`connection-status.mjs`). */
@@ -1138,6 +1140,14 @@ export async function startEntryPage({mode}) {
     holdsPerson: async ({origin} = {}) => Boolean(currentIdentity()
       || (origin && remembering(() => keptMembership({host: {origin}}))?.paired)
       || await keptIdentity().catch(() => null)),
+    // The public workspaces a server lists (its directory), read once a page:
+    // whether a workspace's own entry lets anyone in, and the wait list one
+    // keeps, before anything joins.
+    listings: origin => {
+      const at = new URL(origin).origin;
+      if (!listingsRead.has(at)) listingsRead.set(at, publicListings(at));
+      return listingsRead.get(at);
+    },
     onAdmitted: peer => { admitted = peer; letIn(peer); },
     prefetchApplication,
     prefetchDesktop,
@@ -1553,8 +1563,12 @@ export async function startEntryPage({mode}) {
         ask: (current, save) => askName(current, save),
         set: chosen => {
           displayName = chooseDisplayName(pagePerson(page), chosen);
-          if (page.peer) page.peer.setDisplayName?.(displayName);
-          else page.mount?.setOwnPerson?.({user: pagePerson(page), label: displayName});
+          if (page.peer) {
+            page.peer.setDisplayName?.(displayName);
+            // The name is the person's: their host keeps it and every workspace
+            // there names them by it, as the `tilo` command's naming does.
+            page.peer.nameSelf?.(displayName);
+          } else page.mount?.setOwnPerson?.({user: pagePerson(page), label: displayName});
           return displayName;
         },
       }});
@@ -1603,23 +1617,14 @@ export async function startEntryPage({mode}) {
     // A device that came in by pairing is set up. Its person set their Tilo
     // up where their root is and approved this device there: the first screen
     // is for someone who has none, and a paired device could do nothing with
-    // it. Nothing else says so for it, since a link's secret never shows that
-    // screen, so the hand-off below would send it to the bare site, which
-    // opens this workspace as this device again, and hands it on again.
+    // it.
     if (page.peer && readSetup()?.step !== 'done'
         && remembering(() => keptMembership({host: {origin: page.peer.origin}}))?.paired) setupDone();
     // A link that carries a secret (an invitation, a pairing) never shows the
-    // first screen: the person is let in without it. A person who has not been
-    // set up here and was let in this way into the site's own home workspace is
-    // handed on to the bare site, where the first screen is — its skip, or
-    // their agent, opens a workspace of their own instead of leaving them on
-    // the shared desktop they landed in. A link into another workspace is that
-    // workspace's, and is left alone.
-    if (!embed && !firstRun && here?.kind === 'workspace' && readSetup()?.step !== 'done'
-        && page.peer?.workspace && page.peer.workspace === homeAdmissionWorkspace(page.entry)) {
-      loadPage(page.entry.base);
-      return;
-    }
+    // first screen, and a person it let in stays where it let them in, the
+    // site's own home included: the bare site shows that screen only to a
+    // browser that has joined nothing, so it is no place to send them, and
+    // their own setup waits in the workspace (identity-actions.mjs).
     // A tab an agent just signed in as a device of the person: it paired
     // through the home workspace, and opens the person's own one next.
     if (!embed && page.peer && openOwnAsked()) void openOwnAfterSignIn({page, status});
@@ -1811,10 +1816,13 @@ export async function startEntryPage({mode}) {
       const messages = await localeMessagesSoon(1500, globalThis, language);
       const {host, workspace} = admitting.scope;
       // Its own name where this browser kept one, never the site's home's.
-      const linked = {name: remembering(() => rememberedWorkspace(admitting.scope))?.name ?? null, host: {origin: host}, workspace,
-        admission: error.entry ?? undefined};
+      const linked = {name: error.listing?.name ?? remembering(() => rememberedWorkspace(admitting.scope))?.name ?? null,
+        host: {origin: host}, workspace, admission: error.entry ?? undefined};
+      // Someone with no Tilo identity is offered the wait list, as the
+      // site's front page offers it: the workspace's own, else the home's.
+      const waitList = await signInWaitList({listing: error.listing, host, workspace, home: admitting.entry?.home, listings: deps.listings});
       offerRefusal({messages, language, named: linked.name, error, workspace: linked, runtime, link: admitting.link,
-        home: homeAdmissionWorkspace(admitting.entry), pair: pairSignIn(linked), signIn: true});
+        home: homeAdmissionWorkspace(admitting.entry), pair: pairSignIn(linked), signIn: true, waitList});
       status.textContent = `${document.getElementById('arrival-refusal-heading')?.textContent ?? ''}. ${document.getElementById('arrival-refusal-body')?.textContent ?? ''}`;
       return;
     }
@@ -1869,6 +1877,20 @@ function rememberedWorkspace(scope) {
 
 /** The workspace the site's own entry names, as its admission address spells it
  * (`<server>/peer/v1/directory/<workspace>/`): the site's home. */
+/** The wait list a sign-in screen at `workspace` on `host` offers someone
+ * with no Tilo identity: the one the workspace's own `listing` names, else
+ * the one the site's `home` workspace keeps, as its server's directory
+ * (`listings`) lists it; `{workspace, contact, mail}`, `workspace` the
+ * listing whose entry keeps it, or `null` where neither keeps one. */
+async function signInWaitList({listing, host, workspace, home, listings}) {
+  if (listing?.waitList) return {workspace: {host: {origin: host}, workspace, admission: listing.entry, name: listing.name}, ...listing.waitList};
+  const origin = home?.host?.origin;
+  const id = homeAdmissionWorkspace({home});
+  if (!origin || !id) return null;
+  const kept = await Promise.resolve().then(() => listings(origin)).then(all => all.find(listed => listed.workspace === id), () => null);
+  return kept?.waitList ? {workspace: {...home, workspace: id, admission: kept.entry}, ...kept.waitList} : null;
+}
+
 function homeAdmissionWorkspace(entry) {
   const admission = entry?.home?.admission;
   const match = typeof admission === 'string' ? admission.match(/\/directory\/([^/]+)\/?$/) : null;
@@ -1996,7 +2018,7 @@ const ENTRY_SIGNED_IN = 'tilo-entry-signed-in';
  * at the foot of the page (`offerOwnDesktop`); while the home takes people
  * by invitation only, nothing does.
  */
-function offerRefusal({messages, language, named, error, workspace, runtime, link, home = null, pair = null, signIn = false}) {
+function offerRefusal({messages, language, named, error, workspace, runtime, link, home = null, pair = null, signIn = false, waitList: offered = null}) {
   const entry = document.getElementById('arrival-refusal');
   // The first screen of a first visit is not for someone the entry turns
   // away: it asks them to set an agent up in a workspace they are not in. It
@@ -2013,7 +2035,10 @@ function offerRefusal({messages, language, named, error, workspace, runtime, lin
   const problem = document.getElementById('arrival-invite-error');
   if (!entry || !form || !toggle || !field || !problem) return;
   const say = (key, english, args) => localized(messages, key, english, args);
-  const waitList = Boolean(error?.entry?.waitList && workspace?.admission);
+  // The wait list the entry's refusal named, or the one a sign-in screen offers.
+  const kept = offered ?? (error?.entry?.waitList && workspace?.admission
+    ? {workspace, contact: error.entry.contact, mail: error.entry.mail === true} : null);
+  const waitList = Boolean(kept);
   const copy = refusalCopy({workspace: named, waitList, signIn, messages});
   document.getElementById('arrival-refusal-heading').textContent = copy.heading;
   document.getElementById('arrival-refusal-body').textContent = copy.body;
@@ -2025,7 +2050,7 @@ function offerRefusal({messages, language, named, error, workspace, runtime, lin
       entry.querySelector('.refusal-foot')?.append(own);
     });
   }
-  if (waitList) offerWaitList({workspace, contact: error.entry.contact, mail: error.entry.mail === true, messages, language});
+  if (kept) offerWaitList({workspace: kept.workspace, contact: kept.contact, mail: kept.mail === true, messages, language});
   // Signing in from a link comes back to the link; at the site's entry, to a workspace of their own.
   offerSignIn({workspace, named, messages, runtime, link, home, pair, stay: signIn});
   // The link that lets someone in, an invitation or a pairing from a device

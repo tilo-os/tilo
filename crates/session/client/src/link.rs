@@ -218,6 +218,27 @@ impl PeerStatus {
             self.failures.remove(0);
         }
     }
+
+    /// Why the workspace `ws` cannot answer what this session asks of it now, in the words of what
+    /// failed: while the session is not connected, its newest failure; while it is but the
+    /// workspace has not let this device in, the workspace's refusal. `None` while the workspace
+    /// can answer, and while no failure was heard (a first connection still under way is slow, not
+    /// broken).
+    #[must_use]
+    pub fn unanswerable(&self, ws: WorkspaceId) -> Option<&str> {
+        let newest = |of: FailureKind| {
+            self.failures
+                .iter()
+                .rev()
+                .find(|failure| failure.kind == of)
+                .map(|failure| failure.message.as_str())
+        };
+        match self.phase {
+            TransportPhase::Connected if self.workspaces.get(&ws) == Some(&true) => None,
+            TransportPhase::Connected => newest(FailureKind::Admission),
+            _ => newest(FailureKind::Session),
+        }
+    }
 }
 
 type Queue = Arc<Mutex<VecDeque<Event>>>;
@@ -934,5 +955,47 @@ mod tests {
             ));
         }
         assert_eq!(status.failures.len(), MAX_FAILURES);
+    }
+
+    #[test]
+    fn a_workspace_that_cannot_answer_says_what_failed() {
+        let ws = WorkspaceId::parse("6f1c2a52-3c1e-4c55-9d8e-2b7f4f0e9a10").unwrap();
+        let said = |code, message: &str, kind| Failure {
+            message: message.to_owned(),
+            ..failure(code, kind)
+        };
+        let mut status = PeerStatus::connecting([0; 32]);
+        assert_eq!(
+            status.unanswerable(ws),
+            None,
+            "a first connection still under way is slow, not broken"
+        );
+        status.upsert(said(
+            "transport-unavailable",
+            "Couldn't reach the workspace's server",
+            FailureKind::Session,
+        ));
+        status.phase = TransportPhase::Offline;
+        assert_eq!(
+            status.unanswerable(ws),
+            Some("Couldn't reach the workspace's server")
+        );
+        status.phase = TransportPhase::Connected;
+        assert_eq!(
+            status.unanswerable(ws),
+            None,
+            "connected and not refused: the answer is on its way"
+        );
+        status.upsert(said(
+            "not-admitted",
+            "This workspace hasn't let this device in",
+            FailureKind::Admission,
+        ));
+        assert_eq!(
+            status.unanswerable(ws),
+            Some("This workspace hasn't let this device in")
+        );
+        status.workspaces.insert(ws, true);
+        assert_eq!(status.unanswerable(ws), None, "the workspace is ready");
     }
 }

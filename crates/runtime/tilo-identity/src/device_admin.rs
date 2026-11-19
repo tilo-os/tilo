@@ -199,9 +199,6 @@ pub enum KeyHolding {
 /// What of the identity at `paths` this device holds, without opening its
 /// secret.
 pub fn key_holding(paths: &PersonPaths) -> Result<KeyHolding, String> {
-    if IdentityPaths::under(&paths.root).user_privkey.exists() {
-        return Ok(KeyHolding::Whole);
-    }
     let record = tilo_identity_client::resolve_active_identity(&paths.dir)
         .ok_or("this account has no identity yet")?;
     let metadata = tilo_identity_client::load_metadata_from_path(&record)

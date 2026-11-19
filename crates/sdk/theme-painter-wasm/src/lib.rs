@@ -11,6 +11,7 @@
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use tilo_lock::MutexRecover as _;
 use tilo_theme_sdk::kurbo::Size;
@@ -37,6 +38,10 @@ pub const MAX_ANSWER: usize = 16 << 20;
 /// stops the call.
 const LIMITS: Limits = Limits {
     fuel_per_call: FUEL_PER_CALL,
+    // This set runs on wasmi, which has no interrupt, so the deadline is not enforced here;
+    // it is named so a painter that later runs on a compiled engine is bounded by the clock
+    // too. A painter that loops forever is stopped by its fuel within a frame.
+    deadline: Some(Duration::from_millis(250)),
     max_memory_bytes: MAX_MEMORY,
     max_memories: 1,
     max_tables: 1,
@@ -60,7 +65,7 @@ impl Guest {
     fn exchange(&mut self, request: &[u8]) -> Result<Vec<u8>, Failure> {
         let len = u32::try_from(request.len())
             .map_err(|_| Failure::Trap("the request is larger than a wasm address".to_owned()))?;
-        host::refuel(&mut self.store, LIMITS.fuel_per_call)?;
+        host::begin(&mut self.store, &LIMITS)?;
         let at = self
             .buffer
             .call(&mut self.store, len)
@@ -202,6 +207,7 @@ fn refusal(failure: Failure) -> Refusal {
         Failure::NoExport(name) => Refusal::Exports(name),
         Failure::Trap(why)
         | Failure::OutOfFuel(why)
+        | Failure::Deadline(why)
         | Failure::MemoryLimit(why)
         | Failure::Link(why) => Refusal::Start(why),
     }

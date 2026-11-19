@@ -424,6 +424,8 @@ pub(super) struct ActionRuntime {
         tilo_actions::InvocationId,
         crate::invocation_scope::Continuation,
     >,
+    /// The person's presses waiting for what they change to arrive from the workspace.
+    pub(super) waiting_controls: Vec<crate::app_core::WaitingControl>,
     /// Each edit an effect submitted for its invoker that the host is still
     /// admitting, by broker request, to the effect invocation it continues.
     pub(super) follow_ups: std::collections::HashMap<u64, tilo_actions::InvocationId>,
@@ -522,6 +524,7 @@ impl ActionRuntime {
             action_directory_cursors: std::collections::HashMap::new(),
             directed_invocations: std::collections::HashMap::new(),
             acting_for: std::collections::HashMap::new(),
+            waiting_controls: Vec::new(),
             follow_ups: std::collections::HashMap::new(),
             hosted_requests: std::collections::HashSet::new(),
             awaited_resolutions: Vec::new(),

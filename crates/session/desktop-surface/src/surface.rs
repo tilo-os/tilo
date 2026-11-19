@@ -171,8 +171,9 @@ pub trait TileSource {
     }
 
     /// The resource `tab`'s window shows, by its published address, and the kind of resource it
-    /// keeps: what its bar carries when a person picks it up, and what the windows a person may
-    /// share are listed by ([`ui::window_share`]).
+    /// keeps: what the windows a person may share are listed by ([`ui::window_share`]). What the
+    /// window's bar carries is the workspace's layout's
+    /// ([`DesktopHandle::set_window_resources`]), which every device of the person's reads.
     fn window_resource(&self, _tab: TabId) -> Option<(String, String)> {
         None
     }
@@ -220,6 +221,10 @@ struct Shared {
     /// The agent run that opened each window an agent opened, by tab
     /// ([`DesktopHandle::set_opened_by`]).
     opened_by: std::collections::BTreeMap<TabId, tilo_desktop_model::ownership::OpenedBy>,
+    /// The resource each window shows, by tab, as the workspace's layout keeps it
+    /// ([`DesktopHandle::set_window_resources`]): what a window's bar carries when a person picks
+    /// it up, on every device that reads the layout.
+    resources: std::collections::BTreeMap<TabId, String>,
     /// The windows the sharing app lists for its picker, as last published
     /// ([`DesktopSurface::offer_window_shares`]): a window's menu offers the share row exactly for
     /// these.
@@ -642,6 +647,20 @@ impl DesktopHandle {
             return false;
         }
         shared.holders = holders;
+        true
+    }
+
+    /// Give every window the resource it shows, by the address the workspace's layout keeps: what
+    /// its bar carries. Whether that is news.
+    pub fn set_window_resources(
+        &self,
+        resources: std::collections::BTreeMap<TabId, String>,
+    ) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        if shared.resources == resources {
+            return false;
+        }
+        shared.resources = resources;
         true
     }
 
@@ -1100,14 +1119,14 @@ impl DesktopSurface {
             for group in &mut row.groups {
                 let tabs: Vec<TabId> = group.tabs().iter().map(|tab| tab.id).collect();
                 changed |= group.set_new_tab(shared.opens);
-                // The window's bar carries the resource its place shows, on this device's own
-                // reading: a press that travels then lifts it here and on the device beside this
-                // one.
+                // The window's bar carries the resource its place shows, as the layout keeps it:
+                // a press that travels then lifts it here and on the device beside this one.
                 changed |= group.set_carries(
-                    self.tiles
-                        .window_resource(group.active_tab_id())
-                        .map(|(resource, _)| resource)
-                        .filter(|resource| !resource.is_empty()),
+                    shared
+                        .resources
+                        .get(&group.active_tab_id())
+                        .filter(|resource| !resource.is_empty())
+                        .cloned(),
                 );
                 for tab in tabs {
                     changed |= group.set_tab_holder(tab, shared.holders.get(&tab).cloned());
@@ -1660,13 +1679,8 @@ impl DesktopSurface {
         // A window another of the person's devices carried here, let go over one of this strip's
         // windows: the place showing it joins that window, as a window's bar let go there does.
         if let Some((into, resource)) = row.take_pending_window_drop() {
-            changed |= window_menu::join_place(
-                &mut shared,
-                self.tiles.as_ref(),
-                strip_id,
-                into,
-                &resource,
-            );
+            let resources = shared.resources.clone();
+            changed |= window_menu::join_place(&mut shared, &resources, strip_id, into, &resource);
         }
         let mut new_tab = None;
         let mut search_in = None;

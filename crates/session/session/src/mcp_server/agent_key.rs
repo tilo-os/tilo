@@ -106,6 +106,7 @@ impl super::Loop {
             facts,
             workspace: asked,
             key,
+            session_name,
             session,
             decide,
             ..
@@ -132,7 +133,12 @@ impl super::Loop {
                 }
             };
         tracing::info!(client = %facts.client, pid = facts.pid, %agent, %workspace, "MCP server: the person's agent key admits this client");
-        let consent = super::as_member(members, &facts, (&workspace, person));
+        let consent = super::as_member(
+            members,
+            &facts,
+            (&workspace, person),
+            session_name.as_deref(),
+        );
         self.sessions.admit(&session, &consent, &agent, &name);
         let _ = decide.send(consent);
     }

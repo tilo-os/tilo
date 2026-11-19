@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.disks@d7ae32858694d31a";
+export const SURFACE = "so.tilo.disks@2bb26a51ddf1c158";
 
 /** The arguments of `name-drive`. */
 export interface NameDriveArgs {
@@ -40,9 +40,6 @@ export interface System extends tilo.Resource {
   /** Runs `name-drive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   nameDriveMany(items: NameDriveArgs[]): Promise<tilo.ActionAnswer[]>;
   rescan(): Promise<void>;
-  select(args: {
-    device: string;
-  }): Promise<void>;
   showTab(args: {
     tab: string;
   }): Promise<void>;
@@ -50,7 +47,7 @@ export interface System extends tilo.Resource {
 
 /** The actions `System` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SYSTEM_ACTIONS = ["nameDrive", "nameDriveMany", "rescan", "select", "showTab"] as const;
+export const SYSTEM_ACTIONS = ["nameDrive", "nameDriveMany", "rescan", "showTab"] as const;
 
 /** The `disks.system` kind at `path`. */
 export function system(ws: tilo.Workspace, path: string): System {

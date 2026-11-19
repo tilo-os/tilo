@@ -45,10 +45,6 @@ impl TileSource for Notices {
             detail: String::new(),
         })
     }
-
-    fn window_resource(&self, tab: TabId) -> Option<(String, String)> {
-        Some((resource_of(tab), String::new()))
-    }
 }
 
 pub(super) fn desktop(windows: usize) -> (DesktopSurface, DesktopHandle) {

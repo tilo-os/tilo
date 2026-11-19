@@ -73,7 +73,13 @@ impl Approver {
         paths.ensure_directories().unwrap();
         let root_key = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
-        tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &root_key).unwrap();
+        tilo_identity::provisioning::import_single_device_root(
+            identities.path(),
+            &root_key,
+            "",
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
         tilo_device_identity::persist::write_public_key(
             &paths.user_pubkey,
             &root_key.verifying_key().to_bytes(),
@@ -157,6 +163,7 @@ impl Machine {
             identity_dir: Some(self.identities.path()),
             requester_lease: None,
             port: 0,
+            recovery_key: None,
         }
     }
 
@@ -370,6 +377,7 @@ fn a_code_shown_on_a_machine_enrolls_it_over_a_packet_relay() {
                     identity_dir: Some(&identities),
                     requester_lease: None,
                     port: 0,
+                    recovery_key: None,
                 },
                 Some(&relays),
                 Some(&machine_ready_tx),

@@ -359,7 +359,6 @@ mod tests {
             let cache = temp.path().join("files");
             prepare_new(&cache, device.verifying_key().to_bytes(), envelope.clone()).unwrap();
             check(&temp.path().join("identity"), &cache).expect("existing certified Files primary");
-            assert!(!paths.user_privkey.exists(), "no root export is required");
             let mut revoked = envelope.capabilities;
             revoked[0].effect = Effect::Restrict;
             let denied = WorkspaceAuthorityEnvelope::sign(workspace, 2, revoked, false, &root).unwrap();

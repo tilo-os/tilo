@@ -679,7 +679,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             section.state,
             Some(Arrival::Pending {
-                from: Source::host("Catalogue")
+                from: Source::Remote
             })
         );
         let clock = section.clock.clone().expect("timed from when it was asked");

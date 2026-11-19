@@ -28,6 +28,9 @@ struct Param {
     /// The argument's name where it differs from the field's (`name =
     /// "pageSize"`): a contract its callers already speak.
     name: Option<String>,
+    /// `resource = "kind"`: a person picks an existing resource of that kind,
+    /// the argument naming it (`ParamType::Resource`).
+    resource: Option<String>,
 }
 
 /// A parameter's leading flag.
@@ -83,6 +86,17 @@ impl syn::parse::Parse for Param {
             input.parse::<syn::Token![,]>()?;
         }
         while !input.is_empty() {
+            if input.peek(syn::LitStr) {
+                let text = input.parse::<syn::LitStr>()?;
+                if param.description.replace(text.value()).is_some() {
+                    return Err(syn::Error::new(text.span(), "one parameter description"));
+                }
+                if input.is_empty() {
+                    break;
+                }
+                input.parse::<syn::Token![,]>()?;
+                continue;
+            }
             let key: syn::Ident = input.parse()?;
             input.parse::<syn::Token![=]>()?;
             if key == "place" {
@@ -92,10 +106,13 @@ impl syn::parse::Parse for Param {
                 param.name = Some(input.parse::<syn::LitStr>()?.value());
             } else if key == "choices" {
                 param.choices = Some(input.parse()?);
+            } else if key == "resource" {
+                param.resource = Some(input.parse::<syn::LitStr>()?.value());
             } else {
                 return Err(syn::Error::new(
                     key.span(),
-                    "expected `choices = ...`, `place = \"field\"` or `name = \"argument\"`",
+                    "expected `choices = ...`, `place = \"field\"`, `resource = \"kind\"` or \
+                     `name = \"argument\"`",
                 ));
             }
             if !input.is_empty() {
@@ -449,6 +466,23 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             &crate::words::key(&operation, &id),
             &written,
         )?;
+        // A bound invocation keeps the phrase its caller types, wherever the
+        // effect is offered: the declaration decodes the arguments it is
+        // bound with and names what it loses.
+        let phrase = if options.phrase.is_some() {
+            quote! {
+                ::core::option::Option::Some((|arguments: &#krate::__private::serde_json::Map<
+                    ::std::string::String,
+                    #krate::__private::serde_json::Value,
+                >| {
+                    <Self as #krate::Effect>::decode(#id, arguments)
+                        .ok()
+                        .and_then(|effect| <Self as #krate::Effect>::confirmation_phrase(&effect))
+                }) as #krate::effect::PhraseOf)
+            }
+        } else {
+            quote!(::core::option::Option::None)
+        };
         let description = docs
             .iter()
             .filter(|line| !line.is_empty())
@@ -548,6 +582,15 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 "a `#[param(flatten)]` is the effect's only field: its fields are the arguments",
             ));
         }
+        for (field, _, described) in &fields {
+            if described.resource.is_some() && described.flag != Flag::None {
+                return Err(syn::Error::new(
+                    field.span(),
+                    "`resource = \"kind\"` names one existing resource a person picks: it goes \
+                     with no `secret`, `content`, `place`, `decimal` or `flatten`",
+                ));
+            }
+        }
         let params = fields.iter().map(|(field, ty, described)| {
             if described.flag == Flag::Flatten {
                 return quote!(#krate::__private::flat_params(
@@ -560,7 +603,9 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 .clone()
                 .unwrap_or_else(|| humanize(&param));
             let (param_ty, optional) = param_type(ty, false);
-            let param_ty = if described.flag == Flag::Secret {
+            let param_ty = if described.resource.is_some() {
+                quote!(#krate::__private::ParamType::Resource)
+            } else if described.flag == Flag::Secret {
                 quote!(#krate::__private::ParamType::Secret)
             } else {
                 param_ty
@@ -589,6 +634,10 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 (Some(field), _) => quote!(#declared.as_place_in(#field)),
                 (None, true) => quote!(#declared.as_place()),
                 (None, false) => declared,
+            };
+            let declared = match &described.resource {
+                Some(kind) => quote!(#declared.of_resource_kind(#kind)),
+                None => declared,
             };
             quote!(::std::vec![#declared])
         });
@@ -642,11 +691,12 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             quote!(::std::option::Option::None)
         };
         if let Some(phrase) = &options.phrase {
-            if !options.row || !options.destructive {
+            if !options.destructive || (options.targets.is_empty() && !options.row) {
                 return Err(syn::Error::new(
                     phrase.span(),
                     "a typed phrase names what one invocation loses: declare the effect \
-                     `destructive` and `row`, offered only bound to what it erases",
+                     `destructive` and offered only bound to what it erases (`row`, `on = Row` \
+                     or `item = field`)",
                 ));
             }
             let pattern = if matches!(variant.fields, Fields::Unit) {
@@ -690,6 +740,35 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 },
             });
             quote!(&[#(#targets),*])
+        };
+        // A row id is not always the text the effect acts on: offered on a
+        // row, the first parameter reads the id as its own type (`u64` counts,
+        // an identity parses), and a row whose id is not one is refused.
+        let row_id = if options
+            .targets
+            .iter()
+            .any(|target| matches!(target, Target::Row(_)))
+        {
+            fields.first().map_or_else(
+                || quote!(::core::option::Option::None),
+                |(_, ty, _)| {
+                    quote! {
+                        ::core::option::Option::Some((|id: &str| {
+                            // The field's own serde type reads the id: a
+                            // string as it is, a number from its decimal text.
+                            #krate::__private::serde_json::from_value::<#ty>(
+                                #krate::__private::serde_json::Value::String(id.to_owned()),
+                            )
+                            .or_else(|_| #krate::__private::serde_json::from_str::<#ty>(id))
+                            .ok()
+                            .and_then(|value| #krate::__private::serde_json::to_value(value).ok())
+                            .ok_or_else(|| format!("`{id}` is not one this effect acts on"))
+                        }) as #krate::effect::RowIdOf)
+                    }
+                },
+            )
+        } else {
+            quote!(::core::option::Option::None)
         };
         let reads = match options.kind.as_deref() {
             Some(kind) => kind == "read",
@@ -761,6 +840,16 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             })
             .map(|(field, ty, described)| {
                 let param = described.name.clone().unwrap_or_else(|| field.to_string());
+                if let Some(kind) = &described.resource {
+                    return quote! {{
+                        types.push((
+                            #param,
+                            (|_: &mut #krate::TypeSet| {
+                                #krate::FieldType::Resource(::std::string::String::from(#kind))
+                            }) as #krate::surface::FieldTypeOf,
+                        ));
+                    }};
+                }
                 quote! {{
                     #[allow(unused_imports, reason = "one of the two applies")]
                     use #krate::__private::{DescribedParam as _, UndescribedParam as _};
@@ -820,6 +909,8 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 edits: #edits,
                 member: #member,
                 items: #items,
+                row_id: #row_id,
+                phrase: #phrase,
                 offload: #offload,
                 tags: #tags,
                 outside_with: #outside_with,

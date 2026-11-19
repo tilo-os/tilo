@@ -2260,6 +2260,9 @@ remote_env() {
       TILO_SH_*) printf '%s\n' "$line" ;;
     esac
   done < <(env | grep '^TILO_SH_' || true)
+  # The services' log filters (private_env), which a restart gives them there.
+  [[ -z ${RUST_LOG:-} ]] || printf 'RUST_LOG=%s\n' "$RUST_LOG"
+  [[ -z ${TILO_SERVER_LOG:-} ]] || printf 'TILO_SERVER_LOG=%s\n' "$TILO_SERVER_LOG"
   printf 'TILO_SH_STATE=%s\n' "$remote_state"
   printf 'TILO_SH_PORT_BASE=%s\n' "$base"
   printf 'TILO_SH_REMOTE=0\n'

@@ -130,6 +130,97 @@ if grep -qE '(^|/)(Cargo\.toml|lib\.rs|main\.rs)$|^docs/codemap\.md$' <<< "$lock
   fi
 fi
 
+# os/Containerfile is os/image/'s pieces in one file (tools/ci/os/pieces.py), so one
+# `podman build` makes the whole image. The generator is plain Python, and a change to a piece or
+# the layer plan leaves the file stale, so write it here and stage what it wrote. The test that
+# holds the same invariant (tools/tests/test_os_pieces.py) is what CI runs; writing it is not a
+# judgement call.
+if grep -qE '^(os/image/|os/Containerfile$|tools/ci/os/pieces\.py$)' <<< "$lock_staged_names"; then
+  if ! GIT_INDEX_FILE="$full_index" git diff --quiet -- os/Containerfile; then
+    note "os/Containerfile has unstaged edits: stage the whole file and commit again"
+    fail=1
+  elif ! python3 "$root/tools/ci/os/pieces.py" write; then
+    note "os/Containerfile could not be written; run python3 tools/ci/os/pieces.py write"
+    fail=1
+  elif ! GIT_INDEX_FILE="$full_index" git diff --quiet -- os/Containerfile; then
+    GIT_INDEX_FILE="$full_index" git add -- os/Containerfile
+    note "os/Containerfile: written from os/image/ and staged"
+  fi
+fi
+
+# crates/workspace-hack (cargo-hakari) unifies third-party features across the workspace and
+# each member's selectable features; it is generated from the manifests and must name every
+# workspace member, so a crate added or a dependency changed without regenerating splits the
+# shared build and fails the hakari check. Regenerating is not a judgement call: run cargo
+# hakari here and stage what it wrote. It edits member manifests too (manage-deps adds the
+# workspace-hack dependency), so those are staged as well; a file that already had unstaged
+# edits is left for its author and the commit fails.
+if grep -qE '(^|/)Cargo\.toml$|^Cargo\.lock$' <<< "$lock_staged_names"; then
+  if command -v cargo >/dev/null 2>&1 && cargo hakari --version >/dev/null 2>&1; then
+    hakari_dirty=$(GIT_INDEX_FILE="$full_index" git diff --name-only)
+    if cargo hakari generate >/dev/null 2>&1 && cargo hakari manage-deps --yes >/dev/null 2>&1; then
+      hakari_wrote=0
+      hakari_left=""
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        if grep -qxF "$f" <<< "$hakari_dirty"; then
+          hakari_left="$hakari_left$f"$'\n'
+        else
+          GIT_INDEX_FILE="$full_index" git add -- "$f"
+          hakari_wrote=$((hakari_wrote + 1))
+        fi
+      done < <(GIT_INDEX_FILE="$full_index" git diff --name-only -- '*Cargo.toml' 'Cargo.lock' \
+                 'crates/workspace-hack/**')
+      if [ "$hakari_wrote" -gt 0 ]; then
+        note "crates/workspace-hack: regenerated from the manifests and staged"
+      fi
+      if [ -n "$hakari_left" ]; then
+        note "crates/workspace-hack: these have unstaged edits, stage the whole file and commit again:"
+        printf '%s' "$hakari_left" | sed 's/^/  /' >&2
+        fail=1
+      fi
+    else
+      note "crates/workspace-hack could not be regenerated: run 'cargo hakari generate && cargo hakari manage-deps --yes' and stage what it wrote"
+      fail=1
+    fi
+  else
+    note "a Cargo manifest changed and cargo-hakari is not installed: run 'cargo hakari generate && cargo hakari manage-deps --yes' and stage what it wrote"
+    fail=1
+  fi
+fi
+
+# The design-system baseline (tools/policy/primitives_baseline.txt) is a ratchet that may only
+# shrink. A commit that fixes a hand-painted control leaves its line too high, and the policy
+# suite then fails "is now …; lower the count". Lowering it is not a judgement call, so do it
+# here for the sources this commit stages and stage what it wrote. A commit that adds a
+# violation is left to fail: raising a line is the review the check exists for.
+prim_files=""
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  if GIT_INDEX_FILE="$full_index" git diff --quiet -- "$f"; then
+    prim_files="$prim_files$f"$'\n'
+  else
+    note "primitives baseline: $f has unstaged edits; stage the whole file and commit again"
+    fail=1
+  fi
+done < <(git diff --cached --name-only --diff-filter=ACMD -- crates/session apps \
+           | grep -E '\.rs$' || true)
+if [ -n "$prim_files" ]; then
+  if ! GIT_INDEX_FILE="$full_index" git diff --quiet -- tools/policy/primitives_baseline.txt; then
+    note "primitives baseline has unstaged edits: stage it and commit again"
+    fail=1
+  else
+    mapfile -t prim_array <<< "$prim_files"
+    if ! python3 "$root/tools/policy/check_primitives.py" --lower "${prim_array[@]}"; then
+      note "primitives baseline could not be lowered: run python3 tools/policy/check_primitives.py --lower <files>"
+      fail=1
+    elif ! GIT_INDEX_FILE="$full_index" git diff --quiet -- tools/policy/primitives_baseline.txt; then
+      GIT_INDEX_FILE="$full_index" git add -- tools/policy/primitives_baseline.txt
+      note "primitives baseline: lowered the counts this commit fixed and staged it"
+    fi
+  fi
+fi
+
 # The SDK's types and the API's description (docs/api/openapi.json) are
 # generated from the apps' surfaces and manifests (`tilo sdk gen`), so a
 # change to either leaves them stale: they are what an

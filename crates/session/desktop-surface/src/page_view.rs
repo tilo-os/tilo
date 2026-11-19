@@ -113,7 +113,7 @@ impl PageStream {
             Box::new(MediaGrid::arriving(
                 1,
                 MediaAspect::Wide,
-                &ui::arriving::Source::peer("the device running it"),
+                &ui::arriving::Source::Remote,
                 ui::time::now(),
             ))
         }

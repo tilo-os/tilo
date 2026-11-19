@@ -47,9 +47,12 @@
 #                                     open disk, and enrols the unlock another of
 #                                     the person's devices releases, so its first
 #                                     boot opens without a TPM and without
-#                                     anyone at its console. The plan's disk
-#                                     rule was checked when the installer was
-#                                     staged, and again before this runs.
+#                                     anyone at its console. The disk's
+#                                     recovery key goes to the person's devices
+#                                     with that enrollment; this machine keeps
+#                                     no copy. The plan's disk rule was checked
+#                                     when the installer was staged, and again
+#                                     before this runs.
 #     --network-static <addresses>    the plan's static addressing, as
 #                                     address/prefix entries, comma separated.
 #                                     Applied to this installer through
@@ -1692,8 +1695,35 @@ if [ "$ENCRYPT" -eq 1 ]; then
     fi
   fi
   # The helper logs to stderr; fold it into our stdout so the UI sees the
-  # recovery key it has to show the user.
-  "$DISK_ENCRYPT" enrol "$ENC_LUKS" --key-file "$ENC_KEYFILE" "${ENROL_ARGS[@]}" 2>&1
+  # recovery key it has to show the user. A planned machine has no screen and
+  # no person: its key goes to the person's devices with the enrollment, so it
+  # is kept root-only here and never shown, logged or left in a status line.
+  if [ "$INSTALL_PLAN" -eq 1 ]; then
+    install -d -m 0700 /run/tilo-install
+    RECOVERY_CAPTURE=/run/tilo-install/recovery-key.log
+    ( umask 0077; : > "$RECOVERY_CAPTURE" )
+    if ! "$DISK_ENCRYPT" enrol "$ENC_LUKS" --key-file "$ENC_KEYFILE" "${ENROL_ARGS[@]}" \
+        > "$RECOVERY_CAPTURE" 2>&1; then
+      grep -v '^::tilo-recovery-key::' "$RECOVERY_CAPTURE" | grep -vF 'RECOVERY KEY' >&2 || true
+      shred -u "$RECOVERY_CAPTURE" 2>/dev/null || rm -f "$RECOVERY_CAPTURE"
+      die "the disk's encryption factors could not be enrolled"
+    fi
+    PLAN_RECOVERY_KEY_FILE=/run/tilo-install/recovery-key
+    PLAN_RECOVERY_KEY="$(sed -n 's/^::tilo-recovery-key:://p' "$RECOVERY_CAPTURE" | tail -n 1)"
+    [ -n "$PLAN_RECOVERY_KEY" ] \
+      || { shred -u "$RECOVERY_CAPTURE" 2>/dev/null || rm -f "$RECOVERY_CAPTURE"; \
+           die "the disk produced no recovery key"; }
+    ( umask 0077; printf '%s' "$PLAN_RECOVERY_KEY" > "$PLAN_RECOVERY_KEY_FILE" )
+    # Everything else the helper said, minus the key itself and its banner.
+    grep -vF -- "$PLAN_RECOVERY_KEY" "$RECOVERY_CAPTURE" | grep -v 'RECOVERY KEY' \
+      | grep -v '^  =====' | grep -v '^::tilo-recovery-key::' | grep -v '^$' || true
+    unset PLAN_RECOVERY_KEY
+    shred -u "$RECOVERY_CAPTURE" 2>/dev/null || rm -f "$RECOVERY_CAPTURE"
+    chmod 0600 "$PLAN_RECOVERY_KEY_FILE"
+    log "  the disk's recovery key is kept root-only until the enrollment hands it to your devices"
+  else
+    "$DISK_ENCRYPT" enrol "$ENC_LUKS" --key-file "$ENC_KEYFILE" "${ENROL_ARGS[@]}" 2>&1
+  fi
   [ -n "${PIN_FILE:-}" ] && { shred -u "$PIN_FILE" 2>/dev/null || rm -f "$PIN_FILE"; }
   unset PIN
 fi
@@ -2245,10 +2275,13 @@ if [ -d /run/tilo-installer/setup-handoff ]; then
   [ -n "$DEPLOY_ETC" ] || die "setup handoff is present but the installed /etc was not found"
   HANDOFF_VAR="$(find "$MNT/state/os" "$MNT/ostree/deploy" -mindepth 2 -maxdepth 2 -type d -name var -print -quit 2>/dev/null || true)"
   [ -n "$HANDOFF_VAR" ] || die "setup handoff is present but the installed /var was not found"
-  if [ -e "$HANDOFF_SRC/var/lib/tilo/user-identity/privkey.bin" ] \
-     || [ -L "$HANDOFF_SRC/var/lib/tilo/user-identity/privkey.bin" ]; then
-    die "setup handoff contains the human root secret"
-  fi
+  # The person's root lives in their identity store, whose file provider
+  # keeps it in secrets/; a joined device gets public records only.
+  for secrets in "$HANDOFF_SRC"/var/home/*/.config/tilo/identity/secrets; do
+    if [ -e "$secrets" ] || [ -L "$secrets" ]; then
+      die "setup handoff contains the human root secret"
+    fi
+  done
   if [ -d "$HANDOFF_SRC/etc" ]; then
     /usr/libexec/tilo-install-handoff-copy "$HANDOFF_SRC/etc" "$DEPLOY_ETC"
   fi
@@ -2478,6 +2511,7 @@ enrol_planned_server() {
     --token-file /etc/tilo/enrollment-token.txt
     --home-peer-output "$DEPLOY_ETC/tilo/home-peer.toml"
     --label "$HOSTNAME_VAL" --timeout 270)
+  [ -z "${PLAN_RECOVERY_KEY_FILE:-}" ] || enrol+=(--recovery-key-file "$PLAN_RECOVERY_KEY_FILE")
   [ -z "$relay" ] || enrol+=(--relay "$relay")
   "${enrol[@]}" 2>&1 \
     || die "this machine did not enroll; its disk would need the recovery key at every boot"
@@ -2542,6 +2576,10 @@ if [ "$INSTALL_PLAN" -eq 1 ]; then
   enrol_planned_server
   enrol_planned_sibling
   rm -f /etc/tilo/enrollment-token.txt
+  # The key reached the person's devices with the enrollment: this machine
+  # keeps none, and its disk opens with their consent.
+  [ -z "${PLAN_RECOVERY_KEY_FILE:-}" ] \
+    || { shred -u "$PLAN_RECOVERY_KEY_FILE" 2>/dev/null || rm -f "$PLAN_RECOVERY_KEY_FILE"; }
 fi
 sync
 if [ "$ENCRYPT" -eq 1 ]; then

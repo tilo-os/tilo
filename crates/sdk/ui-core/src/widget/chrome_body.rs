@@ -291,6 +291,7 @@ impl Decorator for ChromeBody {
             } else {
                 0.0
             },
+            inset: [0.0; 2],
         });
         node.floats = rounded;
     }

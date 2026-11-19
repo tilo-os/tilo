@@ -436,6 +436,7 @@ mod tests {
                 label: Some("Prepare budget".into()),
                 kind: "task".into(),
                 declared_id: None,
+                session: None,
             }),
         }
     }

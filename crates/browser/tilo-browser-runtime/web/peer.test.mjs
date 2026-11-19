@@ -1380,6 +1380,22 @@ test('a person renamed since the page started says the new name with the next fr
   await peer.dispose();
 });
 
+test('a name the page draws stays the page\'s; only a name the person gives reaches their server', async () => {
+  const runtime = fakeRuntime();
+  const named = [];
+  const peer = await connect(options(runtime, memoryStore()));
+  runtime.peer.setDisplayName = name => named.push(['shown', name]);
+  runtime.peer.nameSelf = name => named.push(['given', name]);
+  await until(() => peer.live.state === 'live', 'the live layer');
+  peer.setDisplayName('Eager Lynx');
+  assert.deepEqual(named, [['shown', 'Eager Lynx']], 'a drawn name is shown here, never given to the workspace');
+  peer.nameSelf('  ');
+  peer.nameSelf('Quinten');
+  assert.deepEqual(named.at(-1), ['given', 'Quinten']);
+  assert.equal(named.filter(([kind]) => kind === 'given').length, 1, 'a blank name is no name');
+  await peer.dispose();
+});
+
 test('resource hydration can be cancelled and leaving the peer refuses pending opens', async () => {
   const runtime = fakeRuntime();
   const peer = await connect(options(runtime, memoryStore()));

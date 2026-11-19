@@ -746,6 +746,7 @@ impl Desktop {
         }
         let name = crate::replication::governance_name(peer, workspace);
         let policy = crate::replication::governance_policy(peer, workspace);
+        let governed = crate::replication::governance_people(peer, workspace);
         let mut tree = self.handle.read(Clone::clone);
         let changed = tree
             .workspaces
@@ -756,7 +757,10 @@ impl Desktop {
                 let people = policy
                     .as_ref()
                     .is_some_and(|policy| tilo_session_client::membership::project(held, policy));
-                named | people
+                let given = governed.as_deref().is_some_and(|governed| {
+                    tilo_session_client::membership::project_names(held, governed)
+                });
+                named | people | given
             });
         if changed {
             self.handle.replace_tree(tree);

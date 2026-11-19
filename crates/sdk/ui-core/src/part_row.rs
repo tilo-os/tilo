@@ -636,7 +636,7 @@ impl PartRow {
                     button: MouseButton::Left,
                     ..
                 } => {
-                    let took = self.row.press(self.pointer);
+                    let took = self.row.press(self.pointer, false);
                     if !took && self.window_controls && rect.contains(self.pointer) {
                         self.press_bar_ground();
                     }

@@ -931,7 +931,7 @@ wayland-client = "0.31.14"
 ashpd = { version = "0.13", default-features = false, features = ["tokio"] }
 zbus = { version = "5.16", default-features = false }
 # X11, Windows and macOS only; Wayland clients use focus-gated wl_data_device
-# through smithay-clipboard (see crates/sdk/tilo-process-services/src/clipboard.rs).
+# on the app's own connection (see crates/platform/tilo-clipboard/src/wayland.rs).
 arboard = { version = "3.6.1", default-features = false }
 fuser = "0.18.0"
 # Defaults on: the only default is `macos_fsevent`, without which notify has no

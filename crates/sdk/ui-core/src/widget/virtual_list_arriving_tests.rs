@@ -34,7 +34,7 @@ impl ListModel for RemoteRows {
         match index {
             0 if self.ready.get() => Arrival::Ready(()),
             0 => Arrival::Pending {
-                from: crate::arriving::Source::peer("Laptop"),
+                from: crate::arriving::Source::Remote,
             },
             _ => Arrival::Failed("offline"),
         }

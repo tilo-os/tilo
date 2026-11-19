@@ -82,6 +82,11 @@ impl Shared {
         if crate::termination::asked() {
             return;
         }
+        // What each window shows is the workspace's layout's, not this device's reading of it: a
+        // window carried by its bar names it, and a window let go over here finds the place that
+        // shows it.
+        self.handle
+            .set_window_resources(self.layout.borrow().window_resources());
         // Every workspace this device holds has had its record read, and
         // nothing of the workspaces moved since: there is nothing to read,
         // lay out or write.

@@ -505,17 +505,14 @@ impl Workspaces {
         self.page_workspace(workspace, device).await
     }
 
-    /// Name `device`'s person `name` in `workspace`: the name the workspace
-    /// shows for them from now on, in its member list and on the invitations
-    /// they make. Only a person names themself, and only in a workspace they
-    /// are a member of: from any of their devices or keys — one the workspace
-    /// admitted as theirs, or a key of theirs it holds them by their root,
-    /// which is what a declared owner's key is before any device of theirs
-    /// arrived. A name they already go by writes nothing.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked from the check until the name is committed"
-    )]
+    /// Name `device`'s person `name`, asked in `workspace`: the name they go
+    /// by from now on, there and in every other workspace kept here, in its
+    /// member list and on the invitations they make, and the one their profile
+    /// keeps for every device of theirs. Only a person names themself, and only
+    /// in a workspace they are a member of: from any of their devices or keys —
+    /// one the workspace admitted as theirs, or a key of theirs it holds them by
+    /// their root, which is what a declared owner's key is before any device of
+    /// theirs arrived. A name they already go by writes nothing.
     pub(crate) async fn name_self(
         &self,
         workspace: &str,
@@ -555,18 +552,21 @@ impl Workspaces {
         }
         let key = self.inner.host.key.clone();
         let mut candidate = workspace.peer().clone();
-        if !candidate
+        if candidate
             .governance_mut()
             .name_person(device.user_public_key, &name, &key, at)
             .map_err(CollaborationError::new)?
         {
-            return Ok(WorkspacesReply::Named);
+            let log = workspace.collaboration().clone();
+            workspace
+                .commit(candidate, &key, at, |_, _| Ok(log))
+                .map_err(CollaborationError::new)?;
+            self.settle(&mut workspace).await?;
         }
-        let log = workspace.collaboration().clone();
-        workspace
-            .commit(candidate, &key, at, |_, _| Ok(log))
-            .map_err(CollaborationError::new)?;
-        self.settle(&mut workspace).await?;
+        drop(workspace);
+        // The name is the person's, not this workspace's: kept with their profile, which every
+        // device of theirs reads, and theirs in every other workspace kept here.
+        self.name_person(device.user_public_key, &name, now).await?;
         Ok(WorkspacesReply::Named)
     }
 

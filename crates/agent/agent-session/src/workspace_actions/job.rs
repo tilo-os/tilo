@@ -15,24 +15,6 @@ pub(super) enum Urgency {
     Background,
 }
 
-/// The jobs that came and wait for the worker's thread, taken by [`Job::urgency`], each kind in
-/// the order it came.
-#[derive(Default)]
-pub(super) struct Queued(std::collections::VecDeque<(Instant, Job)>);
-
-impl Queued {
-    pub(super) fn push(&mut self, queued: Instant, job: Job) {
-        self.0.push_back((queued, job));
-    }
-
-    /// The most urgent job queued, the oldest of its kind.
-    pub(super) fn take(&mut self) -> Option<(Instant, Job)> {
-        let most = self.0.iter().map(|(_, job)| job.urgency()).min()?;
-        let at = self.0.iter().position(|(_, job)| job.urgency() == most)?;
-        self.0.remove(at)
-    }
-}
-
 /// What the worker thread is asked to do, one at a time.
 pub(super) enum Job {
     Feedback {
@@ -243,45 +225,5 @@ impl Job {
             | Self::Forget(_)
             | Self::Rename(..) => Keys::Joined,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A listing that came after a write, and the names the writes left to read, is taken
-    /// first; writes keep their order among themselves.
-    #[test]
-    fn what_a_caller_waits_on_to_read_goes_before_queued_writes() {
-        let workspace = WorkspaceId::parse("6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b").unwrap();
-        let other = WorkspaceId::parse("0b5e7c1d-2e3f-4a5b-8c6d-7e8f9a0b1c2d").unwrap();
-        let route = DocumentRoute {
-            app_id: "tasks".into(),
-            cluster_id: workspace.to_string(),
-            document: "tracker".into(),
-        };
-        let now = Instant::now();
-        let mut queued = Queued::default();
-        queued.push(now, Job::Rename(workspace, route));
-        queued.push(now, Job::Forget(workspace));
-        queued.push(now, Job::Forget(other));
-        queued.push(now, Job::Joined(workspace));
-        let taken: Vec<String> = std::iter::from_fn(|| queued.take())
-            .map(|(_, job)| match job {
-                Job::Forget(id) => format!("forget {id}"),
-                job => job.kind().to_owned(),
-            })
-            .collect();
-        assert_eq!(
-            taken,
-            [
-                "joined".to_owned(),
-                format!("forget {workspace}"),
-                format!("forget {other}"),
-                "rename".to_owned(),
-            ]
-        );
-        assert!(queued.take().is_none());
     }
 }

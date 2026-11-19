@@ -46,21 +46,15 @@
 //!
 //! # Certification
 //!
-//! The new key needs a certificate from the person's root. This module adds
-//! no trust to issue one:
-//!
-//! - When this machine holds the person's root in the system identity tree
-//!   (`user-identity/privkey.bin`), it signs the new device's certificate
-//!   itself, granting exactly what the source device's certificate granted
-//!   and nothing more. A machine holding the root could sign any certificate
-//!   for that person already.
-//! - Otherwise the certificate stays pending ([`pending_label_path`] names
-//!   the device it will be): a person whose root is in their own identity
-//!   record has it issued at their next sign-in, as on any of their devices
-//!   without one; a device that joined without the root is paired again,
-//!   which one approval on a device holding the root completes. The secrets
-//!   stay usable in the meantime: the stores are sealed to the device key,
-//!   not to its certificate.
+//! The new key needs a certificate from the person's root, which lives in
+//! their identity store, never in the system tree this boot step reads. So
+//! nothing here signs: the certificate stays pending ([`pending_label_path`]
+//! names the device it will be). The identity service, which holds the root
+//! in the person's store, issues it when it starts, as on any of their
+//! devices without one; a device that joined without the root is paired
+//! again, which one approval on a device holding the root completes. The
+//! secrets stay usable in the meantime: the stores are sealed to the device
+//! key, not to its certificate.
 
 use std::fs;
 use std::io;
@@ -72,7 +66,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::persist::{self, IdentityPaths, PersistError};
-use tilo_user_identity::cert::{DeviceCert, device_name, sign_device_cert, verify_device_cert_at};
+use tilo_user_identity::cert::{DeviceCert, device_name, verify_device_cert_at};
 
 /// Where Linux reports the firmware's system UUID. Readable by root only.
 pub const PRODUCT_UUID: &str = "/sys/class/dmi/id/product_uuid";
@@ -538,10 +532,10 @@ fn resume(
     })
 }
 
-/// Certify `to` under the person the copied device belonged to, when this
-/// machine holds that person's root; otherwise leave it pending. Every
-/// certificate for a key this machine no longer holds is removed: it names
-/// the source device, which is not this one.
+/// Keep a certificate already issued for `to`; otherwise leave it pending,
+/// for the identity service to issue. Every certificate for a key this
+/// machine no longer holds is removed: it names the source device, which is
+/// not this one.
 fn certify(
     paths: &IdentityPaths,
     journal: &Journal,
@@ -559,9 +553,9 @@ fn certify(
         .filter(|cert| verify_device_cert_at(cert, now_ns).is_ok());
     let certification = match held {
         Some(cert) if cert.device_public_key == device => Certification::Certified(cert),
-        Some(source) if previous.contains(&source.device_public_key) => {
-            self_certify(paths, &source, &journal.label, device, now_ns)?
-        }
+        Some(source) if previous.contains(&source.device_public_key) => Certification::Pending(
+            "the person's identity service certifies the new device key".into(),
+        ),
         Some(_) => Certification::Pending("the device certificate names another device".into()),
         None => Certification::Pending("the copied device had no valid certificate".into()),
     };
@@ -571,53 +565,6 @@ fn certify(
         Certification::Pending(_) => write_pending_label(paths, &journal.label)?,
     }
     Ok(certification)
-}
-
-fn self_certify(
-    paths: &IdentityPaths,
-    source: &DeviceCert,
-    label: &str,
-    device: [u8; 32],
-    now_ns: u64,
-) -> Result<Certification, PersistError> {
-    let root = match fs::symlink_metadata(&paths.user_privkey) {
-        Ok(_) => match persist::read_owned_signing_key(&paths.user_privkey) {
-            Ok(root) => root,
-            Err(error) => {
-                return Ok(Certification::Pending(format!(
-                    "the root on this machine cannot be used: {error}"
-                )));
-            }
-        },
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(Certification::Pending(
-                "this machine does not hold the person's root".into(),
-            ));
-        }
-        Err(error) => return Err(error.into()),
-    };
-    if root.verifying_key().to_bytes() != source.user_public_key {
-        return Ok(Certification::Pending(
-            "the root on this machine is not the person's who owns the device".into(),
-        ));
-    }
-    let mut cert = DeviceCert {
-        user_public_key: source.user_public_key,
-        device_public_key: device,
-        device_label: label.to_owned(),
-        capabilities: source.capabilities.clone(),
-        issued_at_ns: now_ns,
-        expires_at_ns: source
-            .expires_at_ns
-            .map(|expires| now_ns.saturating_add(expires.saturating_sub(source.issued_at_ns))),
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, &root).map_err(|error| invalid(&error.to_string()))?;
-    verify_device_cert_at(&cert, now_ns).map_err(|error| invalid(&error.to_string()))?;
-    persist::write_device_cert(&paths.device_cert_for_user(&cert.user_public_key), &cert)?;
-    persist::write_device_cert(&paths.device_cert, &cert)?;
-    Ok(Certification::Certified(cert))
 }
 
 fn remove_stale_certificates(

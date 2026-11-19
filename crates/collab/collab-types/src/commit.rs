@@ -983,6 +983,7 @@ mod tests {
                     label: Some("Rename the task".to_owned()),
                     kind: "agent-session".to_owned(),
                     declared_id: None,
+                    session: None,
                 }),
                 invoker: Some(tilo_actions::ActionInvoker::person("alice")),
                 source_invocation: Some(invocation),

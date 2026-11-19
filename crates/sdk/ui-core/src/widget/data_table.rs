@@ -3886,6 +3886,7 @@ impl Widget for DataTableCore {
                     fill: Some(crate::composition::rgba8(fill)),
                     edge: edge.map(crate::composition::rgba8),
                     radius: f64::from(theme.tokens.radii.item).min(row_rect.height() / 2.0),
+                    inset: [0.0; 2],
                 });
             }
             let Some(Arrival::Ready(data)) = self.row_state_at(index) else {

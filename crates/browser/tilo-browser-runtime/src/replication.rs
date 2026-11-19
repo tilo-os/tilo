@@ -542,6 +542,17 @@ pub(crate) fn governance_policy(
     joined.peer.engine().policy(&workspace.to_string()).ok()
 }
 
+/// `workspace`'s people as its governance names them, as this page holds it: each with the name
+/// they gave themselves, which the page's shell names someone who is not here by.
+pub(crate) fn governance_people(
+    id: u32,
+    workspace: WorkspaceId,
+) -> Option<Vec<collab_types::Member>> {
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
+    joined.peer.engine().people(&workspace.to_string()).ok()
+}
+
 /// The name `workspace`'s governance records, as this page holds it: the workspace's one name,
 /// which every device and every list of it reads.
 pub(crate) fn governance_name(id: u32, workspace: WorkspaceId) -> Option<String> {
@@ -717,6 +728,7 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
                 merged: HashMap::new(),
             },
         );
+        joined.follow_link();
     }
     publish(id);
     true
@@ -1208,6 +1220,7 @@ impl Joined {
             }
         }
         self.follow_members(&mut woken);
+        self.follow_link();
         // Withdrawn before what arrived since is merged: a peer's change can
         // never build on one the workspace refused.
         for (route, changes, refusal) in refusals {
@@ -1971,6 +1984,22 @@ impl Joined {
             }
         }
         wanted
+    }
+
+    /// Tell the mounted desktops why the workspace cannot answer this page now, as its link says,
+    /// or that it can again: their windows waiting for a resource show that failure rather than wait
+    /// for an answer that cannot come.
+    fn follow_link(&self) {
+        let cause = self
+            .peer
+            .status()
+            .unanswerable(self.workspace)
+            .map(str::to_owned);
+        for mounted in self.mounts.values() {
+            if let Some((handle, shared)) = &mounted.attachment.desktop {
+                shared.follow_unanswerable(cause.clone(), handle);
+            }
+        }
     }
 
     /// The workspace's members and their names, as the peer last heard its governance say: the

@@ -1141,6 +1141,9 @@ pub fn connect(
         Asking {
             workspace: workspace.map(str::to_owned),
             key: tilo_mcp::session_api::agent_key()?,
+            // A client started by an agent is that agent's session, shown by its name there when
+            // the agent's harness gives it one.
+            session_name: tilo_mcp::session_api::session_name(),
         },
     )
 }

@@ -135,9 +135,11 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
     } else {
         options.search.clone()
     };
+    let started = Resident::now();
     let (built, published) =
         crate::compile(&options.dir, &search, &mut tilolang::OsEntropy::default())
             .map_err(|error| error.to_string())?;
+    let compiled_at = Resident::now();
     let Some(app) = built.last().map(|built| built.compiled.meta.clone()) else {
         return Err(format!("{}: no package", options.dir.display()));
     };
@@ -190,6 +192,16 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
     print_costs(&staged, "open")?;
     if options.times {
         print_times(&opened);
+        for (when, resident) in [
+            ("started", started),
+            ("compiled", compiled_at),
+            ("opened", Resident::now()),
+        ] {
+            println!("{when:>10}  {resident}");
+        }
+        for (kib, file) in mapped_files().into_iter().take(12) {
+            println!("{:>10}  {file}", format!("{kib} KiB"));
+        }
     }
     for interaction in interactions {
         staged.reset_costs();
@@ -202,6 +214,7 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
         print_costs(&staged, &format!("then {}", interaction.label()))?;
         if options.times {
             print_times(&scopes);
+            println!("{:>10}  {}", "after", Resident::now());
         }
     }
     Ok(())
@@ -253,4 +266,82 @@ fn print_costs(staged: &stage::Staged, interaction: &str) -> Result<(), String> 
     println!("== {interaction}");
     print!("{}", costs.render());
     Ok(())
+}
+
+/// The process's resident memory, from the kernel's own count (`/proc/self/smaps_rollup`):
+/// what is held in RAM, split into the heap and other private memory (`anon`) and mapped files
+/// (the program, fonts), and the most it held so far. Zero where the kernel does not say.
+#[derive(Clone, Copy, Default)]
+struct Resident {
+    kib: u64,
+    anon_kib: u64,
+    file_kib: u64,
+    peak_kib: u64,
+}
+
+impl Resident {
+    fn now() -> Self {
+        let field = |text: &str, name: &str| {
+            text.lines()
+                .find_map(|line| line.strip_prefix(name))
+                .and_then(|rest| {
+                    rest.trim()
+                        .trim_end_matches("kB")
+                        .trim()
+                        .parse::<u64>()
+                        .ok()
+                })
+                .unwrap_or(0)
+        };
+        let rollup = std::fs::read_to_string("/proc/self/smaps_rollup").unwrap_or_default();
+        let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        let kib = field(&rollup, "Rss:");
+        let anon_kib = field(&rollup, "Anonymous:");
+        Self {
+            kib,
+            anon_kib,
+            file_kib: kib.saturating_sub(anon_kib),
+            peak_kib: field(&status, "VmHWM:"),
+        }
+    }
+}
+
+impl std::fmt::Display for Resident {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "resident {} MiB (anon {}, files {}), peak {} MiB",
+            self.kib / 1024,
+            self.anon_kib / 1024,
+            self.file_kib / 1024,
+            self.peak_kib / 1024
+        )
+    }
+}
+
+/// The files mapped into the process, the most resident first: KiB in RAM and the path.
+fn mapped_files() -> Vec<(u64, String)> {
+    let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap_or_default();
+    let mut files: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let mut current: Option<String> = None;
+    for line in smaps.lines() {
+        let mut fields = line.split_whitespace();
+        let first = fields.next().unwrap_or_default();
+        if first.contains('-') && first.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+            current = line
+                .split_whitespace()
+                .nth(5)
+                .filter(|path| path.starts_with('/'))
+                .map(str::to_owned);
+        } else if first == "Rss:"
+            && let Some(path) = &current
+        {
+            let kib: u64 = fields.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+            let held = files.entry(path.clone()).or_default();
+            *held = held.saturating_add(kib);
+        }
+    }
+    let mut files: Vec<(u64, String)> = files.into_iter().map(|(path, kib)| (kib, path)).collect();
+    files.sort_by_key(|(kib, _)| std::cmp::Reverse(*kib));
+    files
 }

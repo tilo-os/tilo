@@ -562,10 +562,46 @@ fn published_resource(
     Calendar::child(&crate::resource::read_doc(doc), id)
 }
 
+/// A calendar's recolour asks for the colour it has now, so choosing one
+/// starts from it.
+#[test]
+fn a_calendar_rows_recolour_is_prefilled_with_its_colour() {
+    let app = CalendarApp::new_demo();
+    let doc = demo_document(&app);
+    let (id, colour) = {
+        let state = app.state();
+        let calendar = state.calendars.first().expect("the demo has a calendar");
+        (
+            crate::actions::calendar_resource_id(&calendar.id),
+            Palette::from_index(calendar.color.unwrap_or_default())
+                .name()
+                .to_ascii_lowercase(),
+        )
+    };
+    let row = published_resource(&app, &doc, &id).expect("the calendar's row is published");
+    let set_color = row
+        .actions
+        .iter()
+        .find(|action| action.id == "set-color")
+        .expect("the row offers its recolour");
+    let colour_param = set_color
+        .params()
+        .iter()
+        .find(|param| param.name.as_ref() == "color")
+        .expect("the recolour asks its colour");
+    assert_eq!(
+        colour_param
+            .schema
+            .as_deref()
+            .and_then(|schema| schema.get("default")),
+        Some(&serde_json::json!(colour)),
+        "the field starts from the colour the calendar has"
+    );
+}
+
 tilo_test_env::scenario! {
     /// A task row: its checkbox, its label and the row on the Tasks screen.
     fn tasks_toggle_and_open_from_their_rows;
-
     phase task_completion_toggles_by_checkbox_and_label;
     {
         {

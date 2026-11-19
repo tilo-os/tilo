@@ -143,11 +143,14 @@ pub enum CallError {
 /// Per-call and per-instance limits, as the shared wasm engine layer names them.
 pub use tilo_wasm_host::Limits as EngineLimits;
 
-/// The limits every runtime starts with: a call may burn 2 billion instructions, and an instance
-/// may reach 64 MiB of linear memory. The counts are the engines' own defaults, written down so
+/// The limits every runtime starts with: a call may burn 2 billion instructions and take
+/// five seconds, and an instance may reach 64 MiB of linear memory. The counts are the engines' own defaults, written down so
 /// that no module that loaded before is refused now: a linked set makes one instance per module.
 pub const DEFAULT_LIMITS: EngineLimits = EngineLimits {
     fuel_per_call: 2_000_000_000,
+    // A call that waits in a host function or executes on a compiled engine burns no fuel it
+    // can be stopped by, so the clock bounds it too; see `Limits::deadline`.
+    deadline: Some(std::time::Duration::from_secs(5)),
     max_memory_bytes: 64 * 1024 * 1024,
     max_memories: 10_000,
     max_tables: 10_000,
@@ -360,12 +363,13 @@ trait Backend: Send + Sync + Sized + 'static {
         modules: &[Self::Module],
         limits: &EngineLimits,
     ) -> Result<Self::Instance, Failure>;
-    /// Call `export` with `cx` in the store and `fuel` to spend, and take `cx` out again.
+    /// Call `export` with `cx` in the store, giving it a whole call's budget from `limits`, and
+    /// take `cx` out again.
     fn call(
         instance: &mut Self::Instance,
         export: &str,
         args: &[Wasm],
-        fuel: u64,
+        limits: &EngineLimits,
         cx: Cx,
     ) -> Result<Option<Wasm>, CallError>;
 }
@@ -760,7 +764,7 @@ impl<B: Backend> Pools<B> {
         cx: Cx,
     ) -> Result<Option<Wasm>, CallError> {
         let mut instance = self.checkout(module, limits)?;
-        let outcome = B::call(&mut instance, export, args, limits.fuel_per_call, cx);
+        let outcome = B::call(&mut instance, export, args, limits, cx);
         // A trapped instance may have been left mid-way through its own memory; it is dropped.
         if tilo_wasm_host::reusable(&outcome)
             && let Some(c) = self.modules.borrow_mut().get_mut(module)

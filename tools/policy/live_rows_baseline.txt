@@ -2,7 +2,6 @@
 # (tools/policy/check_live_rows.py). Counts only shrink.
 hand-bound-action 2 crates/session/core/src/layout/published.rs
 hand-bound-action 1 crates/session/desktop-surface/src/surface/peer_view.rs
-hand-bound-action 2 crates/session/desktop-surface/src/window.rs
 hand-bound-action 1 crates/session/desktop/src/osd.rs
 hand-bound-action 1 crates/session/session/src/controls.rs
 hand-bound-action 1 crates/session/session/src/conversations.rs
@@ -14,7 +13,6 @@ hand-built-tree 1 apps/chat/src/testing.rs
 hand-built-tree 3 crates/session/core/src/layout/mod.rs
 hand-built-tree 5 crates/session/core/src/layout/published.rs
 hand-built-tree 1 crates/session/core/src/layout/queries.rs
-hand-built-tree 1 crates/session/desktop-surface/src/surface/peer_view.rs
 hand-built-tree 1 crates/session/desktop/src/osd.rs
 hand-built-tree 8 crates/session/desktop/src/verbs.rs
 hand-built-tree 5 crates/session/session/src/controls.rs

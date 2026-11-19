@@ -2695,11 +2695,10 @@ impl Music {
         );
         let now = ui::time::now();
         let since = self.home_asked.unwrap_or(now);
-        let (named, quiet) = self.arriving_clocks(since);
+        let clock = Self::arriving_clock(since);
         let clip = self.body_rect;
-        for section in 0..2 {
-            let clock = if section == 0 { &named } else { &quiet };
-            let heading = ArrivalFace::new(SkeletonShape::Text { lines: 1 }, clock, now);
+        for _ in 0..2 {
+            let heading = ArrivalFace::new(SkeletonShape::Text { lines: 1 }, &clock, now);
             let w = (extent * 1.5).min(right - left);
             let h = heading.height(ctx.text, theme, w);
             heading.paint(ctx, Rect::new(left, y, left + w, y + h));
@@ -2712,7 +2711,7 @@ impl Music {
                     .push(super::media_grid::MediaGridHost::new());
             }
             if let Some(grid) = self.page.media_grids.get_mut(index) {
-                grid.update_arriving(columns, quiet.source(), since);
+                grid.update_arriving(columns, since);
                 y = grid.place(ctx, (left, right), y, clip);
             }
             y += look.gutter;
@@ -2720,12 +2719,9 @@ impl Music {
         y
     }
 
-    /// The clocks of what is on its way: one names the catalogue, one keeps quiet.
-    fn arriving_clocks(&self, since: Instant) -> (ArrivalClock, ArrivalClock) {
-        (
-            ArrivalClock::new(since, Source::host(self.backend_name.as_str())),
-            ArrivalClock::new(since, Source::host("")),
-        )
+    /// The clock of what is on its way from the catalogue.
+    fn arriving_clock(since: Instant) -> ArrivalClock {
+        ArrivalClock::new(since, Source::Remote)
     }
 
     pub(crate) fn arriving_step_at(&self, now: Instant) -> Option<Instant> {
@@ -2735,7 +2731,7 @@ impl Music {
             self.loading_page()
                 .and_then(|id| self.pages_asked.get(id).copied())
         }?;
-        self.arriving_clocks(since).0.next_step_at(now)
+        Self::arriving_clock(since).next_step_at(now)
     }
 
     /// Lay `cards` out as a media grid from `y`; what the cards ask for comes back through
@@ -3609,22 +3605,21 @@ impl Music {
         let theme = ctx.theme;
         let now = ui::time::now();
         let since = self.pages_asked.get(id).copied().unwrap_or(now);
-        let (named, quiet) = self.arriving_clocks(since);
+        let clock = Self::arriving_clock(since);
         let mut y = y + look.gutter;
         let left = body.x0 + look.gutter;
         let right = body.x1 - look.gutter;
         let side = MediaSize::Small.extent(theme).min(right - left);
         let cover = ArrivalFace::new(
             SkeletonShape::Media(ui::widget::MediaAspect::Square),
-            &quiet,
+            &clock,
             now,
         );
         let cover_h = cover.height(ctx.text, theme, side);
         cover.paint(ctx, Rect::new(left, y, left + side, y + cover_h));
         y += cover_h + look.gutter;
-        for index in 0..6 {
-            let clock = if index == 0 { &named } else { &quiet };
-            let row = ArrivalFace::new(SkeletonShape::Row(TRACK_ROW), clock, now);
+        for _ in 0..6 {
+            let row = ArrivalFace::new(SkeletonShape::Row(TRACK_ROW), &clock, now);
             let row_h = row.height(ctx.text, theme, right - left);
             row.paint(ctx, Rect::new(left, y, right, y + row_h));
             y += row_h;

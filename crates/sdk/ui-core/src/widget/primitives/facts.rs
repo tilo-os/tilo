@@ -371,6 +371,7 @@ impl Widget for Facts {
                         fill: Some(crate::composition::rgba8(tone.colour(theme))),
                         edge: None,
                         radius: m.dot / 2.0,
+                        inset: [0.0; 2],
                     });
                     dot.attrs.push(("aria-hidden", "true".into()));
                 }

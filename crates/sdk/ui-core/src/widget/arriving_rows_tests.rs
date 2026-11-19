@@ -1,5 +1,5 @@
 use super::*;
-use crate::arriving::{GRACE, MIN_SHOWN, NAME_SOURCE_AFTER, Source};
+use crate::arriving::{GRACE, MIN_SHOWN, Source};
 use crate::time::Duration;
 
 fn ms(base: Instant, ms: u64) -> Instant {
@@ -8,7 +8,7 @@ fn ms(base: Instant, ms: u64) -> Instant {
 
 fn pending() -> Arrival<(), &'static str> {
     Arrival::Pending {
-        from: Source::peer("Laptop"),
+        from: Source::Remote,
     }
 }
 
@@ -77,7 +77,7 @@ tilo_test_env::scenario! {
         assert!(rows.is_empty(), "a settled row keeps no timing");
     }
 
-    phase a_pending_row_shows_ground_then_a_skeleton_then_names_its_source;
+    phase a_pending_row_shows_ground_then_a_skeleton;
     {
         let t0 = crate::time::now();
         let mut rows = ArrivingRows::new();
@@ -89,10 +89,8 @@ tilo_test_env::scenario! {
         let grace = t0 + GRACE;
         assert_eq!(rows.next_wake_deadline(t0), Some(grace));
         assert_eq!(step(&rows, 1, grace), Some(Step::Skeleton));
-        let named = t0 + NAME_SOURCE_AFTER;
-        assert_eq!(rows.next_wake_deadline(grace), Some(named));
-        assert_eq!(step(&rows, 1, named), Some(Step::Named));
-        assert_eq!(rows.next_wake_deadline(named), None, "then it waits");
+        assert_eq!(rows.next_wake_deadline(grace), None, "then it waits");
+        assert_eq!(step(&rows, 1, ms(t0, 60_000)), Some(Step::Skeleton));
     }
 
     phase rows_redraw_only_at_their_steps;

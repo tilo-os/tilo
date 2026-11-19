@@ -27,6 +27,8 @@ fn entry(name: &str) -> DirectoryEntry {
         members: 3,
         last_active_ms: None,
         community: false,
+        invitation_only: false,
+        wait_list: None,
     }
 }
 

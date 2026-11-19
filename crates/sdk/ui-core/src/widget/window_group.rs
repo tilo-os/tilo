@@ -1612,10 +1612,17 @@ impl WindowGroup {
         if self.held_bar.is_some() {
             return true;
         }
-        if self.new_tab_hit(p) {
-            return false;
+        // A window the bar lifts from wherever it is not a control — one that stands on a canvas,
+        // and one of a single tab, which its bar shows as its title. A bar of several tabs keeps
+        // its presses for tab drags.
+        if self.bar.lifts_the_window() {
+            return self.carry_grab_hit(p);
         }
-        if self.bar.toolbar_hit(p) || self.search.hit(p) || self.window_control_hit(p) {
+        if self.new_tab_hit(p)
+            || self.bar.toolbar_hit(p)
+            || self.search.hit(p)
+            || self.window_control_hit(p)
+        {
             return false;
         }
         !self.tab_rects().iter().any(|r| r.contains(p))
@@ -4228,7 +4235,7 @@ mod tests {
             // Another device's frame never holds this one's: the place is
             // reserved from the first frame.
             let mut g = crate::time::testing::with_monotonic_time(t0, || {
-                group_opening("Notes", false, crate::arriving::Source::peer("Laptop"))
+                group_opening("Notes", false, crate::arriving::Source::Remote)
             });
             crate::time::testing::with_monotonic_time(t0, || {
                 assert_eq!(Widget::holds_frame_until(&g, t0), None);

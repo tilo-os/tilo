@@ -244,8 +244,8 @@ tilo_test_env::scenario! {
     }
 
     phase a_device_holding_its_own_root_renews_itself_rather_than_through_the_fleet;
-    // A device that holds its own root keeps it in its identity record, not
-    // only in `user-identity/privkey.bin`. It reissues its own certificate, so
+    // A device that holds its own root keeps it in its identity store. It
+    // reissues its own certificate, so
     // it is never the device that has to ask the person's other devices — and a
     // session that mistook it for one would leave it presenting a certificate
     // that ran out.
@@ -254,10 +254,6 @@ tilo_test_env::scenario! {
         let (personal, paths, expired) = aged_throwaway(tmp.path(), 36 * HOUR);
         let now = tilo_clock::unix_now_ns();
         assert!(expired.is_expired_at(now));
-        assert!(
-            !paths.user_privkey.exists(),
-            "this device's root lives in its identity record"
-        );
         assert!(
             joined_device_renewal_due(&paths, now).is_none(),
             "this device reissues its own certificate, so nothing is asked of the person's devices"

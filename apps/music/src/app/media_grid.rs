@@ -76,12 +76,7 @@ impl MediaGridHost {
     }
 
     /// Show `count` cards on their way: the shape of the covers to come.
-    pub(super) fn update_arriving(
-        &mut self,
-        count: usize,
-        from: &ui::arriving::Source,
-        since: ui::time::Instant,
-    ) {
+    pub(super) fn update_arriving(&mut self, count: usize, since: ui::time::Instant) {
         self.host.unplace();
         if self.loading == Some((count, since)) {
             return;
@@ -89,8 +84,13 @@ impl MediaGridHost {
         self.loading = Some((count, since));
         self.key.clear();
         self.host.replace(
-            MediaGrid::arriving(count, MediaAspect::Square, from, since)
-                .with_size(MediaSize::Small),
+            MediaGrid::arriving(
+                count,
+                MediaAspect::Square,
+                &ui::arriving::Source::Remote,
+                since,
+            )
+            .with_size(MediaSize::Small),
         );
     }
 

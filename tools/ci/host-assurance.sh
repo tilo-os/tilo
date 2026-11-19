@@ -232,14 +232,18 @@ loud podman tag "$image" localhost/tilo-host:ci || die "cannot name the loaded i
 # os-release.sh sign-boot), its measurement signed as generation 0 — the
 # generation before the server's dense series starts. It is not installed; what
 # it proves is that the TPM will not unseal a generation below the floor.
+# Built over the sealed image, not the signed one: the seal reseals the image's
+# UKIs in one layer of its own, and the signed image already carries a second
+# UKI (/boot/tilo-target) that would make that two.
 say 'build an older signed image'
 older=localhost/tilo-host:older
 n=$(cat "$pub/generation")
 [[ $n =~ ^[1-9][0-9]*$ ]] || die "the sealed image carries no generation"
+load_archive "$sealed" localhost/tilo-host:sealed
 mkdir -p "$work/older"
-printf 'FROM localhost/tilo-host:ci\nRUN echo %s > /usr/lib/tilo/host-assurance-older\n' "$target" \
+printf 'FROM localhost/tilo-host:sealed\nRUN echo %s > /usr/lib/tilo/host-assurance-older\n' "$target" \
   > "$work/older/Containerfile"
-SOURCE_DATE_EPOCH=$(podman image inspect --format '{{.Created.Unix}}' localhost/tilo-host:ci) \
+SOURCE_DATE_EPOCH=$(podman image inspect --format '{{.Created.Unix}}' localhost/tilo-host:sealed) \
   podman build -q --pull=never -t "$older" -f "$work/older/Containerfile" "$work/older" >/dev/null \
   || die 'cannot build the older image'
 mkdir -p "$work/older-built"
@@ -639,7 +643,7 @@ echo "the root is $src: $uuid over /dev/$backing"
 '
 refuse 'the root has the recovery key and no throwaway install key' '
 set -eu
-src=$(findmnt -nro SOURCE /sysroot)
+src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 name=${src#/dev/mapper/}
 command -v cryptsetup >/dev/null \
   || { echo "the image carries no cryptsetup, so its own LUKS2 header cannot be read here"; exit 1; }
@@ -881,7 +885,7 @@ say 'the disk is sealed to this machine and opens by itself'
 refuse 'this machine seals the volume it booted, with no secret' '
 set -eu
 mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
-src=$(findmnt -nro SOURCE /sysroot)
+src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 dev=/dev/$(lsblk -sno NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
 gen=$(cat /usr/lib/tilo/generation)
 tilo-rollback enroll --device "$dev" --generation "$gen" \
@@ -920,7 +924,7 @@ say 'an image below the floor is refused'
 refuse 'this machine has a keyslot for the older generation' "
 set -eu
 mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
-src=\$(findmnt -nro SOURCE /sysroot)
+src=\$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 dev=/dev/\$(lsblk -sno NAME,TYPE \"\$src\" | awk '\$2 == \"part\" { print \$1; exit }')
 tilo-rollback enroll --device \"\$dev\" --generation 0 \
   --predictions /mnt/update/older-predictions --recovery-key-file /mnt/update/recovery.key --automatic
@@ -931,7 +935,7 @@ tilo-rollback status --device \"\$dev\"
 # check's side), brought back and spent by confirm.
 request=$(as_root '
 set -eu
-src=$(findmnt -nro SOURCE /sysroot)
+src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 dev=/dev/$(lsblk -sno NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
 tilo-rollback floor-request --device "$dev" | base64 -w0
 ') || die 'the machine could not write a floor request'
@@ -956,7 +960,7 @@ done
 refuse 'the floor moves to this generation, with the approvals' "
 set -eu
 mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
-src=\$(findmnt -nro SOURCE /sysroot)
+src=\$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 dev=/dev/\$(lsblk -sno NAME,TYPE \"\$src\" | awk '\$2 == \"part\" { print \$1; exit }')
 gen=\$(cat /usr/lib/tilo/generation)
 tilo-rollback --retain \$((gen + 1)) --predictions /boot/tilo-target/predictions \
@@ -1000,7 +1004,7 @@ unattended_unlock || { ./os/dev/vm.sh serial > "$out/floor-permitted-serial.log"
 console 'true' >/dev/null || die 'the restored image never answered at its console'
 refuse 'the floor still permits the running generation and refuses the older one' '
 set -eu
-src=$(findmnt -nro SOURCE /sysroot)
+src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 dev=/dev/$(lsblk -sno NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
 tilo-rollback status --device "$dev"
 tilo-rollback status --device "$dev" --json | grep -q "\"floor_generation\":$(cat /usr/lib/tilo/generation)" \

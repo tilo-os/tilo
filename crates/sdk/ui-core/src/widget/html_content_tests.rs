@@ -488,3 +488,96 @@ fn a_history_change_composes_on_one_line_with_its_time_beside_it() {
         "no face for nobody"
     );
 }
+
+/// A sidebar's rows stand as the canvas paints them: the chosen one's lift inset from the list's
+/// edges and rounded, every row's icon and words at the canvas's indent, and only the chosen
+/// row's words at full strength.
+#[test]
+fn a_nav_row_lifts_inset_and_indents_as_painted() {
+    use crate::icons::Icon;
+    use crate::widget::{NavItem, NavList, NavSection};
+    let list = NavList::new(vec![NavSection::untitled(
+        "pages",
+        vec![
+            NavItem::new("basics", "Basics").icon(Icon::Inbox),
+            NavItem::new("data", "Data").icon(Icon::Send),
+        ],
+    )])
+    .selected("data");
+    let composition = composed(Box::new(list), (280, 200));
+    let root = shown(&composition);
+    let rows = tagged(root, "li");
+    assert_eq!(rows.len(), 2, "one item per row: {root:?}");
+    let theme = Theme::dark();
+    let tokens = &theme.tokens;
+    let s2 = f64::from(tokens.spacing.s2);
+    let hairline = f64::from(tokens.metrics.chrome_rule_px);
+    let face = |row: &Composed| match &row.own {
+        Some(Own::Face(face)) => face.clone(),
+        other => panic!("a row shows a face, not {other:?}"),
+    };
+    for row in &rows {
+        let ground = row
+            .ground
+            .as_ref()
+            .expect("every row keeps its inset ground");
+        assert_eq!(
+            ground.inset,
+            [s2, hairline],
+            "the lift stands in from the list's edges"
+        );
+        let face = face(row);
+        assert_eq!(
+            face.pad, s2,
+            "the icon sits one step into the lift, as painted"
+        );
+        assert_eq!(
+            face.icon.as_ref().map(|icon| icon.size),
+            Some(f64::from(tokens.metrics.icon_md)),
+            "the icon is the painted size"
+        );
+    }
+    let (chosen, other) = (rows[1], rows[0]);
+    assert!(
+        chosen.ground.as_ref().is_some_and(|g| g.fill.is_some()),
+        "the chosen row lifts"
+    );
+    assert!(
+        other.ground.as_ref().is_some_and(|g| g.fill.is_none()),
+        "the others do not"
+    );
+    let ink = |row: &Composed| face(row).label.and_then(|label| label.color);
+    assert_eq!(
+        ink(chosen),
+        Some(crate::composition::rgba8(tokens.colors.text_primary))
+    );
+    assert_eq!(
+        ink(other),
+        Some(crate::composition::rgba8(tokens.colors.text_dim))
+    );
+}
+
+/// A done or removed item's title is struck through on a page, as the canvas paints it, and an
+/// open one's is not.
+#[test]
+fn a_struck_rows_title_is_struck_through_on_the_page() {
+    use crate::widget::ListRow;
+    let struck = |row: ListRow, title: &str| {
+        let composition = composed(Box::new(row), (400, 60));
+        nodes(shown(&composition))
+            .into_iter()
+            .find_map(|node| match &node.own {
+                Some(Own::Text(look)) if look.text == title => Some(look.struck),
+                _ => None,
+            })
+            .expect("the title shows")
+    };
+    assert!(struck(
+        ListRow::new("stale", "Old errand").struck(),
+        "Old errand"
+    ));
+    assert!(!struck(
+        ListRow::new("milk", "Buy oat milk"),
+        "Buy oat milk"
+    ));
+}

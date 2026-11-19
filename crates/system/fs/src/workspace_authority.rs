@@ -387,49 +387,6 @@ impl WorkspaceAuthority {
     }
 }
 
-/// Keep `authority` in step with the host-local capability list at `path`: whenever the file's bytes
-/// change, sign them as the next revision with `governor` and apply it. Bytes present when the task
-/// starts count as already applied; an unreadable or malformed file changes nothing, so a
-/// half-written list is never signed.
-pub fn spawn_capability_file_reload(
-    path: PathBuf,
-    authority: std::sync::Arc<WorkspaceAuthority>,
-    governor: ed25519_dalek::SigningKey,
-) -> std::io::Result<tokio::task::JoinHandle<()>> {
-    let mut previous = std::fs::read(&path).ok();
-    let mut changes = crate::file_watch::FileChanges::for_file(&path)?;
-    Ok(tokio::spawn(async move {
-        loop {
-            changes.next().await;
-            let Ok(bytes) = std::fs::read(&path) else {
-                continue;
-            };
-            if previous.as_ref() == Some(&bytes) {
-                continue;
-            }
-            let Ok(capabilities) = serde_json::from_slice::<collab_types::FsAuthority>(&bytes)
-            else {
-                continue;
-            };
-            let revision = authority
-                .current()
-                .map_or(1, |current| current.revision.saturating_add(1));
-            let Ok(envelope) = WorkspaceAuthorityEnvelope::sign(
-                authority.workspace(),
-                revision,
-                capabilities,
-                false,
-                &governor,
-            ) else {
-                continue;
-            };
-            if authority.apply(envelope).is_ok() {
-                previous = Some(bytes);
-            }
-        }
-    }))
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthorityRequest {
@@ -887,83 +844,6 @@ mod tests {
             WorkspaceAuthorityEnvelope::sign(workspace, 1, vec![grant], false, &governor).unwrap();
         assert!(authority.apply(next).unwrap());
         assert!(authority.handle().permits(&subject, "/file", Access::Read));
-    }
-
-    /// The workspace authority follows the host-local capability list through its file watch: a
-    /// revocation written to the list is signed, applied and enforced, and a half-written list is
-    /// never signed.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_revoked_capability_leaves_the_workspace_authority_through_the_watch() {
-        let temp = tempfile::tempdir().unwrap();
-        let governor = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let workspace = uuid::Uuid::new_v4();
-        let subject = [4; 32];
-        let grant = |path: &str| {
-            CapOverride::new(
-                tilo_action_policy::Grantee::person(hex::encode(subject)),
-                Scope::FsPath(path.into()),
-                Effect::Grant,
-                CapAccess::Read,
-            )
-        };
-        let list = temp.path().join("fs-capabilities.json");
-        std::fs::write(
-            &list,
-            serde_json::to_vec(&collab_types::FsAuthority::from(vec![
-                grant("/docs"),
-                grant("/plans"),
-            ]))
-            .unwrap(),
-        )
-        .unwrap();
-        let authority = Arc::new(
-            WorkspaceAuthority::open(
-                temp.path().join("authority.bin"),
-                workspace,
-                governor.verifying_key().to_bytes(),
-                subject,
-                Vec::new(),
-            )
-            .unwrap(),
-        );
-        authority
-            .apply(
-                WorkspaceAuthorityEnvelope::sign(
-                    workspace,
-                    1,
-                    vec![grant("/docs"), grant("/plans")],
-                    false,
-                    &governor,
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        let handle = authority.handle();
-        let reload =
-            spawn_capability_file_reload(list.clone(), Arc::clone(&authority), governor.clone())
-                .unwrap();
-        assert!(handle.permits(&subject, "/plans/b.md", Access::Read));
-
-        std::fs::write(&list, b"{\"capabilities\":[{\"subject\"").unwrap();
-
-        std::fs::write(
-            &list,
-            serde_json::to_vec(&collab_types::FsAuthority::from(vec![grant("/docs")])).unwrap(),
-        )
-        .unwrap();
-        tilo_test_env::within("the revocation to reach the workspace authority", async {
-            while handle.permits(&subject, "/plans/b.md", Access::Read) {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-        })
-        .await;
-        assert_eq!(
-            authority.current().unwrap().revision,
-            2,
-            "a half-written list must never be signed"
-        );
-        assert!(handle.permits(&subject, "/docs/a.md", Access::Read));
-        reload.abort();
     }
 
     #[cfg(unix)]

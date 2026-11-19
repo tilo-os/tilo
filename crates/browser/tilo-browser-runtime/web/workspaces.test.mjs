@@ -4,7 +4,7 @@ import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, 
 import {DeviceKeyError} from './device-key.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 import {PAIRING_SAME_PERSON} from './pairing.mjs';
-import {unmarkOwnPairing} from './workspaces.mjs';
+import {publicListings, unmarkOwnPairing} from './workspaces.mjs';
 
 const identity = key => ({kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(key), userPublicKey: key.toString(16).padStart(2, '0').repeat(32), sign: async () => new Uint8Array(64)});
 
@@ -1114,4 +1114,23 @@ test('nothing pairs a device that was not first told whose it becomes', async ()
     memberships: options.memberships, findProfile: async () => null,
     pair: async pairing => { calls.paired.push(pairing); return {workspace: 'WORKSPACE'}; }}), TypeError);
   assert.deepEqual(calls.paired, []);
+});
+
+test('a server’s public directory is read as each workspace’s own entry, whether it lets anyone in, and its wait list', async () => {
+  const asked = [];
+  const listings = await publicListings('https://ada.tilo.cloud/some/page', {fetch: async (url, init) => {
+    asked.push([url, init.method, init.credentials]);
+    return {ok: true, json: async () => ({workspaces: [
+      {workspace: 'open', name: 'Reading group', entry: 'directory/open/', invitationOnly: false, waitList: null},
+      {workspace: 'lounge', name: '', entry: 'directory/lounge/', invitationOnly: true, waitList: {contact: 'hi@ada.example', mail: true}},
+      {workspace: 'broken'},
+    ]})};
+  }});
+  assert.deepEqual(asked, [['https://ada.tilo.cloud/peer/v1/directory', 'POST', 'omit']]);
+  assert.deepEqual(listings, [
+    {workspace: 'open', name: 'Reading group', entry: 'https://ada.tilo.cloud/peer/v1/directory/open/', invitationOnly: false, waitList: null},
+    {workspace: 'lounge', name: null, entry: 'https://ada.tilo.cloud/peer/v1/directory/lounge/', invitationOnly: true,
+      waitList: {contact: 'hi@ada.example', mail: true}},
+  ]);
+  await assert.rejects(publicListings('https://ada.tilo.cloud', {fetch: async () => ({ok: false, status: 404})}), /404/);
 });

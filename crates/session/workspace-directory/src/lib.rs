@@ -142,6 +142,8 @@ pub fn home_listing(site: &url::Url, home: &SiteWorkspace) -> Listed {
             members: 0,
             last_active_ms: None,
             community: true,
+            invitation_only: false,
+            wait_list: None,
         },
         entry_url: home.admission.clone(),
         site: Some(site.clone()),
@@ -205,6 +207,8 @@ mod tests {
             members: 3,
             last_active_ms: None,
             community: false,
+            invitation_only: false,
+            wait_list: None,
         }
     }
 

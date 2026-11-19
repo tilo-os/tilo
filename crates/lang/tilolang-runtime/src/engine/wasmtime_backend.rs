@@ -316,14 +316,16 @@ impl Backend for Wasmtime {
         pooled: &mut Pooled,
         export: &str,
         args: &[Wasm],
-        fuel: u64,
+        limits: &EngineLimits,
         cx: Cx,
     ) -> Result<Option<Wasm>, CallError> {
         pooled.store.data_mut().cx = Some(cx);
-        let outcome = run(pooled, export, args, fuel);
+        let outcome = call_export(pooled, export, args, limits);
         // What the call spent, charged to the unit that made it: a call that ran out spent it
         // all.
-        let spent = fuel.saturating_sub(pooled.store.get_fuel().unwrap_or(0));
+        let spent = limits
+            .fuel_per_call
+            .saturating_sub(pooled.store.get_fuel().unwrap_or(0));
         let cx = pooled.store.data_mut().cx.take();
         if let Some(costs) = cx.and_then(|cx| cx.costs) {
             costs.fuel(spent);
@@ -332,13 +334,13 @@ impl Backend for Wasmtime {
     }
 }
 
-fn run(
+fn call_export(
     pooled: &mut Pooled,
     export: &str,
     args: &[Wasm],
-    fuel: u64,
+    limits: &EngineLimits,
 ) -> Result<Option<Wasm>, CallError> {
-    shared::refuel(&mut pooled.store, fuel)?;
+    shared::begin(&mut pooled.store, limits)?;
     let found = if let Some(found) = pooled.funcs.get(export) {
         found.clone()
     } else {

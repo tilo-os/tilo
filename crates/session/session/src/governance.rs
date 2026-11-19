@@ -147,6 +147,9 @@ impl crate::Shared {
                     continue;
                 };
                 changed |= membership::project(workspace, &policy);
+                if let Ok(people) = engine.people(&workspace.id().to_string()) {
+                    changed |= membership::project_names(workspace, &people);
+                }
                 let Ok((bots, shortcuts)) = engine.owner().with_current(workspace.id(), |view| {
                     Ok((
                         view.peer().governance().workspace_bots(),

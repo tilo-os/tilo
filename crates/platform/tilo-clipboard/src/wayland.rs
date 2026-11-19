@@ -192,37 +192,15 @@ fn recv_bounded<T>(
     receiver.recv_timeout(budget).ok()
 }
 
-// Field order matters: smithay joins its protocol worker before releasing
-// the display owner. Detached loaders clone this entire wrapper, not just the
-// mutex, so they cannot outlive the connection they use.
-struct DisplayReader {
-    clipboard: std::sync::Mutex<smithay_clipboard::Clipboard>,
-    _display: Option<Arc<dyn Send + Sync>>,
-}
-
 /// `wl_data_device` + `zwp_primary_selection_device_v1` on the app's own
 /// Wayland connection. The focused client's connection is required for the
-/// compositor to accept copies; a separate connection cannot substitute.
-/// Prefer [`Self::from_owned_display`] so every protocol worker and retained
-/// loader owns the display it uses.
+/// compositor to accept copies; a separate connection cannot substitute. One
+/// worker thread owns every clipboard queue on that connection, so an idle app
+/// has a single thread waiting for a selection change.
 pub struct WaylandClipboard {
-    /// `smithay_clipboard::Clipboard` owns an mpsc receiver, so it is `Send`
-    /// but not `Sync`. Each target has its own instance and read thread: a
-    /// peer that never closes its clipboard pipe can therefore stall at most
-    /// one bounded reader and can never starve the other target.
-    read_clipboard: Option<Arc<DisplayReader>>,
-    read_primary: Option<Arc<DisplayReader>>,
-    write_inner: Option<Arc<DisplayReader>>,
     publication: PublicationClipboard,
-    clipboard_cache: Arc<std::sync::Mutex<Option<String>>>,
-    primary_cache: Arc<std::sync::Mutex<Option<String>>>,
-    clipboard_refresh_inflight: Arc<std::sync::atomic::AtomicBool>,
-    primary_refresh_inflight: Arc<std::sync::atomic::AtomicBool>,
-    clipboard_refresh_generation: Arc<std::sync::atomic::AtomicU64>,
-    primary_refresh_generation: Arc<std::sync::atomic::AtomicU64>,
     pasted: PastedImage,
     rich: Arc<RichClipboard>,
-    wake: tilo_rt::wake::WakeHandle,
     explicit_read_budget: tilo_clock::time::Duration,
 }
 
@@ -253,12 +231,16 @@ impl PublicationClipboard {
 
 enum ClipboardCommand {
     Publish(Publication),
-    Exit,
-    Fence(std::sync::mpsc::Sender<()>),
+    /// Read the current selection of `target` on the worker's own queue.
     ReadText(
+        ClipboardTarget,
         std::sync::mpsc::Sender<Option<String>>,
         tilo_clock::time::Instant,
     ),
+    /// Offer `text` as the primary selection, for the next middle click.
+    SetPrimary(Vec<u8>),
+    Exit,
+    Fence(std::sync::mpsc::Sender<()>),
     #[cfg(test)]
     CommandProcessed(std::sync::mpsc::Sender<()>),
 }
@@ -282,27 +264,16 @@ impl WaylandClipboard {
         display_ptr: *mut std::ffi::c_void,
         owner: Option<Arc<dyn Send + Sync>>,
     ) -> Self {
-        let reader = || {
-            Some(Arc::new(DisplayReader {
-                clipboard: std::sync::Mutex::new(unsafe {
-                    smithay_clipboard::Clipboard::new(display_ptr)
-                }),
-                _display: owner.clone(),
-            }))
-        };
-        let (read_clipboard, read_primary, write_inner) = (reader(), reader(), reader());
-        let mut clipboard = unsafe {
+        // SAFETY: the caller guarantees the display outlives the worker unless
+        // `owner` keeps it alive, which the worker holds until it stops.
+        unsafe {
             Self::with_publication_worker(
                 display_ptr,
                 owner,
                 CLIPBOARD_READ_BUDGET,
                 "tilo-wayland-clipboard",
             )
-        };
-        clipboard.read_clipboard = read_clipboard;
-        clipboard.read_primary = read_primary;
-        clipboard.write_inner = write_inner;
-        clipboard
+        }
     }
 
     /// Only the publication worker, on its own backend for the display. It
@@ -352,23 +323,13 @@ impl WaylandClipboard {
             alive.store(false, std::sync::atomic::Ordering::Release);
         }
         Self {
-            read_clipboard: None,
-            read_primary: None,
-            write_inner: None,
             publication: PublicationClipboard {
                 sender,
                 thread: std::sync::Mutex::new(thread),
                 alive,
             },
-            clipboard_cache: Arc::new(std::sync::Mutex::new(None)),
-            primary_cache: Arc::new(std::sync::Mutex::new(None)),
-            clipboard_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            primary_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            clipboard_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            primary_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pasted,
             rich,
-            wake: tilo_rt::wake::WakeHandle::new(),
             explicit_read_budget: EXPLICIT_READ_BUDGET,
         }
     }
@@ -463,6 +424,11 @@ mod image_worker_impl {
     use sctk::data_device_manager::data_offer::{DataOfferData, DataOfferHandler, DragOffer};
     use sctk::data_device_manager::data_source::DataSourceHandler;
     use sctk::data_device_manager::{DataDeviceManagerState, WritePipe};
+    use sctk::primary_selection::PrimarySelectionManagerState;
+    use sctk::primary_selection::device::{PrimarySelectionDevice, PrimarySelectionDeviceHandler};
+    use sctk::primary_selection::selection::{
+        PrimarySelectionSource, PrimarySelectionSourceHandler,
+    };
     use sctk::reexports::calloop::{self, EventLoop, LoopHandle, PostAction};
     use sctk::reexports::calloop_wayland_source::WaylandSource;
     use sctk::reexports::client::backend::ObjectId;
@@ -484,8 +450,8 @@ mod image_worker_impl {
     use smithay_client_toolkit as sctk;
 
     use super::{
-        ClipboardCommand, PastedImage, Publication, PublicationClaim, PublicationPayload,
-        RichClipboard, SharedSettle, settle_once,
+        ClipboardCommand, ClipboardTarget, PastedImage, Publication, PublicationClaim,
+        PublicationPayload, RichClipboard, SharedSettle, settle_once,
     };
 
     #[derive(Debug, Default)]
@@ -494,6 +460,7 @@ mod image_worker_impl {
         pointer: Option<WlPointer>,
         touch: Option<WlTouch>,
         data_device: Option<DataDevice>,
+        primary_device: Option<PrimarySelectionDevice>,
         keyboard_focus: bool,
         rich_offer_seen: bool,
         latest_serial: u32,
@@ -501,6 +468,7 @@ mod image_worker_impl {
 
     struct State {
         data_device_manager: DataDeviceManagerState,
+        primary_manager: Option<PrimarySelectionManagerState>,
         registry: RegistryState,
         seat_registry: SeatState,
         seats: HashMap<WlSeat, SeatData>,
@@ -508,10 +476,12 @@ mod image_worker_impl {
         queue_handle: QueueHandle<Self>,
         loop_handle: LoopHandle<'static, Self>,
         data_sources: Vec<sctk::data_device_manager::data_source::CopyPasteSource>,
+        primary_sources: Vec<PrimarySelectionSource>,
         source_payloads: HashMap<ObjectId, SourcePayload>,
         text_contents: Option<Arc<[u8]>>,
         text_secret: bool,
         html_contents: Option<Arc<[u8]>>,
+        primary_contents: Option<Arc<[u8]>>,
         pending_image: Option<Arc<[u8]>>,
         inflight_transfers: usize,
         inflight_bytes: usize,
@@ -573,44 +543,15 @@ mod image_worker_impl {
         };
         let loop_handle = event_loop.handle();
         let qh = queue.handle();
-        let Ok(data_device_manager) = DataDeviceManagerState::bind(&globals, &qh) else {
-            return;
-        };
-        let seat_state = SeatState::new(&globals, &qh);
-        #[allow(
-            clippy::mutable_key_type,
-            reason = "Wayland object identity is the protocol key used by SCTK callbacks"
-        )]
-        let seats = seat_state
-            .seats()
-            .map(|seat| (seat, SeatData::default()))
-            .collect();
-        let mut state = State {
-            data_device_manager,
-            registry: RegistryState::new(&globals),
-            seat_registry: seat_state,
-            seats,
-            latest_seat: None,
-            queue_handle: qh,
-            loop_handle: loop_handle.clone(),
-            data_sources: Vec::new(),
-            source_payloads: HashMap::new(),
-            text_contents: None,
-            text_secret: false,
-            html_contents: None,
-            pending_image: None,
-            inflight_transfers: 0,
-            inflight_bytes: 0,
+        let Some(mut state) = State::new(
+            loop_handle.clone(),
+            &globals,
+            qh,
             pasted,
-            selection_generation: 0,
             rich,
-            rich_seat: None,
-            rich_active_seat: None,
-            rich_pending: None,
-            plain_pending: None,
             rich_read_budget,
-            pending_publications: HashMap::new(),
-            exit: false,
+        ) else {
+            return;
         };
         let fence_connection = connection.clone();
         let _ = loop_handle.insert_source(commands, move |event, (), state| {
@@ -637,9 +578,10 @@ mod image_worker_impl {
                         fence_connection.display().sync(&state.queue_handle, reply);
                         let _ = fence_connection.flush();
                     }
-                    ClipboardCommand::ReadText(reply, deadline) => {
-                        state.request_plain_read(&fence_connection, reply, deadline);
+                    ClipboardCommand::ReadText(target, reply, deadline) => {
+                        state.request_plain_read(&fence_connection, target, reply, deadline);
                     }
+                    ClipboardCommand::SetPrimary(text) => state.publish_primary(text),
                 }
             }
         });
@@ -656,6 +598,70 @@ mod image_worker_impl {
         }
     }
 
+    impl State {
+        fn new(
+            loop_handle: LoopHandle<'static, Self>,
+            globals: &sctk::reexports::client::globals::GlobalList,
+            qh: QueueHandle<Self>,
+            pasted: PastedImage,
+            rich: Arc<RichClipboard>,
+            rich_read_budget: tilo_clock::time::Duration,
+        ) -> Option<Self> {
+            let data_device_manager = DataDeviceManagerState::bind(globals, &qh).ok()?;
+            let seat_state = SeatState::new(globals, &qh);
+            let primary_manager = PrimarySelectionManagerState::bind(globals, &qh).ok();
+            let primary_device = |seat: &WlSeat| {
+                primary_manager
+                    .as_ref()
+                    .map(|manager| manager.get_selection_device(&qh, seat))
+            };
+            #[allow(
+                clippy::mutable_key_type,
+                reason = "Wayland object identity is the protocol key used by SCTK callbacks"
+            )]
+            let seats = seat_state
+                .seats()
+                .map(|seat| {
+                    let data = SeatData {
+                        primary_device: primary_device(&seat),
+                        ..SeatData::default()
+                    };
+                    (seat, data)
+                })
+                .collect();
+            Some(Self {
+                data_device_manager,
+                primary_manager,
+                registry: RegistryState::new(globals),
+                seat_registry: seat_state,
+                seats,
+                latest_seat: None,
+                queue_handle: qh,
+                loop_handle,
+                data_sources: Vec::new(),
+                primary_sources: Vec::new(),
+                source_payloads: HashMap::new(),
+                text_contents: None,
+                text_secret: false,
+                html_contents: None,
+                primary_contents: None,
+                pending_image: None,
+                inflight_transfers: 0,
+                inflight_bytes: 0,
+                pasted,
+                selection_generation: 0,
+                rich,
+                rich_seat: None,
+                rich_active_seat: None,
+                rich_pending: None,
+                plain_pending: None,
+                rich_read_budget,
+                pending_publications: HashMap::new(),
+                exit: false,
+            })
+        }
+    }
+
     struct PendingPublication {
         payload: std::sync::Mutex<Option<PublicationPayload>>,
         settle: SharedSettle,
@@ -668,6 +674,7 @@ mod image_worker_impl {
     }
 
     struct PlainRequest {
+        target: ClipboardTarget,
         reply: std::sync::Mutex<Option<std::sync::mpsc::Sender<Option<String>>>>,
         deadline: tilo_clock::time::Instant,
     }
@@ -692,7 +699,7 @@ mod image_worker_impl {
             if let Ok(mut reply) = request.reply.lock()
                 && let Some(reply) = reply.take()
             {
-                state.start_plain_read(connection, reply, request.deadline);
+                state.start_plain_read(connection, request.target, reply, request.deadline);
             }
         }
     }
@@ -905,6 +912,39 @@ mod image_worker_impl {
             let Some(contents) = payload.bytes_for_mime(mime) else {
                 return;
             };
+            self.write_outgoing(contents, fd);
+        }
+
+        /// Offer `contents` as the primary selection, for the next middle
+        /// click. The source outlives this call: the compositor asks it for the
+        /// bytes whenever a peer pastes.
+        fn publish_primary(&mut self, contents: Vec<u8>) {
+            let contents = Arc::from(contents);
+            self.primary_contents = Some(contents);
+            let Some(manager) = self.primary_manager.as_ref() else {
+                return;
+            };
+            let Some(seat) = self.latest_seat.clone() else {
+                return;
+            };
+            let Some(seat_data) = self.seats.get(&seat) else {
+                return;
+            };
+            if !seat_data.keyboard_focus {
+                return;
+            }
+            let serial = seat_data.latest_serial;
+            let Some(device) = seat_data.primary_device.as_ref() else {
+                return;
+            };
+            let source = manager.create_selection_source(&self.queue_handle, tilo_mime::TEXT_MIMES);
+            source.set_selection(device, serial);
+            self.primary_sources.push(source);
+        }
+
+        /// Write `contents` into the pipe a peer pastes from, without blocking
+        /// the worker on a peer that reads slowly or never.
+        fn write_outgoing(&mut self, contents: Arc<[u8]>, fd: WritePipe) {
             if self.inflight_transfers >= MAX_INFLIGHT_TRANSFERS
                 || self.inflight_bytes.saturating_add(contents.len()) > MAX_INFLIGHT_BYTES
             {
@@ -1112,10 +1152,17 @@ mod image_worker_impl {
         }
     }
 
+    fn preferred_text_mime(types: &[String]) -> Option<&'static str> {
+        tilo_mime::TEXT_PREFERENCE
+            .into_iter()
+            .find(|mime| types.iter().any(|offered| offered == mime))
+    }
+
     impl State {
         fn request_plain_read(
             &self,
             connection: &Connection,
+            target: ClipboardTarget,
             reply: std::sync::mpsc::Sender<Option<String>>,
             deadline: tilo_clock::time::Instant,
         ) {
@@ -1124,6 +1171,7 @@ mod image_worker_impl {
             connection.display().sync(
                 &self.queue_handle,
                 PlainRequest {
+                    target,
                     reply: std::sync::Mutex::new(Some(reply)),
                     deadline,
                 },
@@ -1144,23 +1192,32 @@ mod image_worker_impl {
         fn start_plain_read(
             &mut self,
             connection: &Connection,
+            target: ClipboardTarget,
             reply: std::sync::mpsc::Sender<Option<String>>,
             deadline: tilo_clock::time::Instant,
         ) {
             self.finish_plain_read(None);
             let offered = self.latest_seat.as_ref().and_then(|seat| {
                 let data = self.seats.get(seat)?;
-                if !data.keyboard_focus || !data.rich_offer_seen {
+                if !data.keyboard_focus {
                     return None;
                 }
-                let device = data.data_device.as_ref()?;
-                let offer = device.data().selection_offer()?;
-                let mime = offer.with_mime_types(|types| {
-                    tilo_mime::TEXT_PREFERENCE
-                        .into_iter()
-                        .find(|mime| types.iter().any(|offered| offered == mime))
-                })?;
-                Some((seat.clone(), offer.receive(mime.into()).ok()?))
+                let pipe = match target {
+                    ClipboardTarget::Clipboard => {
+                        if !data.rich_offer_seen {
+                            return None;
+                        }
+                        let offer = data.data_device.as_ref()?.data().selection_offer()?;
+                        let mime = offer.with_mime_types(preferred_text_mime)?;
+                        offer.receive(mime.into()).ok()?
+                    }
+                    ClipboardTarget::Primary => {
+                        let offer = data.primary_device.as_ref()?.data().selection_offer()?;
+                        let mime = offer.with_mime_types(preferred_text_mime)?;
+                        offer.receive(mime.into()).ok()?
+                    }
+                };
+                Some((seat.clone(), pipe))
             });
             let Some((seat, pipe)) = offered.filter(|_| tilo_clock::now() < deadline) else {
                 let _ = reply.send(None);
@@ -1546,6 +1603,44 @@ mod image_worker_impl {
         }
     }
 
+    impl PrimarySelectionSourceHandler for State {
+        fn send_request(
+            &mut self,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+            _: &sctk::reexports::protocols::wp::primary_selection::zv1::client::zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1,
+            mime: String,
+            fd: WritePipe,
+        ) {
+            if !tilo_mime::is_text(&mime) {
+                return;
+            }
+            let Some(contents) = self.primary_contents.clone() else {
+                return;
+            };
+            self.write_outgoing(contents, fd);
+        }
+
+        fn cancelled(
+            &mut self,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+            source: &sctk::reexports::protocols::wp::primary_selection::zv1::client::zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1,
+        ) {
+            self.primary_sources.retain(|held| held.inner() != source);
+        }
+    }
+
+    impl PrimarySelectionDeviceHandler for State {
+        fn selection(
+            &mut self,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+            _: &sctk::reexports::protocols::wp::primary_selection::zv1::client::zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1,
+        ) {
+        }
+    }
+
     impl DataDeviceHandler for State {
         fn enter(
             &mut self,
@@ -1597,8 +1692,18 @@ mod image_worker_impl {
         fn seat_state(&mut self) -> &mut SeatState {
             &mut self.seat_registry
         }
-        fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
-            self.seats.entry(seat).or_default();
+        fn new_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: WlSeat) {
+            let primary_device = self
+                .primary_manager
+                .as_ref()
+                .map(|manager| manager.get_selection_device(qh, &seat));
+            self.seats.insert(
+                seat,
+                SeatData {
+                    primary_device,
+                    ..SeatData::default()
+                },
+            );
         }
         fn new_capability(
             &mut self,
@@ -1607,6 +1712,10 @@ mod image_worker_impl {
             seat: WlSeat,
             capability: Capability,
         ) {
+            let primary = self
+                .primary_manager
+                .as_ref()
+                .map(|manager| manager.get_selection_device(qh, &seat));
             let Some(data) = self.seats.get_mut(&seat) else {
                 return;
             };
@@ -1617,6 +1726,9 @@ mod image_worker_impl {
                         data.rich_offer_seen = false;
                         data.data_device =
                             Some(self.data_device_manager.get_data_device(qh, &seat));
+                    }
+                    if data.primary_device.is_none() {
+                        data.primary_device = primary;
                     }
                 }
                 Capability::Pointer => {
@@ -1650,6 +1762,7 @@ mod image_worker_impl {
                     Capability::Keyboard => {
                         data.keyboard = None;
                         data.keyboard_focus = false;
+                        data.primary_device = None;
                     }
                     Capability::Pointer => data.pointer = None,
                     Capability::Touch => data.touch = None,
@@ -1845,6 +1958,7 @@ mod image_worker_impl {
 
     delegate_seat!(State);
     delegate_pointer!(State);
+    sctk::delegate_primary_selection!(State);
     // Keep SCTK's offer/source bookkeeping and child-object initialization.
     // Its pinned 0.20 handler omits DataDeviceHandler::selection for NULL,
     // although NULL must cancel the rich cache and both pending readers.
@@ -1890,14 +2004,10 @@ mod image_worker_impl {
 impl ClipboardBackend for WaylandClipboard {
     fn request_text(&self, target: ClipboardTarget) -> std::sync::mpsc::Receiver<Option<String>> {
         let (reply, result) = std::sync::mpsc::channel();
-        if target == ClipboardTarget::Primary {
-            let _ = reply.send(self.text(target));
-        } else {
-            let now = tilo_clock::now();
-            let deadline = now.checked_add(self.explicit_read_budget).unwrap_or(now);
-            if !self.send_publication(ClipboardCommand::ReadText(reply.clone(), deadline)) {
-                let _ = reply.send(None);
-            }
+        let now = tilo_clock::now();
+        let deadline = now.checked_add(self.explicit_read_budget).unwrap_or(now);
+        if !self.send_publication(ClipboardCommand::ReadText(target, reply.clone(), deadline)) {
+            let _ = reply.send(None);
         }
         result
     }
@@ -1905,52 +2015,30 @@ impl ClipboardBackend for WaylandClipboard {
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
         match target {
             ClipboardTarget::Clipboard => {
-                let ok = self.publish(PublicationPayload::Text(text.as_bytes().to_vec()));
-                if ok && let Ok(mut cache) = self.clipboard_cache.lock() {
-                    *cache = Some(text.to_owned());
-                }
-                ok
+                self.publish(PublicationPayload::Text(text.as_bytes().to_vec()))
             }
             ClipboardTarget::Primary => {
-                let Some(inner) = self.write_inner.as_ref() else {
-                    return false;
-                };
-                let Ok(inner) = inner.clipboard.try_lock() else {
-                    return false;
-                };
-                inner.store_primary(text.to_string());
-                if let Ok(mut cache) = self.primary_cache.lock() {
-                    *cache = Some(text.to_owned());
-                }
-                true
+                self.send_publication(ClipboardCommand::SetPrimary(text.as_bytes().to_vec()))
             }
         }
     }
 
     fn set_rich_text(&self, html: &str, plain: &str) -> bool {
-        let ok = self.publish(PublicationPayload::Rich {
+        self.publish(PublicationPayload::Rich {
             html: html.as_bytes().to_vec(),
             plain: plain.as_bytes().to_vec(),
-        });
-        if ok && let Ok(mut cache) = self.clipboard_cache.lock() {
-            *cache = Some(plain.to_owned());
-        }
-        ok
+        })
     }
 
     fn set_secret_text(&self, text: &str) -> bool {
-        let ok = self.publish(PublicationPayload::SecretText(text.as_bytes().to_vec()));
-        if ok && let Ok(mut cache) = self.clipboard_cache.lock() {
-            *cache = None;
-        }
-        ok
+        self.publish(PublicationPayload::SecretText(text.as_bytes().to_vec()))
     }
 
     fn text(&self, target: ClipboardTarget) -> Option<String> {
         // An explicit paste must never substitute an older cached selection.
         // The protocol read runs on its worker; this call waits only for the
         // small interaction budget, then reports no text.
-        self.refresh_external_text(target).flatten()
+        recv_bounded(&self.request_text(target), CLIPBOARD_READ_BUDGET).flatten()
     }
 
     fn set_image(&self, width: usize, height: usize, rgba: &[u8]) -> bool {
@@ -1987,81 +2075,6 @@ impl ClipboardBackend for WaylandClipboard {
 }
 
 impl WaylandClipboard {
-    #[allow(
-        clippy::option_option,
-        reason = "outer None is a timed-out/unavailable read; inner None is a completed non-text selection"
-    )]
-    fn refresh_external_text(&self, target: ClipboardTarget) -> Option<Option<String>> {
-        use std::sync::atomic::Ordering;
-        let inner = match target {
-            ClipboardTarget::Clipboard => self.read_clipboard.as_ref(),
-            ClipboardTarget::Primary => self.read_primary.as_ref(),
-        }
-        .cloned()?;
-        let (refresh_inflight, refresh_generation) = match target {
-            ClipboardTarget::Clipboard => (
-                &self.clipboard_refresh_inflight,
-                &self.clipboard_refresh_generation,
-            ),
-            ClipboardTarget::Primary => (
-                &self.primary_refresh_inflight,
-                &self.primary_refresh_generation,
-            ),
-        };
-        if !begin_external_refresh(refresh_inflight) {
-            return None;
-        }
-        let generation = refresh_generation
-            .fetch_add(1, Ordering::AcqRel)
-            .saturating_add(1);
-        let cache = match target {
-            ClipboardTarget::Clipboard => Arc::clone(&self.clipboard_cache),
-            ClipboardTarget::Primary => Arc::clone(&self.primary_cache),
-        };
-        let inflight = Arc::clone(refresh_inflight);
-        let worker_inflight = Arc::clone(&inflight);
-        let current_generation = Arc::clone(refresh_generation);
-        let wake = self.wake.clone();
-        let (immediate_tx, immediate_rx) = std::sync::mpsc::sync_channel(1);
-        if std::thread::Builder::new()
-            .name("tilo-wayland-clipboard-read".into())
-            .spawn(move || {
-                // `smithay_clipboard::Clipboard::load` waits for the compositor's
-                // transfer to finish. Keep exactly one loader per target instead
-                // of a timeout thread that clears `inflight` while the loader is
-                // still blocked; the latter creates an unbounded pile of blocked
-                // threads when a peer never closes its pipe.
-                let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    inner
-                        .clipboard
-                        .lock()
-                        .ok()
-                        .and_then(|clipboard| match target {
-                            ClipboardTarget::Clipboard => clipboard.load().ok(),
-                            ClipboardTarget::Primary => clipboard.load_primary().ok(),
-                        })
-                }))
-                .ok()
-                .flatten();
-                let _ = immediate_tx.send(value.clone());
-                if current_generation.load(Ordering::Acquire) == generation {
-                    if let Some(value) = value
-                        && let Ok(mut slot) = cache.lock()
-                    {
-                        *slot = Some(value);
-                    }
-                    worker_inflight.store(false, Ordering::Release);
-                }
-                wake.wake();
-            })
-            .is_err()
-        {
-            inflight.store(false, Ordering::Release);
-            return None;
-        }
-        recv_bounded(&immediate_rx, CLIPBOARD_READ_BUDGET)
-    }
-
     fn publish_async(&self, payload: PublicationPayload, settle: Settle) {
         let publication = Publication::new(payload, settle, publication_deadline());
         let _ = self.send_publication(ClipboardCommand::Publish(publication));
@@ -2121,14 +2134,6 @@ impl WaylandClipboard {
         // the established text backend contract.
         self.publication.alive.load(Ordering::Acquire)
     }
-}
-
-fn begin_external_refresh(inflight: &std::sync::atomic::AtomicBool) -> bool {
-    use std::sync::atomic::Ordering;
-
-    inflight
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
 }
 
 impl Drop for WaylandClipboard {
@@ -2263,17 +2268,6 @@ mod tests {
 
         phase clipboard_transfers_are_single_flight_bounded_and_mime_exact;
         {
-            {
-                use std::sync::atomic::AtomicBool;
-
-                let clipboard = AtomicBool::new(false);
-                let primary = AtomicBool::new(false);
-                assert!(begin_external_refresh(&clipboard));
-                assert!(!begin_external_refresh(&clipboard));
-                assert!(begin_external_refresh(&primary));
-                clipboard.store(false, std::sync::atomic::Ordering::Release);
-                assert!(begin_external_refresh(&clipboard));
-            }
             {
                 let (tx, rx) = std::sync::mpsc::channel();
                 let (request_tx, request_rx) = std::sync::mpsc::channel::<()>();

@@ -139,9 +139,13 @@ impl NavShell {
             }
             inputs.user_sidebar = Some(width.max(min) / scale.max(f64::EPSILON));
         }
-        self.update_toggle_names();
-        self.publish_open_states();
-        if was_open != self.is_sidebar_open() {
+        // A step that only moves the edge changes what is laid out and nothing the app reads:
+        // the open state, the toggle's name and the window's parts stand as they were.
+        if was_open == self.is_sidebar_open() {
+            crate::widget::note_view_only_pan();
+        } else {
+            self.update_toggle_names();
+            self.publish_open_states();
             self.structure_dirty = true;
         }
         self.invalidate();

@@ -2,9 +2,10 @@
 //! app as the shell shows it in-process): switching its page, dragging its sidebar's edge and
 //! turning the wheel over its content each do the work of what changed. What is held is counted,
 //! not timed, so the check reads the same on any machine at any load: a page switch rebuilds the
-//! window's structure once or twice and costs no more after many switches than after one, a drag
-//! step of the sidebar's edge is one layout with no rebuild and no view evaluated, and a wheel
-//! step is one layout with no component synced.
+//! window's structure once or twice, measures its leaves a bounded number of times and costs no
+//! more time or memory after many switches than after one, a drag step of the sidebar's edge is
+//! one layout with no rebuild, no view evaluated and no sync, and a wheel step is one layout with
+//! no component synced.
 
 use std::collections::HashMap;
 
@@ -103,15 +104,47 @@ fn switching_pages_resizing_the_sidebar_and_scrolling_do_only_what_changed() {
     .expect("the gallery opens in a window");
 }
 
-/// Every page once, and then again: the second round costs what the first did.
+/// The process's resident memory in KiB, as the kernel counts it.
+fn resident_kib() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status.lines().find_map(|line| {
+                line.strip_prefix("VmRSS:")?
+                    .trim()
+                    .trim_end_matches("kB")
+                    .trim()
+                    .parse()
+                    .ok()
+            })
+        })
+        .unwrap_or(0)
+}
+
+/// Every page once, and then again: the second round costs what the first did, each switch
+/// solves its layout without measuring its leaves over and over, and coming back to pages holds
+/// no more memory.
 fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
     let mut rounds = Vec::new();
+    let mut resident = vec![resident_kib()];
     for _ in 0..2 {
+        let _ = ui::profiling::layout_counts::take();
         let ((), scopes) = observe(|| {
             for y in ROWS {
                 click(tile, text, (120.0, y));
             }
         });
+        let solved = ui::profiling::layout_counts::take();
+        resident.push(resident_kib());
+        // A solve that answers a container from its cache measures each leaf a few times a
+        // switch; one that solves nested grids again for every constraint probed measured
+        // the Feedback page alone some 12,000 times.
+        assert!(
+            solved.measures <= 16_000,
+            "a round of {} switches measures its leaves {} times",
+            ROWS.len(),
+            solved.measures
+        );
         let rebuilds = calls(&scopes, "ui.rebuild_structure");
         assert!(
             rebuilds <= ROWS.len().saturating_mul(2),
@@ -120,6 +153,15 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
         );
         rounds.push(calls(&scopes, "ui.callback_scope"));
     }
+    let grown =
+        |round: usize| resident[round].saturating_sub(resident[round.saturating_sub(1)]) / 1024;
+    assert!(
+        grown(1) <= 32 && grown(2) <= 4,
+        "every page shown holds at most 32 MiB more, and showing them again holds no more: \
+         {} MiB, then {} MiB",
+        grown(1),
+        grown(2)
+    );
     let (first, second) = (rounds[0], rounds[1]);
     assert!(
         second <= first.saturating_add(first / 10),
@@ -156,9 +198,13 @@ fn drags(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
                 calls(&scopes, "ui.rebuild_structure"),
                 calls(&scopes, "ui.layout"),
                 evaluated,
+                calls(&scopes, "ui.component.sync"),
+                calls(&scopes, "framework.action_bindings"),
+                calls(&scopes, "framework.publication"),
             ),
-            (0, 1, 0),
-            "a drag step is one layout, without a rebuild or a view evaluated: {}",
+            (0, 1, 0, 0, 0, 0),
+            "a drag step is one layout, without a rebuild, a view evaluated, a sync or what the \
+             app publishes read again: {}",
             said(&scopes)
         );
     }

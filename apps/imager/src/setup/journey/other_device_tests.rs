@@ -246,8 +246,9 @@ fn a_real_prepared_package_reaches_a_new_identity_and_returns_a_verified_receipt
         source_identity.public_key()
     );
     let joined_paths = tilo_device_identity::persist::IdentityPaths::under(&destination_system);
-    assert!(
-        !joined_paths.user_privkey.exists(),
+    assert_eq!(
+        tilo_identity::store::list_identities(&join_identity).unwrap()[0].protection,
+        tilo_identity_client::KeyProtection::DeviceCertificate,
         "the joining device never receives the source root key"
     );
     let joined_cert =

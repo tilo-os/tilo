@@ -105,11 +105,12 @@ use held::Held;
 pub use held::{MAX_HELD_BYTES, MAX_HELD_INPUTS};
 pub use native_publication::NativePublicationCut;
 pub use personal::device_grants::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept, Refusal};
-pub use personal::link::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
+pub use personal::link::{AdmittedFrame, PERSONAL_ALPN, PersonalSync, update_person_resource};
+pub use personal::machines::{self as machines, MachineRecovery};
 pub use personal::scopes::{device_resource, resource_owner};
 pub use personal::{
     DEVICE_FACTS, ENROLLMENT_KIND, PeerPersonal, PersonalStore, SETTINGS_KIND, WIFI_KIND,
-    WORKSPACES_KIND,
+    WORKSPACES_KIND, store_path,
 };
 pub use seed::{person_workspace_seed, seed_workspace, seed_workspace_at, workspace_seed};
 mod compaction_set;

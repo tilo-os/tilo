@@ -224,8 +224,10 @@ signature database that gained a Microsoft third-party CA — which signs shims 
 drivers and other vendors — admits boots this machine never chose, and PCR 7 alone
 cannot tell the two policies apart from a legitimate firmware update. So
 enrollment writes the digest of the authorities in `db` (and nothing else: an
-image hash can admit one binary and sign nothing) beside the rollback state, and
-every unlock compares against it. A `db` that changed since enrollment turns the
+image hash can admit one binary and sign nothing) beside the rollback state and
+in the token itself, and every unlock compares against it. The token's copy is
+the one early userspace reads: the state lives on the encrypted root, which the
+unlock has not opened yet. A `db` that changed since enrollment turns the
 quiet unlock into the typed one, which is how the machine asks rather than either
 silently trusting a boot it no longer recognises or leaving a person with an
 unbootable disk.

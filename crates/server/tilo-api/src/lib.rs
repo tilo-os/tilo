@@ -200,16 +200,16 @@ pub struct Server {
     /// each stands, so a connection that failed continues instead of
     /// starting again.
     uploads: content::Uploads,
-    /// Whether the site serves the sign-in page every approval lands on, as
-    /// last seen and when ([`Self::sign_in_page`]).
-    sign_in_seen: Mutex<Option<(std::time::Instant, Result<(), String>)>>,
+    /// When the site was last seen serving the sign-in page every approval
+    /// lands on ([`Self::sign_in_page`]).
+    sign_in_served: Mutex<Option<std::time::Instant>>,
     /// The Tilo desktop this server is part of, when it is: it answers every
     /// workspace itself, and no call is forwarded anywhere.
     here: Option<Arc<dyn session::Here>>,
 }
 
-/// How long what the site answered for its sign-in page is trusted.
-const SIGN_IN_SEEN_FOR: Duration = Duration::from_secs(60);
+/// How long a site seen serving its sign-in page is trusted to keep serving it.
+const SIGN_IN_SERVED_FOR: Duration = Duration::from_secs(60);
 
 /// What every answer's body is: whole, or a stream (server-sent events).
 pub type Body = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
@@ -291,7 +291,7 @@ impl Server {
             held: std::sync::OnceLock::new(),
             page_tokens: Mutex::default(),
             approved_keys: Mutex::default(),
-            sign_in_seen: Mutex::default(),
+            sign_in_served: Mutex::default(),
             v1: v1::State::default(),
             uploads: content::Uploads::default(),
             here,
@@ -300,31 +300,32 @@ impl Server {
 
     /// Whether the site serves the sign-in page every key and agent approval
     /// lands on (`<web entry>/sign-in`): `Err` with what it answered when it
-    /// does not, so a site deployed without it shows on `/health` and in the
-    /// log instead of as a dead link in front of the person approving.
+    /// does not, so a site deployed without it shows on `/health` instead of as
+    /// a dead link in front of the person approving.
+    ///
+    /// Only a served page is remembered: a site that is not up yet has not
+    /// answered, so the call after it starts asks again.
     pub async fn sign_in_page(&self) -> Result<(), String> {
-        if let Some((at, seen)) = lock(&self.sign_in_seen).as_ref()
-            && at.elapsed() < SIGN_IN_SEEN_FOR
+        if let Some(at) = *lock(&self.sign_in_served)
+            && at.elapsed() < SIGN_IN_SERVED_FOR
         {
-            return seen.clone();
+            return Ok(());
         }
         let url = self.sign_in_entry.as_str();
-        let seen = match self
+        match self
             .http
             .get(url)
             .timeout(Duration::from_secs(5))
             .send()
             .await
         {
-            Ok(answer) if answer.status().is_success() => Ok(()),
+            Ok(answer) if answer.status().is_success() => {
+                *lock(&self.sign_in_served) = Some(std::time::Instant::now());
+                Ok(())
+            }
             Ok(answer) => Err(format!("{url} answers {}", answer.status())),
             Err(error) => Err(format!("{url} was not reached: {error}")),
-        };
-        if let Err(why) = &seen {
-            tracing::error!(%why, "the site serves no sign-in page: no key or agent can be approved");
         }
-        *lock(&self.sign_in_seen) = Some((std::time::Instant::now(), seen.clone()));
-        seen
     }
 
     /// The live MCP sessions.

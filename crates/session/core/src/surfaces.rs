@@ -73,6 +73,15 @@ pub trait Published {
     /// What it publishes now: its resources, with their actions.
     fn resources(&mut self) -> Vec<ResourceSpec>;
 
+    /// What the actions on the row `row` are like now, when they differ from
+    /// their declaration: a window only a foreign reader may look at, an app
+    /// of an unresponsive window that may be force quit. Read for every
+    /// published child, so the palette, agents and scripts follow the row it
+    /// is about; the row's own actions that are not named stay as they are.
+    fn row_status(&self, _row: &str) -> Vec<tilo_actions::RowStatus> {
+        Vec::new()
+    }
+
     /// Run its published action `address` with `arguments`; `look` pictures a
     /// window this session does not run, for the surface publishing one.
     ///
@@ -309,11 +318,15 @@ impl Surfaces {
         if at.is_some() && self.kept(place, |kept| kept.at) == Some(at) {
             return;
         }
-        let resources = if locked {
+        let mut resources = if locked {
             surface.borrow_mut().locked_resources()
         } else {
             surface.borrow_mut().resources()
         };
+        {
+            let surface = surface.borrow();
+            ui::tilo_actions::apply_row_statuses(&mut resources, |row| surface.row_status(row));
+        }
         let mut read = self.read.borrow_mut();
         let revision = match read.get(&place) {
             Some(kept) if ui::tilo_actions::api::publishes_same(&kept.resources, &resources) => {
@@ -539,6 +552,76 @@ mod tests {
         fn revision(&self) -> Option<u64> {
             Some(self.1)
         }
+    }
+
+    #[test]
+    fn a_surface_says_what_one_of_its_rows_offers_now() {
+        /// A surface with a child row offering one effect.
+        struct Rows;
+
+        impl Published for Rows {
+            fn resources(&mut self) -> Vec<ResourceSpec> {
+                let encoded = tilo_actions::EncodedAction::encode_operation(
+                    "test.effects",
+                    &serde_json::json!({}),
+                )
+                .unwrap();
+                let stop = tilo_actions::ActionSpec::typed_operation_on(
+                    "stop",
+                    "Stop",
+                    "Stop",
+                    tilo_actions::OperationKind::Effect,
+                    "test.effects",
+                    Vec::new(),
+                    move |_, _| encoded.clone(),
+                );
+                let mut rows = ResourceSpec::new("rows", "test.rows", "Rows");
+                rows.children
+                    .push(ResourceSpec::new("row:1", "test.row", "One").with_action(stop));
+                vec![rows]
+            }
+
+            fn row_status(&self, row: &str) -> Vec<tilo_actions::RowStatus> {
+                (row == "row:1")
+                    .then(|| tilo_actions::RowStatus {
+                        action: "stop".to_owned(),
+                        availability: tilo_actions::Availability::Unavailable {
+                            code: "busy".to_owned(),
+                            reason: "this one is busy".to_owned(),
+                        },
+                    })
+                    .into_iter()
+                    .collect()
+            }
+
+            fn invoke(
+                &mut self,
+                address: &ActionAddress,
+                _: &serde_json::Map<String, serde_json::Value>,
+                _: &mut Look<'_>,
+            ) -> Result<ResourceOperationStart, ApiError> {
+                Err(ApiError::Unknown(address.clone()))
+            }
+
+            fn accessible_labels(&mut self) -> Vec<String> {
+                Vec::new()
+            }
+        }
+
+        let surface = Rc::new(RefCell::new(Rows));
+        let mut api = Surfaces::default();
+        api.add(surface);
+        let published = api.resources();
+        let row = &published[0].children[0];
+        assert_eq!(row.id.as_str(), "row:1");
+        assert_eq!(
+            row.actions[0].contract.availability,
+            tilo_actions::Availability::Unavailable {
+                code: "busy".to_owned(),
+                reason: "this one is busy".to_owned(),
+            },
+            "what the surface says of the row reaches the published catalogue"
+        );
     }
 
     #[test]

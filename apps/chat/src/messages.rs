@@ -11,7 +11,9 @@
 //!
 //! Who posts, reacts or edits is whoever invokes the verb
 //! ([`ActionCx::author`]), never an argument; when is the action's time
-//! ([`ActionCx::now_ms`]).
+//! ([`ActionCx::now_ms`]), which a post carries as a hybrid logical clock of
+//! its conversation ([`ChatMessages::prepare`]): it reads after every message
+//! the writing device had seen there.
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -1404,10 +1406,10 @@ impl Chained for ChatMessages {
     fn prepare(
         actions: &mut [Self::Action],
         chat: &Chat,
-        _parts: &[(u64, Rc<Self>)],
+        parts: &[(u64, Rc<Self>)],
         invoker: &ui::tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
-        for action in actions {
+        for action in &mut *actions {
             match &mut action.operation {
                 ChatMessagesAction::Post(post) => {
                     let message = &mut post.message;
@@ -1465,6 +1467,35 @@ impl Chained for ChatMessages {
                 _ => {}
             }
         }
+        // What a verb writes into a conversation reads after every message the
+        // invoking device had seen there, however far the two machines' clocks
+        // are apart: the action's time is a hybrid logical clock of that
+        // conversation, read here on the origin so every replica applies the
+        // same value and none decides it from its own state.
+        let mut written: Vec<(Id, i64)> = Vec::new();
+        for action in actions.iter_mut() {
+            let Some(channel) = channel_written(action, parts) else {
+                continue;
+            };
+            let mut clock = tilo_resource::HybridClock::new();
+            for (_, part) in parts {
+                for (_, message) in part.messages.iter() {
+                    if message.channel == channel {
+                        clock.see(message.ts);
+                    }
+                }
+            }
+            // A group's members take up where the one before left off.
+            if let Some((_, at)) = written.iter().find(|(seen, _)| *seen == channel) {
+                clock.see(*at);
+            }
+            action.now_ms = clock.stamp(action.now_ms);
+            if let Some((_, at)) = written.iter_mut().find(|(seen, _)| *seen == channel) {
+                *at = action.now_ms;
+            } else {
+                written.push((channel, action.now_ms));
+            }
+        }
         Ok(())
     }
 
@@ -1491,6 +1522,38 @@ impl Chained for ChatMessages {
         let name = conversation.name.trim().trim_start_matches('#');
         (conversation.is_channel() && !name.is_empty()).then(|| format!("#{name}"))
     }
+}
+
+/// The conversation a verb writes its time into: the one it posts to, or the
+/// one holding the message it changes.
+fn channel_written(
+    action: &ui::tilo_resource::Stamped<ChatMessagesAction>,
+    parts: &[(u64, Rc<ChatMessages>)],
+) -> Option<Id> {
+    let channel = match &action.operation {
+        ChatMessagesAction::Post(post) => &post.message.channel,
+        ChatMessagesAction::PostFile(post) => &post.channel,
+        ChatMessagesAction::ShareResource(share) => &share.channel,
+        ChatMessagesAction::ShareWindow(share) => &share.channel,
+        ChatMessagesAction::Ask(ask) => &ask.channel,
+        ChatMessagesAction::PostView(post) => &post.channel,
+        ChatMessagesAction::AskAgent(ask) => &ask.channel,
+        ChatMessagesAction::DeliverMessage(delivery) => &delivery.channel,
+        ChatMessagesAction::StreamOutput(stream) => &stream.channel,
+        _ => {
+            let message = ChatMessages::beside(action)
+                .or_else(|| ChatMessages::item_of(&action.operation))?;
+            return message_channel(&message, parts);
+        }
+    };
+    Some(channel.clone())
+}
+
+/// The conversation the message `message` is in, over the parts held.
+fn message_channel(message: &Id, parts: &[(u64, Rc<ChatMessages>)]) -> Option<Id> {
+    parts
+        .iter()
+        .find_map(|(_, part)| part.messages.get(message).map(|row| row.channel.clone()))
 }
 
 impl ChatMessages {

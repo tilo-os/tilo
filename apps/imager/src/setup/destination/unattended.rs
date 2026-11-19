@@ -164,15 +164,6 @@ impl Invocation {
     }
 }
 
-/// Where a plan-driven install writes the one-time recovery key: root-only,
-/// beside the handoff it installs from, until the owner has it.
-pub fn plan_recovery_key_path() -> std::path::PathBuf {
-    std::path::Path::new(imager_backend::destination::internal_handoff::HANDOFF_PATH)
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join("recovery-key")
-}
-
 /// The staged install a carried plan decides: the same wizard, driven by the
 /// plan the Imager staged, with no person and no recipe file.
 pub struct PlannedInvocation {
@@ -213,14 +204,11 @@ impl PlannedInvocation {
         if let Err(error) = app.apply_install_plan(&self.plan) {
             return stay_with_error(&mut app, &console, &error);
         }
-        let mut sink = match RecoveryDestination::File(plan_recovery_key_path()).open() {
-            Ok(sink) => sink,
-            Err(error) => return stay_with_error(&mut app, &console, &error),
-        };
-        match execute_plan(&mut app, &self.plan, &mut sink) {
+        match execute_plan(&mut app, &self.plan) {
             Ok(()) => {
                 eprintln!(
-                    "Unattended installation finished. The recovery key is beside the handoff."
+                    "Unattended installation finished. The disk's recovery key went to the \
+                     person's devices."
                 );
                 Ok(())
             }
@@ -229,12 +217,10 @@ impl PlannedInvocation {
     }
 }
 
-/// The install, with every step the plan already answered.
-fn execute_plan(
-    app: &mut InstallerApp,
-    plan: &Plan,
-    sink: &mut RecoverySink,
-) -> Result<(), String> {
+/// The install, with every step the plan already answered. The disk's
+/// recovery key is not written anywhere here: the installer hands it to the
+/// person's devices with the enrollment, and the machine keeps no copy.
+fn execute_plan(app: &mut InstallerApp, plan: &Plan) -> Result<(), String> {
     drive_plan(app, plan)?;
     if app.install_state() != InstallState::Done {
         let tail = app
@@ -247,17 +233,6 @@ fn execute_plan(
             .to_owned();
         return Err(format!("The installation failed: {tail}"));
     }
-    let key = app
-        .recovery_key()
-        .ok_or("The installed system reported success without a recovery key")?
-        .to_owned();
-    sink.write(&key)?;
-    drop(Zeroizing::new(key));
-    invoke(
-        app,
-        "confirm-recovery-saved@installer",
-        serde_json::json!({"saved": true}),
-    )?;
     invoke(app, "reboot@installer", serde_json::json!({}))?;
     Ok(())
 }

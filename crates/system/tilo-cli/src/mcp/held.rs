@@ -37,8 +37,10 @@ const TAKING_OVER: Duration = Duration::from_secs(20);
 const OPENING: Duration = Duration::from_secs(30);
 /// How often it looks whether those stores let go.
 const OPENING_POLL: Duration = Duration::from_millis(100);
-/// How long a holder leaving waits for its stores to close before it lets the lock go.
-const RELEASING: Duration = Duration::from_secs(5);
+/// How long a holder leaving waits for its stores to close and the device's endpoint to say it
+/// is going, before it lets the lock go: the next holder opens the store as soon as this
+/// process lets it go rather than when this process ends.
+const RELEASING: Duration = Duration::from_secs(3);
 /// How often a connection looks for a holder that has not started listening.
 const POLL: Duration = Duration::from_millis(50);
 /// How often the service's holder, waiting for a newer program's holder to end, looks for its lock.
@@ -48,10 +50,14 @@ const STANDBY_ASK: Duration = Duration::from_secs(30);
 /// How long a holder's process waits for its runtime's threads once it ended. A step that walks
 /// a whole folder tree runs on its thread to its end and cannot be interrupted; a stop leaves it
 /// behind rather than hanging until it finishes.
-const SHUTDOWN: Duration = Duration::from_secs(3);
-/// How long a stop waits for the folders to unmount: one whose mount thread is inside a step on
-/// the tree is cleared when the next holder shows it.
-const UNMOUNTING: Duration = Duration::from_secs(5);
+const SHUTDOWN: Duration = Duration::from_secs(2);
+/// How long a stop waits for one folder to unmount: one whose mount thread is inside a step on
+/// the tree is left behind, and its mount cleared when the next holder shows it.
+pub(crate) const UNMOUNTING: Duration = Duration::from_secs(3);
+/// How long a stop waits for the folders to unmount and each workspace's tree to be kept on
+/// disk, all of them together: a tree's changes made here are saved, and a step still running
+/// is left behind rather than waited for.
+const STOPPING: Duration = Duration::from_secs(8);
 /// How often a holder looks whether the login it serves is still the one under its device
 /// directory: a login made again makes another device, and the holder it replaced steps down so
 /// one computer runs one holder.
@@ -260,7 +266,16 @@ pub(crate) fn alone<E: Enter>(shared: &Arc<Shared<E>>) -> Result<ExitCode> {
         tokio::spawn(async move {
             let _ = entering.session(false, super::Ask::Sync).await;
         });
-        converse(Arc::clone(shared), tokio::io::stdin(), tokio::io::stdout()).await;
+        // This process is the agent's own: what its harness calls the session, it says in the
+        // initialize it passes on.
+        let session_name = tilo_mcp::session_api::session_name();
+        converse(
+            Arc::clone(shared),
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+            session_name.as_deref(),
+        )
+        .await;
         // The connection ended (its input closed): the agent leaves the
         // workspace now, while its session can still say so.
         shared.leaving().await;
@@ -272,10 +287,15 @@ pub(crate) fn alone<E: Enter>(shared: &Arc<Shared<E>>) -> Result<ExitCode> {
 
 /// One agent's connection, served as its own run until its input ends: each
 /// request answered as it comes, so a long call holds up no other.
+///
+/// `session_name` is what the agent's harness calls this session, when the process serving it
+/// knows: the initialize the client sends then says it ([`tilo_mcp::session_api::SESSION_NAME`]),
+/// and the workspace shows the agent by that name rather than by its product's name.
 async fn converse<E: Enter>(
     shared: Arc<Shared<E>>,
     read: impl AsyncRead + Unpin,
     write: impl AsyncWrite + Unpin + Send + 'static,
+    session_name: Option<&str>,
 ) {
     let connection = Arc::new(Connection::new(shared));
     let write = Arc::new(tokio::sync::Mutex::new(write));
@@ -285,6 +305,7 @@ async fn converse<E: Enter>(
         if line.trim().is_empty() {
             continue;
         }
+        let line = naming(line, session_name);
         let (connection, write) = (Arc::clone(&connection), Arc::clone(&write));
         answering.spawn(async move {
             if let Some(answer) = answer(&connection, &line).await {
@@ -441,7 +462,8 @@ fn hold_for<E: Enter>(
     let served = runtime.block_on(serve_held(place, shared, holding));
     // A step that walks a whole folder tree — a merge of a tree record, a save of one — runs on
     // its thread to its end and cannot be interrupted. The process ends now instead of waiting
-    // for it: the socket is gone and the folders were unmounted (or given up on) above.
+    // for it: the socket is gone, the folders were unmounted (or given up on), and the trees
+    // were kept, above.
     runtime.shutdown_timeout(SHUTDOWN);
     // The next holder opens the stores as soon as this process lets go of the lock, which is
     // before this process ends: let go of them first, or it finds them still open.
@@ -449,7 +471,7 @@ fn hold_for<E: Enter>(
         let releasing = bridge_runtime()?;
         // The timer is made inside the runtime: one made outside it has no clock to tick on.
         if releasing
-            .block_on(async { tokio::time::timeout(RELEASING, peer.shutdown()).await })
+            .block_on(async { tokio::time::timeout(RELEASING, peer.shutdown(RELEASING)).await })
             .is_err()
         {
             tracing::warn!("the workspaces' files did not close in time");
@@ -547,10 +569,6 @@ async fn serve_held<E: Enter>(
     // A socket left by a holder that ended without removing it.
     let _ = std::fs::remove_file(&place.socket);
     let listener = tilo_files::native::socket::bind(&place.socket)
-        .and_then(|listener| {
-            listener.set_nonblocking(true)?;
-            tokio::net::UnixListener::from_std(listener)
-        })
         .with_context(|| format!("listen at {}", place.socket.display()))?;
     std::fs::set_permissions(&place.socket, std::fs::Permissions::from_mode(0o600))?;
     serve_api(place, &shared)?;
@@ -568,25 +586,16 @@ async fn serve_held<E: Enter>(
             None
         }
     };
+    let (count, mut live) = tokio::sync::watch::channel(0_usize);
+    let count = Arc::new(count);
+    let mut accepting = accepting(listener, Arc::clone(&shared), Arc::clone(&count))?;
     let mut ended = ending()?;
     let mut login = tokio::time::interval(LOGIN_LOOK);
     // Whether the login this holder serves was replaced: a holder on its way out then unmounts
     // nothing, since the holder of the new login shows the folders again.
     let mut replaced = false;
-    let (count, mut live) = tokio::sync::watch::channel(0_usize);
-    let count = Arc::new(count);
     loop {
         tokio::select! {
-            accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else { continue };
-                count.send_modify(|live| *live = live.saturating_add(1));
-                let (shared, count) = (Arc::clone(&shared), Arc::clone(&count));
-                tokio::spawn(async move {
-                    let (read, write) = stream.into_split();
-                    converse(shared, read, write).await;
-                    count.send_modify(|live| *live = live.saturating_sub(1));
-                });
-            }
             () = idle(&mut live, linger) => break,
             _ = login.tick() => if !place.serves_current_login() {
                 tracing::info!(
@@ -605,26 +614,86 @@ async fn serve_held<E: Enter>(
             },
         }
     }
-    if let Some(peer) = PEER.get()
-        && !replaced
-    {
-        // Unmounting waits for the mount's thread, which may be inside a step on the folder's
-        // tree; a stop does not wait for that step to end.
-        if tokio::time::timeout(UNMOUNTING, peer.close())
-            .await
-            .is_err()
-        {
-            tracing::warn!(
-                "a folder did not unmount in time; the mounts are cleared when next shown"
-            );
-        }
+    // No connection from here on: the socket is shut down rather than left queuing clients that
+    // would be told a holder is there by the kernel and wait in vain for it.
+    accepting.stop();
+    if !replaced && let Some(peer) = PEER.get() {
+        // Unmounting and keeping the trees wait for the mounts' and trees' own steps, which
+        // cannot be interrupted; both are bounded, so a stop ends inside the unit's timeout.
+        peer.stop(STOPPING).await;
     }
-    // No connection is left to cut off: the next one starts a holder anew.
     let _ = std::fs::remove_file(&place.socket);
     let _ = std::fs::remove_file(&place.api);
-    drop(listener);
     shared.leaving().await;
     Ok(())
+}
+
+/// The thread that takes connections: on one of its own, so a client asking (a person's `tilo
+/// status`, an agent's `tilo mcp`) is taken the moment it does, however busy the runtime that
+/// answers it is with another client's work. Each connection is served on that runtime, whose
+/// workers a bulk write's steps never occupy: those go to the blocking pool.
+struct Accepting {
+    /// A duplicate of the listening socket: shutting it down wakes the thread's accept.
+    socket: std::os::unix::net::UnixListener,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Accepting {
+    fn stop(&mut self) {
+        let _ = rustix::net::shutdown(&self.socket, rustix::net::Shutdown::Both);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for Accepting {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Take the connections at `listener` on a thread of its own, serving each on this runtime.
+fn accepting<E: Enter>(
+    listener: std::os::unix::net::UnixListener,
+    shared: Arc<Shared<E>>,
+    count: Arc<tokio::sync::watch::Sender<usize>>,
+) -> std::io::Result<Accepting> {
+    let socket = listener.try_clone()?;
+    let runtime = tokio::runtime::Handle::current();
+    let thread = std::thread::Builder::new()
+        .name("tilo-accept".to_owned())
+        .spawn(move || {
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let Ok(()) = stream.set_nonblocking(true) else {
+                            continue;
+                        };
+                        count.send_modify(|live| *live = live.saturating_add(1));
+                        let (shared, count) = (Arc::clone(&shared), Arc::clone(&count));
+                        runtime.spawn(async move {
+                            let Ok(stream) = tokio::net::UnixStream::from_std(stream) else {
+                                count.send_modify(|live| *live = live.saturating_sub(1));
+                                return;
+                            };
+                            let (read, write) = stream.into_split();
+                            // This process is no agent's: the name comes in each connection's
+                            // own initialize, which the connection that reached it wrote.
+                            converse(shared, read, write, None).await;
+                            count.send_modify(|live| *live = live.saturating_sub(1));
+                        });
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    // The holder stopped listening: the socket was shut down.
+                    Err(_) => break,
+                }
+            }
+        })?;
+    Ok(Accepting {
+        socket,
+        thread: Some(thread),
+    })
 }
 
 /// Serve Tilo's API at `place` as this computer's device, over the one session it holds: every
@@ -856,6 +925,9 @@ pub(crate) fn relay(stream: UnixStream, place: &Place) -> Result<ExitCode> {
 
 async fn relaying(first: UnixStream, place: &Place) -> Result<ExitCode> {
     let (lines_in, mut input) = tokio::sync::mpsc::channel::<String>(64);
+    // What the agent's harness calls this session: this process is the agent's own child, so it
+    // is the one that knows, and each holder reached says it in the initialize it passes on.
+    let session_name = tilo_mcp::session_api::session_name();
     tokio::spawn(async move {
         let mut stdin = BufReader::new(tokio::io::stdin()).lines();
         while let Ok(Some(line)) = stdin.next_line().await {
@@ -911,6 +983,7 @@ async fn relaying(first: UnixStream, place: &Place) -> Result<ExitCode> {
         let ended = loop {
             tokio::select! {
                 line = input.recv(), if input_open => if let Some(line) = line {
+                    let line = naming(line, session_name.as_deref());
                     if write.write_all(format!("{line}\n").as_bytes()).await.is_err() {
                         break true;
                     }
@@ -962,6 +1035,23 @@ async fn relaying(first: UnixStream, place: &Place) -> Result<ExitCode> {
 struct Unanswered {
     id: Value,
     line: String,
+}
+
+/// `line` with the session this connection is written in, when it is the client's `initialize`
+/// and the agent's harness named the session: what the workspace shows the agent by, in place of
+/// the product's name. Any other line, and a session with no name, go as they are.
+fn naming(line: String, session_name: Option<&str>) -> String {
+    let Some(name) = session_name else {
+        return line;
+    };
+    let asking = tilo_mcp::session_api::Asking {
+        session_name: Some(name.to_owned()),
+        ..Default::default()
+    };
+    asking
+        .written_into(line.as_bytes())
+        .and_then(|rewritten| String::from_utf8(rewritten).ok())
+        .unwrap_or(line)
 }
 
 /// Whether a request only reads: asking it again runs nothing twice.
@@ -1130,6 +1220,19 @@ mod tests {
         service.join().unwrap();
     }
 
+    /// A stop ends by itself inside the user service's timeout: every wait it makes, added
+    /// up, is shorter than what the unit gives it before the process is killed, so a holder
+    /// stopped while a bulk write is under way exits rather than being killed.
+    #[test]
+    fn a_stop_ends_inside_the_services_timeout() {
+        let waits = STOPPING + crate::mcp::CLOSING + SHUTDOWN + RELEASING + SHUTDOWN;
+        assert!(
+            waits < crate::service::STOP_TIMEOUT,
+            "a stop's waits add up to {waits:?}, past the unit's {:?}",
+            crate::service::STOP_TIMEOUT
+        );
+    }
+
     /// A holder whose workers are both inside a step that walks a whole folder tree still ends
     /// when it is stopped: the steps are left behind rather than waited for, which is what a
     /// stop (the user service's, or `tilo folders stop`) hangs on otherwise.
@@ -1265,7 +1368,7 @@ mod tests {
             opening.recv_timeout(Duration::from_millis(300)).is_err(),
             "a second holder opened the files this one still holds"
         );
-        runtime.block_on(first.shutdown());
+        runtime.block_on(first.shutdown(RELEASING));
         opening
             .recv_timeout(Duration::from_secs(30))
             .expect("the second holder opens the files once the first lets go")

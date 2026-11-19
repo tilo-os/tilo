@@ -643,6 +643,11 @@ fn resource_label(
         .map(|(name, value)| (*name, ArgValue::from(value)))
         .collect();
     if fill == tilo_resource::label::Fill::Whole {
+        // A message with no placeable takes no arguments: handing Fluent an
+        // empty set of them is not the same as asking for the whole message.
+        if arguments.is_empty() {
+            return I18nManager::lookup_complete(key, None);
+        }
         let mut fluent_args = FluentArgs::new();
         for (name, value) in &arguments {
             fluent_args.set(*name, value.to_fluent());
@@ -659,12 +664,15 @@ fn resource_label(
 fn declared_catalogue(
     catalogue: &'static tilo_resource::label::Catalogue,
 ) -> &'static EmbeddedCatalog {
-    static LOADED: std::sync::Mutex<Vec<(&'static str, &'static EmbeddedCatalog)>> =
+    // One crate's catalogue and a test's, or another build's, share a package
+    // name: which messages they hold is the directory they were read from.
+    static LOADED: std::sync::Mutex<Vec<((&'static str, &'static str), &'static EmbeddedCatalog)>> =
         std::sync::Mutex::new(Vec::new());
+    let key = (catalogue.id, catalogue.dir);
     let mut loaded = LOADED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((_, held)) = loaded.iter().find(|(id, _)| *id == catalogue.id) {
+    if let Some((_, held)) = loaded.iter().find(|(held, _)| *held == key) {
         return held;
     }
     let sources: &'static [(&'static str, &'static str)] =
@@ -679,7 +687,7 @@ fn declared_catalogue(
             .with_system_locale()
             .as_shared(),
     ));
-    loaded.push((catalogue.id, held));
+    loaded.push((key, held));
     held
 }
 

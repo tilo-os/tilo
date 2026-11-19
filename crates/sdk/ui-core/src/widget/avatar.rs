@@ -425,6 +425,7 @@ impl<'a> AvatarFace<'a> {
             fill: Some(crate::composition::rgba8(fill)),
             edge: neutral.then(|| crate::composition::rgba8(crate::surface::edge_on(fill))),
             radius: self.shape(rect, theme).radii().top_left,
+            inset: [0.0; 2],
         });
         let style = initials_style(theme, rect.height());
         let ink = if neutral {

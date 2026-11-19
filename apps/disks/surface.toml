@@ -23,13 +23,6 @@ id = "rescan"
 kind = "read"
 
 [[resources.verbs]]
-id = "select"
-kind = "read"
-params = [
-  { name = "device", type = "text", required = true },
-]
-
-[[resources.verbs]]
 id = "show-tab"
 kind = "read"
 params = [

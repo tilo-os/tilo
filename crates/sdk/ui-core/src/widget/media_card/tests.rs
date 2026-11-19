@@ -443,7 +443,7 @@ fn a_shelf_of_grids_lays_out_at_every_width() {
                 vec![Box::new(MediaGrid::arriving(
                     3,
                     MediaAspect::Wide,
-                    &crate::arriving::Source::host("Lounge"),
+                    &crate::arriving::Source::Remote,
                     crate::time::now() - crate::time::Duration::from_secs(1),
                 ))],
             )));

@@ -1,8 +1,7 @@
 //! Admission and off-thread teardown for a runner's native clipboard.
 //!
-//! Closing is deliberately not a reader cancellation guarantee. A smithay
-//! loader may still be waiting on a peer; its owned display must remain alive
-//! until that loader and its protocol worker have actually finished.
+//! Closing is admission closure, not a wait on the worker: the worker owns the
+//! display it borrowed and releases it on its own thread once it stops.
 
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 
@@ -58,11 +57,10 @@ impl Drop for AdmissionLease {
 }
 
 /// Runner-owned admission guard. Drop closes the attachment without joining
-/// protocol workers on the event-loop thread. Retained system clipboard handles
-/// then refuse operations on this connection. This is admission closure, not
-/// complete shutdown: initialization and independently retained smithay
-/// loaders may await the server or peer. They keep the owned display alive
-/// until they finish; close neither abandons workers nor raises reader limits.
+/// the clipboard worker on the event-loop thread. Retained system clipboard
+/// handles then refuse operations on this connection. The worker keeps the
+/// display it borrowed alive until it stops; close neither abandons it nor
+/// raises the reader limit.
 #[must_use = "keep the attachment until the runner closes"]
 pub struct ClipboardAttachment {
     pub(crate) session: Arc<Session>,

@@ -315,7 +315,10 @@ export function refusalCopy({workspace = null, waitList = false, signIn = false,
       heading: workspace
         ? say('arrival-refusal-sign-in-heading', 'Sign in to open { $workspace }', {workspace})
         : say('arrival-refusal-sign-in-heading-unnamed', 'Sign in to open this workspace'),
-      body: say('arrival-refusal-sign-in-body', 'Only the people in this workspace can open it. Sign in as one of them, or paste an invite link someone sent you.'),
+      // Someone new can ask for an invite where the site keeps a wait list.
+      body: waitList
+        ? say('arrival-refusal-sign-in-wait-body', 'Only the people in this workspace can open it. If you’re one of them, sign in. New to Tilo? It’s invite-only right now: leave your email and we’ll send you an invite.')
+        : say('arrival-refusal-sign-in-body', 'Only the people in this workspace can open it. Sign in as one of them, or paste an invite link someone sent you.'),
     };
   }
   if (waitList) {

@@ -145,7 +145,7 @@ pub fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<A
         }
         (None, approved.user_public_key)
     } else {
-        let root = load_root(options.identity_root, options.identity_dir)?;
+        let root = load_root(options.identity_dir)?;
         let user_public_key = root.public_key();
         (Some(root), user_public_key)
     };
@@ -492,6 +492,7 @@ pub fn waiting_of(pending: &PendingApproval) -> WaitingMachine {
         &pending.request.hardware,
     )
     .with_nonce(pending.token.nonce)
+    .with_recovery_key(pending.request.recovery_key.clone())
 }
 
 /// Wait for a device to acknowledge its signed configuration on a local

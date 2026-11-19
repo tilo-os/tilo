@@ -73,14 +73,20 @@ impl super::App {
         self.may_pan_view_only(event) && self.root_widget.view_only_scroll(event)
     }
 
-    /// Whether a wheel `event` arrives where it can be view-only: nothing
-    /// held, nothing pending, no modal or floating surface. The root may
-    /// declare it so up front ([`Self::is_view_only_scroll`]); else a scroll
-    /// container reports during dispatch that it only panned
-    /// ([`crate::widget::note_view_only_pan`]).
+    /// Whether `event` arrives where it can be view-only: a wheel with no
+    /// button held, or a move of the pointer with one held (a drag step);
+    /// no modifier, nothing pending, no modal or floating surface. The root
+    /// may declare a wheel so up front ([`Self::is_view_only_scroll`]); else
+    /// a scroll container or a pane's edge reports during dispatch that it
+    /// only moved what is laid out ([`crate::widget::note_view_only_pan`]).
     fn may_pan_view_only(&self, event: &WindowEvent) -> bool {
-        matches!(event, WindowEvent::MouseWheel { .. })
-            && self.input.pointer.buttons == 0
+        let held = self.input.pointer.buttons != 0;
+        let movable = match event {
+            WindowEvent::MouseWheel { .. } => !held,
+            WindowEvent::CursorMoved { .. } => held,
+            _ => false,
+        };
+        movable
             && self.input.modifiers.state().is_empty()
             && !self.needs_sync
             && !self.layout.structure_dirty

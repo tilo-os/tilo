@@ -159,6 +159,8 @@ fn community_entry(members: u32, now_ms: u64) -> DirectoryEntry {
         members,
         last_active_ms: Some(now_ms),
         community: true,
+        invitation_only: false,
+        wait_list: None,
     }
 }
 
@@ -177,6 +179,8 @@ fn club_entry(now_ms: u64) -> DirectoryEntry {
         members: 5,
         last_active_ms: Some(now_ms.saturating_sub(week)),
         community: false,
+        invitation_only: false,
+        wait_list: None,
     }
 }
 
@@ -351,6 +355,8 @@ fn page_listing_the_workspace_on_this_shell(held_name: &str, held_workspace: &st
         members: 3,
         last_active_ms: Some(now_ms()),
         community: false,
+        invitation_only: false,
+        wait_list: None,
     });
     page_of(entries)
 }
@@ -1155,6 +1161,8 @@ impl LoungeHost {
             members: 2,
             last_active_ms: Some(now_ms()),
             community: true,
+            invitation_only: false,
+            wait_list: None,
         }]);
         let site = Responder::handle(move |request| {
             let json = |body: String| {

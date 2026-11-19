@@ -343,7 +343,7 @@ impl<C: ChildResource> ChildrenState<C> {
                 (Some(live), _) => Arrival::Ready(live.get()),
                 (None, Some(reason)) => Arrival::Failed(reason.clone()),
                 (None, None) => Arrival::Pending {
-                    from: ui_core::workspace_sync::source(),
+                    from: ui_core::arriving::Source::Remote,
                 },
             };
             match arrivals.get(&id) {

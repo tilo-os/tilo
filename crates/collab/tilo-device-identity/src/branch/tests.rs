@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use ed25519_dalek::SigningKey;
 
 use super::*;
-use crate::persist::{load_or_create_device_key, read_device_cert, read_device_key};
-use tilo_user_identity::cert::{DeviceCapabilities, verify_device_cert};
+use crate::persist::{load_or_create_device_key, read_device_key};
+use tilo_user_identity::cert::{DeviceCapabilities, sign_device_cert};
 
 const SOURCE: &str = "4c4c4544-0042-3510-8048-b4c04f4d3232";
 const BRANCH: &str = "8a1f02d6-91c4-4f0e-9b9a-2d1f5c3e7a10";
@@ -479,78 +479,7 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn a_branch_is_certified_only_by_its_persons_root;
-
-    phase a_machine_holding_the_root_certifies_its_branch;
-    // With the person's root on the machine, the branch certifies itself with
-    // what the source device was granted, under its new name.
-    {
-        let root = SigningKey::from_bytes(&[7; 32]);
-        let fixture = Fixture::new(&root);
-        persist::write_signing_key(&fixture.paths.user_privkey, &root).unwrap();
-        let result = branched(fixture.settle(BRANCH));
-        let Certification::Certified(cert) = &result.certification else {
-            panic!("not certified: {:?}", result.certification);
-        };
-        verify_device_cert(cert).unwrap();
-        assert_eq!(cert.user_public_key, public(&root));
-        assert_eq!(cert.device_public_key, public(&fixture.device()));
-        assert_eq!(cert.capabilities, DeviceCapabilities::member());
-        assert_eq!(cert.device_label, result.label);
-        assert_eq!(cert.expires_at_ns, None);
-        assert_eq!(&read_device_cert(&fixture.paths.device_cert).unwrap(), cert);
-        assert_eq!(
-            &read_device_cert(&fixture.paths.device_cert_for_user(&public(&root))).unwrap(),
-            cert
-        );
-        assert_eq!(pending_label(&fixture.paths).unwrap(), None);
-    }
-
-    phase nothing_but_the_persons_own_root_certifies_a_branch;
-    // A root on the machine that is not the device's person's signs nothing,
-    // and neither does an unreadable one or a source certificate that does
-    // not verify.
-    {
-        // Another person's root.
-        let root = SigningKey::from_bytes(&[7; 32]);
-        let fixture = Fixture::new(&root);
-        let stranger = SigningKey::from_bytes(&[9; 32]);
-        persist::write_signing_key(&fixture.paths.user_privkey, &stranger).unwrap();
-        let result = branched(fixture.settle(BRANCH));
-        assert!(matches!(result.certification, Certification::Pending(_)));
-        assert!(!fixture.paths.device_cert.exists());
-        assert!(
-            !fixture
-                .paths
-                .device_cert_for_user(&stranger.verifying_key().to_bytes())
-                .exists()
-        );
-
-        // A root anyone could read.
-        let fixture = Fixture::new(&root);
-        persist::write_signing_key(&fixture.paths.user_privkey, &root).unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(
-                &fixture.paths.user_privkey,
-                fs::Permissions::from_mode(0o644),
-            )
-            .unwrap();
-        }
-        let result = branched(fixture.settle(BRANCH));
-        assert!(matches!(result.certification, Certification::Pending(_)));
-        assert!(!fixture.paths.device_cert.exists());
-
-        // A source certificate that does not verify grants nothing to copy.
-        let fixture = Fixture::new(&root);
-        persist::write_signing_key(&fixture.paths.user_privkey, &root).unwrap();
-        let mut forged = read_device_cert(&fixture.paths.device_cert).unwrap();
-        forged.capabilities = DeviceCapabilities::primary();
-        persist::write_device_cert(&fixture.paths.device_cert, &forged).unwrap();
-        let result = branched(fixture.settle(BRANCH));
-        assert!(matches!(result.certification, Certification::Pending(_)));
-        assert!(!fixture.paths.device_cert.exists());
-    }
+    fn a_branch_is_named_after_its_source;
 
     phase branch_labels_fit_a_certificate;
     {

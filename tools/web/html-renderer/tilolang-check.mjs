@@ -6,10 +6,13 @@
 // usage: node tools/web/html-renderer/tilolang-check.mjs BUNDLE_DIR OUT_DIR [--package tl/<id>/]
 //                                                       [--scenario all|NAME,...] [--open ROW]
 //                                                       [--width N] [--height N]
-//                                                       [--pages ROW,ROW,...]
+//                                                       [--pages ROW,ROW,...] [--zone ZONE]
 // With --pages, each named place in the window's sidebar is chosen, and its page shot in both
 // themes and both renderers as `<render>-<theme>-<place>.png`, before the interaction checks.
 // The gallery's pages are its sidebar's places, so by default every one of them is walked.
+// The page reads its clock in ZONE (an IANA name, UTC by default, as a device's capture does), and
+// a package staged with a scenario shows the capture's instant, so its days and times are a
+// capture's.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {serve} from '../chrome.mjs';
@@ -30,6 +33,7 @@ const width = Number(option('--width')) || 1280;
 const height = Number(option('--height')) || 800;
 const pages = (option('--pages') ?? (pkg === GALLERY ? GALLERY_PLACES.join(',') : ''))
   .split(',').filter(Boolean);
+const zone = option('--zone') ?? 'UTC';
 const TEXT = 'Hello web';
 mkdirSync(out, {recursive: true});
 
@@ -117,6 +121,7 @@ try {
         const result = report.pages[`${render}-${theme}-${page}`] = {};
         try {
           await tab.colourScheme(theme);
+          await tab.send('Emulation.setTimezoneOverride', {timezoneId: zone});
           await tab.navigate(`${server.url}/app.html?package=${encodeURIComponent(pkg)}&scenario=${scenario}&render=${render}&theme=${theme}`);
           await tab.waitFor('window.renderMarks.presented.length > 0', {timeout: 120000});
           await settle(tab);
@@ -166,6 +171,7 @@ try {
       report.renders[`${render}-${theme}`] = result;
       try {
         await tab.colourScheme(theme);
+        await tab.send('Emulation.setTimezoneOverride', {timezoneId: zone});
         await tab.navigate(`${server.url}/app.html?package=${encodeURIComponent(pkg)}&scenario=${scenario}&render=${render}&theme=${theme}`);
         await tab.waitFor('window.renderMarks.presented.length > 0', {timeout: 120000});
         await settle(tab);

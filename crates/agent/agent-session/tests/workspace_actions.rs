@@ -140,6 +140,9 @@ mod hosted_consent_notification;
 #[path = "workspace_actions/hosted_documents.rs"]
 pub mod hosted_documents;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_import_open.rs"]
+mod hosted_import_open;
+#[cfg(test)]
 #[path = "workspace_actions/hosted_mail_turn.rs"]
 mod hosted_mail_turn;
 #[cfg(test)]
@@ -209,6 +212,10 @@ mod workspace_find;
 #[cfg(test)]
 #[path = "workspace_actions/search_beside_requests.rs"]
 mod search_beside_requests;
+
+#[cfg(test)]
+#[path = "workspace_actions/person_before_agent.rs"]
+mod person_before_agent;
 
 #[cfg(test)]
 #[path = "workspace_actions/workspace_per_customer.rs"]

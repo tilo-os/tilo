@@ -1,0 +1,138 @@
+# What each app below gained since its budget: its package now carries the
+# app's model module, the WebAssembly a device holding the workspace's keys
+# applies its actions with (docs/architecture/apps.md). `t test app-models`
+# builds the modules, and both packs write each app's into its payload as
+# `model.wasm`, so the module's own bytes count against the app's budget. A
+# module is 20 KB for Assistant to 500 KB for Calendar and Chat; the app
+# binaries themselves grew about 40 KB each since the budgets were measured
+# (Calendar's named code 1,605,089 to 1,594,816 bytes at ce691a3c2e, measured
+# with tools/perf/tapp_symbol_sizes.py). Each amount is the app's overage at
+# run rb55fae3ed4 plus the ratchet's 1 % headroom, rounded up to 64 KiB. The
+# aarch64 run prints its own numbers.
+reason = "every app's package carries its model module now, the WebAssembly a device holding the workspace's keys applies its actions with, which adds 20 to 510 KB of the app's own model code to each tapp; the rest is the code the apps gained since the budgets were measured"
+run = "rb55fae3ed4"
+
+# model 138,691 bytes; 1,706,496 bytes in all, 1,572,864 budgeted.
+[apps."so.tilo.api-tester"]
+x86_64 = 196608
+
+# model 21,846 bytes; 998,912 bytes in all, 983,040 budgeted.
+[apps."so.tilo.assistant"]
+x86_64 = 65536
+
+# model 26,779 bytes; 1,246,720 bytes in all, 1,245,184 budgeted.
+[apps."so.tilo.backups"]
+x86_64 = 65536
+
+# model 106,793 bytes; 4,066,304 bytes in all, 3,932,160 budgeted.
+[apps."so.tilo.browser"]
+x86_64 = 196608
+
+# model 64,835 bytes; 966,656 bytes in all, 917,504 budgeted.
+[apps."so.tilo.calculator"]
+x86_64 = 65536
+
+# model 499,371 bytes; 3,290,112 bytes in all, 2,686,976 budgeted.
+[apps."so.tilo.calendar"]
+x86_64 = 655360
+
+# model 51,336 bytes; 1,780,736 bytes in all, 1,703,936 budgeted.
+[apps."so.tilo.camera"]
+x86_64 = 131072
+
+# model 509,894 bytes; 5,205,504 bytes in all, 4,587,520 budgeted.
+[apps."so.tilo.chat"]
+x86_64 = 720896
+
+# model 101,405 bytes; 1,656,320 bytes in all, 1,572,864 budgeted.
+[apps."so.tilo.clocks"]
+x86_64 = 131072
+
+# model 31,632 bytes; 1,488,384 bytes in all, 1,441,792 budgeted.
+[apps."so.tilo.containers"]
+x86_64 = 65536
+
+# model 65,022 bytes; 4,529,152 bytes in all, 4,456,448 budgeted.
+[apps."so.tilo.db-client"]
+x86_64 = 131072
+
+# model 97,556 bytes; 1,272,320 bytes in all, 1,179,648 budgeted.
+[apps."so.tilo.diffmerge"]
+x86_64 = 131072
+
+# model 41,105 bytes; 951,808 bytes in all, 917,504 budgeted.
+[apps."so.tilo.disk-usage"]
+x86_64 = 65536
+
+# model 98,535 bytes; 1,433,600 bytes in all, 1,376,256 budgeted.
+[apps."so.tilo.firewall"]
+x86_64 = 131072
+
+# model 79,982 bytes; 4,099,584 bytes in all, 4,063,232 budgeted.
+[apps."so.tilo.git-client"]
+x86_64 = 131072
+
+# model 63,863 bytes; 914,432 bytes in all, 851,968 budgeted.
+[apps."so.tilo.hex-editor"]
+x86_64 = 131072
+
+# no model; 2,788,864 bytes in all, 2,752,512 budgeted.
+[apps."so.tilo.imager"]
+x86_64 = 65536
+
+# no model; 657,408 bytes in all, 655,360 budgeted.
+[apps."so.tilo.launcher"]
+x86_64 = 65536
+
+# model 28,822 bytes; 932,864 bytes in all, 917,504 budgeted.
+[apps."so.tilo.logs"]
+x86_64 = 65536
+
+# model 129,067 bytes; 1,730,048 bytes in all, 1,572,864 budgeted.
+[apps."so.tilo.maps"]
+x86_64 = 196608
+
+# model 21,837 bytes; 1,654,784 bytes in all, 1,638,400 budgeted.
+[apps."so.tilo.passwords"]
+x86_64 = 65536
+
+# model 107,158 bytes; 885,248 bytes in all, 786,432 budgeted.
+[apps."so.tilo.poker"]
+x86_64 = 131072
+
+# model 25,401 bytes; 1,277,440 bytes in all, 1,245,184 budgeted.
+[apps."so.tilo.print-centre"]
+x86_64 = 65536
+
+# model 30,333 bytes; 867,328 bytes in all, 851,968 budgeted.
+[apps."so.tilo.publisher"]
+x86_64 = 65536
+
+# model 59,781 bytes; 3,022,848 bytes in all, 3,014,656 budgeted.
+[apps."so.tilo.remote"]
+x86_64 = 65536
+
+# no model; 2,904,064 bytes in all, 2,883,584 budgeted.
+[apps."so.tilo.store"]
+x86_64 = 65536
+
+# no model; 1,913,344 bytes in all, 1,900,544 budgeted.
+[apps."so.tilo.terminal"]
+x86_64 = 65536
+
+# model 81,047 bytes; 2,155,008 bytes in all, 2,097,152 budgeted.
+[apps."so.tilo.tube"]
+x86_64 = 131072
+
+# no model; 1,134,080 bytes in all, 1,114,112 budgeted.
+[apps."so.tilo.typst-editor"]
+x86_64 = 65536
+
+# no model; 1,145,344 bytes in all, 1,114,112 budgeted.
+[apps."so.tilo.video-player"]
+x86_64 = 65536
+
+# no model; 1,494,016 bytes in all, 1,441,792 budgeted.
+[apps."so.tilo.windows"]
+x86_64 = 131072
+

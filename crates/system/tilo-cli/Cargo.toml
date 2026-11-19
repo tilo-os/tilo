@@ -34,7 +34,7 @@ jiff.workspace = true
 tilo-advisory-lock = { path = "../advisory-lock" }
 # The cleanup record, replaced atomically and durably.
 tilo-files = { path = "../../platform/tilo-files" }
-rustix = { workspace = true, features = ["fs", "std", "process", "termios"] }
+rustix = { workspace = true, features = ["fs", "net", "std", "process", "termios"] }
 tilo-paths.workspace = true
 # The desktop's apps and actions (`tilo open`, `tilo action`, `tilo do`): the
 # control protocol's one client, shared with tilo-control.
@@ -53,6 +53,9 @@ iroh-base.workspace = true
 # HTTPS to a site and a host, as every client of the server makes its requests.
 tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+# The person's own store: their machines' disk recovery keys, which only
+# their devices keep.
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # `tilo login <invitation link>` reads the signed invitation and the server's iroh address in it.
 tilo-workspace-join = { path = "../../collab/workspace-join" }
 tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
@@ -124,6 +127,9 @@ zeroize.workspace = true
 mail-parser = "0.11.4"
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
+# The person's root, kept in their identity store.
+tilo-identity = { path = "../../runtime/tilo-identity" }
+tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser.workspace = true

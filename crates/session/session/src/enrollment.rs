@@ -21,7 +21,10 @@ use collab_types::CommitNamed as _;
 use serde::{Deserialize, Serialize};
 use tilo_enrollment::approval::ApprovalOptions;
 use tilo_enrollment::{Decision, Person, WaitingMachine};
-use tilo_peer_state::{DocumentMutation, ENROLLMENT_KIND, PersonalSync};
+use tilo_peer_state::{
+    DocumentMutation, ENROLLMENT_KIND, MachineRecovery, PersonalSync, machines,
+    update_person_resource,
+};
 
 use crate::i18n::{t, t_args};
 use crate::platform::notice::Notice;
@@ -183,6 +186,26 @@ fn answered(personal: &PersonalSync, ask: &str) -> Option<Decision> {
     })
 }
 
+/// Keep the disk recovery key a machine handed over with its ask in the
+/// person's own store, beside their own list of their devices: what opens a disk
+/// whose install kept no copy. Idempotent, so an approval carried out twice
+/// (a replayed answer, a second device serving the same machine) changes
+/// nothing.
+fn keep_machine_recovery(
+    personal: &PersonalSync,
+    machine: &WaitingMachine,
+    key: &str,
+    now_ns: u64,
+) -> Result<(), String> {
+    let entry = MachineRecovery {
+        machine: machine.device.clone(),
+        label: machine.label.clone(),
+        key: key.to_owned(),
+        at_ns: now_ns,
+    };
+    update_person_resource(personal, machines::KIND, |doc| machines::put(doc, &entry))
+}
+
 /// The person's own devices, as the store holds them, for the endpoint that
 /// answers machines: another device answers an ask from the store, and this
 /// one carries it out here.
@@ -200,6 +223,21 @@ impl Person for Asked {
         };
         while std::time::Instant::now() < deadline {
             if let Some(decision) = answered(&self.personal, &machine.ask) {
+                if decision == Decision::Approve
+                    && let Some(key) = machine.recovery_key.as_deref()
+                    && let Err(error) = keep_machine_recovery(
+                        &self.personal,
+                        machine,
+                        key,
+                        tilo_clock::unix_now_ns(),
+                    )
+                {
+                    // The machine is admitted either way: refusing it would
+                    // leave a disk whose key nobody kept. Losing the key is
+                    // what the person must know about.
+                    tracing::warn!(%error, machine = %machine.label,
+                        "a machine's disk recovery key was not kept");
+                }
                 return Ok(decision);
             }
             std::thread::sleep(LOOK_EVERY);

@@ -218,7 +218,7 @@ impl<P: Chained> ChainPager<P> {
         match self.chain.hold(earlier) {
             Ok(()) => {
                 if self.chain.waiting(earlier).is_some() {
-                    self.asked = Some(ArrivalClock::new(ui_core::time::now(), Source::host("")));
+                    self.asked = Some(ArrivalClock::new(ui_core::time::now(), Source::Remote));
                 }
                 Paged::Opened(earlier)
             }
@@ -348,11 +348,9 @@ impl<P: Chained, K: Clone + Eq + Hash + 'static, T> ListModel for ChainList<P, K
             if let Some(why) = &self.unavailable {
                 return Arrival::Failed(why);
             }
-            let from = self
-                .pager
-                .asked()
-                .map_or_else(|| Source::host(""), |asked| asked.source().clone());
-            return Arrival::Pending { from };
+            return Arrival::Pending {
+                from: Source::Remote,
+            };
         }
         Arrival::Ready(())
     }

@@ -1119,8 +1119,19 @@ fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member
         .filter_map(|(person, role)| {
             let person_id = PersonId::parse(&person).ok()?;
             let id = MemberId::person(person_id.clone());
+            // Someone not here goes by the name the workspace's governance gives them: the one
+            // they gave themselves, wherever they did.
             let (name, colour) = here(&id).map_or_else(
-                || (String::new(), PresenceHue::of_member(&id)),
+                || {
+                    (
+                        workspace
+                            .people_names
+                            .get(&person)
+                            .cloned()
+                            .unwrap_or_default(),
+                        PresenceHue::of_member(&id),
+                    )
+                },
                 |person| (person.label.clone(), hue_of(person.rgb)),
             );
             let mut row = Member::of_person(

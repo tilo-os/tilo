@@ -331,11 +331,7 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
     sign_device_cert(&mut cert, &person).expect("the person's signature");
     // The node was enrolled from the factory, never set up here: no root and no key of an identity
     // of its own beside the device key the imager left.
-    for path in [
-        &machine.paths.user_privkey,
-        &machine.paths.user_pubkey,
-        &machine.paths.device_cert,
-    ] {
+    for path in [&machine.paths.user_pubkey, &machine.paths.device_cert] {
         if path.exists() {
             std::fs::remove_file(path).expect("the node holds no identity of its own yet");
         }
@@ -365,7 +361,7 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
         "taking up an enrollment minted a primary identity"
     );
     assert!(
-        !machine.paths.user_privkey.exists(),
+        !personal.join("secrets").exists(),
         "taking up an enrollment minted the person's root on this device"
     );
     assert_eq!(

@@ -558,10 +558,11 @@ impl PresenceCtx {
                 &Circle::new(target, radius),
             );
         }
-        // The agent wears the nametag it wears wherever it points, in its
-        // colour, saying what it is doing here: one tag for the agent and its
-        // action, clear of the text around it.
-        let words = self.interaction_status_label(interaction);
+        // The agent wears the nametag it wears wherever it points, in its colour: its name alone,
+        // one tag for the agent, clear of the text around it. What it is doing is said by the
+        // caret it writes with, the card of the action it took, and its line among who is here —
+        // not by a second sentence on the tag, which a long one pushes out of the window.
+        let words = actor_label(self, interaction);
         // A caret it writes with may wear its tag already (an agent writing in a document): the
         // pointer then goes without, one tag for one agent, at its caret. The caret's tag names
         // the agent ("Claude Code") where this one would say what it does; a second tag
@@ -1040,6 +1041,18 @@ pub(super) fn same_or_made_in(
 /// ([`PresenceCtx::member_label`]); an automation by the group it runs in. A roster that knows a
 /// member only by its key gives no name: a raw id is none, so it says what kind of member acts.
 fn actor_label(presence: &PresenceCtx, interaction: &SemanticInteraction) -> String {
+    // An agent that named its session is called that: the roster's name for an agent working
+    // through a key is the key's device label, which is no name to point at a step with.
+    if interaction.actor.is_agent()
+        && let Some(named) = interaction
+            .group
+            .as_ref()
+            .and_then(|group| group.session.as_deref())
+            .map(str::trim)
+            .filter(|named| !named.is_empty())
+    {
+        return named.to_owned();
+    }
     let Some(member) = interaction.actor.member_id() else {
         let name = interaction
             .group
@@ -1787,6 +1800,7 @@ pub(crate) mod tests {
                 label: Some("Morning".into()),
                 kind: "shortcut".into(),
                 declared_id: None,
+                session: None,
             });
             assert_eq!(
                 actor_label(&presence, &shortcut),
@@ -1962,6 +1976,12 @@ pub(crate) mod tests {
                     presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
                     "Release Notes Agent: Working in Draft.md"
                 );
+                // The pointer's tag names the agent alone: what it does is the card's line, and
+                // a second sentence on the tag pushes a long one out of the window it points in.
+                assert_eq!(
+                    actor_label(&presence, &interaction(11, 1, InteractionPhase::Applying)),
+                    "Release Notes Agent"
+                );
                 presence.names.clear();
                 assert_eq!(
                     presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
@@ -1977,6 +1997,19 @@ pub(crate) mod tests {
                 assert_eq!(actor_label(&presence, &agent), "Agent");
                 presence.names.insert(user.clone(), "Quill".into());
                 assert_eq!(actor_label(&presence, &agent), "Quill");
+                // An agent that named its session is called that, whatever the roster calls the
+                // key's device it works through: a key label and an address name no one.
+                presence.names.insert(user.clone(), "API key \u{201c}Local stack\u{201d} via localhost:37710".into());
+                let mut named = interaction(14, 1, InteractionPhase::Applying);
+                named.actor = Acting::agent("opaque-runtime-id");
+                named.group = Some(tilo_actions::WorkGroup {
+                    id: "agent-session:1".into(),
+                    label: None,
+                    kind: "agent-session".into(),
+                    declared_id: None,
+                    session: Some("Office Hours".into()),
+                });
+                assert_eq!(actor_label(&presence, &named), "Office Hours");
             }
             // A roster that knows a member only by its key hands that key
             // back as its name; the card names the kind of member instead.

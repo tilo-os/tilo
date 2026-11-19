@@ -282,6 +282,25 @@ impl<I> ActionBinding<I> {
 }
 
 impl ActionBinding<()> {
+    /// Bind a nullary control to the action `spec` its declaration publishes
+    /// on `resource`, which no row carries: an effect the resource offers.
+    /// # Errors
+    /// [`ActionBindingError::InvalidArguments`] when `spec` requires an argument.
+    pub fn declared(
+        resource: impl Into<String>,
+        spec: ActionSpec,
+    ) -> Result<Self, ActionBindingError> {
+        let binding = Self {
+            address: ActionAddress::new(resource, spec.id.clone()),
+            kind: String::new(),
+            shared_by: None,
+            spec,
+            arguments: std::sync::Arc::new(|()| Ok(serde_json::Map::new())),
+        };
+        binding.spec.validate_json(&serde_json::Map::new())?;
+        Ok(binding)
+    }
+
     /// Bind a nullary control to a nullary exported action.
     pub fn unit(
         resource: &(impl Exports + ?Sized),
@@ -1225,7 +1244,7 @@ pub struct ActionType {
     /// The typed argument surface an external caller invokes against. Private
     /// because it must stay in step with `build` — the two are always set
     /// together by a constructor, never independently.
-    params: Vec<ActionParam>,
+    pub(crate) params: Vec<ActionParam>,
     /// Builds the encoded action from arguments bound against `params`. The
     /// palette's input mode uses the same closure, which is what makes the palette
     /// path and the external path provably one function.

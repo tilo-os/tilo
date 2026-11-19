@@ -222,7 +222,6 @@ history-sync-offline = Offline. Änderungen werden synchronisiert, sobald du wie
 history-sync-reconnecting = Verbinde. Änderungen werden synchronisiert, sobald die Verbindung steht.
 history-sync-join-refused = Dieser Arbeitsbereich hat die App nicht beitreten lassen: { $reason }. Deine Änderungen bleiben auf diesem Gerät.
 arriving-loading = Wird geladen
-arriving-from = Von { $source }
 arriving-received-of = { $received } von { $total }
 arriving-received = { $received } empfangen
 arriving-failed = Konnte nicht geladen werden
