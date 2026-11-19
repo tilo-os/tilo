@@ -757,18 +757,18 @@ pub enum TurnEffect {
 fn turn_resource(question: &str, asked: &str) -> tilo_actions::ResourceSpec {
     let label = asked.lines().next().unwrap_or_default().trim();
     let mut spec = tilo_resource::LiveRow::typed::<TurnRow>(turn_address(question), label)
-        // Chat's own words for a message's item, as its window publishes it.
-        .with_type(tilo_actions::ResourceType {
-            noun: tilo_actions::Noun::new("answer", "answers"),
-            app: tilo_actions::Noun::new("Chat", "Chat"),
-            root: false,
-        })
         .view(tilo_actions::ResourceViewSpec::new(
             tilo_session_core::layout::TURN_VIEW,
             label.to_owned(),
             "open",
         ))
-        .into_resource();
+        .into_resource()
+        // Chat's own words for a message's item, as its window publishes it.
+        .with_type(tilo_actions::ResourceType {
+            noun: tilo_actions::Noun::new("answer", "answers"),
+            app: tilo_actions::Noun::new("Chat", "Chat"),
+            root: false,
+        });
     spec.app_id = Some("chat".to_owned());
     spec
 }
