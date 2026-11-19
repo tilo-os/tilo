@@ -155,13 +155,18 @@ fn copy_assets(
     documents: &[((String, String), Vec<u8>)],
     omitted: &BTreeSet<String>,
 ) -> Result<(), String> {
-    let mut named = super::collection::named_by(documents, &|address| from.read(address))?;
+    let mut named = super::collection::named_by(documents, &|address| {
+        (!omitted.contains(address))
+            .then(|| from.read(address))
+            .flatten()
+    })?;
     if !omitted.is_empty() {
         let attachments =
             super::collection::named_by_matching(documents, &|app| app != FILES_APP, &|address| {
                 from.read(address)
             })?;
-        named.retain(|hash| !omitted.contains(hash) || attachments.contains(hash));
+        named.retain(|hash| !omitted.contains(hash));
+        named.extend(attachments);
     }
     let (count, mut copied, mut lacking) = (named.len(), 0_usize, 0_usize);
     for address in named {
