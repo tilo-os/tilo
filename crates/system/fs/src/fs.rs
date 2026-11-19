@@ -74,6 +74,66 @@ pub type WriteStages = HashMap<u64, Arc<Stage>>;
 /// ([`QuickFS::set_durability_hook`]).
 pub type DurabilityHook = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
 
+/// Keeps on disk what the namespace changed since it last did, the moment the mount changed
+/// it ([`QuickFS::with_change_journal`]): handed the namespace under the lock the change was
+/// made in, before the request that made it is answered. What a request was answered for then
+/// outlives the process, killed or not, however long the namespace's own copy on disk lags.
+pub type ChangeJournal = Arc<dyn Fn(&mut Namespace) -> io::Result<()> + Send + Sync>;
+
+/// The namespace, locked for one step of the mount; what the step changed is handed to the
+/// mount's [`ChangeJournal`] as the lock is let go.
+pub(crate) struct NamespaceGuard<'a> {
+    namespace: std::sync::MutexGuard<'a, Namespace>,
+    journal: Option<&'a Journaled>,
+}
+
+/// A [`ChangeJournal`] and the announcements of the namespace it keeps, which say whether a
+/// step changed anything: a step that only read hands nothing to it.
+pub(crate) struct Journaled {
+    journal: ChangeJournal,
+    changes: Mutex<tokio::sync::watch::Receiver<()>>,
+}
+
+impl Journaled {
+    /// Whether the namespace announced a change since this was last asked.
+    fn announced(&self) -> bool {
+        let mut announcements = self.changes.lock_recover();
+        let announced = announcements.has_changed().unwrap_or(false);
+        if announced {
+            announcements.borrow_and_update();
+        }
+        drop(announcements);
+        announced
+    }
+}
+
+impl std::ops::Deref for NamespaceGuard<'_> {
+    type Target = Namespace;
+
+    fn deref(&self) -> &Namespace {
+        &self.namespace
+    }
+}
+
+impl std::ops::DerefMut for NamespaceGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Namespace {
+        &mut self.namespace
+    }
+}
+
+impl Drop for NamespaceGuard<'_> {
+    fn drop(&mut self) {
+        let Some(journaled) = self.journal else {
+            return;
+        };
+        if journaled.announced()
+            && let Err(error) = (journaled.journal)(&mut self.namespace)
+        {
+            eprintln!("the namespace's change could not be kept on disk: {error}");
+        }
+    }
+}
+
 /// Commit bookkeeping for one in-memory write buffer. `generation` counts mutations of
 /// the buffer; a buffer whose latest generation is committed is clean and may be
 /// dropped when its last handle closes.
@@ -569,6 +629,8 @@ pub struct QuickFS {
     /// Makes the namespace on disk hold the current placements: run after a record group
     /// is durable (native backend), and by `fsync`/`fsyncdir`.
     durability_hook: std::sync::OnceLock<DurabilityHook>,
+    /// Where each change the mount makes is kept on disk before it is answered.
+    journal: Option<Journaled>,
     /// Whether a changeset is publishing: its changes are announced once, when it is
     /// durable.
     changeset_open: AtomicBool,
@@ -623,6 +685,7 @@ impl QuickFS {
             writers: None,
             admission: None,
             durability_hook: std::sync::OnceLock::new(),
+            journal: None,
             changeset_open: AtomicBool::new(false),
             announce_held: AtomicBool::new(false),
 
@@ -690,8 +753,23 @@ impl QuickFS {
         self
     }
 
-    fn ns(&self) -> std::sync::MutexGuard<'_, Namespace> {
-        self.namespace.lock_recover()
+    fn ns(&self) -> NamespaceGuard<'_> {
+        NamespaceGuard {
+            namespace: self.namespace.lock_recover(),
+            journal: self.journal.as_ref(),
+        }
+    }
+
+    /// Keep each change the mount makes to the namespace with `journal` before the request
+    /// that made it is answered ([`ChangeJournal`]).
+    #[must_use]
+    pub fn with_change_journal(mut self, journal: ChangeJournal) -> Self {
+        let changes = self.namespace.lock_recover().subscribe_changes();
+        self.journal = Some(Journaled {
+            journal,
+            changes: Mutex::new(changes),
+        });
+        self
     }
 
     /// [`Namespace::inode_view`] under one namespace lock, with the path built only when

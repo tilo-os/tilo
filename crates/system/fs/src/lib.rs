@@ -52,8 +52,10 @@ pub mod hydration;
 pub mod identity;
 #[cfg(feature = "filesystem")]
 #[cfg(feature = "filesystem")]
-pub mod namespace;
+pub mod kept_documents;
 #[cfg(feature = "filesystem")]
+#[cfg(feature = "filesystem")]
+pub mod namespace;
 #[cfg(feature = "filesystem")]
 pub mod namespace_persist;
 #[cfg(all(feature = "filesystem", target_os = "linux"))]
