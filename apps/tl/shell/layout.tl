@@ -156,7 +156,7 @@ fn permille_of(w: Width) -> Int {
 }
 
 /// What the person shows of their layout, and which strip stands in front: the shell's own
-/// view of it, in their own document (`resources: .own`, `root viewing: Viewing`). The layout
+/// view of it, in their profile (`resources: .profile`, `root viewing: Viewing`). The layout
 /// is the session's and the same whichever way it is shown; this is what changes when the
 /// person picks a style or brings a strip forward, and switching keeps every place where
 /// it was.

@@ -114,6 +114,7 @@ pub fn own_kinds(app: &str) -> Vec<String> {
     let legacy: &[&str] = match app {
         "so.tilo.lang.mail" => &["tl.so.tilo.lang.mail"],
         "so.tilo.lang.views" => &["tl.so.tilo.lang.views"],
+        "so.tilo.shell" => &["tl.so.tilo.shell"],
         tilo_app_id::apps::MAIL | "dev.tilo.mail" => {
             &["mail.mailbox", "mail.trusted-senders", "mail.copies"]
         }
@@ -238,7 +239,7 @@ mod tests {
         assert_eq!(
             OwnResource::recognise("so.tilo.shell", &package.document_id(), [3; 32]),
             Some(package),
-            "a built-in tilolang package declaring `resources: .own` keeps its record kind as each member's own"
+            "the earlier Shell identity stays recognizable after the declaration moves to the profile"
         );
     }
 }
