@@ -287,16 +287,21 @@ impl Worker {
         if owner && !super::bounded::governed(&self.shared, workspace_id) {
             return true;
         }
-        let Some(who) = self.bounded(caller) else {
-            return false;
-        };
         let workspace = workspace_id.to_string();
-        let document = tree::document_id();
-        let Ok(policy) =
-            self.policy_for(workspace_id, &who, &workspace, Some((FILES_APP, &document)))
-        else {
+        let who = self.bounded(caller);
+        let policy = match &who {
+            Some(who) => self.policy_for(workspace_id, who, &workspace, None).ok(),
+            None if owner => self
+                .shared
+                .link
+                .get()
+                .and_then(|link| link.workspace_policy(workspace_id, caller)),
+            None => None,
+        };
+        let Some(policy) = policy.filter(|policy| policy.workspace == workspace) else {
             return false;
         };
+        let document = tree::document_id();
         let node = collab_types::document_node(&workspace, FILES_APP, &document);
         let clock = ui::permissions::policy::Context::at_secs(policy.unix_time);
         if policy.access.answer(&node, ActionKind::Read, &clock) != Answer::Allow
@@ -305,25 +310,25 @@ impl Worker {
         {
             return false;
         }
-        if owner {
-            return true;
-        }
-        self.permissions_across(workspace_id, &who, &workspace)
-            .is_some_and(|permissions| {
-                // The nodes a mount writing a file and every receiver of the change decide it at.
-                if verbs.is_empty() {
-                    return permissions.answer(
-                        &fs_protocol::file_action::verb_node(None, tree::LIST),
-                        ActionKind::Read,
-                    ) == Answer::Allow;
-                }
-                verbs.iter().all(|verb| {
-                    permissions.answer(
-                        &fs_protocol::file_action::verb_node(None, verb),
-                        ActionKind::Undoable,
-                    ) == Answer::Allow
-                })
+        let permissions = match &who {
+            Some(who) => super::bounded::bounded_permissions(&policy, who).ok(),
+            None => Some(policy.permissions()),
+        };
+        permissions.is_some_and(|permissions| {
+            // The nodes a mount writing a file and every receiver of the change decide it at.
+            if verbs.is_empty() {
+                return permissions.answer(
+                    &fs_protocol::file_action::verb_node(None, tree::LIST),
+                    ActionKind::Read,
+                ) == Answer::Allow;
+            }
+            verbs.iter().all(|verb| {
+                permissions.answer(
+                    &fs_protocol::file_action::verb_node(None, verb),
+                    ActionKind::Undoable,
+                ) == Answer::Allow
             })
+        })
     }
 
     /// Answer one of Files' verbs on the folder of the workspace `named`, its `write-file`
