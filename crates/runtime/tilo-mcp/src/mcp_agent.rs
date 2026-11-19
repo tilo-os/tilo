@@ -1815,7 +1815,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 });
             let mut named: Vec<Node> = children.clone();
             named.extend(resolved.node.clone());
-            let shared = shared_names(&children, &named);
+            let titled = mcp_agent_node::Names::of(&named);
+            let shared = shared_names(&children, &titled);
             entries.resize(first, (String::new(), None));
             for (index, child) in children.iter().enumerate() {
                 let index = first.saturating_add(index);
@@ -1829,7 +1830,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     .listed_reference(&child.kind, &child.id)
                     .map(|reference| format!("{reference}  "))
                     .unwrap_or_default();
-                line.push_str(&child.name(&named));
+                let name = child.name_in(&titled);
+                line.push_str(&name);
                 if child.container {
                     line.push('/');
                 }
@@ -1838,7 +1840,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 // row read off the listing walks back to this very resource. Never the
                 // published kind (`tl.<app>.<Type>`), which no program writes.
                 let _ = write!(line, "  {}", forms.kind(&child.kind).unwrap_or(&child.kind));
-                let name = child.name(&named);
                 // A title two rows share does not say which is which: the row's
                 // own id does, beside it.
                 if shared.contains(&name.trim().to_lowercase()) {

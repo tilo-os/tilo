@@ -47,12 +47,74 @@ impl Node {
 /// ([`Node::name`]): a line named by one of them is told apart by its id
 /// beside it. Two titles used once each per parent are told apart by their
 /// places instead, so they are not shared.
-pub(super) fn shared_names(rows: &[Node], siblings: &[Node]) -> std::collections::HashSet<String> {
+pub(super) fn shared_names(
+    rows: &[Node],
+    siblings: &Names<'_>,
+) -> std::collections::HashSet<String> {
     let mut seen = std::collections::HashSet::new();
     rows.iter()
-        .filter(|row| !seen.insert(row.name(siblings).trim().to_lowercase()))
-        .map(|row| row.name(siblings).trim().to_lowercase())
+        .map(|row| row.name_in(siblings).trim().to_lowercase())
+        .filter(|name| !seen.insert(name.clone()))
         .collect()
+}
+
+/// Siblings indexed by their titles: what tells whether a name sets one of
+/// them apart ([`Node::name_in`]) without reading every other sibling, so a
+/// listing of hundreds names each of its rows at the cost of one.
+pub(super) struct Names<'a> {
+    siblings: &'a [Node],
+    /// Each sibling's index by its title, trimmed and lowercased, in order.
+    titled: HashMap<String, Vec<usize>>,
+}
+
+impl<'a> Names<'a> {
+    pub(super) fn of(siblings: &'a [Node]) -> Self {
+        let mut titled: HashMap<String, Vec<usize>> = HashMap::new();
+        for (at, node) in siblings.iter().enumerate() {
+            titled
+                .entry(node.label.trim().to_ascii_lowercase())
+                .or_default()
+                .push(at);
+        }
+        Self { siblings, titled }
+    }
+
+    /// The siblings titled `title`, trimmed, whatever its case.
+    fn titled(&self, title: &str) -> impl Iterator<Item = &'a Node> + '_ {
+        self.titled
+            .get(&title.trim().to_ascii_lowercase())
+            .into_iter()
+            .flatten()
+            .filter_map(|at| self.siblings.get(*at))
+    }
+
+    /// The siblings `name` names first ([`Node::answers_to`] ranks them `0`):
+    /// the one a title names, or the one whose place among those of its
+    /// title `name` gives (`TODO 2`). Any other answers to it after them, if
+    /// at all.
+    fn first_named(&self, name: &str) -> Vec<&'a Node> {
+        let mut named: Vec<&'a Node> = Vec::new();
+        let mut by_place: Option<&str> = None;
+        if let Some((base, place)) = name.rsplit_once(' ')
+            && !base.trim().is_empty()
+            && place.chars().all(|character| character.is_ascii_digit())
+            && let Ok(place) = place.parse::<usize>()
+        {
+            by_place = Some(base.trim());
+            named.extend(
+                self.titled(base)
+                    .filter(|node| place == node.ordinal && place >= 2),
+            );
+        }
+        // A name that is the title itself names the first of that title; a
+        // title its place names above answers only to that place.
+        named.extend(self.titled(name).filter(|node| {
+            node.ordinal <= 1
+                && node.label.trim().eq_ignore_ascii_case(name)
+                && by_place.is_none_or(|base| !node.label.trim().eq_ignore_ascii_case(base))
+        }));
+        named
+    }
 }
 
 /// One resource of an app's directory, as an agent names it.
@@ -150,21 +212,26 @@ impl Node {
     /// The name that goes in a path: its label when it tells it apart from
     /// `siblings`, else its key's last part (`body`), else its key.
     pub(super) fn name(&self, siblings: &[Node]) -> String {
+        self.name_in(&Names::of(siblings))
+    }
+
+    /// [`Self::name`] among siblings already indexed by their titles.
+    pub(super) fn name_in(&self, siblings: &Names<'_>) -> String {
         // Neither what belongs to this resource nor what it is a part of
         // competes with it: a note titled like its notebook keeps its title.
         let apart = |name: &str| {
             !name.trim().is_empty()
                 && siblings
-                    .iter()
+                    .first_named(name)
+                    .into_iter()
                     .filter(|other| other.id != self.id)
-                    .filter(|other| !self.owns(other) && !self.within(other))
-                    .all(|other| other.answers_to(name).is_none_or(|rank| rank > 0))
+                    .all(|other| self.owns(other) || self.within(other))
         };
         let label = self.label.trim();
         // A page and the body published beside it share a title but not a
         // level: only what sits beside this one takes its title.
         let twin = !label.is_empty()
-            && siblings.iter().any(|other| {
+            && siblings.titled(label).any(|other| {
                 other.id != self.id
                     && other.parent == self.parent
                     && other.label.trim().eq_ignore_ascii_case(label)
