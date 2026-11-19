@@ -125,6 +125,20 @@ fn drive_pixels(device: &wgpu::Device, queue: &wgpu::Queue, conservative: bool) 
     })
 }
 
+/// The code that reads the workspace's resources is in: every desktop builds the windows that
+/// waited for it.
+pub(crate) fn workspace_resources_arrived() {
+    let ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
+    for id in ids {
+        let _ = with_mount_quietly(id, |mount| {
+            if let Some(desktop) = &mount.desktop {
+                desktop.shared.code_arrived();
+            }
+            Ok(())
+        });
+    }
+}
+
 /// Schedule a frame for every desktop: an application posted or withdrew a
 /// notification, or the Activity pane's code arrived. Runs inside
 /// application code or a future, so it reaches the mounts only through the
@@ -744,24 +758,16 @@ impl Desktop {
         if self.shared.projected_at.get() == Some((revision, self.handle.revision())) {
             return false;
         }
-        let name = crate::replication::governance_name(peer, workspace);
-        let policy = crate::replication::governance_policy(peer, workspace);
-        let governed = crate::replication::governance_people(peer, workspace);
+        // Who is in the workspace waits for the code that reads its governance.
+        let Some(code) = crate::workspace_resources::WORKSPACE_RESOURCES.get() else {
+            return false;
+        };
         let mut tree = self.handle.read(Clone::clone);
         let changed = tree
             .workspaces
             .iter_mut()
             .find(|held| held.id() == workspace)
-            .is_some_and(|held| {
-                let named = name.as_deref().is_some_and(|name| held.named_as(name));
-                let people = policy
-                    .as_ref()
-                    .is_some_and(|policy| tilo_session_client::membership::project(held, policy));
-                let given = governed.as_deref().is_some_and(|governed| {
-                    tilo_session_client::membership::project_names(held, governed)
-                });
-                named | people | given
-            });
+            .is_some_and(|held| (code.project_governance)(peer, workspace, held));
         if changed {
             self.handle.replace_tree(tree);
         }
@@ -1030,7 +1036,10 @@ impl Mount {
         for store in self.stores.borrow().iter() {
             let _ = store.try_flush();
         }
-        crate::person_resources::flush(&self.store);
+        if let Some(code) = crate::workspace_resources::WORKSPACE_RESOURCES.get() {
+            let store: Rc<dyn durable_store::DurableStore> = self.store.clone();
+            (code.flush_person)(&store);
+        }
         self.save_desktop();
     }
 
@@ -1438,18 +1447,11 @@ fn mount_search(
 /// store its own records are in, from the content the page keeps.
 fn files_of_the_workspace(
     config: &Config,
-    owners: &ui::resource::ResourceOwners,
     shared: &crate::desktop::Shared,
     content: &tilo_content::ContentStore,
 ) -> Option<Rc<crate::page_files::WorkspaceFiles>> {
     config.peer?;
-    let records = crate::workspace_resources::in_page(
-        owners,
-        &shared.stores,
-        &config.workspace,
-        config.author(),
-        true,
-    );
+    let records = shared.page_stores(&config.author())?;
     // The files' bytes are the tree record's content: read through that record's
     // media queue, so a file whose bytes are not here yet is asked of the workspace and
     // its words are read when it arrives. A plain store would answer what the
@@ -1537,7 +1539,7 @@ fn present_desktop(
         &here,
         (&handle, &shared.woken),
     );
-    let files = files_of_the_workspace(config, &owners, &shared, &content_store);
+    let files = files_of_the_workspace(config, &shared, &content_store);
     let search = mount_search(
         id,
         config,
@@ -2473,8 +2475,10 @@ impl Mount {
     fn draw(&mut self) -> Result<(), String> {
         // The workspace's files as the palette will find them: what moved
         // since the last frame, and the words of content that arrived.
-        if let Some(files) = &self.files_of_the_workspace {
-            files.refresh();
+        if let Some(files) = &self.files_of_the_workspace
+            && let Some(code) = crate::workspace_resources::WORKSPACE_RESOURCES.get()
+        {
+            (code.refresh_files)(files);
         }
         let start = self.metric_start();
         let before = self.frames;

@@ -61,7 +61,8 @@ struct Read {
 /// A workspace's tree, read for the palette.
 pub(crate) struct WorkspaceFiles {
     source: Arc<TreeFiles>,
-    records: WorkspaceResources,
+    stores: crate::workspace_resources::PageStores,
+    records: std::cell::OnceCell<WorkspaceResources>,
     content: tilo_content::ContentStore,
     read: RefCell<Read>,
 }
@@ -72,12 +73,13 @@ impl WorkspaceFiles {
     /// say the files are of, never the id its records are kept by.
     pub(crate) fn new(
         named: &str,
-        records: WorkspaceResources,
+        stores: crate::workspace_resources::PageStores,
         content: tilo_content::ContentStore,
     ) -> Self {
         Self {
             source: Arc::new(TreeFiles::new(named)),
-            records,
+            stores,
+            records: std::cell::OnceCell::new(),
             content,
             read: RefCell::new(Read {
                 heads: Vec::new(),
@@ -101,7 +103,7 @@ impl WorkspaceFiles {
 
     /// The records the page keeps of the workspace, which the tree is one of.
     pub(crate) fn records(&self) -> &WorkspaceResources {
-        &self.records
+        self.records.get_or_init(|| self.stores.resources())
     }
 
     /// The content the workspace's files are kept in on this page.
@@ -112,7 +114,7 @@ impl WorkspaceFiles {
     /// The workspace's tree record, opened: on its way while the workspace's hosts have not
     /// sent it or said they hold none ([`ui::resource::ResourceOpenError::Arriving`]).
     pub(crate) fn tree_document(&self) -> Result<StoredResource, ui::resource::ResourceOpenError> {
-        self.records.open_resource_at(
+        self.records().open_resource_at(
             FILES_APP,
             &collab_types::person_document_id(TREE_KIND),
             TREE_KIND,
@@ -133,7 +135,7 @@ impl WorkspaceFiles {
                 Rc::clone(record)
             } else {
                 let opened = self
-                    .records
+                    .records()
                     .open_resource_at(
                         FILES_APP,
                         &chunk_document_id(chunk),

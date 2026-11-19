@@ -185,10 +185,11 @@ deferred-jobs-band = ["ui/lazy-jobs-band"]
 # own module the first time a drag reaches the shell. Without it the drops are
 # linked in.
 deferred-drops = []
-# The bundling crate supplies the workspace's agents resource (`PAGE_AGENTS`),
-# which the browser desktop fetches as its own module once the page is in the
-# workspace and asks for it. Without it the agents are linked in.
-deferred-page-agents = []
+# The bundling crate supplies the code that reads the workspace's resources
+# (`WORKSPACE_RESOURCES`), which the browser desktop fetches as its own module
+# as the page starts; a window opened before it is in shows its app arriving.
+# Without it the code is linked in.
+deferred-workspace-resources = []
 # The bundling crate supplies the page's layout actions (`PAGE_LAYOUT`), which
 # the browser desktop fetches as its own module as the page first draws; an
 # action asked before they are in waits for them. Without it they are linked

@@ -38,7 +38,7 @@ const NO_HOST: &str = "this page is in no workspace";
 /// it, as the workspace's host last answered.
 #[derive(Clone)]
 pub(crate) struct PageRecords {
-    pub records: WorkspaceResources,
+    pub stores: crate::workspace_resources::PageStores,
     pub permissions: SharedPermissions,
     pub administers: Arc<AtomicBool>,
     /// The shell the page shows, and its person.
@@ -60,13 +60,13 @@ impl PageRecords {
         author: String,
     ) -> Self {
         Self {
-            records: crate::workspace_resources::in_page(
-                owners,
-                &shared.stores,
-                workspace,
-                author.clone(),
-                true,
-            ),
+            stores: crate::workspace_resources::PageStores {
+                owners: owners.clone(),
+                stores: Rc::clone(&shared.stores),
+                workspace: workspace.to_owned(),
+                author: author.clone(),
+                replicated: true,
+            },
             permissions: permissions.clone(),
             administers: Arc::clone(&shared.administers),
             handle: handle.clone(),
@@ -83,7 +83,7 @@ impl AgentsHost for PageRecords {
         _person: &UserId,
     ) -> (WorkspaceResources, Option<LivePermissions>) {
         (
-            self.records.clone(),
+            self.stores.resources(),
             Some(LivePermissions::shared(self.permissions.clone())),
         )
     }
