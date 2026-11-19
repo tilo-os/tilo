@@ -8,12 +8,16 @@ const web = new URL('./', import.meta.url);
 const scrubber = readFileSync(new URL('scrub.inline.js', web), 'utf8');
 const corpus = JSON.parse(readFileSync(new URL('../../../collab/reference/tests/links.json', web), 'utf8'));
 
-/** Run the scrubber against `href` with a fake location and history. */
+/** Run the scrubber against `href` with a fake location, history and page
+ * listeners; `move` changes the address as a browser does and tells them. */
 function scrub(href) {
   const url = new URL(href);
   const writes = [];
+  const reloads = [];
+  const listeners = new Map();
   const location = {
     get hash() { return url.hash; }, get pathname() { return url.pathname; }, get search() { return url.search; },
+    reload() { reloads.push(url.href); },
   };
   const history = {state: {page: 1}, replaceState(state, _title, next) {
     writes.push(next);
@@ -21,10 +25,15 @@ function scrub(href) {
     url.hash = moved.hash;
     assert.equal(state, history.state, 'the page generation state is kept');
   }};
-  const context = vm.createContext({location, history});
+  const context = vm.createContext({location, history, addEventListener: (name, listener) => listeners.set(name, listener)});
   context.globalThis = context;
   vm.runInContext(scrubber, context);
-  return {url: url.href, writes, secrets: context.__tiloLinkSecrets};
+  const move = (hash, pathname = url.pathname, event = 'hashchange') => {
+    url.pathname = pathname;
+    url.hash = hash;
+    listeners.get(event)?.();
+  };
+  return {url: url.href, writes, secrets: context.__tiloLinkSecrets, reloads, move};
 }
 
 test('secrets leave the URL before any module runs', () => {
@@ -85,4 +94,19 @@ test('a sealed invitation keeps only its handle in the address', () => {
   const elsewhere = scrub(`https://tilo.sh/#${key}`);
   assert.equal(elsewhere.url, `https://tilo.sh/#${key}`);
   assert.deepEqual({...elsewhere.secrets}, {});
+});
+
+test('a link followed in a tab already on the site loads the page again with its secrets', () => {
+  const page = scrub('https://tilo.sh/#/w/abc');
+  // An invitation pasted into the tab the person is on changes only the
+  // fragment: the loaded page read no secret, and loads again to read this one.
+  page.move('#/w/abc?invite=SIGNED');
+  assert.deepEqual(page.reloads, ['https://tilo.sh/#/w/abc?invite=SIGNED']);
+  // A route the page moves to itself carries no secret, and is not loaded again.
+  page.move('#/w/abc/so.tilo.chat/-', undefined, 'popstate');
+  assert.equal(page.reloads.length, 1);
+  // A sealed link's key after the `#` is its invitation too: the page at its
+  // shelf loads again to read it.
+  page.move(`#${'B'.repeat(43)}`, '/i/abcdefghijklmnop');
+  assert.equal(page.reloads.length, 2);
 });

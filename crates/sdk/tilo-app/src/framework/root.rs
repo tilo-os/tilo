@@ -2267,11 +2267,10 @@ impl RootSearch for ResourceRoot {
             }
         });
         let opens = self.dispatch.resource_id();
-        // An item of the app's resource and one of a part kept beside it publish an `open` of
-        // their own, alike, so each keeps it rather than addressing the resource's.
-        let kinds = super::hosted_kinds();
-        let app = self.dispatch.app_id();
-        let is_item = |id: &str| (self.resource.opens_as_item)(id) || kinds.opens_as_item(app, id);
+        // An item of the app's own resource publishes an `open` of its own, so it keeps it rather
+        // than addressing the resource's. One a part keeps beside it opens through the resource's,
+        // told the item as its anchor.
+        let is_item = self.resource.opens_as_item;
         ui_core::search::index_publication::merged_by_key(
             entries
                 .iter()

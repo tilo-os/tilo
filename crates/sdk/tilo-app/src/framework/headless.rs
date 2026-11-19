@@ -2772,12 +2772,16 @@ fn split_command_line(
 /// ([`reserved_action_ids`](super::reserved_action_ids)).
 #[must_use]
 pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
-    report_surface(
+    let mut report = report_surface(
         &Opening::of::<A>(),
         <A::Resource as Resource>::surface(),
         A::PERSON_RESOURCES,
         &published_ids::<A>,
-    )
+    );
+    for other in A::OTHER_WINDOWS {
+        other.merge_into(&mut report);
+    }
+    report
 }
 
 /// What a built view publishes beside its resource's verbs: its effects and

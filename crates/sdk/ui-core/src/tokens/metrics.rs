@@ -82,6 +82,9 @@ pub struct Metrics {
     /// what the change did and the thing it did it to keep the room.
     pub history_writer_name_width: f32,
     pub chooser_width: f32,
+    /// The width a page rail stands at where its container leaves it the choice: thumbnails a
+    /// glance reads, beside the viewer that takes the rest.
+    pub page_rail_width: f32,
     /// The narrowest a text field stands where nothing else sets its width: a row that
     /// wraps or a run that hugs its items lays a field out at its own width, which is
     /// this, grown with the text.
@@ -179,6 +182,7 @@ impl Metrics {
         message_measure: 560.0,
         history_writer_name_width: 480.0,
         chooser_width: 224.0,
+        page_rail_width: 192.0,
         field_min_width: 160.0,
         wheel_line: 60.0,
         scroll_thumb: 8.0,
@@ -299,6 +303,7 @@ impl Metrics {
             message_measure: self.message_measure * factor,
             history_writer_name_width: self.history_writer_name_width * factor,
             chooser_width: self.chooser_width * factor,
+            page_rail_width: self.page_rail_width * factor,
             field_min_width: self.field_min_width * factor,
             wheel_line: self.wheel_line * factor,
             scroll_thumb: self.scroll_thumb * factor,
@@ -357,6 +362,7 @@ mod tests {
             (base.reading_measure, scaled.reading_measure),
             (base.message_measure, scaled.message_measure),
             (base.chooser_width, scaled.chooser_width),
+            (base.page_rail_width, scaled.page_rail_width),
             (base.field_min_width, scaled.field_min_width),
             (base.wheel_line, scaled.wheel_line),
             (base.scroll_thumb, scaled.scroll_thumb),

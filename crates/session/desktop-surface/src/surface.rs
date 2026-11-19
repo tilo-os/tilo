@@ -350,6 +350,9 @@ struct Shared {
     liveness: Vec<(TabId, LivenessChoice)>,
     /// What the shell says over the windows for a while ([`DesktopHandle::notice`]).
     notice: Rc<RefCell<ui::widget::toast::Transient<ui::window_toolbar::ToolbarNotice>>>,
+    /// The buttons of that notice the person pressed that the shell does not carry out itself,
+    /// waiting for the layer that showed them ([`DesktopHandle::take_notice_actions`]).
+    notice_actions: RefCell<Vec<String>>,
     /// The notifications the host installed: the shell carries out what the person chose there,
     /// and the host above the windows draws them ([`DesktopHandle::notifications`]).
     notifications: Option<DesktopNotifications>,
@@ -379,12 +382,24 @@ impl DesktopHandle {
     /// Say in passing what left nothing to see, or why nothing happened: a short-lived notice
     /// over the windows, said politely to screen readers, never a notification.
     pub fn acknowledge(&self, text: impl Into<String>) {
-        self.shared
-            .borrow()
-            .say(ui::window_toolbar::ToolbarNotice::new(
-                text,
-                ui::widget::toast::ToastKind::Info,
-            ));
+        self.acknowledge_with(ui::window_toolbar::ToolbarNotice::new(
+            text,
+            ui::widget::toast::ToastKind::Info,
+        ));
+    }
+
+    /// Say `notice` in passing, as [`Self::acknowledge`] does, with what the person can still do
+    /// about it: the shell carries out the buttons it knows, and [`Self::take_notice_actions`]
+    /// hands the rest to whoever showed the notice.
+    pub fn acknowledge_with(&self, notice: ui::window_toolbar::ToolbarNotice) {
+        self.shared.borrow().say(notice);
+    }
+
+    /// The buttons of the notice the person pressed that the shell does not carry out itself,
+    /// taken by the layer that showed it. One press each, in the order they were made.
+    #[must_use]
+    pub fn take_notice_actions(&self) -> Vec<String> {
+        std::mem::take(&mut *self.shared.borrow().notice_actions.borrow_mut())
     }
 
     /// The notice the shell says over the windows: the host draws it
@@ -411,6 +426,13 @@ impl DesktopHandle {
         if offered && action == REOPEN_CLOSED {
             // Undo after a close reopens as Shift+Super+T does, through the same command.
             let _ = self.dispatch(ChromeEffect::ReopenClosed { app: None });
+        } else if offered {
+            // A notice the shell itself put up: whoever showed it takes its buttons.
+            self.shared
+                .borrow()
+                .notice_actions
+                .borrow_mut()
+                .push(action.to_owned());
         }
         offered
     }

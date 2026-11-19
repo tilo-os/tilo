@@ -63,6 +63,22 @@ const PARENT: &str = "p";
 const ORDER: &str = "o";
 const FIELDS: &str = "f";
 
+/// Whether `name` names a document the store placed: `<readers>/<owner>#<n>`, or a content
+/// document `<readers>/<kind>/<id>~<n>`, where `<readers>` is `*` or a digest. Any other name is
+/// an app's own document, which no store holds.
+#[must_use]
+pub fn is_store_document(name: &str) -> bool {
+    let Some((readers, rest)) = name.split_once('/') else {
+        return false;
+    };
+    let named = readers == "*"
+        || (readers.len() == 16 && readers.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let numbered = rest.rsplit_once(['#', '~']).is_some_and(|(_, number)| {
+        !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
+    });
+    named && numbered
+}
+
 /// The name a document id gives the reader set `readers`: `*` for the whole group, a digest of
 /// any other set, so a long list of people is in no id.
 fn readers_name(readers: &str) -> String {

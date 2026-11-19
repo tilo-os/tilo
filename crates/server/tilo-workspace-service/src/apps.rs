@@ -27,6 +27,7 @@ pub mod policy_clock;
 pub mod published_authorization;
 /// The route an app's traffic is addressed on, the same on every host.
 pub use tilo_broker_core::route;
+pub mod service_reads;
 pub mod services;
 
 pub use broker_error::{BrokerError, BrokerErrorKind};

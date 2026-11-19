@@ -2,7 +2,9 @@
 //! file its verdict on the ones admission refused, and write the copy through
 //! to the workspace file.
 
-use super::{GovernedWorkspace, Workspaces, publisher};
+use std::sync::Arc;
+
+use super::{GovernedWorkspace, KEEP_FOLLOWED, Workspaces, publisher};
 use ed25519_dalek::SigningKey;
 use tilo_peer_state::TransportOrigin;
 use tilo_user_identity::DeviceCert;
@@ -331,5 +333,48 @@ impl Workspaces {
         }
         let state = self.workspace(workspace).await.ok()?;
         state.lock().await.refuses(author, &message)
+    }
+}
+
+impl Workspaces {
+    /// Replay what the server retains for `workspace` into the governor's copy
+    /// ([`Self::recall_retained`]), apart from whatever asked for it. The
+    /// server's copy is read once every write the governor was handed is
+    /// durable in it, and before the workspace is locked: their delivery waits
+    /// for the governor to follow them.
+    pub(super) fn replay_soon(&self, workspace: String) {
+        let workspaces = Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            let Some(inner) = workspaces.upgrade() else {
+                return;
+            };
+            (Self { inner }).replay(&workspace).await;
+        });
+    }
+
+    /// Write the members' writes `workspace` took in through to its workspace file
+    /// within [`KEEP_FOLLOWED`], once for all of them: a write each made a
+    /// busy chat queue behind its own workspace file.
+    pub(super) fn keep_soon(&self, workspace: &mut GovernedWorkspace) {
+        workspace.unkept = true;
+        if std::mem::replace(&mut workspace.keeping, true) {
+            return;
+        }
+        let workspaces = Arc::downgrade(&self.inner);
+        let id = workspace.workspace().to_owned();
+        tokio::spawn(async move {
+            tokio::time::sleep(KEEP_FOLLOWED).await;
+            let Some(inner) = workspaces.upgrade() else {
+                return;
+            };
+            let Ok(workspace) = (Self { inner }).workspace(&id).await else {
+                return;
+            };
+            let mut workspace = workspace.lock().await;
+            workspace.keeping = false;
+            if workspace.unkept {
+                workspace.keep_followed();
+            }
+        });
     }
 }

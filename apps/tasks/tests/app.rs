@@ -1589,11 +1589,11 @@ fn an_agents_rename_and_comment_are_drawn_on_the_issue_page() {
             region: "title".into(),
             ranges: vec![InteractionTextRange {
                 block: issue.as_str().to_owned(),
-                start: 0,
+                start: 5,
                 end: 11,
             }],
         },
-        "all of the title, in the issue's block"
+        "the words the rename wrote (\"hall 4\"), in the issue's block"
     );
     // The comment answers the comment it made, under its issue: where its step landed.
     let made = app

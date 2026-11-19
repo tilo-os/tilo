@@ -104,6 +104,8 @@ pub struct RailMetrics {
     pub menu_pad: f64,
     /// Inset of a menu row, and of the menu from the rail's edges (`spacing.s1`).
     pub menu_row_inset: f64,
+    /// Width the rail stands at where nothing else sets one (`metrics.page_rail_width`).
+    pub natural_width: f64,
 }
 
 impl RailMetrics {
@@ -120,6 +122,7 @@ impl RailMetrics {
         menu_sep_h: MENU_SEP_H,
         menu_pad: MENU_PAD,
         menu_row_inset: MENU_ROW_INSET,
+        natural_width: crate::tokens::Metrics::BASE.page_rail_width as f64,
     };
 
     /// The same geometry read from the theme's tokens. The add button is a
@@ -140,6 +143,7 @@ impl RailMetrics {
             menu_sep_h: f64::from(sp.s2),
             menu_pad: f64::from(sp.s2),
             menu_row_inset: f64::from(sp.s1),
+            natural_width: f64::from(theme.tokens.metrics.page_rail_width),
         }
     }
 }
@@ -393,13 +397,14 @@ impl PageSidebar {
         std::mem::take(&mut self.pending)
     }
 
-    /// The width a rail stands at where its container leaves it the choice: thumbnails a glance
-    /// reads, beside a viewer that takes the rest.
-    pub(crate) const NATURAL_WIDTH: f64 = 192.0;
-
     /// Take the geometry from `theme` for the next layout, before the frame that draws it.
     pub(crate) fn adopt_theme(&mut self, theme: &Theme) {
         self.m = RailMetrics::from_theme(theme);
+    }
+
+    /// The width the rail stands at where its container leaves it the choice.
+    pub(crate) fn natural_width(&self) -> f64 {
+        self.m.natural_width
     }
 
     /// How tall the rail stands at `width` to show `count` pages with nothing to scroll: its

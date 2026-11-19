@@ -698,8 +698,10 @@ pub struct PopoverButtonProps {
     /// What the button is called, as it is announced.
     #[component(required, positional)]
     pub label: String,
-    /// A glyph instead of the label, on an icon-only button.
+    /// A glyph before the label, or instead of it when `icon_only`.
     pub icon: Option<crate::icons::Icon>,
+    /// The glyph alone, with the label as its tooltip and accessible name.
+    pub icon_only: bool,
     /// The side of the button it opens on: `below` unless said.
     pub side: Option<PopoverSide>,
     /// Whether it opens at the button's trailing edge, not its leading edge.
@@ -707,6 +709,15 @@ pub struct PopoverButtonProps {
     /// The popover's content.
     #[component(part(default))]
     pub content: Vec<Element>,
+}
+
+/// The button a popover opens from: its label after its glyph, or the glyph alone.
+fn face(key: &str, label: &str, icon: Option<crate::icons::Icon>, icon_only: bool) -> Button {
+    match icon {
+        Some(icon) if icon_only => Button::icon_only(key, icon, label),
+        Some(icon) => Button::new(key, label).with_icon(icon),
+        None => Button::new(key, label),
+    }
 }
 
 pub struct DeclaredPopoverButton {
@@ -717,11 +728,7 @@ impl DeclaredPopoverButton {
     #[must_use]
     pub fn new(key: &str, mut props: PopoverButtonProps) -> Self {
         let content = column(std::mem::take(&mut props.content));
-        let button = match props.icon {
-            Some(icon) => crate::widget::Button::icon_only(key, icon, &props.label),
-            None => crate::widget::Button::new(key, &props.label),
-        };
-        let mut pair = button.with_popover(content);
+        let mut pair = face(key, &props.label, props.icon, props.icon_only).with_popover(content);
         if let Some(side) = props.side {
             pair = pair.side(side);
         }
@@ -848,14 +855,12 @@ impl Described for DeclaredPopoverButton {
         let PopoverButtonProps {
             label,
             icon,
+            icon_only,
             side,
             trailing,
             content: _,
         } = props;
-        let words = match icon {
-            Some(icon) => Button::icon_only("", icon, &label),
-            None => Button::new("", &label),
-        };
+        let words = face("", &label, icon, icon_only);
         if !self.pair.button_mut().take_words(&words) {
             return false;
         }

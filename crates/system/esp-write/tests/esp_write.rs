@@ -596,7 +596,8 @@ fn counter_writer_failure_is_fatal() {
 #[test]
 fn the_boot_menu_editor_is_turned_off() {
     let f = Fixture::new();
-    f.set_flavour("server");
+    // The dev image keeps kernel/initrd entries; the server boots only signed UKIs.
+    f.set_flavour("dev");
     let booted = "a".repeat(128);
     f.type1_entry(
         "entries",

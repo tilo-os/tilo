@@ -17,7 +17,7 @@ use tilo_actions::{ActionError, ActionKind};
 use tilo_automerge::read::ReadTyped as _;
 use tilo_resource::Doc;
 
-use crate::files::{FileDocumentId, FileNameV1, FileNodeKind};
+use crate::files::{FileDocumentId, FileNameV1, FileNodeKind, TreeChunk};
 use crate::tree::{
     AUTHOR_KEY, DOCUMENT_ID_KEY, HASH_KEY, KIND_KEY, MTIME_KEY, NAME_KEY, PARENT_KEY,
     PLACEMENT_NAME_KEY, PREV_PARENT_KEY, ROOT_ID, SIZE_KEY, TRASH_ID, tree_nodes,
@@ -78,6 +78,10 @@ pub enum FileAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent: Option<String>,
     },
+    /// List the chunk `chunk` in the tree's own document (chunk 0), so everyone who opens the
+    /// tree opens it too: what a writer does before it makes the first node in a chunk nobody
+    /// listed yet.
+    ListChunk { chunk: TreeChunk },
 }
 
 impl FileAction {
@@ -90,6 +94,7 @@ impl FileAction {
             | Self::Move { node, .. }
             | Self::Trash { node }
             | Self::Restore { node, .. } => node,
+            Self::ListChunk { .. } => ROOT_ID,
         }
     }
 
@@ -106,6 +111,7 @@ impl FileAction {
             Self::Move { .. } => verbs::MOVE,
             Self::Trash { .. } => verbs::TRASH,
             Self::Restore { .. } => verbs::RESTORE,
+            Self::ListChunk { .. } => verbs::LIST_CHUNK,
         }
     }
 
@@ -117,6 +123,10 @@ impl FileAction {
     /// A node the document does not hold (for anything but [`Self::Create`]), a name no file
     /// may have, or a document that refused the write.
     pub fn write(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        if let Self::ListChunk { chunk } = self {
+            crate::tree::list_chunk(doc, *chunk)?;
+            return Ok(());
+        }
         let nodes = tree_nodes(doc)?;
         match self {
             Self::Create { .. } => self.write_create(doc, &nodes),
@@ -143,6 +153,7 @@ impl FileAction {
                 Ok(())
             }
             Self::Trash { .. } | Self::Restore { .. } => self.write_trash(doc, &nodes),
+            Self::ListChunk { .. } => Ok(()),
         }
     }
 
@@ -330,8 +341,11 @@ pub mod verbs {
     pub const MOVE: &str = "move";
     pub const TRASH: &str = "trash";
     pub const RESTORE: &str = "restore";
+    pub const LIST_CHUNK: &str = "list-chunk";
     /// Every verb, in the order the surface lists them.
-    pub const ALL: [&str; 6] = [NEW_FOLDER, NEW_FILE, WRITE, MOVE, TRASH, RESTORE];
+    pub const ALL: [&str; 7] = [
+        NEW_FOLDER, NEW_FILE, WRITE, MOVE, TRASH, RESTORE, LIST_CHUNK,
+    ];
 }
 
 fn check_name(name: &FileNameV1) -> Result<(), ActionError> {

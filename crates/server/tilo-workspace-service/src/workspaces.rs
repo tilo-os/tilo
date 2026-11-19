@@ -93,6 +93,8 @@ mod packaged_model_runtime_tests;
 mod packaged_model_tests;
 mod pages;
 mod peer_parts;
+#[cfg(feature = "apps")]
+mod reads;
 // The person's mail accounts and model providers, kept where their
 // workspace runs: a page has no mail connection and no vault of its own.
 #[cfg(not(target_arch = "wasm32"))]
@@ -140,6 +142,7 @@ mod publisher;
 mod record_authority;
 #[cfg(feature = "agents")]
 pub mod repaired_documents;
+mod resources;
 mod revocations;
 pub use own::OwnWorkspaceOffer;
 pub(crate) mod sealed_documents;
@@ -371,6 +374,8 @@ struct GovernedWorkspace {
     handed_by: Option<tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1>,
     /// For a member copy, the address of the device serving the workspace.
     member: Option<member::Member>,
+    /// The workspace's resources, in the framework's store.
+    resources: resources::Resources,
 }
 
 /// The people `peer`'s governance admits now.
@@ -464,6 +469,7 @@ impl GovernedWorkspace {
                 .map_err(|error| format!("wait list: {error}"))?,
             removals: removals::Removals::open(&path)
                 .map_err(|error| format!("removals: {error}"))?,
+            resources: resources::Resources::open(&path, entry.workspace_id),
             record: entry,
             peer: Replica::new(peer),
             parts,
@@ -1839,21 +1845,6 @@ impl Workspaces {
         });
     }
 
-    /// Replay what the server retains for `workspace` into the governor's copy
-    /// ([`Self::recall_retained`]), apart from whatever asked for it. The
-    /// server's copy is read once every write the governor was handed is
-    /// durable in it, and before the workspace is locked: their delivery waits
-    /// for the governor to follow them.
-    fn replay_soon(&self, workspace: String) {
-        let workspaces = Arc::downgrade(&self.inner);
-        tokio::spawn(async move {
-            let Some(inner) = workspaces.upgrade() else {
-                return;
-            };
-            (Self { inner }).replay(&workspace).await;
-        });
-    }
-
     /// Replay what the server retains for `workspace` into the governor's
     /// copy now: [`Self::replay_soon`] in the caller's own time.
     async fn replay(&self, workspace: &str) {
@@ -2045,7 +2036,8 @@ impl Workspaces {
                 workspace: ref named,
                 ..
             } if named == workspace => self.absorb_topology(workspace, author, message).await,
-            _ => return Ok(Some(message)),
+            // A resource's document is the store's, which hands any other write back.
+            _ => return self.absorb_resources(workspace, author, message).await,
         }
         .map(|()| None)
     }
@@ -2614,32 +2606,6 @@ impl Workspaces {
         }
     }
 
-    /// Write the members' writes `workspace` took in through to its workspace file
-    /// within [`KEEP_FOLLOWED`], once for all of them: a write each made a
-    /// busy chat queue behind its own workspace file.
-    fn keep_soon(&self, workspace: &mut GovernedWorkspace) {
-        workspace.unkept = true;
-        if std::mem::replace(&mut workspace.keeping, true) {
-            return;
-        }
-        let workspaces = Arc::downgrade(&self.inner);
-        let id = workspace.workspace().to_owned();
-        tokio::spawn(async move {
-            tokio::time::sleep(KEEP_FOLLOWED).await;
-            let Some(inner) = workspaces.upgrade() else {
-                return;
-            };
-            let Ok(workspace) = (Self { inner }).workspace(&id).await else {
-                return;
-            };
-            let mut workspace = workspace.lock().await;
-            workspace.keeping = false;
-            if workspace.unkept {
-                workspace.keep_followed();
-            }
-        });
-    }
-
     /// Write through what every workspace's governor took in of its members'
     /// writes, for a host that is stopping: the write-through is deferred
     /// ([`Self::keep_soon`]), so a host stopped inside that window would end
@@ -2658,6 +2624,7 @@ impl Workspaces {
                 workspace.keeping = false;
                 workspace.keep_followed();
             }
+            workspace.resources.keep();
         }
     }
 

@@ -59,11 +59,11 @@
 #                  invitation as production's does): the wait list and its
 #                  confirmation mail, the invitation the person who runs the
 #                  host sends from the workspace's own wait list and the mail it
-#                  carries, the workspace of their own they land in and the
-#                  agent set up there; the passkey that brings them back on a
-#                  browser that forgot the site; a second workspace they make;
-#                  and a visitor with no invitation, still refused
-#                  (integration/onboarding.mjs)
+#                  carries, the workspace they land in and the agent set up
+#                  there; the passkey that brings them back on a browser that
+#                  forgot the site, into a workspace of their own; a second
+#                  workspace they make; and a visitor with no invitation, still
+#                  refused (integration/onboarding.mjs)
 #   restart        the Lounge's server starts again on its volume, and a person
 #                  who was not here reads the chat people-call wrote and
 #                  writes in it

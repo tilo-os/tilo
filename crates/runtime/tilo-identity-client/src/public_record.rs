@@ -37,7 +37,10 @@ pub fn load_metadata_from_bytes(bytes: &[u8]) -> Result<IdentityMetadata, NotAva
         return Err(invalid_record("identity record exceeds the size limit"));
     }
     let record: PublicRecord = serde_json::from_slice(bytes).map_err(|error| {
-        NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
+        NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("identity JSON malformed: {error}"),
+        ))
     })?;
     if !matches!(record.schema_version, 1 | 2) {
         return Err(invalid_record("unsupported identity record schema"));

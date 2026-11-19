@@ -147,6 +147,7 @@ icons! {
     ExternalLink => "external-link",
     Trash => "trash",
     MoreHorizontal => "more-horizontal",
+    GripVertical => "grip-vertical",
     Inbox => "inbox",
     Send => "send",
     Reply => "reply",
@@ -1057,6 +1058,14 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             circle_path(12.0, 12.0, 1.0),
             circle_path(19.0, 12.0, 1.0),
             circle_path(5.0, 12.0, 1.0),
+        ],
+        Icon::GripVertical => vec![
+            circle_path(9.0, 12.0, 1.0),
+            circle_path(9.0, 5.0, 1.0),
+            circle_path(9.0, 19.0, 1.0),
+            circle_path(15.0, 12.0, 1.0),
+            circle_path(15.0, 5.0, 1.0),
+            circle_path(15.0, 19.0, 1.0),
         ],
         // --- Mail set — lucide v0.546.0 ---
         Icon::Inbox => vec![

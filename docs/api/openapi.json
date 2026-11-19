@@ -17181,6 +17181,16 @@
         ],
         "description": ""
       },
+      "files.tree.list-chunk.Arguments": {
+        "type": "object",
+        "properties": {
+          "chunk": {}
+        },
+        "required": [
+          "chunk"
+        ],
+        "description": ""
+      },
       "files.recent.note.Arguments": {
         "type": "object",
         "properties": {
@@ -33032,6 +33042,12 @@
       "resource": "files.tree",
       "action": "restore",
       "arguments": "#/components/schemas/files.tree.restore.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.tree",
+      "action": "list-chunk",
+      "arguments": "#/components/schemas/files.tree.list-chunk.Arguments"
     },
     {
       "app": "so.tilo.file-explorer",

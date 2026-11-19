@@ -614,3 +614,38 @@ fn section_child(node: &InspectionNode, index: usize) -> Option<Rect> {
         .iter()
         .find_map(|child| section_child(child, index))
 }
+
+/// A view placed straight in a section with a fit that asks for an `aspect` is as wide as the
+/// section and as tall as the ratio says, as it is in a stack.
+#[test]
+fn an_aspect_shapes_a_view_placed_straight_in_a_section() {
+    let mut fit = crate::widget::arrange::Fit::hug();
+    fit.aspect = Some(2.0);
+    let section = Section::new(vec![
+        Box::new(Text::new("Above")) as Element,
+        Box::new(crate::widget::Fitted::new(
+            Box::new(crate::widget::Spacer::new()),
+            fit,
+        )),
+        Box::new(Text::new("Below")) as Element,
+    ]);
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(crate::widget::Scrollable::new_vertical().with_child(Box::new(section))),
+        (640, 400),
+        Theme::light(),
+    );
+    let root = harness.inspection().root;
+    let shaped = section_child(&root, 1).expect("the shaped view");
+    let section = section_rect(&root).expect("the section");
+    assert!(
+        (shaped.width() - section.width()).abs() < 0.5,
+        "as wide as the section: {shaped:?} in {section:?}"
+    );
+    assert!(
+        (shaped.height() - shaped.width() / 2.0).abs() < 1.0,
+        "as tall as its ratio says: {shaped:?}"
+    );
+    let below = section_child(&root, 2).expect("the text below");
+    assert!(below.y0 >= shaped.y1, "what follows starts under it");
+}

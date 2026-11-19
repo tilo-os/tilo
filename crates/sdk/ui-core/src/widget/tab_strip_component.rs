@@ -16,8 +16,7 @@ use std::collections::HashMap;
 
 use crate::component::{Component, Described, Event, Person, ResourceId, Value};
 use crate::icons::Icon;
-use crate::presence::user_color;
-use crate::widget::{TabBar, TabDescriptor, TabHolder, TabMark};
+use crate::widget::{TabBar, TabDescriptor, TabMark};
 
 crate::component::part_type!(TabItemProps);
 
@@ -426,15 +425,6 @@ impl TabStrip {
             self.bar.set_attention(*id, tab.attention);
             self.bar.set_mark(*id, tab.busy.then_some(TabMark::Busy));
             self.bar.set_modified(*id, tab.modified);
-            let holder = tab.presence.first().and_then(|face| {
-                let who = face.who.as_ref()?;
-                let name = face.name.clone().unwrap_or_else(|| who.name.clone());
-                Some(TabHolder {
-                    name,
-                    rgb: user_color(who.identity.id()),
-                })
-            });
-            self.bar.set_holder(*id, holder);
         }
     }
 

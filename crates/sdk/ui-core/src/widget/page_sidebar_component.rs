@@ -10,9 +10,6 @@ use crate::widget::TaffyTreeExt;
 
 use super::{PageSidebar, PageSidebarEvent};
 
-/// How far one notch of a wheel that counts lines scrolls the rail, in logical pixels.
-const WHEEL_LINE: f64 = 40.0;
-
 /// A rail of numbered page thumbnails down a document's side; unless read-only, pages are
 /// dragged, copied, moved and added.
 #[derive(Component, Default)]
@@ -173,8 +170,7 @@ impl crate::widget::Widget for DeclaredRail {
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
     ) -> taffy::NodeId {
         self.rail.adopt_theme(theme);
-        #[allow(clippy::cast_possible_truncation, reason = "a rail's width fits f32")]
-        let width = PageSidebar::NATURAL_WIDTH as f32;
+        let width = theme.tokens.metrics.page_rail_width;
         let mut style = crate::widget::layout::natural_filling();
         style.size.width = taffy::Dimension::auto();
         style.max_size.width = taffy::Dimension::length(width);
@@ -190,12 +186,12 @@ impl crate::widget::Widget for DeclaredRail {
         let offered = match available.width {
             taffy::AvailableSpace::Definite(width) => f64::from(width),
             taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => {
-                PageSidebar::NATURAL_WIDTH
+                self.rail.natural_width()
             }
         };
         let width = known
             .width
-            .map_or_else(|| offered.min(PageSidebar::NATURAL_WIDTH), f64::from);
+            .map_or_else(|| offered.min(self.rail.natural_width()), f64::from);
         #[allow(clippy::cast_possible_truncation, reason = "a rail's measures fit f32")]
         taffy::Size {
             width: width as f32,
@@ -262,7 +258,9 @@ impl crate::widget::Widget for DeclaredRail {
             }
             WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.cursor) => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * WHEEL_LINE,
+                    MouseScrollDelta::LineDelta(_, y) => {
+                        -f64::from(*y) * crate::widget::wheel::line_of_wheel()
+                    }
                     MouseScrollDelta::PixelDelta(at) => -at.y / ctx.scale_factor,
                 };
                 self.rail.on_wheel(dy)

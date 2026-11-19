@@ -14,11 +14,13 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
-use fs_protocol::files::{FileNodeKind, TreeChunk};
+use fs_protocol::FileAction;
+use fs_protocol::files::{FileDocumentId, FileNameV1, FileNodeKind, TreeChunk};
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree, TreeChunks, TreeEntry, chunk_document_id};
 use ui::carry_out::{ContentLinkAsk, ContentLinkFile, Offers};
 use ui::framework::{
-    Dispatcher, Live, People, ResourceApp, ResourceOpener, ViewCx, WorkspaceResource,
+    ChosenFile, Dispatcher, EffectAnswer, EffectCx, Effected, Live, People, ResourceApp,
+    ResourceOpener, ViewCx, WindowBar, WorkspaceResource,
 };
 use ui::i18n::EmbeddedCatalog;
 use ui::icons::Icon;
@@ -27,12 +29,18 @@ use ui::tilo_actions::remote::ApplicationLaunch;
 use ui::tilo_resource::Atom;
 use ui::widget::controls::ActionControls;
 use ui::widget::{
-    ActionEmitter, Button, Column, Decorator, Element, EmptyState, ListRow, Row, Text, Widget as _,
+    ActionEmitter, ArrivingView, Banner, Button, Column, Decorator, Element, ListRow, Row,
+    SkeletonShape, TextInput, Widget as _,
 };
+use ui::window_toolbar::{LocationSegment, ToolbarEvent, ToolbarLocation};
 
-use crate::i18n::{format_bytes, format_datetime, t};
+use crate::i18n::{arg, format_bytes, format_datetime, t, t_args};
 
-pub use file_explorer_model::window::FilesWindow;
+pub use file_explorer_model::window::{FilesWindow, FilesWindowEffect};
+
+/// The most a person uploads at once from the page's chooser: the page holds the files whole
+/// while it keeps them.
+const MAX_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
 
 /// Files in a page: the workspace's tree, over the page's session.
 pub struct FilesTreeShell;
@@ -58,6 +66,11 @@ impl ResourceApp for FilesTreeShell {
         });
 
     fn view(cx: &mut ViewCx<FilesWindow>) -> Element {
+        // New folder and Upload are the window's own effects, so the bar, the palette and an
+        // agent ask for them alike; each answers on the window that shows the folder.
+        cx.window_host_effects(|browser: &mut TreeBrowser, effect: FilesWindowEffect, cx| {
+            browser.answer(effect, cx)
+        });
         Box::new(TreeBrowser::new(cx))
     }
 
@@ -77,12 +90,52 @@ struct Asked {
     name: String,
 }
 
+/// What a press in the window's rows asks of the window, taken on its next refresh.
+enum Ask {
+    /// Make a folder by this name in the open folder.
+    MakeFolder(String),
+    /// Let the new folder be.
+    StopNaming,
+}
+
+/// The asks the rows made since the window last took them.
+#[derive(Clone, Default)]
+struct Asks(Rc<RefCell<Vec<Ask>>>);
+
+impl Asks {
+    fn make_folder(&self, name: &str) {
+        self.0.borrow_mut().push(Ask::MakeFolder(name.to_owned()));
+    }
+
+    fn stop_naming(&self) {
+        self.0.borrow_mut().push(Ask::StopNaming);
+    }
+
+    fn take(&self) -> Vec<Ask> {
+        std::mem::take(&mut *self.0.borrow_mut())
+    }
+}
+
 /// What the rows were built from, so they are built again only when it moved.
+#[derive(PartialEq)]
 struct Shown {
     folder: String,
     /// The tree's revision when the rows were built: it moves when a chunk's nodes do.
     revision: u64,
     names: u64,
+    /// Whether the tree had arrived.
+    arrived: bool,
+    /// Whether a new folder was being named.
+    naming: bool,
+    /// What the window last had to say about something it could not do.
+    notice: Option<Notice>,
+}
+
+/// Something the window could not do: what failed, and why.
+#[derive(Clone, PartialEq)]
+struct Notice {
+    title: String,
+    reason: Option<String>,
 }
 
 /// The workspace's tree as the page holds it: the resource that names its root and lists its
@@ -99,11 +152,17 @@ struct Held {
     tree: Tree,
     /// Moves when the nodes the page shows do.
     revision: u64,
+    /// The tree's own document and every chunk it lists have been read: what the window
+    /// shows is the tree, not part of it on its way.
+    arrived: bool,
+    /// Nodes this window made that the workspace did not take, as they were taken
+    /// (some only once the store was free): what was asked and why it failed.
+    failed: Rc<RefCell<Vec<Notice>>>,
 }
 
 /// One chunk of the tree, read as its resource changes.
 struct HeldChunk {
-    record: WorkspaceResource<fs_protocol::tree::FilesTree>,
+    resource: WorkspaceResource<fs_protocol::tree::FilesTree>,
     /// The revision the nodes were last read at; `None` before the first read.
     revision: Option<u64>,
     nodes: BTreeMap<String, TreeEntry>,
@@ -122,7 +181,14 @@ impl Held {
             chunks: BTreeMap::new(),
             tree: Tree::default(),
             revision: 0,
+            arrived: false,
+            failed: Rc::default(),
         }
+    }
+
+    /// What this window asked of the tree that failed since it last looked.
+    fn take_failed(&self) -> Vec<Notice> {
+        std::mem::take(&mut self.failed.borrow_mut())
     }
 
     /// The whole tree, every chunk read so far.
@@ -135,6 +201,125 @@ impl Held {
         self.chunks.get(&chunk)
     }
 
+    /// Open the chunk the next node made here goes to, ahead of it: a chunk nobody has written
+    /// yet is founded as it opens, which the window can do only outside its frame (as it
+    /// answers an effect), never while it builds its rows.
+    fn open_next_chunk(&mut self) {
+        let next = self.tree.chunk_for_new();
+        if self.chunks.contains_key(&next) {
+            return;
+        }
+        if let Some(resource) = self.chunks_open.open(&chunk_document_id(next)) {
+            self.chunks.insert(
+                next,
+                HeldChunk {
+                    resource,
+                    revision: None,
+                    nodes: BTreeMap::new(),
+                    writers: HashMap::new(),
+                },
+            );
+        }
+    }
+
+    /// Make a node called `name` in the folder `parent` (the first free name beside it when the
+    /// folder has one already), as the person at this window: one change of the chunk it goes
+    /// to, through the tree's own verbs, then listed in the tree's own document. A file's
+    /// `content` is the hash of its manifest and its length. The name it took.
+    fn create(
+        &mut self,
+        parent: &str,
+        name: &str,
+        kind: FileNodeKind,
+        content: Option<(String, u64)>,
+        failed_title: String,
+    ) -> Result<String, String> {
+        let chunk = self.tree.chunk_for_new();
+        let resource = match self.chunks.get(&chunk) {
+            Some(held) => held.resource.clone(),
+            None => self
+                .chunks_open
+                .open(&chunk_document_id(chunk))
+                .ok_or_else(|| t("files-tree-not-here"))?,
+        };
+        let name = fs_protocol::tree::free_name(&self.tree, parent, name);
+        let document_id = FileDocumentId::in_chunk(chunk);
+        let node = fs_protocol::tree::document_node_id(document_id);
+        let (hash, size) = content.map_or((None, 0), |(hash, size)| (Some(hash), size));
+        let mtime = ui::time::unix_now_ms();
+        let action = FileAction::Create {
+            node: node.clone(),
+            document_id,
+            parent: parent.to_owned(),
+            name: FileNameV1::from(name.as_str()),
+            kind,
+            hash: hash.clone(),
+            size,
+            mtime,
+            author: resource.me().id().to_owned(),
+        };
+        let invoke = ui::tilo_resource::Invoke::<fs_protocol::tree::FilesTree>::apply(&action)
+            .map_err(|error| error.to_string())?;
+        // The tree's own document lists every chunk a node is in, so every member opens it: a
+        // chunk nobody listed yet is listed first, with the tree's own action. Both wait for the
+        // store when the window's own effect holds it (a chooser that answers), and
+        // what fails says so on the window's next refresh.
+        let unlisted = !self
+            .index
+            .read(fs_protocol::tree::listed_chunks)
+            .unwrap_or_default()
+            .contains(&chunk);
+        if unlisted {
+            let list = ui::tilo_resource::Invoke::<fs_protocol::tree::FilesTree>::apply(
+                &FileAction::ListChunk { chunk },
+            )
+            .map_err(|error| error.to_string())?;
+            let failed = Rc::clone(&self.failed);
+            let failed_title = failed_title.clone();
+            self.index.invoke_then(&list, move |listed| {
+                if let Err(why) = listed {
+                    tracing::warn!("listing part {chunk} of the workspace's tree: {why}");
+                    failed.borrow_mut().push(Notice {
+                        title: failed_title,
+                        reason: Some(why.to_string()),
+                    });
+                }
+            });
+        }
+        let failed = Rc::clone(&self.failed);
+        let made_name = name.clone();
+        resource.invoke_then(&invoke, move |made| {
+            if let Err(why) = made {
+                tracing::warn!("making {made_name} in the workspace's tree: {why}");
+                failed.borrow_mut().push(Notice {
+                    title: failed_title,
+                    reason: Some(why.to_string()),
+                });
+            }
+        });
+        self.chunks.entry(chunk).or_insert_with(|| HeldChunk {
+            resource,
+            revision: None,
+            nodes: BTreeMap::new(),
+            writers: HashMap::new(),
+        });
+        // The next node made before the chunk is read again sees this one's name.
+        self.tree.nodes.insert(
+            node,
+            TreeEntry {
+                parent: Some(parent.to_owned()),
+                name: FileNameV1::from(name.as_str()),
+                kind,
+                hash,
+                size,
+                mtime,
+                author: None,
+                document_id: Some(document_id),
+            },
+        );
+        Ok(name)
+    }
+
     /// Read the chunks the tree lists that are not read yet, and the nodes of each one that
     /// moved, in place of what it held before. Whether the page's nodes moved.
     fn follow(&mut self) -> bool {
@@ -142,7 +327,8 @@ impl Held {
         // A chunk is opened as the tree's own document lists it; one still on its way here is
         // tried again on the next wake.
         let mut index = TreeChunks::default();
-        if self.index.read(|doc| index.read_index(doc)).is_some() {
+        let index_read = self.index.read(|doc| index.read_index(doc)).is_some();
+        if index_read {
             let root = index.tree().root_document_id;
             if self.tree.root_document_id != root {
                 self.tree.root_document_id = root;
@@ -152,11 +338,11 @@ impl Held {
                 if self.chunks.contains_key(&chunk) {
                     continue;
                 }
-                if let Some(record) = self.chunks_open.open(&chunk_document_id(chunk)) {
+                if let Some(resource) = self.chunks_open.open(&chunk_document_id(chunk)) {
                     self.chunks.insert(
                         chunk,
                         HeldChunk {
-                            record,
+                            resource,
                             revision: None,
                             nodes: BTreeMap::new(),
                             writers: HashMap::new(),
@@ -169,8 +355,8 @@ impl Held {
         // left as it was, so a change costs its chunk.
         let mut tree = std::mem::take(&mut self.tree);
         for held in self.chunks.values_mut() {
-            let state = held.record.get();
-            let revision = held.record.revision();
+            let state = held.resource.get();
+            let revision = held.resource.revision();
             if held.revision == Some(revision) {
                 continue;
             }
@@ -180,7 +366,7 @@ impl Held {
             }
             held.nodes = state.nodes.clone();
             held.writers = held
-                .record
+                .resource
                 .read(ui::history_source::folder::last_change_by_node)
                 .unwrap_or_default();
             tree.nodes.extend(
@@ -191,10 +377,47 @@ impl Held {
             moved = true;
         }
         self.tree = tree;
+        let arrived = index_read
+            && index.listed().iter().all(|chunk| {
+                self.chunks
+                    .get(chunk)
+                    .is_some_and(|held| held.revision.is_some())
+            });
+        if arrived != self.arrived {
+            self.arrived = arrived;
+            moved = true;
+        }
         if moved {
             self.revision = self.revision.wrapping_add(1);
         }
         moved
+    }
+}
+
+/// What the list of a folder shows.
+enum Listing<'a> {
+    /// The workspace's tree is on its way: the list's place, held for it.
+    Arriving,
+    /// The folder holds nothing yet.
+    Empty,
+    /// The folder's entries, out of the trash.
+    Entries(&'a Tree, Vec<(&'a str, &'a TreeEntry)>),
+}
+
+/// What the list of `folder` shows, `tree` being the workspace's tree once it is here whole.
+fn listing<'a>(tree: Option<&'a Tree>, folder: &str) -> Listing<'a> {
+    let Some(tree) = tree else {
+        return Listing::Arriving;
+    };
+    let entries: Vec<(&str, &TreeEntry)> = tree
+        .children(folder)
+        .into_iter()
+        .filter(|(id, _)| !tree.trashed(id))
+        .collect();
+    if entries.is_empty() {
+        Listing::Empty
+    } else {
+        Listing::Entries(tree, entries)
     }
 }
 
@@ -210,12 +433,28 @@ fn opening_app(head: &[u8], name: &str) -> Option<String> {
 pub struct TreeBrowser {
     live: Live<FilesWindow>,
     /// The workspace's tree, as the page holds it: its own document and the chunks it lists.
+    /// `None` while the workspace has not delivered it.
     tree: Option<Held>,
+    /// Opens the tree's resources as the workspace delivers them.
+    opener: ResourceOpener<fs_protocol::tree::FilesTree>,
+    /// When the window started waiting for the tree: its placeholder keeps its timing however
+    /// often the rows are built again.
+    since: ui::time::Instant,
+    /// The name being typed for a new folder, while one is: `None` otherwise.
+    naming: Option<ui::LocalState<String>>,
+    /// What the window could not do, said above its rows until the next thing it does.
+    notice: Option<Notice>,
+    /// The window's bar: where it is, and New folder and Upload.
+    bar: WindowBar<FilesWindow>,
+    /// What the rows asked of the window.
+    asks: Asks,
     /// What the workspace calls the people its nodes name.
     people: People,
     /// The window's own document, which the open folder is set in.
     dispatch: Dispatcher<FilesWindow>,
     read: Option<Reads>,
+    /// Where the window keeps the content of files put into the workspace from here.
+    content: Option<ui::content::ContentStore>,
     body: Column,
     shown: Option<Shown>,
     structure_dirty: bool,
@@ -246,18 +485,23 @@ impl TreeBrowser {
         // Files app's own name for it — the one the page's search reads
         // when it finds a file by what it says. Its chunks are opened as
         // the resource lists them: one resource each, read as each one changes.
-        let tree = cx
-            .shared_resource::<fs_protocol::tree::FilesTree>(
-                FILES_APP,
-                &fs_protocol::tree::document_id(),
-            )
-            .map(|index| Held::new(index, cx.resource_opener(FILES_APP)));
+        let opener = cx.resource_opener(FILES_APP);
+        let tree = opener
+            .open(&fs_protocol::tree::document_id())
+            .map(|index| Held::new(index, opener.clone()));
         let mut browser = Self {
             live: cx.live().clone(),
             tree,
+            opener,
+            since: ui::time::now(),
+            naming: None,
+            notice: None,
+            bar: cx.toolbar(),
+            asks: Asks::default(),
             people,
             dispatch: cx.dispatcher(),
             read,
+            content: cx.content(),
             body: Column::new(),
             shown: None,
             structure_dirty: true,
@@ -286,75 +530,327 @@ impl TreeBrowser {
     /// names moved; open what the person asked for once its bytes are here.
     fn refresh(&mut self) -> bool {
         self.open_what_arrived();
+        for ask in self.asks.take() {
+            match ask {
+                Ask::MakeFolder(name) => self
+                    .dispatch
+                    .effect(&FilesWindowEffect::NewFolder { name: Some(name) }),
+                Ask::StopNaming => self.naming = None,
+            }
+        }
+        // The tree is opened once the workspace delivered it: a window opened before that
+        // waits for it rather than showing an empty folder.
+        if self.tree.is_none()
+            && let Some(index) = self.opener.open(&fs_protocol::tree::document_id())
+        {
+            self.tree = Some(Held::new(index, self.opener.clone()));
+        }
         // A chunk of the tree that moved is the only one read again.
         if let Some(tree) = self.tree.as_mut() {
             tree.follow();
+            if let Some(failed) = tree.take_failed().pop() {
+                self.notice = Some(failed);
+            }
         }
         let folder = self.folder(self.tree.as_ref().map(Held::tree));
-        let names = self.people.revision().get();
-        let revision = self.tree.as_ref().map_or(0, |tree| tree.revision);
-        let moved = self.shown.as_ref().is_none_or(|shown| {
-            shown.folder != folder || shown.names != names || shown.revision != revision
-        });
-        if !moved {
+        self.declare_bar(&folder);
+        let shown = Shown {
+            names: self.people.revision().get(),
+            revision: self.tree.as_ref().map_or(0, |tree| tree.revision),
+            arrived: self.arrived(),
+            naming: self.naming.is_some(),
+            notice: self.notice.clone(),
+            folder,
+        };
+        if self.shown.as_ref() == Some(&shown) {
             return false;
         }
-        let tree = self.tree.as_ref().map(Held::tree);
-        self.body = self.rows(tree, &folder);
-        self.shown = Some(Shown {
-            folder,
-            revision,
-            names,
-        });
+        let tree = self
+            .tree
+            .as_ref()
+            .filter(|held| held.arrived)
+            .map(Held::tree);
+        self.body = self.rows(tree, &shown.folder);
+        self.shown = Some(shown);
         self.structure_dirty = true;
         true
     }
 
-    /// The window's content: where the open folder is, then its entries.
-    fn rows(&self, tree: Option<&Tree>, folder: &str) -> Column {
-        let mut body = Column::new()
-            .with_id("files-tree")
-            .push(self.crumbs(tree, folder));
-        let entries: Vec<(&str, &TreeEntry)> = tree.map_or_else(Vec::new, |tree| {
-            tree.children(folder)
-                .into_iter()
-                .filter(|(id, _)| !tree.trashed(id))
-                .collect()
-        });
-        self.offers.clear();
-        if entries.is_empty() {
-            return body.push(Box::new(
-                EmptyState::new(t("files-tree-empty")).with_icon(Icon::Folder),
-            ));
-        }
-        for (id, node) in entries {
-            let carried = tree.map(|tree| Self::carried(tree, id, node));
-            body = body.push(self.row(id, node, carried));
-        }
-        body
+    /// Whether the workspace's tree is here whole: until it is, the window says it is on its
+    /// way rather than showing a folder that only looks empty.
+    fn arrived(&self) -> bool {
+        self.tree.as_ref().is_some_and(|held| held.arrived)
     }
 
-    /// Where the open folder is, and the way up to the folder holding it.
-    fn crumbs(&self, tree: Option<&Tree>, folder: &str) -> Box<dyn ui::widget::Widget> {
-        let mut row = Row::new()
-            .with_id("files-tree-crumbs")
-            .with_rhythm(ui::tokens::Rhythm::Related);
+    /// The window's bar: the open folder and the folders above it, each a step back up, and
+    /// the ways to put something into it.
+    fn declare_bar(&mut self, folder: &str) {
+        let tree = self.tree.as_ref().map(Held::tree);
+        let root = t("files-tree-root");
+        let mut segments = vec![LocationSegment {
+            label: root.clone(),
+            value: ROOT_ID.to_owned(),
+        }];
+        if let Some(tree) = tree {
+            segments.extend(Self::trail(tree, folder).into_iter().map(|(id, name)| {
+                LocationSegment {
+                    label: name,
+                    value: id,
+                }
+            }));
+        }
+        let label = segments
+            .last()
+            .map_or_else(|| root.clone(), |segment| segment.label.clone());
+        let location = ToolbarLocation {
+            label,
+            name: t("files-location"),
+            segments,
+            // The workspace's own folder names a part of Files, not something the person
+            // opened: the window keeps the app's name.
+            section: folder == ROOT_ID,
+            ..ToolbarLocation::default()
+        };
+        let mut bar = WindowBar::new(self.dispatch.clone())
+            .place(Some(location))
+            .effect(&FilesWindowEffect::NewFolder { name: None })
+            .enabled(self.arrived())
+            .effect(&FilesWindowEffect::Upload)
+            .enabled(self.arrived());
         if folder != ROOT_ID {
             let parent = tree
                 .and_then(|tree| tree.node(folder))
                 .and_then(|node| node.parent.clone())
                 .unwrap_or_else(|| ROOT_ID.to_owned());
-            let dispatch = self.dispatch.clone();
-            row = row.push(Box::new(
-                Button::new("files-tree-up", &t("files-tree-up"))
-                    .with_icon(Icon::ArrowUp)
-                    .on_click(move || {
-                        dispatch.submit(FilesWindow::paths().folder.set(Atom(parent.clone())));
-                    }),
-            ));
+            bar = bar
+                .action(FilesWindow::paths().folder.set(Atom(parent)))
+                .named("arrow-up", t("files-tree-up"))
+                .in_menu();
         }
-        let path = tree.map_or_else(String::new, |tree| Self::path_of(tree, folder));
-        Box::new(row.push(Text::new(&path).strong().into_widget()))
+        self.bar = bar;
+        self.bar.declare();
+    }
+
+    /// Take what the person pressed in the window's bar: a level of the location opens that
+    /// folder; the rest is the bar's own.
+    fn take_bar_events(&self) -> bool {
+        let mut asked = false;
+        for event in ui::window_toolbar::take_events() {
+            asked = true;
+            match &event {
+                ToolbarEvent::Commit { text } => self.show_folder(text),
+                _ => {
+                    self.bar.press(&event);
+                }
+            }
+        }
+        asked
+    }
+
+    /// Show the folder `id`: the workspace's own for [`ROOT_ID`].
+    fn show_folder(&self, id: &str) {
+        let id = if id == ROOT_ID {
+            String::new()
+        } else {
+            id.to_owned()
+        };
+        self.dispatch
+            .submit(FilesWindow::paths().folder.set(Atom(id)));
+    }
+
+    /// Answer the window's effect: the row a new folder is named in, or the chooser whose
+    /// files go into the open folder.
+    fn answer(
+        &mut self,
+        effect: FilesWindowEffect,
+        cx: &mut EffectCx<FilesWindow, Self>,
+    ) -> EffectAnswer {
+        match effect {
+            FilesWindowEffect::NewFolder { name } => {
+                // The chunk the folder goes to is founded here, outside the window's frame.
+                if let Some(held) = self.tree.as_mut() {
+                    held.open_next_chunk();
+                }
+                match name {
+                    Some(name) if name.trim().is_empty() => Err(t("files-folder-name-empty")),
+                    Some(name) => {
+                        self.make_folder(&name);
+                        match &self.notice {
+                            Some(notice) => Err(notice
+                                .reason
+                                .clone()
+                                .unwrap_or_else(|| notice.title.clone())),
+                            None => Ok(Effected::done()),
+                        }
+                    }
+                    None => {
+                        self.naming = Some(ui::LocalState::new(t("files-new-folder-default-name")));
+                        self.notice = None;
+                        Ok(Effected::done())
+                    }
+                }
+            }
+            FilesWindowEffect::Upload => {
+                let request = ui::portal::PickRequest::open_multiple(
+                    &t("files-tree-upload-title"),
+                    &t("files-tree-upload-accept"),
+                )
+                .max_contents_bytes(MAX_UPLOAD_BYTES);
+                // The files go in as the chooser answers, outside the window's frame, as a new
+                // folder does: the action that adds each needs the tree's store to itself.
+                Ok(cx.choose_files(request, |browser: &mut Self, files, _| {
+                    if let Some(held) = browser.tree.as_mut() {
+                        held.open_next_chunk();
+                    }
+                    browser.upload(files);
+                    browser.refresh();
+                    match &browser.notice {
+                        Some(notice) => Err(notice.title.clone()),
+                        None => Ok(Effected::done()),
+                    }
+                }))
+            }
+        }
+    }
+
+    /// Put the files `chosen` into the open folder: each kept in the workspace's content, then
+    /// a file of the tree that names it.
+    fn upload(&mut self, chosen: Vec<ChosenFile>) {
+        let folder = self.folder(self.tree.as_ref().map(Held::tree));
+        let Some(content) = self.content.clone() else {
+            self.notice = Some(Notice {
+                title: t("files-tree-not-here"),
+                reason: None,
+            });
+            return;
+        };
+        let Some(held) = self.tree.as_mut() else {
+            self.notice = Some(Notice {
+                title: t("files-tree-not-here"),
+                reason: None,
+            });
+            return;
+        };
+        for file in chosen {
+            let made = ui::content::manifest::keep(&content, &file.bytes).and_then(|hash| {
+                let size = u64::try_from(file.bytes.len()).unwrap_or(u64::MAX);
+                held.create(
+                    &folder,
+                    &file.name,
+                    FileNodeKind::File,
+                    Some((hash, size)),
+                    t_args(
+                        "files-tree-upload-failed",
+                        &[arg("name", file.name.clone())],
+                    ),
+                )
+            });
+            if let Err(why) = made {
+                tracing::warn!("uploading {}: {why}", file.name);
+                self.notice = Some(Notice {
+                    title: t_args(
+                        "files-tree-upload-failed",
+                        &[arg("name", file.name.clone())],
+                    ),
+                    reason: Some(why),
+                });
+            }
+        }
+    }
+
+    /// Make the folder named `name` in the open folder, and stop naming one.
+    fn make_folder(&mut self, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let folder = self.folder(self.tree.as_ref().map(Held::tree));
+        let Some(held) = self.tree.as_mut() else {
+            return;
+        };
+        match held.create(
+            &folder,
+            name,
+            FileNodeKind::Directory,
+            None,
+            t("files-new-folder-failed-title"),
+        ) {
+            Ok(_) => {
+                self.naming = None;
+                self.notice = None;
+            }
+            Err(why) => {
+                self.notice = Some(Notice {
+                    title: t("files-new-folder-failed-title"),
+                    reason: Some(why),
+                });
+            }
+        }
+    }
+
+    /// The window's content: the open folder's entries, under the bar that says where it is.
+    /// `tree` is `None` while the workspace's tree is on its way: the list's place is held
+    /// for it then, never shown as an empty folder.
+    fn rows(&self, tree: Option<&Tree>, folder: &str) -> Column {
+        let mut body = Column::new().with_id("files-tree");
+        self.offers.clear();
+        if let Some(notice) = &self.notice {
+            let mut banner = Banner::warning(notice.title.clone());
+            if let Some(reason) = &notice.reason {
+                banner = banner.with_message(reason.clone());
+            }
+            body = body.push(Box::new(banner));
+        }
+        if let Some(name) = self.naming.as_ref().filter(|_| tree.is_some()) {
+            body = body.push(self.naming_row(name));
+        }
+        match listing(tree, folder) {
+            Listing::Arriving => body.push(ArrivingView::placeholder_since(
+                ui::arriving::Source::Local,
+                self.since,
+                SkeletonShape::Page,
+            )),
+            // An empty folder is a list with nothing in it yet: the bar above still offers
+            // New folder and Upload, and files dropped on the window land here.
+            Listing::Empty if self.naming.is_none() => body.push(Box::new(
+                ListRow::new("files-tree-empty".to_owned(), t("files-empty-folder")).quiet(),
+            )),
+            Listing::Empty => body,
+            Listing::Entries(tree, entries) => {
+                for (id, node) in entries {
+                    body =
+                        body.push(self.row(id, node, Some(TreeBrowser::carried(tree, id, node))));
+                }
+                body
+            }
+        }
+    }
+
+    /// The row a new folder is named in: its name, chosen and ready to type over, and the
+    /// buttons that make it or let it be.
+    fn naming_row(&self, name: &ui::LocalState<String>) -> Box<dyn ui::widget::Widget> {
+        let window = self.asks.clone();
+        let submitted = window.clone();
+        let mut field = TextInput::from_state(name)
+            .with_id("files-tree-new-folder-name")
+            .on_submit(move |typed| submitted.make_folder(typed));
+        field.request_focus();
+        field.select_all();
+        let made = window.clone();
+        let typed = name.clone();
+        let create = Button::new("files-tree-new-folder-create", &t("files-tree-create"))
+            .on_click(move || made.make_folder(&typed.get()));
+        let cancel = Button::new("files-tree-new-folder-cancel", &t("files-tree-cancel"))
+            .on_click(move || window.stop_naming());
+        Box::new(
+            Row::new()
+                .with_id("files-tree-new-folder")
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .push(Box::new(ui::widget::IconWidget::new(Icon::Folder)))
+                .push(Box::new(field))
+                .push(Box::new(create))
+                .push(Box::new(cancel)),
+        )
     }
 
     /// One entry of the open folder: its name, its size and when and by whom
@@ -526,25 +1022,35 @@ impl TreeBrowser {
             .map(format_datetime)
     }
 
-    /// The path of `folder` from the workspace's root, as `a / b`.
-    fn path_of(tree: &Tree, folder: &str) -> String {
-        let mut names: Vec<String> = Vec::new();
+    /// The folders from the workspace's root down to `folder`, each by its node and name; the
+    /// root itself is not one of them.
+    fn trail(tree: &Tree, folder: &str) -> Vec<(String, String)> {
+        let mut trail: Vec<(String, String)> = Vec::new();
         let mut at = folder.to_owned();
-        // A node names its parent, so the path is read up from the folder and
-        // turned round; a tree that points back on itself ends the walk at the
-        // repeat rather than looping.
-        while at != ROOT_ID {
+        // A node names its parent, so the trail is read up from the folder and turned round;
+        // a tree that points back on itself ends the walk at the repeat rather than looping.
+        while at != ROOT_ID && !trail.iter().any(|(id, _)| *id == at) {
             let Some(node) = tree.node(&at) else {
                 break;
             };
-            names.push(Self::name_of(node));
+            trail.push((at.clone(), Self::name_of(node)));
             match node.parent.clone() {
-                Some(parent) if parent != at => at = parent,
-                _ => break,
+                Some(parent) => at = parent,
+                None => break,
             }
         }
-        names.reverse();
-        names.join(" / ")
+        trail.reverse();
+        trail
+    }
+
+    /// The path of `folder` from the workspace's root, as `a / b`.
+    #[cfg(test)]
+    fn path_of(tree: &Tree, folder: &str) -> String {
+        Self::trail(tree, folder)
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect::<Vec<_>>()
+            .join(" / ")
     }
 
     /// Open the file at node `id`, as choosing its row does: a folder is shown, a file is
@@ -668,14 +1174,16 @@ impl Decorator for TreeBrowser {
     }
 
     fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        self.take_bar_events();
         self.refresh();
         self.body.sync(state, path);
     }
 
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        let asked = self.take_bar_events();
         let rebuilt = self.refresh();
         let updated = self.body.update(state, path);
-        rebuilt || updated || std::mem::take(&mut self.structure_dirty)
+        asked || rebuilt || updated || std::mem::take(&mut self.structure_dirty)
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -774,6 +1282,23 @@ mod tests {
         let tree = workspace();
         assert_eq!(TreeBrowser::path_of(&tree, "docs"), "docs");
         assert_eq!(TreeBrowser::path_of(&tree, ROOT_ID), "");
+    }
+
+    #[test]
+    fn a_tree_on_its_way_is_not_an_empty_folder() {
+        assert!(
+            matches!(listing(None, ROOT_ID), Listing::Arriving),
+            "before the tree is here the list waits for it"
+        );
+        let empty = Tree::default();
+        assert!(
+            matches!(listing(Some(&empty), ROOT_ID), Listing::Empty),
+            "a tree with nothing in it is an empty folder"
+        );
+        let tree = workspace();
+        assert!(
+            matches!(listing(Some(&tree), ROOT_ID), Listing::Entries(_, entries) if entries.len() == 2)
+        );
     }
 
     #[test]
@@ -950,7 +1475,7 @@ mod window_tests {
         // History, opened from the window, lists the folder's change: the file, by its
         // path, written by the agent.
         app.harness()
-            .click_named("history-open")
+            .open_history()
             .expect("the window offers History");
         app.flush().unwrap();
         app.harness().relayout();
@@ -989,6 +1514,68 @@ mod window_tests {
             texts.iter().any(|text| text == "nda.txt"),
             "the window shows the folder's files: {texts:?}"
         );
+    }
+
+    #[test]
+    fn an_empty_workspace_is_a_file_manager_with_nothing_in_it_yet() {
+        let mut app = ui::prelude::TestApp::<FilesTreeShell>::in_workspace(WORKSPACE)
+            .expect("the window opens");
+        app.flush().unwrap();
+        let texts = app.texts();
+        assert!(
+            texts.iter().any(|text| text == "This folder is empty"),
+            "the empty folder says so in its list: {texts:?}"
+        );
+        // The bar says where the window is and offers what puts something into it.
+        let bar = ui::window_toolbar::declared().expect("the window declares its bar");
+        let location = bar.location.expect("the bar shows the folder");
+        assert_eq!(location.label, "Workspace");
+        let offered: Vec<(&str, bool)> = bar
+            .actions
+            .iter()
+            .map(|action| (action.name.as_str(), action.enabled))
+            .collect();
+        assert!(
+            offered.contains(&("New folder", true)) && offered.contains(&("Upload files", true)),
+            "the bar offers New folder and Upload: {offered:?}"
+        );
+        // New folder asks for its name in the list, and Create makes it there.
+        app.effect(&FilesWindowEffect::NewFolder { name: None })
+            .expect("New folder answers");
+        app.flush().unwrap();
+        app.harness()
+            .click_named("files-tree-new-folder-create")
+            .expect("the naming row offers Create");
+        app.flush().unwrap();
+        let texts = app.texts();
+        assert!(
+            !texts.iter().any(|text| text.starts_with("Couldn’t")),
+            "the folder was made: {texts:?}"
+        );
+        assert!(
+            app.harness()
+                .click_named("files-tree-new-folder-create")
+                .is_err(),
+            "the naming row is gone once the folder is made"
+        );
+        assert!(
+            texts.iter().any(|text| text == "New folder"),
+            "the new folder is listed: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|text| text == "This folder is empty"),
+            "the folder is no longer empty: {texts:?}"
+        );
+        let index = app
+            .shared_resource::<fs_protocol::tree::FilesTree>(
+                FILES_APP,
+                &fs_protocol::tree::document_id(),
+            )
+            .expect("the window holds the workspace's tree");
+        let listed = index
+            .read(fs_protocol::tree::listed_chunks)
+            .expect("the tree reads");
+        assert_eq!(listed, [1], "the tree lists the chunk the folder went into");
     }
 
     #[test]

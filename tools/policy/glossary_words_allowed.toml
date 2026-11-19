@@ -1410,3 +1410,32 @@ reason = "The workspace service's own document store accessor (`WorkspaceService
 words = ["record"]
 identifiers = ["records", "record"]
 paths = ["crates/server/tilo-workspace-service/src/workspaces/member.rs"]
+
+[[allow]]
+reason = "The service's test fixture starts a certified device holding given keys (`test_host_holding`), a name its other tests share."
+words = ["host"]
+identifiers = ["test_host_holding"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/resources/tests.rs"]
+
+[[allow]]
+reason = "The `record` field of the write the workspace's followers are told of (`ResourceWrite::record`), the type's own name for the document written."
+words = ["record"]
+identifiers = ["record"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/resources/tests.rs"]
+
+[[allow]]
+reason = "The workspace service's own name for where its embedder installs it to be served (`ServiceSlot`), which the service and a session call rather than rename."
+words = ["slot"]
+identifiers = ["ServiceSlot"]
+
+[[allow]]
+reason = "A test of a service's resource reads builds its service with the fixture main already names `test_host` and reads it back by `.host()`; its resource routes are named by the API main gives them (`CrdtRoute::record`)."
+words = ["host", "record"]
+identifiers = ["test_host", "test_host_taking_part", "host", "record"]
+paths = ["crates/server/tilo-workspace-service/src/apps/service_reads/tests.rs"]
+
+[[allow]]
+reason = "The app framework's own API names the page's Files window calls: `WorkspaceResource::record` (the stored document under a resource) and `ViewCx::window_host_effects` (effects whose completions reach the window)."
+words = ["record", "host"]
+identifiers = ["record", "window_host_effects"]
+paths = ["apps/file-explorer/src/tree.rs"]

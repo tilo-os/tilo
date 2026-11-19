@@ -136,10 +136,6 @@ pub fn insets(top: f32, right: f32, bottom: f32, left: f32) -> taffy::Rect<Lengt
     }
 }
 
-/// The width [`natural_shape`] reads its height from while no width is known yet: a reading
-/// column's.
-const NATURAL_WIDTH: f32 = 640.0;
-
 /// The size of a view that takes the width it is given and a height from `aspect` (width over
 /// height) where nothing else gives it one: a player or a page in a column that grows with what
 /// it holds, which would otherwise stand zero tall there and paint over what follows.
@@ -155,7 +151,8 @@ pub fn natural_shape(
     });
     // A pass that sizes the parent by its content asks before any width is known: the view asks
     // for no width of its own there, and the height of a typical column's width.
-    let across = width.unwrap_or(NATURAL_WIDTH);
+    // A reading column's width stands for the one not yet known.
+    let across = width.unwrap_or(crate::tokens::Metrics::BASE.reading_measure);
     let height = known
         .height
         .unwrap_or(if aspect > 0.0 { across / aspect } else { 0.0 });

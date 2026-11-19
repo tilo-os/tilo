@@ -18,7 +18,9 @@
 //! Two properties are checked per widget:
 //! - at 1x, a single line of descender-free text sits on the centre line of
 //!   its band (its ink centre is within a pixel of the band centre, which the
-//!   old `(band - font_size) / 2` placement missed by ~1.5 px);
+//!   old `(band - font_size) / 2` placement missed by ~1.5 px), except a
+//!   chart's title, which stands on its box's own corner in the `Heading`
+//!   role with the legend in one row of entries under it;
 //! - the ink height grows by ~2x between 1x and 2x text scale. The widgets
 //!   used to grow by 4x because they fed already-scaled theme sizes to the
 //!   renderer, which scales once more.
@@ -49,7 +51,6 @@ const SEARCH_HEADER_H: f64 = 26.0;
 const SEARCH_ROW_ONE_LINE: f64 = 38.0;
 const SEARCH_ROW_TWO_LINE: f64 = 50.0;
 const SEARCH_TEXT_X: f64 = 8.0 + 12.0 + 30.0;
-const CHART_HEADER_H: f64 = 22.0;
 
 // The production formulas the widgets size their bands from — one line of
 // type as the renderer lays it out, and a pinned floor grown by content plus
@@ -572,25 +573,33 @@ fn card_headers_centre_on_their_icon_line_and_scale_once() {
         for scale in [1.0, 2.0] {
             let cap = capture("chart", chart(), (480, 220), scale);
             let chart = rect(find(&cap.harness.inspection().root, "Chart"));
-            // The header band holds the `sm` title line plus `s1`; the pinned
-            // 22 px at 1x.
             let theme = Theme::dark().with_text_scale(scale);
-            let header_h = band(
-                CHART_HEADER_H,
-                line(&theme.tokens.typography, TextRole::Caption),
-                f64::from(theme.tokens.spacing.s1),
-            );
-            assert!(header_h >= CHART_HEADER_H);
-            if scale > 1.0 {
-                assert!(header_h > CHART_HEADER_H);
-            }
-            let header = Rect::new(chart.x0, chart.y0, chart.x0 + 160.0, chart.y0 + header_h);
-            let title = ink(&cap.image, header);
+            // The title stands on the box's own corner in the `Heading` role;
+            // the legend is one row of entries under it, a related gap under
+            // the title, each entry's name centred on its row.
+            let title_line = line(&theme.tokens.typography, TextRole::Heading);
+            let legend_top = chart.y0 + title_line + f64::from(theme.tokens.spacing.rhythm.related);
+            let title_band = Rect::new(chart.x0, chart.y0, chart.x0 + 160.0, chart.y0 + title_line);
+            let title = ink(&cap.image, title_band);
             title_ink.push(title);
-            assert_centered("chart title", title, header, 1.0);
-            assert_has_air("chart title", title, header);
-            let legend = Rect::new(chart.x1 - 60.0, chart.y0, chart.x1, chart.y0 + header_h);
-            assert_centered("legend label", ink(&cap.image, legend), legend, 1.0);
+            assert!(
+                title.y0 >= title_band.y0 && title.y1 <= title_band.y1,
+                "chart title {title:?} leaves its line {title_band:?}"
+            );
+            assert_has_air("chart title", title, title_band);
+            // The first entry: its name past the swatch and clear of the
+            // second entry's swatch.
+            let name = Rect::new(
+                chart.x0 + 16.0,
+                legend_top,
+                chart.x0 + 80.0,
+                legend_top + tilo_ui::widget::chart_legend::ROW_HEIGHT,
+            );
+            let label = ink(&cap.image, name);
+            // The rasterized ink of a small line can sit a little above the
+            // centre of the line box the widget centres.
+            assert_centered("legend label", label, name, 1.5 * f64::from(scale));
+            assert_has_air("legend label", label, name);
         }
         assert_scaled_once("chart title", title_ink[0], title_ink[1]);
     }

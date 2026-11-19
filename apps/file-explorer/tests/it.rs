@@ -19,3 +19,6 @@ mod perf_interaction;
 
 #[path = "a11y_row_activation.rs"]
 mod a11y_row_activation;
+
+#[path = "page_window_surface.rs"]
+mod page_window_surface;

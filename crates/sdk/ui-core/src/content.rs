@@ -15,6 +15,29 @@ pub use tilo_content_types::{HEAD_BYTES, Landing, Takes, landing};
 /// read by its own hash.
 pub mod manifest {
     pub use fs_content::{is_manifest, whole};
+
+    /// Keep `bytes` in `store` as a workspace file's content: each chunk under its own hash,
+    /// then the manifest that lists them, so a device that reads the file by its manifest's
+    /// hash (the workspace's service, a computer that mounts the folder) asks for the chunks
+    /// it lacks. The manifest's hash (hex), which the file's node names.
+    ///
+    /// # Errors
+    /// The store refused a chunk or the manifest (full, or an item past its bound).
+    pub fn keep(store: &super::ContentStore, bytes: &[u8]) -> Result<String, String> {
+        let (manifest, _) = fs_content::build(bytes, None);
+        for index in 0..manifest.chunks().len() {
+            let Some(range) = manifest.chunk_range(index) else {
+                continue;
+            };
+            let start = usize::try_from(range.start).unwrap_or(usize::MAX);
+            let end = usize::try_from(range.end).unwrap_or(usize::MAX);
+            let chunk = bytes.get(start..end).unwrap_or_default();
+            store.put_public(chunk).map_err(|error| error.to_string())?;
+        }
+        store
+            .put_public(&manifest.encode())
+            .map_err(|error| error.to_string())
+    }
 }
 
 /// The device's one copy of the public file `name` (a catalogue the filesystem daemon mirrors for every
