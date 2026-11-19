@@ -357,6 +357,13 @@ impl Reports {
         read(&self.lock().status)
     }
 
+    /// Note that the server said something at `at_ms`. What a connection's liveness is read from
+    /// (the session's keep-alive): kept here without publishing a status change for every frame
+    /// the server sends.
+    pub(crate) fn note_contact(&self, at_ms: u64) {
+        self.lock().status.last_contact_at_ms = Some(at_ms);
+    }
+
     /// Apply `change` to the status, bump its generation, publish the states it moved
     /// ([`crate::states`]) and wake the watchers once the lock is released.
     pub fn change(&self, change: impl FnOnce(&mut PeerStatus)) {
