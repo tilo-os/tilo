@@ -25,7 +25,7 @@ __all__ = [
 
 class Note(Resource):
     """Note — `scratchpad.note`."""
-    __surface__ = "so.tilo.scratchpad@37a50595f46c488d"
+    __surface__ = "so.tilo.scratchpad@ff83eaec31c5d048"
     body: str
 
 

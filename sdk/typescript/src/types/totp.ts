@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.totp@1beb8a5e2e56189e";
+export const SURFACE = "so.tilo.totp@a6efc38b1fa5acc5";
 
 /** One of "Sha1", "Sha256", "Sha512". */
 export type Algorithm = "Sha1" | "Sha256" | "Sha512";

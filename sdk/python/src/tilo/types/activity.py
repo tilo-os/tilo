@@ -30,7 +30,7 @@ ClearFiltersArgs = TypedDict("ClearFiltersArgs", {
 
 class Filter(Resource):
     """Workspace activity — `activity.filter`."""
-    __surface__ = "so.tilo.activity@fc8884dd13a243c5"
+    __surface__ = "so.tilo.activity@fe5e26e58568ed26"
     period: str
     author: str
     lens: str

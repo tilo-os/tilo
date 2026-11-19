@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.firewall@d4e5e1b79ae77004";
+export const SURFACE = "so.tilo.firewall@8d556bea928f1554";
 
 /** One of "allow", "deny". */
 export type Action = "allow" | "deny";

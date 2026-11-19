@@ -205,7 +205,7 @@ DropDraftArgs = TypedDict("DropDraftArgs", {
 
 class Messages(Resource):
     """Messages — `tilo.messages`."""
-    __surface__ = "so.tilo.messages@72a4057592be1cdc"
+    __surface__ = "so.tilo.messages@cebfaa2cb667be8b"
     @property
     def conversations(self) -> list[Entry[Conversation]]:
         """Read only."""
@@ -311,7 +311,7 @@ class Messages(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.messages@72a4057592be1cdc"
+    __surface__ = "so.tilo.messages@cebfaa2cb667be8b"
     accounts: list[Entry[PersonAccount]]
     active: dict[str, str]
 
@@ -367,7 +367,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.messages@72a4057592be1cdc"
+    __surface__ = "so.tilo.messages@cebfaa2cb667be8b"
     people: list[Entry[Person]]
 
     def project_contact(self,
@@ -507,7 +507,7 @@ class Identities(Resource):
 
 class Drafts(Resource):
     """Message drafts — `messages.drafts`."""
-    __surface__ = "so.tilo.messages@72a4057592be1cdc"
+    __surface__ = "so.tilo.messages@cebfaa2cb667be8b"
     drafts: dict[str, str]
 
     def keep_draft(self,

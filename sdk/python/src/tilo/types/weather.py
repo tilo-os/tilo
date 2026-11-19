@@ -64,7 +64,7 @@ MoveToTopArgs = TypedDict("MoveToTopArgs", {
 
 class Locations(Resource):
     """Weather — `weather.locations`."""
-    __surface__ = "so.tilo.weather@d2252d1ae403d4ce"
+    __surface__ = "so.tilo.weather@24a1f909df8266d0"
     places: list[Entry[Place]]
     default_place: str
 

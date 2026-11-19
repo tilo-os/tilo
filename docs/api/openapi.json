@@ -19909,6 +19909,63 @@
               }
             ]
           },
+          "parts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "at": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "pieces": {
+                  "items": {
+                    "oneOf": [
+                      {
+                        "items": {
+                          "maximum": 255,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "type": "array"
+                      },
+                      {
+                        "content": true,
+                        "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
+                        "type": "string"
+                      },
+                      {
+                        "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
+                        "type": "string"
+                      },
+                      {
+                        "properties": {
+                          "inline": {
+                            "type": "array"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "at",
+                "size",
+                "pieces"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "answers": {
             "type": [
               "string",

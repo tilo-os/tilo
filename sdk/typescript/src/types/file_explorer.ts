@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.file-explorer@f952b0008d9de267";
+export const SURFACE = "so.tilo.file-explorer@22335a63282c089d";
 
 export interface Bookmark {
   place: string;

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.word-processor@d8ed1c63bd93e2ff";
+export const SURFACE = "so.tilo.word-processor@aef8d21eae3890e2";
 
 /** One of member, named: an object whose case the app tags it with. */
 export type Author = Record<string, unknown>;

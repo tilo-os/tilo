@@ -191,7 +191,7 @@ RemoveInputArgs = TypedDict("RemoveInputArgs", {
 
 class Workbench(Resource):
     """Shortcuts — `shortcuts.workbench`."""
-    __surface__ = "so.tilo.shortcuts@720723bfb1ff289c"
+    __surface__ = "so.tilo.shortcuts@07f5724db001dde6"
     drafts: list[Entry[Draft]]
     ignored: list[str]
 

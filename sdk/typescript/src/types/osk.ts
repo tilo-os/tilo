@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.osk@d810ab469be58922";
+export const SURFACE = "so.tilo.osk@0632dbc6f3a723f6";
 
 export interface KeyOffset {
   dx: number;

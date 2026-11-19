@@ -25,5 +25,5 @@ __all__ = [
 
 class Root(Resource):
     """Model providers — `model-providers.root`."""
-    __surface__ = "so.tilo.model-providers@bce9a952d0491cca"
+    __surface__ = "so.tilo.model-providers@87aa287e492c7c4a"
 

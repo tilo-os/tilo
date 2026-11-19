@@ -29,8 +29,10 @@ __all__ = [
     "LocalFolder",
     "RetiredCopy",
     "ServerUpdate",
+    "DeliveredPart",
     "Delivery",
     "HeldMessage",
+    "HeldPart",
     "IngestBaseline",
     "MessageState",
     "ServerCopy",
@@ -129,6 +131,11 @@ class RetiredCopy(TypedDict):
 ServerUpdate = dict[str, Any]
 """One of Flags, Move, Remove, SaveDraft: an object whose case the app tags it with."""
 
+class DeliveredPart(TypedDict):
+    at: int
+    size: int
+    pieces: list[Any]
+
 Delivery = TypedDict("Delivery", {
     "from": "str",
     "to": "str | None",
@@ -142,6 +149,7 @@ Delivery = TypedDict("Delivery", {
     "conversation": "str | None",
     "message_id": "str | None",
     "original": "Any | None",
+    "parts": "list[DeliveredPart]",
     "answers": "str | None",
 })
 
@@ -156,7 +164,13 @@ HeldMessage = TypedDict("HeldMessage", {
     "in_reply_to": "str | None",
     "conversation": "str",
     "original": "Any | None",
+    "parts": "list[HeldPart]",
 })
+
+class HeldPart(TypedDict):
+    at: int
+    size: int
+    pieces: list[Any]
 
 class IngestBaseline(TypedDict):
     id: str
@@ -389,7 +403,7 @@ ForgetCopiesArgs = TypedDict("ForgetCopiesArgs", {
 
 class Mailbox(Resource):
     """Mail — `mail.mailbox`."""
-    __surface__ = "so.tilo.mail@698aad87deeb11e6"
+    __surface__ = "so.tilo.mail@45358b355be6b85c"
     folders: list[Entry[LocalFolder]]
     draft: DraftState
     drafts: list[Entry[DraftState]]
@@ -587,7 +601,7 @@ class Mailbox(Resource):
 
 class Messages(Resource):
     """Messages — `mail.messages`."""
-    __surface__ = "so.tilo.mail@698aad87deeb11e6"
+    __surface__ = "so.tilo.mail@45358b355be6b85c"
     messages: list[Entry[MessageState]]
     @property
     def held(self) -> list[Entry[HeldMessage]]:
@@ -672,6 +686,7 @@ class Messages(Resource):
         conversation: str | None = None,
         message_id: str | None = None,
         original: Any | None = None,
+        parts: list[DeliveredPart] | None = None,
         answers: str | None = None,
     ) -> Any:
         """Runs the app's action."""
@@ -697,6 +712,8 @@ class Messages(Resource):
             args["message_id"] = message_id
         if original is not None:
             args["original"] = original
+        if parts is not None:
+            args["parts"] = parts
         if answers is not None:
             args["answers"] = answers
         return self.action("deliver-message", **args)
@@ -708,7 +725,7 @@ class Messages(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.mail@698aad87deeb11e6"
+    __surface__ = "so.tilo.mail@45358b355be6b85c"
     accounts: list[Entry[PersonAccount]]
     active: dict[str, str]
 
@@ -764,7 +781,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.mail@698aad87deeb11e6"
+    __surface__ = "so.tilo.mail@45358b355be6b85c"
     people: list[Entry[Person]]
 
     def project_contact(self,
@@ -904,7 +921,7 @@ class Identities(Resource):
 
 class TrustedSenders(Resource):
     """Trusted senders — `mail.trusted-senders`."""
-    __surface__ = "so.tilo.mail@698aad87deeb11e6"
+    __surface__ = "so.tilo.mail@45358b355be6b85c"
     senders: list[str]
 
     def trust(self, *, sender: str) -> None:
@@ -930,7 +947,7 @@ class TrustedSenders(Resource):
 
 class Copies(Resource):
     """Mail on your devices — `mail.copies`."""
-    __surface__ = "so.tilo.mail@698aad87deeb11e6"
+    __surface__ = "so.tilo.mail@45358b355be6b85c"
     @property
     def copies(self) -> list[Entry[KeptCopy]]:
         """Read only."""

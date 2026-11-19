@@ -98,7 +98,7 @@ AppliedArgs = TypedDict("AppliedArgs", {
 
 class Config(Resource):
     """Firewall — `firewall.config`."""
-    __surface__ = "so.tilo.firewall@d4e5e1b79ae77004"
+    __surface__ = "so.tilo.firewall@8d556bea928f1554"
     @property
     def enabled(self) -> bool:
         """Read only."""
@@ -173,7 +173,7 @@ class Config(Resource):
 
 class Applied(Resource):
     """Applied configuration — `firewall.applied`."""
-    __surface__ = "so.tilo.firewall@d4e5e1b79ae77004"
+    __surface__ = "so.tilo.firewall@8d556bea928f1554"
     devices: dict[str, str]
 
     def applied(self,

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.console@e3c41227510079ff";
+export const SURFACE = "so.tilo.console@2d09c6bc76c75d71";
 
 /** The arguments of `show-everything`. */
 export interface ShowEverythingArgs {

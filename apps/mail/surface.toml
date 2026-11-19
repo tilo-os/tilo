@@ -305,6 +305,7 @@ fields = [
   { path = "held.*.in_reply_to", type = { option = "text" } },
   { path = "held.*.conversation", type = "text" },
   { path = "held.*.original", type = { option = "any" } },
+  { path = "held.*.parts", type = { list = { named = "HeldPart" } } },
 ]
 
 [[resources.verbs]]
@@ -376,7 +377,16 @@ params = [
   { name = "conversation", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "message_id", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "original", type = { option = "any" }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] }] } },
+  { name = "parts", type = { list = { named = "DeliveredPart" } }, required = false, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { at = { type = "integer", minimum = 0 }, pieces = { type = "array", items = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] } }, size = { type = "integer", minimum = 0 } }, required = ["at", "size", "pieces"] } } },
   { name = "answers", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.types]]
+name = "DeliveredPart"
+fields = [
+  { name = "at", type = "int" },
+  { name = "size", type = "int" },
+  { name = "pieces", type = { list = "any" } },
 ]
 
 [[resources.types]]
@@ -394,6 +404,7 @@ fields = [
   { name = "conversation", type = { option = "text" } },
   { name = "message_id", type = { option = "text" } },
   { name = "original", type = { option = "any" } },
+  { name = "parts", type = { list = { named = "DeliveredPart" } } },
   { name = "answers", type = { option = "text" } },
 ]
 
@@ -452,6 +463,15 @@ fields = [
   { name = "in_reply_to", type = { option = "text" } },
   { name = "conversation", type = "text" },
   { name = "original", type = { option = "any" } },
+  { name = "parts", type = { list = { named = "HeldPart" } } },
+]
+
+[[resources.types]]
+name = "HeldPart"
+fields = [
+  { name = "at", type = "int" },
+  { name = "size", type = "int" },
+  { name = "pieces", type = { list = "any" } },
 ]
 
 [[resources.types]]

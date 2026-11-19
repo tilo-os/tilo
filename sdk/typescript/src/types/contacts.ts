@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.contacts@f4998e3b8d2c4225";
+export const SURFACE = "so.tilo.contacts@e4e007df47b75f0c";
 
 export interface Address {
   id: string;

@@ -135,7 +135,7 @@ ForgetArgs = TypedDict("ForgetArgs", {
 
 class Folder(Resource):
     """Folder — `files.folder`."""
-    __surface__ = "so.tilo.file-explorer@f952b0008d9de267"
+    __surface__ = "so.tilo.file-explorer@22335a63282c089d"
     places: list[Entry[Bookmark]]
 
     def add_bookmark(self,
@@ -357,7 +357,7 @@ class Folder(Resource):
 
 class Tree(Resource):
     """Files — `files.tree`."""
-    __surface__ = "so.tilo.file-explorer@f952b0008d9de267"
+    __surface__ = "so.tilo.file-explorer@22335a63282c089d"
     def new_folder(self,
         *,
         parent: Any,
@@ -451,7 +451,7 @@ class Tree(Resource):
 
 class Recent(Resource):
     """Recent files — `files.recent`."""
-    __surface__ = "so.tilo.file-explorer@f952b0008d9de267"
+    __surface__ = "so.tilo.file-explorer@22335a63282c089d"
     devices: dict[str, Any]
 
     def note(self,
@@ -504,7 +504,7 @@ class Recent(Resource):
 
 class Workspace(Resource):
     """Files window — `files.workspace`."""
-    __surface__ = "so.tilo.file-explorer@f952b0008d9de267"
+    __surface__ = "so.tilo.file-explorer@22335a63282c089d"
     def up(self) -> None:
         """Runs the app's action."""
         return self.action("up")

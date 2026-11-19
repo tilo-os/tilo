@@ -159,7 +159,7 @@ KeepArgs = TypedDict("KeepArgs", {
 
 class Collection(Resource):
     """Clocks — `clocks.collection`."""
-    __surface__ = "so.tilo.clocks@9852f71e51ca4a4d"
+    __surface__ = "so.tilo.clocks@e9f7a4bd4d373070"
     world_clocks: list[Entry[WorldClock]]
     alarms: list[Entry[Alarm]]
     timers: list[Entry[Timer]]
@@ -336,7 +336,7 @@ class Collection(Resource):
 
 class OnDevices(Resource):
     """Clocks on each device — `clocks.on-devices`."""
-    __surface__ = "so.tilo.clocks@9852f71e51ca4a4d"
+    __surface__ = "so.tilo.clocks@e9f7a4bd4d373070"
     devices: dict[str, Any]
 
     def keep(self,
