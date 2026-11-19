@@ -1300,9 +1300,9 @@ mod tests {
         }
 
         phase an_agents_step_on_an_item_names_the_item;
-        // An agent renaming one of a record's items says that item's name in the
-        // view it acts in, by the label the app published for the item: the view
-        // reads "Editing Harbour plan", never only the app it is in.
+        // An agent renaming one of a record's items names that item's own resource
+        // in the view it acts in, labelled with what its app published for it, so
+        // the mark lands on the item's row and reads "Editing Harbour plan".
         {
             use crate::apps::test_support::{Grantee, Grants as _, KindSet};
             let mut workspace = workspace();
@@ -1352,8 +1352,9 @@ mod tests {
             };
             assert_eq!(interaction.action.id, "rename");
             assert_eq!(
-                interaction.resource.id, "files.app",
-                "the record it acts in"
+                interaction.resource.id,
+                format!("files.app/entries/{ENTRY}"),
+                "the item it acts on, as its app published it"
             );
             assert_eq!(
                 interaction.resource.label, "Harbour plan",
