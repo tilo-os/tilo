@@ -283,7 +283,7 @@ d-dkylvhw4 = Nach vorn
 d-dkylvhw4-strip = Leiste
 
 d-zoqbhs7o = Einrichten
-    .doc = Eine Shell, die nie angeordnet wurde: die Teile der Leiste und des Docks, in der Reihenfolge, in der die voreingestellte Shell sie zeigt.
+    .doc = Womit eine neue Shell beginnt: die Teile der Leiste und des Docks, in der Reihenfolge, in der die voreingestellte Shell sie zeigt.
 
 d-vglzmkiy = Das Ein/Aus-Teil entfernen
     .doc = Eine Shell, die das zurückgezogene Teil `power` neben dem Status behielt, verliert es.

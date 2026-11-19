@@ -259,11 +259,8 @@ d-jrcgjyzr = Medium
 
 d-fglwr2mx = High
 
-d-ugfyyjbk = Seed
-    .doc = A gallery whose root is made opens filled: the platform applies this once to the root, as it applies every migration, as the root is made and before the window that asked for it is drawn.
-
 d-haqpp6u6 = Fill
-    .doc = What the gallery shows with nothing in it yet: one document of every group, so a person meets the components rather than an empty window.
+    .doc = What a new gallery starts with: one document of every group, so a person meets the components rather than an empty window.
 
 d-6obnc5qh = Add item
     .doc = Adds what the backlog's line says as an item to do, and clears the line.
