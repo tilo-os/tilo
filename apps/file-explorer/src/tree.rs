@@ -27,7 +27,7 @@ use ui::icons::Icon;
 use ui::widget::controls::ActionControls;
 use ui::widget::{
     ActionEmitter, ArrivingView, Banner, Button, Column, Decorator, Element, ListRow, Row,
-    SkeletonShape, TextInput, Widget as _,
+    SkeletonShape, Widget as _,
 };
 use ui::window_toolbar::{LocationSegment, ToolbarEvent, ToolbarLocation};
 
@@ -93,6 +93,8 @@ type Reads = Rc<dyn Fn(&str) -> Option<Vec<u8>>>;
 /// A file the person asked to open, waiting for the bytes that say which app
 /// opens it.
 struct Asked {
+    /// The file's node in the tree.
+    node: String,
     hash: String,
     name: String,
 }
@@ -143,6 +145,9 @@ struct Shown {
 struct Notice {
     title: String,
     reason: Option<String>,
+    /// The file the notice is about, offered to download, by its node: a file no app here
+    /// opens is still the person's to take.
+    download: Option<String>,
 }
 
 /// The workspace's tree as the page holds it: the resource that names its root and lists its
@@ -289,6 +294,7 @@ impl Held {
                     failed.borrow_mut().push(Notice {
                         title: failed_title,
                         reason: Some(why.to_string()),
+                        download: None,
                     });
                 }
             });
@@ -301,6 +307,7 @@ impl Held {
                 failed.borrow_mut().push(Notice {
                     title: failed_title,
                     reason: Some(why.to_string()),
+                    download: None,
                 });
             }
         });
@@ -475,9 +482,16 @@ pub struct TreeBrowser {
     /// that asked.
     asked: Rc<RefCell<Vec<Asked>>>,
     /// The handoff that opens a file, by the app that opens its type.
-    handoffs: RefCell<HashMap<String, ActionEmitter<String>>>,
+    handoffs: RefCell<HashMap<String, ActionEmitter<(String, String)>>>,
     /// What the rows shown now can be dragged out of the window with.
     offers: Offers,
+    /// A file asked for that no app here opens, said on the window's next refresh.
+    unopened: RefCell<Option<Notice>>,
+    /// Where the window keeps its view as it moves, so a reloaded page brings each window back
+    /// to its own folder; `None` for a past version.
+    shows: Option<ui::application_view::WindowShows>,
+    /// The folder the window last kept or was brought back to, so it is kept only once it moved.
+    kept: String,
 }
 
 impl TreeBrowser {
@@ -522,6 +536,11 @@ impl TreeBrowser {
             asked: Rc::default(),
             handoffs: RefCell::new(HashMap::new()),
             offers: Offers::default(),
+            unopened: RefCell::new(None),
+            shows: cx.window_shows(),
+            // The root a window opens on is not a move: keeping it would write over the folder
+            // the window is about to be brought back to.
+            kept: String::new(),
         };
         browser.refresh();
         browser
@@ -544,6 +563,9 @@ impl TreeBrowser {
     /// names moved; open what the person asked for once its bytes are here.
     fn refresh(&mut self) -> bool {
         self.open_what_arrived();
+        if let Some(unopened) = self.unopened.take() {
+            self.notice = Some(unopened);
+        }
         for ask in self.asks.take() {
             match ask {
                 Ask::StopNaming => self.naming = None,
@@ -570,6 +592,7 @@ impl TreeBrowser {
                 self.notice = Some(failed);
             }
         }
+        self.keep_view();
         let folder = self.folder(self.tree.as_ref().map(Held::tree));
         self.declare_bar(&folder);
         let shown = Shown {
@@ -592,6 +615,28 @@ impl TreeBrowser {
         self.shown = Some(shown);
         self.structure_dirty = true;
         true
+    }
+
+    /// Keep the folder the window went into with the window's saved view, once it moved: not
+    /// only when the window closes, which a reloaded page never does.
+    fn keep_view(&mut self) {
+        let folder = self.folder.get();
+        if self.kept == folder {
+            return;
+        }
+        if let Some(shows) = &self.shows {
+            shows.keep(Self::application_view(&folder));
+        }
+        self.kept = folder;
+    }
+
+    /// The window's own view: the folder it shows, by its node.
+    fn application_view(folder: &str) -> ui::application_view::ApplicationLocalView {
+        ui::application_view::ApplicationLocalView {
+            app_id: <FilesTreeShell as ResourceApp>::ID.to_owned(),
+            version: WINDOW_VIEW_VERSION,
+            payload: folder.as_bytes().to_vec(),
+        }
     }
 
     /// Whether the workspace's tree is here whole: until it is, the window says it is on its
@@ -759,12 +804,7 @@ impl TreeBrowser {
                 }
             }
             None => {
-                let name = t(if is_folder {
-                    "files-new-folder-default-name"
-                } else {
-                    "files-tree-new-file-default-name"
-                });
-                self.naming = Some((kind, ui::LocalState::new(name)));
+                self.naming = Some((kind, ui::LocalState::new(Self::proposed_name(kind))));
                 self.notice = None;
                 Ok(Effected::done())
             }
@@ -779,6 +819,7 @@ impl TreeBrowser {
             self.notice = Some(Notice {
                 title: t("files-tree-not-here"),
                 reason: None,
+                download: None,
             });
             return;
         };
@@ -786,6 +827,7 @@ impl TreeBrowser {
             self.notice = Some(Notice {
                 title: t("files-tree-not-here"),
                 reason: None,
+                download: None,
             });
             return;
         };
@@ -811,6 +853,7 @@ impl TreeBrowser {
                         &[arg("name", file.name.clone())],
                     ),
                     reason: Some(why),
+                    download: None,
                 });
             }
         }
@@ -854,6 +897,7 @@ impl TreeBrowser {
                 self.notice = Some(Notice {
                     title,
                     reason: Some(why),
+                    download: None,
                 });
             }
         }
@@ -866,9 +910,19 @@ impl TreeBrowser {
         let mut body = Column::new().with_id("files-tree");
         self.offers.clear();
         if let Some(notice) = &self.notice {
-            let mut banner = Banner::warning(notice.title.clone());
+            let mut banner = Banner::warning(notice.title.clone()).with_id("files-tree-notice");
             if let Some(reason) = &notice.reason {
                 banner = banner.with_message(reason.clone());
+            }
+            if let Some(node) = notice
+                .download
+                .clone()
+                .filter(|_| ui::carry_out::available())
+            {
+                banner = banner.with_action(self.actions.bind_effect(
+                    Button::new("files-tree-notice-download", &t("files-tree-download")),
+                    FilesWindowEffect::DOWNLOAD.map(move |()| node.clone()),
+                ));
             }
             body = body.push(Box::new(banner));
         }
@@ -897,64 +951,73 @@ impl TreeBrowser {
         }
     }
 
-    /// The row a new folder or file is named in: its name, chosen and ready to type over (a
-    /// file's name up to its extension), and the buttons that make it or let it be.
+    /// The row a new folder or file is named in, as the row it becomes: its icon, and its name
+    /// typed in place, chosen and ready to type over (a file's name up to its extension). Enter
+    /// or leaving it makes it; Escape lets it be.
     fn naming_row(
         &self,
         kind: FileNodeKind,
         name: &ui::LocalState<String>,
     ) -> Box<dyn ui::widget::Widget> {
-        let (part, icon) = if kind == FileNodeKind::Directory {
-            ("folder", Icon::Folder)
-        } else {
-            ("file", Icon::FileText)
-        };
-        // Enter in the name and Create invoke the window's New folder or New file with the
-        // typed name, as the bar, the palette and an agent do.
-        let effect = if kind == FileNodeKind::Directory {
+        let is_folder = kind == FileNodeKind::Directory;
+        let part = if is_folder { "folder" } else { "file" };
+        let typed = name.get();
+        // Enter in the name invokes the window's New folder or New file with the typed name, as
+        // the bar, the palette and an agent do.
+        let effect = if is_folder {
             FilesWindowEffect::NEW_FOLDER
         } else {
             FilesWindowEffect::NEW_FILE
         };
-        let mut field = TextInput::from_state(name).with_id(&format!("files-tree-new-{part}-name"));
+        let window = self.asks.clone();
+        let mut label = ui::widget::EditableLabel::naming(name)
+            .with_id(&format!("files-tree-new-{part}-name"))
+            .with_accessible_name(t(if is_folder {
+                "files-tree-new-folder-name"
+            } else {
+                "files-tree-new-file-name"
+            }))
+            .with_plain_field()
+            .filling()
+            .on_cancel(move || window.stop_naming());
+        // The name as proposed is chosen, a file's up to its extension, so the first keystroke
+        // types over it; once the person typed, their caret stays where they left it.
+        if typed == Self::proposed_name(kind) {
+            let end = std::path::Path::new(&typed)
+                .file_stem()
+                .filter(|_| !is_folder)
+                .map_or(typed.len(), std::ffi::OsStr::len);
+            label = label.with_selection(0, end);
+        }
         if let Some(binding) = self
             .actions
             .effect_binding(effect.map(|typed: String| Some(typed)))
         {
-            field = field.on_submit_action(binding);
+            label = label.on_action(binding);
         }
-        field.request_focus();
-        let typed = name.get();
-        match std::path::Path::new(&typed)
-            .file_stem()
-            .filter(|_| kind != FileNodeKind::Directory)
-        {
-            Some(stem) => field.set_selection(0, stem.len()),
-            None => field.select_all(),
-        }
-        let typed = name.clone();
-        let create = self.actions.bind_effect(
-            Button::new(
-                &format!("files-tree-new-{part}-create"),
-                &t("files-tree-create"),
-            ),
-            effect.map(move |()| Some(typed.get())),
-        );
-        let window = self.asks.clone();
-        let cancel = Button::new(
-            &format!("files-tree-new-{part}-cancel"),
-            &t("files-tree-cancel"),
-        )
-        .on_view(move || window.stop_naming());
-        Box::new(
-            Row::new()
-                .with_id(format!("files-tree-new-{part}"))
-                .with_rhythm(ui::tokens::Rhythm::Related)
-                .push(Box::new(ui::widget::IconWidget::new(icon)))
-                .push(Box::new(field))
-                .push(Box::new(create))
-                .push(Box::new(cancel)),
-        )
+        let icon = ui::icons::icon_for_path(std::path::Path::new(&typed), is_folder);
+        let content = Row::new()
+            .with_id(format!("files-tree-new-{part}"))
+            .with_padding(
+                ui::tokens::Spacing::BASE.s2,
+                ui::tokens::Spacing::BASE.rhythm.tight,
+            )
+            .with_gap(ui::tokens::Spacing::BASE.s3)
+            .with_min_height(ui::widget::ControlSize::Regular)
+            .no_wrap()
+            .with_align_items(ui::taffy::AlignItems::Center)
+            .push(Box::new(ui::widget::IconWidget::new(icon)))
+            .push(Box::new(label));
+        Box::new(ui::widget::ControlRow::new(content).with_selected(true))
+    }
+
+    /// The name a new folder or file is proposed under, before the person types one.
+    fn proposed_name(kind: FileNodeKind) -> String {
+        t(if kind == FileNodeKind::Directory {
+            "files-new-folder-default-name"
+        } else {
+            "files-tree-new-file-default-name"
+        })
     }
 
     /// One entry of the open folder: its name, its size and when and by whom
@@ -1044,6 +1107,7 @@ impl TreeBrowser {
         };
         let asked = Rc::clone(&self.asked);
         let read = self.read.clone();
+        let node_id = id.to_owned();
         Box::new(row.on_view(move || {
             if let Some(read) = &read {
                 // Reading content the page lacks asks the workspace for it;
@@ -1051,6 +1115,7 @@ impl TreeBrowser {
                 let _ = read(&hash);
             }
             asked.borrow_mut().push(Asked {
+                node: node_id.clone(),
                 hash: hash.clone(),
                 name: name.clone(),
             });
@@ -1183,7 +1248,11 @@ impl TreeBrowser {
             // Reading content the page lacks asks the workspace for it.
             let _ = read(&hash);
         }
-        self.asked.borrow_mut().push(Asked { hash, name });
+        self.asked.borrow_mut().push(Asked {
+            node: id.to_owned(),
+            hash,
+            name,
+        });
         self.open_what_arrived();
         true
     }
@@ -1210,7 +1279,12 @@ impl TreeBrowser {
             .get(..bytes.len().min(ui::content::HEAD_BYTES))
             .unwrap_or(bytes);
         let Some(app) = opening_app(head, &ask.name) else {
-            tracing::info!("no app in this page opens {}", ask.name);
+            // Said plainly, with the file to take instead: nothing opening is never silent.
+            *self.unopened.borrow_mut() = Some(Notice {
+                title: t_args("files-tree-no-app", &[arg("name", ask.name.clone())]),
+                reason: Some(t("files-tree-no-app-detail")),
+                download: Some(ask.node.clone()),
+            });
             return;
         };
         let mut handoffs = self.handoffs.borrow_mut();
@@ -1222,7 +1296,7 @@ impl TreeBrowser {
             slot.insert(built);
         }
         if let Some(handoff) = handoffs.get_mut(&app)
-            && let Err(error) = handoff.emit(ask.hash.clone())
+            && let Err(error) = handoff.emit((ask.hash.clone(), ask.name.clone()))
         {
             tracing::warn!("opening {} in {app}: {error}", ask.name);
         }
@@ -1231,8 +1305,29 @@ impl TreeBrowser {
     /// The handoff that opens a file by its content in `app`, as Camera hands
     /// a capture to Photos: the app's own `open`, with the hash bound by the
     /// row that chose it.
-    fn handoff(app: &str, label: &str) -> Option<ActionEmitter<String>> {
-        ui::framework::ContentHandoff::new(app, label, t("files-tree-open-detail")).emitter("open")
+    fn handoff(app: &str, label: &str) -> Option<ActionEmitter<(String, String)>> {
+        ui::framework::ContentHandoff::new(app, label, t("files-tree-open-detail"))
+            .file_emitter("open")
+    }
+}
+
+/// The apps this window handed a file to are the rows those launches name: published, so a
+/// launch dispatched from the window resolves to the app it opens.
+impl ui::resources::PublishesResources for TreeBrowser {
+    fn resource(
+        &self,
+        _doc: &ui::automerge::AutoCommit,
+        id: &str,
+    ) -> Option<ui::tilo_actions::ResourceSpec> {
+        let app = id.strip_suffix(".app")?;
+        self.handoffs.borrow().contains_key(app).then(|| {
+            ui::framework::ContentHandoff::new(
+                app,
+                t("files-tree-open"),
+                t("files-tree-open-detail"),
+            )
+            .destination("open")
+        })
     }
 }
 
@@ -1257,11 +1352,7 @@ impl ui::application_view::ApplicationViewState for TreeBrowser {
     fn capture_application_view(
         &self,
     ) -> Result<Option<ui::application_view::ApplicationLocalView>, ui::view::ThawError> {
-        Ok(Some(ui::application_view::ApplicationLocalView {
-            app_id: <FilesTreeShell as ResourceApp>::ID.to_owned(),
-            version: WINDOW_VIEW_VERSION,
-            payload: self.folder.get().into_bytes(),
-        }))
+        Ok(Some(Self::application_view(&self.folder.get())))
     }
 
     fn restore_application_view(
@@ -1277,6 +1368,8 @@ impl ui::application_view::ApplicationViewState for TreeBrowser {
         }
         let folder = String::from_utf8(local.payload.clone())
             .map_err(|_| ui::view::ThawError::InvalidView("a folder that is not text".into()))?;
+        // What was kept is what the window shows now: nothing to keep again.
+        self.kept.clone_from(&folder);
         self.folder.set_if_changed(folder);
         Ok(ui::application_view::ApplicationFocusRestore::Generic)
     }
@@ -1285,7 +1378,9 @@ impl ui::application_view::ApplicationViewState for TreeBrowser {
 impl Decorator for TreeBrowser {
     ui::provides!(
         dyn ui::history_mode::capability::PresentsHistoryEntries,
-        dyn ui::application_view::ApplicationViewState
+        dyn ui::application_view::ApplicationViewState,
+        dyn ActionControls,
+        dyn ui::resources::PublishesResources
     );
 
     type Inner = Column;
@@ -1323,10 +1418,17 @@ impl Decorator for TreeBrowser {
 
 impl ActionControls for TreeBrowser {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.handoffs
+        let handed = self
+            .handoffs
             .borrow_mut()
             .values_mut()
-            .find_map(ActionEmitter::take)
+            .find_map(ActionEmitter::take);
+        // The browser speaks for its own handoffs; its rows and bars queue theirs below it.
+        handed.or_else(|| {
+            ui::Widget::children_mut(self)
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
     }
 }
 
@@ -1448,17 +1550,18 @@ mod tests {
     }
 
     #[test]
-    fn the_handoff_opens_the_app_the_bytes_name_with_the_files_content() {
+    fn the_handoff_opens_the_app_the_bytes_name_with_the_files_content_and_name() {
         let handoff = TreeBrowser::handoff("so.tilo.notes", "Open").expect("the handoff binds");
         let hash = "ab".repeat(32);
         let invocation = handoff
             .binding()
-            .invoke(hash.clone())
+            .invoke((hash.clone(), "plan.txt".to_owned()))
             .expect("the row's click is one invocation");
         assert_eq!(invocation.address.resource.as_str(), "so.tilo.notes.app");
         assert_eq!(invocation.address.action.as_str(), "open");
         let arguments = serde_json::Value::Object(invocation.arguments);
         assert_eq!(arguments["content_hash"].as_str(), Some(hash.as_str()));
+        assert_eq!(arguments["name"].as_str(), Some("plan.txt"));
     }
 }
 
@@ -1771,9 +1874,34 @@ mod window_tests {
     }
 
     #[test]
+    fn a_reloaded_page_brings_the_window_back_to_its_folder() {
+        let mut app = ui::prelude::TestApp::<FilesTreeShell>::in_workspace(WORKSPACE)
+            .expect("the window opens");
+        deliver_terms_and_legal(&mut app);
+        choose_row(&mut app, "legal");
+        let mut app = app.reload().expect("the window comes back");
+        app.flush().unwrap();
+        app.harness().relayout();
+        assert!(
+            app.texts().iter().any(|text| text == "nda.txt"),
+            "the window comes back in the folder it went into: {:?}",
+            app.texts()
+        );
+    }
+
+    #[test]
     fn new_file_is_named_in_place_and_made_empty() {
         let mut app = ui::prelude::TestApp::<FilesTreeShell>::in_workspace(WORKSPACE)
             .expect("the window opens");
+        let session = std::sync::Arc::new(ui::tilo_actions::remote::TestProvider::new());
+        app.harness().set_session_api(
+            ui::RemoteActions::with_provider(
+                session.clone(),
+                ui::tilo_actions::remote::Caller::local_app("so.tilo.file-explorer")
+                    .in_workspace(WORKSPACE),
+            ),
+            Some(WORKSPACE.into()),
+        );
         app.flush().unwrap();
         let bar = ui::window_toolbar::declared().expect("the window declares its bar");
         assert!(
@@ -1785,9 +1913,24 @@ mod window_tests {
         app.effect(&FilesWindowEffect::NewFile { name: None })
             .expect("New file answers");
         app.flush().unwrap();
-        app.harness()
-            .click_named("files-tree-new-file-create")
-            .expect("the naming row offers Create");
+        // The name is typed in the row the file becomes, with no form around it: no button
+        // makes it or lets it be, Enter and Escape do.
+        assert!(
+            app.harness()
+                .targets()
+                .keys()
+                .all(|id| !id.ends_with("-create") && !id.ends_with("-cancel")),
+            "naming offers no Create or Cancel"
+        );
+        assert!(
+            app.harness()
+                .targets()
+                .contains_key("files-tree-new-file-name"),
+            "the row holds the name being typed"
+        );
+        // The name up to its extension is chosen: typing replaces it and keeps `.txt`.
+        app.harness().type_text("plan");
+        app.harness().key("Enter");
         app.flush().unwrap();
         let texts = app.texts();
         assert!(
@@ -1795,23 +1938,72 @@ mod window_tests {
             "the file was made: {texts:?}"
         );
         assert!(
-            texts.iter().any(|text| text == "New file.txt"),
-            "the new file is listed: {texts:?}"
+            texts.iter().any(|text| text == "plan.txt"),
+            "the new file is listed under the typed name: {texts:?}"
         );
         assert!(
-            app.harness()
-                .click_named("files-tree-new-file-create")
-                .is_err(),
+            !app.harness()
+                .targets()
+                .contains_key("files-tree-new-file-name"),
             "the naming row is gone once the file is made"
         );
-        // Made, it opens: its empty bytes and its name hand it to Notes to be written.
+        // Made, it opens: its empty bytes and its name hand it to Notes to be written, as the
+        // window's session is asked to open Notes on the file's content.
+        assert!(
+            app.harness().control_failures().is_empty(),
+            "the open is dispatched: {:?}",
+            app.harness().control_failures()
+        );
+        let asked = session.take_asked();
+        assert_eq!(asked.len(), 1, "the session is asked to open one app");
         assert_eq!(
-            app.with_widget::<TreeBrowser, _>(|browser| browser
-                .handoffs
-                .borrow()
-                .contains_key("so.tilo.notes")),
-            Some(true),
+            asked[0].target,
+            ui::tilo_actions::remote::application_open_target(WORKSPACE, "so.tilo.notes"),
             "the new file is handed to Notes"
+        );
+        assert_eq!(
+            ui::tilo_actions::remote::ApplicationLaunch::opened_content(&asked[0].argument)
+                .and_then(|(_, name)| name),
+            Some("plan.txt"),
+            "under its name, which says it is a note"
+        );
+    }
+
+    #[test]
+    fn a_file_no_app_opens_says_so() {
+        let mut app = ui::prelude::TestApp::<FilesTreeShell>::in_workspace(WORKSPACE)
+            .expect("the window opens");
+        app.flush().unwrap();
+        app.with_widget::<TreeBrowser, _>(|browser| {
+            browser.hand_off(
+                &Asked {
+                    node: "blob".into(),
+                    hash: "d".repeat(64),
+                    name: "blob.bin".into(),
+                },
+                &[0, 1, 2, 3],
+            );
+            assert!(
+                ui::widget::controls::take_control_invocation(browser).is_none(),
+                "no app is asked to open it"
+            );
+        })
+        .expect("the window shows its files");
+        app.flush().unwrap();
+        let texts = app.texts();
+        assert!(
+            texts
+                .iter()
+                .any(|text| text == "No app here opens blob.bin"),
+            "the window says no app opens it: {texts:?}"
+        );
+        // A page offers the file's download beside it; here nothing carries files out, so
+        // no button promises it.
+        assert!(
+            !app.harness()
+                .targets()
+                .contains_key("files-tree-notice-download"),
+            "no download is offered where files cannot be taken out"
         );
     }
 
@@ -1838,13 +2030,34 @@ mod window_tests {
             offered.contains(&("New folder", true)) && offered.contains(&("Upload files", true)),
             "the bar offers New folder and Upload: {offered:?}"
         );
-        // New folder asks for its name in the list, and Create makes it there.
+        // New folder asks for its name in the list, and Escape lets it be.
         app.effect(&FilesWindowEffect::NewFolder { name: None })
             .expect("New folder answers");
         app.flush().unwrap();
-        app.harness()
-            .click_named("files-tree-new-folder-create")
-            .expect("the naming row offers Create");
+        assert!(
+            app.harness()
+                .targets()
+                .contains_key("files-tree-new-folder-name"),
+            "the folder is named in its row"
+        );
+        app.harness().key("Escape");
+        app.flush().unwrap();
+        assert!(
+            !app.harness()
+                .targets()
+                .contains_key("files-tree-new-folder-name")
+                && app
+                    .texts()
+                    .iter()
+                    .any(|text| text == "This folder is empty"),
+            "Escape made nothing: {:?}",
+            app.texts()
+        );
+        // Asked again, Enter makes it under the name proposed.
+        app.effect(&FilesWindowEffect::NewFolder { name: None })
+            .expect("New folder answers");
+        app.flush().unwrap();
+        app.harness().key("Enter");
         app.flush().unwrap();
         let texts = app.texts();
         assert!(
@@ -1852,9 +2065,9 @@ mod window_tests {
             "the folder was made: {texts:?}"
         );
         assert!(
-            app.harness()
-                .click_named("files-tree-new-folder-create")
-                .is_err(),
+            !app.harness()
+                .targets()
+                .contains_key("files-tree-new-folder-name"),
             "the naming row is gone once the folder is made"
         );
         assert!(

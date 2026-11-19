@@ -1578,7 +1578,14 @@ impl TileSource for Tiles {
 
     fn launch(&mut self, _: &Workspace, id: TabId, app: &str, _: Option<TabId>) -> Option<Tab> {
         let (app, record, content) =
-            if let Some((app, hash)) = tilo_desktop_surface::session::launched_content(app) {
+            if let Some((app, hash, name)) = tilo_desktop_surface::session::launched_file(app) {
+                // A window that handed over a file named it: the app opens it as that file.
+                if let Some(name) = name {
+                    self.shared
+                        .content_names
+                        .borrow_mut()
+                        .insert(hash.to_owned(), name.to_owned());
+                }
                 (app, None, Some(hash))
             } else if let Some((app, record)) = tilo_desktop_search::launched_record(app) {
                 (app, Some(record), None)

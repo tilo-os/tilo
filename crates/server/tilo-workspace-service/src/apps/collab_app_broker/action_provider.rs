@@ -570,20 +570,29 @@ impl RowScope<'_> {
 }
 
 /// The content an application's open action is asked to show. Its text
-/// argument is a content hash; a typed caller (MCP) sends its argument map
-/// in the canonical envelope, and an empty map is a plain open.
-fn launch_content_hash(argument: Option<&str>) -> &str {
+/// argument is a content hash; a typed caller (MCP, a window handing over a
+/// file by its name) sends its argument map in the canonical envelope, whose
+/// `content_hash` is the content, and an empty map is a plain open.
+fn launch_content_hash(argument: Option<&str>) -> std::borrow::Cow<'_, str> {
     let Some(argument) = argument else {
-        return "";
+        return "".into();
     };
-    match argument.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX) {
-        Some(json)
-            if serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
-                .is_ok_and(|map| map.is_empty()) =>
+    let Some(json) = argument.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX) else {
+        return argument.into();
+    };
+    match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json) {
+        Ok(map) if map.is_empty() => "".into(),
+        Ok(map) => match map
+            .get(tilo_actions::remote::CONTENT_HASH_ARGUMENT)
+            .and_then(serde_json::Value::as_str)
         {
-            ""
+            Some(hash) => hash.to_owned().into(),
+            None => argument.into(),
+        },
+        Err(error) => {
+            tracing::warn!(%error, "an app's open was given an argument map that does not parse");
+            argument.into()
         }
-        _ => argument,
     }
 }
 

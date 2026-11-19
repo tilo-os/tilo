@@ -9,6 +9,24 @@ use super::{
     workspace_provider,
 };
 
+/// The argument of an application `open` naming the content it opens.
+pub const CONTENT_HASH_ARGUMENT: &str = "content_hash";
+/// The argument of an application `open` naming the file its content is.
+pub const NAME_ARGUMENT: &str = "name";
+
+/// A file's name a launch may carry: one path component of at most 255 bytes, with no
+/// control characters.
+#[must_use]
+pub fn valid_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && name != "."
+        && name != ".."
+        && !name
+            .chars()
+            .any(|c| c.is_control() || c == '/' || c == '\\')
+}
+
 /// The target that opens `app_id` into workspace `workspace`. An invocation may
 /// carry the content hash of bytes to open read-only as its text argument.
 #[must_use]
@@ -41,6 +59,10 @@ pub struct ApplicationLaunch {
     /// An action to deliver after opening the app, rather than opening it empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<crate::ActionAddress>,
+    /// The name of the file the content is, where the one handing it over knows it
+    /// (`plan.txt`): bytes alone say an image is a PNG, never that text is a note or a table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl ApplicationLaunch {
@@ -54,6 +76,7 @@ impl ApplicationLaunch {
             app_id: app_id.into(),
             content_hash: None,
             action: None,
+            name: None,
         }
     }
 
@@ -69,6 +92,7 @@ impl ApplicationLaunch {
             app_id: app_id.into(),
             content_hash: None,
             action: Some(crate::ActionAddress::new(resource, action)),
+            name: None,
         }
     }
 
@@ -90,7 +114,15 @@ impl ApplicationLaunch {
             app_id: app_id.into(),
             content_hash: Some(content_hash.into()),
             action: None,
+            name: None,
         }
+    }
+
+    /// This launch's content, as the file called `name`.
+    #[must_use]
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 
     /// An app id of letters, digits, dots and dashes, and a content hash
@@ -115,15 +147,48 @@ impl ApplicationLaunch {
                         .bytes()
                         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
             })
+            && self
+                .name
+                .as_ref()
+                .is_none_or(|name| self.content_hash.is_some() && valid_file_name(name))
     }
 
     /// The argument the broker's application `open` takes: the content
-    /// hash as its text, or nothing.
+    /// hash as its text, with the file's name the map of both, or nothing.
     #[must_use]
     pub fn argument(&self) -> InvokeArgument {
-        self.content_hash
-            .clone()
-            .map_or(InvokeArgument::None, InvokeArgument::Text)
+        match (&self.content_hash, &self.name) {
+            (Some(hash), Some(name)) => InvokeArgument::Json(serde_json::Map::from_iter([
+                (
+                    CONTENT_HASH_ARGUMENT.to_owned(),
+                    serde_json::Value::String(hash.clone()),
+                ),
+                (
+                    NAME_ARGUMENT.to_owned(),
+                    serde_json::Value::String(name.clone()),
+                ),
+            ])),
+            (Some(hash), None) => InvokeArgument::Text(hash.clone()),
+            (None, _) => InvokeArgument::None,
+        }
+    }
+
+    /// The content hash and the file name an `open`'s `argument` carries
+    /// ([`Self::argument`]): `None` for an argument that names no content.
+    #[must_use]
+    pub fn opened_content(argument: &InvokeArgument) -> Option<(&str, Option<&str>)> {
+        match argument {
+            InvokeArgument::Text(hash) => Some((hash, None)),
+            InvokeArgument::Json(map) => {
+                let hash = map.get(CONTENT_HASH_ARGUMENT)?.as_str()?;
+                let name = map
+                    .get(NAME_ARGUMENT)
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|name| valid_file_name(name));
+                Some((hash, name))
+            }
+            InvokeArgument::None => None,
+        }
     }
 
     /// Opening `app_id` with content the caller names as the action's
@@ -143,16 +208,27 @@ impl ApplicationLaunch {
             description,
             crate::OperationKind::Effect,
             Self::TYPE,
-            vec![crate::ActionParam::required(
-                "content_hash",
-                crate::ParamType::Text,
-                "Content address hash of what the app opens",
-            )],
+            vec![
+                crate::ActionParam::required(
+                    CONTENT_HASH_ARGUMENT,
+                    crate::ParamType::Text,
+                    "Content address hash of what the app opens",
+                ),
+                crate::ActionParam::optional(
+                    NAME_ARGUMENT,
+                    crate::ParamType::Text,
+                    "The name of the file it is",
+                ),
+            ],
             move |args| {
                 let launch = Self::with_content(
                     app_id.clone(),
-                    args.text("content_hash").unwrap_or_default(),
+                    args.text(CONTENT_HASH_ARGUMENT).unwrap_or_default(),
                 );
+                let launch = match args.text(NAME_ARGUMENT).filter(|name| !name.is_empty()) {
+                    Some(name) => launch.named(name),
+                    None => launch,
+                };
                 crate::EncodedAction::encode_operation(Self::TYPE, &launch).unwrap_or_else(|_| {
                     crate::EncodedAction {
                         type_id: Self::TYPE.to_owned(),
@@ -260,4 +336,39 @@ fn application_parts(provider: &str) -> Option<(&str, &str, Option<&str>)> {
     };
     (!workspace.is_empty() && !app_id.is_empty() && record.is_none_or(|record| !record.is_empty()))
         .then_some((workspace, app_id, record))
+}
+
+#[cfg(test)]
+mod named_content_tests {
+    use super::*;
+
+    #[test]
+    fn a_launch_carries_the_name_of_the_file_it_opens() {
+        let hash = "ab".repeat(32);
+        let plain = ApplicationLaunch::with_content("so.tilo.notes", hash.clone());
+        assert_eq!(plain.argument(), InvokeArgument::Text(hash.clone()));
+        assert_eq!(
+            ApplicationLaunch::opened_content(&plain.argument()),
+            Some((hash.as_str(), None))
+        );
+        let named = plain.named("plan.txt");
+        assert!(named.valid());
+        assert_eq!(
+            ApplicationLaunch::opened_content(&named.argument()),
+            Some((hash.as_str(), Some("plan.txt")))
+        );
+        // A name is one file's, never a path, and only content has one.
+        for name in ["", "..", "a/b", "a\\b", "line\nbreak"] {
+            assert!(
+                !ApplicationLaunch::with_content("so.tilo.notes", hash.clone())
+                    .named(name)
+                    .valid()
+            );
+        }
+        assert!(
+            !ApplicationLaunch::app("so.tilo.notes")
+                .named("plan.txt")
+                .valid()
+        );
+    }
 }

@@ -61,6 +61,7 @@ pub(crate) fn profile_directory() -> std::io::Result<tempfile::TempDir> {
     tempfile::tempdir()
 }
 
+#[derive(Clone)]
 enum Profile {
     /// A private temporary profile, removed with the app, the workspace the app
     /// opens in and the device it runs on.
@@ -1005,18 +1006,22 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// `arguments`, as `app ARGUMENTS` run again would.
     pub fn relaunch(mut self, arguments: &[&str]) -> Result<Self, LaunchError> {
         self.close()?;
-        let profile = match &self.profile {
-            Profile::Temporary(directory, workspace, device) => {
-                Profile::Temporary(Rc::clone(directory), workspace.clone(), device.clone())
-            }
-            Profile::Window(directory, workspace, device, window) => Profile::Window(
-                Rc::clone(directory),
-                workspace.clone(),
-                device.clone(),
-                *window,
-            ),
-            Profile::DataDir(directory) => Profile::DataDir(directory.clone()),
-        };
+        self.launch_again(arguments)
+    }
+
+    /// Open the app again without closing it, as a reloaded page does: its window's view is
+    /// what the window kept while open, never what a close would save.
+    pub fn reload(mut self) -> Result<Self, LaunchError> {
+        self.harness
+            .flush_component_resources()
+            .map_err(operation)?;
+        self.closed = true;
+        self.launch_again(&[])
+    }
+
+    /// Launch the app on this one's profile with `arguments`, once this one is closed or let go.
+    fn launch_again(mut self, arguments: &[&str]) -> Result<Self, LaunchError> {
+        let profile = self.profile.clone();
         let role = self.role;
         let author = std::mem::take(&mut self.author);
         // Release this instance's record writer before the next one opens it.
@@ -1025,25 +1030,28 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Self::open(profile, role, &author, &arguments, None, None, None, |_| {})
     }
 
+    /// The profile of the next window a launcher opens beside this one.
+    fn next_window(&self) -> Result<Profile, LaunchError> {
+        let window = self.instance.wrapping_add(1).max(INSTANCE + 1);
+        match &self.profile {
+            Profile::Temporary(directory, workspace, device)
+            | Profile::Window(directory, workspace, device, _) => Ok(Profile::Window(
+                Rc::clone(directory),
+                workspace.clone(),
+                device.clone(),
+                window,
+            )),
+            Profile::DataDir(_) => Err(operation("a --data-dir profile has one window")),
+        }
+    }
+
     /// Close the app and open a new window of it on the same profile and in
     /// the same workspace, as the launcher opens one: an instance it never had,
     /// whose fallback record is a fresh record of that window's own unless
     /// the app [keeps one per workspace](ResourceApp::WORKSPACE_RESOURCE).
     pub fn another_window(mut self) -> Result<Self, LaunchError> {
         self.close()?;
-        let window = self.instance.wrapping_add(1).max(INSTANCE + 1);
-        let profile = match &self.profile {
-            Profile::Temporary(directory, workspace, device)
-            | Profile::Window(directory, workspace, device, _) => Profile::Window(
-                Rc::clone(directory),
-                workspace.clone(),
-                device.clone(),
-                window,
-            ),
-            Profile::DataDir(_) => {
-                return Err(operation("a --data-dir profile has one window"));
-            }
-        };
+        let profile = self.next_window()?;
         let role = self.role;
         let author = std::mem::take(&mut self.author);
         drop(self);
@@ -1056,19 +1064,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// app [keeps one per workspace](ResourceApp::WORKSPACE_RESOURCE), so both show one
     /// record; [`Self::deliver_changes_to`] carries edits between them.
     pub fn open_window(&self) -> Result<Self, LaunchError> {
-        let window = self.instance.wrapping_add(1).max(INSTANCE + 1);
-        let profile = match &self.profile {
-            Profile::Temporary(directory, workspace, device)
-            | Profile::Window(directory, workspace, device, _) => Profile::Window(
-                Rc::clone(directory),
-                workspace.clone(),
-                device.clone(),
-                window,
-            ),
-            Profile::DataDir(_) => {
-                return Err(operation("a --data-dir profile has one window"));
-            }
-        };
+        let profile = self.next_window()?;
         Self::open_beside(
             WindowLaunch {
                 profile,

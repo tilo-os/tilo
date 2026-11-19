@@ -93,6 +93,27 @@ impl WindowShows {
             tracing::warn!(%error, "what the window shows is not remembered");
         }
     }
+
+    /// The window's own view moved (what its [`ApplicationViewState`] captures: the folder it
+    /// shows of a tree it reads, by its node): kept at once with its saved view, as [`Self::show`]
+    /// keeps a path, so a page reloaded or a session that ends without closing the window brings
+    /// it back there, and no other window's view moves.
+    pub fn keep(&self, application: ApplicationLocalView) {
+        let saved = match self.views.load(self.unsaved.instance_id) {
+            Ok(Some(saved)) if saved.document_id == self.unsaved.document_id => saved,
+            _ => self.unsaved.clone(),
+        };
+        if saved.application.as_ref() == Some(&application) {
+            return;
+        }
+        let saved = SavedInstanceView {
+            application: Some(application),
+            ..saved
+        };
+        if let Err(error) = self.views.save(&saved) {
+            tracing::warn!(%error, "the window's view is not remembered");
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
