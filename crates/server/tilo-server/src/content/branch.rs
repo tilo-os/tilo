@@ -12,7 +12,8 @@ use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ROOT, ReadDoc as _};
 use collab_types::{ContentRetention, EncryptionMetadata, WorkspaceId, file_content_artifact};
 use fs::content::Manifest;
-use fs_protocol::tree::{FILES_APP, chunk_of_record as tree_chunk};
+use fs_protocol::tree::FILES_APP;
+pub(super) use fs_protocol::tree::chunk_of_record as tree_chunk;
 use key_group::ContentKeys;
 use tilo_content::{ContentStore, WorkspaceStores};
 
@@ -205,7 +206,9 @@ fn copy_assets(
 }
 
 /// Every version address ever entered in a chunk of the Files tree.
-fn file_versions(documents: &[((String, String), Vec<u8>)]) -> Result<BTreeSet<String>, String> {
+pub(super) fn file_versions(
+    documents: &[((String, String), Vec<u8>)],
+) -> Result<BTreeSet<String>, String> {
     use automerge::legacy::{Key, OpType};
     use fs_protocol::tree::{HASH_KEY, is_file_content_hash};
 
@@ -233,13 +236,22 @@ fn write_file_aliases(
     bytes: &mut Vec<u8>,
     translated: &BTreeMap<String, String>,
 ) -> Result<(), String> {
-    use automerge::{ObjType, Value};
-    use fs_protocol::tree::FILE_VERSION_ALIASES_KEY;
-
     if translated.is_empty() {
         return Ok(());
     }
     let mut document = AutoCommit::load(bytes).map_err(|error| error.to_string())?;
+    set_file_aliases(&mut document, translated)?;
+    *bytes = document.save();
+    Ok(())
+}
+
+pub(super) fn set_file_aliases(
+    document: &mut AutoCommit,
+    translated: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    use automerge::{ObjType, Value};
+    use fs_protocol::tree::FILE_VERSION_ALIASES_KEY;
+
     let aliases = match document
         .get(&ROOT, FILE_VERSION_ALIASES_KEY)
         .map_err(|error| error.to_string())?
@@ -254,17 +266,19 @@ fn write_file_aliases(
             .put(&aliases, before, after.as_str())
             .map_err(|error| error.to_string())?;
     }
-    *bytes = document.save();
     Ok(())
 }
 
 /// A stored file version is a manifest or a legacy file stored directly by its content hash.
-struct StoredVersion {
+pub(super) struct StoredVersion {
     len: u64,
-    manifest: Option<Manifest>,
+    pub(super) manifest: Option<Manifest>,
 }
 
-fn inspect_version(store: &ContentStore, address: &str) -> Result<Option<StoredVersion>, String> {
+pub(super) fn inspect_version(
+    store: &ContentStore,
+    address: &str,
+) -> Result<Option<StoredVersion>, String> {
     let Some(len) = store.size(address).filter(|len| *len > 0) else {
         return Ok(None);
     };
@@ -292,7 +306,7 @@ fn inspect_version(store: &ContentStore, address: &str) -> Result<Option<StoredV
     Ok(Some(StoredVersion { len, manifest }))
 }
 
-fn seal_version(
+pub(super) fn seal_version(
     (source_store, destination): (&ContentStore, &ContentStore),
     (address, version): (&str, StoredVersion),
     (from, to): (WorkspaceId, WorkspaceId),
@@ -433,10 +447,12 @@ fn replace_file_hashes(
 
 /// The Files tree among `records`, read: its own record and each chunk of it the branch took.
 /// `None` when the branch took none of it.
-fn tree_of(records: &[((String, String), Vec<u8>)]) -> Option<fs_protocol::tree::TreeChunks> {
+pub(super) fn tree_of(
+    documents: &[((String, String), Vec<u8>)],
+) -> Option<fs_protocol::tree::TreeChunks> {
     let mut tree = fs_protocol::tree::TreeChunks::default();
     let mut read = false;
-    for ((app, record), document) in records {
+    for ((app, record), document) in documents {
         if app == fs_protocol::tree::FILES_APP {
             read |= tree.read_resource(record, document).unwrap_or(false);
         }

@@ -66,6 +66,10 @@ impl DocumentKeys {
         )
     }
 
+    pub(super) fn same_write_key(&self, keys: &ContentKeys) -> bool {
+        self.keys.same_write_key(keys)
+    }
+
     /// Open any write of the record's history, under any epoch the keys
     /// hold, a compaction included.
     pub(super) fn open(&self) -> impl FnMut(&SignedOp) -> Result<Vec<u8>, String> + '_ {
@@ -355,7 +359,7 @@ impl GovernedWorkspace {
     }
 }
 
-async fn read_document_keys(
+pub(super) async fn read_document_keys(
     device: &super::DeviceKeys,
     workspace: &str,
     (app, document): (&str, &str),

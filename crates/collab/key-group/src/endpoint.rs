@@ -98,6 +98,17 @@ impl ContentKeys {
         self.epoch
     }
 
+    /// Whether both handles encrypt with the same current key.
+    #[must_use]
+    pub fn same_write_key(&self, other: &Self) -> bool {
+        self.workspace == other.workspace
+            && self.epoch == other.epoch
+            && self
+                .keyring
+                .get(self.epoch)
+                .is_some_and(|key| other.keyring.get(other.epoch) == Some(key))
+    }
+
     pub fn holds_epoch(&self, epoch: u64) -> bool {
         self.keyring.get(epoch).is_some()
     }
