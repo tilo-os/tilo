@@ -91,8 +91,8 @@ impl Route {
 /// A record of a workspace this device reads and writes.
 type Key = (WorkspaceId, Route);
 
-/// What a record held when this device last wrote it, as its route compares it: a look that finds
-/// it again writes nothing.
+/// What a record held when this device last read or wrote it, as its route compares it: a look
+/// that finds it again writes nothing.
 #[derive(Clone, PartialEq, Eq)]
 enum Written {
     /// The layout revision it was written from, and the record each window showed.
@@ -116,7 +116,7 @@ struct Held {
     kept: Option<automerge::AutoCommit>,
     /// The revision `kept` holds.
     based: Option<[u8; 32]>,
-    /// What the record held when this device last wrote it.
+    /// What the record held when this device last read or wrote it.
     written: Option<Written>,
     /// The person's view as this device shows it from the record alone, with nothing changed
     /// here: a front tab that differs from it is the person's change here; one that differs from
@@ -138,6 +138,9 @@ struct Held {
     pending_acted: Option<Acted>,
     /// Whether the record was read here.
     read: bool,
+    /// Whether a look found the view unreadable: what it holds is not known here yet, so no view
+    /// is written of it until a look reads it.
+    unreadable: bool,
     /// Where the engine stood when this record was last read, or found not to have moved: a look
     /// that skips the record (its write under way) or a write of it that finished leaves it behind
     /// the engine, so the record is read again however the rest of the workspace moved meanwhile.
@@ -886,15 +889,32 @@ impl Layouts {
             let known = self.held(&key, |held| held.revision);
             let record = Self::record(engine, &key, known);
             self.held(&key, |held| held.read_at = Some(at));
-            let Some((doc, revision)) = record.ok().flatten() else {
-                // Nothing written of this view here yet: the layout shows the person's view as it is.
-                self.held(&key, |held| {
-                    held.read = true;
-                    if held.written.is_none() {
-                        held.written = Some(Written::View(PersonView::of(tree, workspace_id)));
-                    }
-                });
-                continue;
+            let (doc, revision) = match record {
+                Ok(Some(read)) => read,
+                // Read against a revision, nothing came back while the view did not move: what
+                // was read stands.
+                Ok(None) if known.is_some() => {
+                    self.held(&key, |held| {
+                        held.read = true;
+                        held.unreadable = false;
+                    });
+                    continue;
+                }
+                // The workspace holds no view of this person yet: what it holds is no view at all,
+                // and the view the person has here is written once it rests. One the workspace
+                // holds and this look cannot read is nobody's to write over, so nothing counts as
+                // written until a look reads it.
+                failed => {
+                    let absent = failed.is_err() && nothing_written(engine, workspace_id, &route);
+                    self.held(&key, |held| {
+                        held.read = true;
+                        held.unreadable = !absent;
+                        if absent && held.written.is_none() {
+                            held.written = Some(Written::View(PersonView::default()));
+                        }
+                    });
+                    continue;
+                }
             };
             let doc = base_of(
                 workspace_id,
@@ -920,6 +940,7 @@ impl Layouts {
                 };
                 held.seen = Some(PersonView::of(&alone, workspace_id));
                 held.read = true;
+                held.unreadable = false;
                 held.revision = Some(revision);
                 held.written = Some(Written::View(read));
                 if held.undo.is_none() {
@@ -2086,6 +2107,13 @@ fn keys_awaited(engine: &Engine, key: &Key) -> bool {
     matches!(engine.seal_keys(*workspace_id), Ok(SealKeys::Waiting))
 }
 
+/// Whether this device holds `workspace_id` and it holds nothing of `route` yet: what a view is
+/// written onto, rather than over one this look cannot read.
+fn nothing_written(engine: &Engine, workspace_id: WorkspaceId, route: &Route) -> bool {
+    engine.workspaces().contains(&workspace_id)
+        && !engine.holds_resource(&workspace_id.to_string(), route.app, &route.record)
+}
+
 /// Write `view` into `doc`, a person's view record. Where an arranging action changed it, the view
 /// as it stood before the action is committed first and the change is written as `person`'s, on
 /// whichever of their devices made it. The heads the action's step starts from.
@@ -2113,13 +2141,14 @@ fn view_written(
     view.write(doc)?;
     Ok(step)
 }
-/// The view to write into `key`'s record now, if any: what a look writes only once it rests, and
-/// never while a write of it is under way or before this device has read the record. A view that
-/// did not change is not written again.
+/// The view to write into `key` now, if any: what a look writes only once it rests, and never
+/// while a write of it is under way or before this device has read it. A view that did not change
+/// is not written again.
 fn rested(held: &mut Held, view: &PersonView, now: bool) -> Option<PersonView> {
     // A view this device has not read here is written on the look after it reads it: it writes
-    // what the person changed, never a layout still being opened.
-    if !held.read || held.writing.is_some() {
+    // what the person changed, never a layout still being opened. One it could not read is
+    // written once it can.
+    if !held.read || held.unreadable || held.writing.is_some() {
         return None;
     }
     if held.written.as_ref() == Some(&Written::View(view.clone())) {
@@ -2374,6 +2403,28 @@ mod tests {
             held.writing = None;
             let _ = rested(&mut held, &view(11), false);
             assert_eq!(rested(&mut held, &view(11), false), Some(view(11)));
+        }
+
+        phase a_view_that_could_not_be_read_is_written_once_it_can;
+        // A look that cannot read the view here writes nothing of it; the look that can writes the
+        // person's view, the one a session ends with as well.
+        {
+            let mut held = Held {
+                read: true,
+                unreadable: true,
+                ..Held::default()
+            };
+            assert_eq!(
+                rested(&mut held, &view(13), true),
+                None,
+                "the view cannot be read here yet"
+            );
+            held.unreadable = false;
+            assert_eq!(
+                rested(&mut held, &view(13), true),
+                Some(view(13)),
+                "read here, the view is written"
+            );
         }
     }
 
