@@ -465,15 +465,18 @@ impl ActionService {
     }
 
     /// The devices of `workspace` that may be offered work, other than this
-    /// one: certified, unrevoked and unexpired, its person a member, its
-    /// delegation live ([`StatePeer::permissions`](crate::StatePeer::permissions)).
+    /// one and any device's workspace service: certified, unrevoked and
+    /// unexpired, its person a member, its delegation live ([`StatePeer::permissions`](crate::StatePeer::permissions)).
     pub async fn key_holders(&self, workspace: &str) -> Vec<[u8; 32]> {
         let device = self.device();
         let mut key_holders = self
             .read_workspace(workspace, |peer| {
                 let now = tilo_clock::wall();
+                // A device's workspace service takes on no work of its own: it is
+                // reached as the device that certified it, which is asked.
                 peer.certificates()
                     .into_iter()
+                    .filter(|certificate| !certificate.capabilities.workspace_service)
                     .map(|certificate| certificate.device_public_key)
                     .filter(|source| peer.permissions(*source, now).is_ok())
                     .collect::<Vec<_>>()
