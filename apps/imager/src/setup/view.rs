@@ -25,7 +25,7 @@ use ui::widget::{
     Spacer, Text, Widget,
 };
 
-use super::actions::{HardwareProjection, SetupEffect};
+use super::actions::{HardwareProjection, SETUP_ROW_ID, SetupEffect};
 use super::desktop_catalog::{DesktopRelease, PackageFormat, RuntimeEvidence};
 use super::desktop_flow::{DesktopFailureKind, DesktopFlow, DesktopFlowState, DesktopSelection};
 use super::internal_download_flow::InternalDownloadFlow;
@@ -2185,11 +2185,33 @@ impl PublishingWindow for SetupApp {
     fn rows(&self) -> Vec<LiveRow> {
         let mut rows = vec![super::actions::row(&self.setup_projection())];
         if self.reviewed() == Experience::Desktop {
-            rows.push(super::actions::desktop_preparation_row(
-                self.guided_delivery_retry_available(),
-            ));
+            rows.push(super::actions::desktop_preparation_row());
         }
         rows
+    }
+
+    fn row_statuses(&self) -> Vec<(String, Vec<EffectStatus>)> {
+        let setup = self.setup_projection();
+        let mut by_row = vec![
+            (
+                format!("{SETUP_ROW_ID}.internal"),
+                super::actions::internal_row_status(&setup.internal),
+            ),
+            (
+                "imager.setup.desktop".to_owned(),
+                super::desktop_journey::row_status(&setup.desktop),
+            ),
+        ];
+        if self.reviewed() == Experience::Desktop {
+            by_row.push((
+                "imager.setup.desktop-preparation".to_owned(),
+                super::actions::desktop_preparation_row_status(
+                    self.guided_delivery_retry_available(),
+                ),
+            ));
+        }
+        by_row.retain(|(_, statuses)| !statuses.is_empty());
+        by_row
     }
 }
 
@@ -2756,7 +2778,44 @@ mod tests {
                 },
             )
             .collect();
+        let setup = app.setup_projection();
+        if let Some(internal) = root
+            .children
+            .iter_mut()
+            .find(|child| child.kind == "imager.setup.internal")
+        {
+            for (id, code, reason) in
+                super::super::actions::internal_refusals_for_test(&setup.internal)
+            {
+                refuse(internal, id, code, reason);
+            }
+        }
+        if let Some(desktop) = root
+            .children
+            .iter_mut()
+            .find(|child| child.kind == "imager.setup.desktop")
+        {
+            for (command, _, open) in super::super::desktop_journey::commands(&setup.desktop) {
+                if !open {
+                    refuse(
+                        desktop,
+                        command.id,
+                        "desktop_command_unavailable",
+                        super::super::strings::t("imager-setup-desktop-command-unavailable"),
+                    );
+                }
+            }
+        }
         root
+    }
+
+    /// The framework's row status, applied to the child a test built without
+    /// publishing it.
+    fn refuse(child: &mut tilo_actions::ResourceSpec, id: &str, code: &str, reason: String) {
+        if let Some(at) = child.actions.iter().position(|action| action.id == id) {
+            let spec = child.actions.remove(at);
+            child.actions.insert(at, spec.unavailable(code, reason));
+        }
     }
 
     fn setup_args(

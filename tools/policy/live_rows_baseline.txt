@@ -34,11 +34,7 @@ row-operation 1 apps/file-explorer/src/files_app/drives.rs
 row-operation 18 apps/file-explorer/src/files_app/entry_rows.rs
 row-operation 3 apps/file-explorer/src/search_provider.rs
 row-operation 1 apps/file-explorer/src/tree.rs
-row-operation 2 apps/imager/src/app.rs
-row-operation 2 apps/imager/src/setup/actions.rs
-row-operation 1 apps/imager/src/setup/desktop_journey.rs
 row-operation 1 apps/imager/src/setup/destination/installer_app/surface.rs
-row-operation 10 apps/imager/src/setup/import_actions.rs
 row-operation 1 apps/monitor/src/app.rs
 row-operation 1 apps/music/src/app/local_files.rs
 row-operation 1 apps/music/src/app/spotify.rs
@@ -63,7 +59,3 @@ row-operation 1 apps/settings/src/panes/personal_apps.rs
 row-operation 4 apps/settings/src/panes/printers.rs
 row-operation 5 apps/settings/src/panes/users.rs
 untyped-live-row 4 apps/chat/src/effects.rs
-untyped-live-row 1 apps/imager/src/app.rs
-untyped-live-row 5 apps/imager/src/setup/actions.rs
-untyped-live-row 1 apps/imager/src/setup/desktop_journey.rs
-untyped-live-row 3 apps/imager/src/setup/import_actions.rs

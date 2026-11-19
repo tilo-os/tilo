@@ -15,6 +15,7 @@ use crate::resource::Imager;
 pub(crate) struct Published {
     rows: Vec<LiveRow>,
     statuses: Vec<EffectStatus>,
+    row_statuses: Vec<(String, Vec<EffectStatus>)>,
     staged: Option<Staged>,
     document: Option<(Live<Imager>, Option<(u64, u64)>)>,
 }
@@ -45,6 +46,12 @@ pub(crate) trait PublishingWindow: Widget + Sized + 'static {
 
     fn statuses(&self) -> Vec<EffectStatus>;
 
+    /// The effects each published row has unavailable now, by the row's
+    /// published id, as the projection each row shows says.
+    fn row_statuses(&self) -> Vec<(String, Vec<EffectStatus>)> {
+        Vec::new()
+    }
+
     fn present(&mut self, _state: &Imager) {}
 
     fn follow_document(&mut self) {
@@ -55,10 +62,11 @@ pub(crate) trait PublishingWindow: Widget + Sized + 'static {
     }
 
     fn publish(&self) {
-        let (rows, statuses) = (self.rows(), self.statuses());
+        let (rows, statuses, row_statuses) = (self.rows(), self.statuses(), self.row_statuses());
         let mut published = self.published().borrow_mut();
         published.rows = rows;
         published.statuses = statuses;
+        published.row_statuses = row_statuses;
     }
 }
 
@@ -128,8 +136,21 @@ fn publishing(
             published.borrow_mut().staged = Some(Staged(scenario.map(str::to_owned)));
         });
     }
+    let statuses = Rc::clone(&published);
     cx.publishing(
-        Publishes::new().live_rows(move || published.borrow().rows.clone()),
+        Publishes::new()
+            .live_rows(move || published.borrow().rows.clone())
+            // A row says which of its effects its projection cannot start now:
+            // a copy that cannot start, a drive the writer refuses.
+            .row_status(move |id| {
+                statuses
+                    .borrow()
+                    .row_statuses
+                    .iter()
+                    .find(|(row, _)| row == id)
+                    .map(|(_, statuses)| statuses.clone())
+                    .unwrap_or_default()
+            }),
         content,
     )
 }

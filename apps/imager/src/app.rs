@@ -40,7 +40,6 @@ use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, JobProgress, Jobs,
     LiveRow, RunMode,
 };
-use ui::tilo_resource::Effect as _;
 use ui::widget::DrawChild;
 
 struct SourceCheckActivity(std::sync::Arc<std::sync::atomic::AtomicBool>);
@@ -2993,22 +2992,7 @@ impl ImagerApp {
         rows
     }
     fn target_row(&self, target: &TargetDrive) -> LiveRow {
-        let identity = target.stable_id.as_deref().unwrap_or(&target.name);
-        let device = target.dev_path();
-        let write = ImagerEffect::Write {
-            device: device.clone(),
-            confirmation: target.name.clone(),
-        }
-        .bound();
-        let write = match self.writer_refusal() {
-            Err((code, reason)) => write.unavailable(code, reason),
-            Ok(()) => write,
-        };
-        LiveRow::new(format!("imager.target:{identity}"), "imager.target", device)
-            .effect(&ImagerEffect::ChooseDrive {
-                drive: target.name.clone(),
-            })
-            .operation(write)
+        rows::target_row(target)
     }
 }
 
@@ -3029,6 +3013,10 @@ impl crate::window_view::PublishingWindow for ImagerApp {
 
     fn statuses(&self) -> Vec<EffectStatus> {
         self.effect_statuses()
+    }
+
+    fn row_statuses(&self) -> Vec<(String, Vec<EffectStatus>)> {
+        rows::target_row_statuses(self)
     }
 
     fn present(&mut self, state: &Imager) {
@@ -3495,12 +3483,14 @@ impl Widget for ImagerApp {
     }
 }
 
+mod rows;
 mod window_bar;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use automerge::AutoCommit;
+    use ui::tilo_resource::Effect as _;
     use ui::tilo_resource::Fields as _;
 
     fn harness(
