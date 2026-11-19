@@ -208,6 +208,16 @@ struct PendingStep<T> {
     acted: Option<Acted>,
 }
 
+/// What this device changed of a workspace while it could not write it: the layout, and the
+/// person's view of it, each change as its own step.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Pending {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    layout: Vec<PendingStep<LayoutStep>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    view: Vec<PendingStep<PersonView>>,
+}
+
 /// The changes this device made while that could not be written, in the order it made them.
 struct PendingSteps<T>(Vec<PendingStep<T>>);
 
@@ -628,8 +638,8 @@ pub(crate) struct Layouts {
     /// Why each workspace's layout was last left unwritten on a look, said once each time it
     /// changes: what a change that never reached the workspace reads back.
     unwritten: RefCell<HashMap<WorkspaceId, &'static str>>,
-    /// Where what this device could not write yet of its workspaces' layouts is kept, so a session
-    /// that ends first leaves it for the one after.
+    /// Where what this device could not write yet of its workspaces is kept, so a session that
+    /// ends first leaves it for the one after.
     pending_at: Option<std::path::PathBuf>,
     /// What was last kept there: a look that keeps the same of it writes nothing.
     kept_pending: RefCell<Option<Vec<u8>>>,
@@ -650,9 +660,9 @@ pub(crate) fn of_session(
     .hosting(crate::apps::runs_on_its_device)
 }
 
-/// Where this device keeps what it could not write yet of its workspaces' layouts.
+/// Where this device keeps what it could not write yet of its workspaces.
 fn pending_path(state: &std::path::Path) -> std::path::PathBuf {
-    state.join("tilo").join("pending-layouts.json")
+    state.join("tilo").join("pending-steps.json")
 }
 
 /// What this device kept there.
@@ -705,8 +715,8 @@ impl Layouts {
         layouts
     }
 
-    /// What this device could not write of its workspaces' layouts before the session before this
-    /// one ended: each is written as its own step once its workspace can hold it.
+    /// What this device could not write of its workspaces before the session before this one
+    /// ended: each is written as its own step once its workspace can hold it.
     fn load_pending(&self) {
         let Some(at) = &self.pending_at else {
             return;
@@ -714,40 +724,54 @@ impl Layouts {
         let Some(bytes) = read_pending(at) else {
             return;
         };
-        let kept: BTreeMap<String, Vec<PendingStep<LayoutStep>>> = match serde_json::from_slice(
-            &bytes,
-        ) {
+        let kept: BTreeMap<String, Pending> = match serde_json::from_slice(&bytes) {
             Ok(kept) => kept,
             Err(error) => {
                 tracing::warn!(path = %at.display(), %error, "what this device could not write was not read");
                 return;
             }
         };
-        for (workspace, steps) in kept {
+        let person = self.person.borrow().clone();
+        for (workspace, pending) in kept {
             let Some(workspace) = WorkspaceId::parse(&workspace) else {
                 continue;
             };
-            if steps.is_empty() {
-                continue;
+            if !pending.layout.is_empty() {
+                self.held(&(workspace, Route::layout()), |held| {
+                    held.pending_steps = PendingSteps(pending.layout);
+                });
             }
-            self.held(&(workspace, Route::layout()), |held| {
-                held.pending_steps = PendingSteps(steps);
-            });
+            if let Some(person) = &person
+                && !pending.view.is_empty()
+            {
+                self.held(&(workspace, Route::view(person)), |held| {
+                    held.pending_view = PendingSteps(pending.view);
+                });
+            }
         }
     }
 
-    /// Keep what this device has not written yet of its workspaces' layouts, for the session after
-    /// this one: a desktop that ends before its workspace can hold them leaves them here.
+    /// Keep what this device has not written yet of its workspaces, for the session after this
+    /// one: a desktop that ends before its workspaces can hold them leaves them here.
     fn keep_pending(&self) {
         let Some(at) = &self.pending_at else {
             return;
         };
-        let mut kept: BTreeMap<String, Vec<PendingStep<LayoutStep>>> = BTreeMap::new();
+        let view = self
+            .person
+            .borrow()
+            .clone()
+            .map(|person| Route::view(&person));
+        let mut kept: BTreeMap<String, Pending> = BTreeMap::new();
         for ((workspace, route), held) in self.held.borrow().iter() {
-            if *route == Route::layout() && !held.pending_steps.is_empty() {
-                kept.insert(workspace.to_string(), held.pending_steps.0.clone());
+            let pending = kept.entry(workspace.to_string()).or_default();
+            if *route == Route::layout() {
+                pending.layout.clone_from(&held.pending_steps.0);
+            } else if Some(route) == view.as_ref() {
+                pending.view.clone_from(&held.pending_view.0);
             }
         }
+        kept.retain(|_, pending| !(pending.layout.is_empty() && pending.view.is_empty()));
         let Ok(bytes) = serde_json::to_vec(&kept) else {
             return;
         };
@@ -1041,6 +1065,7 @@ impl Layouts {
                 held.read_once = true;
             });
             let Ok(record) = record else {
+                changed |= self.owed(workspace_id, workspace);
                 continue;
             };
             let Some((doc, revision)) = record else {
@@ -1048,6 +1073,7 @@ impl Layouts {
                 // was read stands. A workspace with no layout yet is read as one: a layout that
                 // arrives moves the engine's revision, and the next pass reads it.
                 self.held(&key, |held| held.read = true);
+                changed |= self.owed(workspace_id, workspace);
                 continue;
             };
             // The workspace's copy reaches this device after the workspace admitted this device's
@@ -1084,8 +1110,28 @@ impl Layouts {
                 .borrow_mut()
                 .insert(workspace_id, layout.opened_by);
             changed |= self.fold_into(workspace_id, &doc, &layout.tree, workspace, salt, device);
+            changed |= self.owed(workspace_id, workspace);
         }
         changed
+    }
+
+    /// Show in `workspace` what this device could not write of it before this session: its last
+    /// step waits for the workspace to hold it, and the session shows what the person arranged
+    /// until then. Whether anything changed.
+    fn owed(&self, workspace_id: WorkspaceId, workspace: &mut Workspace) -> bool {
+        let Some(owed) = self.held(&(workspace_id, Route::layout()), |held| {
+            held.pending_steps
+                .last()
+                .map(|step| step.changed.workspace.clone())
+        }) else {
+            return false;
+        };
+        if owed.strips == workspace.strips && owed.layout == workspace.layout {
+            return false;
+        }
+        workspace.strips = owed.strips;
+        workspace.layout = owed.layout;
+        true
     }
 
     /// Show the layout `layout`, what the record `doc` reads as, in `workspace`, keeping what this
@@ -1219,10 +1265,7 @@ impl Layouts {
             let mut alone = tree.clone();
             read.applied(&mut alone, workspace_id);
             let view = self.held(&key, |held| {
-                let view = match &held.seen {
-                    Some(seen) => read.over(&here, seen),
-                    None => read.clone(),
-                };
+                let view = read.over(&here, held.seen.as_ref());
                 held.seen = Some(PersonView::of(&alone, workspace_id));
                 held.read = true;
                 held.unreadable = false;
@@ -1812,6 +1855,7 @@ impl Layouts {
                 was: None,
             }),
         );
+        self.keep_pending();
     }
 
     /// A step of a layout the person asked for while that layout's write was under way: the
@@ -1893,7 +1937,7 @@ impl Layouts {
             // What the person changed here, over what the record holds.
             let here = PersonView::of(tree, workspace.id());
             let view = self.held(&key, |held| match (&held.written, &held.seen) {
-                (Some(Written::View(read)), Some(seen)) => read.over(&here, seen),
+                (Some(Written::View(read)), Some(seen)) => read.over(&here, Some(seen)),
                 _ => here.clone(),
             });
             // The changes made while the view could not be written, in the order they were made,
@@ -1978,6 +2022,7 @@ impl Layouts {
                 sealed,
             );
         }
+        self.keep_pending();
         wrote
     }
 
