@@ -637,12 +637,12 @@ fn place_of<E: Effect>(
 
 /// Where an effect that shows a row ([`tilo_actions::SCREEN_PLACE_TAG`]) is
 /// answered when someone other than this window's person, `me`, invoked it:
-/// in the invoker's own view, at the row its first parameter names. `None`
-/// for any other effect, and for this window's person, whose screen it moves.
-#[inline(never)]
-fn shown_elsewhere<E: Effect>(
+/// in the invoker's own view, at the row the effect is offered on. `None`
+/// for any other effect, for this window's person, whose screen it moves,
+/// and for an operation resolved against no resource.
+fn shown_elsewhere(
     decl: &tilo_resource::effect::EffectDecl,
-    effect: &E,
+    row: Option<&str>,
     me: Option<&ui_core::permissions::MemberId>,
 ) -> Option<(tilo_actions::PresenceId, tilo_resource::Place)> {
     if !decl.tags.contains(&tilo_actions::SCREEN_PLACE_TAG) {
@@ -653,14 +653,7 @@ fn shown_elsewhere<E: Effect>(
         return None;
     }
     let view = invoker.view()?;
-    let row = match effect
-        .arguments()
-        .remove(decl.params.first()?.name.as_ref())?
-    {
-        serde_json::Value::String(row) => row,
-        other => other.to_string(),
-    };
-    Some((view, tilo_resource::Place::Item(row)))
+    Some((view, tilo_resource::Place::Item(row?.to_owned())))
 }
 
 /// The name of the parameter `decl` declares `#[param(place)]`, if any.
@@ -1690,7 +1683,7 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         // it, and this person's screen does not move.
         if let Some((view, row)) = declaration
             .as_ref()
-            .and_then(|decl| shown_elsewhere(decl, &effect, self.env.dispatch.me()))
+            .and_then(|decl| shown_elsewhere(decl, op.resource(), self.env.dispatch.me()))
         {
             self.env.live.land(view, row);
             return Ok(Some(ResourceOperationStart::Completed(

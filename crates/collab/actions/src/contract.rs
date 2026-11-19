@@ -675,10 +675,12 @@ pub const ATTENDED_TAG: &str = "tilo.attended";
 /// their window and learn nothing ([`ActionContract::only_shows`]).
 pub const SCREEN_TAG: &str = "tilo.screen";
 
-/// The contract tag of an effect of [`SCREEN_TAG`] that shows the row or item its first parameter
-/// names. It is answered against its caller's view: the person at the screen is shown the row,
-/// and anyone else is placed at it in their own view of the window, where the person sees their
-/// presence. So it is not the person's alone ([`ActionContract::only_shows`]).
+/// The contract tag of an effect of [`SCREEN_TAG`] offered on a row or item
+/// (`#[effect(screen, on = Row)]`), which shows the row it is offered on. It is
+/// answered against its caller's view: anyone else is placed at that row in
+/// their own view of the window, where the person sees their presence, and the
+/// person's own screen does not move. So it is not the person's alone
+/// ([`ActionContract::only_shows`]).
 pub const SCREEN_PLACE_TAG: &str = "tilo.screen.place";
 
 /// The contract tag of an effect whose whole scope is the invoking
@@ -962,8 +964,8 @@ impl ActionContract {
         self.tags.iter().any(|tag| tag == SCREEN_TAG) && !self.shows_a_place()
     }
 
-    /// Whether the effect shows the row or item it names, answered against its caller's view
-    /// ([`SCREEN_PLACE_TAG`]).
+    /// Whether the effect shows the row it is offered on, answered against its
+    /// caller's view ([`SCREEN_PLACE_TAG`]).
     pub fn shows_a_place(&self) -> bool {
         self.tags.iter().any(|tag| tag == SCREEN_PLACE_TAG)
     }

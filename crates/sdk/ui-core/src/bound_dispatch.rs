@@ -1720,13 +1720,12 @@ pub(crate) fn discover_cached_bound_resources(
     Ok(snapshots)
 }
 
-/// Action-scoped authority shared by native and headless legacy and outer
-/// hosts, as the bound API decides it: the action `action` on `resource`
-/// runs when allowed; where the workspace's grants ask first it runs once the
-/// person confirmed it (`confirmed`), and is
-/// [`tilo_actions::ApiError::ConfirmationRequired`] until then, so the
-/// window asks them, saying who decides. A plain quick control (a button's
-/// effect) gets no further than an action declaring its confirmation.
+/// Action-scoped authority the bound dispatch shares: the action `action` on
+/// `resource` runs when allowed; where the workspace's grants ask first it
+/// runs once the person confirmed it (`confirmed`), and is
+/// [`tilo_actions::ApiError::ConfirmationRequired`] until then, so the window
+/// asks them, saying who decides. A plain quick control (a button's effect)
+/// gets no further than an action declaring its confirmation.
 pub(crate) fn admit_local_action(
     permissions: &PermissionContext,
     (app_id, resource, action): (&str, &ResourceSpec, &tilo_actions::ActionSpec),
@@ -2813,8 +2812,7 @@ pub(crate) fn actions_not_in() -> tilo_actions::ApiError {
     }
 }
 
-/// One execution body for bound components and legacy shell roots. Broker
-/// admission and semantic delivery are host concerns surrounding this body.
+/// One execution body for bound components, under the broker's admission.
 pub(crate) fn execute_resource_operation(
     widget: &mut dyn Widget,
     doc: &mut AutoCommit,
@@ -2924,9 +2922,8 @@ fn perform_resource_operation(
                 ));
             }
             note_native_text_policy(widget, doc, &encoded);
-            // A document action that runs without an authenticated publication
-            // makes this input's history unsigned only when it actually changes
-            // the document. Input that edits nothing never reaches this branch.
+            // Input that runs without an authenticated publication leaves its
+            // history unsigned only where it changes the document.
             let unsigned = if !broker_admitted && source_invocation.is_none() {
                 crate::local_document_action::unsigned_input(Some(&context))
                     .map(|edits| (edits, doc.get_heads()))
@@ -3006,8 +3003,7 @@ fn perform_resource_operation(
             if indexed {
                 doc.reset_diff_cursor();
             }
-            // What the action minted, taken before it answers: the answer
-            // carries it beside what the action itself said, and a group's
+            // What the action minted, taken before it answers: a group's
             // members' ids are here together.
             let minted = tilo_resource::take_minted();
             let made = match (applied.as_ref(), before.as_ref()) {
@@ -3097,7 +3093,9 @@ fn perform_resource_operation(
                     &encoded.payload,
                 ),
             };
-            let op = op.with_target(target.as_ref());
+            let op = op
+                .with_target(target.as_ref())
+                .with_resource(resource.id.as_str());
             tilo_actions::with_invoking_context(ambient.cloned(), || {
                 crate::widget::start_operation(
                     &mut *widget,
@@ -3633,11 +3631,9 @@ pub(crate) fn service_retained_owner_model(
                     current.drain_owned_tree(owner, document).map(|_| ())
                 })
                 .and_then(|result| result);
-            // The original host attempts sync after a nonpanic update/drain
-            // refusal. Retain its first error without omitting the fresh API.
+            // A refused update is still synced, and the first error stands.
             let admitted = updated.and(synced);
-            // Original status projection follows the canonical loan, including
-            // refusal. No application callback runs under a record-store loan.
+            // Status is projected after the loan, even refused; no callback runs in it.
             let projected = current.enter().and_then(|_entry| {
                 let handle = current.lifetime.clone();
                 let wake: durable_store::ReadyWake =
