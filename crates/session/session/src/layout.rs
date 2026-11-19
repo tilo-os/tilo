@@ -140,6 +140,10 @@ struct Held {
     pending_view: PendingSteps<PersonView>,
     /// Whether the record was read here.
     read: bool,
+    /// Whether this device's own store was asked for the layout at least once, whether it held
+    /// one or not: a write under way or one that moved leaves [`Self::read`] unset again, but
+    /// what the local store held was read, and kept windows wait for nothing more.
+    read_once: bool,
     /// Whether a look found the view unreadable: what it holds is not known here yet, so no view
     /// is written of it until a look reads it.
     unreadable: bool,
@@ -743,11 +747,16 @@ impl Layouts {
 
     /// Whether the layout of every workspace `tree` holds has been read at least once: what
     /// the workspaces held of this device's windows when the session started is laid out.
+    ///
+    /// A look that asked this device's own store counts, whether the store held the layout or
+    /// not: a layout this device does not hold is one no local look can find, and what waits for
+    /// it is the workspace's own governance, not this device. The windows kept across a restart are shown as
+    /// soon as the layouts this device has are laid out, never after a wait for the network.
     pub(crate) fn all_read(&self, tree: &Layout) -> bool {
         tree.workspaces
             .iter()
             .filter(|workspace| !workspace.id().is_nil())
-            .all(|workspace| self.held(&(workspace.id(), Route::layout()), |held| held.read))
+            .all(|workspace| self.held(&(workspace.id(), Route::layout()), |held| held.read_once))
     }
 
     /// Note that this look left `workspace_id`'s layout unwritten for `why`, said at debug when the
@@ -1000,7 +1009,10 @@ impl Layouts {
             let record = Self::record(engine, &key, known);
             // Read at this revision, whatever it held: a record that fails to read fails again until
             // the engine moves.
-            self.held(&key, |held| held.read_at = Some(at));
+            self.held(&key, |held| {
+                held.read_at = Some(at);
+                held.read_once = true;
+            });
             let Ok(record) = record else {
                 continue;
             };

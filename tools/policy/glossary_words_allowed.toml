@@ -1587,3 +1587,8 @@ reason = "The membership a page keeps is stored under the key `host`, and the en
 words = ["host"]
 identifiers = ["host", "hostDevice", "pairViaHost", "HOST"]
 paths = ["crates/browser/tilo-browser-runtime/web/workspaces.mjs", "crates/browser/tilo-browser-runtime/web/workspaces.test.mjs", "crates/session/client/src/entered.rs"]
+
+[[allow]]
+reason = "iroh's packet relay: a test gives the desktop's peer network a relay address that never answers and shows the windows kept across a restart do not wait for it."
+words = ["relay"]
+paths = ["crates/session/session/tests/kept_apps.rs"]

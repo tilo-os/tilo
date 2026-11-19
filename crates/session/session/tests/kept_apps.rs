@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tilo_app_launch::Teardown;
 use tilo_app_launch::kept::testing;
@@ -35,6 +35,10 @@ const APP: &str = "org.example.Kept";
 /// What makes this test binary the kept app: the directory it reads its windows from and reports
 /// in.
 const APP_DIR: &str = "TILO_TEST_KEPT_APP";
+
+/// A relay nobody answers at: an address of the block kept for documentation, which routes
+/// nowhere.
+const SILENT_RELAY: &str = "https://192.0.2.1/";
 
 /// Not a test: the keeper a kept launch starts, as `tilo-app-keeper` would run.
 #[test]
@@ -128,6 +132,8 @@ struct Rig {
     x11: bool,
     /// The desktop entry the app is launched by.
     entry: String,
+    /// The relays the desktop's peer network is given, when a test gives it any.
+    relays: Option<tilo_endpoint_reachability::EndpointRelays>,
 }
 
 /// One run of the desktop: its session, its apps, and how it ends when dropped.
@@ -212,7 +218,19 @@ impl Rig {
             root,
             x11,
             entry: entry.to_owned(),
+            relays: None,
         }
+    }
+
+    /// This device's peer network given a relay that never answers: what a desktop away from its
+    /// home network, on a captive portal or offline, is given.
+    fn on_a_silent_relay(mut self) -> Self {
+        let silent: iroh::RelayUrl = SILENT_RELAY.parse().expect("a relay address");
+        self.relays = Some(tilo_endpoint_reachability::EndpointRelays {
+            relays: iroh::RelayMap::from(silent),
+            n0_dns: false,
+        });
+        self
     }
 
     /// A run of the desktop, taking up what the keepers hold as the session's `main` does:
@@ -231,6 +249,7 @@ impl Rig {
             apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
             launch: Some(Rc::clone(&apps)),
             state: Some(self.device.state.clone()),
+            relays: self.relays.clone(),
             teardown: Box::new(move || asked.get()),
             ..Options::default()
         });
@@ -469,6 +488,32 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
     second.end(Teardown::Logout);
     tilo_test_env::exited("the kept app at logout", pid);
     assert!(!dir.exists(), "a logout removes the keeper's directory");
+}
+
+/// A desktop given a relay that never answers restarts in place and shows its kept windows at
+/// once: what it waits for is the layouts its own store holds, never the network.
+#[test]
+fn kept_windows_show_without_waiting_for_a_relay_that_never_answers() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]).on_a_silent_relay();
+    let mut first = rig.desktop(false);
+    rig.launch(&first);
+    let placed = shown_and_told(&rig, &mut first, &["Only"]);
+    first.end(Teardown::InPlaceRestart);
+
+    let started = Instant::now();
+    let mut second = rig.desktop(true);
+    let back = shown_and_told(&rig, &mut second, &["Only"]);
+    let waited = started.elapsed();
+    eprintln!(
+        "the kept window was shown {waited:?} after the desktop started, with no relay answering"
+    );
+    assert_eq!(back, placed, "the window is back in its saved tab");
+    assert!(
+        waited < tilo_endpoint_reachability::RELAY_WAIT,
+        "the kept window came after {waited:?}: it waited on the network"
+    );
+    second.end(Teardown::Logout);
 }
 
 /// A kept program's second window closes while it has the keyboard, the way Wine closes a dialog
