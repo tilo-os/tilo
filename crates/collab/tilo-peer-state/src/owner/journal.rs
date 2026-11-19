@@ -2,20 +2,23 @@
 //! publication, appended and synced before the publication is installed.
 //!
 //! An entry holds what its publication changed and nothing else: the
-//! workspace's own fields (as JSON), the server's answers that changed, and
-//! of its replica's durable encoding the stretches before and after the
-//! documents and each document it changed, each as a delta of what the entry
-//! before left. The answers and the documents are maps whose
-//! copies share what neither changed, so telling what a publication changed
-//! skips everything it did not: a publication of one keystroke into one
-//! document of thousands appends that keystroke, and costs what it changed
-//! however much the workspace already holds.
+//! workspace's own fields (as JSON), the server's answers that changed, the
+//! writes its server took or was given to take, ownership's lists of writes as
+//! stretches of the writes they held before, and of its replica's durable encoding
+//! the stretches before and after the documents and each document it changed,
+//! each as a delta of what the entry before left. The answers, the writes not
+//! taken and the documents are maps whose copies share what neither changed,
+//! so telling what a publication changed skips everything it did not: a
+//! publication of one keystroke into one document of thousands appends that
+//! keystroke, and an answer to a write the write it answered, however much the
+//! workspace already holds.
 //!
 //! Each entry is framed with its length and digest: an entry a crash cut
 //! short fails its digest, and it and anything after it were never
 //! acknowledged, so the journal is read up to it.
 use crate::ordered::Ordered;
-use crate::owner::publication::{Answer, Answered};
+use crate::owner::answers::AnswerSignature;
+use crate::owner::publication::{Answer, Journaled, StoredOutgoing};
 use crate::owner::stored::{DurablePeer, StoredWorkspace};
 use crate::state::{DocumentParts, DurableParts, Route};
 use serde::{Deserialize, Serialize};
@@ -36,6 +39,10 @@ struct Entry {
     fields: Vec<Op>,
     /// Each document whose answers changed, with what it holds now.
     answered: Vec<((String, String), Option<Answer>)>,
+    /// Each write whose server's answer changed: `true` once it waits for one, `false` once taken.
+    unanswered: Vec<(AnswerSignature, bool)>,
+    /// Ownership's governance, head and tail, each as stretches of the writes the three held before.
+    writes: [Vec<Stretch>; 3],
     /// The replica's stretches before its documents.
     head: Vec<Op>,
     /// Each document that changed, with its stretches now, or `None` when
@@ -43,6 +50,14 @@ struct Entry {
     documents: Vec<(Route, Option<DocumentOps>)>,
     /// The replica's stretches after its documents.
     tail: Vec<Op>,
+}
+
+/// One stretch of a list of ownership's writes: writes the lists held before, counted over the
+/// three of them in turn, or writes of its own.
+#[derive(Debug, Serialize, Deserialize)]
+enum Stretch {
+    Kept { from: u32, len: u32 },
+    Writes(Vec<StoredOutgoing>),
 }
 
 /// A document's stretches as a delta of what it held before.
@@ -55,7 +70,7 @@ struct DocumentOps {
 /// What the next entry is a delta of: the record as the last entry left it.
 pub(crate) struct Written {
     fields: Arc<[u8]>,
-    answered: Answered,
+    journaled: Journaled,
     peer: DurableParts,
 }
 
@@ -76,28 +91,20 @@ impl Written {
 /// Length and digest ahead of each entry.
 const FRAME_HEAD: usize = 4 + 32;
 
-/// The workspace's own fields, without its answers and its replica: JSON, as
-/// the snapshot holds them.
-fn fields_of(stored: &StoredWorkspace) -> Result<Arc<[u8]>, String> {
+/// The workspace's own fields as JSON, as the snapshot holds them, without its replica and what
+/// [`Journaled`] carries apart: those as well.
+fn split(stored: &StoredWorkspace) -> Result<(Arc<[u8]>, Journaled), String> {
     let mut fields = StoredWorkspace {
         peer: DurablePeer::default(),
         ..stored.clone()
     };
-    if let Some(publication) = fields.publication.as_mut() {
-        publication.set_answered(Answered::default());
-    }
-    serde_json::to_vec(&fields)
-        .map(Into::into)
-        .map_err(|error| error.to_string())
-}
-
-/// The server's answers `stored` holds.
-fn answered_of(stored: &StoredWorkspace) -> Answered {
-    stored
+    let journaled = fields
         .publication
-        .as_ref()
-        .map(|publication| publication.answered().clone())
-        .unwrap_or_default()
+        .as_mut()
+        .map(crate::owner::publication::StoredPublication::take_journaled)
+        .unwrap_or_default();
+    let fields = serde_json::to_vec(&fields).map_err(|error| error.to_string())?;
+    Ok((fields.into(), journaled))
 }
 
 /// What the first entry of a snapshot's journal is a delta of: `stored`,
@@ -107,9 +114,10 @@ fn answered_of(stored: &StoredWorkspace) -> Answered {
 pub(super) fn first(stored: &StoredWorkspace, snapshot: &[u8]) -> Result<Written, String> {
     let read: StoredWorkspace =
         serde_json::from_slice(snapshot).map_err(|error| error.to_string())?;
+    let (fields, journaled) = split(&read)?;
     Ok(Written {
-        fields: fields_of(&read)?,
-        answered: answered_of(&read),
+        fields,
+        journaled,
         peer: stored.peer.layout().clone(),
     })
 }
@@ -117,9 +125,10 @@ pub(super) fn first(stored: &StoredWorkspace, snapshot: &[u8]) -> Result<Written
 /// What the next entry is a delta of, from the record itself: a store that
 /// decodes the record before it keeps it needs no second read of its snapshot.
 pub(super) fn first_of(stored: &StoredWorkspace) -> Result<Written, String> {
+    let (fields, journaled) = split(stored)?;
     Ok(Written {
-        fields: fields_of(stored)?,
-        answered: answered_of(stored),
+        fields,
+        journaled,
         peer: stored.peer.layout().clone(),
     })
 }
@@ -131,8 +140,7 @@ pub(super) fn next(
     stored: &StoredWorkspace,
     revision: u64,
 ) -> Result<(Vec<u8>, Written), String> {
-    let fields = fields_of(stored)?;
-    let answered = answered_of(stored);
+    let (fields, journaled) = split(stored)?;
     let peer = stored.peer.layout().clone();
     let empty: Arc<[Arc<[u8]>]> = Arc::from([]);
     let documents = Ordered::changes(
@@ -165,10 +173,21 @@ pub(super) fn next(
     let entry = Entry {
         revision,
         fields: delta_chunked(&written.fields, &fields),
-        answered: Ordered::changes(&written.answered, &answered, |a, b| a == b)
-            .into_iter()
-            .map(|change| (change.key.clone(), change.after.copied()))
-            .collect(),
+        answered: Ordered::changes(&written.journaled.answered, &journaled.answered, |a, b| {
+            a == b
+        })
+        .into_iter()
+        .map(|change| (change.key.clone(), change.after.copied()))
+        .collect(),
+        unanswered: Ordered::changes(
+            &written.journaled.unanswered,
+            &journaled.unanswered,
+            |(), ()| true,
+        )
+        .into_iter()
+        .map(|change| (change.key.clone(), change.after.is_some()))
+        .collect(),
+        writes: stretches(&written.journaled.writes, &journaled.writes),
         head: delta(&written.peer.head, &peer.head),
         documents,
         tail: delta(&written.peer.tail, &peer.tail),
@@ -177,7 +196,7 @@ pub(super) fn next(
         frame(&entry)?,
         Written {
             fields,
-            answered,
+            journaled,
             peer,
         },
     ))
@@ -202,8 +221,8 @@ pub(super) fn replay(
     log: &[u8],
 ) -> Result<(StoredWorkspace, Option<u64>), String> {
     let rope = |parts: &[Arc<[u8]>]| Rope::of(&parts.concat().into());
-    let mut fields = Rope::of(&fields_of(&stored)?);
-    let mut answered = answered_of(&stored);
+    let (fields, mut journaled) = split(&stored)?;
+    let mut fields = Rope::of(&fields);
     let layout = stored.peer.layout();
     let mut head = rope(&layout.head);
     let mut tail = rope(&layout.tail);
@@ -223,10 +242,18 @@ pub(super) fn replay(
         fields = fields.apply(entry.fields)?;
         for (key, answer) in entry.answered {
             match answer {
-                Some(answer) => answered.insert(key, answer),
-                None => answered.remove(&key),
+                Some(answer) => journaled.answered.insert(key, answer),
+                None => journaled.answered.remove(&key),
             };
         }
+        for (signature, waits) in entry.unanswered {
+            if waits {
+                journaled.unanswered.insert(signature, ());
+            } else {
+                journaled.unanswered.remove(&signature);
+            }
+        }
+        journaled.writes = replay_stretches(&journaled.writes, entry.writes)?;
         head = head.apply(entry.head)?;
         tail = tail.apply(entry.tail)?;
         for (route, ops) in entry.documents {
@@ -256,7 +283,7 @@ pub(super) fn replay(
     let mut replayed: StoredWorkspace = serde_json::from_slice(&fields.to_vec())
         .map_err(|error| format!("the record's journal does not parse: {error}"))?;
     if let Some(publication) = replayed.publication.as_mut() {
-        publication.set_answered(answered);
+        publication.set_journaled(journaled);
     }
     let whole = |rope: &Rope| -> Arc<[Arc<[u8]>]> { Arc::from([Arc::from(rope.to_vec())]) };
     replayed.peer = DurableParts {
@@ -277,6 +304,65 @@ pub(super) fn replay(
     }
     .into();
     Ok((replayed, revision))
+}
+
+/// `new`, ownership's lists of writes, as stretches of `old`, the lists before: a write the lists held
+/// as it is now is named by its place among them, so a publication that answered or added a few
+/// writes carries those and not every write ownership still holds.
+fn stretches(old: &[Vec<StoredOutgoing>; 3], new: &[Vec<StoredOutgoing>; 3]) -> [Vec<Stretch>; 3] {
+    let held: std::collections::HashMap<[u8; 32], usize> = old
+        .iter()
+        .flatten()
+        .enumerate()
+        .map(|(at, write)| (write.id, at))
+        .collect();
+    let old: Vec<&StoredOutgoing> = old.iter().flatten().collect();
+    new.each_ref().map(|list| {
+        let mut stretches: Vec<Stretch> = Vec::new();
+        for write in list {
+            let kept = held
+                .get(&write.id)
+                .copied()
+                .filter(|at| old.get(*at).is_some_and(|before| *before == write))
+                .and_then(|at| u32::try_from(at).ok());
+            match (stretches.last_mut(), kept) {
+                (Some(Stretch::Kept { from, len }), Some(at))
+                    if from.checked_add(*len) == Some(at) =>
+                {
+                    *len = len.saturating_add(1);
+                }
+                (_, Some(at)) => stretches.push(Stretch::Kept { from: at, len: 1 }),
+                (Some(Stretch::Writes(writes)), None) => writes.push(write.clone()),
+                (_, None) => stretches.push(Stretch::Writes(vec![write.clone()])),
+            }
+        }
+        stretches
+    })
+}
+
+/// The lists `stretches` make of `old`, the lists before ([`stretches()`]).
+fn replay_stretches(
+    old: &[Vec<StoredOutgoing>; 3],
+    stretches: [Vec<Stretch>; 3],
+) -> Result<[Vec<StoredOutgoing>; 3], String> {
+    let old: Vec<&StoredOutgoing> = old.iter().flatten().collect();
+    let mut lists: [Vec<StoredOutgoing>; 3] = Default::default();
+    for (list, stretches) in lists.iter_mut().zip(stretches) {
+        for stretch in stretches {
+            match stretch {
+                Stretch::Kept { from, len } => {
+                    let from = usize::try_from(from).map_err(|e| e.to_string())?;
+                    let end = from.saturating_add(usize::try_from(len).map_err(|e| e.to_string())?);
+                    let kept = old
+                        .get(from..end)
+                        .ok_or("a journal entry keeps writes ownership did not hold")?;
+                    list.extend(kept.iter().map(|write| (*write).clone()));
+                }
+                Stretch::Writes(writes) => list.extend(writes),
+            }
+        }
+    }
+    Ok(lists)
 }
 
 /// Bytes as stretches of the buffers they came from: the snapshot's, and the
@@ -765,6 +851,44 @@ mod tests {
             assert_eq!(rebuilt(&new, &[]).0, Vec::<u8>::new());
         }
 
+        phase ownership_carries_the_writes_that_changed_and_names_the_rest;
+        {
+            let write = |id: u8| StoredOutgoing::sample(id, vec![id; 1000]);
+            let lists = |governance: &[u8], head: &[u8], tail: &[u8]| {
+                [governance, head, tail].map(|ids| ids.iter().map(|id| write(*id)).collect::<Vec<_>>())
+            };
+            let carried = |entry: &[Vec<Stretch>; 3]| -> usize {
+                entry.iter()
+                    .flatten()
+                    .map(|stretch| match stretch {
+                        Stretch::Writes(writes) => writes.len(),
+                        Stretch::Kept { .. } => 0,
+                    })
+                    .sum()
+            };
+            let old = lists(&[1], &[2, 3, 4, 5], &[6, 7]);
+            // The server answered the head's first two, the tail moved up to the head, and a write
+            // the head did not hold before (one read back from a kept stretch) followed it.
+            let new = lists(&[1], &[4, 5, 6, 7, 20], &[21]);
+            let entry = stretches(&old, &new);
+            assert_eq!(carried(&entry), 2, "{entry:?}");
+            assert_eq!(replay_stretches(&old, entry).unwrap(), new);
+            // A renewal carries the change of the write it renews behind every other one, and a
+            // compaction drafted in its place keeps its name with other bytes.
+            let mut new = lists(&[1], &[2, 4, 5], &[6, 7, 30]);
+            new[1][0].bytes = vec![0; 10];
+            let entry = stretches(&old, &new);
+            assert_eq!(carried(&entry), 2, "{entry:?}");
+            assert_eq!(replay_stretches(&old, entry).unwrap(), new);
+            // Nothing changed carries nothing, and every list emptied rebuilds as empty.
+            assert_eq!(carried(&stretches(&old, &old)), 0);
+            assert_eq!(replay_stretches(&old, stretches(&old, &old)).unwrap(), old);
+            let empty: [Vec<StoredOutgoing>; 3] = Default::default();
+            assert_eq!(replay_stretches(&old, stretches(&old, &empty)).unwrap(), empty);
+            // An entry that names writes the lists never held is refused.
+            assert!(replay_stretches(&empty, stretches(&old, &old)).is_err());
+        }
+
         phase a_torn_entry_ends_the_journal;
         {
             let entry = |revision| {
@@ -772,6 +896,8 @@ mod tests {
                     revision,
                     fields: Vec::new(),
                     answered: Vec::new(),
+                    unanswered: Vec::new(),
+                    writes: Default::default(),
                     head: vec![Op::Bytes(revision.to_le_bytes().to_vec())],
                     documents: Vec::new(),
                     tail: Vec::new(),

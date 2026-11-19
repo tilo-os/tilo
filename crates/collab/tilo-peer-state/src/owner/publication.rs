@@ -1,5 +1,5 @@
 //! Same-barrier native outgoing ownership; server queue acceptance is never an ACK.
-use super::answers::AnswerSignature;
+use super::answers::Unanswered;
 use super::backlog::Ownership;
 use crate::StatePeer;
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, enrollment, stored};
@@ -166,8 +166,15 @@ pub(crate) struct StoredPublication {
     /// the history its host acknowledged ([`NativeWorkspaceOwner::compact_outgoing`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     slots: Vec<[u8; 32]>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(super) unanswered: Vec<AnswerSignature>,
+    /// This device's writes its server has not taken, by signature ([`super::answers`]): a map
+    /// whose copies share what neither changed, so an answer journals the writes it took and not
+    /// every write still waiting.
+    #[serde(
+        default,
+        skip_serializing_if = "Unanswered::is_empty",
+        with = "super::answers::unanswered_list"
+    )]
+    pub(super) unanswered: Unanswered,
 }
 /// One of [`StoredPublication::hosted`]: the host's writes of `record` of `app` the record
 /// holds here only inside this device's compaction, in the host's order: those of `runs`
@@ -346,7 +353,7 @@ impl Default for StoredPublication {
             tail: Vec::new(),
             hosted: Vec::new(),
             slots: Vec::new(),
-            unanswered: Vec::new(),
+            unanswered: Unanswered::default(),
         }
     }
 }
@@ -366,6 +373,29 @@ pub(crate) struct StoredOutgoing {
     timestamp_ns: u64,
     channel: [u8; 32],
     incremental: bool,
+}
+#[cfg(test)]
+impl StoredOutgoing {
+    /// A write of `bytes` named by `id` in each of its bytes.
+    pub(crate) fn sample(id: u8, bytes: Vec<u8>) -> Self {
+        Self {
+            ordinal: 3,
+            id: [id; 32],
+            bytes,
+            binding: CommitBinding {
+                workspace: "workspace".into(),
+                target: crate::owner_commit::CommitTarget::Document {
+                    app: "so.tilo.code".into(),
+                    record: "a".into(),
+                },
+                request_digest: [1; 32],
+                basis: [2; 32],
+            },
+            timestamp_ns: 5,
+            channel: [9; 32],
+            incremental: true,
+        }
+    }
 }
 pub struct NativeOutgoing<'a> {
     state: &'a StoredPublication,
@@ -1620,15 +1650,44 @@ impl StoredPublication {
         self.answered.insert(key, held);
     }
 
-    /// The server's answers to this device's writes, by document.
-    pub(crate) fn answered(&self) -> &Answered {
-        &self.answered
+    /// What a journal entry carries apart from the rest of the workspace's state
+    /// ([`super::journal`]): the server's answers, the writes it has not taken, and the lists of
+    /// writes ownership holds (its governance, its head and its tail), all taken out of this.
+    pub(crate) fn take_journaled(&mut self) -> Journaled {
+        Journaled {
+            answered: std::mem::take(&mut self.answered),
+            unanswered: std::mem::take(&mut self.unanswered),
+            writes: [
+                std::mem::take(&mut self.governance),
+                std::mem::take(&mut self.entries),
+                std::mem::take(&mut self.tail),
+            ],
+        }
     }
 
-    /// Hold `answered` as the server's answers, by document.
-    pub(crate) fn set_answered(&mut self, answered: Answered) {
+    /// Hold `journaled` again, as [`Self::take_journaled`] took it.
+    pub(crate) fn set_journaled(&mut self, journaled: Journaled) {
+        let Journaled {
+            answered,
+            unanswered,
+            writes: [governance, entries, tail],
+        } = journaled;
         self.answered = answered;
+        self.unanswered = unanswered;
+        self.governance = governance;
+        self.entries = entries;
+        self.tail = tail;
     }
+}
+
+/// The parts of ownership a journal entry carries as what changed of them
+/// ([`StoredPublication::take_journaled`]).
+#[derive(Default)]
+pub(crate) struct Journaled {
+    pub(crate) answered: Answered,
+    pub(crate) unanswered: Unanswered,
+    /// Ownership's governance, its head and its tail, each in order.
+    pub(crate) writes: [Vec<StoredOutgoing>; 3],
 }
 pub(crate) fn retire(live: &StatePeer, view: &mut stored::StoredWorkspace) -> Result<bool, String> {
     let publication = state_of(view)?;
@@ -2789,139 +2848,8 @@ fn take_hosted(
     publication.set_hosted(runs, route, None)
 }
 #[cfg(test)]
-mod encoding_tests {
-    use super::*;
-
-    fn entry(bytes: Vec<u8>) -> StoredOutgoing {
-        StoredOutgoing {
-            ordinal: 3,
-            id: [7; 32],
-            bytes,
-            binding: CommitBinding {
-                workspace: "workspace".into(),
-                target: crate::owner_commit::CommitTarget::Document {
-                    app: "so.tilo.code".into(),
-                    record: "a".into(),
-                },
-                request_digest: [1; 32],
-                basis: [2; 32],
-            },
-            timestamp_ns: 5,
-            channel: [9; 32],
-            incremental: true,
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn a_publication_entry_keeps_its_class_and_its_bytes_in_json;
-
-        phase an_entry_leaves_as_the_class_it_was_published_by;
-        // Ownership leaves each entry as the class it was published by: a write
-        // appends after the record's checkpoint, while a member's sealed
-        // compaction replaces that author's retained history with itself.
-        {
-            let delta = entry(Vec::new());
-            assert_eq!(NativeOutgoingEntry(&delta).retention(), Retention::Delta);
-            let checkpoint = StoredOutgoing {
-                incremental: false,
-                ..entry(Vec::new())
-            };
-            assert_eq!(
-                NativeOutgoingEntry(&checkpoint).retention(),
-                Retention::Checkpoint
-            );
-        }
-
-        phase outgoing_bytes_are_text_in_json_and_legacy_arrays_still_read;
-        // An entry's bytes are base64 text in JSON, an entry written as the
-        // legacy array of numbers still reads back the same, and a binary
-        // encoding keeps its unchanged sequence.
-        {
-            let stored = entry((0..=255).collect());
-            let json = serde_json::to_value(&stored).unwrap();
-            assert!(json["bytes"].is_string(), "{json}");
-            assert_eq!(
-                serde_json::from_value::<StoredOutgoing>(json).unwrap(),
-                stored
-            );
-            let mut legacy = serde_json::to_value(&stored).unwrap();
-            legacy["bytes"] = serde_json::to_value(&stored.bytes).unwrap();
-            assert!(legacy["bytes"].is_array());
-            assert_eq!(
-                serde_json::from_value::<StoredOutgoing>(legacy).unwrap(),
-                stored
-            );
-            let pretty = serde_json::to_vec_pretty(&stored).unwrap();
-            assert_eq!(
-                serde_json::from_slice::<StoredOutgoing>(&pretty).unwrap(),
-                stored
-            );
-            let binary = postcard::to_allocvec(&stored).unwrap();
-            assert_eq!(
-                binary,
-                postcard::to_allocvec(&(
-                    stored.ordinal,
-                    stored.id,
-                    &stored.bytes,
-                    &stored.binding,
-                    stored.timestamp_ns,
-                    stored.channel,
-                    stored.incremental
-                ))
-                .unwrap(),
-                "the binary encoding is unchanged"
-            );
-            assert_eq!(
-                postcard::from_bytes::<StoredOutgoing>(&binary).unwrap(),
-                stored
-            );
-        }
-
-        phase a_projected_record_still_reads_and_is_written_without_its_projection;
-        // A record an earlier build kept recovery projections in still reads, and
-        // this build writes it back without them: it sends the signed originals.
-        {
-            let projected = entry(vec![1, 2, 3]);
-            let mut stored = serde_json::to_value(StoredPublication::default()).unwrap();
-            stored["projection"] = serde_json::to_value([&projected]).unwrap();
-            let mut read: StoredPublication = serde_json::from_value(stored).unwrap();
-            assert_eq!(read.projection, vec![projected]);
-            // What a record read from disk does with one (`file_store`).
-            read.projection.clear();
-            let written = serde_json::to_value(&read).unwrap();
-            assert!(
-                written.get("projection").is_none(),
-                "a record written now carries no projection: {written}"
-            );
-        }
-
-        phase outgoing_bytes_past_the_cap_are_refused_as_text_and_as_arrays;
-        // Bytes past the cap are refused in either JSON form, text before it is
-        // decoded.
-        {
-            let read = |json: &str| read_bytes(&mut serde_json::Deserializer::from_str(json), 4);
-            assert_eq!(read(r#""AAECAw==""#).unwrap(), [0, 1, 2, 3]);
-            assert_eq!(read("[0, 1, 2, 3]").unwrap(), [0, 1, 2, 3]);
-            assert!(read(r#""AAECAwQ=""#).is_err(), "five bytes");
-            assert!(
-                read(r#""AAECAwQFBg==""#).is_err(),
-                "text longer than four bytes'"
-            );
-            assert!(read("[0, 1, 2, 3, 4]").is_err());
-            assert!(read(r#""not base64""#).is_err());
-            let fits = entry(vec![0; MAX_BYTES]);
-            assert_eq!(
-                serde_json::from_value::<StoredOutgoing>(serde_json::to_value(&fits).unwrap()).unwrap(),
-                fits
-            );
-            let past = entry(vec![0; MAX_BYTES + 1]);
-            assert!(
-                serde_json::from_value::<StoredOutgoing>(serde_json::to_value(&past).unwrap()).is_err()
-            );
-        }
-    }
-}
-
+#[path = "publication_encoding_tests.rs"]
+mod encoding_tests;
 #[cfg(test)]
 mod tests {
     use super::{COMPACTION_RETRY, Resting, WorkspaceId};
