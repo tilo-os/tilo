@@ -25,7 +25,7 @@ use super::service::ServiceWorkspaces;
 pub(in crate::standalone) type DeclaredKinds =
     Box<dyn Fn(&str) -> Option<Vec<String>> + Send + Sync>;
 
-/// In which kinds an app may write a record the workspace does not hold yet.
+/// In which kinds an app may write a resource this device's own workspace does not hold yet.
 pub(in crate::standalone) struct RecordCreation {
     pub(in crate::standalone) declared_kinds: DeclaredKinds,
     /// Started with `--dev`: an app that is not installed is a build under
@@ -152,13 +152,19 @@ impl CommitParts {
             return Err("the desktop session's workspace is read only in the runtime".to_owned());
         }
         let copies = self.service.workspaces();
-        let peer = match copies.member_copy(workspace).await {
-            Some((_, peer)) => peer,
-            None => copies
-                .governed_copy(workspace)
-                .await
-                .map(|(_, peer)| peer)
-                .ok_or_else(|| "this device holds no such workspace".to_owned())?,
+        // What type a new resource may be is this device's rule only in the workspace it
+        // governs, where the apps installed here say it; a member copy's writes are the
+        // governing device's to admit.
+        let (peer, governs) = match copies.member_copy(workspace).await {
+            Some((_, peer)) => (peer, false),
+            None => (
+                copies
+                    .governed_copy(workspace)
+                    .await
+                    .map(|(_, peer)| peer)
+                    .ok_or_else(|| "this device holds no such workspace".to_owned())?,
+                true,
+            ),
         };
         let (app, document, envelope) = match &request.operation {
             CommitOperation::Document {
@@ -181,7 +187,7 @@ impl CommitParts {
                 now,
             )
         });
-        if !held {
+        if !held && governs {
             let kind = resource_type
                 .as_deref()
                 .ok_or_else(|| format!("{app} named no kind for a new record"))?;
