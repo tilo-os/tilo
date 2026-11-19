@@ -19,7 +19,7 @@ use base64::Engine as _;
 use collab_types::DocumentMutation;
 use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree};
-use serde_json::json;
+use serde_json::{Value, json};
 use tilo_agent_session::ModelChoice;
 use tilo_fs::tree_document::document_id as tree_document;
 use tilo_mcp::McpServer;
@@ -714,28 +714,37 @@ async fn a_tree_a_computer_founds_after_the_service_found_none_is_read_and_writt
         "beside the laptop's file"
     );
 
-    // A coding agent on the laptop writes a file through the mounted folder, for its person.
+    // A coding agent on the laptop makes a file through the mounted folder and then writes it,
+    // for its person: two steps.
     let person = hex::encode(owner.verifying_key().to_bytes());
-    {
-        let agent = tilo_actions::ActionInvoker::admitted(
-            &tilo_actions::Acting::agent("claude")
-                .handed()
-                .in_session("0f3c"),
-        )
-        .named(Some("Claude Code".into()))
-        .acting_for(person.as_str());
-        let _acting = tilo_fs::namespace::acting_as(Some(
-            tilo_actions::ActionContext::default().with_invoker(agent),
-        ));
+    let agent = tilo_actions::ActionInvoker::admitted(
+        &tilo_actions::Acting::agent("claude")
+            .handed()
+            .in_session("0f3c"),
+    )
+    .named(Some("Claude Code".into()))
+    .acting_for(person.as_str());
+    let as_agent = || {
+        tilo_fs::namespace::acting_as(Some(
+            tilo_actions::ActionContext::default().with_invoker(agent.clone()),
+        ))
+    };
+    let made = {
+        let _acting = as_agent();
         folder
             .create_file(tilo_fs::ROOT_INO, "agent-notes.md", None, 0, 2)
-            .unwrap();
+            .unwrap()
+    };
+    publish(&laptop, &mut folder).await;
+    {
+        let _acting = as_agent();
+        assert!(folder.set_content(made, None, 12, 3));
     }
     publish(&laptop, &mut folder).await;
 
-    // Files' History names the change by the file's path, the agent and its person.
+    // Files' History names both steps by the file's path, the agent and its person.
     let deadline = tilo_test_env::hang_deadline();
-    let version = loop {
+    let steps = loop {
         let history = json_in(
             &tool(
                 &server,
@@ -744,44 +753,99 @@ async fn a_tree_a_computer_founds_after_the_service_found_none_is_read_and_writt
             )
             .await,
         );
-        let found = history["versions"]
+        let steps: Vec<Value> = history["versions"]
             .as_array()
             .into_iter()
             .flatten()
-            .find(|version| version["path"] == "agent-notes.md")
-            .cloned();
-        if let Some(version) = found {
-            break version;
+            .filter(|version| version["path"] == "agent-notes.md")
+            .cloned()
+            .collect();
+        if steps.len() == 2 {
+            break steps;
         }
         assert!(
             Instant::now() < deadline,
-            "History never lists the agent's file: {history}"
+            "History never lists the agent's two steps: {history}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    assert_eq!(version["actor"]["name"], "Claude Code", "{version}");
-    assert!(
-        version.to_string().contains(&person),
-        "the change is the agent's for its person: {version}"
-    );
+    for step in &steps {
+        assert_eq!(step["actor"]["name"], "Claude Code", "{step}");
+        assert!(
+            step.to_string().contains(&person),
+            "the change is the agent's for its person: {step}"
+        );
+    }
+    let did = |step: &Value| {
+        step["what"]["action"]["action"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let (making, writing) = match (did(&steps[0]).as_str(), did(&steps[1]).as_str()) {
+        ("new-file", "write") => (&steps[0], &steps[1]),
+        ("write", "new-file") => (&steps[1], &steps[0]),
+        other => panic!("a making and a write: {other:?}"),
+    };
 
-    // Files' undo of that change takes the file back, and leaves the rest of the folder.
-    let undone = json_in(
-        &tool(
-            &server,
-            "tilo_do",
-            json!({"path": "files#undo", "args": {"step": version["change"]}}),
-        )
-        .await,
-    );
-    assert_eq!(undone["taken"], 1, "{undone}");
+    // Files' undo of the write and then of the making takes the file away whole, and leaves
+    // the rest of the folder.
+    for step in [writing, making] {
+        let undone = json_in(
+            &tool(
+                &server,
+                "tilo_do",
+                json!({"path": "files#undo", "args": {"step": step["change"]}}),
+            )
+            .await,
+        );
+        assert_eq!(undone["taken"], 1, "{undone}");
+    }
     let tree = tree_when(&hosted, &workspace, |tree| {
         file_at(tree, "", "agent-notes.md").is_none()
     })
     .await;
-    assert!(file_at(&tree, "", "agent-notes.md").is_none(), "{undone}");
+    assert!(
+        file_at(&tree, "", "agent-notes.md").is_none(),
+        "no empty file is left behind"
+    );
     assert!(file_at(&tree, "", "contract.txt").is_some());
     assert!(file_at(&tree, "", "Drafts").is_some());
+    // The laptop's mounted folder, taking what the workspace keeps, shows no such file either.
+    folder
+        .take_documents(kept_documents(&hosted, &workspace).await)
+        .unwrap();
+    assert!(folder.lookup(tilo_fs::ROOT_INO, "agent-notes.md").is_none());
+    assert!(folder.lookup(tilo_fs::ROOT_INO, "contract.txt").is_some());
+}
+
+/// The tree's documents the workspace keeps, by chunk: what a mounted folder takes in.
+async fn kept_documents(
+    hosted: &crate::harness::hosted::Hosted,
+    workspace: &str,
+) -> Vec<(fs_protocol::TreeChunk, Vec<u8>)> {
+    let workspaces = hosted.server.workspaces().unwrap();
+    let index = workspaces
+        .resource_document(workspace, FILES_APP, &tree_document())
+        .await
+        .unwrap()
+        .expect("the workspace keeps its tree");
+    let listed = fs_protocol::tree::listed_chunks(&automerge::AutoCommit::load(&index).unwrap());
+    let mut documents = vec![(0, index)];
+    for chunk in listed {
+        if let Some(document) = workspaces
+            .resource_document(
+                workspace,
+                FILES_APP,
+                &fs_protocol::tree::chunk_document_id(chunk),
+            )
+            .await
+            .unwrap()
+        {
+            documents.push((chunk, document));
+        }
+    }
+    documents
 }
 
 /// Files' verbs by a path in the workspace, on the tree the workspace's server keeps.

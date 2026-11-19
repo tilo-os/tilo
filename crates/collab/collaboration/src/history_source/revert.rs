@@ -350,6 +350,11 @@ fn later_writers(
     } else {
         HashSet::new()
     };
+    let undone = if start_at < versions.len() {
+        crate::history_source::steps::undone(doc)
+    } else {
+        HashSet::new()
+    };
     let mut out: HashMap<Slot, String> = HashMap::new();
     let mut typed: HashMap<ObjId, text::LaterText> = HashMap::new();
     for i in start_at..versions.len() {
@@ -369,6 +374,12 @@ fn later_writers(
                     .is_some_and(|other| other.acting.by == *invoker)
             })
         {
+            continue;
+        }
+        // A later step that was taken back since leaves nothing of its own, and neither does
+        // the undo that took it back: the earlier step is undone as if neither was made, so
+        // a write undone before its file's making is undone takes the file with it.
+        if undone.contains(&v.hash.to_string()) || undid_only(doc, &v, &undone) {
             continue;
         }
         let lo = if i == 0 {
@@ -405,6 +416,19 @@ fn later_writers(
         slots: out,
         text: typed,
     }
+}
+
+/// Whether `version` is an undo, and every step it took back is still undone.
+fn undid_only(
+    doc: &AutoCommit,
+    version: &tilo_resource::history::Version,
+    undone: &HashSet<String>,
+) -> bool {
+    matches!(
+        crate::history_source::steps::kind_of(doc, version),
+        crate::history_source::steps::Kind::Undo(moved)
+            if !moved.is_empty() && moved.iter().all(|step| undone.contains(step))
+    )
 }
 
 /// The object living at `prop` of `obj` as of `after`, when it is one the run
