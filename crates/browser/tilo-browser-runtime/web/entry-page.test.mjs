@@ -64,7 +64,8 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   };
   globalThis.location = {href: 'https://web.example/#/workspace', search, pathname: '/', reload: () => calls.push('reload'),
     assign: url => { calls.push('assign'); assigned = url; }};
-  globalThis.history = {pushState: (_state, _title, url) => { calls.push('history'); assigned = url ?? assigned; }};
+  globalThis.history = {pushState: (_state, _title, url) => { calls.push('history'); assigned = url ?? assigned; },
+    replaceState: (_state, _title, url) => { calls.push('replace'); assigned = url ?? assigned; }};
   globalThis.document = {body: new Element('body'), documentElement: {dataset: {}, toggleAttribute() {}, removeAttribute() {}}, createElement: tag => new Element(tag),
     // A card is found by its kind, as the page looks for the one a new card replaces.
     querySelector: selector => document.body.children.find(card => selector === `[data-card="${card.dataset.card}"]`) ?? null,
@@ -172,7 +173,16 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   const failure = await startEntryPage({mode: 'desktop'}).then(() => null, error => error)
     .finally(() => { if (entryParts) delete globalThis.window; });
   await tick();
-  return {calls, shown, diagnostics, page, prepared, mounted: globalThis.__entryPageFixture.mounted, prefetched: globalThis.__entryPageFixture.prefetched, listeners, session: stored, failure, at: () => assigned, screen, module};
+  // `signed()` stands for the pairing a sign-in makes (`signInAs`): the device
+  // this page becomes, certified as the person, in `workspace` (the one it
+  // pairs through), which asks its server for the person's own workspace when
+  // no remembered one is opened (`own`: what the server answers).
+  const signed = ({workspace = 'current', own = 'mine'} = {}) => async (userPublicKey, invite) => {
+    calls.push(['pair', userPublicKey, invite]);
+    return {...page.peer, workspace,
+      enterOwnWorkspace: async () => { calls.push(['own']); return {workspace: own, name: 'Mine', origin: ORIGIN}; }};
+  };
+  return {calls, shown, diagnostics, page, prepared, signed, mounted: globalThis.__entryPageFixture.mounted, prefetched: globalThis.__entryPageFixture.prefetched, listeners, session: stored, failure, at: () => assigned, screen, module};
 }
 
 test('the entry says what works where passkeys cannot be used, and nothing when the person closes the sheet', async () => {
@@ -1408,4 +1418,43 @@ test('a device approved through the own desktop’s link is the device of the pe
   } finally {
     timers.release();
   }
+});
+
+/** The link a signed-in tab formats for the workspace it opens. */
+const signedInLink = {format: ({target}) => `https://web.example/#/@node.example/w/${target.scope.workspace}`};
+const INVITE = 'e'.repeat(32);
+
+test('a tab an agent signs in pairs on its own page and loads, once, the workspace the person last used', async () => {
+  globalThis.fetch = async () => ({ok: false});
+  const {module, calls, at, session, signed} = await fixture();
+  const before = calls.length;
+  await module.signInAs({user: USER, invite: INVITE}, {origin: ORIGIN, home: 'lounge'}, signedInLink, signed());
+  const made = calls.slice(before);
+  assert.deepEqual(made.filter(call => Array.isArray(call) && call[0] === 'pair'), [['pair', USER, INVITE]],
+    'the tab pairs itself as the person the claim names, with the invite it named');
+  assert.ok(!made.some(call => Array.isArray(call) && call[0] === 'own'),
+    'a workspace this browser remembers is not asked of the host again');
+  assert.deepEqual(made.filter(call => call === 'dispose'), ['dispose'],
+    'the pairing session is let go before the page loads');
+  assert.equal(made.filter(call => call === 'reload').length, 1, 'the sign-in loads one page');
+  assert.ok(!made.includes('assign'), 'and has nothing to navigate to a second time');
+  assert.equal(at(), 'https://web.example/#/@node.example/w/current',
+    'the workspace the person last used, not the home workspace it paired through');
+  assert.equal(session.get('tilo-open-own-workspace'), undefined,
+    'the loaded page has no workspace of its own to open after drawing this one');
+});
+
+test('a tab an agent signs in with only the home remembered loads the person’s own workspace, never the home', async () => {
+  globalThis.fetch = async () => ({ok: false});
+  const {module, calls, at, session, signed} = await fixture({remembered: null});
+  const before = calls.length;
+  // The one workspace this browser remembers on that server is the home it
+  // was let into: a sign-in opens the person's own there instead.
+  await module.signInAs({user: USER, invite: INVITE}, {origin: ORIGIN, home: 'current'}, signedInLink, signed());
+  const made = calls.slice(before);
+  assert.deepEqual(made.filter(call => Array.isArray(call) && call[0] === 'own'), [['own']],
+    'the home workspace is no place to sign in to: the host is asked for the person’s own');
+  assert.equal(made.filter(call => call === 'reload').length, 1, 'the sign-in loads one page');
+  assert.equal(at(), 'https://web.example/#/@node.example/w/mine', 'and lands on the person’s own workspace');
+  assert.equal(session.get('tilo-open-own-workspace'), undefined, 'nothing is left to open after it');
 });
