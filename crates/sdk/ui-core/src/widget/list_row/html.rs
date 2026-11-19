@@ -123,14 +123,12 @@ impl ListRowFace<'_> {
             title_x + room,
             top + frame.title_line * crate::num::f64_of_usize(lines),
         );
-        words(
-            cx,
-            "title",
-            r,
-            frame.lines.join("\n"),
-            &frame.title_style,
-            ink,
-        );
+        // A done or removed item's words are struck through, as painted.
+        let title = frame.lines.join("\n");
+        if !title.is_empty() && r.width() > 0.0 {
+            let look = TextLook::new(title, &frame.title_style, Some(ink)).struck(self.struck);
+            cx.words("title", "span", r, look);
+        }
         // The tags after the title's last line, as far as they fit.
         let last = frame.lines.last().map_or(0.0, |line| {
             f64::from(text.measure_style(line, None, &frame.title_style).0)

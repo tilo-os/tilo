@@ -372,6 +372,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     if (look.italic) css += 'font-style:italic;';
     if (look.color) css += `color:${rgba(look.color)};`;
     if (look.mono) css += 'font-family:var(--tilo-mono);';
+    if (look.struck) css += 'text-decoration:line-through;';
     css += `text-align:${look.align};`;
     return css;
   }

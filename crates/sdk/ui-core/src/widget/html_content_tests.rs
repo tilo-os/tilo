@@ -556,3 +556,28 @@ fn a_nav_row_lifts_inset_and_indents_as_painted() {
         Some(crate::composition::rgba8(tokens.colors.text_dim))
     );
 }
+
+/// A done or removed item's title is struck through on a page, as the canvas paints it, and an
+/// open one's is not.
+#[test]
+fn a_struck_rows_title_is_struck_through_on_the_page() {
+    use crate::widget::ListRow;
+    let struck = |row: ListRow, title: &str| {
+        let composition = composed(Box::new(row), (400, 60));
+        nodes(shown(&composition))
+            .into_iter()
+            .find_map(|node| match &node.own {
+                Some(Own::Text(look)) if look.text == title => Some(look.struck),
+                _ => None,
+            })
+            .expect("the title shows")
+    };
+    assert!(struck(
+        ListRow::new("stale", "Old errand").struck(),
+        "Old errand"
+    ));
+    assert!(!struck(
+        ListRow::new("milk", "Buy oat milk"),
+        "Buy oat milk"
+    ));
+}

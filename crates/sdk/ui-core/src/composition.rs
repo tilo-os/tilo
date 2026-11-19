@@ -529,6 +529,9 @@ pub struct TextLook {
     pub max_lines: Option<u32>,
     /// Monospaced rather than the interface face.
     pub mono: bool,
+    /// Struck through, as a done or removed item's words are painted.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub struck: bool,
 }
 
 impl TextLook {
@@ -559,7 +562,15 @@ impl TextLook {
             },
             max_lines: None,
             mono: matches!(style.family, FontChoice::Monospace),
+            struck: false,
         }
+    }
+
+    /// Struck through when `struck`.
+    #[must_use]
+    pub fn struck(mut self, struck: bool) -> Self {
+        self.struck = struck;
+        self
     }
 
     /// Set to `align`: `start`, `center` or `end`.
