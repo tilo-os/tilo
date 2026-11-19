@@ -230,3 +230,16 @@ test('the screen says each change once to screen readers, and holds Try now whil
   view.hide();
   assert.equal(document.documentElement.dataset.reconnect, undefined);
 });
+
+test('reconnect rejects immediately on device-revoked / authenticated device was revoked without scheduling retries', async () => {
+  const {reconnect, view, advance} = harness();
+  assert.equal(reconnectReason(Object.assign(new Error('revoked'), {code: 'device_revoked'})), 'device-revoked');
+  assert.equal(reconnectReason(new Error('peer protocol violation: authenticated device was revoked')), 'device-revoked');
+
+  const revoked = new Error('peer protocol violation: authenticated device was revoked');
+  await assert.rejects(reconnect.wait({error: revoked, attempt: 0, origin: 'https://lounge.example'}), {code: 'device-revoked'});
+  await assert.rejects(reconnect.wait({reason: 'device-revoked', attempt: 0}), {code: 'device-revoked'});
+  await assert.rejects(reconnect.wait({error: Object.assign(new Error('deleted'), {code: 'workspace-deleted'}), attempt: 0}), {code: 'workspace-deleted'});
+  advance(60_000);
+  assert.equal(view.shown.length, 0, 'never shows a retry countdown for permanent refusals');
+});

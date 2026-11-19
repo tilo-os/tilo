@@ -1584,3 +1584,47 @@ test('the feed of changes leaves the page\'s ask as names with nothing a change 
   assert.equal(await held.woke, false);
   assert.equal(over, true);
 });
+
+test('mid-session authenticated device was revoked halts the session, rejects reconnect, and clears the revoked key and binding', async () => {
+  const runtime = fakeRuntime({phase: 'ready'});
+  const store = memoryStore();
+  let destroyed = 0;
+  const namespaces = new Map();
+  const local = {
+    getItem: key => namespaces.get(key) ?? null,
+    setItem: (key, value) => { namespaces.set(key, String(value)); },
+  };
+  const customKey = {
+    kind: 'webcrypto-ed25519',
+    publicKey: new Uint8Array(32).fill(0x55),
+    sign: async () => new Uint8Array(64),
+    close() {},
+    async destroy() { destroyed += 1; },
+  };
+  const peer = await connect(options(runtime, store, {
+    deviceKey: customKey,
+    namespaces: local,
+    live: false,
+    voice: false,
+  }));
+  assert.ok(await store.get('certificate'), 'certificate stored while active');
+
+  // Server closes session mid-flight with the revocation protocol error.
+  runtime.peer.transport = 'reconnecting';
+  Object.assign(runtime.peer, {
+    error: 'peer protocol violation: authenticated device was revoked',
+    errorCode: 'transport-ended',
+  });
+  runtime.peer.emit('incomplete');
+  await settle();
+
+  assert.equal(peer.getSnapshot().phase, 'failed');
+  assert.equal(peer.getSnapshot().errorCode, 'device-revoked');
+  assert.equal(runtime.peer.disposed, true, 'underlying wasm peer stopped immediately');
+  assert.equal(destroyed, 1, 'revoked device key destroyed so fresh pairing creates a new keypair');
+  assert.equal(await store.get('certificate'), undefined, 'stored revoked certificate cleared');
+  await assert.rejects(peer.reconnect(), TypeError);
+  await assert.rejects(peer.recover({kind: 'retry-connection'}), TypeError);
+  await assert.rejects(peer.recover({kind: 'reauthenticate'}), TypeError);
+  await peer.dispose();
+});

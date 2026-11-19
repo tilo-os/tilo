@@ -992,10 +992,10 @@ impl Tiles {
             ));
         };
         if self.shared.failed.borrow_mut().remove(app_id.as_str()) {
-            return Err(Unready::Notice(format!(
-                "{} could not be loaded. Check the connection, then open it again.",
-                tab.title
-            )));
+            return Err(Unready::CouldNotLoad {
+                app: app_id.to_owned(),
+                title: tab.title.clone(),
+            });
         }
         if ui::application::registry::is_deferred(app_id) {
             self.load(app_id);
@@ -1227,6 +1227,10 @@ enum Unready {
     Notice(String),
     /// The app could not be built on the record the window shows; what the launch answered.
     Failed(String),
+    /// The app's code did not arrive (the connection dropped, or the fetch
+    /// stalled past its bound). Its window says so with the one thing left
+    /// to do, trying again, which fetches it once more.
+    CouldNotLoad { app: String, title: String },
 }
 
 impl From<String> for Unready {
@@ -1441,58 +1445,7 @@ impl TileSource for Tiles {
                     _ => host,
                 }
             }
-            // The app's code is on its way: its window reserves the place,
-            // showing the shape the app declared for it (its manifest's
-            // `arrival-skeleton`), and the app goes on with that arrival once
-            // built.
-            Err(Unready::Arriving) => {
-                self.shared.unopened.borrow_mut().remove(&tab.id);
-                self.shared.landed.borrow_mut().remove(&tab.id);
-                let TileContent::LocalApp { app_id, .. } = &tab.tile else {
-                    return TileHost::new(ui::widget::TileContent::Arriving)
-                        .arriving_from(code_host());
-                };
-                let shape = ui::application::registry::declared_arrival_shape(app_id);
-                TileHost::new(ui::widget::TileContent::Arriving)
-                    .arriving_from(code_host())
-                    .with_arrival_shape(shape)
-            }
-            Err(Unready::Notice(detail)) => {
-                self.shared
-                    .unopened
-                    .borrow_mut()
-                    .insert(tab.id, detail.clone());
-                self.shared.landed.borrow_mut().remove(&tab.id);
-                if self.shared.records.borrow().contains_key(&tab.id) {
-                    self.shared.waiting.borrow_mut().insert(tab.id);
-                }
-                TileHost::new(ui::widget::TileContent::Notice {
-                    title: tab.title.clone(),
-                    detail,
-                })
-            }
-            // The app was not built: the window says that it could not open and what to do, in
-            // the person's words, and tries again on their word. What the launch answered is for
-            // whoever looks into it: behind the card's Details, and in the console.
-            Err(Unready::Failed(detail)) => {
-                self.shared
-                    .unopened
-                    .borrow_mut()
-                    .insert(tab.id, detail.clone());
-                self.shared.landed.borrow_mut().remove(&tab.id);
-                if self.shared.records.borrow().contains_key(&tab.id) {
-                    self.shared.waiting.borrow_mut().insert(tab.id);
-                }
-                web_sys::console::warn_1(&format!("{} could not open: {detail}", tab.title).into());
-                let outcome = tilo_desktop_surface::outcome::Outcome::not_built(&tab.title, detail);
-                let shared = self.shared.clone();
-                let id = tab.id;
-                TileHost::new(ui::widget::TileContent::App(Box::new(
-                    tilo_desktop_surface::outcome::OutcomeCard::new(&outcome, move || {
-                        shared.reopen(id);
-                    }),
-                )))
-            }
+            Err(unready) => self.unready_tile(tab, unready),
         }
     }
 
@@ -2078,4 +2031,94 @@ pub(crate) fn mount(
     };
     let (surface, handle) = DesktopSurface::new(tree, salt, Box::new(tiles));
     Ok((surface, handle, shared, persistence))
+}
+
+impl Tiles {
+    /// The window of an app that is not built: its code on its way, did
+    /// not arrive, or the app could not open. Each says what to do next.
+    fn unready_tile(&self, tab: &Tab, unready: Unready) -> TileHost {
+        match unready {
+            // The app's code is on its way: its window reserves the place,
+            // showing the shape the app declared for it (its manifest's
+            // `arrival-skeleton`), and the app goes on with that arrival once
+            // built.
+            Unready::Arriving => {
+                self.shared.unopened.borrow_mut().remove(&tab.id);
+                self.shared.landed.borrow_mut().remove(&tab.id);
+                let TileContent::LocalApp { app_id, .. } = &tab.tile else {
+                    return TileHost::new(ui::widget::TileContent::Arriving)
+                        .arriving_from(code_host());
+                };
+                let shape = ui::application::registry::declared_arrival_shape(app_id);
+                TileHost::new(ui::widget::TileContent::Arriving)
+                    .arriving_from(code_host())
+                    .with_arrival_shape(shape)
+            }
+            // The app's code did not arrive: said with the one thing left
+            // to do, trying again, which starts a fresh fetch. A window left
+            // saying only "open it again" left the person to find how.
+            Unready::CouldNotLoad {
+                app: detail_app,
+                title: detail_title,
+            } => {
+                let detail = format!(
+                    "{detail_title} could not be loaded. Check the connection, then try again."
+                );
+                self.shared.unopened.borrow_mut().insert(tab.id, detail);
+                self.shared.landed.borrow_mut().remove(&tab.id);
+                web_sys::console::warn_1(
+                    &format!("{detail_title} could not be loaded: {detail_app}").into(),
+                );
+                let shared = self.shared.clone();
+                let id = tab.id;
+                let outcome = tilo_desktop_surface::outcome::Outcome::new(format!(
+                    "{detail_title} could not be loaded"
+                ))
+                .saying("Check the connection, then try again.")
+                .retryable("Try again")
+                .with_technical_details(format!("{detail_app}: its code did not arrive"));
+                TileHost::new(ui::widget::TileContent::App(Box::new(
+                    tilo_desktop_surface::outcome::OutcomeCard::new(&outcome, move || {
+                        shared.reopen(id);
+                    }),
+                )))
+            }
+            Unready::Notice(detail) => {
+                self.shared
+                    .unopened
+                    .borrow_mut()
+                    .insert(tab.id, detail.clone());
+                self.shared.landed.borrow_mut().remove(&tab.id);
+                if self.shared.records.borrow().contains_key(&tab.id) {
+                    self.shared.waiting.borrow_mut().insert(tab.id);
+                }
+                TileHost::new(ui::widget::TileContent::Notice {
+                    title: tab.title.clone(),
+                    detail,
+                })
+            }
+            // The app was not built: the window says that it could not open and what to do, in
+            // the person's words, and tries again on their word. What the launch answered is for
+            // whoever looks into it: behind the card's Details, and in the console.
+            Unready::Failed(detail) => {
+                self.shared
+                    .unopened
+                    .borrow_mut()
+                    .insert(tab.id, detail.clone());
+                self.shared.landed.borrow_mut().remove(&tab.id);
+                if self.shared.records.borrow().contains_key(&tab.id) {
+                    self.shared.waiting.borrow_mut().insert(tab.id);
+                }
+                web_sys::console::warn_1(&format!("{} could not open: {detail}", tab.title).into());
+                let outcome = tilo_desktop_surface::outcome::Outcome::not_built(&tab.title, detail);
+                let shared = self.shared.clone();
+                let id = tab.id;
+                TileHost::new(ui::widget::TileContent::App(Box::new(
+                    tilo_desktop_surface::outcome::OutcomeCard::new(&outcome, move || {
+                        shared.reopen(id);
+                    }),
+                )))
+            }
+        }
+    }
 }

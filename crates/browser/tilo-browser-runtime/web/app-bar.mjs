@@ -82,11 +82,13 @@ function readableOn(background) {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.4 ? '#121214' : '#ffffff';
 }
 
-/** Draw `people` into `list`: up to `MAX_FACES` faces, then "+N". */
-export function drawPeople(list, people, document = globalThis.document) {
+/** Draw `people` into `list`: up to `MAX_FACES` faces, then "+N". `shown` is
+ * how many faces the bar's place actually holds (its stylesheet hides the
+ * rest on a small screen), so the count is right for what the person sees. */
+export function drawPeople(list, people, document = globalThis.document, shown = MAX_FACES) {
   list.replaceChildren();
-  const shown = people.slice(0, MAX_FACES);
-  for (const person of shown) {
+  const faces = people.slice(0, Math.max(0, Math.min(MAX_FACES, Math.trunc(shown) || 0)));
+  for (const person of faces) {
     const face = document.createElement('span');
     face.className = `bar-face${person.agent ? ' bar-agent' : ''}${person.here ? '' : ' bar-elsewhere'}`;
     face.textContent = initial(person.label);
@@ -99,12 +101,12 @@ export function drawPeople(list, people, document = globalThis.document) {
     }
     list.append(face);
   }
-  if (people.length > shown.length) {
+  if (people.length > faces.length) {
     const more = document.createElement('span');
     more.className = 'bar-face bar-more';
-    more.textContent = `+${people.length - shown.length}`;
+    more.textContent = `+${people.length - faces.length}`;
     more.setAttribute('role', 'listitem');
-    more.setAttribute('aria-label', `${people.length - shown.length} more`);
+    more.setAttribute('aria-label', `${people.length - faces.length} more`);
     list.append(more);
   }
   list.hidden = people.length === 0;
@@ -213,7 +215,17 @@ export function startAppBar({page, appName = id => id, workspaceName = () => '',
   let stopped = false;
   let timer;
   let theme = null;
-
+  // The bar's own place: how many faces it holds before its stylesheet hides
+  // the rest (three, two on a phone). Read as the bar first draws and again
+  // whenever it is resized, so the people here are counted for the faces on
+  // screen: a stale count reads "+1" for a person whose face is then hidden.
+  let shown = MAX_FACES;
+  const measure = () => {
+    const holds = globalThis.getComputedStyle?.(list)?.getPropertyValue('--bar-faces');
+    const fit = Number.parseInt(holds ?? '', 10);
+    shown = Number.isFinite(fit) ? Math.max(0, Math.min(MAX_FACES, fit)) : MAX_FACES;
+  };
+  measure();
   const named = () => {
     const name = workspaceName() || page.peer?.workspaceName || '';
     if (where) where.textContent = name;
@@ -221,6 +233,9 @@ export function startAppBar({page, appName = id => id, workspaceName = () => '',
     root.dataset.bar = 'shown';
   };
   const refresh = () => {
+    // The bar's width changes under a rotation or a resized window, and a
+    // face count read once is a "+N" that counts a face since hidden.
+    measure();
     // The mount names the document it shows as its presence does (its
     // app and document digest), so the bar matches members against that.
     const state = page.mount?.state?.();
@@ -229,7 +244,7 @@ export function startAppBar({page, appName = id => id, workspaceName = () => '',
       theme = state.pageTheme;
       root.dataset.barTheme = theme.dark ? 'dark' : 'light';
     }
-    if (list) drawPeople(list, peopleHere(page.peer?.live?.presenceMembers?.() ?? [], {self: page.peer?.userPublicKey, here}), document);
+    if (list) drawPeople(list, peopleHere(page.peer?.live?.presenceMembers?.() ?? [], {self: page.peer?.userPublicKey, here}), document, shown);
     named();
   };
   const tick = () => {
@@ -238,6 +253,18 @@ export function startAppBar({page, appName = id => id, workspaceName = () => '',
     try { refresh(); } finally { timer = setTimer(tick, 1000); }
   };
   tick();
+
+  // The people in the bar are read once a second: a hidden tab (and a phone
+  // with its screen off) draws no frame, and once it is back the faces stand
+  // where presence left them. So one reading is taken as the page is shown
+  // again, and the second by second tick waits for the next frame after it.
+  const shownAgain = () => {
+    if (stopped || document.visibilityState === 'hidden') return;
+    if (timer) clearTimer(timer);
+    timer = undefined;
+    tick();
+  };
+  document.addEventListener?.('visibilitychange', shownAgain);
 
   if (share) {
     // Sharing needs a workspace to share in: the person's own desktop has
@@ -259,5 +286,7 @@ export function startAppBar({page, appName = id => id, workspaceName = () => '',
   return () => {
     stopped = true;
     if (timer !== undefined) clearTimer(timer);
+    timer = undefined;
+    document.removeEventListener?.('visibilitychange', shownAgain);
   };
 }

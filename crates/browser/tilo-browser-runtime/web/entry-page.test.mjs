@@ -19,6 +19,7 @@ class Element {
   replaceChildren(...nodes) { this.children = nodes; }
   setAttribute() {}
   addEventListener(type, listener) { this.listeners.set(type, listener); }
+  removeEventListener(type) { this.listeners.delete(type); }
   focus() {}
   select() {}
   // The one part a form or a section is asked for by a selector: its button, its foot.
@@ -613,7 +614,7 @@ test('an embed shows its site’s fallback until the visitor’s first gesture, 
     // Nothing mounts. The page takes no admission and makes no person of its own.
     assert.deepEqual(await deps.enterViaHost({workspace: LOUNGE}), {idle: true});
     assert.equal(document.documentElement.dataset.entry, 'idle');
-    assert.equal(document.getElementById('status').textContent, 'Click or type to join');
+    assert.equal(document.getElementById('status').textContent, 'Click, type or scroll to join');
     return null;
   }});
   assert.equal(failure, null);
@@ -741,14 +742,16 @@ test('the bar follows the session after the mount, not the mount alone', async (
   assert.equal(statuses.length, 1, 'the page follows the session, not only the mount it made');
   diagnostics.onStatus({phase: 'presented', frames: 1});
   assert.equal(root.connection, undefined, 'a session that is well has nothing to say');
-  // Nothing unmounted: the desktop is still there, the session is not.
-  session = sessionOf({phase: 'incomplete', transport: 'offline'});
+  // Nothing unmounted: the desktop is still there, the session is not. The
+  // browser here has a network, so the line says the session rejoins by
+  // itself rather than that the person is offline.
+  session = sessionOf({phase: 'incomplete', transport: 'reconnecting'});
   statuses[0]();
-  assert.equal(root.connection, 'offline', 'a transport that dropped after the mount is not connected');
+  assert.equal(root.connection, 'offline-rejoining', 'a transport that dropped after the mount is not connected');
   // The mount never changed: the line comes from the session alone.
   session = sessionOf();
   statuses[0]();
-  assert.notEqual(root.connection, 'offline', 'and it clears once the transport is back');
+  assert.notEqual(root.connection, 'offline-rejoining', 'and it clears once the transport is back');
 });
 
 test('a person let in by a link into the site’s own home is handed to the bare site, where the first screen is', async () => {

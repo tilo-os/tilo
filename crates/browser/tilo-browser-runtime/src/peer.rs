@@ -22,6 +22,8 @@
 //! ([`WasmPeer::take_live_events`]). Documents reach the desktop's
 //! `CollaborationManager` through [`WasmPeer::collab_transport`].
 
+mod revocation;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -40,7 +42,7 @@ use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::device::{Device, DeviceRefusal};
 use tilo_session_client::{Events, FailureKind, Link, LocalState};
 use tilo_session_client::{PeerConfig, PeerEntry, PeerStore};
-use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
+use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 use tilo_workspace_keys::VAULT_SECRET_APP as CHANNEL_VAULT_APP;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -1018,47 +1020,6 @@ pub async fn follow_login_code(
     serde_json::to_string(&polled).map_err(|error| js_error(error).into())
 }
 
-/// Revoke `keyHex`, a device key of this person's, with the root the page
-/// holds (`root`): resolves to the root-signed revocation as JSON, which the
-/// page keeps beside the person. It
-/// is announced to every session of theirs at once, so their hosts refuse
-/// what the key signs from now on and keep valid what it signed before.
-/// `reason` is why: `retired`, `lost`, `stolen` or `compromised`.
-#[wasm_bindgen(js_name = revokeDevice)]
-pub async fn revoke_device(
-    root: JsValue,
-    key_hex: String,
-    reason: String,
-) -> Result<String, JsError> {
-    let root = PageSigner::from_js(&root)?;
-    let reason = match reason.as_str() {
-        "retired" => RevocationReason::Retired,
-        "lost" => RevocationReason::Lost,
-        "stolen" => RevocationReason::Stolen,
-        "compromised" => RevocationReason::Compromised,
-        _ => {
-            return Err(JsError::new(
-                "a device's access ends as retired, lost, stolen or compromised",
-            ));
-        }
-    };
-    let entry = tilo_server_client::revoke_device(
-        &root,
-        device_key(&key_hex)?,
-        tilo_clock::unix_now_ns(),
-        reason,
-    )
-    .await
-    .map_err(js_error)?;
-    for handle in crate::peer_sync::handles_of(&hex::encode(entry.user_public_key)) {
-        handle.send(Cmd::Revoke(entry.clone())).map_err(js_error)?;
-    }
-    // Announced: whatever lists the person's devices on this page has them
-    // read from the host once more.
-    crate::identity_api::devices_moved();
-    serde_json::to_string(&entry).map_err(js_error)
-}
-
 /// The host a page pairs its person's new devices through, as that person's
 /// root: over the session the page holds there ([`WasmPeer::pairing`]), or,
 /// before it holds one, from an endpoint of its own it keeps while it pairs.
@@ -1631,22 +1592,6 @@ impl JsCallOperation {
     }
 }
 
-/// The revocations of `entries` the person `cert` certifies signed: a
-/// session announces only its own person's, since a host reads a hello's
-/// entries as its sender's root's and refuses one signed by another.
-fn own_revocations(
-    entries: Vec<RevocationEntry>,
-    cert: &DeviceCert,
-) -> Result<RevocationList, JsError> {
-    let mut revocations = RevocationList::new();
-    for entry in entries {
-        if entry.user_public_key == cert.user_public_key {
-            revocations.insert(entry).map_err(js_error)?;
-        }
-    }
-    Ok(revocations)
-}
-
 /// The events [`WasmPeer::take_durable_events`] reads.
 fn is_durable(event: &Event) -> bool {
     matches!(event, Event::Landed { .. })
@@ -1696,6 +1641,8 @@ pub struct WasmPeer {
     /// The workspace the person takes part in through this page, once joined
     /// as a person: the one that names them.
     speaking_workspace: RefCell<Option<String>>,
+    /// Tracks permanent revocation once the server refuses this device.
+    revocation: revocation::RevocationState,
 }
 
 impl WasmPeer {
@@ -1866,7 +1813,7 @@ impl WasmPeer {
         let reporter_cert = config.cert.clone();
         let owner_cert = config.server_cert.clone();
         let display_name = config.display_name;
-        let revocations = own_revocations(config.revocations, &config.cert)?;
+        let revocations = revocation::own_revocations(config.revocations, &config.cert)?;
         let handle = tilo_session_client::start_session(
             PeerConfig {
                 host: dialled(config.address),
@@ -1914,6 +1861,7 @@ impl WasmPeer {
         // page remembered, never asked for again.
         let personal_events = handle.events_where(|event| matches!(event, Event::Personal(_)));
         let listeners: Rc<RefCell<Vec<Function>>> = Rc::default();
+        let revocation = revocation::RevocationState::new();
         let changed = Arc::new(tokio::sync::Notify::new());
         handle.on_change({
             let changed = changed.clone();
@@ -1921,12 +1869,15 @@ impl WasmPeer {
         });
         wasm_bindgen_futures::spawn_local({
             let listeners = Rc::downgrade(&listeners);
+            let handle = handle.clone();
+            let revocation = revocation.clone();
             async move {
                 loop {
                     changed.notified().await;
                     let Some(listeners) = listeners.upgrade() else {
                         return;
                     };
+                    revocation.observe(&handle);
                     crate::replication::pump(id);
                     crate::feedback_code::pump(id);
                     let current = listeners.borrow().clone();
@@ -1952,6 +1903,7 @@ impl WasmPeer {
             listeners,
             replication,
             speaking_workspace: RefCell::default(),
+            revocation,
         })
     }
 
@@ -1984,7 +1936,7 @@ impl WasmPeer {
 
     /// `PeerSnapshot` JSON.
     pub fn snapshot(&self) -> String {
-        serde_json::to_string(&self.handle.snapshot()).unwrap_or_default()
+        self.revocation.snapshot_json(&self.handle)
     }
 
     /// This page's channel state as text: whom each workspace follows, which
@@ -2890,20 +2842,23 @@ impl WasmPeer {
             .map_err(js_error)
     }
 
-    /// Reconnect now (also after a failure).
+    /// Reconnect now (also after a failure). Refuses once this device was revoked.
     pub fn reconnect(&self) -> Result<(), JsError> {
+        self.revocation.ensure_active()?;
         self.handle.send(Cmd::Reconnect).map_err(js_error)
     }
 
     /// The network is back: a session waiting to reconnect tries now; a
-    /// connected one stays as it is.
+    /// connected one stays as it is. Refuses once this device was revoked.
     #[wasm_bindgen(js_name = retryNow)]
     pub fn retry_now(&self) -> Result<(), JsError> {
+        self.revocation.ensure_active()?;
         self.handle.send(Cmd::Retry).map_err(js_error)
     }
 
-    /// Ask the host for the joined workspaces' shared state again.
+    /// Ask the server for the joined workspaces' shared state again. Refuses once revoked.
     pub fn refresh(&self) -> Result<(), JsError> {
+        self.revocation.ensure_active()?;
         self.handle.send(Cmd::Refresh).map_err(js_error)
     }
 

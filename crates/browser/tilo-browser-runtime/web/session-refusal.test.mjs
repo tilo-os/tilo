@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 
 import {followRefusal, hostUnreachable, reachedHost, REJOIN_WINDOW_MS, REJOINED, refusalText, rejoinedName, rejoinedRecently, retryUnreachable, UNREACHED} from './session-refusal.mjs';
-import {deviceRemoved} from './session-refusal.mjs';
+import {deviceRemoved, permanentRefusal, snapshotRevoked} from './session-refusal.mjs';
 
 /** A peer whose snapshots the test sends; records recover requests. */
 function fakePeer({recover = async () => {}} = {}) {
@@ -151,4 +151,20 @@ test('a browser removed from its person’s devices is known by its session’s 
   assert.ok(!deviceRemoved(new Error('This device was removed from your devices.')), 'its code says it, never its words');
   assert.ok(!deviceRemoved(null));
   assert.equal(refusalText('device-revoked', 'Lounge'), 'This browser was removed from your devices, so it can’t open Lounge anymore.');
+});
+
+test('mid-session protocol revocation (authenticated device was revoked / device_revoked) stops immediately without rejoin or recovery', async () => {
+  assert.ok(deviceRemoved(Object.assign(new Error('revoked'), {code: 'device_revoked'})));
+  assert.ok(deviceRemoved(new Error('peer protocol violation: authenticated device was revoked')));
+  assert.ok(permanentRefusal(new Error('peer protocol violation: authenticated device was revoked')));
+  assert.ok(snapshotRevoked({phase: 'incomplete', error: 'peer protocol violation: authenticated device was revoked'}));
+  assert.ok(snapshotRevoked({phase: 'reconnecting', health: {failures: [{code: 'protocol-rejected', message: 'authenticated device was revoked'}]}}));
+
+  const peer = fakePeer();
+  const {seen} = follow({peer, canRejoin: () => true});
+  peer.send({phase: 'incomplete', errorCode: 'transport-ended', error: 'peer protocol violation: authenticated device was revoked'});
+  await settle();
+  assert.deepEqual(seen, {rejoined: [], refused: ['device-revoked']});
+  assert.deepEqual(peer.recovered, [], 'never attempts silent recovery on revocation');
+  assert.equal(peer.listening(), 0, 'stops following immediately');
 });

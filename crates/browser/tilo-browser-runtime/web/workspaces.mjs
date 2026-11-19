@@ -62,7 +62,7 @@ import {originOf} from './entered-workspaces.mjs';
 import {fetchProfile} from './identity.mjs';
 import {PAIRING_SAME_PERSON, PAIRING_STOPPED, shownName} from './pairing.mjs';
 import {backoffDelay} from './reconnect.mjs';
-import {hostUnreachable} from './session-refusal.mjs';
+import {deviceRemoved, hostUnreachable, permanentRefusal} from './session-refusal.mjs';
 
 // The workspaces this browser entered are its own store (`entered-workspaces.mjs`):
 // offered here as the choices a person switches between.
@@ -351,6 +351,9 @@ export function entryWorkspace(workspace) {
  * ban and a removal alike are `removed`; an entry not reached is `unavailable`.
  * Anything else stands. */
 function entryRefused(error) {
+  if (deviceRemoved(error)) {
+    return Object.assign(new HostAdmissionError('device-revoked', error.message ?? 'This device was removed from your devices.'), {cause: error});
+  }
   if (error?.name !== 'DeviceRefusal') return error;
   const code = {banned: 'removed', removed: 'removed', 'invitation-only': 'invitation-only', full: 'full', unanswered: 'unavailable'}[error.code] ?? 'refused';
   // A workspace taking people by invitation may keep a wait list, and name
@@ -548,6 +551,17 @@ function keepMembership(memberships, workspace, value) {
   memberships?.setItem(MEMBERSHIPS, JSON.stringify(all));
 }
 
+/** Forget any kept membership binding for `origin` (for example after the
+ * server revokes this browser device). */
+export function forgetMembership(origin, memberships = globalThis.localStorage) {
+  if (!origin) return;
+  const all = readMemberships(memberships);
+  const key = originOf(origin);
+  if (!(key in all)) return;
+  delete all[key];
+  memberships?.setItem(MEMBERSHIPS, JSON.stringify(all));
+}
+
 /**
  * Remember the host at `origin` as one `userPublicKey` owns: a machine this
  * browser set up for that person (`machine-setup.mjs`). Like a joined host,
@@ -675,11 +689,22 @@ export async function joinViaHost({
     const profile = identityProfile(known, known.origin);
     const deviceKey = await openDeviceKey(profile);
     const common = {...connectOptions, origin: known.origin, workspace: asking ?? known.workspace, userPublicKey: known.userPublicKey, profile, deviceKey, displayName};
-    return withDeviceKey(deviceKey, () => (deviceKey.created
-      // A tab with a key of its own: a new device of that person, which
-      // only their root can certify. It pairs as a new browser would.
-      ? pair({...common, entry}).catch(error => { throw entryRefused(error); })
-      : connect(common)), connectOptions.signal);
+    return withDeviceKey(deviceKey, async () => {
+      try {
+        return await (deviceKey.created
+          // A tab with a key of its own: a new device of that person, which
+          // only their root can certify. It pairs as a new browser would.
+          ? pair({...common, entry}).catch(error => { throw entryRefused(error); })
+          : connect(common));
+      } catch (error) {
+        if (deviceRemoved(error)) {
+          keepMembership(memberships, workspace, null);
+          try { await deviceKey.destroy?.(); } catch {}
+          throw Object.assign(new Error(error?.message ?? 'This device was removed from your devices.'), {code: 'device-revoked', cause: error});
+        }
+        throw error;
+      }
+    }, connectOptions.signal);
   }
   if (!identity?.userPublicKey) throw new TypeError("joining through a host needs the person's identity");
   /** Ask the entry to admit the person, then join with what it hands out.
@@ -743,6 +768,9 @@ export async function joinViaHost({
       try {
         return await throughEntry(held, refused, renewals > 0);
       } catch (error) {
+        // A deliberately revoked device or permanent refusal must stop at once
+        // without silent key renewal or retry.
+        if (deviceRemoved(error) || permanentRefusal(error)) throw error;
         if (error?.name === 'AdmissionError' && error.code === 'refused') {
           // The first new device took this tab's key in place of the old one.
           if (renewals > 0) held = null;
@@ -778,6 +806,14 @@ export async function joinViaHost({
       return peer;
     } catch (error) {
       await peer?.dispose?.().catch(() => {});
+      // A deliberately revoked device must stop immediately without silent key
+      // renewal or retry; forget its binding so an intentional fresh pairing
+      // mints a new keypair.
+      if (deviceRemoved(error)) {
+        keepMembership(memberships, workspace, null);
+        try { await deviceKey.destroy?.(); } catch {}
+        throw Object.assign(new Error(error?.message ?? 'This device was removed from your devices.'), {code: 'device-revoked', cause: error});
+      }
       // The host has not answered yet, or is not answering at all (it is
       // restarting): nothing the host refused, so the membership stays, and
       // joining again would spend an admission and a join to fail the same way.
@@ -812,10 +848,14 @@ export async function joinViaHost({
  * A browser is never paired to the person it already is. `holds` is the
  * person whose root this browser keeps (hex, or `null`): a pairing link that
  * names them, opened in the browser that made it, is refused here
- * (`same-person`) before the host is asked anything. The link is not spent,
- * nobody is asked to approve, and nothing kept changes. Paired, the browser
- * would be remembered as a device whose root is elsewhere and leave the root
- * it holds unused: it could let no further device in.
+ * (`same-person`) before the server is asked anything. So is a link naming a
+ * person whose device key this browser already keeps (`heldProfile`, asked
+ * as `identity-profile.mjs` keeps one, whatever server the link names): a
+ * window of the browser that made the link knows its person only by that
+ * key. The link is not spent, nobody is asked to approve, and nothing kept
+ * changes. Paired, the browser would be remembered as a device whose root is
+ * elsewhere and leave the root it holds unused: it could let no further
+ * device in.
  *
  * A device says whose it becomes before it asks. A link is written by
  * whoever made it, and following one makes this device theirs: so, before
@@ -836,13 +876,22 @@ export async function joinViaHost({
 export async function pairViaHost({
   origin, workspace, userPublicKey, listed = null, label = 'Browser', displayName = defaultDisplayName(userPublicKey),
   memberships = globalThis.localStorage, fetch = globalThis.fetch, pair = pairDevice, holds = null,
-  agree, findProfile = fetchProfile, ofSite = false, stopped = () => false, ...connectOptions
+  agree, findProfile = fetchProfile, ofSite = false, stopped = () => false,
+  heldProfile = null, ...connectOptions
 }) {
   if (!/^[0-9a-f]{64}$/.test(userPublicKey ?? '')) throw new HostAdmissionError('invalid', 'This pairing link names no person');
   if (connectOptions.invite != null && !/^[0-9a-f]{32}$/.test(connectOptions.invite)) {
     throw new HostAdmissionError('invalid', 'This pairing link is damaged');
   }
   if (holds && holds === userPublicKey) throw new HostAdmissionError('same-person', PAIRING_SAME_PERSON);
+  // A link naming this browser's own person lands on the device it was made
+  // on: claiming it would ask the server for a certificate of that person and
+  // then wait for an approval by the very person it is, on the device that
+  // wrote the link. `heldProfile` is the page's answer for that, asked here
+  // before a server is asked anything.
+  if (typeof heldProfile === 'function' && heldProfile(userPublicKey)) {
+    throw new HostAdmissionError('same-person', PAIRING_SAME_PERSON);
+  }
   if (typeof agree !== 'function') throw new TypeError('a device is paired only once it said whose it becomes: pairViaHost needs agree');
   const own = ofSite === true;
   const kept = own

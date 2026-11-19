@@ -29,6 +29,8 @@ import {createNativeCatalogueBridge, invokeMembershipAction} from './native-cata
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
 import {browserSettings} from './browser-locale.mjs';
 import {fetchProxyFor,proxiedGet} from './fetch-proxy.mjs';
+import {installWebTransportGuard} from './webtransport-guard.mjs';
+installWebTransportGuard();
 // Page host for the Tilo browser runtime. Ported from the Tilo browser runtime
 // (PR 541) without its desktop host and action palette.
 // `mountDesktop` mounts the session desktop (tilo-desktop-surface over the
@@ -1012,21 +1014,35 @@ async function settleBeforeGpu(){
   await new Promise(resolve=>setTimeout(resolve,1500));
   await new Promise(resolve=>(globalThis.requestIdleCallback??(f=>setTimeout(f,0)))(resolve,{timeout:1500}));
 }
+// How long before a place the runtime was busy for is asked about again.
+const POINTER_ASK_AGAIN_MS=8;
 // This person's pointer, said over the tab it is on: a point in that tab's
 // logical pixels, which every member's view of the tab places. The session's
 // roster draws the members' pointers from the board; this only says where this
 // page's is.
 function followOwnPointer(layer,mountId,surface,active){
+  // The place last handed to the workspace, so a move that reads the same one
+  // says nothing, and the place a move left for a later turn.
+  let said='',left,timer;
+  function say(at){if(at===said)return;said=at;layer.publishPresence({pointer:at?JSON.parse(at):null});}
+  // The runtime is busy until the frame or input it is servicing returns, and a
+  // move is not worth throwing out of a listener for: the place waits a turn.
+  // It is read again rather than remembered because the pointer may have left
+  // the tab while the workspace was busy.
+  function read(x,y){try{say(runtime.pointer_tile(mountId(),x,y));left=undefined;}catch{left={x,y};askAgain();}}
+  function askAgain(){
+    if(timer!==undefined)return;
+    timer=setTimeout(()=>{timer=undefined;if(active()&&left)read(left.x,left.y);},POINTER_ASK_AGAIN_MS);
+  }
   const move=event=>{
     if(!active())return;
     const rect=surface.getBoundingClientRect();
-    const at=runtime.pointer_tile(mountId(),event.clientX-rect.left,event.clientY-rect.top);
-    layer.publishPresence({pointer:at?JSON.parse(at):null});
+    read(event.clientX-rect.left,event.clientY-rect.top);
   };
-  const leave=()=>layer.publishPresence({pointer:null});
+  const leave=()=>{left=undefined;say('');layer.publishPresence({pointer:null});};
   surface.addEventListener('pointermove',move,{passive:true});
   surface.addEventListener('pointerleave',leave,{passive:true});
-  return ()=>{surface.removeEventListener('pointermove',move);surface.removeEventListener('pointerleave',leave);};
+  return ()=>{clearTimeout(timer);timer=undefined;surface.removeEventListener('pointermove',move);surface.removeEventListener('pointerleave',leave);};
 }
 export function pendingRecoveryCount(){return recoveryJobs.size;}
 export async function retryPendingRecovery(){for(const retry of [...recoveryJobs])await retry();}

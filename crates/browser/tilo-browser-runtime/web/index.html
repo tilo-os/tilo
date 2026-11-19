@@ -231,6 +231,22 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
        page. */
     #bar { display: contents; }
     [data-arrival=done] #bar { display: block; position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    /* What the workspace's connection is doing, once the desktop is up: the
+       desktop fills the page, so the line stands over it, calm and out of the
+       way, and goes once everything is well again (connection-status.mjs says
+       it; entry-page.mjs shows it). A page still arriving, a failure, the
+       reconnect screen or the first screen has the page instead. */
+    #connection { position: fixed; z-index: 2; left: 50%; top: max(12px, env(safe-area-inset-top)); transform: translateX(-50%); display: flex; align-items: center; gap: 8px; box-sizing: border-box; width: max-content; max-width: min(36em, calc(100% - 24px)); margin: 0; padding: 8px 14px; border-radius: 10px; background: #26282e; color: #ececf0; box-shadow: 0 6px 20px rgb(0 0 0 / 35%); font: 13px/1.45 system-ui, -apple-system, 'Segoe UI', sans-serif; text-align: left; text-wrap: pretty; }
+    #connection::before { content: ''; flex: none; width: 8px; height: 8px; border-radius: 50%; background: #e0a53a; }
+    #connection[data-connection=offline]::before, #connection[data-connection=admission]::before { background: #e0763a; }
+    #connection[data-connection=renderer]::before { background: #d9534f; }
+    #connection[hidden] { display: none; }
+    html:not([data-arrival=done]) #connection, [data-arrival=stopped] #connection, [data-failure] #connection, [data-reconnect] #connection, [data-first-run] #connection { display: none; }
+    @media (prefers-color-scheme: light) {
+      #connection { background: #f2f2f4; color: #17181c; box-shadow: 0 6px 20px rgb(0 0 0 / 12%); }
+    }
+    @media (prefers-reduced-motion: no-preference) { #connection:not([hidden]) { animation: tilo-connection-in 220ms ease-out both; } }
+    @keyframes tilo-connection-in { from { opacity: 0; transform: translate(-50%, -6px); } }
     .tilo-entry-card { position: fixed; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%); box-sizing: border-box; width: min(360px, calc(100vw - 32px)); display: grid; gap: 20px; padding: 24px; border-radius: 14px; background: #1c1d21; border: 1px solid #2c2e34; box-shadow: 0 12px 40px rgb(0 0 0 / 45%); }
     .tilo-entry-card p { margin: 0; line-height: 1.5; color: #e6e6e9; }
     .tilo-entry-card button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid #34363d; background: transparent; color: #d4d4d8; cursor: pointer; }
@@ -753,6 +769,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
   <section id="arrival-failure" aria-labelledby="arrival-failure-heading"><div class="failure-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-failure-heading"></h1><p id="arrival-failure-body"></p><div class="failure-actions"><button id="arrival-failure-host" type="button" hidden></button><button id="arrival-failure-retry" type="button" hidden>Try again</button></div><div id="arrival-failure-elsewhere" hidden><p id="arrival-failure-others-heading"></p><ul id="arrival-failure-others"></ul></div><details id="arrival-failure-details" hidden><summary id="arrival-failure-summary">Technical details</summary><pre id="arrival-failure-text"></pre><button id="arrival-failure-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
   <section id="arrival-reconnect" aria-labelledby="arrival-reconnect-heading"><div class="reconnect-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-reconnect-heading"></h1><p id="arrival-reconnect-body"></p><p id="arrival-reconnect-next" aria-hidden="true"></p><p id="arrival-reconnect-said" class="reconnect-said" role="status" aria-live="polite"></p><button id="arrival-reconnect-now" type="button" aria-busy="false"><span class="reconnect-spinner" aria-hidden="true"></span><span id="arrival-reconnect-now-label">Try now</span></button><a id="arrival-reconnect-host" class="reconnect-copy" target="_blank" rel="noopener" hidden></a><details id="arrival-reconnect-details"><summary id="arrival-reconnect-summary">Technical details</summary><pre id="arrival-reconnect-text"></pre><button id="arrival-reconnect-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
   <div id="bar"><span id="status" role="status">Loading Tilo…</span></div>
+  <p id="connection" role="status" aria-live="polite" hidden></p>
   <script type="module">
     // A Tilo link under this entry: desktop mode. The route is in the
     // fragment and never reaches the server.

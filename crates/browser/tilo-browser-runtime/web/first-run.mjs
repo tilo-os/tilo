@@ -58,6 +58,8 @@
  *   for a while).
  */
 
+import {deviceRemoved, permanentRefusal} from './session-refusal.mjs';
+
 /**
  * Where this browser keeps the person's setup (`readSetup`): the step the
  * first screen is at, the codes it shows and follows, and what the agent did
@@ -121,6 +123,10 @@ export const QUIET_MS = 3 * 60_000;
 export const OPEN_SLOW_MS = 20_000;
 /** How long a passkey sign-in waits for the page to be able to ask. */
 export const PASSKEY_WAIT_MS = 30_000;
+/** Said after what a round that heard nothing was waiting on. The page asks
+ * again by itself the moment the browser is back online (`online`), so a wait
+ * is never the person's to end. */
+const picksUpByItself = 'This page asks again by itself once you’re back online.';
 /** The site whose commands need no `--site`. */
 export const HOME_SITE = 'https://tilo.sh';
 /** Tilo's MCP server, for an agent added by hand. */
@@ -284,17 +290,17 @@ export function setupFailure(error, {site = HOME_SITE} = {}) {
   // The host that did not answer is the one the codes come from
   // (`error.origin`, which the entry page names), not necessarily the page's.
   const from = typeof error?.origin === 'string' ? error.origin : site;
-  const host = hostOf(from);
+  const siteName = hostOf(from);
   if (code === 'timeout' || code === 'unreachable' || error?.name === 'TypeError') {
     // A page cannot read why a request failed, but a host on this computer
     // is not behind a connection: it is not running, or (over https) the
     // browser refused its certificate, which a fetch reports as nothing more.
     const local = onThisComputer(from);
-    if (local === 'http:') return `Couldn’t reach ${host} on this computer. Check that it is running, then try again.`;
-    if (local === 'https:') return `Couldn’t reach ${host} on this computer. It isn’t running, or this browser doesn’t trust its certificate.`;
-    return `Couldn’t reach ${host}. Check your connection, then try again.`;
+    if (local === 'http:') return `Couldn’t reach ${siteName} on this computer. Check that it is running, then try again.`;
+    if (local === 'https:') return `Couldn’t reach ${siteName} on this computer. It isn’t running, or this browser doesn’t trust its certificate.`;
+    return `Couldn’t reach ${siteName}. Check your connection, then try again.`;
   }
-  return `${host} did not make a code. Try again, or skip for now.`;
+  return `${siteName} did not make a code. Try again, or skip for now.`;
 }
 
 /** The scheme of `origin` when it is on this computer (a `localhost` name or
@@ -352,7 +358,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   const prompts = {setup: setupPrompt, signIn: signInPrompt};
   const modeOf = kind => (kind === 'signIn' ? 'sign-in' : 'setup');
   const kindOf = mode => (mode === 'sign-in' ? 'signIn' : 'setup');
-  const host = hostOf(site);
+  const siteName = hostOf(site);
   const codes = {};
   for (const kind of ['setup', 'signIn']) codes[kind] = {make: null, resume: null, made: null, making: false, error: null, renew: null, round: 0, note: null};
   // A setup kept for later (the person arrived by an invitation) or over
@@ -437,14 +443,19 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   let opened = false;
   let leaveTimer = null;
   let slowTimer = null;
-  const close = () => {
-    if (closed) return;
+  // Every timer this controller armed, stopped: the page's code-following, the
+  // renewal of the codes it made, its offers and the waits it keeps.
+  const halt = () => {
     stop();
     stopWatch();
     for (const kind of Object.keys(codes)) clear(codes[kind].renew);
     clear(offerTimer);
     clear(leaveTimer);
     clear(slowTimer);
+  };
+  const close = () => {
+    if (closed) return;
+    halt();
     closed = true;
     heldBack = false;
     view.close();
@@ -480,7 +491,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     save({step: 'opening'});
     view.opening({heading: connectedShown ? frame.heading : null});
     slowTimer = later(() => view.opening({heading: connectedShown ? frame.heading : null,
-      note: `Still opening: ${host} is slow to answer.`}), OPEN_SLOW_MS);
+      note: `Still opening: ${siteName} is slow to answer.`}), OPEN_SLOW_MS);
     openOwn();
   };
   // The agent is in (or this tab is signed in): said for a moment, then the
@@ -585,8 +596,13 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
           polled = await bounded(Promise.resolve().then(() => made.follow()), ASK_MS, later, clear);
         } catch (error) {
           // A page that cannot follow codes yet looks again once it can; a
-          // host that did not answer, too (asking for the prompt says so).
+          // server that did not answer, too (asking for the prompt says so).
+          // A revoked device or permanent refusal stops polling at once.
           if (round !== watchRound || closed) return;
+          if (deviceRemoved(error) || permanentRefusal(error)) {
+            stopWatch();
+            return;
+          }
           if (error?.code === 'not-loaded' && made.early) lost = true;
           continue;
         }
@@ -693,6 +709,10 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     let quietSince = now();
     let misses = 0;
     let checking = resumed;
+    // The last round that heard nothing, kept until one is answered
+    // (`online`): the page asks again by itself once the network is back, and
+    // says so rather than staying on "isn't answering" as though it is not.
+    let paused = null;
     const expire = () => {
       finished = true;
       stop();
@@ -724,13 +744,23 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
         if (mine !== attempt || closed || finished) return;
         if (error?.status === 404) { forgotten(); return; }
         if (error?.code === 'not-loaded') return;
+        if (deviceRemoved(error) || permanentRefusal(error)) {
+          console.warn('first screen: stopped following after permanent refusal', error);
+          finished = true;
+          stop();
+          save({step: 'start', code: null, polled: null});
+          view.failed(setupFailure(error, {site}), mode);
+          return;
+        }
         console.warn('first run: follow', error);
         misses += 1;
+        paused = {error};
         if (!online()) view.net('You’re offline.');
-        else if (misses >= 2 || error?.code === 'timeout') view.net(`${host} isn’t answering.`);
+        else if (misses >= 2 || error?.code === 'timeout') view.net(`${siteName} isn’t answering. ${picksUpByItself}`);
         return;
       } finally { asking = false; }
       if (mine !== attempt || closed || finished) return;
+      paused = null;
       if (misses || checking) { misses = 0; checking = false; view.net(null); }
       if (polled.expired) { if (resolved) forgotten(); else expire(); return; }
       if (!polled.resolved) return;
@@ -784,7 +814,12 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       }
     };
     void tick();
-    askNow = () => { void tick(); };
+    askNow = () => {
+      // Nothing is said of a wait once the network is back: the try that
+      // follows is the one the screen shows.
+      if (paused) { paused = null; view.net(null); }
+      void tick();
+    };
     stop = every(() => { void tick(); }, FOLLOW_MS);
   };
   // Follow the code the setup kept again, once the page can (`resume`).
@@ -852,7 +887,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
         return;
       }
       if (!next.polled?.resolved) view.left(minutesLeft(next.code.expiresAt, now()));
-      view.net(`Checking with ${host}…`);
+      view.net(`Checking with ${siteName}…`);
       resumeFollow();
       return;
     }
@@ -1086,6 +1121,15 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       if (closed || !heldBack) return;
       heldBack = false;
       toStart(true);
+    },
+    /** This controller gives the screen to another one (opening the first
+     * screen or sign-in again writes the same screen): its timers stop here,
+     * and the screen stays on the page for the controller that took it. */
+    retire() {
+      if (closed) return;
+      halt();
+      closed = true;
+      heldBack = false;
     },
     close,
     get closed() { return closed; },
@@ -1364,11 +1408,41 @@ export function openSignIn(document = globalThis.document, {onBack = () => {}} =
   return run;
 }
 
+/** The controller now holding the page's first screen: the one its page-wide
+ * listeners speak to. Writing the screen again replaces it, and the
+ * controller it replaces is retired, its timers stopped. */
+let shownController = null;
+
+/** Install this page's listeners for the first screen, once: what happens to
+ * the page while any controller shows it, handed to the active one. A
+ * controller replaced on the screen keeps nothing, so a page that opens the
+ * screen again and again adds no listener. */
+function watchFirstScreenPage(document) {
+  if (watchFirstScreenPage.armed) return;
+  watchFirstScreenPage.armed = true;
+  // A prompt selected and copied by hand is copied all the same.
+  document.addEventListener('copy', () => {
+    const offer = document.getElementById('first-run-offer');
+    const selection = document.getSelection?.();
+    if (offer?.textContent && selection && !selection.isCollapsed && offer.contains(selection.anchorNode)) shownController?.copiedByHand();
+  });
+  // Another tab's step is this one's: the setup is one, whichever tab shows it.
+  globalThis.addEventListener?.('storage', event => { if (event.key === SETUP || event.key === null) shownController?.sync(); });
+  globalThis.addEventListener?.('online', () => shownController?.online());
+  // A page back from the back/forward cache missed what other tabs did meanwhile.
+  globalThis.addEventListener?.('pageshow', event => { if (event.persisted) shownController?.sync(); });
+}
+
 /** The screen's buttons wired to a controller of its own. A sign-in from the
  * wait list (`signInOnly`) keeps nothing in `storage`. */
 function wireFirstRunScreen(document, storage, {held = false, signInOnly = false, onBack} = {}) {
   const run = createFirstRun({view: domView(document), clipboard: pageClipboard(),
     storage: signInOnly ? null : storage ?? globalThis.localStorage, site: globalThis.location?.origin, held, signInOnly, onBack});
+  // The controller before this one stops every timer it armed: the screen is
+  // this one's from here on, and two controllers following the same code would ask twice.
+  const before = shownController;
+  shownController = run;
+  if (before !== run) before?.retire?.();
   const on = (id, handler) => document.getElementById(id)?.addEventListener('click', handler);
   const text = id => document.getElementById(id).textContent;
   on('first-run-agent', () => run.copy());
@@ -1382,17 +1456,7 @@ function wireFirstRunScreen(document, storage, {held = false, signInOnly = false
   on('first-run-back', () => run.back());
   for (const id of ['first-run-skip', 'first-run-skip-wait']) on(id, () => run.skip());
   on('first-run-passkey', () => run.passkey());
-  // A prompt selected and copied by hand is copied all the same.
-  document.addEventListener('copy', () => {
-    const offer = document.getElementById('first-run-offer');
-    const selection = document.getSelection?.();
-    if (offer?.textContent && selection && !selection.isCollapsed && offer.contains(selection.anchorNode)) run.copiedByHand();
-  });
-  // Another tab's step is this one's: the setup is one, whichever tab shows it.
-  globalThis.addEventListener?.('storage', event => { if (event.key === SETUP || event.key === null) run.sync(); });
-  globalThis.addEventListener?.('online', () => run.online());
-  // A page back from the back/forward cache missed what other tabs did meanwhile.
-  globalThis.addEventListener?.('pageshow', event => { if (event.persisted) run.sync(); });
+  watchFirstScreenPage(document);
   pressEarly(document);
   return run;
 }

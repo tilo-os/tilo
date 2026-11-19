@@ -318,7 +318,23 @@ export function applyEditorHints(editor,hints){
   editor.autocomplete=hints.autocomplete;
   editor.spellcheck=hints.spellcheck;
 }
-export function retainStatus(previous,next){return {...previous,...next};}
+export function retainStatus(previous,next){return {...retainedBefore(previous,next),...next};}
+/** What `previous` still answers for with `next` here: every field a status left
+ * out. A generation reaches the page as one status said at once, so a field it
+ * leaves out is empty in it, whatever the generation before it said: else a
+ * surface taken in hand again (`gpuGeneration` moved) kept the last one's
+ * `presentation` and `semanticLoci` until its first frame, and the HTML layer
+ * and the input both read a presentation that no longer existed. The fields
+ * that carry a change as it happens (`focusPresence`, `livePlace`, `liveWave`,
+ * `liveFollowing`) are never replayed: the same presence said again is a
+ * wave, a place and a pointer shown a second time. */
+export function retainedBefore(previous,next){
+  if(!previous)return {};
+  const carried={...previous};
+  if('gpuGeneration' in next&&previous.gpuGeneration!==next.gpuGeneration)delete carried.semantics;
+  for(const key of ['focusPresence','livePlace','liveWave','liveFollowing'])delete carried[key];
+  return carried;
+}
 export function retainedWidget(state){return state?.semantics?.root?.widget;}
 
 /** How long a page status stays visible: the toolkit's notice lifetime. */

@@ -83,12 +83,16 @@ fn present_queued() {
             }
             Ok(())
         });
-        if let Err(error) = result {
-            // The runtime was busy: the animation frame draws it.
-            web_sys::console::debug_1(&error);
-            let _ = with_mount_quietly(id, |m| {
-                m.window.request_redraw();
-                Ok(())
+        if result.is_err() {
+            // The runtime was busy servicing another mount: asking this one
+            // for a frame here would be refused for the same reason (this is
+            // still that call's turn), so the frame is queued again and the
+            // event loop draws it once the runtime is free.
+            QUEUED.with_borrow_mut(|queued| queued.insert(id));
+            super::LOOP.with_borrow(|proxy| {
+                if let Some(proxy) = proxy {
+                    let _ = proxy.send_event(id);
+                }
             });
         }
     }

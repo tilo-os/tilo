@@ -114,7 +114,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #bar-workspace:empty, #bar-workspace:empty + #bar-sep { display: none; }
     #bar-sep { color: var(--bar-quiet); }
     #bar-app { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--bar-quiet); }
-    #bar-people { display: flex; flex: none; padding-left: 6px; }
+    #bar-people { display: flex; flex: none; padding-left: 6px; --bar-faces: 3; }
     .bar-face { display: grid; place-items: center; box-sizing: border-box; width: 28px; height: 28px; margin-left: -6px; border-radius: 50%; border: 2px solid var(--bar-bg); background: #5b5f6b; color: #fff; font: 600 12px/1 system-ui, sans-serif; }
     .bar-face.bar-agent { border-radius: 7px; }
     .bar-face.bar-elsewhere { opacity: .55; }
@@ -145,6 +145,9 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
       #bar button, #bar a#other-mode { padding: 0 10px; height: 32px; }
       .bar-face { width: 26px; height: 26px; }
       .bar-face:nth-child(n+3):not(.bar-more) { display: none; }
+      /* Two faces at a time here (app-bar.mjs counts the people here for
+         the faces it draws, so "+N" leaves those out). */
+      #bar-people { --bar-faces: 2; }
     }
     .tilo-entry-card { position: fixed; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%); box-sizing: border-box; width: min(360px, calc(100vw - 32px)); display: grid; gap: 20px; padding: 24px; border-radius: 14px; background: #1c1d21; border: 1px solid #2c2e34; box-shadow: 0 12px 40px rgb(0 0 0 / 45%); }
     .tilo-entry-card p { margin: 0; line-height: 1.5; color: #e6e6e9; }
@@ -231,6 +234,19 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     html:not([data-arrival=done]):not([data-arrival=stopped]):not([data-arrival-status]) #status { width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     #bar { overflow: hidden; }
     [data-arrival=done] #status { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    /* What the workspace's connection is doing, once the page has arrived:
+       the bar's line is cut short there, so a sentence worth reading stands
+       under it, over the view, and goes once everything is well again
+       (connection-status.mjs says it; entry-page.mjs shows it). */
+    #connection { position: fixed; z-index: 2; left: 50%; top: calc(var(--bar-h, 0px) + env(safe-area-inset-top) + 10px); transform: translateX(-50%); display: flex; align-items: center; gap: 8px; box-sizing: border-box; width: max-content; max-width: min(36em, calc(100% - 24px)); margin: 0; padding: 8px 14px; border-radius: 10px; background: #26282e; color: #ececf0; box-shadow: 0 6px 20px rgb(0 0 0 / 35%); font: 13px/1.45 system-ui, -apple-system, 'Segoe UI', sans-serif; text-align: left; text-wrap: pretty; }
+    #connection::before { content: ''; flex: none; width: 8px; height: 8px; border-radius: 50%; background: #e0a53a; }
+    #connection[data-connection=offline]::before, #connection[data-connection=admission]::before { background: #e0763a; }
+    #connection[data-connection=renderer]::before { background: #d9534f; }
+    #connection[hidden] { display: none; }
+    html:not([data-arrival=done]) #connection, [data-arrival=stopped] #connection, [data-failure] #connection, [data-reconnect] #connection, [data-first-run] #connection { display: none; }
+    @media (prefers-color-scheme: light) {
+      #connection { background: #f2f2f4; color: #17181c; box-shadow: 0 6px 20px rgb(0 0 0 / 12%); }
+    }
     .tilo-entry-card { z-index: 3; }
     /* Not let in yet, and trying again (reconnect.mjs): one calm screen
        for every reason, in the entry's language. What happened in plain
@@ -287,6 +303,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
   <button id="arrival-retry" type="button">Try again</button>
   <section id="arrival-reconnect" aria-labelledby="arrival-reconnect-heading"><div class="reconnect-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-reconnect-heading"></h1><p id="arrival-reconnect-body"></p><p id="arrival-reconnect-next" aria-hidden="true"></p><p id="arrival-reconnect-said" class="reconnect-said" role="status" aria-live="polite"></p><button id="arrival-reconnect-now" type="button" aria-busy="false"><span class="reconnect-spinner" aria-hidden="true"></span><span id="arrival-reconnect-now-label">Try now</span></button><details id="arrival-reconnect-details"><summary id="arrival-reconnect-summary">Technical details</summary><pre id="arrival-reconnect-text"></pre><button id="arrival-reconnect-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
   <header id="bar"><span id="bar-where"><span id="bar-workspace"></span><span id="bar-sep" aria-hidden="true">/</span><span id="bar-app"></span><span id="status" role="status">Loading Tilo…</span></span><span id="bar-people" role="list" aria-label="People here" hidden></span><button id="bar-share" type="button" aria-haspopup="dialog" aria-expanded="false" hidden>Share</button><a id="other-mode" hidden>Open in Tilo</a></header>
+  <p id="connection" role="status" aria-live="polite" hidden></p>
   <script type="module">
     // A Tilo link under this entry: app mode. The route is in the
     // fragment and never reaches the server.

@@ -25,7 +25,7 @@ import {mountWaitList} from './wait-list.mjs';
 import {handToNativeHost} from './native-host.mjs';
 import {boot, grammar} from './entry.mjs';
 import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchApplications, prefetchDesktop, prepareGpu, reportPageErrors} from './host.mjs';
-import {connectPeer, httpsPost, identityProfile, inspectInvitation, invitedServer, joinWorkspace, openInvitation, profileDevice, withDeviceKey} from './peer.mjs';
+import {connectPeer, forgetDeviceCertificate, httpsPost, identityProfile, inspectInvitation, invitedServer, joinWorkspace, openInvitation, PROFILE_DEVICES, profileDevice, withDeviceKey} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceKey} from './device-key.mjs';
 import {createIdentityActions, setupOrigin, syncProfile} from './identity-actions.mjs';
@@ -35,7 +35,7 @@ import {askOwnPairing, assistantAddress, deviceLabel, ofThisSite, ownPairing, PA
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, keptIdentity, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';
 import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
-import {followConnection} from './connection-status.mjs';
+import {followConnection, reloadsByItself} from './connection-status.mjs';
 import {domFailureView, failureCause, failureDetails, failureScreen, namedOrigin, unanswered} from './failure-screen.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
 import {deviceRemoved} from './session-refusal.mjs';
@@ -44,7 +44,8 @@ import {createWorkspaceActions, invitedLine} from './workspace-actions.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
 import {isInvitedServer, invitedOrigin, nameInvitedServer, siteServer} from './site-host.mjs';
 import {
-  chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces,
+  chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace,
+  forgetGoneWorkspaces, forgetMembership,
   heldWorkspaces, hostDeviceOf, hostToReconnect, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
   keptMembership, listedWorkspaces,
   membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
@@ -984,6 +985,10 @@ export async function startEntryPage({mode}) {
       if ('gpuStalled' in state || state.phase !== 'gpu-pending') document.documentElement.toggleAttribute('data-gpu-stalled', state.gpuStalled === true);
       if (state.phase === 'presented') {
         arrive('done');
+        // A line the session took while the page was still arriving could not
+        // show over the arrival screen: said again now, over the desktop.
+        bar.look();
+        if (bar.last) showConnection(bar.last.cleared ? null : {state: bar.last.state, sentence: bar.last.sentence});
         // The page has drawn: the apps the workspace's windows show can now
         // fetch their modules in its idle time, a bounded few at a time, so a
         // window opened on one later instantiates from what is already in.
@@ -1029,22 +1034,76 @@ export async function startEntryPage({mode}) {
   bar = followConnection({
     // The session's own snapshot, re-read each time: `opened.peer` is the
     // constant peer object, and its health changes under it.
+    // Read at every look, so a phone that moved between networks says which
+    // line it is now: offline is a state, and the bar follows it, not the
+    // failure that was there when the transport dropped.
     read: () => ({peer: opened?.peer?.getSnapshot?.() ?? null, desktop: desktopStatus, messages,
-      mounted: Boolean(opened?.mount) && !noDesktop, saved}),
+      mounted: Boolean(opened?.mount) && !noDesktop, saved, offline: navigator?.onLine === false}),
     bar: {
       show: reading => {
         document.documentElement.dataset.connection = reading.state;
         // The cause is for the console, once: the bar says what to do.
         if (!reading.cleared) console.warn(`desktop: ${reading.state}`, reading.detail ?? '');
+        // A connection the browser itself says is cut is followed, not put
+        // up once: the session rejoins where it is, and the line changes to
+        // the one that says so, or clears, as soon as that is true.
+        if (['offline', 'offline-rejoining'].includes(reading.state) && !reading.cleared) lookWhenNetworkChanges();
+        // The workspace another tab of this browser holds opens here again once
+        // that tab lets go: the page loads itself again then, though nothing
+        // on the carry from that tab executes here.
+        if (reading.state === 'key-held' && !reading.cleared) {
+          void whenKeyFree(heldProfile(), impatient => reconnect.wait({reason: 'busy', attempt: 0, impatient,
+            origin: opened?.peer?.origin, build: PAGE_BUILD}))
+            .then(() => reloadNow(impatient => reloadsByItself(bar.last?.state) || impatient));
+        }
         // The bar is the page's own note while it arrives, so only a line
         // still of its own is replaced: a visit message stays, and so does
         // the note about a desktop that stopped while the session was fine.
         const own = [loading, opening, drawing].includes(status.textContent);
+        // Said once for screen readers and once where the person can see it:
+        // after arrival the desktop fills the page and the bar is only read
+        // aloud, so a line put only there told a person whose connection
+        // dropped nothing at all.
+        showConnection(reading.cleared ? null : {state: reading.state, sentence: reading.sentence});
         if (!own && !reading.cleared) return;
         status.textContent = reading.cleared ? '' : reading.sentence;
       },
     },
   });
+  // The network the browser is on changing (a phone off Wi-Fi, a laptop off a
+  // cable) is what makes an offline line untrue or true: the bar is read again
+  // then rather than left saying what it said when the transport dropped.
+  let followingNetwork = false;
+  function lookWhenNetworkChanges() {
+    if (followingNetwork) return;
+    followingNetwork = true;
+    const look = () => bar.look();
+    globalThis.addEventListener?.('online', look);
+    globalThis.addEventListener?.('offline', look);
+  }
+  /**
+   * The connection line over the desktop (`index.html`, `#connection`): what
+   * the person reads while the workspace's session is cut off, unsaved or
+   * undrawn, and nothing once all of it is well again. It waits for the
+   * desktop's first frame, since before that the page is still arriving.
+   */
+  function showConnection(reading) {
+    const line = document.getElementById('connection');
+    if (!line) return;
+    // The arrival screen, a failure or the reconnect screen owns the page
+    // until the desktop is up; from then it is the line's, over the desktop.
+    const arrived = document.documentElement.dataset.arrival === 'done';
+    const text = arrived ? (reading?.sentence ?? '') : '';
+    if (!text) {
+      line.hidden = true;
+      line.textContent = '';
+      delete line.dataset.connection;
+      return;
+    }
+    line.dataset.connection = reading.state;
+    line.textContent = text;
+    line.hidden = false;
+  }
   let runtime;
   // Whether this browser can draw at all, asked as the page starts: the
   // browser's GPU process takes hundreds of milliseconds to answer on a
@@ -1126,12 +1185,13 @@ export async function startEntryPage({mode}) {
       visitedAt = workspace;
       // An embed joins nothing before the visitor does something: it takes no
       // admission and makes no person, and its site shows its static fallback
-      // until the first click, tap or key press (`{idle: true}`: nothing
-      // mounts). A browser that already joined this host comes in at once.
+      // until they click, tap, type or scroll on the page (`{idle: true}`:
+      // nothing mounts). A browser that already joined this host comes in at
+      // once.
       if (embed && !joinNow && !keptMembership(workspace)) {
         tell('idle');
         document.documentElement.dataset.entry = 'idle';
-        joinOnFirstGesture(status);
+        joinOnFirstMove(document.getElementById('arrival'), status);
         return {idle: true};
       }
       // A device paired to a person kept elsewhere reconnects as them,
@@ -1242,8 +1302,26 @@ export async function startEntryPage({mode}) {
         const profile = identityProfile(paired, paired.origin);
         const deviceKey = await openDeviceKey({profile, storage: idbStorage(), requireExisting: true});
         displayName = chosenDisplayName(paired.userPublicKey) ?? defaultDisplayName(paired.userPublicKey);
-        return withDeviceKey(deviceKey, () => connectPeer({origin, workspace, userPublicKey: paired.userPublicKey,
-          profile, deviceKey, displayName, runtime, requireExistingCertificate: true}));
+        const opened = () => withDeviceKey(deviceKey, () => connectPeer({origin, workspace,
+          userPublicKey: paired.userPublicKey, profile, deviceKey, displayName, runtime,
+          requireExistingCertificate: true}));
+        // A certificate only a pairing's approval makes this device's own is
+        // one the host refuses until that device answers, and a refused
+        // request no longer waits: asking again, with the certificate done,
+        // shows the code for the owner to approve, here as the pairing did.
+        try {
+          return await opened();
+        } catch (error) {
+          if (deviceRemoved(error)) {
+            remembering(() => forgetMembership(origin));
+            try { await deviceKey.destroy?.(); } catch {}
+            throw error;
+          }
+          if (error?.code !== 'certificate-rejected') throw error;
+          await forgetDeviceCertificate({profile,
+            device: profileDevice(profile, globalThis.localStorage, deviceKey.slot ?? 0), runtime});
+          return opened();
+        }
       }
       const identity = currentIdentity() ?? await browserIdentity({create: false});
       const kept = identity && hostToReconnect(origin, identity.userPublicKey);
@@ -1304,6 +1382,14 @@ export async function startEntryPage({mode}) {
         const holds = currentIdentity()?.userPublicKey ?? (await keptIdentity().catch(() => null))?.rootPublicKey ?? null;
         return await pairViaHost({origin, workspace, userPublicKey, invite, listed, runtime, displayName, holds,
           label: deviceLabel(),
+          // Whether this browser already keeps a device of the person the
+          // link names (`heldProfile`): a profile's staff keeps one under
+          // `identityProfile`, whether this browser is that person or a
+          // device paired to them, and neither is paired again.
+          heldProfile: held => held === holds || remembering(() => {
+            const kept = JSON.parse(globalThis.localStorage?.getItem(PROFILE_DEVICES) ?? '{}');
+            return kept?.[identityProfile({userPublicKey: held}, origin)] === held;
+          }),
           // The link wrote the server it names. Only one this site names as
           // its own (its `entry.json`, read before anything is asked) is
           // asked who the link's person is; any other names nobody.
@@ -1638,6 +1724,25 @@ export async function startEntryPage({mode}) {
         refuse: async code => {
           tell('unavailable');
           const known = remembering(() => rememberedWorkspace(here));
+          if (code === 'device-revoked') {
+            await page.peer?.dispose?.().catch(() => {});
+            remembering(() => forgetMembership(page.peer?.origin));
+            stopAgentSetup();
+            document.documentElement.dataset.refusal = code;
+            document.documentElement.dataset.entry = 'refused';
+            if (embed) return;
+            const choices = [['Sign in or pair again', 'sign-in']];
+            if (await ownDesktopAllowed(page.entry?.home)) choices.push(['Open your own desktop', 'own']);
+            const chosen = await card(refusalText(code, workspaceName ?? known?.name), choices, 'revoked');
+            if (chosen === 'sign-in') {
+              await closeWorkspace(page);
+              loadPage(page.entry.base);
+            } else if (chosen === 'own') {
+              await closeWorkspace(page);
+              loadPage(page.link.format({mode: 'desktop', target: {scope: {kind: 'own'}}}));
+            }
+            return;
+          }
           // A workspace its owner deleted is forgotten; anything else is
           // asked of its origin, which says so too to a browser it no longer
           // lets in (a person invited to only that workspace).
@@ -1723,8 +1828,10 @@ export async function startEntryPage({mode}) {
     const named = (typeof admitted?.workspaceName === 'string' && admitted.workspaceName) || workspaceName;
     const messages = await localeMessagesSoon();
     // This browser was removed from its person's devices: its server's own word at the
-    // handshake, which nothing here undoes. Said in the words an open page says it in.
+    // handshake, which nothing here undoes. Clear its binding and stop background polling.
     if (deviceRemoved(error)) {
+      remembering(() => forgetMembership(failingHost(error)));
+      stopAgentSetup();
       error = Object.assign(new AdmissionError('device-revoked', refusalText('device-revoked', named || null)), {cause: error});
       document.documentElement.dataset.refusal = 'device-revoked';
     }
@@ -1915,8 +2022,7 @@ function offerRefusal({messages, language, named, error, workspace, runtime, lin
   // loaded goes with it: the entry is what this visit is. Its setup code is
   // no longer watched for an agent either: this person approves no device
   // at a host that turned them away, and asking would only be refused.
-  firstRun?.close();
-  for (const watcher of agentWatchers) watcher.stopWatchingAgents();
+  stopAgentSetup();
   document.documentElement.removeAttribute('data-first-run');
   const form = document.getElementById('arrival-invite');
   const toggle = document.getElementById('arrival-invite-toggle');
@@ -2175,21 +2281,86 @@ function joinByReload() {
   location.reload();
 }
 
+/** The profile whose device key the workspace here was opened with: the
+ * person's on this host, or the tab's own for a guest. */
+function heldProfile() {
+  const identity = pagePerson(opened ?? {});
+  const at = opened?.peer?.origin ?? visitedAt?.host?.origin ?? globalThis.location?.origin;
+  return identity && at ? identityProfile({userPublicKey: identity}, at) : 'tilo-browser';
+}
+
 /**
- * Ask the visitor to join: the embed's first click, tap or key press joins
- * as this browser's own person, on the page that loads for it. The gesture is
- * captured, so the visiting surface never sees it.
+ * Wait until another tab of this browser lets go of the device key the
+ * workspace here is held by (`device-key-busy`, `device-key.mjs`): the page
+ * cannot open it while that tab lives, and the person closes tabs rather than
+ * waits on a clock. `pause` resolves for another look (`reconnect.wait`:
+ * every second at first, longer after, and at once while it holds still), and
+ * `impatient` is the person's own "Try now". Resolves once a look is the
+ * page's to make.
  */
-function joinOnFirstGesture(status) {
-  status.textContent = 'Click or type to join';
-  const gesture = event => {
-    for (const type of ['pointerdown', 'keydown']) removeEventListener(type, gesture, true);
-    event.preventDefault();
-    event.stopPropagation();
+async function whenKeyFree(profile, pause) {
+  for (let attempt = 0; ; attempt++) {
+    let held = true;
+    let key = null;
+    try { key = await openDeviceKey({profile, storage: idbStorage(), requireExisting: true}); } catch (error) {
+      held = error?.name === 'DeviceKeyError' && error.code === 'device-key-busy';
+    }
+    // A key a look opens is the look's own: it closes before the next one, and
+    // before the reload, which then takes the key the other tab left.
+    await key?.close?.();
+    if (!held) return;
+    if (await pause(attempt)) return;
+  }
+}
+
+/**
+ * Load this page again, once nothing it did is unsaved: what a workspace
+ * another tab held, or a connection that came back, needs. `wanted` is
+ * asked again before the reload, so a page that got well in between stays
+ * where it is.
+ */
+async function reloadNow(wanted) {
+  if (!wanted(false)) return;
+  const flush = opened?.mount?.flush;
+  if (typeof flush === 'function') {
+    try { await flush.call(opened.mount); } catch (error) {
+      console.warn('reloading: saving failed', error);
+      return;
+    }
+  }
+  if (!wanted(true)) return;
+  location.reload();
+}
+
+/**
+ * Ask the visitor to join: the embed's first click, tap, key press or scroll
+ * joins as this browser's own person, on the page that loads for it. A page
+ * inside a site is a card in it, and a card a visitor scrolls past is one
+ * they are looking at: asking them to find a click that only takes is a step
+ * they do not know is there.
+ *
+ * The tap and the key press are captured, so the visiting surface never sees
+ * them. A wheel is not taken: it scrolls the site's page, and the scroll it
+ * makes joins. The arrival card itself keeps the page's scrolling: a screen
+ * too short to hold it still scrolls inside it, which is not the visitor
+ * moving on.
+ */
+function joinOnFirstMove(card, status) {
+  status.textContent = 'Click, type or scroll to join';
+  const joined = () => {
+    for (const type of ['pointerdown', 'keydown', 'wheel']) removeEventListener(type, gesture, true);
+    card?.removeEventListener('scroll', moved);
     status.textContent = 'Joining…';
     joinByReload();
   };
-  for (const type of ['pointerdown', 'keydown']) addEventListener(type, gesture, true);
+  const gesture = event => {
+    event.preventDefault();
+    event.stopPropagation();
+    joined();
+  };
+  const moved = () => joined();
+  for (const type of ['pointerdown', 'keydown', 'wheel']) addEventListener(type, gesture, true);
+  card?.addEventListener('scroll', moved);
 }
 
 /**
@@ -2326,6 +2497,11 @@ const pageLetIn = new Promise(resolve => { letIn = resolve; });
  * told to stop once the host turns the page away, where this
  * person approves nothing. */
 const agentWatchers = new Set();
+/** Close the setup overlay and stop every active agent watcher. */
+function stopAgentSetup() {
+  firstRun?.close();
+  for (const watcher of agentWatchers) watcher.stopWatchingAgents();
+}
 /** How long signing in with an agent waits for this tab to be in its workspace. */
 const LET_IN_MS = 30_000;
 

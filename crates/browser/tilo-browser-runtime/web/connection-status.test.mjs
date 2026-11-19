@@ -23,7 +23,7 @@ test('a session that keeps committing online is still online', () => {
 
 test('a transport that dropped after the mount says off line, not connected', () => {
   for (const transport of ['offline', 'reconnecting', 'failed', 'closed']) {
-    const reading = connectionStatus({...well, peer: snapshot({phase: 'incomplete', transport})});
+    const reading = connectionStatus({...well, peer: snapshot({phase: 'incomplete', transport}), offline: true});
     assert.equal(reading.state, 'offline', transport);
     assert.match(reading.sentence, /offline/);
     assert.match(reading.sentence, /kept on this device/, 'the person is told their work stays');
@@ -31,8 +31,18 @@ test('a transport that dropped after the mount says off line, not connected', ()
   }
 });
 
+test('a connection lost while the browser is on a network says it rejoins by itself, not that the person is offline', () => {
+  // A phone that moved from one network to another: the browser has a
+  // network, so nothing waits for a switch, and the session rejoins alone.
+  const reading = connectionStatus({...well, peer: snapshot({phase: 'incomplete', transport: 'reconnecting'})});
+  assert.equal(reading.state, 'offline-rejoining');
+  assert.equal(reading.sentence, 'Lost the connection to the workspace. Changes are kept on this device, and it rejoins by itself.');
+  assert.doesNotMatch(reading.sentence, /offline/i);
+  assert.match(reading.detail, /rejoins by itself/);
+});
+
 test('a page the host stopped admitting says so, and its ending session says it is over', () => {
-  assert.equal(connectionStatus({...well, peer: snapshot({phase: 'failed', transport: 'connected', admission: 'failed'})}).state, 'offline');
+  assert.equal(connectionStatus({...well, offline: true, peer: snapshot({phase: 'failed', transport: 'connected', admission: 'failed'})}).state, 'offline');
   const refused = connectionStatus({...well, peer: snapshot({phase: 'incomplete', admission: 'failed'})});
   assert.equal(refused.state, 'admission');
   assert.match(refused.sentence, /kept on this device/);
@@ -72,7 +82,7 @@ test('the bar says the worst thing first and clears once it is over', () => {
   const shown = [];
   let peer = snapshot();
   let desktop = drawn;
-  const follow = followConnection({read: () => ({peer, desktop, mounted: true, saved: true}), bar: {show: reading => shown.push(reading)}});
+  const follow = followConnection({read: () => ({peer, desktop, mounted: true, saved: true, offline: true}), bar: {show: reading => shown.push(reading)}});
   assert.deepEqual(shown, [], 'a healthy desktop says nothing');
   peer = snapshot({phase: 'incomplete', transport: 'offline'});
   follow.look();
@@ -93,7 +103,7 @@ test('the bar says the worst thing first and clears once it is over', () => {
 test('the cause of each line goes to the console once, not to the bar', () => {
   const debug = [];
   const peer = snapshot({phase: 'incomplete', transport: 'reconnecting'});
-  const follow = followConnection({read: () => ({peer, desktop: drawn, mounted: true, saved: true}),
+  const follow = followConnection({read: () => ({peer, desktop: drawn, mounted: true, saved: true, offline: true}),
     bar: {showDebug: (state, detail) => debug.push([state, detail])}});
   follow.look();
   follow.look();

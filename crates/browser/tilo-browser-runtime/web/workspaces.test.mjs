@@ -1115,3 +1115,21 @@ test('nothing pairs a device that was not first told whose it becomes', async ()
     pair: async pairing => { calls.paired.push(pairing); return {workspace: 'WORKSPACE'}; }}), TypeError);
   assert.deepEqual(calls.paired, []);
 });
+
+test('a revoked device stops joinViaHost immediately without silent key renewal or retry and forgets its binding', async () => {
+  const person = identity(0x77);
+  const membership = {origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person.userPublicKey};
+  const {calls, options, store} = harness({person, membership});
+  options.connect = async connected => {
+    calls.connected.push(connected);
+    throw new Error('peer protocol violation: authenticated device was revoked');
+  };
+
+  await assert.rejects(joinViaHost(options), {code: 'device-revoked'});
+  assert.equal(calls.connected.length, 1);
+  assert.equal(calls.joined.length, 0, 'never silently re-joins through entry after explicit revocation');
+  assert.equal(calls.renewed.length, 0, 'never silently renews a deliberately revoked device');
+  assert.equal(calls.waited.length, 0, 'never waits in a retry loop');
+  assert.equal(calls.deviceKeys[0].destroyed, true, 'revoked device key is cleared for future fresh pairing');
+  assert.equal(keptMembership(commons, {getItem: key => store.get(key)}), null, 'revoked membership binding cleared');
+});

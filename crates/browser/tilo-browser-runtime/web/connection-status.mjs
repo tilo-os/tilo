@@ -21,11 +21,28 @@ import {localized} from './arrival.mjs';
  * (`arrival-failed-<kind>` in the locale file, as the page's other failures). */
 export const WORDS = {
   offline: 'You’re offline. Changes are kept on this device and sent once the connection is back.',
+  // Cut from the workspace while the browser itself says it is on a network:
+  // nothing waits for a switch, so the line says how it comes back by itself.
+  'offline-rejoining': 'Lost the connection to the workspace. Changes are kept on this device, and it rejoins by itself.',
   admission: 'The workspace can’t take this browser’s changes right now. Changes are kept on this device.',
   saving: 'Your changes aren’t saved on this device yet. Keep this tab open and try again.',
   files: 'This window keeps no files, so apps here can’t store files of their own. Open Tilo in a normal window to work with them.',
   renderer: 'The desktop stopped drawing. Try again to start it, or reload the page.',
+  // Another tab of this browser holds the workspace and has not let go: the
+  // page loads itself again once it does, so the person does nothing.
+  'key-held': 'The workspace is open in another tab of this browser, which this tab picks up again as soon as that one closes.',
 };
+
+/** The reasons the page asks again by itself once the workspace opens here:
+ * the ones a reload answers. A connection lost on a network that is there is
+ * not one: the session rejoins on its own. */
+const RELOADS = new Set(['offline', 'offline-rejoining', 'key-held']);
+
+/** Whether `state` is one the page gets out of by loading itself again: what
+ * the bar shows besides its line rather than instead of it. */
+export function reloadsByItself(state) {
+  return RELOADS.has(state);
+}
 
 /** A desktop that presented a frame (the two phases that follow one). */
 const presented = phase => phase === 'presented' || phase === 'gpu-pending';
@@ -33,7 +50,8 @@ const presented = phase => phase === 'presented' || phase === 'gpu-pending';
 /**
  * The bar's reading of the session and the desktop: `{state, sentence,
  * detail}`, where `state` is `online`, `connecting` or the kind of trouble
- * (`offline`, `admission`, `saving`, `files`, `renderer`); `sentence` is what
+ * (`offline`, `offline-rejoining`, `admission`, `saving`, `files`, `renderer`,
+ * `key-held`); `sentence` is what
  * the person reads (`null`: the bar stays empty) and `detail` the cause, for
  * the console.
  *
@@ -48,8 +66,8 @@ const presented = phase => phase === 'presented' || phase === 'gpu-pending';
  * that save files of their own cannot, which the person is told once rather
  * than on every save that fails.
  */
-export function connectionStatus({peer = null, desktop = null, mounted = false, saved = true, messages = null} = {}) {
-  const failed = failureOf({peer, desktop, saved, messages});
+export function connectionStatus({peer = null, desktop = null, mounted = false, saved = true, messages = null, offline = false} = {}) {
+  const failed = failureOf({peer, desktop, saved, messages, offline});
   if (failed) return {state: failed.kind, sentence: failed.sentence, detail: failed.detail};
   if (!mounted || !presented(desktop?.phase)) return {state: 'connecting', sentence: null, detail: null};
   // A session still finding its transport, or its host still admitting its
@@ -69,17 +87,34 @@ function pending(peer) {
 
 /** The worst thing wrong with the desktop right now (`null` when nothing
  * is), in the order the person most needs to know it. */
-function failureOf({peer, desktop, saved, messages}) {
+function failureOf({peer, desktop, saved, messages, offline}) {
   const said = kind => localized(messages, `arrival-failed-${kind}`, WORDS[kind]);
   const health = peer?.health ?? null;
   const transport = health?.transport?.phase ?? null;
   const cut = peer !== null
     && (peer.phase === 'closed' || peer.phase === 'failed' || ['offline', 'failed', 'closed', 'reconnecting'].includes(transport));
   if (cut) {
+    // The browser's own word on the network decides which line this is: a
+    // phone that moved between networks is back by itself, and saying
+    // "offline" of it leaves the person looking for a switch they never
+    // turned off.
+    const kind = offline ? 'offline' : 'offline-rejoining';
     return {
-      kind: 'offline',
-      detail: `session ${peer.phase ?? 'unknown'}${transport ? `, transport ${transport}` : ''}`,
-      sentence: said('offline'),
+      kind,
+      detail: `session ${peer.phase ?? 'unknown'}${transport ? `, transport ${transport}` : ''}`
+        + (offline ? '' : ': the browser reports a network, so the session rejoins by itself'),
+      sentence: said(kind),
+    };
+  }
+  // This browser holds every device key the account has here, each in a tab
+  // that is still open: the workspace opens here again once one of them
+  // closes, and waiting does not do it. Said as it happens, not as the
+  // browser's own error words (`device-key-busy`, `device-key.mjs`).
+  if (health?.failures?.some(failure => failure.code === 'device-key-busy')) {
+    return {
+      kind: 'key-held',
+      detail: 'every device key this browser has for the account is held by another tab',
+      sentence: said('key-held'),
     };
   }
   if (health?.admission?.phase === 'failed') {
@@ -138,9 +173,14 @@ export function followConnection({read, bar = {}}) {
     let reading;
     try { reading = connectionStatus(read()); } catch { reading = {state: 'connecting', sentence: null, detail: null}; }
     // A milder trouble waits for the worse one to clear first, and the
-    // same state again is nothing new.
+    // same state again is nothing new
     if (said !== null && troubles(reading.state, said)) return;
-    if (reading.state === said) return;
+    // — unless the words of that state changed with it (a connection lost
+    // while the browser is on a network reads as rejoining by itself, said
+    // where it happened rather than on the next look).
+    const restated = reading.state === said && reading.state !== 'online' && reading.state !== 'connecting'
+      && reading.sentence !== shown?.sentence;
+    if (reading.state === said && !restated) return;
     const was = said;
     // "Online" and "on its way" are not troubles: nothing stands on the bar.
     said = ['online', 'connecting'].includes(reading.state) ? null : reading.state;
@@ -155,8 +195,9 @@ export function followConnection({read, bar = {}}) {
   return {get last() { return shown; }, look, stop() { stopped = true; }};
 }
 
-/** The kinds of trouble, worst first. */
-const SEVERITY = ['offline', 'admission', 'saving', 'renderer'];
+/** The kinds of trouble, worst first (`key-held` is another tab's doing, and
+ * reads beside the rest rather than under them). */
+const SEVERITY = ['offline', 'offline-rejoining', 'key-held', 'admission', 'saving', 'renderer'];
 
 /** Whether `next` reads milder than the trouble `said`, and so waits for
  * the bar instead of taking it. */

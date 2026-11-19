@@ -280,7 +280,12 @@ export async function openDeviceKey({
       /** Lets go of the device key; resolves once another holder may take it. */
       close() { if (!closed) { closed = true; release(); } return held.then(() => undefined, () => undefined); },
       /** Forget the key (after revocation): the next open creates a new device. */
-      async destroy() { live(); await storage.delete(keyRecord(profile, slot)); this.close(); },
+      async destroy() {
+        live();
+        await storage.delete(keyRecord(profile, slot));
+        try { session?.removeItem?.(SLOT_MEMORY + profile); } catch { /* Best-effort cleanup. */ }
+        this.close();
+      },
     };
     if (record.kind === 'webcrypto-ed25519') {
       return {

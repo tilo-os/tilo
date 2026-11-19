@@ -32,12 +32,91 @@ import {memberText} from './json-text.mjs';
 import {changed as pageChanged} from './changes.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
-import {idbStorage, openDeviceKey, rememberBrowserDevice} from './device-key.mjs';
+import {BROWSER_DEVICES, idbStorage, openDeviceKey, rememberBrowserDevice} from './device-key.mjs';
 import {identityProfile} from './identity-profile.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
 import {siteServer, STALE_SITE_SERVER, staleSiteServer, staleSiteServerReport} from './site-host.mjs';
 import {deviceLabel} from './pairing.mjs';
+import {deviceRemoved, snapshotRevoked} from './session-refusal.mjs';
+import {transportOrigin, webTransportGuard} from './webtransport-guard.mjs';
+
+webTransportGuard();
+
+/** Active peer instances per normalized origin, so closing the last peer tears
+ * down any lingering WebTransport sockets for that origin. */
+const activePeersByOrigin = new Map();
+const trackOriginPeer = origin => {
+  const key = transportOrigin(origin);
+  activePeersByOrigin.set(key, (activePeersByOrigin.get(key) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const next = (activePeersByOrigin.get(key) ?? 1) - 1;
+    if (next <= 0) {
+      activePeersByOrigin.delete(key);
+      webTransportGuard().closeOrigin(key);
+    } else {
+      activePeersByOrigin.set(key, next);
+    }
+  };
+};
+
+/** Remove a revoked device key's certificate from `tilo-browser-devices`. */
+function forgetBrowserDevice(publicKey, namespaces = globalThis.localStorage) {
+  if (!publicKey || !namespaces) return;
+  try {
+    const raw = namespaces.getItem?.(BROWSER_DEVICES);
+    if (!raw) return;
+    const kept = JSON.parse(raw);
+    if (!Array.isArray(kept?.certs)) return;
+    const wanted = JSON.stringify(Array.from(publicKey));
+    const certs = kept.certs.filter(cert => JSON.stringify(cert?.device_public_key) !== wanted);
+    if (certs.length !== kept.certs.length) {
+      namespaces.setItem?.(BROWSER_DEVICES, JSON.stringify({...kept, certs}));
+    }
+  } catch { /* Non-fatal cleanup. */ }
+}
+
+/**
+ * Clear a deliberately revoked device's key, stored certificate, and namespace
+ * binding so the next intentional fresh pairing generates a new keypair instead
+ * of reusing the revoked device key. Never silently re-pairs or re-certifies.
+ */
+export async function forgetRevokedDevice({
+  deviceKey,
+  profile,
+  device,
+  store,
+  storage,
+  runtime,
+  userPublicKey,
+  position = 0,
+  namespaces = globalThis.localStorage,
+  random = bytes => globalThis.crypto.getRandomValues(bytes),
+} = {}) {
+  if (typeof deviceKey?.destroy === 'function') {
+    try { await deviceKey.destroy(); } catch { /* Already closed or missing. */ }
+  }
+  if (typeof store?.delete === 'function') {
+    try { await store.delete(CERTIFICATE); } catch { /* Best-effort cleanup. */ }
+  }
+  if (profile && device && userPublicKey && typeof runtime?.clearPeerCertificate === 'function') {
+    try { runtime.clearPeerCertificate(profile, device, userPublicKey); } catch { /* Best-effort cleanup. */ }
+  }
+  if (typeof storage?.flush === 'function') {
+    try { await storage.flush(); } catch { /* Best-effort cleanup. */ }
+  }
+  if (deviceKey?.publicKey) forgetBrowserDevice(deviceKey.publicKey, namespaces);
+  if (profile && namespaces?.setItem) {
+    try {
+      const base = `${PROFILE_DEVICE}:${hexKey(random(new Uint8Array(16)))}`;
+      const fresh = position ? `${base}#${position}` : base;
+      keepProfileDevice(profile, position, fresh, namespaces);
+    } catch { /* Best-effort cleanup. */ }
+  }
+}
 
 export {
   addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
@@ -101,7 +180,7 @@ const forSlot = (namespace, slot) => (slot ? `${namespace}#${slot}` : namespace)
 /** Which namespace each profile (and each slot past the first, as
  * `profile#slot`) keeps its peer in now (`localStorage`): absent for one
  * still in its first namespace. */
-const PROFILE_DEVICES = 'tilo-profile-devices';
+export const PROFILE_DEVICES = 'tilo-profile-devices';
 const readProfileDevices = namespaces => {
   try {
     const all = JSON.parse(namespaces?.getItem(PROFILE_DEVICES) ?? '{}');
@@ -171,6 +250,8 @@ const SUBSCRIBE_RETRY_MS = [100, 250, 1000, 3000];
  * host's shared state. */
 const RECOVERY_TIMEOUT_MS = 10_000;
 const REFRESH_TIMEOUT_MS = 30_000;
+/** How long after a certificate the server refused this page asks for another. */
+const AUTHENTICATE_RETRY_MS = 30_000;
 
 /** The `FailureCode` of a mount's renderer error. */
 export function rendererFailureCode(error) {
@@ -442,11 +523,16 @@ export async function withDeviceKey(deviceKey, connecting, signal) {
     throw error;
   }
   const dispose = peer.dispose;
+  // The listener is this peer's to take back: a signal the page keeps across
+  // sessions (an abort of its own, or a tab's) would otherwise hold every
+  // peer it ever opened, and close their device keys again and again.
+  const closed = () => deviceKey.close();
   peer.dispose = async () => {
+    signal?.removeEventListener('abort', closed);
     // The page may connect again once this resolves: the device key is free by then.
     try { await dispose(); } finally { await deviceKey.close(); }
   };
-  signal?.addEventListener('abort', () => deviceKey.close(), {once: true});
+  signal?.addEventListener('abort', closed, {once: true});
   return peer;
 }
 
@@ -478,8 +564,8 @@ async function connect({
   let storage;
   // Each device key of the profile (each tab open at once) is a device of
   // its own, with its own certificate, record and channel state.
-  const slot = deviceKey.slot ?? 0;
-  device ??= profile ? profileDevice(profile, namespaces, slot) : PROFILE_DEVICE;
+  const position = deviceKey.slot ?? 0;
+  device ??= profile ? profileDevice(profile, namespaces, position) : PROFILE_DEVICE;
   if (profile) {
     const surface = await surfaceModule();
     if (typeof surface.openProfileStorage !== 'function') throw new Error('profile storage is unavailable');
@@ -523,11 +609,22 @@ async function connect({
   let live;
   let admitted;
   let ready;
+  /** The session answering at this moment (a recovery replaces it), and when
+   * the page may ask for a certificate again after one the server refused. */
+  let current = peer;
+  let asksAgainAt = 0;
   const resetReady = () => { ready = new Promise(resolve => { admitted = resolve; }); };
   resetReady();
   let actions;
   let voice;
   let disposed = false;
+  let revoked = false;
+  let haltedPeer = false;
+  let forgotRevoked = null;
+  // Intentional connection with a brand-new key or fresh certificate lifts any
+  // earlier revocation halt on this origin.
+  if (deviceKey?.created || deviceCertificate) webTransportGuard().allowOrigin(origin);
+  const releaseOriginPeer = trackOriginPeer(origin);
   let drawName = null;
   // The name the host gave this device where it said one: its answer to the
   // pairing, which numbers a name another of the person's devices reads by.
@@ -593,35 +690,75 @@ async function connect({
   const surfaces = new Map();
   let surfaceCount = 0;
 
+  const haltForRevocation = () => {
+    if (haltedPeer) return;
+    haltedPeer = true;
+    revoked = true;
+    clearTimeout(siteServerCheck);
+    webTransportGuard().haltOrigin(origin);
+    actions?.dispose();
+    voice?.dispose();
+    stopLive();
+    try { peer?.dispose?.(); } catch {}
+    forgotRevoked ??= forgetRevokedDevice({
+      deviceKey,
+      profile,
+      device,
+      store,
+      storage,
+      runtime,
+      userPublicKey,
+      position,
+      namespaces,
+    }).catch(() => {});
+  };
+
   const publish = () => {
-    if (!peer) return;
-    snapshot = JSON.parse(peer.snapshot());
-    if (!reached) {
-      const transport = snapshot.health?.transport?.phase;
-      if (transport === 'connected') {
-        reached = true;
-        clearTimeout(siteServerCheck);
-      } else if (stale) {
-        snapshot = {...snapshot, phase: 'failed', error: stale.message, errorCode: stale.code};
-      } else if (['reconnecting', 'offline', 'failed'].includes(transport)) {
-        checkSiteServer();
+    // A session replaced by `recover` answers nothing: what it said is not
+    // this page's state any more.
+    if (!peer || peer !== current) return;
+    const raw = JSON.parse(peer.snapshot());
+    if (revoked || snapshotRevoked(raw)) {
+      snapshot = {
+        ...raw,
+        phase: 'failed',
+        errorCode: 'device-revoked',
+        error: raw.error || 'This device was removed from your devices.',
+        refused: true,
+      };
+      haltForRevocation();
+    } else {
+      snapshot = raw;
+      // A transport that is up while the session failed is a server that refused
+      // the device, or would not let it in: a session started again says the same.
+      snapshot.refused = snapshot.phase === 'failed' && snapshot.health?.transport?.phase === 'connected';
+      if (!reached) {
+        const transport = snapshot.health?.transport?.phase;
+        if (transport === 'connected') {
+          reached = true;
+          clearTimeout(siteServerCheck);
+        } else if (stale) {
+          snapshot = {...snapshot, phase: 'failed', error: stale.message, errorCode: stale.code};
+        } else if (['reconnecting', 'offline', 'failed'].includes(transport)) {
+          checkSiteServer();
+        }
       }
+      if (snapshot.health?.transport?.phase === 'connected') connectedOnce = true;
+      if (!connectedOnce && !stale) {
+        if ((reached || siteChecked) && snapshot.health?.transport?.phase === 'offline') unreached = true;
+        if (unreached) snapshot = {...snapshot, ...hostUnreached(origin, snapshot)};
+      }
+      // Once in, a session started again (a recovery) is a member's and enters no more.
+      if (snapshot.entry?.outcome === 'admitted') entering = undefined;
+      if (snapshot.phase === 'ready') admitted();
+      if (live) {
+        // The session's next frame carries both: the durable changes this page
+        // reads, and what the members said (presence, pointers, previews).
+        live.pump(JSON.parse(peer.takeDurableEvents()));
+        live.pump(JSON.parse(peer.takeLiveEvents()));
+      }
+      voice?.pump(peer.takeVoiceEvents?.() ?? '[]');
     }
-    if (snapshot.health?.transport?.phase === 'connected') connectedOnce = true;
-    if (!connectedOnce && !stale) {
-      if ((reached || siteChecked) && snapshot.health?.transport?.phase === 'offline') unreached = true;
-      if (unreached) snapshot = {...snapshot, ...hostUnreached(origin, snapshot)};
-    }
-    // Once in, a session started again (a recovery) is a member's and enters no more.
-    if (snapshot.entry?.outcome === 'admitted') entering = undefined;
-    if (snapshot.phase === 'ready') admitted();
-    if (live) {
-      // The session's next frame carries both: the durable changes this page
-      // reads, and what the members said (presence, pointers, previews).
-      live.pump(JSON.parse(peer.takeDurableEvents()));
-      live.pump(JSON.parse(peer.takeLiveEvents()));
-    }
-    voice?.pump(peer.takeVoiceEvents?.() ?? '[]');
     for (const listener of [...listeners]) listener(snapshot);
     onStatus?.(snapshot);
     for (const listener of [...statusListeners]) {
@@ -731,7 +868,7 @@ async function connect({
    * outbox and documents) stays in its own namespace, untouched and never
    * opened for this session. */
   async function adoptHost(serverCert, cert = undefined) {
-    const fresh = hostNamespace(serverCert, slot, cert, device);
+    const fresh = hostNamespace(serverCert, position, cert, device);
     if (!ownNamespace || !storage || !fresh || fresh === device) throw new AdmissionError('host-changed', HOST_CHANGED);
     unsubscribeStorage?.();
     const previous = storage;
@@ -743,7 +880,7 @@ async function connect({
     store = profileStore(runtime, profile, device);
     channelVault = await vaultOf();
     unsubscribeStorage = watchStorage();
-    keepProfileDevice(profile, slot, device, namespaces);
+    keepProfileDevice(profile, position, device, namespaces);
   }
 
   async function certificate() {
@@ -828,6 +965,8 @@ async function connect({
       storage ? undefined : bytes => { store.put(PEER_RECORD, bytes).catch(() => {}); },
       channelVault,
     );
+    current = peer;
+    asksAgainAt = 0;
     // Settings lists this browser's tabs' device keys as one entry.
     if (profile) rememberBrowserDevice(certified, namespaces);
     peer.subscribe(publish);
@@ -1110,6 +1249,7 @@ async function connect({
   try {
     await start();
   } catch (error) {
+    releaseOriginPeer();
     await storage?.release().catch(() => {});
     throw error;
   }
@@ -1127,13 +1267,17 @@ async function connect({
   page?.addEventListener('pagehide', leavePage);
   // Back online, the session reconnects now rather than when its backoff
   // (up to half a minute after a long outage) runs out: a call waits on it
-  // for its fresh grant.
-  const online = () => { if (!disposed) { try { peer?.retryNow?.(); } catch {} } };
+  // for its fresh grant. A revoked device never retries.
+  const online = () => { if (!disposed && !revoked) { try { peer?.retryNow?.(); } catch {} } };
   page?.addEventListener('online', online);
 
   let disposal;
   function dispose() {
     if (disposal) return disposal;
+    // The signal holds this peer for no longer than it serves: a page's own
+    // abort, kept across the sessions it opens, would otherwise keep every
+    // closed peer it ever had alive, and stop the next one twice.
+    signal?.removeEventListener('abort', dispose);
     page?.removeEventListener('pagehide', leavePage);
     page?.removeEventListener('online', online);
     let resolve, reject;
@@ -1149,7 +1293,9 @@ async function connect({
       actions?.dispose();
       voice?.dispose();
       stopLive();
-      peer?.dispose();
+      if (!haltedPeer) peer?.dispose();
+      if (forgotRevoked) await forgotRevoked;
+      releaseOriginPeer();
       listeners.clear();
       statusListeners.clear();
       await storage?.release();
@@ -1157,6 +1303,9 @@ async function connect({
     return disposal;
   }
   signal?.addEventListener('abort', dispose, {once: true});
+  // A signal aborted while this page was connecting is this page's to leave:
+  // the listener lands after the abort it waited for.
+  if (signal?.aborted) dispose();
 
   /** One workspace request, in the shape the page draws (`workspaces.rs`). */
   const ask = async (op, args) => JSON.parse(await peer.workspaces(op, JSON.stringify(args ?? {})));
@@ -1426,7 +1575,9 @@ async function connect({
           connected: snapshot.health?.transport?.phase === 'connected'}));
         const check = current => {
           if (disposed) finish(new Error('Shared resource connection closed'));
-          else if (current.phase === 'ready') finish(undefined, current);
+          else if (revoked || snapshotRevoked(current)) {
+            finish(Object.assign(new Error(current.error ?? 'This device was removed from your devices.'), {code: 'device-revoked'}));
+          } else if (current.phase === 'ready') finish(undefined, current);
           else if (shown && current.phase === 'admitting' && hasRecord(DESKTOP_APP, DESKTOP_RECORD)) finish(undefined, current);
           // A host never reached (`hostUnreached`) keeps its code: nothing it refused.
           // So does a session its server stopped because this browser was removed from
@@ -1491,11 +1642,28 @@ async function connect({
     /** Resolves once every published change is durable on the host and the
      * peer's own state is durable in the profile. */
     flush: async () => { await peer.flush(); await storage?.flush(); },
-    async reconnect() { peer.reconnect(); },
+    async reconnect() {
+      if (revoked || snapshot.errorCode === 'device-revoked') {
+        throw new TypeError("this browser is no longer one of this person's devices");
+      }
+      peer.reconnect();
+    },
     /** `SessionHealth` v1 recovery: `retry-connection`, `reauthenticate`,
      * `retry-saving`, `refresh-checkpoint`, `retry-desktop` or
      * `retry-asset`. Resolves once the recovery took effect. */
     async recover(request) {
+      // A certificate the server refused is not one to come back with: asking
+      // for another is what makes this page a device of its person again, so
+      // any other recovery is that one here.
+      if (snapshot.refused) request = {...request, kind: 'reauthenticate'};
+      // This browser was removed from its person's devices, by its owner's
+      // root and not by this page: joining again is turned away the same.
+      if (revoked || snapshot.errorCode === 'device-revoked') {
+        throw new TypeError("this browser is no longer one of this person's devices");
+      }
+      // A certificate the server just refused is not asked for again at once:
+      // the answer would be the same, and the page says it meanwhile.
+      if (Date.now() < asksAgainAt) throw new TypeError('a certificate is still being asked for');
       if (request?.kind === 'retry-connection') { peer.reconnect(); return {operationId: 'retry-connection'}; }
       if (request?.kind === 'retry-saving') { await retrySaving(); return {operationId: 'retry-saving'}; }
       if (request?.kind === 'refresh-checkpoint') { await refreshCheckpoint(); return {operationId: 'refresh-checkpoint'}; }
@@ -1521,13 +1689,26 @@ async function connect({
           globalThis.location.reload();
           return {operationId: 'reauthenticate'};
         }
+        // The session that asked is the one replaced: what it says from here
+        // on is not this page's state, and its mounts and listens go with it.
+        const before = peer;
+        current = undefined;
+        listeners.clear();
         voice?.reset();
         stopLive();
-        peer.dispose();
+        for (const entry of [...surfaces.values()]) dropSurface(entry);
+        before.dispose();
         resetReady();
         await store.delete(CERTIFICATE);
         host = answering;
-        await start();
+        try {
+          await start();
+        } catch (error) {
+          // The certificate this page asked for was refused: asking again at
+          // once spends another for the same answer.
+          asksAgainAt = Date.now() + AUTHENTICATE_RETRY_MS;
+          throw error;
+        }
         return {operationId: 'reauthenticate'};
       }
       throw new TypeError(`unsupported recovery ${request?.kind}`);
@@ -1628,25 +1809,38 @@ export async function openInvitation(site, secret, {runtime} = {}) {
 export async function pairDevice(options) {
   const {origin, userPublicKey, label = deviceLabel(), entry, signal} = options;
   if (!origin || !userPublicKey) throw new TypeError('origin and userPublicKey are required');
+  // Intentional fresh pairing lifts any prior revocation halt on this origin.
+  webTransportGuard().allowOrigin(origin);
   const profile = options.profile ?? identityProfile({userPublicKey}, origin);
   // A caller's device key (`options.device key`, of `profile`) stays the
   // caller's to let go.
-  const own = options.deviceKey ?? await openDeviceKey({profile, storage: idbStorage()});
+  let own = options.deviceKey ?? await openDeviceKey({profile, storage: idbStorage()});
+  const managed = {close: () => own.close()};
   const pairing = async () => {
     const runtime = options.runtime ?? await pageRuntime(options.desktop);
-    const deviceKeyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
+    let deviceKeyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
     const info = siteServer(origin)?.info ?? JSON.parse(await runtime.hostInfo(httpsPost(origin, options.fetch)));
     if (!info.address) throw new Error('the host named no iroh endpoint to reach it at');
-    // The host names this device: the name asked for, or the next numbered one
-    // when another of the person's devices reads by it already.
-    const certified = await runtime.certifyDevice(userPublicKey, label, options.invite ?? null, deviceKeyForWasm,
-      code => options.onPairingCode?.(code), JSON.stringify(info.address));
+    // The server names this device: the name asked for, or the next numbered one
+    // when another of the person's devices reads by it already. If this browser's
+    // kept device key was revoked, mint a fresh key and retry once.
+    let certified;
+    try {
+      certified = await runtime.certifyDevice(userPublicKey, label, options.invite ?? null, deviceKeyForWasm,
+        code => options.onPairingCode?.(code), JSON.stringify(info.address));
+    } catch (error) {
+      if (options.deviceKey || !/device is revoked/i.test(String(error?.message ?? error))) throw error;
+      own = await renewDevice(own, profile, {namespaces: options.namespaces});
+      deviceKeyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
+      certified = await runtime.certifyDevice(userPublicKey, label, options.invite ?? null, deviceKeyForWasm,
+        code => options.onPairingCode?.(code), JSON.stringify(info.address));
+    }
     const enrolled = JSON.parse(certified).label ?? label;
     const common = {...options, identity: undefined, label: enrolled, profile, deviceKey: own, runtime};
     if (!entry) return connect({...common, deviceCertificate: certified});
     return join({...common, origin, entry, certified});
   };
-  return options.deviceKey ? pairing() : withDeviceKey(own, pairing, signal);
+  return options.deviceKey ? pairing() : withDeviceKey(managed, pairing, signal);
 }
 
 const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
@@ -1691,6 +1885,28 @@ async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop
   } catch (error) {
     console.warn('join: the device\'s certificate could not be read', error);
     return null;
+  } finally {
+    await opened?.release?.();
+  }
+}
+
+/**
+ * The certificate this browser keeps for the profile `profile` its `deviceKey`
+ * made, done, so the next session asks the server for one made now: `store` is
+ * the profile's storage as `open` hands it (`needStorage` keeps it open while
+ * the session asks), and `device` the device the profile calls itself.
+ *
+ * A pairing's certificate is this device's own only once one of the person's
+ * other devices approved it, so a server answers with a new code for its owner
+ * to approve; one left from a request nobody approved is one no server takes
+ * again.
+ */
+export async function forgetDeviceCertificate({store, profile, device, desktop, namespaces = globalThis.localStorage}) {
+  let opened;
+  const kept = store ?? (opened = await (desktop ?? await import('./host.mjs'))
+    .openProfileStorage(profile, device ?? profileDevice(profile, namespaces, 0)));
+  try {
+    await kept.delete(CERTIFICATE);
   } finally {
     await opened?.release?.();
   }
@@ -1747,7 +1963,8 @@ function entryAnswered(peer, timeoutMs = ENTRY_TIMEOUT_MS) {
     }
     const check = snapshot => {
       const entry = snapshot?.entry;
-      if (entry?.outcome === 'admitted') finish(undefined, entry);
+      if (snapshotRevoked(snapshot)) finish(hostRefusal('device-revoked', snapshot?.error ?? 'This device was removed from your devices.'));
+      else if (entry?.outcome === 'admitted') finish(undefined, entry);
       else if (entry?.outcome === 'refused') finish(hostRefusal(entry.code, entry.message, entry.retryAfterSecs, entry.entry ?? null));
       else if (snapshot?.phase === 'failed') finish(hostRefusal(snapshot.errorCode ?? 'refused', snapshot.error ?? 'The host refused this device.'));
     };
@@ -1774,6 +1991,7 @@ async function enterOnSession({
     hostText ??= await runtime.hostInfo(httpsPost(origin, fetcher));
     entered = await entry(memberText(hostText, 'hostCert'));
   } catch (error) {
+    if (deviceRemoved(error)) throw hostRefusal('device-revoked', error?.message ?? 'This device was removed from your devices.');
     if (ENTRY_CODES.has(error?.code)) throw error;
     console.warn('join refused:', error?.code ?? error?.name, error?.message ?? error);
     throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: error?.message ?? String(error), code: 'refused'});
@@ -1799,6 +2017,8 @@ async function enterOnSession({
     return peer;
   } catch (error) {
     await peer.dispose?.().catch(() => {});
+    // A revoked device must stop immediately without silent key renewal or retry.
+    if (deviceRemoved(error)) throw hostRefusal('device-revoked', error?.message ?? 'This device was removed from your devices.');
     // The site names the host as it was before it was set up again: the site's to fix.
     if (error?.code === 'stale-entry') throw new AdmissionError('stale-entry', STALE_SITE_SERVER);
     // An entry's own refusal (its code, and the wait it asked for) is the caller's to show:

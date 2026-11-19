@@ -35,10 +35,16 @@
 export const REJOINED = 'tilo-rejoined';
 /** How long a join again by itself keeps the next one from happening. */
 export const REJOIN_WINDOW_MS = 2 * 60 * 1000;
-/** The failure codes a host's refusal ends a session with. */
-export const REFUSALS = new Set(['not-admitted', 'host-changed', 'device-revoked', 'certificate-rejected', 'workspace-deleted']);
+/** The failure codes a server's refusal ends a session with. */
+export const REFUSALS = new Set(['not-admitted', 'host-changed', 'device-revoked', 'device_revoked', 'certificate-rejected', 'workspace-deleted']);
 /** The refusals nothing brings back: joining again would be turned away too. */
-const FINAL = new Set(['device-revoked', 'certificate-rejected', 'workspace-deleted']);
+const FINAL = new Set(['device-revoked', 'device_revoked', 'certificate-rejected', 'workspace-deleted']);
+/** Codes indicating this device was explicitly revoked by its user root. */
+const REVOKED_CODES = new Set(['device-revoked', 'device_revoked']);
+/** Wire/protocol messages emitted when a server terminates a revoked device. */
+const REVOKED_TEXT = /\b(?:authenticated\s+)?device\s+(?:was|is)\s+revoked\b|\bdevice[-_]revoked\b/i;
+/** Permanent refusal codes that must never be retried in a loop. */
+const PERMANENT_REFUSALS = new Set(['device-revoked', 'device_revoked', 'workspace-deleted', 'certificate-rejected', 'banned', 'removed', 'invitation-only']);
 
 function recentRejoin({storage = globalThis.sessionStorage, now = Date.now()} = {}) {
   let kept;
@@ -105,11 +111,41 @@ export function reachedHost({storage = globalThis.sessionStorage} = {}) {
 }
 
 /** Whether `error` says this browser was removed from its person's devices
- * (`device-revoked`): its server's own word at the session's handshake, which
- * a session that stopped for it before the page got in (`whenReady` in
- * peer.mjs) and an entry that met it (`entryAnswered`) carry as their code.
- * Nothing joins such a browser again: the person is told (`refusalText`). */
-export const deviceRemoved = error => error?.code === 'device-revoked';
+ * (`device-revoked`, `device_revoked`, or the server's revocation protocol
+ * text `authenticated device was revoked`). Nothing joins or retries such a
+ * browser again: the person is told (`refusalText`). */
+export const deviceRemoved = error => Boolean(error) && (
+  REVOKED_CODES.has(error.code)
+  || REVOKED_CODES.has(error.errorCode)
+  || REVOKED_CODES.has(error.sessionErrorCode)
+  || REVOKED_TEXT.test(String(error.message ?? ''))
+  || REVOKED_TEXT.test(String(error.reason ?? ''))
+  || REVOKED_TEXT.test(String(error.error ?? ''))
+  || REVOKED_TEXT.test(String(error.sessionError ?? ''))
+);
+
+/** Whether a peer snapshot indicates the server revoked this device, either at
+ * handshake or mid-session. */
+export function snapshotRevoked(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return false;
+  if (deviceRemoved({code: snapshot.errorCode, error: snapshot.error})) return true;
+  if (snapshot.entry?.outcome === 'refused' && deviceRemoved({code: snapshot.entry.code, message: snapshot.entry.message})) {
+    return true;
+  }
+  return Array.isArray(snapshot.health?.failures)
+    && snapshot.health.failures.some(failure => deviceRemoved({code: failure?.code, message: failure?.message}));
+}
+
+/** Whether `value` (an error or peer snapshot) represents a permanent refusal
+ * that must stop reconnect retries immediately. */
+export function permanentRefusal(value) {
+  if (!value || typeof value !== 'object') return false;
+  return deviceRemoved(value)
+    || snapshotRevoked(value)
+    || PERMANENT_REFUSALS.has(value.code)
+    || PERMANENT_REFUSALS.has(value.errorCode)
+    || PERMANENT_REFUSALS.has(value.sessionErrorCode);
+}
 
 /** What the person is told when the host's refusal `code` cannot be undone
  * here, about the workspace `name` (or `null`). */
@@ -141,8 +177,10 @@ export function followRefusal({
   let reauthenticated = false;
   let stopped = false;
   const act = async snapshot => {
-    if (stopped || acting || snapshot?.phase !== 'failed' || !REFUSALS.has(snapshot.errorCode)) return;
-    const code = snapshot.errorCode;
+    if (stopped || acting) return;
+    const revoked = snapshotRevoked(snapshot);
+    if (!revoked && (snapshot?.phase !== 'failed' || !REFUSALS.has(snapshot.errorCode))) return;
+    const code = revoked || REVOKED_CODES.has(snapshot?.errorCode) ? 'device-revoked' : snapshot.errorCode;
     acting = true;
     try {
       if (code === 'certificate-rejected' && !reauthenticated) {

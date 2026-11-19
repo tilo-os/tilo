@@ -277,6 +277,38 @@ pub fn saved_peer_certificate(
     serde_json::to_string(&held).map(Some).map_err(error)
 }
 
+/// Clear the saved peer entry and certificate stored in `(profile, device)` for
+/// `user_public_key_hex` (for example after the server revokes this device), so
+/// a future intentional pairing starts with a fresh device keypair.
+///
+/// # Errors
+///
+/// Rejects an unknown namespace or a refused write.
+#[wasm_bindgen(js_name = clearPeerCertificate)]
+pub fn clear_peer_certificate(
+    profile: &str,
+    device: &str,
+    user_public_key_hex: &str,
+) -> Result<(), JsValue> {
+    let store = cached(profile, device)?;
+    let normalized = user_public_key_hex.to_ascii_lowercase();
+    store
+        .write(
+            &StorageKey::document("so.tilo.browser-peer", PROFILE_WORKSPACE, &normalized),
+            durable_store::WriteOp::Replace(Vec::new()),
+            None,
+        )
+        .map_err(error)?;
+    store
+        .write(
+            &StorageKey::document(PAGE_VALUES_PACKAGE, PROFILE_WORKSPACE, "certificate"),
+            durable_store::WriteOp::Replace(Vec::new()),
+            None,
+        )
+        .map(drop)
+        .map_err(error)
+}
+
 /// Take every accepted write as `[{key, bytes, actor, revision}]` with the
 /// key's whole current value.
 pub(crate) fn drain(store: &MemoryStore) -> Result<JsValue, JsValue> {

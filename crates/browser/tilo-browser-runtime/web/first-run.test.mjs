@@ -941,7 +941,7 @@ test('a slow host and a quiet agent are each said, with the reason, while the ta
   code.follow = () => new Promise(() => {});
   await tick();
   await fire(ASK_MS);
-  assert.deepEqual(last('net'), ['net', 'tilo.sh isn’t answering.']);
+  assert.deepEqual(last('net'), ['net', 'tilo.sh isn’t answering. This page asks again by itself once you’re back online.']);
   code.follow = follow;
   Object.assign(code.polled, {resolved: true, agent: 'Claude Code', steps: ['resolved', 'logged-in']});
   await tick();
@@ -1319,4 +1319,26 @@ test('a prompt only shown after an invitation keeps the setup for later, even wh
   const asked = code.asked;
   await fire(SHOWN_FOLLOW_MS);
   assert.ok(code.asked > asked, 'still followed');
+});
+
+test('permanent device revocation stops first-screen code polling immediately', async () => {
+  const code = fakeCode();
+  const {run: screen, tick, last, state} = fixture();
+  screen.offerSetup(maker(code).make, resumer(code));
+  await settle();
+  await screen.copy();
+  await settle();
+  const before = code.asked;
+  code.follow = async () => {
+    code.asked += 1;
+    throw Object.assign(new Error('peer protocol violation: authenticated device was revoked'), {code: 'device_revoked'});
+  };
+  await tick();
+  const afterFailure = code.asked;
+  assert.equal(afterFailure, before + 1);
+  assert.equal(last('failed')?.[0], 'failed');
+  assert.equal(state.ticks, null, 'polling timer stopped immediately');
+  await tick();
+  await tick();
+  assert.equal(code.asked, afterFailure, 'no further polling after revocation');
 });

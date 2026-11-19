@@ -850,8 +850,13 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     // moving them: their own scroll reaches the widget first.
     for (const {element, offset} of scrollers.values()) {
       if (Math.abs(element.scrollTop - offset) >= 1) {
+        const before = element.scrollTop;
         settingScroll.add(element);
         element.scrollTop = offset;
+        // A scroll bar clamps what it cannot reach: nothing moved means no
+        // `scroll` event will come back to take, and a set left set here
+        // would swallow the person's next scroll of this region.
+        if (element.scrollTop === before) settingScroll.delete(element);
       }
       if (!element.tiloScroll) {
         element.tiloScroll = true;

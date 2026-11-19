@@ -15,12 +15,25 @@
  * says what happened in plain words, counts down to the next try and keeps
  * the technical details (`reconnectDetails`, never a token, key or
  * certificate) folded below, to copy.
+ *
+ * A wait the page shows nothing of (`wait({impatient: true})`: the workspace
+ * here is held by another tab of this browser, which the bar says) puts no
+ * screen up: it resolves `true` when the page is to look again.
  */
 import {localized} from './arrival.mjs';
+import {deviceRemoved, permanentRefusal} from './session-refusal.mjs';
 
 /** The first wait, the factor each next one grows by, the longest wait and
  * the share of a wait that is random either way. */
 export const BACKOFF = {firstMs: 2000, factor: 2, capMs: 5 * 60 * 1000, jitter: 0.2};
+
+/** How soon a page that shows nothing of its wait (another tab of this
+ * browser holding the key the workspace here is opened with) looks again: a
+ * tab closing is noticed within a second. */
+export const WAIT_LOOK_MS = 1000;
+/** How that page's looks grow: a tab left open all afternoon is not looked
+ * at every second. */
+const LOOK_BACKOFF = {firstMs: WAIT_LOOK_MS, factor: 1.5, capMs: 10_000, jitter: 0.2};
 
 /** `start`, `factor`, `capMs` and `jitter` of a wait series, shaped like
  * [`BACKOFF`]. */
@@ -41,8 +54,9 @@ export function backoffDelay(attempt, random = Math.random, start = BACKOFF) {
 }
 
 /** Why the page waits, from the last `error` and whether the browser is
- * `online`: `offline`, `refused`, `busy` or `unreachable`. */
+ * `online`: `device-revoked`, `offline`, `refused`, `busy` or `unreachable`. */
 export function reconnectReason(error, {online = true} = {}) {
+  if (deviceRemoved(error)) return 'device-revoked';
   if (online === false) return 'offline';
   if (error?.code === 'refused') return 'refused';
   if (['full', 'too-many'].includes(error?.code) || error?.status === 429) return 'busy';
@@ -136,7 +150,9 @@ export function createReconnect({view, window = globalThis, document = globalThi
   const online = () => window?.navigator?.onLine !== false;
   const hidden = () => document?.visibilityState === 'hidden';
   const render = () => {
-    if (!current) return;
+    // A page that shows nothing of the wait has its own line on the bar
+    // (`connection-status.mjs`): the screen is not its to take.
+    if (!current || current.quiet) return;
     const waiting = !online() ? 'offline' : current.trying ? 'trying' : 'counting';
     view.show({...current.info, reason: online() ? current.info.reason : 'offline', waiting,
       remainingMs: Math.max(0, current.deadline - now())});
@@ -157,26 +173,59 @@ export function createReconnect({view, window = globalThis, document = globalThi
     const remaining = current.deadline - now();
     if (remaining <= 0) { fire(); return; }
     render();
-    current.timer = schedule(tick, Math.min(1000, remaining % 1000 || 1000));
+    // The next look at the clock: a whole second away while more than one is
+    // left, else the moment it expires (`260` ms, not `2` ms short of it and
+    // a whole second late).
+    current.timer = schedule(tick, Math.min(1000, remaining));
   };
   const onOnline = () => { if (current && !current.trying) fire(); };
   const onOffline = () => tick();
-  const onVisible = () => { if (!hidden()) tick(); };
+  const onVisible = () => { tick(); };
+  // A hidden tab keeps no timer of its own for long: coming back to it is a
+  // moment the page is sure to be woken, so the clock is read again then.
   window?.addEventListener?.('online', onOnline);
   window?.addEventListener?.('offline', onOffline);
   document?.addEventListener?.('visibilitychange', onVisible);
   return {
     /** Wait before try `attempt` (0 for the first wait), the last one having
      * failed with `error`; `retryAfterMs` is the least wait the host asked
-     * for. Rejects when `signal` aborts. */
-    wait({reason, error, attempt = 0, since = now(), origin, build, retryAfterMs = 0, signal} = {}) {
+     * for. `impatient` is a page that shows nothing of the wait — another tab
+     * of this browser holding the key the workspace here is opened with, say —
+     * so it looks again on a clock of its own and resolves `true` when a look
+     * is due, the person's "Try now" included. Rejects when `signal` aborts; a
+     * wait another wait replaces, or one `done` ends, settles nothing: the
+     * page went another way. */
+    wait({reason, error, attempt = 0, since = now(), origin, build, retryAfterMs = 0, signal, impatient = false} = {}) {
+      // A wait left unclaimed by a page that went another way (a reload, a
+      // throw above it) never resolves: it must not outlive its own try, nor
+      // cancel the wait that replaced it.
+      const self = {};
       if (current) cancel(current.timer);
+      if (permanentRefusal(error) || ['device-revoked', 'device_revoked', 'workspace-deleted'].includes(reason)) {
+        current = null;
+        view.hide();
+        const code = deviceRemoved(error) || reason === 'device_revoked'
+          ? 'device-revoked'
+          : (error?.code ?? reason ?? 'refused');
+        return Promise.reject(error instanceof Error
+          ? (error.code ? error : Object.assign(error, {code}))
+          : Object.assign(new Error(String(error?.message ?? 'Session permanently refused')), {code}));
+      }
       return new Promise((resolve, reject) => {
         signal?.throwIfAborted();
-        const delay = Math.max(backoffDelay(attempt, random), retryAfterMs ?? 0);
+        const delay = impatient
+          ? Math.max(WAIT_LOOK_MS, Math.round(backoffDelay(attempt, random, LOOK_BACKOFF) / WAIT_LOOK_MS) * WAIT_LOOK_MS)
+          : Math.max(backoffDelay(attempt, random), retryAfterMs ?? 0);
         current = {info: {reason: reason ?? reconnectReason(error, {online: online()}), error, attempt, since, origin, build},
-          deadline: now() + delay, trying: false, resolve, timer: null};
-        signal?.addEventListener('abort', () => { cancel(current?.timer); reject(signal.reason); }, {once: true});
+          deadline: now() + delay, trying: false, resolve: () => resolve(impatient), timer: null, self, quiet: impatient};
+        signal?.addEventListener('abort', () => {
+          // Only the wait an abort hears now is the one it stops: an abort
+          // heard after the next wait began would leave that one uncounted.
+          if (current?.self !== self) return;
+          cancel(current.timer);
+          current = null;
+          reject(signal.reason);
+        }, {once: true});
         tick();
       });
     },

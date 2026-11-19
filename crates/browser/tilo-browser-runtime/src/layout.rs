@@ -125,6 +125,9 @@ pub(crate) struct PageLayout {
     made: OnceCell<Box<dyn LayoutApi>>,
     /// What the page published when an action was last asked before the code was in.
     remembered: RefCell<Vec<tilo_actions::ResourceSpec>>,
+    /// Whether a window was floated or put back before the code was in: its layout action applies
+    /// as the code arrives.
+    floats_waiting: std::cell::Cell<bool>,
     waiting: RefCell<
         Vec<(
             tilo_actions::ActionAddress,
@@ -149,6 +152,7 @@ impl PageLayout {
             layout,
             made: OnceCell::new(),
             remembered: RefCell::default(),
+            floats_waiting: std::cell::Cell::new(false),
             waiting: RefCell::default(),
         }
     }
@@ -160,6 +164,9 @@ impl PageLayout {
         }
         let made = (self.code.get()?.0)(&self.person, self.handle.clone(), Rc::clone(&self.layout));
         made.remember(&self.remembered.take());
+        if self.floats_waiting.replace(false) {
+            made.take_asked_floats();
+        }
         for (address, arguments) in self.waiting.take() {
             if let Err(error) = made.invoke(&address, &arguments) {
                 tracing::warn!(?error, action = %address.action, "a layout action failed");
@@ -202,9 +209,16 @@ impl PageLayout {
 
     /// Make each window the person floated or put back on the layout their layout action; the
     /// layout keeps what was asked until the code is in.
+    ///
+    /// Asked while the code is out, they wait with the actions that did: its arrival applies them
+    /// ([`PageLayout::page_actions`]), and draining the shell's asks before then threw them away
+    /// and left the window where it was.
     pub(crate) fn take_asked_floats(&self) {
-        if let Some(actions) = self.page_actions() {
-            actions.take_asked_floats();
+        match self.page_actions() {
+            Some(actions) => actions.take_asked_floats(),
+            None => {
+                self.floats_waiting.set(true);
+            }
         }
     }
 
