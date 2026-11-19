@@ -58,7 +58,7 @@ pub enum MonitorEffect {
         process: String,
     },
     /// Asks every process of the app to close.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = crate::model::Process)]
     #[effect(destructive)]
     EndApp {
         #[param("The app's id, as a process row names it")]
