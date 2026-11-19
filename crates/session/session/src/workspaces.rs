@@ -37,6 +37,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
@@ -1035,15 +1036,27 @@ impl crate::Shared {
                 // named keeps no name of its own, and a workspace is founded under a name, so
                 // the word the session reads for it stands in until one is given.
                 let name = tilo_desktop_surface::names::workspace(&workspace.name);
-                let founded = crate::landing::off_loop(async move {
-                    engine.found(id, &name).await;
-                });
+                let told = name.clone();
+                let founded =
+                    crate::landing::off_loop(async move { engine.found(id, &name).await });
+                // A founding that failed is tried again when the next one ends, and the person
+                // hears why the workspace is not on the service yet: never a silent sole copy on
+                // this layout.
                 let sync = self.sync.clone();
-                self.landings.then(founded, move |_| {
-                    // The workspace is held here now, as one joined is: its live session opens,
-                    // so this device says who is here in it and hears who else is.
-                    if let Some(sync) = &sync {
-                        sync.workspace_arrived();
+                self.landings.then(founded, {
+                    let notifications = Rc::clone(&self.notifications);
+                    move |outcome| match outcome {
+                        Some(Err(error)) => notifications
+                            .borrow()
+                            .tell(&crate::notices::workspace_not_founded_notice(&told, &error)),
+                        Some(Ok(())) => {
+                            // The workspace is held here now, as one joined is: its live session
+                            // opens, so this device says who is here in it and hears who else is.
+                            if let Some(sync) = &sync {
+                                sync.workspace_arrived();
+                            }
+                        }
+                        None => {}
                     }
                 });
             }

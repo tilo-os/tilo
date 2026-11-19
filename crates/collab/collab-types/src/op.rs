@@ -42,9 +42,7 @@ const MAX_ENCODED_DOCUMENT_MUTATION_BYTES: usize = DOCUMENT_MUTATION_V2_PREFIX.l
     + crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES
     + crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES / 1024
     + 16;
-const DOCUMENT_ARTIFACT_DOMAIN: &[u8] = b"tilo-document-artifact-v1\0";
 const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"tilo-document-attestation-v1\0";
-const LIVE_ARTIFACT_DOMAIN: &[u8] = b"tilo-live-artifact-v1\0";
 
 /// Meaning of a signed document payload. Keeping this tag inside
 /// [`SignedOp::payload`] makes snapshot-vs-incremental part of the bytes the
@@ -211,37 +209,16 @@ impl DocumentMutation {
     }
 }
 
-/// Deterministically derive the policy artifact for one collaboration route.
-/// Length-prefixing prevents ambiguous concatenations; domain separation keeps
-/// these ids distinct from user-minted UUIDs and other derived identifiers.
+/// The artifact of `document_id`, a document of `app_id` in `workspace_id`: what its writes name
+/// and its content is sealed for, as every member reads it
+/// ([`crate::readers::content_artifact_id`]).
 #[must_use]
 pub fn document_artifact_id(app_id: &str, workspace_id: &str, document_id: &str) -> ArtifactId {
-    ArtifactId(derived_document_uuid(
-        DOCUMENT_ARTIFACT_DOMAIN,
-        app_id,
+    crate::readers::content_artifact_id(
         workspace_id,
-        document_id,
-    ))
-}
-
-/// Artifact a sealed live frame is bound to: its workspace's content
-/// key seals it for this kind, sequence and record only, so a frame cannot
-/// be replayed under another sequence, record or kind.
-#[must_use]
-pub fn live_artifact_id(resource_digest: &[u8; 32], kind: u8, seq: u64) -> ArtifactId {
-    let mut hash = Sha256::new();
-    hash.update(LIVE_ARTIFACT_DOMAIN);
-    hash.update(resource_digest);
-    hash.update([kind]);
-    hash.update(seq.to_le_bytes());
-    let digest = hash.finalize();
-    let mut bytes = [0_u8; 16];
-    for (target, source) in bytes.iter_mut().zip(digest.iter()) {
-        *target = *source;
-    }
-    bytes[6] = (bytes[6] & 0x0f) | 0x80;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    ArtifactId(uuid::Uuid::from_bytes(bytes))
+        crate::readers::EVERY_MEMBER,
+        &crate::readers::app_document_id(app_id, document_id),
+    )
 }
 
 static LAST_UNORDERED_DOCUMENT_SEQUENCE: std::sync::atomic::AtomicU64 =
@@ -1196,12 +1173,12 @@ mod tests {
                 "artifact and attestation domains must not alias"
             );
             assert_eq!(first.0.get_version_num(), 8);
-            assert_eq!(first.0.to_string(), "e2ada506-cd66-8f71-816d-98526180e680");
+            assert_eq!(first.0.to_string(), "3b09fe70-3936-80a2-b81e-463232e016b9");
             assert_eq!(
                 document_artifact_id("dev.tilo.notes", "workspace-a", "record-b")
                     .0
                     .to_string(),
-                "bbc5b5c9-074e-887b-911b-beb90a51413d"
+                "2ceca59c-1004-854e-9067-9a09c2b5128a"
             );
             assert_eq!(
                 document_attestation_id("dev.tilo.notes", "workspace-a", "record-b")

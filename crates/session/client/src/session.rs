@@ -303,6 +303,7 @@ fn session_task(
             Arc::clone(&signer),
         ),
         Arc::new(crate::membership_check::SessionMembership),
+        Arc::new(crate::engine::Founders::default()),
     ));
     engine.keys().set(Some(workspace_keys.clone()));
     engine.held_writes().lock().extend(key_state.held());
@@ -2061,6 +2062,7 @@ impl Task {
         };
         tilo_server_protocol::live::SealedLiveFrame::seal(
             &frame,
+            &workspace_id.to_string(),
             |artifact, retention, cleartext| {
                 keys.seal_content(artifact, retention, cleartext)
                     .map_err(|error| error.to_string())
@@ -2076,25 +2078,29 @@ impl Task {
             return Opening::Dropped;
         };
         let bound = self.keyed_routes().find_map(|route| {
-            let record = tilo_server_protocol::live::LiveResource {
+            let resource = tilo_server_protocol::live::LiveResource {
                 app: route.app_id.clone(),
                 record: route.document.clone(),
             };
-            (record.digest() == sealed.record && route.workspace_id().ok() == Some(workspace_id))
-                .then_some((record, route))
+            (resource.digest() == sealed.record && route.workspace_id().ok() == Some(workspace_id))
+                .then_some((resource, route))
         });
-        let Some((record, route)) = bound else {
+        let Some((resource, route)) = bound else {
             return Opening::NoKeys(sealed.record);
         };
         sealed
-            .open_in_record(&record, |artifact, metadata, payload| {
-                let keys = self
-                    .keys_for_ciphertext(route, *metadata)
-                    .ok_or("the document's keys have not arrived".to_owned())?;
-                keys.open_content(artifact, metadata, payload)
-                    .map(|plaintext| plaintext.to_vec())
-                    .map_err(|error| error.to_string())
-            })
+            .open(
+                &workspace_id.to_string(),
+                &resource,
+                |artifact, metadata, payload| {
+                    let keys = self
+                        .keys_for_ciphertext(route, *metadata)
+                        .ok_or("the document's keys have not arrived".to_owned())?;
+                    keys.open_content(artifact, metadata, payload)
+                        .map(|plaintext| plaintext.to_vec())
+                        .map_err(|error| error.to_string())
+                },
+            )
             .ok()
             .and_then(|frame| frame.encode().ok())
             .map_or(Opening::Dropped, Opening::Opened)

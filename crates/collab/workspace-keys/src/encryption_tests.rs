@@ -1052,7 +1052,12 @@ fn a_request_waiting_for_keys_leaves_the_other_asks_answered() {
     let workspace_name = awaited.to_string();
     let mut waiting = Waiting::new(async move {
         asking
-            .group_keys(&workspace_name, true, Duration::from_secs(30))
+            .group_keys(
+                &workspace_name,
+                collab_types::EVERY_MEMBER,
+                true,
+                Duration::from_secs(30),
+            )
             .await
     });
     assert!(
@@ -2355,3 +2360,5 @@ fn a_member_that_links_after_a_commit_is_handed_the_channels_head() {
         "one group"
     );
 }
+
+include!("reader_group_tests.rs");

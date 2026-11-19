@@ -41,7 +41,8 @@ impl DocumentBytes for Bytes {
 struct Owner {
     captures: AtomicUsize,
     between: Mutex<Option<Box<dyn Fn() + Send>>>,
-    /// For a workspace whose records are sealed channels: what this device holds of them.
+    /// What this device holds of a workspace's sealed records; `None` for a
+    /// workspace whose every record it holds whole.
     sealed: Option<Sealed>,
     /// The members whose own Mail record this device holds writes of, which name it theirs.
     own_people: Mutex<Vec<String>>,
@@ -56,15 +57,12 @@ struct Sealed {
 }
 
 impl NativeDocumentReads for Owner {
-    fn requires_workspace(&self, _: &str) -> bool {
-        self.sealed.is_none()
-    }
     fn seals_documents(&self, _: &str) -> bool {
-        self.sealed.is_some()
+        true
     }
     fn resource_read(&self, _: &str, _: &str, record: &str) -> ResourceRead {
         match &self.sealed {
-            None => ResourceRead::Committed,
+            None => ResourceRead::Sealed,
             Some(sealed) if sealed.whole.contains(&record) => ResourceRead::Sealed,
             Some(_) => ResourceRead::Own,
         }

@@ -512,9 +512,6 @@ mod external_moderation_rpc_tests {
     }
 
     impl NativeDocumentReads for ReportDocument {
-        fn requires_workspace(&self, _: &str) -> bool {
-            true
-        }
         fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
             context.revalidate()
         }

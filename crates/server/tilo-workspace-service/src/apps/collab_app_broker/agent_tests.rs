@@ -153,9 +153,6 @@ impl CertificateAuthority for Native {
     }
 }
 impl OwnerCommitService for Native {
-    fn requires_workspace(&self, requested: &str) -> bool {
-        requested == workspace_id().to_string()
-    }
     fn health(&self) -> Result<(), String> {
         if self.opening.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("the native owner is still opening; try again in a moment".into());
@@ -228,7 +225,7 @@ impl crate::apps::services::WorkspaceGrants for Native {
 
 impl WorkspaceMemberships for Native {
     fn requires_workspace(&self, requested: &str) -> bool {
-        OwnerCommitService::requires_workspace(self, requested)
+        requested == workspace_id().to_string()
     }
     fn health(&self) -> Result<(), String> {
         self.owner.health()
@@ -265,7 +262,7 @@ impl crate::apps::services::AgentSessions for Native {
     }
 
     fn confines(&self, workspace: &str) -> bool {
-        OwnerCommitService::requires_workspace(self, workspace)
+        workspace == workspace_id().to_string()
     }
 
     fn turns(&self, _workspace: &str) -> Vec<crate::apps::services::AgentTurn> {

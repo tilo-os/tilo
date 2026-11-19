@@ -786,6 +786,33 @@ tilo_test_env::scenario! {
             assert_eq!(v[2].name, "c");
         }
 
+        fn a_hovered_sortable_header_is_known_and_a_plain_one_is_not() {
+            let mut t = DataTable::<R>::new(sample_cols());
+            t.set_rows(rows4());
+            let (tree, node) = lay_out(&mut t);
+            let point_at = |t: &mut DataTable<R>, x: f64, y: f64| {
+                dispatch(
+                    t,
+                    &tree,
+                    node,
+                    &WindowEvent::CursorMoved {
+                        device_id: winit::event::DeviceId::dummy(),
+                        position: (x, y).into(),
+                    },
+                );
+            };
+            // The sortable Name column's header shows the order a press gives.
+            point_at(&mut t, 20.0, 10.0);
+            assert_eq!(t.hover_header, Some(0));
+            // The plain X column's header offers nothing, and the body is no header.
+            let x = t.col_rects.get(1).map_or(0.0, |r| r.center().x);
+            point_at(&mut t, x, 10.0);
+            assert_eq!(t.hover_header, None);
+            let body = t.header_h + 10.0;
+            point_at(&mut t, 20.0, body);
+            assert_eq!(t.hover_header, None);
+        }
+
         fn header_click_fires_on_header_click_instead_of_toggle() {
             let hits = Rc::new(RefCell::new(Vec::<usize>::new()));
             let mut t = {
@@ -897,6 +924,7 @@ tilo_test_env::scenario! {
             assert_eq!(shown, ["c", "b", "a"]);
         }
 
+        a_hovered_sortable_header_is_known_and_a_plain_one_is_not();
         model_owns_sort_order_while_table_owns_header_state();
         a_sorted_table_speaks_in_the_hosts_rows_and_keeps_its_order();
         toggle_sort_requires_prior_sort_by_with();

@@ -460,6 +460,25 @@ impl Joined {
             .with_current(workspace, |view| {
                 view.peer().document_key_holders(app, document_id, at)
             })
+            .ok()?
+            .ok()?;
+        Some(holders)
+    }
+
+    /// The devices of `people` among [`Self::key_holders`]: who holds the keys
+    /// of a group of `workspace` only those people read.
+    pub(super) fn reader_key_holders(
+        &self,
+        workspace: WorkspaceId,
+        people: &std::collections::BTreeSet<[u8; 32]>,
+        now: u64,
+    ) -> Option<std::collections::BTreeSet<collab_types::Ed25519PublicKey>> {
+        let at = std::time::SystemTime::UNIX_EPOCH
+            .checked_add(tilo_workspace_service::apps::workspace_keys::policy_instant(now))
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let holders = self
+            .owner
+            .with_current(workspace, |view| view.reader_key_holders(people, at))
             .ok()?;
         Some(
             holders
@@ -796,14 +815,6 @@ impl Joined {
 }
 
 impl OwnerCommitService for Joined {
-    /// Every workspace this profile joined, and the workspaces the desktop session
-    /// governs here, whose writes are refused.
-    fn requires_workspace(&self, workspace: &str) -> bool {
-        WorkspaceId::parse(workspace).is_some_and(|workspace| {
-            self.owner.contains_workspace(workspace) || self.refused.contains(&workspace)
-        })
-    }
-
     /// A workspace hosted here keeps its effect receipts in the profile's own
     /// workspace record.
     fn records_effects(&self, workspace: &str) -> bool {

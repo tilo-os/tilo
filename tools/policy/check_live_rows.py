@@ -22,8 +22,9 @@ This refuses, in production Rust under `apps/` and `crates/session/`:
 
 * `untyped-live-row`: `LiveRow::new`, a row that names no declared type;
 * `row-operation`: `.operation(...)` or `.effect(...)` chained onto a
-  `LiveRow` construction — an effect offered on a row the app built rather
-  than one its type declares;
+  `LiveRow` construction (including `LiveRow::typed::<…>`) or added to a row
+  a variable holds (`let row = …; row = row.operation(spec)`) — an effect
+  offered on a row the app built rather than one its type declares;
 * `hand-built-tree`: `ResourceSpec::new`, a resource tree an app built;
 * `hand-bound-action`: `ActionSpec::typed`, an action an app bound itself.
 
@@ -53,13 +54,25 @@ RULES = {
     "hand-bound-action": re.compile(r"\bActionSpec::typed"),
 }
 
-ROW = re.compile(r"\bLiveRow\s*::\s*(?:new|typed)\s*\(")
+# Every way a row is built: untyped, of a declared type (with the turbofish
+# that spells it: `LiveRow::typed::<Widget>(…)`), with the state its type's
+# effects bind, or from an entity's own resource.
+ROW = re.compile(
+    r"\bLiveRow\s*::\s*(?:new|typed|typed_with|from_resource)"
+    r"\s*(?:::?<[^()]*>)?\s*\("
+)
 ROW_METHODS = {"operation", "effect"}
+# A row handed to a variable and given operations there (`let row =
+# LiveRow::typed::<…>(…); row = row.operation(spec)`): a control-binding row
+# still hand-built, in a form the chain above does not see.
+LET_ROW = re.compile(
+    r"\blet\s+(?:mut\s+)?(\w+)\s*(?::[^=;]+)?=[^;]*?\bLiveRow\s*::"
+)
 
 ADVICE = {
     "untyped-live-row": (
         "publish the row as an item of a declared type "
-        "(LiveRow::typed::<Channel>, #[derive(Row)]), so search names it by "
+        "(LiveRow::typed::<Widget>, #[derive(Row)]), so search names it by "
         "what it is and a press runs the type's effect (one-app-model.md §1)"
     ),
     "row-operation": (
@@ -118,6 +131,11 @@ def row_operations(code: str) -> int:
                 count += 1
             if index < len(code) and code[index] == "(":
                 index = rust_source.matching(code, index)
+    for ident in {match.group(1) for match in LET_ROW.finditer(code)}:
+        count += len(re.findall(
+            rf"\b{re.escape(ident)}\s*\.\s*(?:{'|'.join(sorted(ROW_METHODS))})\s*\(",
+            code,
+        ))
     return count
 
 

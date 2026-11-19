@@ -204,7 +204,7 @@ d-ii4dp5pl = Count
 d-xnmw2f5g-filter-count = Count
 
 d-4cntcc2v = Change
-    .doc = One change of the document: who made it, when, and what it did.
+    .doc = One change of the document: what it did.
     .noun = { $count ->
         [one] change
        *[other] changes
@@ -212,13 +212,7 @@ d-4cntcc2v = Change
 
 d-dmejdwow = Title
 
-d-twgxunl5 = Who
-
 d-kbnmru3y = Summary
-
-d-e4daczuq = At
-
-d-4cntcc2v-filter-at = At
 
 d-36wloal6 = Photo
     .doc = One photo of the library: what it shows, where, and its picture, carried in its address.
@@ -299,6 +293,11 @@ d-yy2pow4p = Note item
 d-yy2pow4p-last = Last
 
 d-yy2pow4p-x = X
+
+d-vifo6twu = Note change
+    .doc = Note a change to the document, made by whoever asks for it.
+
+d-vifo6twu-summary = Summary
 
 d-o4oyc5hc = Picked
     .doc = Note the row the table picked, in the page's answer.

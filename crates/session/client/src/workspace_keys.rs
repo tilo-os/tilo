@@ -261,16 +261,23 @@ impl KeyLink {
 
     /// This device holds a write of `workspace` sealed under a key its group at `epoch` lacks: ask
     /// the person's other devices for the group's frames from there on, as the workspace's host
-    /// would replay them. Asked once per epoch held, and again whenever one of those devices
-    /// comes up ([`Self::sibling_arrived`]).
+    /// would replay them, and for the frames of each of the workspace's reader groups this
+    /// device is in from the epoch it holds of that one. Asked once per epoch held, and again
+    /// whenever one of those devices comes up ([`Self::sibling_arrived`]).
     pub fn want_frames(&self, workspace: ModelWorkspaceId, epoch: u64) {
-        if self.wanted.lock_recover().insert(workspace, epoch) == Some(epoch) {
-            return;
+        let keys = self.keys.lock_recover().clone();
+        let groups = keys
+            .map(|keys| keys.reader_groups_of(workspace))
+            .unwrap_or_default();
+        for (group, epoch) in std::iter::once((workspace, epoch)).chain(groups) {
+            if self.wanted.lock_recover().insert(group, epoch) == Some(epoch) {
+                continue;
+            }
+            self.tell_siblings(NeighbourMsg::MlsGovernanceWanted {
+                workspace: group.to_string(),
+                from_epoch: epoch,
+            });
         }
-        self.tell_siblings(NeighbourMsg::MlsGovernanceWanted {
-            workspace: workspace.to_string(),
-            from_epoch: epoch,
-        });
     }
 
     /// One of the person's devices came up: it hears what this device still waits for.
@@ -297,8 +304,8 @@ impl KeyLink {
 
     /// Take in what `peer`, one of the person's devices, said on the session between the two: a
     /// group's frames and access requests go to the key service as the host's do, which judges
-    /// them alike; an ask for frames is answered with this device's own, when the workspace admits
-    /// `peer`.
+    /// them alike; an ask for frames is answered with this device's own, when the group admits
+    /// `peer`, each in the workspace that carries the group.
     pub fn heard_from_sibling(&self, peer: [u8; 32], message: &NeighbourMsg) {
         match message {
             NeighbourMsg::MlsGovernance { .. } | NeighbourMsg::MlsAccessRequest { .. } => {
@@ -317,9 +324,10 @@ impl KeyLink {
                 };
                 let frames =
                     keys.frames_for(workspace, &Ed25519PublicKey::from_bytes(peer), *from_epoch);
+                let carrier = keys.carrier(workspace);
                 for frame in frames {
                     self.tell_siblings(NeighbourMsg::MlsGovernance {
-                        workspace: workspace.to_string(),
+                        workspace: carrier.to_string(),
                         frame: Box::new(frame),
                         delivery: 0,
                     });
@@ -703,6 +711,35 @@ impl KeyDirectory for OwnerDirectory {
                 Ok(readers)
             })
             // A workspace whose governance cannot be read says nothing of who reads it.
+            .ok()?;
+        Some(
+            readers
+                .into_iter()
+                .map(Ed25519PublicKey::from_bytes)
+                .collect(),
+        )
+    }
+
+    /// The devices of `people` among those that hold the workspace's keys at `now`, and this
+    /// device when it follows its groups as one of theirs.
+    fn reader_devices(
+        &self,
+        workspace: ModelWorkspaceId,
+        people: &BTreeSet<[u8; 32]>,
+        now: u64,
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        let at = UNIX_EPOCH.checked_add(tilo_workspace_keys::policy_instant(now))?;
+        let reader = self.reader;
+        let readers = self
+            .owner
+            .with_current(workspace, |view| {
+                let mut readers = view.reader_key_holders(people, at)?;
+                let device = view.device();
+                if reader && people.contains(&device.user_public_key) {
+                    readers.insert(device.device_public_key);
+                }
+                Ok(readers)
+            })
             .ok()?;
         Some(
             readers

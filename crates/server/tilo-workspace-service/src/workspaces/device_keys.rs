@@ -25,10 +25,17 @@ pub type GroupKeysAnswerFuture<'a> = Pin<Box<dyn Future<Output = GroupKeysAnswer
 
 /// The group keys of the device a workspace service runs on, asked of it.
 pub trait GroupKeys: Send + Sync + 'static {
-    /// The content keys of `workspace`, opening its group when it has none
-    /// yet and `create`. `None` when the device takes no part in `workspace`'s
-    /// group; [`Err`] when it takes part and holds no keys yet.
-    fn group_keys<'a>(&'a self, workspace: &'a str, create: bool) -> GroupKeysAnswerFuture<'a>;
+    /// The content keys of the group of `readers` in `workspace`
+    /// ([`collab_types::reader_group`]: [`collab_types::EVERY_MEMBER`] is the
+    /// workspace's own), opening the group when it has none yet and `create`.
+    /// `None` when the device takes no part in that group; [`Err`] when it
+    /// takes part and holds no keys yet.
+    fn group_keys<'a>(
+        &'a self,
+        workspace: &'a str,
+        readers: &'a str,
+        create: bool,
+    ) -> GroupKeysAnswerFuture<'a>;
 }
 
 /// [`GroupKeys`] as the host's shared handle.

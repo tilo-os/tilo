@@ -81,7 +81,7 @@ impl AppBrokerState {
             );
             return Err(ActionCallError::NotPermitted);
         }
-        if self.durable_owner_required || self.publisher.requires_owner_for(workspace) {
+        if self.durable_owner_required || self.publisher.has_owner() {
             self.owner_health().map_err(unavailable)?;
         }
         let actor = BrokerActor::for_caller(caller);

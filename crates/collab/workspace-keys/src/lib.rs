@@ -1,10 +1,10 @@
 //! This device's side of every encrypted collaboration group it takes part in.
 //!
-//! A group is one MLS group per record, or per workspace while every reader of the workspace may
-//! read the record. Who is in the group is the workspace's access policy ([`KeyDirectory`]),
-//! and every key holder moves its group to that policy: an invite, a removal, a role change that
-//! ends access, a new certified device or a revoked one becomes a commit from whichever key holder
-//! gets there first. The keys live here, never in the document, which is what lets a person invited
+//! A group is one MLS group per workspace, read by every member, and one per reader set within it
+//! that only some members read ([`collab_types::reader_group`]). Who is in the group is the
+//! workspace's access policy ([`KeyDirectory`]), and every key holder moves its group to that
+//! policy: an invite, a removal, a role change that ends access, a new certified device or a
+//! revoked one becomes a commit from whichever key holder gets there first. The keys live here, never in the document, which is what lets a person invited
 //! today read what the workspace said a year ago.
 //!
 //! [`WorkspaceKeys`] is the service, [`SharedKeys`] the handle a host's identity service

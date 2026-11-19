@@ -2962,6 +2962,9 @@ fn flatten_into<'a>(resource: &'a ResourceSpec, depth: usize, out: &mut Vec<Flat
     }
 }
 
+#[path = "resource/choices.rs"]
+mod choices;
+
 #[path = "resource/carried.rs"]
 mod carried;
 

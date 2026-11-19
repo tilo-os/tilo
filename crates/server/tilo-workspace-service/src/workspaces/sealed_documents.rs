@@ -36,7 +36,8 @@ use super::{GovernedWorkspace, SystemTime, Workspaces};
 )]
 const COMPACTION_RETRY: usize = 256;
 
-/// The content keys of one record's channel, as the node holds them.
+/// The content keys of one document, as the node holds them: its readers'
+/// group's keys, scoped to the document.
 pub(super) struct DocumentKeys {
     keys: ContentKeys,
     workspace_keys: Option<ContentKeys>,
@@ -44,6 +45,27 @@ pub(super) struct DocumentKeys {
 }
 
 impl DocumentKeys {
+    /// `keys`, of the group of `readers` in `workspace`, for document `doc`
+    /// ([`collab_types::content_artifact_id`]).
+    pub(super) fn of(keys: ContentKeys, workspace: &str, readers: &str, doc: &str) -> Self {
+        Self {
+            keys,
+            workspace_keys: None,
+            artifact: collab_types::content_artifact_id(workspace, readers, doc),
+        }
+    }
+
+    /// `keys`, the workspace's own, for a document of `app` every member
+    /// reads.
+    fn app_document(keys: ContentKeys, workspace: &str, (app, document): (&str, &str)) -> Self {
+        Self::of(
+            keys,
+            workspace,
+            collab_types::EVERY_MEMBER,
+            &collab_types::app_document_id(app, document),
+        )
+    }
+
     /// Open any write of the record's history, under any epoch the keys
     /// hold, a compaction included.
     pub(super) fn open(&self) -> impl FnMut(&SignedOp) -> Result<Vec<u8>, String> + '_ {
@@ -179,7 +201,9 @@ impl GovernedWorkspace {
     /// runs on a device that takes part in no group of the workspace.
     pub(super) async fn route_keys(&self) -> Option<Result<ContentKeys, String>> {
         let device = self.device.as_ref()?;
-        device.group_keys(self.workspace(), false).await
+        device
+            .group_keys(self.workspace(), collab_types::EVERY_MEMBER, false)
+            .await
     }
 
     /// Whether this host holds the workspace's keys: it can then read sealed
@@ -318,12 +342,12 @@ async fn read_document_keys(
         .as_ref()
         .map_or_else(|| workspace.to_owned(), ToString::to_string);
     let keys = device
-        .group_keys(&group, create)
+        .group_keys(&group, collab_types::EVERY_MEMBER, create)
         .await
         .ok_or("no keys are available for this document")??;
     let workspace_keys = if scoped {
         device
-            .group_keys(workspace, false)
+            .group_keys(workspace, collab_types::EVERY_MEMBER, false)
             .await
             .and_then(Result::ok)
     } else {
@@ -642,17 +666,25 @@ impl Workspaces {
                 Err(error) => return Some(Err(error)),
             };
         if !isolated {
-            return device.group_keys(&route.cluster_id, create).await;
+            return device
+                .group_keys(&route.cluster_id, collab_types::EVERY_MEMBER, create)
+                .await;
         }
         let scope = match route.key_scope() {
             Ok(scope) => scope.to_string(),
             Err(reason) => return Some(Err(reason.to_string())),
         };
-        let keys = match device.group_keys(&scope, create).await? {
+        let keys = match device
+            .group_keys(&scope, collab_types::EVERY_MEMBER, create)
+            .await?
+        {
             Ok(keys) => keys,
             Err(reason) => return Some(Err(reason)),
         };
-        let keys = match device.group_keys(&route.cluster_id, false).await {
+        let keys = match device
+            .group_keys(&route.cluster_id, collab_types::EVERY_MEMBER, false)
+            .await
+        {
             Some(Ok(history)) => keys.with_workspace_history(history),
             _ => keys,
         };
@@ -674,7 +706,12 @@ impl Workspaces {
         let Some(device) = self.device_keys() else {
             return false;
         };
-        matches!(device.group_keys(workspace, true).await, Some(Ok(_)))
+        matches!(
+            device
+                .group_keys(workspace, collab_types::EVERY_MEMBER, true)
+                .await,
+            Some(Ok(_))
+        )
     }
 
     /// Everything the governor's copy holds of `record` of `app` in
@@ -985,14 +1022,10 @@ impl Workspaces {
             return workspace.document_keys(app, record).await;
         };
         let keys = device
-            .group_keys(name, true)
+            .group_keys(name, collab_types::EVERY_MEMBER, true)
             .await
             .ok_or("the record is sealed and this host takes part in no channel")??;
-        Ok(Some(DocumentKeys {
-            keys,
-            workspace_keys: None,
-            artifact: collab_types::document_artifact_id(app, name, record),
-        }))
+        Ok(Some(DocumentKeys::app_document(keys, name, (app, record))))
     }
 
     /// Compact every sealed record history of `workspace` that has used most of

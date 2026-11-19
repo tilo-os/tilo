@@ -37,7 +37,7 @@ pub type HostStepOutcome = Result<ActionOutput, Box<ActionFailure>>;
 /// administering the person's identities and the devices trusted under them, changing the
 /// person's settings whether or not the app that shows them is open. The broker answers each
 /// service under its [`Self::provider`] and decides each invocation before the host runs it.
-pub trait HostStepServices: Send + Sync {
+pub trait HostStepServices: collab_types::signer::MaybeSendSync {
     fn provider(&self) -> &'static str;
     /// The application whose controls reach the steps. It reaches them as the person using it,
     /// as it does its own actions.

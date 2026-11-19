@@ -12,7 +12,8 @@ use super::{SharedKeys, WorkspaceKeys};
 
 impl WorkspaceKeys {
     /// The governance a device that links to this one in `workspace` is handed,
-    /// so it is current in every group of the workspace this device is in:
+    /// so it is current in every group of the workspace this device is in, its reader sets'
+    /// included:
     /// each group's genesis and head, as this device holds them
     /// ([`key_group::GroupPeer::current_frames`]).
     ///
@@ -28,7 +29,7 @@ impl WorkspaceKeys {
         for entry in self
             .peers
             .values()
-            .filter(|entry| entry.workspace == workspace)
+            .filter(|entry| self.directory.carrier(entry.workspace) == workspace)
         {
             for frame in entry.peer.current_frames() {
                 self.delivery = self.delivery.wrapping_add(1);

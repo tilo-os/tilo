@@ -39,6 +39,41 @@ fn the_shells_invitation_admits_the_person_it_names() {
     bob_laptop.wait_showing(&workspace);
 }
 
+/// A workspace this session makes is on its own workspace service before the session writes its
+/// first record into it: the layout the shell shows is the workspace's record, and it reads back
+/// through the service this device is a member of, not from a copy the session keeps alone.
+#[test]
+fn a_made_workspace_is_on_the_service_before_its_first_record_write() {
+    let ada = Person::new("Ada");
+    let mut laptop = ada.device("Ada's laptop");
+    laptop.start();
+    tilo_test_env::wait_until("Ada's shell shows the workspace it made", || {
+        laptop.showing().is_some()
+    });
+    let workspace = laptop.showing().expect("the workspace Ada's shell made");
+    // Held as this device's member: the service took the workspace the session made.
+    laptop.wait_holding(&workspace);
+    let answer = laptop.ask(&json!({
+        "op": "resource_read",
+        "workspace": workspace,
+        "app": tilo_desktop_model::ownership::DESKTOP_APP,
+        "records": [tilo_desktop_model::ownership::DESKTOP_DOCUMENT],
+    }));
+    assert!(
+        answer.get("err").is_none(),
+        "{} reads the made workspace's layout: {answer}\n{}",
+        laptop.label,
+        laptop.diagnostic()
+    );
+    assert!(
+        !answer["answer"]["records"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        "the layout record the session wrote is the service's: {answer}\n{}",
+        laptop.diagnostic()
+    );
+}
+
 /// A member whose part is to read is refused the invitation an app asks the shell for: sharing is
 /// inviting into the workspace, and only what the person using the app may do reaches another
 /// person through it.

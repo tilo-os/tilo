@@ -172,8 +172,7 @@ fn events(engine: &Engine) -> Vec<tokio::sync::watch::Receiver<u64>> {
 
 /// Found `record` of `app` in the branch `workspace` as `changes` , a whole document: sealed under
 /// the keys of the record's channel in the branch, which its first sealed write asks for and this
-/// device, the branch's only member, makes, waiting for them until `until`; in the clear where the
-/// branch's records are documents this device commits.
+/// device, the branch's only member, makes, waiting for them until `until`.
 async fn found(
     engine: &Engine,
     workspace: WorkspaceId,
@@ -391,13 +390,12 @@ async fn seal_keys(
     loop {
         let mut events = events(engine);
         match engine.resource_write_keys(workspace, route)? {
-            None => return Ok(None),
-            Some(SealKeys::Here(keys)) => return Ok(Some(keys)),
-            Some(SealKeys::NoSecretStore) => {
+            SealKeys::Here(keys) => return Ok(Some(keys)),
+            SealKeys::NoSecretStore => {
                 return Err("this device holds no secret store to keep its keys in".to_owned());
             }
-            Some(SealKeys::Waiting) if moved(&mut events, until).await => {}
-            Some(SealKeys::Waiting) => return Err("the branch's keys did not come".to_owned()),
+            SealKeys::Waiting if moved(&mut events, until).await => {}
+            SealKeys::Waiting => return Err("the branch's keys did not come".to_owned()),
         }
     }
 }
@@ -777,8 +775,12 @@ impl crate::Shared {
         let copied = Polled::new(
             Arc::clone(&self.wake_handle),
             async move {
-                if let Some(engine) = &engine {
-                    engine.found(workspace, &founded).await;
+                if let Some(engine) = &engine
+                    && let Err(error) = engine.found(workspace, &founded).await
+                {
+                    // The workspace is the layout's from here either way; a founding that failed
+                    // is asked for again, and the person hears why.
+                    tracing::warn!(%error, %workspace, "the branch's workspace was not founded");
                 }
                 copy(engine.as_deref(), Places::here(), from, workspace, until).await
             },
@@ -1151,8 +1153,8 @@ mod tests {
             let identity = identity();
             let engine = reopened(&state, &identity);
             let (from, to) = ids();
-            pollster::block_on(engine.found(from, "Research"));
-            pollster::block_on(engine.found(to, "Research branch"));
+            pollster::block_on(engine.found(from, "Research")).expect("the source is founded");
+            pollster::block_on(engine.found(to, "Research branch")).expect("the branch is founded");
             let keys = key_group::KeyGroup::create(
                 collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
                 key_group::MemberKey::generate("owner").unwrap(),
@@ -1236,8 +1238,8 @@ mod tests {
             let identity = identity();
             let engine = reopened(&state, &identity);
             let (from, to) = ids();
-            pollster::block_on(engine.found(from, "Research"));
-            pollster::block_on(engine.found(to, "Research branch"));
+            pollster::block_on(engine.found(from, "Research")).expect("the source is founded");
+            pollster::block_on(engine.found(to, "Research branch")).expect("the branch is founded");
             let keys = key_group::KeyGroup::create(
                 collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
                 key_group::MemberKey::generate("owner").unwrap(),
@@ -1340,7 +1342,7 @@ mod tests {
                 "7a6b5c4d-0000-4000-8000-000000000005",
             ]
             .map(|id| WorkspaceId::parse(id).unwrap());
-            pollster::block_on(engine.found(from, "Research"));
+            pollster::block_on(engine.found(from, "Research")).expect("the source is founded");
             let channel = collab_types::WorkspaceId::parse(FROM).unwrap();
             let keys =
                 key_group::KeyGroup::create(channel, key_group::MemberKey::generate("owner").unwrap())
@@ -1390,7 +1392,8 @@ mod tests {
             };
 
             for (n, to) in targets.into_iter().enumerate() {
-                pollster::block_on(engine.found(to, &format!("Question {n}")));
+                pollster::block_on(engine.found(to, &format!("Question {n}")))
+                    .expect("the branch is founded");
                 let branched = branch(Some(&engine), places.clone(), from, to);
                 assert!(
                     branched.missing.is_empty(),
@@ -1418,8 +1421,8 @@ mod tests {
             let person = hex::encode(identity.device_cert.user_public_key);
             let engine = reopened(&state, &identity);
             let (from, to) = ids();
-            pollster::block_on(engine.found(from, "Research"));
-            pollster::block_on(engine.found(to, "Research branch"));
+            pollster::block_on(engine.found(from, "Research")).expect("the source is founded");
+            pollster::block_on(engine.found(to, "Research branch")).expect("the branch is founded");
             assert!(engine.holds(from) && engine.holds(to));
             let channel = collab_types::WorkspaceId::parse(&to.to_string()).unwrap();
             let keys =
@@ -1554,14 +1557,16 @@ mod tests {
     fn reopened(
         state: &tempfile::TempDir,
         identity: &tilo_identity::identity_store::DeviceIdentity,
-    ) -> Engine {
-        let engine = Engine::open(
-            identity.clone(),
-            Some(state.path()),
-            Vec::new(),
-            crate::platform::membership_check::of_this_session(),
-        )
-        .expect("this device's engine opens");
+    ) -> Arc<Engine> {
+        let engine = Arc::new(
+            Engine::open(
+                identity.clone(),
+                Some(state.path()),
+                Vec::new(),
+                crate::platform::membership_check::of_this_session(),
+            )
+            .expect("this device's engine opens"),
+        );
         crate::founding_fixture::serve(&engine);
         engine
     }

@@ -349,6 +349,32 @@ impl PeerGovernance<'_> {
             .collect())
     }
 
+    /// The devices of `people` among the workspace's key holders at `now`
+    /// ([`Self::key_holders`]): who holds the keys of a group only those
+    /// people read. A person it no longer has as a member, and a revoked key,
+    /// hold none, so the commit that follows either rotates that group's keys.
+    pub fn reader_key_holders(
+        self,
+        people: &BTreeSet<[u8; 32]>,
+        now: SystemTime,
+    ) -> Result<BTreeSet<[u8; 32]>, String> {
+        let mut theirs: BTreeSet<[u8; 32]> = self
+            .governed_set(now)?
+            .into_iter()
+            .filter(|(root, member)| !member.removed && people.contains(root))
+            .flat_map(|(_, member)| member.devices)
+            .collect();
+        theirs.extend(
+            self.keeping_devices()
+                .iter()
+                .filter(|hint| people.contains(&hint.host.user_public_key))
+                .map(|hint| hint.host.device_public_key),
+        );
+        let mut holders = self.key_holders(now)?;
+        holders.retain(|device| theirs.contains(device));
+        Ok(holders)
+    }
+
     /// The workspace's people and grants as its governance records them: its
     /// owner, its members with the part each takes, when each was admitted,
     /// and the grants on its nodes. This is the one source every list of its

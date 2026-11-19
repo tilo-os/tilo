@@ -438,9 +438,6 @@ mod https_completion {
         }
     }
     impl NativeDocumentReads for StoreOwner {
-        fn requires_workspace(&self, _: &str) -> bool {
-            true
-        }
         fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
             context.revalidate()
         }

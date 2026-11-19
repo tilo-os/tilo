@@ -40,6 +40,7 @@ impl GovernanceTransport for Endpoint {
         if self.workspace.down.load(Ordering::SeqCst) {
             return false;
         }
+        // Carried in the workspace the message names, as a device's transport carries it.
         let Some(inbound) = InboundGovernance::from_message(message) else {
             return false;
         };
@@ -80,6 +81,8 @@ pub struct Policy {
     /// The workspace's governance is not known here: the directory names no
     /// one.
     pub unknown: Arc<std::sync::atomic::AtomicBool>,
+    /// The person each device is one of, by their root key: who reads a reader set's group.
+    pub people: Arc<Mutex<BTreeMap<Ed25519PublicKey, [u8; 32]>>>,
 }
 
 /// The epoch a test [`Directory`] reports as its
@@ -134,6 +137,21 @@ impl KeyDirectory for Directory {
                 .filter(|(_, until)| now < **until)
                 .map(|(device, _)| *device),
         );
+        Some(allowed)
+    }
+    fn reader_devices(
+        &self,
+        workspace: WorkspaceId,
+        people: &BTreeSet<[u8; 32]>,
+        now: u64,
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        let theirs = self.policy.people.lock().unwrap().clone();
+        let mut allowed = self.allowed_devices(workspace, now)?;
+        allowed.retain(|device| {
+            theirs
+                .get(device)
+                .is_some_and(|person| people.contains(person))
+        });
         Some(allowed)
     }
     fn founds(&self, _: WorkspaceId) -> bool {

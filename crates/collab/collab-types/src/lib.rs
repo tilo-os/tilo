@@ -67,6 +67,7 @@ pub mod own_resource;
 pub mod peer;
 pub mod personal;
 pub mod presence;
+pub mod readers;
 pub mod realtime;
 pub mod receipt;
 pub mod redaction;
@@ -129,7 +130,7 @@ pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
     EncryptionMetadata, EncryptionScheme, GOVERNANCE_NEVER_ARRIVED, MAX_DOCUMENT_MUTATION_BYTES,
     MAX_GOVERNANCE_HEADS, RoutedDocumentPayload, SignedOp, WholeDocumentPayload,
-    document_artifact_id, document_attestation_id, governance_head, live_artifact_id,
+    document_artifact_id, document_attestation_id, governance_head,
     next_unordered_document_sequence, validate_document_payload_route,
     validate_whole_document_payload_route,
 };
@@ -139,6 +140,7 @@ pub use personal::{
     is_personal_cluster, person_document_id, person_resource_type, personal_cluster,
     personal_cluster_of,
 };
+pub use readers::{EVERY_MEMBER, Readers, app_document_id, content_artifact_id, reader_group};
 pub use receipt::{
     Allows, ChangeAuthor, Receipt, ReceiptRefusal, ReceiptSurface, SurfaceSource, Surfaces,
     WrittenDocument, check_appearances, check_claims, check_claims_by_kind, check_continuations,

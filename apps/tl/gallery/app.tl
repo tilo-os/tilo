@@ -150,17 +150,8 @@ initial action fill(g: Gallery) {
     g.data_cards.insert(Card(title: "Design", count: 12))
     g.data_cards.insert(Card(title: "Engineering", count: 34))
     g.data_cards.insert(Card(title: "Support", count: 7))
-    g.data_changes.insert(
-        Change(
-            title: "The summary, rewritten",
-            who: "Ada",
-            summary: "Rewrote the summary",
-            at: 2026-06-30T08:42Z,
-        ),
-    )
-    g.data_changes.insert(
-        Change(title: "Moved to Done", who: "Sam", summary: "Moved to Done", at: 2026-06-30T09:10Z),
-    )
+    g.data_changes.insert(Change(title: "Rewrote the summary", summary: "Rewrote the summary"))
+    g.data_changes.insert(Change(title: "Moved to Done", summary: "Moved to Done"))
     g.media_photos.insert(Photo(title: "Dawn", place: "Black Forest", picture: photo()))
     g.media_photos.insert(Photo(title: "Blue hour", place: "Lake Constance", picture: photo()))
     g.media_photos.insert(Photo(title: "Dunes", place: "Erg Chebbi", picture: photo()))

@@ -524,8 +524,8 @@ impl Inner {
                 }
             };
             let sealed = match engine.resource_write_keys(room, (app, record)) {
-                Ok(Some(SealKeys::Here(keys))) => Some(keys),
-                Ok(Some(SealKeys::Waiting | SealKeys::NoSecretStore)) => {
+                Ok(SealKeys::Here(keys)) => Some(keys),
+                Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => {
                     unwritten.insert((workspace.clone(), app.clone()));
                     continue;
                 }
@@ -534,7 +534,6 @@ impl Inner {
                     unwritten.insert((workspace.clone(), app.clone()));
                     continue;
                 }
-                Ok(None) => None,
             };
             let (engine, route) = (Arc::clone(engine), (app.clone(), record.clone()));
             let mut writing = Writing::write(Arc::clone(&self.wake), async move {
@@ -629,11 +628,10 @@ impl Inner {
                     DocumentMutation::Snapshot(bytes) => (bytes, true),
                     DocumentMutation::Incremental(bytes) => (bytes, false),
                 };
-                // In the clear where this device commits the workspace's documents, else under the
-                // record channel's keys, once it holds them.
+                // Seal under the keys selected for this record.
                 let sealed = match engine.resource_write_keys(room, (&app, &record)) {
-                    Ok(Some(SealKeys::Here(keys))) => Some(keys),
-                    Ok(Some(SealKeys::Waiting | SealKeys::NoSecretStore)) => {
+                    Ok(SealKeys::Here(keys)) => Some(keys),
+                    Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => {
                         unwritten.insert((workspace.clone(), app.clone()));
                         continue;
                     }
@@ -642,7 +640,6 @@ impl Inner {
                         unwritten.insert((workspace.clone(), app.clone()));
                         continue;
                     }
-                    Ok(None) => None,
                 };
                 let (engine, route) = (Arc::clone(&engine), (app.clone(), record.clone()));
                 let mut writing = Writing::write(Arc::clone(&self.wake), async move {
