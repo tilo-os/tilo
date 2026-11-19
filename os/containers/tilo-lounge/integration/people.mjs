@@ -205,7 +205,10 @@ const dump = async (tab, name) => {
   const states = (shown.chordStates ?? []);
   if (states.length) console.error(`--- ${name} chords as they arrived: ${states.slice(-6).map(state => JSON.stringify(state)).join(', ')}`);
   if (shown.call) console.error(`--- ${name} call: ${JSON.stringify(shown.call)}`);
-  const shot = await tab.screenshot();
+  // A picture is what the page showed where it could give one: a page whose GPU
+  // is minutes behind answers no frame within a screenshot's steps, and what
+  // this step reads (its state, its names, its console) is no less true for it.
+  const shot = await tab.screenshot().catch(() => null);
   if (shot) writeFileSync(`${out}/${name}.png`, shot);
   return shown;
 };
@@ -612,6 +615,26 @@ const notesPoint = async tab => {
 const sheetCell = async tab => {
   const node = await maybePublished(tab, 'B2');
   return node ? centreOfNode(tab, node) : null;
+};
+// Where the sheet's grid stands, as the app publishes it: every cell it draws,
+// by its name and where it lies. A grid the fingers scrolled has moved its
+// cells or brought others on; one that took the wheel and drew the same cells
+// where they stood has not scrolled.
+const sheetGrid = async (tab, not = null) => {
+  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+  return tab.waitFor(`(() => {
+  const cells = {};
+  const node = n => {
+    const b = n.bounds ?? n.rect;
+    if (b && /^[A-Z]{1,3}[0-9]{1,7}$/.test(n.name ?? '')) cells[n.name] = b;
+    (n.children || []).forEach(node);
+  };
+  const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+  const root = globalThis.tiloMount?.state()?.semantics?.root;
+  if (root) walk(root);
+  const now = JSON.stringify(cells);
+  return now !== '{}' && now !== ${JSON.stringify(not)} ? now : '';
+})()`, {timeout: stepLimit(3)}).catch(() => '');
 };
 // The names of the nodes drawn at page point (x, y), innermost first.
 const namesAt = async (tab, x, y) => {
@@ -1294,7 +1317,6 @@ try {
     if (!name) return null;
     return await press(tab, name) ? name : null;
   };
-  const picture = async tab => (await tab.screenshot())?.toString('base64') ?? '';
   const wheel = (tab, x, y, {deltaX = 0, deltaY = 0, modifiers = 0} = {}) =>
     tab.send('Input.dispatchMouseEvent',
       {type: 'mouseWheel', x, y, deltaX, deltaY, ...(modifiers ? {modifiers} : {})});
@@ -1489,7 +1511,7 @@ try {
         failed(`${application.label} opened, but Enter to its window was not measured (${JSON.stringify(marks)}); an unmeasured open is not a fast one`, a.tab);
       }
       timings.push({app: application.id, ...marks});
-      const shot = await a.tab.screenshot();
+      const shot = await a.tab.screenshot().catch(() => null);
       if (shot) writeFileSync(`${out}/app-${application.id.replace(/[^a-z0-9]+/gi, '-')}.png`, shot);
       opened.push(application.id);
       // Where one app's open went: the search for it, its window arriving, the
@@ -1527,9 +1549,9 @@ try {
     if (!panBefore) failed('the strip does not overflow, so nothing can pan');
     // The way the strip still has workspace: a gesture at its end pans nothing.
     const forward = panBefore.offset < panBefore.max / 2;
-    const frameBefore = await picture(a.tab);
+    const framesBefore = await presented(a.tab);
     await sidewaysSwipe(a.tab, overNotes.x, overNotes.y, forward, async () => {
-      const midScroll = await a.tab.screenshot();
+      const midScroll = await a.tab.screenshot().catch(() => null);
       if (midScroll) writeFileSync(`${out}/strip-mid-scroll.png`, midScroll);
     });
     // Where the swipe left the strip, once it has come to rest: a reveal still
@@ -1547,7 +1569,9 @@ try {
     if (windowsAfter.join() !== windowsBefore.join()) {
       failed(`a sideways pan changed the windows: ${JSON.stringify({before: windowsBefore, after: windowsAfter})}`);
     }
-    if (await picture(a.tab) === frameBefore) failed('the strip did not repaint as it panned');
+    // A strip that pans without drawing is no pan a person sees: the pan is
+    // drawn on the frames it stepped through, so it presented some.
+    if (await presented(a.tab) <= framesBefore) failed('the strip did not repaint as it panned');
     console.log(`ok: two fingers sideways pan the strip over Notes (${panBefore.offset} to ${panAfter.offset})`);
     mark('a sideways pan over Notes');
 
@@ -1563,7 +1587,8 @@ try {
     const keptPan = await restingPan(a.tab);
     const cell = await sheetCell(a.tab);
     if (!cell) failed('Sheets shows no cell B2 to swipe over');
-    const sheetBefore = await picture(a.tab);
+    const gridBefore = await sheetGrid(a.tab);
+    if (!gridBefore) failed('Sheets publishes no grid to scroll', a.tab);
     // Toward the later columns: a sheet opens on its first one, so that is where
     // its room is. Which way the strip has room says nothing about the grid —
     // a swipe the columns cannot follow is the strip's, and would pan it.
@@ -1573,7 +1598,8 @@ try {
     if ((sheetPan?.offset ?? 0) !== (keptPan?.offset ?? 0)) {
       failed(`the strip panned under a sideways wheel Sheets scrolled with: ${JSON.stringify(report.sheets)}`, a.tab);
     }
-    if (await picture(a.tab) === sheetBefore) failed('Sheets did not scroll sideways with the fingers', a.tab);
+    const gridAfter = await sheetGrid(a.tab, gridBefore);
+    if (!gridAfter) failed(`Sheets did not scroll sideways with the fingers: its cells stand where they did (${gridBefore})`, a.tab);
     console.log('ok: the same gesture scrolls Sheets and leaves the strip');
     mark('a sideways swipe over Sheets');
   }
@@ -1585,9 +1611,11 @@ try {
     // never a pan, with or without a sideways part.
     const beforePinch = await panOf(a.tab);
     for (let i = 0; i < 6; i++) await wheel(a.tab, centre.x, centre.y, {deltaY: -40, modifiers: 2});
-    await settle(a.tab, 2);
+    // A zoom the shell has reached the end of draws its one frame and stops, so
+    // what the gesture is worth is that frame, or a step with nothing left to draw.
+    await drawn(a.tab, 1);
     for (let i = 0; i < 6; i++) await wheel(a.tab, centre.x, centre.y, {deltaX: 10, deltaY: -20, modifiers: 2});
-    await settle(a.tab, 2);
+    await drawn(a.tab, 1);
     const afterPinch = await panOf(a.tab);
     report.pinch = {before: beforePinch, after: afterPinch};
     if ((afterPinch?.offset ?? 0) !== (beforePinch?.offset ?? 0)) {
@@ -1596,11 +1624,11 @@ try {
     console.log('ok: a pinch zooms and never pans the strip');
     mark('a pinch zoom');
 
-    // A right-click in the chat's composer is the text's menu.
+    // A right-click in the chat's composer is the text's menu. The composer is
+    // read where the shell publishes it, not after a count of frames: a shell
+    // that drew its window in one frame owes no second.
     await search(a.tab, a.command, 'chat', 'Chat');
-    await settle(a.tab, 2);
-    const composer = JSON.parse(await find(a.tab, 'Message composer'));
-    if (!composer) failed('the chat has no composer to right-click');
+    const composer = await published(a.tab, 'Message composer', 'the chat composer');
     const [cx0, cy0, cx1, cy1] = Array.isArray(composer.bounds)
       ? composer.bounds
       : [composer.bounds.x0 ?? composer.bounds.x, composer.bounds.y0 ?? composer.bounds.y,

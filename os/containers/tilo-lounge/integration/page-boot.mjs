@@ -126,6 +126,13 @@ const until = async (expression, what, timeout = stepLimit(4)) => {
     gpuStalls: globalThis.tiloMount?.state()?.gpuStalls ?? null,
     phase: globalThis.tiloMount?.state()?.phase ?? null,
     searchPending: globalThis.tiloMount?.state()?.searchPending ?? null,
+    // What the shell's search holds, as the shell published it: the query its
+    // field carries, whether it still owes rows, and the rows it shows, so a
+    // search that never answered says whether the text reached it and what it
+    // was still waiting for.
+    searchOpen: globalThis.tiloMount?.state()?.searchOpen ?? null,
+    searchSearching: globalThis.tiloMount?.state()?.searchSearching ?? null,
+    searchCard: globalThis.tiloMount?.state()?.searchCard ?? null,
     // Each search chord the page saw, as it arrived and 300 ms after: whether
     // the page took it, and what the shell said of it then.
     chords: globalThis.__chordStates ?? null,
