@@ -30,6 +30,12 @@ maps-saved-places = Gespeicherte Orte
 
 maps-workspace-places = Die Orte geändert
 maps-workspace-mode = Fortbewegung auf { $new ->
+    [car] Auto
+    [transit] öffentliche Verkehrsmittel
+    [bike] Fahrrad
+    [foot] zu Fuß
+   *[other] { $new }
+} gesetzt
 maps-workspace-transit-time = Abfahrts- oder Ankunftszeit der Verbindungen geändert
 maps-offline-areas = Offline-Bereiche
 maps-offline-areas-remember = Heruntergeladenen Bereich merken

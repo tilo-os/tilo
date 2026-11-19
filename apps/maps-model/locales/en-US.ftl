@@ -30,6 +30,12 @@ maps-saved-places = Saved places
 
 maps-workspace-places = Changed the places
 maps-workspace-mode = Set directions to travel { $new ->
+    [car] by car
+    [transit] by public transport
+    [bike] by bike
+    [foot] on foot
+   *[other] { $new }
+}
 maps-workspace-transit-time = Changed when transit journeys leave or arrive
 maps-offline-areas = Offline areas
 maps-offline-areas-remember = Remember a downloaded area
