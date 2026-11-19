@@ -1410,3 +1410,9 @@ reason = "The workspace service's own document store accessor (`WorkspaceService
 words = ["record"]
 identifiers = ["records", "record"]
 paths = ["crates/server/tilo-workspace-service/src/workspaces/member.rs"]
+
+[[allow]]
+reason = "The service's test fixture starts a certified device holding given keys (`test_host_holding`), a name its other tests share."
+words = ["host"]
+identifiers = ["test_host_holding"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/resources/tests.rs"]
