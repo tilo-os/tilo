@@ -5,6 +5,9 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["monitor-samples"]
 
 [lib]
 name = "monitor"
@@ -15,6 +18,9 @@ name = "monitor"
 path = "src/main.rs"
 
 [features]
+# The sample snapshot and scenarios the captures show: development runs and
+# tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 test-support = ["ui/test-support"]
 
@@ -41,6 +47,7 @@ tilo-system-info = { path = "../../crates/platform/tilo-system-info" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+monitor-samples = { package = "monitor", path = ".", features = ["samples"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 # The tests serve the session's service themselves.
 tilo-system-stats = { path = "../../crates/system/system-stats" }

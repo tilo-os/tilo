@@ -10427,6 +10427,7 @@ dependencies = [
 name = "monitor"
 version = "0.1.0"
 dependencies = [
+ "monitor",
  "monitor-model",
  "runtime-dylib",
  "serde",

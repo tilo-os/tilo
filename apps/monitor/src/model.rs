@@ -141,13 +141,24 @@ pub struct MonitorModel {
 pub const HISTORY: usize = 120;
 
 impl MonitorModel {
-    /// A fully populated snapshot with no IO, which captures render and the live app
-    /// starts from.
+    /// The sample snapshot a capture shows; a release build carries none.
+    pub fn sample() -> Self {
+        #[cfg(feature = "samples")]
+        {
+            Self::sample_snapshot()
+        }
+        #[cfg(not(feature = "samples"))]
+        {
+            Self::empty()
+        }
+    }
+
+    #[cfg(feature = "samples")]
     #[allow(
         clippy::similar_names,
         reason = "net_rx_hist/net_tx_hist are the standard receive/transmit pair; renaming either would read worse"
     )]
-    pub fn sample() -> Self {
+    fn sample_snapshot() -> Self {
         let cores: Vec<f32> = SAMPLE_CORE_LOAD.to_vec();
 
         let cpu_hist = RollingSeries::from_samples(
@@ -296,10 +307,12 @@ impl MonitorModel {
     }
 }
 
+#[cfg(feature = "samples")]
 const SAMPLE_CORE_LOAD: [f32; 8] = [62.0, 18.0, 47.0, 9.0, 88.0, 33.0, 14.0, 71.0];
 
 /// A sample row as `(name, parent, user, cpu, mem_MiB, threads, status, kernel)`;
 /// `cpu` is per core, `parent` is `""` for a forest root.
+#[cfg(feature = "samples")]
 type SampleRow = (
     &'static str,
     &'static str,
@@ -313,6 +326,7 @@ type SampleRow = (
 
 /// The sample process table: each row names its parent so the tree reads as a real
 /// session, and a name with several instances attaches to the first match.
+#[cfg(feature = "samples")]
 const SAMPLE_ROWS: &[SampleRow] = &[
     ("shell", "", "ada", 14.6, 412, 24, "Running", false),
     ("browser", "shell", "ada", 12.3, 643, 14, "Running", false),
@@ -507,6 +521,7 @@ const SAMPLE_ROWS: &[SampleRow] = &[
     ("irq/142-nvme0", "", "root", 0.1, 0, 1, "Idle", true),
 ];
 
+#[cfg(feature = "samples")]
 fn sample_pids(rows: &[SampleRow]) -> Vec<u32> {
     let mut pid: u32 = 1;
     let mut pids = Vec::with_capacity(rows.len());
@@ -518,6 +533,7 @@ fn sample_pids(rows: &[SampleRow]) -> Vec<u32> {
 }
 
 /// Turn sample row `i` into a [`ProcessInfo`] with believable details.
+#[cfg(feature = "samples")]
 #[allow(
     clippy::similar_names,
     reason = "pid/ppid are the standard process-table terms; renaming either would read worse"
@@ -571,6 +587,7 @@ fn build_sample_process(rows: &[SampleRow], pids: &[u32], i: usize, row: SampleR
 
 /// The app a sample process belongs to: the person's apps, never the system's
 /// services.
+#[cfg(feature = "samples")]
 fn sample_app(name: &str) -> Option<&'static str> {
     Some(match name {
         "browser" | "Web Content" | "GPU Process" => "so.tilo.browser",
@@ -583,6 +600,7 @@ fn sample_app(name: &str) -> Option<&'static str> {
     })
 }
 
+#[cfg(feature = "samples")]
 fn sample_processes() -> Vec<ProcessInfo> {
     let pids = sample_pids(SAMPLE_ROWS);
     SAMPLE_ROWS
@@ -592,6 +610,7 @@ fn sample_processes() -> Vec<ProcessInfo> {
         .collect()
 }
 
+#[cfg(feature = "samples")]
 fn sample_cmdline(name: &str, user: &str) -> String {
     match name {
         "shell" => "/usr/bin/shell --session wayland --workspace 0".into(),
