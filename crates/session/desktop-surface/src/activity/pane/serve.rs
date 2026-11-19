@@ -478,15 +478,6 @@ impl WorkspaceActivityPane {
             kind: kind(entry.entry_kind),
             at_ms: millis(entry.timestamp),
             summary: self.timeline.summary_of(entry).to_owned(),
-            step: context
-                .filter(|context| context.what.is_some())
-                .map(|context| ui::tilo_actions::ActionContext {
-                    app: context.app.clone(),
-                    resource: context.resource.clone(),
-                    item: context.item.clone(),
-                    what: context.what.clone(),
-                    ..ui::tilo_actions::ActionContext::default()
-                }),
             workspace: context.and_then(|context| {
                 context
                     .facets
