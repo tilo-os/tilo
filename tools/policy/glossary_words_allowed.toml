@@ -160,7 +160,7 @@ paths = ["apps/poker/*"]
 [[allow]]
 reason = "iroh's NAT and packet relay, and the live session's relaying device: iroh's own infrastructure, and the one Tilo role that keeps the word relay."
 words = ["relay"]
-identifiers = ["RelayMode", "RelayUrl", "RelayMap", "RelayNode", "RelayUrlParseError", "relay_mode", "ByRelay"]
+identifiers = ["RelayMode", "RelayUrl", "RelayMap", "RelayNode", "RelayUrlParseError", "relay_mode", "relay_url", "relay_urls", "ByRelay"]
 
 [[allow]]
 reason = "iroh's NAT and packet relay, and the live session's relaying device: iroh's own infrastructure, and the one Tilo role that keeps the word relay."
@@ -1592,3 +1592,8 @@ paths = ["crates/browser/tilo-browser-runtime/web/workspaces.mjs", "crates/brows
 reason = "iroh's packet relay: a test gives the desktop's peer network a relay address that never answers and shows the windows kept across a restart do not wait for it."
 words = ["relay"]
 paths = ["crates/session/session/tests/kept_apps.rs"]
+
+[[allow]]
+reason = "The session client's own-resource test starts a workspace server and holds the shared fixture's names for the device it runs workspaces on (`TestHost`, `start_workspace_host_relaying`, `host_device`)."
+words = ["host"]
+paths = ["crates/session/client/tests/own_record_open.rs"]

@@ -1,7 +1,9 @@
 //! The layout a page keeps: one automerge document, whose own change history is what happened to the
 //! layout, who did it and when.
 //! A native session keeps no such document: the workspaces' shared records hold its layout, and every
-//! member shows them ([`tilo_desktop_model::shared_resource`]).
+//! member shows them ([`tilo_desktop_model::shared_resource`]). A page in no workspace keeps its
+//! layout here. In a workspace, the workspace holds the layout, and how the person shows it is
+//! theirs, in their own view of it ([`tilo_desktop_model::person_view`]).
 //! The layout is no second copy anywhere: the tree a host draws is a projection of this document, a
 //! pass that finds the layout changed writes one change of it, and a version restored from the
 //! history is another change on top. What is written is the form that opens again — a running
@@ -159,20 +161,6 @@ impl LayoutDocument {
         records: &[(TabId, String)],
     ) -> bool {
         self.write(desktop, time, false, Some(asked), records, None)
-    }
-
-    /// Record how this device shows `desktop` alone: a host whose workspace holds the layout itself
-    /// keeps only the view here, so a reload opens the layout as the workspace has it. Whether
-    /// anything was written.
-    pub fn record_view(&self, desktop: &Tree, time: i64) -> bool {
-        let mut doc = self.doc.borrow_mut();
-        desktop_doc::seed_of_the_view(&mut doc, &relaunchable(desktop));
-        if doc.pending_ops() == 0 {
-            return false;
-        }
-        shared_resource::commit_change(&mut doc, &self.person, time, None);
-        self.keep(&mut doc);
-        true
     }
 
     /// Record `desktop`, and that the windows in `records` show the records they name.

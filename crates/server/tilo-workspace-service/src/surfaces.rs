@@ -274,7 +274,7 @@ pub(crate) fn role_refusal(
     let access = device_access?.get(&author_device)?;
     let person = access.person_id().unwrap_or_default();
     if access.policy.active_role(person) != Some(tilo_action_policy::Role::Viewer)
-        || writes_own_document(&message, person)
+        || writes_own_resource(&message, person)
     {
         return None;
     }
@@ -287,14 +287,21 @@ pub(crate) fn role_refusal(
     ))
 }
 
-/// Whether `message` is a change of `person`'s own record, which only they
-/// read and write whatever their role in the workspace.
-fn writes_own_document(message: &neighbour_wire::NeighbourMsg, person: &str) -> bool {
-    matches!(
-        message,
-        neighbour_wire::NeighbourMsg::AppDocument { document_id, own: Some(own), .. }
-            if !person.is_empty() && own.names(document_id) && own.person() == person
-    )
+/// Whether `message` is a change of `person`'s own resource, which only they
+/// write whatever their role in the workspace.
+fn writes_own_resource(message: &neighbour_wire::NeighbourMsg, person: &str) -> bool {
+    !person.is_empty()
+        && matches!(
+            message,
+            neighbour_wire::NeighbourMsg::AppDocument { app_id, document_id, own, .. }
+                if tilo_desktop_model::shared_resource::guard::own_person(
+                    app_id,
+                    document_id,
+                    own.as_ref(),
+                )
+                .as_deref()
+                    == Some(person)
+        )
 }
 
 /// Why the server refuses the change the delta `delta` carries as a write of a
@@ -350,11 +357,11 @@ pub(crate) fn refusal(
     let author = device_access.map(|device_access| device_access.get(envelope.author.as_bytes()));
     // A member's own record is decided as theirs: its person does anything in
     // it, nobody else anything.
-    let person = route
-        .own
-        .as_ref()
-        .filter(|own| own.names(&route.document_id))
-        .map(collab_types::OwnResource::person);
+    let person = tilo_desktop_model::shared_resource::guard::own_person(
+        &route.app_id,
+        &route.document_id,
+        route.own.as_ref(),
+    );
     let mut cx = tilo_action_policy::Context::at(tilo_clock::unix_now());
     if let Some(person) = &person {
         cx = cx.with_own_resource(&route.document_id, person);

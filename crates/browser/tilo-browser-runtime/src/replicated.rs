@@ -117,6 +117,9 @@ pub(crate) struct Replicated {
     pub(crate) desktop_history_heads: fn(u32) -> Option<Vec<ui::automerge::ChangeHash>>,
     /// The workspace's layout document, as the profile keeps a copy of it.
     pub(crate) layout_bytes: fn(u32) -> Option<Vec<u8>>,
+    /// Write `tree`, the layout a mount shows, as the person's view of the workspace's layout in
+    /// their own view of it, which every device of theirs reads.
+    pub(crate) publish_view: fn(u32, &tilo_desktop_model::Layout),
 }
 
 thread_local! {
@@ -265,4 +268,8 @@ pub(crate) fn desktop_history_heads(id: u32) -> Option<Vec<ui::automerge::Change
 
 pub(crate) fn layout_bytes(id: u32) -> Option<Vec<u8>> {
     installed(None, |replicated| (replicated.layout_bytes)(id))
+}
+
+pub(crate) fn publish_view(id: u32, tree: &tilo_desktop_model::Layout) {
+    installed((), |replicated| (replicated.publish_view)(id, tree));
 }

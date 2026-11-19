@@ -260,6 +260,13 @@ impl StatePeer {
         self.core.own_write(app, record, author)
     }
 
+    /// [`Self::own_write`] as whose resource it is, for one a member writes whatever their role:
+    /// a resource its app declares each member's own, or their view of the workspace's layout.
+    #[must_use]
+    pub fn own_person(&self, app: &str, document: &str, author: &[u8; 32]) -> Option<String> {
+        self.core.own_person(app, document, author)
+    }
+
     /// The person (user root key) of every member's own record this replica
     /// knows, by app and record.
     #[must_use]
@@ -1242,10 +1249,7 @@ impl StatePeer {
         };
         // A member's own record is decided as its person's: they do anything in
         // it whatever their role, and nobody else anything.
-        let person = self
-            .core
-            .own_write(app_id, record, source)
-            .map(|own| own.person());
+        let person = self.core.own_person(app_id, record, source);
         let mut cx = tilo_action_policy::Context::at_time(authorization_time);
         if let Some(person) = &person {
             cx = cx.with_own_resource(record, person);

@@ -1919,10 +1919,10 @@ try {
 
   // The shell one person arranged is the shell the other shows: neither of the
   // two people sharing it had a write of the shared desktop refused. The
-  // invitation's person keeps their view of the layout on their own page: the
-  // link brings them in as a Commenter and A makes them a Viewer, and neither
-  // role writes in the workspace, so their page sends nothing of its layout,
-  // which the workspace would refuse.
+  // invitation's person keeps their view of the layout as their own view of
+  // it, which the workspace admits whatever their role: the link brings them in
+  // as a Commenter and A makes them a Viewer, and their page writes none of the
+  // workspace's layout, which the workspace would refuse.
   const refused = both.filter(line => /the workspace refused a change/.test(line));
   report.refused = refused;
   const refusedOfTheSharing = [...a.tab.log, ...b.tab.log]

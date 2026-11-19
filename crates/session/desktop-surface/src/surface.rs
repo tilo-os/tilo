@@ -751,6 +751,22 @@ impl DesktopHandle {
         self.note_arrivals(opened, ui::time::now());
     }
 
+    /// Show `view`, the person's view of `workspace`'s layout as they left it: the strip
+    /// and group in front, the tab in front of each group, and how wide each group is
+    /// ([`tilo_desktop_model::person_view`]). Whether the shell changed.
+    pub fn show_view(
+        &self,
+        view: &tilo_desktop_model::person_view::PersonView,
+        workspace: tilo_desktop_model::WorkspaceId,
+    ) -> bool {
+        let mut tree = self.read(Clone::clone);
+        if !view.applied(&mut tree, workspace) {
+            return false;
+        }
+        self.replace_tree(tree);
+        true
+    }
+
     /// Ask the [`TileSource`] for `tab` 's content again on a coming update pass, as when the tab
     /// was first shown: for a host whose first answer was a notice (its record had not arrived).
     /// The host is asked for that pass, so a window waiting for its record fills in when the record

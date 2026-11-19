@@ -107,12 +107,12 @@ fn deliver_at(
                 state
                     .artifact_resources
                     .insert(artifact, document.document_id.clone());
-                if let Some(own) = document
-                    .own
-                    .as_ref()
-                    .filter(|own| own.names(&document.document_id))
-                {
-                    state.artifact_owners.insert(artifact, own.person());
+                if let Some(person) = tilo_desktop_model::shared_resource::guard::own_person(
+                    &document.app_id,
+                    &document.document_id,
+                    document.own.as_ref(),
+                ) {
+                    state.artifact_owners.insert(artifact, person);
                 }
                 validate_document(
                     &document.envelope,

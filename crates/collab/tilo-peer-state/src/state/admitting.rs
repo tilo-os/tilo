@@ -293,11 +293,11 @@ impl StatePeer {
             .channel
             .artifact_resources
             .insert(envelope.artifact, route.record.clone());
-        if let Some(own) = self.core.own_write(&route.app, &route.record, &source) {
+        if let Some(person) = self.core.own_person(&route.app, &route.record, &source) {
             candidate
                 .channel
                 .artifact_owners
-                .insert(envelope.artifact, own.person());
+                .insert(envelope.artifact, person);
         }
         candidate.channel.workspace.clone_from(&self.core.workspace);
         let mut validated_channel = candidate.channel.clone();

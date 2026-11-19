@@ -19,7 +19,7 @@
 //! this device reads, and `view_v1` is how this device shows the layout; none reaches
 //! another device, all are here because it is the one store of the layout. A document a
 //! workspace shares ([`write_shared`]) holds neither `view_v1` nor `active`: how a person
-//! shows the layout is theirs, and stays in the document their own device keeps.
+//! shows the layout is theirs, and stays in their own view of it ([`crate::person_view`]).
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};

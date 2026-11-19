@@ -1692,18 +1692,19 @@ impl Persistence {
         if !mirrored && revision == self.saved_revision.get() && !self.records_changed.get() {
             return Ok(());
         }
-        // The document keeps how this device shows the shell — the widths, the
-        // workspace and the window in front — so a reload returns the shell as
-        // it was left, as native's own document does.
+        // A page in no workspace keeps how this device shows the shell — the widths, the
+        // workspace and the window in front — in the layout's own document, so a reload returns
+        // it as it was left; in a workspace that is the person's own view of the layout.
         let tree = handle.read(Clone::clone);
         let time = ui::time::unix_now_i64();
-        if self
+        if let Some(peer) = self
             .peer
-            .and_then(crate::replicated::desktop_history_heads)
-            .is_some()
+            .filter(|peer| crate::replicated::desktop_history_heads(*peer).is_some())
         {
-            // The workspace holds the shell itself; the copy keeps the view alone.
-            self.layout.record_view(&tree, time);
+            // The workspace holds the shell itself, and the person's view of it is theirs: it is
+            // kept as their own view of it, so every device of theirs shows the layout as they left
+            // it (`tilo_desktop_model::person_view`).
+            crate::replicated::publish_view(peer, &tree);
         } else {
             // No workspace holds this shell: what the person changed is this page's
             // change of its own document.
