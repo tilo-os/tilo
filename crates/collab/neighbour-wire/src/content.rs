@@ -366,6 +366,11 @@ impl<T> ContentWants<T> {
 /// responder answers. What `read` returns is sent only when it hashes to what
 /// was asked for.
 ///
+/// `device` may be the asker: a server's own agents join its workspaces as the
+/// server's device, with nothing kept from before it started, and the server's
+/// store is where they get what its history names. A device answering requests
+/// other members fanned out to it leaves its own aside itself.
+///
 /// At most [`PIECES_PER_ANSWER`] pieces go in one answer, the first of what
 /// the asker lacks: the asker asks again for what is still missing, so a large
 /// piece of content crosses a session's outbound queue in windows instead of
@@ -389,7 +394,7 @@ pub fn answer(
     let hash = hash.to_ascii_lowercase();
     let responder = crate::peer_handle(device);
     let valid = hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
-    if requester != crate::peer_handle(asker) || requester == responder || !valid {
+    if requester != crate::peer_handle(asker) || !valid {
         return Vec::new();
     }
     let Some(bytes) = read(&app_id, &cluster_id, &hash).filter(|bytes| {
@@ -569,9 +574,10 @@ mod tests {
             answer(&page, &[3; 32], &request, kept).is_empty(),
             "only the device that asked is answered"
         );
-        assert!(
-            answer(&host, &host, &request, kept).is_empty(),
-            "a device never answers itself"
+        assert_eq!(
+            answer(&host, &host, &request, kept).len(),
+            3,
+            "a server's store answers its own device, which keeps none of it"
         );
         assert!(
             lacks(&answer(&page, &host, &request, |_, _, _| Some(

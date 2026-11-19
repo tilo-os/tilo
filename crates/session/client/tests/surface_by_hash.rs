@@ -112,55 +112,17 @@ fn commit_page_edit(document: &mut automerge::AutoCommit, page: &str) {
     document.commit_with(options).unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_decides_it() {
-    // The page runs no app of its own: every change it receives names a
-    // surface it must fetch, the one this test's host keeps.
-    tilo_peer_state::decide_with_surfaces(tilo_session_client::surfaces::surfaces(), |_| None);
-
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
-    let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
-    let browser = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let surface = older_surface();
-    let keeps = Arc::new(Keeps {
-        bytes: surface.clone(),
-        answers: Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new())),
-    });
-    host.server
-        .workspaces()
-        .unwrap()
-        .serve_content(keeps.clone());
-
-    // The laptop joins the group the host founded, announces itself and
-    // writes the record's history, sealed and naming the other version's
-    // surface.
-    let note = route();
+/// Write `note`'s history from the laptop as the notes app starts one: its pages a unit each,
+/// then three page edits naming `surface`, each with the claim its executor makes, so every
+/// edit is decided against that surface. Every write is sealed with the note's content key.
+/// The document the history makes.
+fn write_history(
+    laptop: &NativeDevice,
+    note: &tilo_peer_state::document_frame::DocumentRoute,
+    surface: &[u8],
+) -> automerge::AutoCommit {
     let artifact = document_artifact_id(&note.app_id, &note.cluster_id, &note.document);
-    let laptop_device = laptop.key.verifying_key().to_bytes();
-    crate::support::place(&host.server, &laptop.cert).await;
-    let mut laptop = NativeDevice::start(
-        &host.server,
-        root.verifying_key().to_bytes(),
-        laptop,
-        workspace(),
-    )
-    .await;
-    laptop.join().await;
-
-    // The record's history: the record as the notes app starts one, its pages
-    // a unit each, then three page edits, each naming the kind and field its
-    // executor does, so every edit carries the claim the receiver decides
-    // against the app's surface. Every write is sealed with the record's
-    // content key.
+    let laptop_device = laptop.device.key.verifying_key().to_bytes();
     let mut document = automerge::AutoCommit::new();
     let units = document
         .put_object(
@@ -196,11 +158,11 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
                     .unwrap()
             })
             .collect();
-        writes.push((mutation, Some(*blake3::hash(&surface).as_bytes()), claims));
+        writes.push((mutation, Some(*blake3::hash(surface).as_bytes()), claims));
     }
     for (seq, (mutation, named, claims)) in (1..).zip(writes) {
         let frame = mutation.encode().unwrap();
-        let (metadata, sealed) = laptop.seal(&note, &frame);
+        let (metadata, sealed) = laptop.seal(note, &frame);
         let op = SignedOp::new_unsigned_with_encryption(
             sealed,
             artifact,
@@ -213,15 +175,100 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
         )
         .with_claims(claims)
         .with_surface(named);
-        laptop.write(&note, op);
+        laptop.write(note, op);
     }
+
+    document
+}
+
+/// A workspace whose laptop joined, on a server whose content keeps `older_surface`, answering
+/// once the test lets it.
+struct Started {
+    root: ed25519_dalek::SigningKey,
+    server_device: crate::support::Device,
+    server: crate::support::TestHost,
+    surface: Vec<u8>,
+    keeps: Arc<Keeps>,
+    _state: tempfile::TempDir,
+}
+
+async fn started() -> Started {
+    // The page uses no app of its own: every change it receives names a
+    // surface it must fetch, the one this test's server keeps.
+    tilo_peer_state::decide_with_surfaces(tilo_session_client::surfaces::surfaces(), |_| None);
+
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let server_device = enrol(&root, "home-server", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = start_host(
+        &root,
+        &server_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let surface = older_surface();
+    let keeps = Arc::new(Keeps {
+        bytes: surface.clone(),
+        answers: Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new())),
+    });
+    server
+        .server
+        .workspaces()
+        .unwrap()
+        .serve_content(keeps.clone());
+    Started {
+        root,
+        server_device,
+        server,
+        surface,
+        keeps,
+        _state: state,
+    }
+}
+
+/// `laptop` joined to the workspace's group, as its owner.
+async fn joined(started: &Started, laptop: crate::support::Device) -> NativeDevice {
+    crate::support::place(&started.server.server, &laptop.cert).await;
+    let mut laptop = NativeDevice::start(
+        &started.server.server,
+        started.root.verifying_key().to_bytes(),
+        laptop,
+        workspace(),
+    )
+    .await;
+    laptop.join().await;
+    laptop
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_decides_it() {
+    let started = started().await;
+    let Started {
+        root,
+        server_device,
+        server,
+        surface,
+        keeps,
+        ..
+    } = &started;
+    let laptop = enrol(root, "laptop", DeviceCapabilities::primary());
+    let browser = enrol(root, "browser", DeviceCapabilities::member());
+
+    // The laptop joins the group the host founded, announces itself and
+    // writes the record's history, sealed and naming the other version's
+    // surface.
+    let note = route();
+    let laptop = joined(&started, laptop).await;
+    let document = write_history(&laptop, &note, surface);
+    let pages = document.get(automerge::ROOT, "pages").unwrap().unwrap().1;
 
     // The page joins: it asks for the workspace's keys though it holds the
     // note's first write, undecided, and the host admits it.
     let page = start_peer(
-        host.iroh(),
+        server.iroh(),
         browser.cert.clone(),
-        host_device.cert.clone(),
+        server_device.cert.clone(),
         browser.key.clone(),
     );
     page.join_placed(WORKSPACE, "Workspace").unwrap();
@@ -255,8 +302,66 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     })
     .await;
     assert_eq!(
-        tilo_session_client::surfaces::read("so.tilo.notes", &blake3::hash(&surface).to_hex()),
-        Some(surface),
+        tilo_session_client::surfaces::read("so.tilo.notes", &blake3::hash(surface).to_hex()),
+        Some(surface.clone()),
         "the page keeps the surface it fetched, by its hash"
     );
+}
+
+/// The server's agents join a workspace as the server's own device, with nothing kept from
+/// before it last started. A note an older version of its app wrote is decided once that device
+/// has the version's surface, which the server's content keeps and answers its own device with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_server_s_own_device_decides_what_an_older_version_wrote_from_its_server_s_surfaces() {
+    let started = started().await;
+    let laptop = enrol(&started.root, "laptop", DeviceCapabilities::primary());
+    let laptop = joined(&started, laptop).await;
+    let notes: Vec<_> = ["note-1", "note-2"]
+        .into_iter()
+        .map(|document| tilo_peer_state::document_frame::DocumentRoute {
+            document: document.into(),
+            ..route()
+        })
+        .collect();
+    let written: Vec<_> = notes
+        .iter()
+        .map(|note| write_history(&laptop, note, &started.surface))
+        .collect();
+
+    // The server's own device joins with an empty replica, handed the workspace's keys, as
+    // the server's agents are.
+    let device = &started.server_device;
+    let agents = start_peer(
+        started.server.iroh(),
+        device.cert.clone(),
+        device.cert.clone(),
+        device.key.clone(),
+    );
+    agents
+        .engine()
+        .hand_keys(workspace(), laptop.peer.content_keys().unwrap());
+    agents.join_placed(WORKSPACE, "Workspace").unwrap();
+    ready(&[&agents]).await;
+
+    // Both notes wait for the one surface before the server answers.
+    wait_for("both notes held for their app surface", || {
+        let held = agents.status().key_state;
+        let waiting = notes.iter().all(|note| {
+            held.lines().any(|line| {
+                line.starts_with(&format!("held {}/{}:", note.app_id, note.document))
+                    && line.contains("for its app surface")
+            })
+        });
+        async move { waiting.then_some(()) }
+    })
+    .await;
+    started.keeps.answer();
+    for (note, document) in notes.iter().zip(&written) {
+        crate::support::holds(&agents, note, document).await;
+    }
+    wait_for("nothing held for either note", || {
+        let held = agents.status().key_state;
+        async move { (!held.contains("for its app surface")).then_some(()) }
+    })
+    .await;
 }
