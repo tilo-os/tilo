@@ -686,39 +686,58 @@ fn target_specs_with(
     declarations()
         .into_iter()
         .filter(|decl| decl.items.iter().any(&matches))
-        .filter_map(|decl| {
-            let given = bindings.arguments(decl.id)?;
-            let mut bound = BoundArguments::new();
-            for (name, value) in given {
-                if decl
-                    .params
-                    .iter()
-                    .any(|param| param.name.as_ref() == name.as_str())
-                {
-                    bound.insert(name.clone(), value.clone());
-                }
-            }
-            let asked = params_from(
-                &decl
-                    .params
-                    .iter()
-                    .filter(|param| !bound.contains_key(param.name.as_ref()))
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            );
-            let build = encoder(check, operation, decl.id, Bound::OverCaller);
-            let fixed: Vec<(String, serde_json::Value)> = bound.clone().into_iter().collect();
-            let arguments: serde_json::Map<String, serde_json::Value> =
-                fixed.iter().cloned().collect();
-            let mut spec = decl.spec_with(operation, asked, build);
-            if let Some(phrase) = decl.phrase {
-                spec = asking_phrase(spec, phrase(&arguments));
-            }
-            Some(
-                spec.action_type()
-                    .bind(Target::new(bound))
-                    .with_bound(fixed),
-            )
+        .flat_map(|decl| {
+            bindings
+                .arguments(decl.id)
+                .unwrap_or_default()
+                .iter()
+                .map(|given| {
+                    // An argument the row binds to null is the argument left
+                    // unset, as a declaration's own binding leaves an optional
+                    // one: it is taken, not asked, and travels as absent.
+                    let mut bound = BoundArguments::new();
+                    let mut taken: Vec<&str> = Vec::new();
+                    for (name, value) in given {
+                        if decl
+                            .params
+                            .iter()
+                            .any(|param| param.name.as_ref() == name.as_str())
+                        {
+                            taken.push(name.as_str());
+                            if !value.is_null() {
+                                bound.insert(name.clone(), value.clone());
+                            }
+                        }
+                    }
+                    let mut asked = decl
+                        .params
+                        .iter()
+                        .filter(|param| !taken.contains(&param.name.as_ref()))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    // The values the row's own state says this parameter
+                    // takes (a display's modes) stand where the
+                    // declaration's do.
+                    for param in &mut asked {
+                        if let Some(choices) = bindings.chosen(decl.id, param.name.as_ref()) {
+                            param.choices = choices.iter().cloned().map(Into::into).collect();
+                        }
+                    }
+                    let asked = params_from(&asked);
+                    let build = encoder(check, operation, decl.id, Bound::OverCaller);
+                    let fixed: Vec<(String, serde_json::Value)> =
+                        bound.clone().into_iter().collect();
+                    let arguments: serde_json::Map<String, serde_json::Value> =
+                        fixed.iter().cloned().collect();
+                    let mut spec = decl.spec_with(operation, asked, build);
+                    if let Some(phrase) = decl.phrase {
+                        spec = asking_phrase(spec, phrase(&arguments));
+                    }
+                    spec.action_type()
+                        .bind(Target::new(bound))
+                        .with_bound(fixed)
+                })
+                .collect::<Vec<_>>()
         })
         .collect()
 }

@@ -797,3 +797,47 @@ fn a_row_status_refuses_what_a_caller_invokes_there() {
         .expect("the idle job is stopped");
     RAN.with(|ran| assert_eq!(ran.borrow().as_slice(), [stop("job:1")]));
 }
+
+#[test]
+fn a_row_says_the_values_a_parameter_takes() {
+    let bindings = tilo_resource::RowBindings::new()
+        .bind(JobEffect::STOP, [("job", "job:7".into())])
+        .choices(
+            JobEffect::STOP,
+            "force",
+            ["now".to_owned(), "later".to_owned()],
+        );
+    let row = LiveRow::typed_with::<Job>("job:7", "Backup", &bindings).into_resource();
+    let stop = row
+        .actions
+        .iter()
+        .find(|action| action.id == "stop")
+        .unwrap();
+    let force = stop
+        .params()
+        .iter()
+        .find(|param| param.name.as_ref() == "force")
+        .expect("the parameter the row left asked");
+    assert_eq!(
+        force
+            .choices
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["now", "later"],
+        "the row's own state says what the parameter takes"
+    );
+}
+
+#[test]
+fn a_row_offers_an_action_another_resource_declares() {
+    let declared = tilo_resource::Effect::bound(&JobEffect::Play {
+        item: "song:1".into(),
+    });
+    let bindings = tilo_resource::RowBindings::new().spec(declared);
+    let row = LiveRow::typed_with::<Job>("job:9", "Index", &bindings).into_resource();
+    assert!(
+        row.actions.iter().any(|action| action.id == "play"),
+        "an action another resource declares is published on the row as it is"
+    );
+}
