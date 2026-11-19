@@ -451,3 +451,18 @@ unsafe extern "Rust" fn __getrandom_v03_custom(
     unsafe { std::ptr::write_bytes(dest, 0, len) };
     Ok(())
 }
+
+/// [`__getrandom_v03_custom`] for getrandom 0.2, which rand_core 0.6 asks: the
+/// same zeros, for the same reason.
+#[cfg(target_arch = "wasm32")]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "getrandom 0.2's custom backend ABI"
+)]
+fn fill_zeros(dest: &mut [u8]) -> Result<(), getrandom_02::Error> {
+    dest.fill(0);
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+getrandom_02::register_custom_getrandom!(fill_zeros);
