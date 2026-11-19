@@ -21,13 +21,6 @@ x86_64 = 65536
 [apps."so.tilo.contacts"]
 x86_64 = 65536
 
-# Remote: its SSH client (russh, with the curve crate its key type needs) is
-# 9 KB of its growth, its records answer a read, and its surface grew 939
-# bytes. Named code +19,036 (own +616, tilo_resource +1,171, serde_json +1,
-# core and alloc +8,591); 13,312 over its old budget.
-[apps."so.tilo.remote"]
-x86_64 = 65536
-
 # Shortcuts: a bot's program reads records through the record API, its actions
 # are labelled from its catalogue, and its surface grew 2,365 bytes. Its own
 # code grew 5,498 bytes; named code +26,946 (tilo_resource +1,045, serde_json

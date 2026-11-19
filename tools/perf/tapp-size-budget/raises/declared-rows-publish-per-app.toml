@@ -1,5 +1,0 @@
-reason = "A repository's rows (dc3381f9188) and a connection's effects (d6130a4d592) are declared types now, so an app builds the row and effect code for its own vocabulary: the declaration search, an effect's bound spec, the bindings and the per-row builders. Symbols builds before and after each change put Remote +17,433 and Git Client +21,904 bytes of named code in those instances (alloc, tilo_resource, serde_json and tilo_actions), and t's app-sizes-x86_64 (run rb5c377973c) measured Remote 84,992 bytes over its budget, more than the SSH client's own step covers. The amount is one 64 KiB step, the ratchet's quantum. The aarch64 budgets are the same code; that architecture's first run prints what to raise them to."
-run = "rb5c377973c"
-
-[apps."so.tilo.remote"]
-x86_64 = 65536

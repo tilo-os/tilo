@@ -101,10 +101,6 @@ x86_64 = 65536
 [apps."so.tilo.publisher"]
 x86_64 = 65536
 
-# model 59,781 bytes; 3,022,848 bytes in all, 3,014,656 budgeted.
-[apps."so.tilo.remote"]
-x86_64 = 65536
-
 # no model; 2,904,064 bytes in all, 2,883,584 budgeted.
 [apps."so.tilo.store"]
 x86_64 = 65536

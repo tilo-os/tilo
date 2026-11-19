@@ -35,8 +35,6 @@ x86_64 = 65536
 x86_64 = 196608
 [apps."so.tilo.publisher"]
 x86_64 = 131072
-[apps."so.tilo.remote"]
-x86_64 = 131072
 [apps."so.tilo.scratchpad"]
 x86_64 = 131072
 [apps."so.tilo.shortcuts"]
