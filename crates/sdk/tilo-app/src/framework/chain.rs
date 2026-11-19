@@ -1371,6 +1371,33 @@ impl ChainCore {
         Ok(())
     }
 
+    /// Whether a part before the head of a chain held whole is still on its
+    /// way here: what an action reads across parts (the issue it is a
+    /// sub-issue of, made long ago) may be in it, so a reference this device
+    /// does not find yet is waited on rather than refused. A part the
+    /// workspace said it has none of is not waited for.
+    pub(super) fn earlier_on_its_way(&self) -> bool {
+        if !self.part.held_whole {
+            return false;
+        }
+        let parts = self.parts.borrow();
+        let Some(&head) = parts.keys().next_back() else {
+            return false;
+        };
+        let waiting = self.waiting.borrow();
+        (0..head).any(|index| match waiting.get(&index) {
+            Some(PartArrival::Arriving) => true,
+            Some(PartArrival::Unavailable) => false,
+            None => {
+                !parts.contains_key(&index)
+                    && !self
+                        .workspace
+                        .store
+                        .workspace_answered(&self.chain.part(index))
+            }
+        })
+    }
+
     /// Hold every part before the head that is neither held nor asked for:
     /// a chain whose views list all of it ([`Chained::HELD_WHOLE`]).
     fn hold_earlier(&self) {
@@ -1825,7 +1852,7 @@ impl ChainState {
     }
 
     /// Write `action` into its part now, as [`Self::apply_as`], or say the
-    /// part is on its way.
+    /// part — or an earlier one what it names may be kept in — is on its way.
     fn try_apply(&self, action: &dyn Any, invoker: &ActionInvoker) -> Result<Write, ActionError> {
         let part = self.part();
         // Which part is the newest is on its way: a part started now would be
@@ -1837,10 +1864,14 @@ impl ChainState {
         let base = (self.base)();
         let kept = self.parts();
         let parts = (part.typed)(&kept);
-        let action = (part.prepare)(&[action], &*base, &*parts, invoker)
-            .map_err(ActionError::Refused)?
-            .pop()
-            .ok_or_else(|| ActionError::Refused("the action was not prepared".into()))?;
+        let action = match (part.prepare)(&[action], &*base, &*parts, invoker) {
+            Ok(prepared) => prepared,
+            // What it names may be in a part on its way: it waits for it.
+            Err(_) if self.core.earlier_on_its_way() => return Ok(Write::Arriving),
+            Err(refused) => return Err(ActionError::Refused(refused)),
+        }
+        .pop()
+        .ok_or_else(|| ActionError::Refused("the action was not prepared".into()))?;
         let (place, by_app) = (part.route)(&*action, &*base, &*parts);
         drop(base);
         if let Some(shares) = self
@@ -1931,8 +1962,11 @@ impl ChainState {
         let kept = self.parts();
         let parts = (part.typed)(&kept);
         let members: Vec<&dyn Any> = group.iter().map(|action| &**action).collect();
-        let prepared =
-            (part.prepare)(&members, &*base, &*parts, invoker).map_err(ActionError::Refused)?;
+        let prepared = match (part.prepare)(&members, &*base, &*parts, invoker) {
+            Ok(prepared) => prepared,
+            Err(_) if self.core.earlier_on_its_way() => return Ok(Write::Arriving),
+            Err(refused) => return Err(ActionError::Refused(refused)),
+        };
         let mut places = Vec::with_capacity(group.len());
         let mut indices = Vec::with_capacity(group.len());
         for action in &prepared {
