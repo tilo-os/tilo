@@ -205,6 +205,11 @@ session-display-external = Externer Bildschirm
 session-clipboard = Zwischenablage
 session-quick-settings = Schnelleinstellungen
 session-shell-styles = Schreibtischstile
+session-style-make = Zu meinem machen
+session-style-check = Ein Stilpaket prüfen
+session-style-install = Ein Stilpaket installieren
+session-turn-conversation = Ganze Unterhaltung
+session-application-open = Die App öffnen
 session-devices = Geräte
 session-devices-press = Eines deiner Geräte drücken
 session-bluetooth-app = Bluetooth
@@ -433,6 +438,9 @@ call-screen-reason = um diesen Bildschirm im Anruf zu teilen
 ## What the window names
 session-resource-keyboard = Bildschirmtastatur
 session-resource-diagnostics = Sitzungsdiagnose
+session-diagnostics-profile-start = Die Bilder der Sitzung profilieren
+session-diagnostics-profile-stop = Das Profilieren der Sitzung beenden
+session-diagnostics-profile-status = Was Profiler und Heap der Sitzung tun
 session-resource-window-menu = Fenstermenü
 session-resource-surfaces = Oberflächen
 session-resource-keyboard-focus = Tastaturfokus
@@ -566,3 +574,9 @@ machines-waiting-body-hardware = { $machine } ({ $hardware }) möchte beitreten 
 machines-waiting-review = Ansehen, was beitreten will
 machines-waiting-approve = { $code } bestätigen
 machines-waiting-decline = Ablehnen
+
+## Die Beschreibung eines Parameters wird als `<Label>-<Argument>` gelesen.
+
+session-toggle-touchpad-on = Ob das Touchpad an ist; weglassen zum Umschalten
+session-night-light-toggle-on = Ob das Nachtlicht an ist; weglassen zum Umschalten
+session-apps-uninstall-app = Der Name der App

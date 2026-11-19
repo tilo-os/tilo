@@ -11,13 +11,11 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use tilo_actions::{
-    ActionAddress, ActionContract, ActionParam, ActionSpec, ApiError, EncodedAction, ExecutionMode,
-    OperationKind, ParamType, ResourceSpec, ResultSpec,
-};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_compositor::Error;
 use tilo_desktop::osd::{Hint, OsdKind};
-use tilo_desktop_search::providers::downloaded::{APP_PARAM, APPS_RESOURCE, ASK_UNINSTALL};
+use tilo_desktop_search::providers::downloaded::APPS_RESOURCE;
+use tilo_resource::Effect as _;
 use tilo_service::{Service, Started};
 
 use crate::displays::DisplayMode;
@@ -53,8 +51,6 @@ pub(crate) fn apply_keyboard(
     );
 }
 
-/// The operation type the session's own actions carry.
-const OPERATION: &str = "tilo.session.command";
 /// The resource of this device's input devices.
 pub const INPUT_RESOURCE: &str = "session:input";
 /// The resource of the screen magnifier.
@@ -130,37 +126,145 @@ impl From<Magnify> for settings_store::magnifier::MagnifierStep {
     }
 }
 
-#[expect(
-    clippy::expect_used,
-    reason = "a session command always serializes to JSON"
-)]
-pub(crate) fn action(
-    id: &'static str,
-    label: String,
-    params: Vec<ActionParam>,
-    build: impl Fn(&tilo_actions::ActionArgs) -> SessionCommand + Send + Sync + 'static,
-) -> ActionSpec {
-    let mut spec = ActionSpec::typed_operation(
-        id,
-        label,
-        String::new(),
-        OperationKind::Effect,
-        OPERATION,
-        params,
-        move |args| {
-            EncodedAction::encode_operation(OPERATION, &build(args))
-                .expect("a session command always serializes")
-        },
-    );
-    spec.type_mut().contract = ActionContract {
-        execution: ExecutionMode::Immediate,
-        result: ResultSpec::None,
-        ..ActionContract::default()
-    };
-    spec
+/// The session's own resources, as declared types.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Input")]
+pub struct Input;
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Screen")]
+pub struct Screen;
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Night light")]
+pub struct NightLight;
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Magnifier")]
+pub struct Magnifier;
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Apps")]
+pub struct AppsRoot;
+
+/// What this device's input devices answer.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.session.input")]
+pub enum InputEffect {
+    /// Turn the touchpad on or off
+    #[effect(kind = "undoable", label = "session-toggle-touchpad")]
+    ToggleTouchpad {
+        /// Whether it takes the person's fingers
+        #[param("Whether it takes the person's fingers")]
+        on: Option<bool>,
+    },
+    /// Switch to the next keyboard layout
+    #[effect(kind = "undoable", label = "session-next-input-source")]
+    NextSource,
 }
 
-/// The session's resources and their actions.
+/// Locking, logging out of and the menu of the session.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.session.screen")]
+pub enum ScreenEffect {
+    /// Lock the screens
+    #[effect(kind = "undoable", label = "session-lock")]
+    Lock,
+    /// Log out of the session
+    #[effect(kind = "undoable", label = "session-log-out")]
+    LogOut,
+    /// Open the power menu
+    #[effect(kind = "undoable", label = "session-power-menu")]
+    PowerMenu,
+}
+
+/// The screen's night light.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.session.night-light")]
+pub enum NightLightEffect {
+    /// Turn the night light on or off
+    #[effect(kind = "undoable", label = "session-night-light-toggle")]
+    Toggle {
+        /// Whether the screen is warm
+        #[param("Whether the screen is warm")]
+        on: Option<bool>,
+    },
+}
+
+/// The screen magnifier.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.session.magnifier")]
+pub enum MagnifierEffect {
+    /// Turn the magnifier on or off
+    #[effect(kind = "undoable", label = "session-magnifier-toggle")]
+    Toggle,
+    /// Zoom in
+    #[effect(kind = "undoable", label = "session-magnifier-zoom-in")]
+    ZoomIn,
+    /// Zoom out
+    #[effect(kind = "undoable", label = "session-magnifier-zoom-out")]
+    ZoomOut,
+}
+
+/// The questions about the person's apps: whether to uninstall one.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.session.apps")]
+pub enum AppsEffect {
+    /// Ask to uninstall an app
+    #[effect(kind = "undoable", label = "session-apps-uninstall")]
+    Uninstall {
+        /// The app's name
+        #[param("The app's name")]
+        app: String,
+    },
+}
+
+impl InputEffect {
+    fn command(&self) -> SessionCommand {
+        match self {
+            Self::ToggleTouchpad { on } => SessionCommand::SetTouchpad { on: *on },
+            Self::NextSource => SessionCommand::NextInputSource,
+        }
+    }
+}
+
+impl ScreenEffect {
+    fn command(&self) -> SessionCommand {
+        match self {
+            Self::Lock => SessionCommand::Lock,
+            Self::LogOut => SessionCommand::LogOut,
+            Self::PowerMenu => SessionCommand::OpenPowerMenu,
+        }
+    }
+}
+
+impl NightLightEffect {
+    fn command(&self) -> SessionCommand {
+        match self {
+            Self::Toggle { on } => SessionCommand::NightLight { on: *on },
+        }
+    }
+}
+
+impl MagnifierEffect {
+    fn command(&self) -> SessionCommand {
+        match self {
+            Self::Toggle => SessionCommand::Magnifier(Magnify::Toggle),
+            Self::ZoomIn => SessionCommand::Magnifier(Magnify::ZoomIn),
+            Self::ZoomOut => SessionCommand::Magnifier(Magnify::ZoomOut),
+        }
+    }
+}
+
+impl AppsEffect {
+    fn command(&self) -> SessionCommand {
+        match self {
+            Self::Uninstall { app } => SessionCommand::AskUninstall { app: app.clone() },
+        }
+    }
+}
+
+/// What the session's own resources and their actions are.
 fn resources() -> Vec<ResourceSpec> {
     vec![
         input_resource(),
@@ -173,99 +277,42 @@ fn resources() -> Vec<ResourceSpec> {
 
 /// The pointer and keyboard the session acts on.
 fn input_resource() -> ResourceSpec {
-    ResourceSpec::new(INPUT_RESOURCE, "session", t("session-input"))
-        .with_action(action(
-            "toggle-touchpad",
-            t("session-toggle-touchpad"),
-            vec![ActionParam::optional_owned(
-                "on",
-                ParamType::Boolean,
-                t("session-param-touchpad-on"),
-            )],
-            |args| SessionCommand::SetTouchpad {
-                on: args.boolean("on"),
-            },
-        ))
-        .with_action(action(
-            "next-source",
-            t("session-next-input-source"),
-            Vec::new(),
-            |_| SessionCommand::NextInputSource,
-        ))
+    tilo_resource::offer::<InputEffect>(tilo_resource::typed_resource::<Input>(
+        INPUT_RESOURCE,
+        t("session-input"),
+    ))
 }
 
 /// Locking, logging out of and the menu of the session.
 fn screen_resource() -> ResourceSpec {
-    ResourceSpec::new(SESSION_RESOURCE, "session", t("session-screen"))
-        .with_action(action("lock", t("session-lock"), Vec::new(), |_| {
-            SessionCommand::Lock
-        }))
-        .with_action(action("log-out", t("session-log-out"), Vec::new(), |_| {
-            SessionCommand::LogOut
-        }))
-        .with_action(action(
-            "power-menu",
-            t("session-power-menu"),
-            Vec::new(),
-            |_| SessionCommand::OpenPowerMenu,
-        ))
+    tilo_resource::offer::<ScreenEffect>(tilo_resource::typed_resource::<Screen>(
+        SESSION_RESOURCE,
+        t("session-screen"),
+    ))
 }
 
 /// The screen's night light.
 fn night_light_resource() -> ResourceSpec {
-    ResourceSpec::new(NIGHT_LIGHT_RESOURCE, "session", t("session-night-light")).with_action(
-        action(
-            "toggle",
-            t("session-night-light-toggle"),
-            vec![ActionParam::optional_owned(
-                "on",
-                ParamType::Boolean,
-                t("session-param-night-light-on"),
-            )],
-            |args| SessionCommand::NightLight {
-                on: args.boolean("on"),
-            },
-        ),
-    )
+    tilo_resource::offer::<NightLightEffect>(tilo_resource::typed_resource::<NightLight>(
+        NIGHT_LIGHT_RESOURCE,
+        t("session-night-light"),
+    ))
 }
 
 /// The screen magnifier.
 fn magnifier_resource() -> ResourceSpec {
-    ResourceSpec::new(MAGNIFIER_RESOURCE, "session", t("session-magnifier"))
-        .with_action(action(
-            "toggle",
-            t("session-magnifier-toggle"),
-            Vec::new(),
-            |_| SessionCommand::Magnifier(Magnify::Toggle),
-        ))
-        .with_action(action(
-            "zoom-in",
-            t("session-magnifier-zoom-in"),
-            Vec::new(),
-            |_| SessionCommand::Magnifier(Magnify::ZoomIn),
-        ))
-        .with_action(action(
-            "zoom-out",
-            t("session-magnifier-zoom-out"),
-            Vec::new(),
-            |_| SessionCommand::Magnifier(Magnify::ZoomOut),
-        ))
+    tilo_resource::offer::<MagnifierEffect>(tilo_resource::typed_resource::<Magnifier>(
+        MAGNIFIER_RESOURCE,
+        t("session-magnifier"),
+    ))
 }
 
 /// The questions about the person's apps: whether to uninstall one. The answer is the downloaded
 /// apps registry's own action, as from anywhere.
 fn apps_resource() -> ResourceSpec {
-    ResourceSpec::new(APPS_RESOURCE, "session", t("session-apps")).with_action(action(
-        ASK_UNINSTALL,
-        t("session-apps-uninstall"),
-        vec![ActionParam::required_owned(
-            APP_PARAM,
-            ParamType::Text,
-            t("session-param-app"),
-        )],
-        |args| SessionCommand::AskUninstall {
-            app: args.text(APP_PARAM).unwrap_or_default().to_owned(),
-        },
+    tilo_resource::offer::<AppsEffect>(tilo_resource::typed_resource::<AppsRoot>(
+        APPS_RESOURCE,
+        t("session-apps"),
     ))
 }
 
@@ -276,10 +323,25 @@ pub(crate) fn command_of(
     arguments: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<SessionCommand, ApiError> {
     let encoded = tilo_actions::api::encode_json(published, address, arguments)?;
-    (encoded.type_id == OPERATION)
-        .then(|| serde_json::from_slice::<SessionCommand>(&encoded.payload).ok())
-        .flatten()
-        .ok_or_else(|| ApiError::Failed("not a session command".into()))
+    let command = match address.resource.as_str() {
+        INPUT_RESOURCE => InputEffect::from_payload(&encoded.payload)
+            .ok()
+            .map(|effect| effect.command()),
+        SESSION_RESOURCE => ScreenEffect::from_payload(&encoded.payload)
+            .ok()
+            .map(|effect| effect.command()),
+        NIGHT_LIGHT_RESOURCE => NightLightEffect::from_payload(&encoded.payload)
+            .ok()
+            .map(|effect| effect.command()),
+        MAGNIFIER_RESOURCE => MagnifierEffect::from_payload(&encoded.payload)
+            .ok()
+            .map(|effect| effect.command()),
+        APPS_RESOURCE => AppsEffect::from_payload(&encoded.payload)
+            .ok()
+            .map(|effect| effect.command()),
+        _ => None,
+    };
+    command.ok_or_else(|| ApiError::Failed("not a session command".into()))
 }
 
 /// What the session's own resources read: the state of what only the session keeps, told to them by

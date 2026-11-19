@@ -13,75 +13,58 @@
 //! reading the owner's `profile_status` request does.
 
 use serde_json::{Map, Value, json};
-use tilo_actions::{
-    ActionAddress, ActionOutput, ActionParam, ActionSpec, ApiError, EncodedAction, OperationKind,
-    ParamType, ResourceSpec,
-};
+use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_session_core::surfaces::Published;
 use ui::host_operation::ResourceOperationStart;
 
 /// The resource the session's diagnostics are published under.
 pub const RESOURCE: &str = "session-diagnostics";
 
-/// What kind of resource [`RESOURCE`] is.
-pub const KIND: &str = "session.diagnostics";
+/// The session's diagnostics as a declared type: the profiler's verbs and its reading.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.diagnostics", label = "Session diagnostics")]
+pub struct Diagnostics;
+
+/// What a person, a script or an agent asks the session's own cost.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.session.diagnostics")]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "the vocabulary is the profiler's three verbs, and each is named for what it does"
+)]
+pub enum DiagnosticsEffect {
+    /// Profile the session's frames
+    ///
+    /// Profiles the loop's frames, phases and threads for a few seconds, without a restart.
+    #[effect(kind = "outside", returns, label = "session-diagnostics-profile-start")]
+    ProfileStart {
+        /// How long to profile, 1 to 600 seconds (default 30)
+        #[param("How long to profile, 1 to 600 seconds (default 30)")]
+        seconds: Option<u64>,
+    },
+    /// Stop profiling the session
+    ///
+    /// Ends the recording profile early and completes its files.
+    #[effect(kind = "outside", returns, label = "session-diagnostics-profile-stop")]
+    ProfileStop,
+    /// What the session's profiler and heap are doing
+    ///
+    /// The profile going now, the last one finished, and the heap trims owed and done.
+    #[effect(
+        view,
+        kind = "undoable",
+        returns,
+        label = "session-diagnostics-profile-status"
+    )]
+    ProfileStatus,
+}
 
 /// [`RESOURCE`] with its actions.
 fn resource() -> ResourceSpec {
-    let result = tilo_actions::ResultSpec::Json {
-        schema: json!({"type": "object"}),
-    };
-    let mut start = ActionSpec::typed_operation(
-        "profile-start",
-        "Profile the session's frames",
-        "Records the loop's frames, phases and threads for a few seconds, without a restart.",
-        OperationKind::Effect,
-        KIND,
-        vec![ActionParam::optional_owned(
-            "seconds",
-            ParamType::Integer,
-            "How long to record, 1 to 600 seconds (default 30)",
-        )],
-        |_| EncodedAction {
-            type_id: KIND.into(),
-            payload: b"profile-start".to_vec(),
-        },
-    );
-    start.type_mut().contract.result = result.clone();
-    let mut stop = ActionSpec::typed_operation(
-        "profile-stop",
-        "Stop profiling the session",
-        "Ends the recording profile early and completes its files.",
-        OperationKind::Effect,
-        KIND,
-        Vec::new(),
-        |_| EncodedAction {
-            type_id: KIND.into(),
-            payload: b"profile-stop".to_vec(),
-        },
-    );
-    stop.type_mut().contract.result = result.clone();
-    let mut status = ActionSpec::typed_operation(
-        "profile-status",
-        "What the session's profiler and heap are doing",
-        "The profile recording now, the last one finished, and the heap trims owed and run.",
-        OperationKind::View,
-        KIND,
-        Vec::new(),
-        |_| EncodedAction {
-            type_id: KIND.into(),
-            payload: b"profile-status".to_vec(),
-        },
-    );
-    status.type_mut().contract.result = result;
-    ResourceSpec::new(
+    tilo_resource::offer::<DiagnosticsEffect>(tilo_resource::typed_resource::<Diagnostics>(
         RESOURCE,
-        KIND,
         crate::i18n::t("session-resource-diagnostics"),
-    )
-    .with_action(start)
-    .with_action(stop)
-    .with_action(status)
+    ))
 }
 
 /// What the session knows of its own cost now: the profiler's state and the heap trim's. One

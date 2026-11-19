@@ -36,12 +36,10 @@ use neighbour_wire::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_action_policy::share::{ShareAccess, is_of_share, share_grants};
-use tilo_actions::{
-    ActionAddress, ActionContract, ActionParam, ActionSpec, ApiError, EncodedAction, ExecutionMode,
-    OperationKind, ParamType, ResourceSpec, ResultSpec,
-};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, InputEvent, Selection};
+use tilo_resource::Effect as _;
 use tilo_session_core::surface::Scroll;
 
 use tilo_desktop_model::window_share::{
@@ -69,9 +67,6 @@ use tilo_session_client::membership::{Membership, project};
 /// The resource the session publishes its window shares on: what it shares,
 /// what it waits to share, what it watches and what it received.
 pub(crate) const SHARES_RESOURCE: &str = "session:window-share";
-
-/// The operation type this resource's actions carry.
-const OPERATION: &str = "tilo.session.window-share";
 
 /// How often a viewer says again which windows of a host it shows: the host ends the streams of a
 /// viewer it stops hearing from.
@@ -2673,11 +2668,9 @@ impl Service for WindowShareService {
         }
         let address = ActionAddress::new(resource, action);
         let encoded = tilo_actions::api::encode_json(&[shares_resource()], &address, arguments)?;
-        let command = (encoded.type_id == OPERATION)
-            .then(|| serde_json::from_slice::<ShareCommand>(&encoded.payload).ok())
-            .flatten()
-            .ok_or_else(|| ApiError::Failed("not a window-share command".into()))?;
-        self.shares.borrow_mut().queue(command);
+        let effect = ShareEffect::from_payload(&encoded.payload)
+            .map_err(|error| ApiError::Failed(error.to_string()))?;
+        self.shares.borrow_mut().queue(effect.command());
         Ok(Started::Accepted)
     }
 
@@ -2689,167 +2682,127 @@ impl Service for WindowShareService {
     }
 }
 
-/// `id` 's action, carrying a [`ShareCommand`].
-#[expect(
-    clippy::expect_used,
-    reason = "a share command always serializes to JSON"
+/// The window shares as the session publishes them, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Shared windows")]
+pub struct WindowSharesRoot;
+
+/// What a person asks of the shares, declared once: share a window with the workspace, stop it,
+/// let the members viewing it control it, show another member's window, stop showing it.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(
+    operation = "tilo.session.window-share",
+    catalogue = "../desktop-surface/locales"
 )]
-fn action(
-    id: &'static str,
-    label: String,
-    params: Vec<ActionParam>,
-    build: impl Fn(&tilo_actions::ActionArgs) -> ShareCommand + Send + Sync + 'static,
-) -> ActionSpec {
-    let mut spec = ActionSpec::typed_operation(
-        id,
-        label,
-        String::new(),
-        OperationKind::Effect,
-        OPERATION,
-        params,
-        move |args| {
-            EncodedAction::encode_operation(OPERATION, &build(args))
-                .expect("a share command always serializes")
-        },
-    );
-    spec.type_mut().contract = ActionContract {
-        execution: ExecutionMode::Immediate,
-        result: ResultSpec::None,
-        ..ActionContract::default()
-    };
-    spec
+pub enum ShareEffect {
+    /// Share a window with the workspace
+    #[effect(kind = "undoable", label = "session-window-share-share")]
+    Share {
+        /// The window, by the identifier its app may be captured by; left out for the window the
+        /// tab shows
+        #[param(
+            "The window, by the identifier its app may be captured by; left out for the window \
+             the tab shows"
+        )]
+        window: Option<String>,
+        /// The tab this device shows the window in
+        #[param("The tab this device shows the window in")]
+        tab: String,
+        /// The app the window belongs to; left out for the shown window's app
+        #[param("The app the window belongs to; left out for the shown window's app")]
+        app_id: Option<String>,
+        /// The workspace in which it is shared; left out for the one the tab stands in
+        #[param("The workspace in which it is shared; left out for the one the tab stands in")]
+        workspace: Option<String>,
+    },
+    /// Stop sharing the window
+    #[effect(kind = "undoable", label = "session-window-share-stop")]
+    Stop {
+        /// The tab this device shows the window in
+        #[param("The tab this device shows the window in")]
+        tab: String,
+    },
+    /// Let the workspace control the window
+    #[effect(kind = "undoable", label = "session-window-share-allow-input")]
+    AllowRemoteInput {
+        /// The tab this device shows the window in
+        #[param("The tab this device shows the window in")]
+        tab: String,
+        /// Whether they may control it; left out to toggle
+        #[param("Whether they may control it; left out to toggle")]
+        on: Option<bool>,
+    },
+    /// Show another member's shared window
+    #[effect(kind = "undoable", label = "session-window-share-watch")]
+    Watch {
+        /// The tab this device shows the window in
+        #[param("The tab this device shows the window in")]
+        tab: String,
+        /// The workspace in which it is shared
+        #[param("The workspace in which it is shared")]
+        workspace: String,
+    },
+    /// Stop showing it
+    #[effect(kind = "undoable", label = "session-window-share-unwatch")]
+    Unwatch {
+        /// The tab this device shows the window in
+        #[param("The tab this device shows the window in")]
+        tab: String,
+        /// The workspace in which it is shared
+        #[param("The workspace in which it is shared")]
+        workspace: String,
+    },
+}
+
+impl ShareEffect {
+    /// The command this effect queues.
+    fn command(&self) -> ShareCommand {
+        let text = |value: &Option<String>| value.clone().unwrap_or_default().trim().to_owned();
+        match self {
+            Self::Share {
+                window,
+                tab,
+                app_id,
+                workspace,
+            } => ShareCommand::Share {
+                window: text(window),
+                tab: tab_of_text(tab),
+                app_id: text(app_id),
+                workspace: text(workspace),
+            },
+            Self::Stop { tab } => ShareCommand::Stop {
+                tab: tab_of_text(tab),
+            },
+            Self::AllowRemoteInput { tab, on } => ShareCommand::AllowInput {
+                tab: tab_of_text(tab),
+                on: *on,
+            },
+            Self::Watch { tab, workspace } => ShareCommand::Watch {
+                tab: tab_of_text(tab),
+                workspace: workspace.trim().to_owned(),
+            },
+            Self::Unwatch { tab, workspace } => ShareCommand::Unwatch {
+                tab: tab_of_text(tab),
+                workspace: workspace.trim().to_owned(),
+            },
+        }
+    }
+}
+
+/// The tab a share names, by its decimal id.
+fn tab_of_text(text: &str) -> TabId {
+    tilo_failure::ignored!(
+        "text that is no tab id names no tab",
+        text.trim().parse().ok().unwrap_or(0)
+    )
 }
 
 /// The window shares' resource and its actions.
 fn shares_resource() -> ResourceSpec {
-    ResourceSpec::new(SHARES_RESOURCE, "session", t("session-window-share"))
-        .with_action(share_action())
-        .with_action(stop_action())
-        .with_action(allow_input_action())
-        .with_action(watch_action())
-        .with_action(unwatch_action())
-}
-
-/// The tab argument: the window of the session a share is about, named by its id as the session's own
-/// resources name it. Ids carry a device's salt and do not fit a JSON integer, so they travel as
-/// text.
-fn tab_argument() -> ActionParam {
-    ActionParam::required_owned("tab", ParamType::Text, t("session-window-share-param-tab"))
-}
-
-/// The workspace argument: the workspace a window is shared with or watched in.
-fn workspace_argument() -> ActionParam {
-    ActionParam::required_owned(
-        "workspace",
-        ParamType::Text,
-        t("session-window-share-param-workspace"),
-    )
-}
-
-/// The tab an action names, by its decimal id.
-fn tab_of(args: &tilo_actions::ActionArgs) -> TabId {
-    tilo_failure::ignored!(
-        "text that is no tab id names no tab",
-        args.text("tab")
-            .and_then(|tab| tab.trim().parse().ok())
-            .unwrap_or(0)
-    )
-}
-
-/// The text argument `name` , or nothing: an argument left out, empty or of blanks alone.
-fn text_of(args: &tilo_actions::ActionArgs, name: &str) -> String {
-    args.text(name).unwrap_or_default().trim().to_owned()
-}
-
-/// Share the window `tab` shows with the workspace the tab stands in. `window` , `app_id` and
-/// `workspace` say which window, whose and with which workspace for a caller that knows them; left
-/// out or empty, they are what the session says of the tab ([`share_of`]): the window it maps
-/// there, that window's app, and the workspace whose layout holds the tab.
-fn share_action() -> ActionSpec {
-    action(
-        "share",
-        t("session-window-share-share"),
-        vec![
-            ActionParam::optional_owned(
-                "window",
-                ParamType::Text,
-                t("session-window-share-param-window"),
-            ),
-            tab_argument(),
-            ActionParam::optional_owned(
-                "app_id",
-                ParamType::Text,
-                t("session-window-share-param-app"),
-            ),
-            ActionParam::optional_owned(
-                "workspace",
-                ParamType::Text,
-                t("session-window-share-param-share-workspace"),
-            ),
-        ],
-        |args| ShareCommand::Share {
-            window: text_of(args, "window"),
-            tab: tab_of(args),
-            app_id: text_of(args, "app_id"),
-            workspace: text_of(args, "workspace"),
-        },
-    )
-}
-
-/// Stop sharing `tab` .
-fn stop_action() -> ActionSpec {
-    action(
-        "stop",
-        t("session-window-share-stop"),
-        vec![tab_argument()],
-        |args| ShareCommand::Stop { tab: tab_of(args) },
-    )
-}
-
-/// Let the members viewing `tab` control it, or stop them.
-fn allow_input_action() -> ActionSpec {
-    action(
-        "allow-remote-input",
-        t("session-window-share-allow-input"),
-        vec![
-            tab_argument(),
-            ActionParam::optional_owned(
-                "on",
-                ParamType::Boolean,
-                t("session-window-share-param-on"),
-            ),
-        ],
-        |args| ShareCommand::AllowInput {
-            tab: tab_of(args),
-            on: args.boolean("on"),
-        },
-    )
-}
-
-/// Show `tab` , another member's window, from `workspace` .
-fn watch_action() -> ActionSpec {
-    action(
-        "watch",
-        t("session-window-share-watch"),
-        vec![tab_argument(), workspace_argument()],
-        |args| ShareCommand::Watch {
-            tab: tab_of(args),
-            workspace: text_of(args, "workspace"),
-        },
-    )
-}
-
-/// Stop showing `tab` .
-fn unwatch_action() -> ActionSpec {
-    action(
-        "unwatch",
-        t("session-window-share-unwatch"),
-        vec![tab_argument(), workspace_argument()],
-        |args| ShareCommand::Unwatch {
-            tab: tab_of(args),
-            workspace: text_of(args, "workspace"),
-        },
-    )
+    tilo_resource::offer::<ShareEffect>(tilo_resource::typed_resource::<WindowSharesRoot>(
+        SHARES_RESOURCE,
+        t("session-window-share"),
+    ))
 }
 
 mod hosts;

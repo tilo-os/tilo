@@ -1404,3 +1404,24 @@ so-tilo-layout-move-to-display = Auf eine andere Anzeige verschieben
 so-tilo-layout-search = Den Desktop durchsuchen
 so-tilo-layout-step-focus = Durch die Fenster wechseln
 so-tilo-layout-wait-window = Weiter warten
+
+# Parameterbeschreibungen der deklarierten Vokabulare, als `<Label>-<Argument>` gelesen.
+
+desktop-action-show-osd-kind = Worum es geht: volume, brightness, keyboard-backlight, microphone, airplane-mode, touchpad, play, pause, next-track, previous-track, stop, no-backlight, night-light, do-not-disturb, magnifier, captured-keys oder pointer-released
+desktop-action-show-osd-level = Die Stufe, von 0 bis 1
+desktop-action-show-osd-on = Ob es an ist
+desktop-action-show-osd-device = Das geänderte Gerät, wie eine Person es kennt
+desktop-action-show-osd-device-glyph = Das Symbol des Geräts: speaker, headphones, display oder keyboard
+desktop-action-show-osd-chord = Die Tastenkombination, die es ausgelöst hat
+desktop-action-show-osd-display = Der Anschluss des Bildschirms, auf dem es erscheint
+session-window-share-share-window = Das Fenster, nach der Kennung, die seine App erfassen darf; weglassen für das Fenster, das der Tab zeigt
+session-window-share-share-tab = Der Tab, in dem das Fenster auf diesem Gerät gezeigt wird
+session-window-share-share-app_id = Die App, zu der das Fenster gehört; weglassen für die App des Fensters, das der Tab zeigt
+session-window-share-share-workspace = Der Arbeitsbereich, in dem es geteilt wird; weglassen für den, in dem der Tab steht
+session-window-share-stop-tab = Der Tab, in dem das Fenster auf diesem Gerät gezeigt wird
+session-window-share-allow-input-tab = Der Tab, in dem das Fenster auf diesem Gerät gezeigt wird
+session-window-share-allow-input-on = Ob sie es bedienen dürfen; weglassen zum Umschalten
+session-window-share-watch-tab = Der Tab, in dem das Fenster auf diesem Gerät gezeigt wird
+session-window-share-watch-workspace = Der Arbeitsbereich, aus dem es gezeigt wird
+session-window-share-unwatch-tab = Der Tab, in dem das Fenster auf diesem Gerät gezeigt wird
+session-window-share-unwatch-workspace = Der Arbeitsbereich, aus dem es gezeigt wird

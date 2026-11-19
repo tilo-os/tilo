@@ -337,6 +337,14 @@ paths = [
 ]
 
 [[allow]]
+reason = "The session publishes Chat's and Tube's own rows under their apps' kinds: the `channel` in those kinds, and the words those apps' windows name a channel by."
+words = ["channel"]
+paths = [
+    "crates/session/session/src/conversations.rs",
+    "crates/session/session/src/dev_rust_views.rs",
+]
+
+[[allow]]
 reason = "A test that opens Chat on the canvas names the conversation the way the session publishes it, `chat.workspace/channels/<id>`, as `canvas_point.rs` beside it does."
 words = ["channel"]
 paths = ["crates/session/session/tests/canvas_turn_open.rs"]

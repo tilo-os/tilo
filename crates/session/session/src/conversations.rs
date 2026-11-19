@@ -711,40 +711,64 @@ fn turn_address(question: &str) -> String {
 /// beside it (canvas.md §7, "the conversation is reached from the handle").
 const CONVERSATION: &str = "conversation";
 
-/// [`CONVERSATION`] as the turn publishes it: an action with no arguments, which the session runs
-/// itself ([`TurnSummonses::invoke_as`]).
-fn conversation_action() -> tilo_actions::ActionSpec {
-    tilo_actions::ActionSpec::typed_operation(
-        CONVERSATION,
-        "Whole conversation",
-        "Opens the whole conversation this answer was asked in, beside it.",
-        tilo_actions::OperationKind::Effect,
-        chat::views::TURN_KIND,
-        Vec::new(),
-        |_| tilo_actions::EncodedAction {
-            type_id: chat::views::TURN_KIND.into(),
-            payload: CONVERSATION.as_bytes().to_vec(),
-        },
-    )
+/// A turn asked from the canvas, as a declared type: Chat's own kind for a message's item.
+pub struct TurnRow;
+
+impl tilo_resource::words::RowType for TurnRow {
+    const KIND: &'static str = chat::views::TURN_KIND;
+    const LABEL: &'static str = "Answer";
+
+    fn effects(id: &tilo_resource::Id) -> Vec<tilo_actions::ActionSpec> {
+        <TurnEffect as tilo_resource::Effect>::row_specs(Self::KIND, id)
+    }
+}
+
+/// Chat's message item, as a declared type: Chat's own kind, through which the session publishes
+/// a turn's summons with Chat's window closed.
+pub struct ChatMessage;
+
+impl tilo_resource::words::RowType for ChatMessage {
+    const KIND: &'static str = "chat.messages";
+    const LABEL: &'static str = "Message";
+}
+
+/// The whole conversation a turn was asked in, as a declared type: Chat's own channel.
+pub struct ConversationTurn;
+
+impl tilo_resource::words::RowType for ConversationTurn {
+    const KIND: &'static str = "chat.workspace.channels";
+    const LABEL: &'static str = "Conversation";
+}
+
+/// What a turn offers on its place's handle, declared once: the whole conversation it was asked
+/// in, opened beside it (canvas.md §7, "the conversation is reached from the handle").
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.chat.turn")]
+pub enum TurnEffect {
+    /// Whole conversation
+    ///
+    /// Opens the whole conversation this answer was asked in, beside it.
+    #[effect(on = TurnRow, kind = "undoable", label = "session-turn-conversation")]
+    Conversation,
 }
 
 /// One turn as a place's resource (canvas.md §3): the message `question` a person asked an agent
 /// in, named by what they asked, drawn through Chat's `turn` view.
 fn turn_resource(question: &str, asked: &str) -> tilo_actions::ResourceSpec {
     let label = asked.lines().next().unwrap_or_default().trim();
-    let mut spec =
-        tilo_actions::ResourceSpec::new(turn_address(question), chat::views::TURN_KIND, label)
-            .with_view(tilo_actions::ResourceViewSpec::new(
-                tilo_session_core::layout::TURN_VIEW,
-                label.to_owned(),
-                "open",
-            ))
-            .with_type(tilo_actions::ResourceType {
-                noun: tilo_actions::Noun::new("answer", "answers"),
-                app: tilo_actions::Noun::new("Chat", "Chat"),
-                root: false,
-            })
-            .with_action(conversation_action());
+    let mut spec = tilo_resource::LiveRow::typed::<TurnRow>(turn_address(question), label)
+        // Chat's own words for a message's item, as its window publishes it.
+        .with_type(tilo_actions::ResourceType {
+            noun: tilo_actions::Noun::new("answer", "answers"),
+            app: tilo_actions::Noun::new("Chat", "Chat"),
+            root: false,
+        })
+        .view(tilo_actions::ResourceViewSpec::new(
+            tilo_session_core::layout::TURN_VIEW,
+            label.to_owned(),
+            "open",
+        ))
+        .into_resource();
     spec.app_id = Some("chat".to_owned());
     spec
 }
@@ -756,17 +780,12 @@ const CHANNELS: &str = "chat.workspace.channels:";
 /// The conversation `channel` as a place's resource: Chat's channel, through Chat's own page,
 /// with Chat's own `send` its composer runs. What a turn's "Whole conversation" places beside it.
 fn conversation_resource(channel: &str, label: String) -> tilo_actions::ResourceSpec {
-    let mut spec = tilo_actions::ResourceSpec::new(
+    let mut spec = tilo_resource::LiveRow::typed::<ConversationTurn>(
         format!("{CHANNELS}{channel}"),
-        "chat.workspace.channels",
         label.clone(),
     )
-    .with_view(tilo_actions::ResourceViewSpec::new("page", label, "open"))
-    .with_type(tilo_actions::ResourceType {
-        noun: tilo_actions::Noun::new("conversation", "conversations"),
-        app: tilo_actions::Noun::new("Chat", "Chat"),
-        root: false,
-    });
+    .view(tilo_actions::ResourceViewSpec::new("page", label, "open"))
+    .into_resource();
     if let Some(send) =
         <chat::effects::ChatEffect as tilo_resource::Effect>::spec(crate::send_to::SEND)
     {
@@ -1076,16 +1095,14 @@ fn summonses(chat: &chat::Chat, part: &chat::parts::ChatMessages) -> Vec<Id> {
 /// Chat's verb, not a copy of it.
 fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
     let kind = chat::parts::ChatMessages::KIND;
-    let mut spec = tilo_actions::ResourceSpec::new(
-        format!("{kind}/messages/{id}"),
-        "chat.messages",
-        id.as_str(),
-    )
-    .with_type(tilo_actions::ResourceType {
-        noun: tilo_actions::Noun::new("message", "messages"),
-        app: tilo_actions::Noun::new("Chat", "Chat"),
-        root: false,
-    });
+    let mut spec =
+        tilo_resource::typed_resource::<ChatMessage>(format!("{kind}/messages/{id}"), id.as_str())
+            // Chat's own words for a message, as its window publishes it.
+            .with_type(tilo_actions::ResourceType {
+                noun: tilo_actions::Noun::new("message", "messages"),
+                app: tilo_actions::Noun::new("Chat", "Chat"),
+                root: false,
+            });
     spec.app_id = Some("chat".to_owned());
     let declaration = tilo_resource::vocabulary::<chat::parts::ChatMessages>()
         .declarations()
