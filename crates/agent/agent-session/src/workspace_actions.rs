@@ -388,7 +388,7 @@ impl WorkspaceActions {
         self.log()
             .entries
             .get(id)
-            .filter(|entry| entry.caller == *caller)
+            .filter(|entry| caller.continues(&entry.caller))
             .map(|entry| {
                 InvocationState::new(*id, entry.update.clone())
                     .linked(entry.link.clone())
@@ -616,12 +616,14 @@ impl WorkspaceActions {
         }
         {
             let mut log = self.log();
-            if let Some(entry) = log.entries.get(&invocation) {
-                if entry.caller != *caller || !entry.request.same_invocation(&request) {
+            if let Some(entry) = log.entries.get_mut(&invocation) {
+                if !caller.continues(&entry.caller) || !entry.request.same_invocation(&request) {
                     return receipt(ReceiptStatus::Rejected {
                         error: ActionCallError::InvocationConflict,
                     });
                 }
+                // Asked again on the connection that replaced its own: it is this one's now.
+                entry.caller.clone_from(caller);
                 let state = InvocationState::new(invocation, entry.update.clone());
                 return receipt(state.receipt().status);
             }
@@ -689,7 +691,7 @@ impl WorkspaceActions {
         let entry = log
             .entries
             .get_mut(id)
-            .filter(|entry| entry.caller == *caller)
+            .filter(|entry| caller.continues(&entry.caller))
             .ok_or(ActionCallError::UnknownInvocation)?;
         if entry.update.is_terminal() {
             return Err(ActionCallError::NotCancellable {
