@@ -16,9 +16,10 @@ headroom = 0.01
 # start module, which the page loads first; each app's own code, including
 # its instantiations of the resource, action and view framework, is in the
 # module fetched when the app first opens and is not counted here. Measured
-# at 17364185 bytes once the renderer's shaders, the people panel's profile
-# card, the session's remote actions, its search sources and the shortcut
-# guide's sheet loaded after the start, the page read URLs with the browser's
+# at 17813109 bytes once the renderer's shaders, the people panel's profile
+# card, the session's remote actions, its search sources, the shortcut guide's
+# sheet, the invitation's server reader, the person's linked accounts and what
+# they are doing loaded after the start, the page read URLs with the browser's
 # parser and skrifa's outline code was compiled for one pen instead of five.
 [bundles.desktop]
-bytes = 17563648
+bytes = 18022400
