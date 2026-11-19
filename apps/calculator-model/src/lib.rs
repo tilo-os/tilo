@@ -1,10 +1,52 @@
 //! The `calculator.document` resource: the evaluated history, newest first, and the saved
 //! graphs, each row with its stable id.
 
-use tilo_resource::{self, ActionCx, Collection, Id, Model, Path, Refusal, resource};
+use tilo_resource::{self, ActionCx, Collection, Effect, Id, Model, Path, Refusal, resource};
 
 /// How many calculations the history keeps.
 pub const HISTORY_CAP: usize = 64;
+
+/// What the calculator does beside changing its resource: what its window
+/// shows, recalling a past calculation, and the two graph lists. Only the
+/// evaluated history and the saved graph formulas are in the resource; the
+/// expression being typed, the display and the pan/zoom are window state.
+#[derive(Debug, Clone, PartialEq, Eq, Effect)]
+#[effect(operation = "calculator.effect")]
+pub enum CalculatorEffect {
+    /// Show calculator.
+    #[effect(view, idempotent)]
+    ShowCalculator,
+    /// Show 2D graph.
+    #[effect(view, idempotent)]
+    ShowGraph2d,
+    /// Show 3D graph.
+    #[effect(view, idempotent)]
+    ShowGraph3d,
+    /// Show unit conversion.
+    #[effect(view, idempotent)]
+    ShowConvert,
+    /// Use degrees.
+    #[effect(view, idempotent)]
+    UseDegrees,
+    /// Use radians.
+    #[effect(view, idempotent)]
+    UseRadians,
+    /// Show or hide the graph's formula panel.
+    #[effect(view)]
+    TogglePanel,
+    /// Recall calculation.
+    #[effect(view, row, idempotent, item = history)]
+    Open {
+        #[param("The history entry's id")]
+        entry: String,
+    },
+    /// Use calculation.
+    #[effect(view, idempotent)]
+    Recall {
+        #[param("The calculation to put back into the calculator")]
+        expression: String,
+    },
+}
 
 /// Which saved-graph list a row is in; both are collections of [`PlotFn`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,7 +175,8 @@ impl Calculator {
 
 #[resource(
     kind = "calculator.document",
-    read_content = Calculator::read_document
+    read_content = Calculator::read_document,
+    effects = CalculatorEffect
 )]
 impl Calculator {
     /// Keeps the newest [`HISTORY_CAP`].

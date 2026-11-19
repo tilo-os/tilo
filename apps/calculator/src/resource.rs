@@ -1,14 +1,13 @@
 //! Calculator's window: the sample it stages, the published rows its history and graphs
 //! offer, and the captures it declares. The resource and its verbs are `calculator-model`'s.
 
-use ui::framework::{Fixture, LiveRow, ResourceApp, ResourceSelection, ViewCx};
+use ui::framework::{Fixture, ResourceApp, ResourceSelection, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{Id, Invoke};
 use ui::widget::Element;
 
-use crate::actions::CalculatorEffect;
-use crate::model::{CalcModel, GraphKind, HistoryEntry, PlotFn};
+use crate::model::{CalcModel, GraphKind, PlotFn};
 
 pub use calculator_model::Calculator;
 
@@ -20,36 +19,6 @@ pub fn history_entry_id(id: &Id) -> String {
 
 pub fn graph_row_id(kind: GraphKind, id: &Id) -> String {
     item_resource_id::<Calculator>(kind.field(), id)
-}
-
-/// Recalling the entry, merged into its published item by id.
-pub(crate) fn history_row(id: &Id, entry: &HistoryEntry) -> LiveRow {
-    LiveRow::new(
-        history_entry_id(id),
-        "calculator.document.history",
-        history_label(entry),
-    )
-    .effect(&CalculatorEffect::Open {
-        entry: id.as_str().to_owned(),
-    })
-}
-
-fn history_label(entry: &HistoryEntry) -> String {
-    let body = if entry.expr.trim().is_empty() {
-        entry.result.clone()
-    } else {
-        format!("{} = {}", entry.expr.trim(), entry.result.trim())
-    };
-    clip(&body, 48)
-}
-
-fn clip(s: &str, n: usize) -> String {
-    let t: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if t.chars().count() > n {
-        t.chars().take(n.saturating_sub(1)).collect::<String>() + "…"
-    } else {
-        t
-    }
 }
 
 pub struct CalculatorShell;

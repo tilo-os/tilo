@@ -2,6 +2,19 @@
 //! rows, and the sample machine captures render. No IO.
 
 pub use ui::charts::RollingSeries;
+use ui::tilo_resource;
+
+/// A process on this machine, as Monitor publishes it: a row of the
+/// `monitor.process` type, not a document item. Its effects are
+/// [`MonitorEffect`](crate::resource::MonitorEffect)'s, each bound to the
+/// process's id.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "monitor.process",
+    label = "Process",
+    effects = crate::resource::MonitorEffect
+)]
+pub struct Process;
 
 #[derive(Clone, Debug)]
 pub struct ProcessInfo {

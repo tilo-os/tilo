@@ -21,7 +21,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey};
 
 use ui::Widget;
-use ui::framework::{Dispatcher, Effected, Live, Publishes, ViewCx};
+use ui::framework::{Dispatcher, Effected, Live, ViewCx};
 use ui::interaction::InteractionEnvironment;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -127,8 +127,7 @@ impl Asks {
 }
 
 /// The calculator window as the view of [`Calculator`]: it follows the
-/// document's rows, takes the effects the view answers and publishes each
-/// history entry as a live row.
+/// document's rows and takes the effects the view answers.
 pub(crate) fn window(cx: &ViewCx<Calculator>) -> Element {
     let mut window = CalculatorApp::new();
     window.dispatch = Some(cx.dispatcher());
@@ -148,18 +147,7 @@ pub(crate) fn window(cx: &ViewCx<Calculator>) -> Element {
             asks.borrow_mut().stage = Some(Staged(scenario.map(str::to_owned)));
         });
     }
-    let live = cx.live().clone();
-    cx.publishing(
-        Publishes::new().live_rows(move || {
-            live.with(|rows| {
-                rows.history
-                    .iter()
-                    .map(|(id, entry)| crate::resource::history_row(id, entry))
-                    .collect()
-            })
-        }),
-        Box::new(window),
-    )
+    Box::new(window)
 }
 
 impl CalculatorApp {

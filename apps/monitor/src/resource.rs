@@ -8,7 +8,7 @@ use ui::tilo_resource::{self, Effect, Invoke};
 use ui::widget::Element;
 
 use crate::app::MonitorApp;
-use crate::model::MonitorModel;
+use crate::model::{MonitorModel, Process};
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
@@ -35,26 +35,24 @@ pub enum MonitorEffect {
         #[param("Process filter text, or omit to clear")]
         query: Option<String>,
     },
-    #[effect(screen)]
+    #[effect(screen, on = Process)]
     Inspect {
         #[param("The process row's id")]
         process: String,
     },
-    #[effect(own_device, kind = "read")]
+    #[effect(own_device, kind = "read", on = Process)]
     CopyPid {
         #[param("The process row's id")]
         process: String,
     },
     /// Asks the process to close, as quitting it would. Only the person's own apps
     /// and programs can be ended, never the system's services.
-    #[effect(kind = "outside")]
-    #[effect(destructive)]
+    #[effect(kind = "outside", destructive, on = Process)]
     EndProcess {
         #[param("The process row's id")]
         process: String,
     },
-    #[effect(kind = "outside")]
-    #[effect(destructive)]
+    #[effect(kind = "outside", destructive, on = Process)]
     Kill {
         #[param("The process row's id")]
         process: String,
