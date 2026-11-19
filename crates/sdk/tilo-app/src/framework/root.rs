@@ -778,6 +778,18 @@ impl ResourceRoot {
     /// costs the view plus surfaces × rows, never the view once per row. Each
     /// row binds its edits in tree order of the surfaces offering them.
     #[inline(never)]
+    /// Lay what the surfaces say of each row's effects over it, and over the
+    /// rows nested beneath it.
+    fn apply_row_statuses(&self, rows: &mut [ResourceSpec]) {
+        for row in rows {
+            let statuses = self.row_statuses(row.id.as_str());
+            if !statuses.is_empty() {
+                super::rows::apply_statuses(row, &statuses);
+            }
+            self.apply_row_statuses(&mut row.children);
+        }
+    }
+
     fn bind_row_declarations(&self, rows: &mut [ResourceSpec]) {
         // Every row, nested ones too (a playlist's tracks), asked of the
         // surfaces in one walk.
@@ -1090,11 +1102,11 @@ impl ResourceRoot {
             // the document: an item's presentation from state the document
             // does not hold, and an effect unavailable on one row.
             let kind = resource.kind.clone();
+            // A row's status reaches it wherever it is published, nested ones
+            // too (a playlist's tracks, the cameras of a disconnected capture
+            // row), as its declarations do.
+            self.apply_row_statuses(&mut resource.children);
             for child in &mut resource.children {
-                let statuses = self.row_statuses(child.id.as_str());
-                if !statuses.is_empty() {
-                    super::rows::apply_statuses(child, &statuses);
-                }
                 if let Some((field, id)) =
                     tilo_resource::items::item_of_resource_in(&kind, child.id.as_str())
                     && let Some(presentation) = self.item_presentation(field, id.as_str())
