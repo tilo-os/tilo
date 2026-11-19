@@ -130,7 +130,7 @@ pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
     EncryptionMetadata, EncryptionScheme, GOVERNANCE_NEVER_ARRIVED, MAX_DOCUMENT_MUTATION_BYTES,
     MAX_GOVERNANCE_HEADS, RoutedDocumentPayload, SignedOp, WholeDocumentPayload,
-    document_artifact_id, document_attestation_id, governance_head, live_artifact_id,
+    document_artifact_id, document_attestation_id, governance_head,
     next_unordered_document_sequence, validate_document_payload_route,
     validate_whole_document_payload_route,
 };

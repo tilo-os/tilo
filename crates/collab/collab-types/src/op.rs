@@ -43,7 +43,6 @@ const MAX_ENCODED_DOCUMENT_MUTATION_BYTES: usize = DOCUMENT_MUTATION_V2_PREFIX.l
     + crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES / 1024
     + 16;
 const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"tilo-document-attestation-v1\0";
-const LIVE_ARTIFACT_DOMAIN: &[u8] = b"tilo-live-artifact-v1\0";
 
 /// Meaning of a signed document payload. Keeping this tag inside
 /// [`SignedOp::payload`] makes snapshot-vs-incremental part of the bytes the
@@ -220,26 +219,6 @@ pub fn document_artifact_id(app_id: &str, workspace_id: &str, document_id: &str)
         crate::readers::EVERY_MEMBER,
         &crate::readers::app_document_id(app_id, document_id),
     )
-}
-
-/// Artifact a sealed live frame is bound to: its workspace's content
-/// key seals it for this kind, sequence and record only, so a frame cannot
-/// be replayed under another sequence, record or kind.
-#[must_use]
-pub fn live_artifact_id(resource_digest: &[u8; 32], kind: u8, seq: u64) -> ArtifactId {
-    let mut hash = Sha256::new();
-    hash.update(LIVE_ARTIFACT_DOMAIN);
-    hash.update(resource_digest);
-    hash.update([kind]);
-    hash.update(seq.to_le_bytes());
-    let digest = hash.finalize();
-    let mut bytes = [0_u8; 16];
-    for (target, source) in bytes.iter_mut().zip(digest.iter()) {
-        *target = *source;
-    }
-    bytes[6] = (bytes[6] & 0x0f) | 0x80;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    ArtifactId(uuid::Uuid::from_bytes(bytes))
 }
 
 static LAST_UNORDERED_DOCUMENT_SEQUENCE: std::sync::atomic::AtomicU64 =
