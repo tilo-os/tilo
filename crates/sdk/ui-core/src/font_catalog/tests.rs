@@ -162,13 +162,13 @@ tilo_test_env::scenario! {
                 .unwrap();
             assert!(error.to_string().contains("TiloSans[wdth,wght].ttf"));
             let mut bytes = std::fs::read(fixture().root().join("TiloSans[wdth,wght].ttf")).unwrap();
-            *bytes.last_mut().unwrap() ^= 1;
+            bytes.pop();
             std::fs::write(root.join("TiloSans[wdth,wght].ttf"), bytes).unwrap();
             let error = catalog
-                .load_with_system(|_| panic!("must not mask corruption"))
+                .load_with_system(|_| panic!("must not mask a font cut short"))
                 .err()
                 .unwrap();
-            assert!(error.to_string().contains("SHA-256"));
+            assert!(error.to_string().contains("bytes"), "{error}");
         }
     }
 
@@ -296,22 +296,14 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase catalog_root_trust_is_verify_for_checkout_and_writable_roots;
-    // Only the image's root-owned, read-only catalog skips hashing. A checkout,
-    // an executable `fonts/` and any directory this user can write are
-    // verified byte for byte, and a modified font there is refused.
+    phase a_catalog_file_of_another_size_is_refused;
+    // A process checks each catalog file's size from its metadata and reads none:
+    // a file cut short is refused before any text is set from it.
     {
-        let roots = catalog_roots();
         let checkout = crate::font_catalog::checkout_root();
-        assert!(roots.contains(&checkout));
-        assert_eq!(Trust::of_root(&checkout), Trust::Verify);
-        let adjacent = roots.first().unwrap();
-        assert!(adjacent.starts_with(std::env::current_exe().unwrap().parent().unwrap()));
-        assert_eq!(Trust::of_root(adjacent), Trust::Verify);
-
+        assert!(catalog_roots().contains(&checkout));
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("manifest.toml"), MANIFEST).unwrap();
-        assert_eq!(Trust::of_root(tmp.path()), Trust::Verify);
         let first = tilo_font_catalog::manifest()
             .unwrap()
             .font
@@ -319,13 +311,13 @@ tilo_test_env::scenario! {
             .find(|asset| asset.scope == Scope::Product)
             .unwrap();
         let mut bytes = std::fs::read(first.path_in(&checkout).unwrap()).unwrap();
-        *bytes.last_mut().unwrap() ^= 1;
+        bytes.pop();
         std::fs::write(first.path_in(tmp.path()).unwrap(), bytes).unwrap();
         let root = tmp.path().canonicalize().unwrap();
-        let error = verify_bundle(&root, false, Trust::of_root(&root), None)
+        let error = verify_bundle(&root, false)
             .err()
-            .expect("a modified font in a writable root is refused");
-        assert!(error.problem.contains("SHA-256"), "{error}");
+            .expect("a font of another size is refused");
+        assert!(error.problem.contains("bytes"), "{error}");
     }
 
     phase new_computer_modern_cuts_are_their_own_families;
@@ -668,61 +660,61 @@ fn a_machine_without_tilo_sans_sets_ui_text_in_the_bundled_catalog() {
 }
 
 tilo_test_env::scenario! {
-    /// The database built from a catalog's recorded faces or held mapped, against the one parsing
-    /// builds.
+    /// The database listed from the manifest or held mapped, against what the files hold.
     /// Each phase was a test of its own and builds its own fixture.
-    fn a_recorded_or_mapped_catalog_is_the_database_parsing_builds;
+    fn a_listed_or_mapped_catalog_is_what_its_files_hold;
 
-    phase a_catalog_s_recorded_faces_build_the_database_parsing_builds;
-    // A catalog's build records the faces of its files
-    // (`tilo_font_catalog::faces`), and every process builds the catalog's part
-    // of its font database from that record instead of parsing each font. The
-    // database the record makes must be the one parsing makes, face for face,
-    // in the same order, under the same Tilo families: nothing a process
-    // shapes or falls back to may depend on which way it was built.
+    phase listed_faces_are_what_the_files_hold;
+    // Every process lists the catalog's faces from the manifest compiled into it instead of
+    // parsing each font, so the manifest's names, style and weight must be what fontdb reads
+    // from the files: nothing a process shapes or falls back to may depend on it.
     {
         let root = tilo_font_catalog::checkout_root().canonicalize().unwrap();
-        let recorded = tilo_font_catalog::faces::FaceIndex::build(&root).unwrap();
-        let parsed = verify_bundle(&root, false, Trust::Verify, None).unwrap();
-        let read = verify_bundle(&root, false, Trust::Verify, Some(&recorded)).unwrap();
-        let faces = |bundle: &VerifiedBundle| {
-            bundle
-                .db
-                .faces()
-                .map(|face| {
-                    let path = match &face.source {
-                        fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => {
-                            Some(path.clone())
-                        }
-                        fontdb::Source::Binary(_) => None,
-                    };
-                    (
-                        path,
-                        face.index,
-                        face.families
-                            .iter()
-                            .map(|(name, _)| name.clone())
-                            .collect::<Vec<_>>(),
-                        face.post_script_name.clone(),
-                        face.style,
-                        face.weight,
-                        face.stretch,
-                        face.monospaced,
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
-        assert!(!faces(&parsed).is_empty());
-        assert_eq!(faces(&read), faces(&parsed));
-        assert_eq!(read.canonical, parsed.canonical);
-        assert_eq!(read.required, parsed.required);
-    }
-
-    phase a_recorded_catalog_on_writable_storage_is_parsed;
-    {
-        let root = tilo_font_catalog::checkout_root().canonicalize().unwrap();
-        assert_eq!(Trust::of_root(&root), Trust::Verify);
-        assert!(tilo_font_catalog::faces::FaceIndex::read_trusted(&root, Trust::Verify).is_none());
+        let listed = verify_bundle(&root, true).unwrap();
+        assert!(listed.db.faces().count() > 0);
+        let mut parsed = fontdb::Database::new();
+        for face in listed.db.faces() {
+            let fontdb::Source::File(path) = &face.source else {
+                panic!("a listed face is in its file");
+            };
+            let ids = parsed.load_font_source(fontdb::Source::File(path.clone()));
+            let file = ids
+                .iter()
+                .filter_map(|id| parsed.face(*id))
+                .find(|read| read.index == face.index)
+                .unwrap_or_else(|| panic!("{} holds face {}", path.display(), face.index));
+            let name = |family: &str| file.families.iter().any(|(read, _)| read == family);
+            let asset = tilo_font_catalog::manifest()
+                .unwrap()
+                .font
+                .iter()
+                .find(|asset| path.ends_with(&asset.file))
+                .unwrap();
+            let own = &asset.faces.iter().find(|f| f.index == face.index).unwrap().family;
+            assert!(name(own), "{}: {own} / {:?}", path.display(), file.families);
+            assert_eq!(
+                (
+                    &face.post_script_name,
+                    face.style,
+                    face.weight,
+                    face.stretch,
+                    face.monospaced
+                ),
+                (
+                    &file.post_script_name,
+                    file.style,
+                    file.weight,
+                    file.stretch,
+                    file.monospaced
+                ),
+                "{} face {}",
+                path.display(),
+                face.index
+            );
+            for id in ids {
+                parsed.remove_face(id);
+            }
+        }
     }
 
     phase a_mapped_database_reads_and_shapes_without_its_files;

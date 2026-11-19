@@ -115,6 +115,23 @@ fn switching_pages_resizing_the_sidebar_and_scrolling_do_only_what_changed() {
     .expect("the gallery opens in a window");
 }
 
+#[test]
+fn the_gallery_s_first_frame_reads_only_the_interface_font() {
+    // Every catalog face is listed and mapped before the first frame; a file is read only when text
+    // needs one of its faces, and the gallery's first page is set in the interface face alone.
+    crate::support::installed("gallery");
+    ui::framework::testing::drive_live_embedded::<TlApp, _>(|tile| {
+        let mut text = TextRenderer::new();
+        frame(tile, &mut text);
+        let read: Vec<String> = ui::font_catalog::font_files_read()
+            .iter()
+            .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(read, ["TiloSans[wdth,wght].ttf"]);
+    })
+    .expect("the gallery opens in a window");
+}
+
 /// The process's resident memory in KiB, as the kernel counts it.
 fn resident_kib() -> u64 {
     std::fs::read_to_string("/proc/self/status")

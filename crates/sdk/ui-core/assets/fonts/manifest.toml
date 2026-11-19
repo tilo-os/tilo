@@ -297,26 +297,31 @@ index = 0
 family = "Noto Sans CJK JP"
 post_script_name = "NotoSansCJKjp-Thin"
 style = "normal"
+weight = 100
 [[font.faces]]
 index = 1
 family = "Noto Sans CJK KR"
 post_script_name = "NotoSansCJKkr-Thin"
 style = "normal"
+weight = 100
 [[font.faces]]
 index = 2
 family = "Noto Sans CJK SC"
 post_script_name = "NotoSansCJKsc-Thin"
 style = "normal"
+weight = 100
 [[font.faces]]
 index = 3
 family = "Noto Sans CJK TC"
 post_script_name = "NotoSansCJKtc-Thin"
 style = "normal"
+weight = 100
 [[font.faces]]
 index = 4
 family = "Noto Sans CJK HK"
 post_script_name = "NotoSansCJKhk-Thin"
 style = "normal"
+weight = 100
 
 [[font]]
 scope = "product"
@@ -424,6 +429,7 @@ index = 0
 family = "NewComputerModern"
 post_script_name = "NewCM10-Bold"
 style = "normal"
+weight = 700
 tilo_families = ["New Computer Modern", "New Computer Modern Book", "New Computer Modern 08"]
 
 [[font]]
@@ -443,6 +449,7 @@ index = 0
 family = "NewComputerModern"
 post_script_name = "NewCM10-BoldItalic"
 style = "italic"
+weight = 700
 tilo_families = ["New Computer Modern", "New Computer Modern Book"]
 
 [[font]]
@@ -517,6 +524,7 @@ index = 0
 family = "Libertinus Serif"
 post_script_name = "LibertinusSerif-Bold"
 style = "normal"
+weight = 700
 
 [[font]]
 scope = "product"
@@ -535,6 +543,7 @@ index = 0
 family = "Libertinus Serif"
 post_script_name = "LibertinusSerif-BoldItalic"
 style = "italic"
+weight = 700
 
 [[font]]
 scope = "product"

@@ -193,16 +193,8 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
     if options.times {
         print_times(&opened);
         print_asking(&staged);
-        for (when, resident) in [
-            ("started", started),
-            ("compiled", compiled_at),
-            ("opened", Resident::now()),
-        ] {
-            println!("{when:>10}  {resident}");
-        }
-        for (kib, file) in mapped_files().into_iter().take(12) {
-            println!("{:>10}  {file}", format!("{kib} KiB"));
-        }
+        print_fonts_read();
+        print_resident(started, compiled_at);
     }
     for interaction in interactions {
         staged.reset_costs();
@@ -217,6 +209,7 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
         if options.times {
             print_times(&scopes);
             print_asking(&staged);
+            print_fonts_read();
             println!("{:>10}  {}", "after", Resident::now());
         }
     }
@@ -285,6 +278,35 @@ fn print_asking(staged: &stage::Staged) {
             .collect();
         println!("    asking  {}", named.join(", "));
     }
+}
+
+/// What the process held as it started, once the app compiled and once it opened, and the files
+/// mapped into it the most resident first.
+fn print_resident(started: Resident, compiled: Resident) {
+    for (when, resident) in [
+        ("started", started),
+        ("compiled", compiled),
+        ("opened", Resident::now()),
+    ] {
+        println!("{when:>10}  {resident}");
+    }
+    for (kib, file) in mapped_files().into_iter().take(12) {
+        println!("{:>10}  {file}", format!("{kib} KiB"));
+    }
+}
+
+/// The font files text has read so far: a font is mapped up front and read only when text first
+/// needs one of its faces.
+fn print_fonts_read() {
+    let read = ui::font_catalog::font_files_read();
+    let names: Vec<String> = read
+        .iter()
+        .map(|path| {
+            path.file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+        })
+        .collect();
+    println!("     fonts  {} read: {}", names.len(), names.join(", "));
 }
 
 fn print_costs(staged: &stage::Staged, interaction: &str) -> Result<(), String> {

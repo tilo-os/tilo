@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cosmic_text::{FontSystem, fontdb};
 #[cfg(test)]
 use tilo_font_catalog::MANIFEST;
-use tilo_font_catalog::{Asset, Face, Manifest, Scope, Trust};
+use tilo_font_catalog::{Asset, Face, Manifest, Scope};
 use tilo_lock::MutexRecover as _;
 
 /// The verified catalog materialized for this source build.
@@ -20,8 +21,6 @@ pub(crate) mod matched;
 pub(crate) mod optical;
 #[cfg(test)]
 mod tests;
-#[cfg(windows)]
-mod windows;
 
 #[cfg(all(target_os = "android", feature = "native"))]
 pub(crate) use android::android_font_system;
@@ -54,16 +53,16 @@ fn no_catalog(errors: &[FontCatalogError]) {
 
 /// The product catalog with the system's fonts behind it, for every process
 /// that is not handed a host font database or Android catalog. The
-/// catalog is verified and the system fonts discovered once per process; each
+/// catalog is listed and the system fonts discovered once per process; each
 /// renderer gets its copy of the database, so its shaping caches stay its
 /// own while font bytes and discovery are shared. `None` when no root in
 /// [`catalog_roots`] has a catalog this build accepts.
 ///
-/// The database is read from the font index the last launch recorded
-/// ([`index`]) when everything it was built from is unchanged, so a launch
-/// parses no font and hashes nothing; otherwise it is built and recorded.
-/// Either way every font file is mapped before the database is handed out
-/// ([`mapped`]), so shaping never opens a file.
+/// The catalog's faces come from the manifest compiled in, and the system's
+/// from the record the last launch made ([`index`]) when the system's fonts are
+/// unchanged, so a launch parses no font and reads none whole. Every font file
+/// is mapped before the database is handed out ([`mapped`]), so shaping never
+/// opens a file; a face's bytes are read when text first needs it.
 #[cfg(not(test))]
 pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     // A test binary of another crate links this one without `cfg(test)`: its text is set in the
@@ -71,31 +70,24 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     let fixtures = cfg!(feature = "test-support");
     static DATABASE: OnceLock<Option<fontdb::Database>> = OnceLock::new();
     let database = DATABASE.get_or_init(|| {
-        if fixtures {
-            return Some(tilo_startup_metrics::span("font-files-map", || {
-                mapped(fixture_font_system().db())
-            }));
-        }
-        let roots = catalog_roots();
-        let recorded = index::location();
-        if let Some(db) = recorded.as_deref().and_then(|path| {
-            tilo_startup_metrics::span("font-index-read", || index::load(path, &roots))
-        }) {
-            return Some(tilo_startup_metrics::span("font-files-map", || mapped(&db)));
-        }
-        match load_first_catalog_at(&roots, &locale, fontdb::Database::load_system_fonts) {
-            Ok((root, font_system)) => {
-                let db = font_system.into_locale_and_db().1;
-                if let Some(path) = recorded.as_deref() {
-                    index::store(path, &roots, &root, &db);
+        let font_system = if fixtures {
+            fixture_font_system()
+        } else {
+            let recorded = index::location();
+            let discover = |db: &mut fontdb::Database| {
+                index::add_system_fonts(recorded.as_deref(), db);
+            };
+            match load_first_catalog(&catalog_roots(), &locale, discover) {
+                Ok(font_system) => font_system,
+                Err(errors) => {
+                    no_catalog(&errors);
+                    return None;
                 }
-                Some(tilo_startup_metrics::span("font-files-map", || mapped(&db)))
             }
-            Err(errors) => {
-                no_catalog(&errors);
-                None
-            }
-        }
+        };
+        Some(tilo_startup_metrics::span("font-files-map", || {
+            mapped(font_system.db())
+        }))
     });
     database.as_ref().map(|db| system_over(locale, db.clone()))
 }
@@ -213,22 +205,10 @@ pub(crate) fn load_first_catalog(
     locale: &str,
     discover: impl Fn(&mut fontdb::Database),
 ) -> Result<FontSystem, Vec<FontCatalogError>> {
-    load_first_catalog_at(roots, locale, discover).map(|(_, font_system)| font_system)
-}
-
-/// [`load_first_catalog`], with the canonical root it loaded from.
-pub(crate) fn load_first_catalog_at(
-    roots: &[PathBuf],
-    locale: &str,
-    discover: impl Fn(&mut fontdb::Database),
-) -> Result<(PathBuf, FontSystem), Vec<FontCatalogError>> {
     let mut errors = Vec::new();
     for root in roots.iter().filter(|root| root.is_dir()) {
         match FontCatalog::product(root, locale).load_with_system(&discover) {
-            Ok(font_system) => {
-                let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
-                return Ok((canonical, font_system));
-            }
+            Ok(font_system) => return Ok(font_system),
             Err(error) => errors.push(error),
         }
     }
@@ -261,7 +241,13 @@ pub(crate) fn mapped(db: &fontdb::Database) -> fontdb::Database {
             fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => {
                 let bytes = files.entry(path.clone()).or_insert_with(|| {
                     tilo_files::native::mapped::MappedFile::open(path)
-                        .map(|map| Arc::new(map) as Bytes)
+                        .map(|map| {
+                            Arc::new(Mapped {
+                                map,
+                                path: path.clone(),
+                                read: AtomicBool::new(false),
+                            }) as Bytes
+                        })
                         .inspect_err(|error| {
                             tracing::debug!(%error, path = %path.display(), "font file not mapped");
                         })
@@ -284,6 +270,32 @@ pub(crate) fn mapped(db: &fontdb::Database) -> fontdb::Database {
     out.set_cursive_family(db.family_name(&fontdb::Family::Cursive));
     out.set_fantasy_family(db.family_name(&fontdb::Family::Fantasy));
     out
+}
+
+/// A mapped font file that notes the first time its bytes are asked for, which is when
+/// shaping first reads it ([`font_files_read`]).
+struct Mapped {
+    map: tilo_files::native::mapped::MappedFile,
+    path: PathBuf,
+    read: AtomicBool,
+}
+
+static FILES_READ: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+impl AsRef<[u8]> for Mapped {
+    fn as_ref(&self) -> &[u8] {
+        if !self.read.load(Ordering::Relaxed) && !self.read.swap(true, Ordering::Relaxed) {
+            FILES_READ.lock_recover().push(self.path.clone());
+        }
+        self.map.as_ref()
+    }
+}
+
+/// The font files of the process's database whose bytes text has asked for so far, in the order
+/// it first did: a file that is mapped and never shaped from is never read.
+#[must_use]
+pub fn font_files_read() -> Vec<PathBuf> {
+    FILES_READ.lock_recover().clone()
 }
 
 /// Keep one face per family, style, weight and stretch.
@@ -837,15 +849,10 @@ struct VerifiedBundle {
 
 type VerifiedBundles = HashMap<(PathBuf, bool), Arc<VerifiedBundle>>;
 
-/// Verify a catalog root once per process and hand every later load a clone
-/// of the resulting database; cloning copies only face metadata, the faces
-/// stay file-backed. Hashing the 54.9 MB of shipped fonts costs 22 ms with
-/// SHA instructions and about 140 ms without, so the image's immutable
-/// catalog is not hashed at all ([`tilo_font_catalog::Trust`]); any other
-/// root still is. A root that fails verification is not remembered, so a
-/// repaired installation loads on the next attempt. The lock is held across
-/// verification so concurrent first loads hash the fonts once rather than
-/// once per caller.
+/// List a catalog root's faces once per process and hand every later load a
+/// clone of the resulting database; cloning copies only face metadata, the
+/// faces stay file-backed. A root that fails is not remembered, so a
+/// repaired installation loads on the next attempt.
 fn verified_bundle(root: &Path, fixtures: bool) -> Result<Arc<VerifiedBundle>, FontCatalogError> {
     static VERIFIED: OnceLock<Mutex<VerifiedBundles>> = OnceLock::new();
     let mut verified = VERIFIED.get_or_init(Mutex::default).lock_recover();
@@ -853,26 +860,21 @@ fn verified_bundle(root: &Path, fixtures: bool) -> Result<Arc<VerifiedBundle>, F
     if let Some(bundle) = verified.get(&key) {
         return Ok(Arc::clone(bundle));
     }
-    let trust = Trust::of_root(root);
-    let shipped = tilo_font_catalog::faces::FaceIndex::read_trusted(root, trust);
-    let bundle = Arc::new(verify_bundle(root, fixtures, trust, shipped.as_ref())?);
+    let bundle = Arc::new(verify_bundle(root, fixtures)?);
     verified.insert(key, Arc::clone(&bundle));
     Ok(bundle)
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "Bundle verification keeps manifest, size, hash and face validation in one sequence."
-)]
-fn verify_bundle(
-    root: &Path,
-    fixtures: bool,
-    trust: Trust,
-    shipped: Option<&tilo_font_catalog::faces::FaceIndex>,
-) -> Result<VerifiedBundle, FontCatalogError> {
+/// The catalog at `root` as the manifest compiled into this build lists it:
+/// its manifest must be this build's byte for byte and every file it uses must
+/// have its pinned size. No font is opened: the manifest states each face's
+/// names, style and weight (`listed_faces_are_what_the_files_hold` holds it to
+/// what the files say), and a face's bytes are read when text first needs it.
+/// The pinned hashes were checked where the catalog was prepared; hashing it
+/// again read all 55 MB of it before the first frame on a cold disk.
+fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCatalogError> {
     tilo_font_catalog::check_manifest(root)?;
     let manifest = tilo_font_catalog::manifest()?;
-    tracing::debug!(root = %root.display(), ?trust, "verifying Tilo font catalog");
     let mut db = fontdb::Database::new();
     let mut canonical = HashSet::new();
     let mut reserved = HashSet::new();
@@ -885,50 +887,11 @@ fn verify_bundle(
             continue;
         }
         reserved.extend(asset.reserved_aliases.iter().map(|s| s.to_lowercase()));
-        let path = verify_asset(root, asset, trust)?;
-        let ids: Vec<fontdb::ID> = match shipped.and_then(|index| index.faces(&asset.file)) {
-            Some(faces) => faces
-                .iter()
-                .map(|face| db.push_face_info(face.info(fontdb::Source::File(path.clone()))))
-                .collect(),
-            None => db
-                .load_font_source(fontdb::Source::File(path.clone()))
-                .into_iter()
-                .collect(),
-        };
-        if ids.len() != asset.faces.len() {
-            return Err(FontCatalogError::at(
-                &path,
-                format!("expected {} faces, loaded {}", asset.faces.len(), ids.len()),
-            ));
-        }
-        for expected in &asset.faces {
-            let style = if expected.style == "italic" {
-                fontdb::Style::Italic
-            } else {
-                fontdb::Style::Normal
-            };
-            let found = ids
-                .iter()
-                .filter_map(|id| db.face(*id))
-                .find(|face| face.index == expected.index);
-            let valid = found.is_some_and(|face| {
-                face.families.iter().any(|name| name.0 == expected.family)
-                    && face.post_script_name == expected.post_script_name
-                    && face.style == style
-            });
-            if !valid {
-                return Err(FontCatalogError::at(
-                    &path,
-                    format!(
-                        "face {} must be {} / {} ({})",
-                        expected.index, expected.family, expected.post_script_name, expected.style
-                    ),
-                ));
-            }
+        let path = asset.sized_in(root)?;
+        for face in &asset.faces {
+            canonical.insert(db.push_face_info(listed(face, fontdb::Source::File(path.clone()))));
         }
         required.extend(required_families(asset));
-        canonical.extend(set_tilo_families(&mut db, asset, ids));
     }
     Ok(VerifiedBundle {
         db,
@@ -938,37 +901,22 @@ fn verify_bundle(
     })
 }
 
-/// Check one catalog file against its pinned size and, unless `trust` and
-/// the file itself show it immutable, its SHA-256.
-#[cfg(not(windows))]
-fn verify_asset(
-    root: &Path,
-    asset: &tilo_font_catalog::Asset,
-    trust: Trust,
-) -> Result<PathBuf, FontCatalogError> {
-    Ok(asset.verify_with(root, trust)?)
-}
-
-#[cfg(windows)]
-fn verify_asset(
-    root: &Path,
-    asset: &tilo_font_catalog::Asset,
-    _trust: Trust,
-) -> Result<PathBuf, FontCatalogError> {
-    let path = asset.path_in(root)?;
-    let metadata = std::fs::metadata(&path).map_err(|e| FontCatalogError::at(&path, e))?;
-    if !metadata.is_file() || metadata.len() != asset.bytes {
-        return Err(FontCatalogError::at(
-            &path,
-            format!("expected regular file of {} bytes", asset.bytes),
-        ));
+/// `face` as the manifest lists it, set under Tilo's families.
+fn listed(face: &Face, source: fontdb::Source) -> fontdb::FaceInfo {
+    fontdb::FaceInfo {
+        id: fontdb::ID::dummy(),
+        source,
+        index: face.index,
+        families: tilo_families(face)
+            .into_iter()
+            .map(|family| (family.to_owned(), fontdb::Language::English_UnitedStates))
+            .collect(),
+        post_script_name: face.post_script_name.clone(),
+        style: face_style(face),
+        weight: fontdb::Weight(face.weight),
+        stretch: fontdb::Stretch::Normal,
+        monospaced: false,
     }
-    let file = std::fs::File::open(&path).map_err(|error| FontCatalogError::at(&path, error))?;
-    let actual = windows::digest(file)
-        .map(hex::encode)
-        .map_err(|error| FontCatalogError::at(&path, error))?;
-    asset.check_digest(&path, &actual)?;
-    Ok(path)
 }
 
 pub fn configured_font_system_with_catalog(
