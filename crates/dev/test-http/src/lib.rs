@@ -207,7 +207,19 @@ impl Responder {
     where
         F: Fn(&Request) -> Option<Reply> + Send + Sync + 'static,
     {
-        Self::serve(move |peer| {
+        Self::handle_at(0, handler)
+    }
+
+    /// [`Responder::handle`] on loopback port `port`, or any free one for 0:
+    /// a stand-in another machine reaches through a forward of a known port.
+    ///
+    /// # Panics
+    /// If the loopback listener cannot be created.
+    pub fn handle_at<F>(port: u16, handler: F) -> Self
+    where
+        F: Fn(&Request) -> Option<Reply> + Send + Sync + 'static,
+    {
+        Self::serve_at(port, move |peer| {
             let reply = handler(peer.request());
             if let Some(reply) = reply {
                 peer.reply(&reply);
@@ -229,7 +241,22 @@ impl Responder {
     where
         F: Fn(&mut Peer) + Send + Sync + 'static,
     {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback responder");
+        Self::serve_at(0, handler)
+    }
+
+    /// [`Responder::serve`] on loopback port `port`, or any free one for 0.
+    ///
+    /// # Panics
+    /// If the loopback listener cannot be created.
+    #[allow(
+        clippy::expect_used,
+        reason = "a test fixture that cannot bind loopback has no meaningful fallback"
+    )]
+    pub fn serve_at<F>(port: u16, handler: F) -> Self
+    where
+        F: Fn(&mut Peer) + Send + Sync + 'static,
+    {
+        let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind loopback responder");
         let port = listener.local_addr().expect("responder address").port();
         let (sender, requests) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));

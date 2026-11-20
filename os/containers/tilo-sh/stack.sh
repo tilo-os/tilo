@@ -280,6 +280,7 @@ mail_port=$((base + 23))       # the mail sink the entry's mail goes to instead 
 mail_stand_in_imap_port=$((base + 24))  # the stand-in mail server's IMAP, when TILO_SH_MAIL_STAND_IN=1
 mail_stand_in_smtp_port=$((base + 25))  # its SMTP
 mail_stand_in_document_port=443        # its settings document, where a mail program asks (https)
+fake_oauth_port=$((base + 26))  # the fake provider sign-in page, with --fake-oauth
 discord_rest_port=$((base + 40))
 discord_gateway_port=$((base + 41))
 discord_control_port=$((base + 42))
@@ -431,7 +432,7 @@ stack_tcp_ports() {
   printf '%s\n' "$server_port" "$plain_port" "$routes_port" "$server_web_port" \
     "$live_port" "$caddy_http_port" "$api_port" "$site_port" "$web_port" \
     "$releases_port" "$mail_port" "$mail_stand_in_imap_port" \
-    "$mail_stand_in_smtp_port" "$discord_rest_port" "$discord_gateway_port" \
+    "$mail_stand_in_smtp_port" "$fake_oauth_port" "$discord_rest_port" "$discord_gateway_port" \
     "$discord_control_port"
 }
 stack_udp_ports() { printf '%s\n' "$packet_port" "$iroh_port" "$link_port"; }
@@ -2022,7 +2023,9 @@ start_native_discord() {
 start_native_fake_oauth() {
   : > "$state/logs/fake-oauth.log"
   private_env fake-oauth "$programs" > "$runs/fake-oauth.env"
-  run_native fake-oauth "$runs/fake-oauth" "$programs/fake-oauth"
+  # On its own port of the base: a stack on the build server forwards it, so
+  # the browser here opens the same page the server there exchanges codes with.
+  run_native fake-oauth "$runs/fake-oauth" "$programs/fake-oauth" --port "$fake_oauth_port"
   local deadline=$((SECONDS + 60))
   until grep -q '^FAKE_OAUTH_URL=' "$state/logs/fake-oauth.log" 2>/dev/null; do
     ((SECONDS < deadline)) || die "the fake OAuth page did not start within a minute: $(cat "$state/logs/fake-oauth.log")"
@@ -2264,6 +2267,7 @@ discord_secrets() {
 
 up() {
   local seed='' discord='' fresh='' images=''
+  fake_oauth=''
   for arg in "$@"; do
     case $arg in
       --images) images=1 ;;
@@ -2754,11 +2758,13 @@ start_supervisor() {
   printf '%s\n' "$!" > "$state/supervisor.pid"
 }
 
-# up_remote [--seed] [--discord]: the stack on the build server, its ports here.
+# up_remote [--seed] [--discord]: the stack on the build server, its ports here
+# (with --fake-oauth when up was given it).
 up_remote() {
   local seed=$1 discord=$2 args=()
   [[ -z $seed ]] || args+=(--seed)
   [[ -z $discord ]] || args+=(--discord)
+  [[ -z ${fake_oauth:-} ]] || args+=(--fake-oauth)
   mkdir -p "$state/logs" "$(dirname -- "$remote_state")"
   echo remote > "$state/mode"
   mode=remote

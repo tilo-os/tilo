@@ -98,13 +98,19 @@ impl Default for FakeAuthorizationServer {
 
 impl FakeAuthorizationServer {
     pub fn start() -> Self {
+        Self::start_at(0)
+    }
+
+    /// The fake on loopback port `port`, or any free one for 0: a local
+    /// stack forwards a known port to the browser that signs in.
+    pub fn start_at(port: u16) -> Self {
         let state = Arc::new(Mutex::new(State {
             token_lifetime: 3600,
             email: "ada@example.test".to_owned(),
             ..State::default()
         }));
         let shared = Arc::clone(&state);
-        let responder = Responder::handle(move |request| Some(handle(&shared, request)));
+        let responder = Responder::handle_at(port, move |request| Some(handle(&shared, request)));
         Self { responder, state }
     }
 
