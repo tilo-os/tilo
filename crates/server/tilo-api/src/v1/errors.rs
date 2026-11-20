@@ -158,7 +158,10 @@ pub fn status_of(code: &str) -> StatusCode {
             StatusCode::CONFLICT
         }
         "too_large" => StatusCode::PAYLOAD_TOO_LARGE,
-        "unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+        // A workspace that was not serving its session yet, and the same call unanswered: the
+        // call waited for it and it did not come, so the caller asks again rather than fixing
+        // anything. Never 422, which says the request itself was wrong.
+        "not_ready" | "unanswered" | "unavailable" => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::UNPROCESSABLE_ENTITY,
     }
 }

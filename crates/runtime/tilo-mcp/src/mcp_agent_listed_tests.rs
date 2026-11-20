@@ -219,7 +219,10 @@ async fn a_later_page_of_a_listing_resolves_no_path_again() {
     )
     .await;
     assert!(!failed, "{next}");
-    assert!(next.contains("Option 299"), "the rest of the directory: {next}");
+    assert!(
+        next.contains("Option 299"),
+        "the rest of the directory: {next}"
+    );
     let asked = notes.take_asked();
     let settings = notes.id("settings");
     assert!(

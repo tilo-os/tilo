@@ -45,6 +45,9 @@ pub(super) struct Notes {
     /// How many times the app answers that its directory cannot be read now, as while
     /// another actor's action is being applied. `u32::MAX` never can.
     cannot_list: Arc<Mutex<u32>>,
+    /// Whether the workspace serves this session yet: while it does not, every ask is refused
+    /// as not ready, and the waiters here are told when `served` says it does.
+    not_served: Arc<Mutex<Option<Vec<tilo_actions::remote::Completer<()>>>>>,
     /// How many times the app's top level lists nothing though it says the page is whole,
     /// as for an instant while its view is rebuilt.
     lists_less: Arc<Mutex<u32>>,
@@ -157,6 +160,7 @@ impl Notes {
             invoked: Arc::default(),
             moves: Arc::default(),
             cannot_list: Arc::default(),
+            not_served: Arc::default(),
             lists_less: Arc::default(),
             search_page: Arc::default(),
             search_moves: Arc::default(),
@@ -364,6 +368,21 @@ impl Notes {
     fn archiving_both_notes(self) -> Self {
         *self.archive_twice.lock().unwrap() = true;
         self
+    }
+
+    /// The same Notes, not serving this session yet: every ask is refused as not ready until
+    /// [`Self::served`] says the workspace serves it now.
+    fn not_serving(self) -> Self {
+        *self.not_served.lock().unwrap() = Some(Vec::new());
+        self
+    }
+
+    /// The workspace serves this session now: what a waiting call reads as the session moving.
+    fn served(&self) {
+        let waiters = self.not_served.lock().unwrap().take().unwrap_or_default();
+        for waiter in waiters {
+            waiter.complete(());
+        }
     }
 
     /// The same Notes with `count` more notes in its notebook.
@@ -737,6 +756,9 @@ impl Notes {
     /// Why the session does not answer `query`, when it does not: it cannot
     /// say which apps run, or the workspace's installed apps cannot be read.
     fn refused(&self, query: &CatalogueQuery) -> Option<ActionCallError> {
+        if self.not_served.lock().unwrap().is_some() {
+            return Some(ActionCallError::NotReady);
+        }
         let unreachable = self.unreachable.lock().unwrap().clone();
         if let Some(error) = unreachable {
             return Some(error);
@@ -1050,6 +1072,21 @@ impl ActionProvider for Notes {
 
     fn here(&self, _caller: &Caller) -> Option<Vec<tilo_actions::remote::Here>> {
         self.here.lock().unwrap().clone()
+    }
+
+    /// When the workspace starts serving this session: the change a call waits on for a
+    /// refusal it was given as not ready. A workspace already serving completes the wait at
+    /// once, so a call that asked again after it moved is never left waiting.
+    fn session_state_changed(&self, _caller: &Caller) -> Option<Pending<()>> {
+        let (done, moved) = tilo_actions::remote::pending();
+        {
+            let mut not_served = self.not_served.lock().unwrap();
+            match &mut *not_served {
+                Some(waiters) => waiters.push(done),
+                None => done.complete(()),
+            }
+        }
+        Some(moved)
     }
 
     fn resource_search(&self) -> Option<std::sync::Arc<dyn tilo_actions::remote::ResourceSearch>> {
@@ -2996,3 +3033,22 @@ mod written_out;
 #[cfg(test)]
 #[path = "mcp_agent_address_tests.rs"]
 mod address_tests;
+
+/// A workspace that is not serving this session yet is waited for, not answered: a listing
+/// asked while it comes up reads once it serves, and never tells the caller it was not ready.
+#[tokio::test]
+async fn a_listing_waits_for_a_workspace_that_is_not_serving_it_yet() {
+    let notes = Notes::new(true).not_serving();
+    let server = std::sync::Arc::new(agent(&notes));
+    let asking = tokio::spawn({
+        let server = std::sync::Arc::clone(&server);
+        async move { tool(&server, "tilo_ls", json!({"path": "notes"})).await }
+    });
+    // The ask is refused as not ready until the workspace says it serves the session.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(!asking.is_finished(), "the listing is still waiting");
+    notes.served();
+    let (text, failed) = asking.await.unwrap();
+    assert!(!failed, "{text}");
+    assert!(text.contains("Todo"), "{text}");
+}

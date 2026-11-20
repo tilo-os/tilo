@@ -68,6 +68,21 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 }
                 None => admitting.await,
             };
+            // A workspace a server has not started serving yet refuses the ask and takes it
+            // once it does: the session is the signal that it moved, and the call waits for
+            // it rather than telling its caller to come back.
+            if matches!(
+                &answer,
+                Some(Err(tilo_actions::remote::ActionCallError::NotReady))
+            ) {
+                let until = tokio::time::Instant::now()
+                    .checked_add(crate::NOT_SERVED_WAIT)
+                    .unwrap_or_else(tokio::time::Instant::now);
+                if self.wait_served(until).await {
+                    continue;
+                }
+                break answer;
+            }
             if !lost(answer.as_ref()) {
                 break answer;
             }

@@ -1344,6 +1344,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
 
     /// Run `source` in the task's host, doing what it reads and invokes as the task, until it
     /// answers. The host is started on the task's first program.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the task's link is held while its host runs the program, as its catalogue is read"
+    )]
     async fn run_in_task(&self, source: &str, confirm: bool) -> Result<Value, String> {
         let mut link = self.task.lock().await;
         if link.is_none() {
