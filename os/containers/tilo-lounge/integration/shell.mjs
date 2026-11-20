@@ -1,8 +1,10 @@
 // The person's hands and eyes on the web desktop, shared by the page drivers:
 // keys and clicks as a person gives them, the nodes the desktop publishes for a
 // screen reader (what a driver reads and presses by name, since what is drawn
-// is a picture), the shell's search, invitation links, and what a page said
-// while it loaded.
+// is a picture), the shell's search, invitation links, what a page said while
+// it loaded, and the mails a stack's entry sends.
+import {readdirSync, readFileSync} from 'node:fs';
+import {join} from 'node:path';
 import {sleep} from '../../../../tools/web/chrome.mjs';
 import {SHELL, stepLimit} from './waits.mjs';
 // Keys as the desktop's search reads them (its own scripts drive it this
@@ -100,10 +102,12 @@ export const boxOf = bounds => Array.isArray(bounds) ? bounds
 export const pressNamed = async (tab, name, nth = 0, presses = null) => {
   const node = JSON.parse(await find(tab, name, nth));
   if (!node) return false;
-  const [x0, y0, x1, y1] = Array.isArray(node.bounds)
-    ? node.bounds
-    : [node.bounds.x0 ?? node.bounds.x, node.bounds.y0 ?? node.bounds.y,
-       node.bounds.x1 ?? node.bounds.x + node.bounds.width, node.bounds.y1 ?? node.bounds.y + node.bounds.height];
+  return pressBox(tab, node.bounds, presses && {name, node, presses});
+};
+/** A press at the centre of `bounds` (a published node's, or four edges): a
+ * person's press on the control drawn there. */
+export const pressBox = async (tab, bounds, record = null) => {
+  const [x0, y0, x1, y1] = boxOf(bounds);
   const corner = JSON.parse(await canvasTopLeft(tab));
   const x = corner.x + (x0 + x1) / 2;
   const y = corner.y + (y0 + y1) / 2;
@@ -121,11 +125,33 @@ export const pressNamed = async (tab, name, nth = 0, presses = null) => {
     return JSON.stringify({tag: element.tagName, className: String(element.className),
       semantic: element.dataset?.tiloSemantic ?? null});
   })()`);
-  presses?.push({name, bounds: node.bounds, at: {x, y}, inside, under});
+  record?.presses.push({name: record.name, bounds: record.node.bounds, at: {x, y}, inside, under});
   if (!inside) return false;
   await click(tab, x, y);
   return true;
 };
+/** A press on the `nth` control the desktop publishes with test id `id` (a
+ * negative index counts from the last), where a person can reach it. */
+export const pressWidget = async (tab, id, nth = 0) => {
+  const matching = (await nodesOf(tab)).filter(node => node.id === id && node.bounds);
+  const node = matching[nth < 0 ? matching.length + nth : nth];
+  if (!node) return false;
+  return pressBox(tab, node.bounds);
+};
+/** Every node the desktop publishes, with what a driver reads it by: the role
+ * a screen reader gets it, its name and value, its test id, and where it is. */
+export const nodesOf = tab => tab.evaluate(`(() => {
+  const out = [];
+  const walk = n => {
+    if (!n) return;
+    const s = n.semantics;
+    if (s) out.push({role: s.role ?? null, name: s.name ?? '', value: s.value ?? null,
+      id: n.test_id ?? null, widget: n.widget ?? null, bounds: s.bounds ?? s.rect ?? n.rect ?? null});
+    (n.children || []).forEach(walk);
+  };
+  walk(globalThis.tiloMount?.state()?.semantics?.root);
+  return JSON.stringify(out);
+})()`).then(JSON.parse).catch(() => []);
 // A page-side clock around the person's Enter. What a person waits for is the
 // shell showing the app's window, and this shell paints into one canvas: the
 // window is on screen when the frame that carries it is presented. So both
@@ -236,6 +262,13 @@ export const recordLoading = async (launched, tab) => {
   await tab.send('Network.enable', {}).catch(() => {});
   await tab.send('Log.enable', {}).catch(() => {});
 };
+/** The keyboard belongs to the desktop's canvas: a card the page showed takes it,
+ * and the shell hears no chord until it is given back. */
+export const focusShell = tab => tab.evaluate(`(() => {
+  const canvas = globalThis.tiloMount?.canvas;
+  canvas?.focus?.();
+  return !!canvas && document.activeElement === canvas;
+})()`).catch(() => false);
 // The invitations a site hands over: `<scheme>://<site>/i/<handle>#<key>`, the
 // handle and the key alone, the key never in the part a site's logs see.
 export const sealedLink = /^https?:\/\/[^/]+\/i\/[A-Za-z0-9_-]{16}#[A-Za-z0-9_-]{43}$/;
@@ -289,7 +322,7 @@ export const searcher = ({until, failed, dump}) => {
   // answer are the previous query's. So Enter waits for the shell to have answered
   // *this* query, and for the row asked for to be the first one under the
   // palette's heading, which is where the highlight sits.
-  const search = async (tab, command, query, row, opens = null) => {
+  const search = async (tab, command, query, row, opens = null, {focus = true} = {}) => {
     const began = Date.now();
     const framesFrom = await presented(tab);
     // What the shell said of itself on every frame from here to the answer: a
@@ -320,7 +353,9 @@ export const searcher = ({until, failed, dump}) => {
     // The shell keeps the search up until what it opened has arrived, and the
     // chord toggles the shell's own: it is pressed only when the shell's is down.
     if (!shellSearch(await openScope())) {
-      await click(tab, SHELL.empty.x, SHELL.empty.y);
+      // A press on the shell's empty place gives the page the keyboard; a page
+      // a window already fills takes the chord as it is.
+      if (focus) await click(tab, SHELL.empty.x, SHELL.empty.y);
       await key(tab, 'k', command);
     }
     const chorded = Date.now();
@@ -404,3 +439,71 @@ export const TREE_TEXT = `(() => {
   if (root) walk(root);
   return out.join('\\n');
 })()`;
+
+// -- the mails a stack's entry sends ------------------------------------------
+/** The mails the entry sent, oldest first: what the stack's mail sink kept of
+ * each (`stack.sh mail` lists the same, with their links). */
+export const mailsOf = dir => readdirSync(dir).filter(name => name.endsWith('.json')).sort()
+  .map(name => JSON.parse(readFileSync(join(dir, name), 'utf8')));
+/** The `count`th mail the entry sent (`what` names it in the failure), once it
+ * has reached the sink: the sink takes each in a task of its own, so the first
+ * attempt may be a moment before the file is there. */
+export const waitForMail = async (dir, what, count, timeout = stepLimit(6)) => {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const kept = mailsOf(dir);
+    if (kept.length >= count) return kept[count - 1];
+    if (Date.now() > deadline) {
+      throw new Error(`${what} never reached the mail sink (${kept.length} mails: ${JSON.stringify(kept.map(mail => mail.subject))})`);
+    }
+    await sleep(250);
+  }
+};
+/** The link a mail carries whose path ends in `marker`'s variable, e.g. the
+ * confirmation's `wait-list-confirm=<secret>` or an invitation's `invite=<key>`. */
+export const mailLink = (mail, marker) => {
+  const text = `${mail.text ?? ''}\n${mail.html ?? ''}`;
+  return text.match(new RegExp(`https?://[^\\s"'<>]*${marker}[=:][0-9a-zA-Z-]+`))?.[0] ?? null;
+};
+/** A person leaves `address` on the entry's wait list, as the page's own form
+ * takes it. The driver waits on what the page says next. */
+export const leaveWaitListAddress = (tab, address) => tab.evaluate(`(() => {
+  const field = document.getElementById('arrival-wait-email');
+  if (!field) return false;
+  field.value = ${JSON.stringify(address)};
+  field.dispatchEvent(new Event('input', {bubbles: true}));
+  const button = document.querySelector('#arrival-wait button');
+  if (button) button.click();
+  return !!button;
+})()`);
+/** A person presses the button of the page's own form whose text is `text`, in
+ * the card `within` (a page's card, not the shell's canvas). */
+export const pressText = (tab, text, within = 'body') => tab.evaluate(`(() => {
+  const button = [...document.querySelectorAll(${JSON.stringify(within)} + ' button')]
+    .find(candidate => candidate.textContent.trim() === ${JSON.stringify(text)} && !candidate.disabled);
+  if (!button) return false;
+  button.click();
+  return true;
+})()`);
+/** Wait until the page answers `expression` something other than an empty
+ * string, or say '' when it never did: for reading what a card says next, or
+ * what went wrong, without the wait failing the run. */
+export const poll = (tab, expression, timeout = stepLimit(4)) =>
+  tab.waitFor(expression, {timeout}).catch(() => '');
+/** The Lounge's waiting card, as a person reads it: the addresses waiting to be
+ * let in and what the card offers, once it has answered with rows, with
+ * nobody on it, or with what went wrong; null while it has said none of them. */
+export const waitingCard = async (tab, timeout = stepLimit(6)) => {
+  const shown = await poll(tab, `(() => {
+    const card = document.querySelector('.tilo-waiting');
+    if (!card) return '';
+    const error = card.querySelector('.tilo-entry-error');
+    const rows = [...card.querySelectorAll('.tilo-waiting-contact')].map(node => node.textContent.trim());
+    const empty = card.querySelector('.tilo-waiting-none');
+    if (!rows.length && !empty && !(error && !error.hidden)) return '';
+    return JSON.stringify({contacts: rows,
+      said: error && !error.hidden ? error.textContent.trim() : null,
+      buttons: [...card.querySelectorAll('li button')].map(node => node.textContent.trim())});
+  })()`, timeout);
+  return shown ? JSON.parse(shown) : null;
+};

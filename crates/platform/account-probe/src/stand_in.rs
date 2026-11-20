@@ -1,25 +1,51 @@
 //! A stand-in mail server with real sockets: an IMAP and an SMTP server that take one made-up
-//! login and refuse every other, for a rehearsal of a mail sign-in where no real mail server,
+//! login and refuse every other, for a rehearsal of a mail account where no real mail server,
 //! no real address and nobody's password may be used.
 //!
-//! It speaks what this crate's sign-in proof speaks: a port is TLS from the first byte, or
-//! greets in the clear and upgrades with `STARTTLS`, and nothing signs in before the
-//! connection is secure. Signed in, it shows an empty inbox. It keeps no mail and sends none:
-//! a message handed to it is refused, so nothing a person writes is swallowed.
+//! Its inbox holds a few made-up messages, so whoever rehearses reads, searches and answers
+//! mail as a person does, and what its SMTP server is handed it delivers to that inbox, so a
+//! message sent to it arrives. It speaks what this crate's sign-in proof speaks: a port is TLS
+//! from the first byte, or greets in the clear and upgrades with `STARTTLS`, and nothing signs
+//! in before the connection is secure. It sends nothing anywhere: every message the SMTP
+//! server takes stays on the box it is started on.
 //!
 //! The example `mail_stand_in` is this module as a program (the local stack starts it as
-//! `mail-stand-in`); the crate's tests sign in to it
-//! with the proof itself.
+//! `mail-stand-in`); the crate's tests sign in to it with the proof itself.
 
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use rustls::pki_types::CertificateDer;
 
 /// What an IMAP server of this kind says it can do once the connection is secure.
-const IMAP_OFFERS: &str = "IMAP4rev1 AUTH=PLAIN AUTH=XOAUTH2";
+const IMAP_OFFERS: &str = "IMAP4rev1 AUTH=PLAIN AUTH=XOAUTH2 IDLE";
+
+/// The made-up mail the inbox holds when a stand-in starts: whose it is from, its subject, its
+/// words, and the hour it arrived on the 18th of November 2026, oldest first.
+const INBOX: [(&str, &str, &str); 3] = [
+    (
+        "Quarterly plan",
+        "The draft is in the shared folder.",
+        "14-Nov-2026 09:05:00 +0000",
+    ),
+    (
+        "Lunch on Friday?",
+        "Does one o'clock work for you?",
+        "17-Nov-2026 12:10:00 +0000",
+    ),
+    (
+        "Welcome to the lab",
+        "Your badge is at the reception from Monday.",
+        "18-Nov-2026 08:30:00 +0000",
+    ),
+];
+
+/// Who the inbox's made-up mail is from.
+const SENDER: &str = "Grace Hopper <grace@example.test>";
 
 /// What a stand-in serves: the names its certificate is for, the one login it takes, where
 /// its two servers listen, and which of them is TLS from the first byte.
@@ -36,20 +62,29 @@ pub struct Serving {
     pub smtp_wrapped: bool,
 }
 
-/// A stand-in that listens: where, and the certificate both servers present.
+/// A stand-in that listens: where, the certificate both servers present, and the TLS they
+/// speak it with (the autoconfig document, where one is served, presents the same).
 pub struct Started {
     pub imap: SocketAddr,
     pub smtp: SocketAddr,
     pub certificate: CertificateDer<'static>,
+    /// The TLS both servers speak, which the program that serves a provider's settings document
+    /// presents too: the tests sign in and read mail, and the example serves https.
+    #[allow(
+        dead_code,
+        reason = "read by the example that serves the settings document"
+    )]
+    pub tls: Arc<rustls::ServerConfig>,
 }
 
-/// The one login, and the identity both servers present.
+/// The one login, the identity both servers present, and the mail they hold.
 struct Taking {
     name: String,
     login: String,
     password: String,
     oauth_token: Option<String>,
     tls: Arc<rustls::ServerConfig>,
+    mail: Arc<Mutex<Mail>>,
 }
 
 impl Taking {
@@ -57,11 +92,98 @@ impl Taking {
         login == self.login && password == self.password
     }
 
-    /// Whether `user` with `token` is the one login signed in with
-    /// `XOAUTH2`.
+    /// Whether `user` with `token` is the one login signed in with `XOAUTH2`.
     fn takes_token(&self, user: &str, token: &str) -> bool {
         user.trim() == self.login && self.oauth_token.as_deref() == Some(token.trim())
     }
+}
+
+/// One message as the stand-in holds it.
+struct Stored {
+    uid: u32,
+    flags: Vec<String>,
+    /// When it arrived, as `INTERNALDATE` writes a date.
+    received: String,
+    raw: Vec<u8>,
+}
+
+/// One folder of the stand-in's mailbox.
+struct Folder {
+    name: String,
+    validity: u32,
+    next_uid: u32,
+    messages: Vec<Stored>,
+}
+
+/// The stand-in's whole mailbox: an inbox with a few made-up messages, and whatever folders a
+/// mail program made.
+struct Mail {
+    folders: Vec<Folder>,
+}
+
+impl Mail {
+    /// The inbox a stand-in starts with, holding the made-up mail above.
+    fn seeded(login: &str) -> Self {
+        let messages = INBOX
+            .iter()
+            .enumerate()
+            .map(|(number, (subject, body, received))| Stored {
+                uid: u32::try_from(number).unwrap_or(0).saturating_add(1),
+                flags: Vec::new(),
+                received: (*received).to_owned(),
+                raw: message(number, subject, body, received, login).into_bytes(),
+            })
+            .collect();
+        Self {
+            folders: vec![Folder {
+                name: "INBOX".to_owned(),
+                validity: 1,
+                next_uid: u32::try_from(INBOX.len()).unwrap_or(0).saturating_add(1),
+                messages,
+            }],
+        }
+    }
+
+    fn folder(&self, name: &str) -> Option<&Folder> {
+        self.folders
+            .iter()
+            .find(|folder| folder.name.eq_ignore_ascii_case(name))
+    }
+
+    fn folder_mut(&mut self, name: &str) -> Option<&mut Folder> {
+        self.folders
+            .iter_mut()
+            .find(|folder| folder.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Keep `raw` in `folder`, as `APPEND` and the SMTP server do, and answer its UID.
+    fn keep(
+        &mut self,
+        folder: &str,
+        flags: Vec<String>,
+        raw: Vec<u8>,
+        received: String,
+    ) -> Option<u32> {
+        let folder = self.folder_mut(folder)?;
+        let uid = folder.next_uid;
+        folder.next_uid = folder.next_uid.saturating_add(1);
+        folder.messages.push(Stored {
+            uid,
+            flags,
+            received,
+            raw,
+        });
+        Some(uid)
+    }
+}
+
+/// One message the stand-in writes: made-up headers, and what it says.
+fn message(number: usize, subject: &str, body: &str, received: &str, to: &str) -> String {
+    format!(
+        "Message-ID: <stand-in-{number}@example.test>\r\nFrom: {SENDER}\r\nTo: {to}\r\n\
+Subject: {subject}\r\nDate: {received}\r\nMIME-Version: 1.0\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\r\n{body}\r\n"
+    )
 }
 
 /// Start both servers. They answer for as long as the program lives.
@@ -89,11 +211,9 @@ pub fn started(serving: Serving) -> Result<Started, String> {
     };
     let (imap, smtp) = (listening(&serving.imap)?, listening(&serving.smtp)?);
     let at = |listener: &TcpListener| listener.local_addr().map_err(|error| error.to_string());
-    let started = Started {
-        imap: at(&imap)?,
-        smtp: at(&smtp)?,
-        certificate,
-    };
+    let (imap_at, smtp_at) = (at(&imap)?, at(&smtp)?);
+    let mail = Arc::new(Mutex::new(Mail::seeded(&serving.login)));
+    let tls = Arc::new(tls);
     let taking = Arc::new(Taking {
         name: serving
             .names
@@ -103,7 +223,8 @@ pub fn started(serving: Serving) -> Result<Started, String> {
         login: serving.login,
         password: serving.password,
         oauth_token: serving.oauth_token,
-        tls: Arc::new(tls),
+        tls: Arc::clone(&tls),
+        mail,
     });
     serve(
         imap,
@@ -112,7 +233,12 @@ pub fn started(serving: Serving) -> Result<Started, String> {
         imap_connection,
     );
     serve(smtp, taking, serving.smtp_wrapped, smtp_connection);
-    Ok(started)
+    Ok(Started {
+        imap: imap_at,
+        smtp: smtp_at,
+        certificate,
+        tls,
+    })
 }
 
 /// `certificate` as the text a trust bundle holds.
@@ -159,8 +285,22 @@ impl<S: Read + Write> Lines<S> {
 
     /// Send `text` and a line's end. Whether it was sent.
     fn say(&mut self, text: &str) -> bool {
+        self.send(&format!("{text}\r\n"))
+    }
+
+    /// Send `text` as it stands. Whether it was sent.
+    fn send(&mut self, text: &str) -> bool {
         let to = self.0.get_mut();
-        to.write_all(text.as_bytes()).is_ok() && to.write_all(b"\r\n").is_ok() && to.flush().is_ok()
+        to.write_all(text.as_bytes()).is_ok() && to.flush().is_ok()
+    }
+
+    /// Read `size` bytes as they stand: a command's literal. Whether they came.
+    fn literal(&mut self, size: usize) -> Option<Vec<u8>> {
+        let mut raw = vec![0_u8; size];
+        self.0.read_exact(&mut raw).ok()?;
+        // The end of the command's line follows the literal.
+        self.line()?;
+        Some(raw)
     }
 }
 
@@ -211,6 +351,26 @@ fn arguments(rest: &str) -> Vec<String> {
     words
 }
 
+/// `rest` without the quotes it may be written in.
+fn unquoted(rest: &str) -> String {
+    let rest = rest.trim();
+    rest.strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .unwrap_or(rest)
+        .replace("\\\"", "\"")
+        .replace("\\\\", "\\")
+}
+
+/// The size a command's literal is declared with (`{123}` at its end).
+fn literal_size(line: &str) -> Option<usize> {
+    line.rsplit_once('{')?
+        .1
+        .strip_suffix('}')?
+        .trim_end_matches('+')
+        .parse()
+        .ok()
+}
+
 /// The login and the password a `PLAIN` sign-in carries.
 fn plain_login(token: &str) -> Option<(String, String)> {
     let said = base64::engine::general_purpose::STANDARD
@@ -243,6 +403,12 @@ fn asked<S: Read + Write>(lines: &mut Lines<S>, prompt: &str) -> Option<String> 
         .decode(lines.line()?.trim())
         .ok()?;
     String::from_utf8(said).ok()
+}
+
+/// What one connection has done so far: whether it signed in, and the folder it selected.
+struct Signed {
+    taken: bool,
+    selected: Option<String>,
 }
 
 fn imap_connection(tcp: TcpStream, taking: &Taking, wrapped: bool) {
@@ -304,32 +470,29 @@ fn imap_in_the_clear(tcp: TcpStream) -> Option<TcpStream> {
     }
 }
 
-/// The secured part of an IMAP connection: the sign-in, then an empty mailbox.
+/// The secured part of an IMAP connection: the sign-in, then its mailbox.
 fn imap_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking) {
-    let mut signed_in = false;
-    let signed = |tag: &str, taken: bool| {
-        if taken {
-            format!("{tag} OK signed in")
-        } else {
-            format!("{tag} NO [AUTHENTICATIONFAILED] the mail stand-in does not take this login")
-        }
+    let mut signed = Signed {
+        taken: false,
+        selected: None,
     };
     while let Some(line) = lines.line() {
         let (tag, command, rest) = parts(&line);
-        // A command by message numbers of the other kind is answered as the plain one.
-        let (command, rest) = if command == "UID" {
+        // A command by message numbers of the other kind is answered as the plain one, which
+        // is told which numbers its set names.
+        let (uid, command, rest) = if command == "UID" {
             let (_, inner, rest) = parts(&format!("- {rest}"));
-            (inner, rest)
+            (true, inner, rest)
         } else {
-            (command, rest)
+            (false, command, rest)
         };
         let said = match command.as_str() {
             "LOGIN" => {
-                signed_in = match arguments(&rest).as_slice() {
+                signed.taken = match arguments(&rest).as_slice() {
                     [login, password] => taking.takes(login, password),
                     _ => false,
                 };
-                lines.say(&signed(&tag, signed_in))
+                lines.say(&signed_in(&tag, signed.taken))
             }
             "AUTHENTICATE" => {
                 let mut words = rest.split(' ');
@@ -341,7 +504,7 @@ fn imap_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking) {
                     None if (plain || xoauth2) && lines.say("+ ") => lines.line(),
                     None => None,
                 };
-                signed_in = (plain
+                signed.taken = (plain
                     && token
                         .as_deref()
                         .and_then(plain_login)
@@ -351,9 +514,9 @@ fn imap_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking) {
                             .as_deref()
                             .and_then(oauth2_login)
                             .is_some_and(|(user, token)| taking.takes_token(&user, &token)));
-                lines.say(&signed(&tag, signed_in))
+                lines.say(&signed_in(&tag, signed.taken))
             }
-            "IDLE" if signed_in => {
+            "IDLE" if signed.taken => {
                 lines.say("+ idling");
                 while lines
                     .line()
@@ -366,12 +529,32 @@ fn imap_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking) {
                 lines.say(&format!("{tag} OK LOGOUT completed"));
                 return;
             }
-            _ => match of_an_empty_mailbox(&command, &rest, signed_in) {
-                Some(untagged) => {
-                    untagged.iter().all(|line| lines.say(line))
-                        && lines.say(&format!("{tag} OK {command} completed"))
-                }
-                None if signed_in => lines.say(&format!(
+            "APPEND" => match (literal_size(&line), signed.taken) {
+                (None, _) => lines.say(&format!("{tag} BAD APPEND needs a literal")),
+                (Some(_), false) => lines.say(&format!("{tag} NO sign in first")),
+                (Some(_), true) if !lines.say("+ go on") => false,
+                (Some(size), true) => match lines.literal(size) {
+                    Some(raw) => {
+                        let folder = arguments(&rest).first().cloned().unwrap_or_default();
+                        let flags = append_flags(&rest);
+                        let mut mail = taking
+                            .mail
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let validity = mail.folder(&folder).map_or(0, |folder| folder.validity);
+                        match mail.keep(&folder, flags, raw, received_now()) {
+                            Some(uid) => lines.say(&format!(
+                                "{tag} OK [APPENDUID {validity} {uid}] APPEND completed"
+                            )),
+                            None => lines.say(&format!("{tag} NO [TRYCREATE] no such mailbox")),
+                        }
+                    }
+                    None => false,
+                },
+            },
+            _ => match answer(&tag, &command, &rest, uid, &mut signed, taking) {
+                Some(reply) => lines.send(&reply),
+                None if signed.taken => lines.say(&format!(
                     "{tag} BAD the mail stand-in does not know {command}"
                 )),
                 None => lines.say(&format!("{tag} NO sign in first")),
@@ -383,34 +566,479 @@ fn imap_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking) {
     }
 }
 
-/// What an empty mailbox answers to a command that needs no conversation: its untagged lines.
-/// Nothing for a command this stand-in does not know, or one that needs a sign-in first.
-fn of_an_empty_mailbox(command: &str, rest: &str, signed_in: bool) -> Option<Vec<String>> {
-    let lines = |lines: &[&str]| Some(lines.iter().map(|line| (*line).to_owned()).collect());
-    if !signed_in && !matches!(command, "CAPABILITY" | "NOOP" | "ID") {
-        return None;
+fn signed_in(tag: &str, taken: bool) -> String {
+    if taken {
+        format!("{tag} OK signed in")
+    } else {
+        format!("{tag} NO [AUTHENTICATIONFAILED] the mail stand-in does not take this login")
     }
+}
+
+/// The flags an `APPEND` gives the message it keeps, as `(\\Seen \\Draft)` writes them.
+fn append_flags(rest: &str) -> Vec<String> {
+    let Some((open, closed)) = rest
+        .split_once('(')
+        .and_then(|(_, tail)| tail.split_once(')'))
+    else {
+        return Vec::new();
+    };
+    let _ = closed;
+    open.split_whitespace().map(str::to_owned).collect()
+}
+
+/// What one signed-in command answers: every untagged line, and the tagged one, as the
+/// connection sends them; none for a command this stand-in does not know.
+#[expect(
+    clippy::too_many_lines,
+    clippy::significant_drop_tightening,
+    reason = "one IMAP command's dispatch, each answer built under the mailbox's one lock"
+)]
+fn answer(
+    tag: &str,
+    command: &str,
+    rest: &str,
+    uid: bool,
+    signed: &mut Signed,
+    taking: &Taking,
+) -> Option<String> {
     match command {
-        "CAPABILITY" => Some(vec![format!("* CAPABILITY {IMAP_OFFERS}")]),
-        "ID" => lines(&["* ID NIL"]),
-        "NOOP" | "CHECK" | "CLOSE" | "ENABLE" | "SUBSCRIBE" | "LSUB" | "FETCH" | "STORE"
-        | "EXPUNGE" => Some(Vec::new()),
-        "NAMESPACE" => lines(&["* NAMESPACE ((\"\" \"/\")) NIL NIL"]),
-        "LIST" if rest.trim_end().ends_with("\"\"") => lines(&["* LIST (\\Noselect) \"/\" \"\""]),
-        "LIST" => lines(&["* LIST (\\HasNoChildren) \"/\" \"INBOX\""]),
-        "SELECT" | "EXAMINE" => lines(&[
-            "* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)",
-            "* 0 EXISTS",
-            "* 0 RECENT",
-            "* OK [UIDVALIDITY 1] the mail stand-in's one mailbox",
-            "* OK [UIDNEXT 1] it is empty",
-        ]),
-        "STATUS" => {
-            lines(&["* STATUS \"INBOX\" (MESSAGES 0 RECENT 0 UIDNEXT 1 UIDVALIDITY 1 UNSEEN 0)"])
+        "CAPABILITY" => Some(format!(
+            "* CAPABILITY {IMAP_OFFERS}\r\n{tag} OK CAPABILITY completed\r\n"
+        )),
+        "NOOP" | "CHECK" | "ENABLE" | "SUBSCRIBE" | "UNSUBSCRIBE" | "UNSELECT" => {
+            Some(format!("{tag} OK {command} completed\r\n"))
         }
-        "SEARCH" => lines(&["* SEARCH"]),
+        "ID" => Some(format!("* ID NIL\r\n{tag} OK ID completed\r\n")),
+        "CLOSE" => {
+            signed.selected = None;
+            Some(format!("{tag} OK CLOSE completed\r\n"))
+        }
+        "NAMESPACE" => Some(format!(
+            "* NAMESPACE ((\"\" \"/\")) NIL NIL\r\n{tag} OK NAMESPACE completed\r\n"
+        )),
+        "LIST" | "LSUB" => {
+            let pattern = arguments(rest).last().cloned().unwrap_or_default();
+            if pattern.is_empty() {
+                return Some(format!(
+                    "* LIST (\\Noselect) \"/\" \"\"\r\n{tag} OK LIST completed\r\n"
+                ));
+            }
+            let mail = taking
+                .mail
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut reply = String::new();
+            for folder in &mail.folders {
+                let uses = match folder.name.as_str() {
+                    "Sent" => " \\Sent",
+                    "Drafts" => " \\Drafts",
+                    "Trash" => " \\Trash",
+                    "Junk" => " \\Junk",
+                    _ => "",
+                };
+                let _ = write!(
+                    reply,
+                    "* LIST (\\HasNoChildren{uses}) \"/\" \"{}\"\r\n",
+                    folder.name
+                );
+            }
+            let _ = write!(reply, "{tag} OK LIST completed\r\n");
+            Some(reply)
+        }
+        "SELECT" | "EXAMINE" => {
+            let name = unquoted(rest.split_whitespace().next().unwrap_or_default());
+            let mail = taking
+                .mail
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let folder = mail.folder(&name)?;
+            let (exists, validity, next) =
+                (folder.messages.len(), folder.validity, folder.next_uid);
+            signed.selected = Some(folder.name.clone());
+            Some(format!(
+                "* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n\
+* {exists} EXISTS\r\n* 0 RECENT\r\n\
+* OK [UIDVALIDITY {validity}] the mail stand-in's mailbox\r\n\
+* OK [UIDNEXT {next}] the next message it takes\r\n\
+* OK [PERMANENTFLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft \\*)] flags it keeps\r\n\
+{tag} OK [READ-WRITE] {command} completed\r\n"
+            ))
+        }
+        "STATUS" => {
+            let name = arguments(rest).first().cloned().unwrap_or_default();
+            let mail = taking
+                .mail
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let folder = mail.folder(&name)?;
+            let unseen = folder
+                .messages
+                .iter()
+                .filter(|message| !has_flag(message, "\\Seen"))
+                .count();
+            let (exists, validity, next) =
+                (folder.messages.len(), folder.validity, folder.next_uid);
+            Some(format!(
+                "* STATUS \"{}\" (MESSAGES {exists} RECENT 0 UIDNEXT {next} UIDVALIDITY {validity} UNSEEN {unseen})\r\n\
+{tag} OK STATUS completed\r\n",
+                folder.name
+            ))
+        }
+        "FETCH" => {
+            let selected = signed.selected.clone()?;
+            let (set, items) = fetch_arguments(rest);
+            let mail = taking
+                .mail
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let folder = mail.folder(&selected)?;
+            let mut reply = String::new();
+            for (position, message) in folder.messages.iter().enumerate() {
+                let position = u32::try_from(position).unwrap_or(0).saturating_add(1);
+                let wanted = if uid {
+                    uid_set(set, &folder.messages).contains(&message.uid)
+                } else {
+                    numbers(set, folder.messages.len()).contains(&position)
+                };
+                if wanted {
+                    reply.push_str(&fetch_line(position, message, &items));
+                }
+            }
+            let _ = write!(reply, "{tag} OK FETCH completed\r\n");
+            Some(reply)
+        }
+        "SEARCH" => {
+            let selected = signed.selected.clone()?;
+            let keys = search_keys(rest);
+            let mail = taking
+                .mail
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let folder = mail.folder(&selected)?;
+            let matching: Vec<String> = folder
+                .messages
+                .iter()
+                .enumerate()
+                .filter(|(_, message)| keys.iter().all(|key| key.matches(message)))
+                .map(|(position, message)| {
+                    if uid {
+                        message.uid.to_string()
+                    } else {
+                        u32::try_from(position)
+                            .unwrap_or(0)
+                            .saturating_add(1)
+                            .to_string()
+                    }
+                })
+                .collect();
+            Some(format!(
+                "* SEARCH {}\r\n{tag} OK SEARCH completed\r\n",
+                matching.join(" ")
+            ))
+        }
+        "STORE" => {
+            let selected = signed.selected.clone()?;
+            let words: Vec<&str> = rest.split_whitespace().collect();
+            let set = words.first().copied().unwrap_or_default();
+            let modes = words
+                .get(1)
+                .copied()
+                .unwrap_or_default()
+                .to_ascii_uppercase();
+            let adding = modes.starts_with('+');
+            let silent = modes.contains("SILENT");
+            let flags: Vec<String> = rest
+                .split_once('(')
+                .and_then(|(_, tail)| tail.split_once(')'))
+                .map(|(flags, _)| flags.split_whitespace().map(str::to_owned).collect())
+                .unwrap_or_default();
+            let mut mail = taking
+                .mail
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let folder = mail.folder_mut(&selected)?;
+            let count = folder.messages.len();
+            let wanted = if uid {
+                uid_set(set, &folder.messages)
+            } else {
+                numbers(set, count)
+            };
+            let mut reply = String::new();
+            for (position, message) in folder.messages.iter_mut().enumerate() {
+                let position = u32::try_from(position).unwrap_or(0).saturating_add(1);
+                if !wanted.contains(&message.uid) && !wanted.contains(&position) {
+                    continue;
+                }
+                for flag in &flags {
+                    if adding {
+                        if !message.flags.contains(flag) {
+                            message.flags.push(flag.clone());
+                        }
+                    } else {
+                        message.flags.retain(|kept| kept != flag);
+                    }
+                }
+                if !silent {
+                    let _ = write!(
+                        reply,
+                        "* {position} FETCH (UID {} FLAGS ({}))\r\n",
+                        message.uid,
+                        message.flags.join(" ")
+                    );
+                }
+            }
+            let _ = write!(reply, "{tag} OK STORE completed\r\n");
+            Some(reply)
+        }
+        "CREATE" => {
+            let name = unquoted(rest);
+            let mut mail = taking
+                .mail
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if mail.folder(&name).is_some() {
+                return Some(format!("{tag} NO mailbox already exists\r\n"));
+            }
+            let validity = u32::try_from(mail.folders.len())
+                .unwrap_or(0)
+                .saturating_add(100);
+            mail.folders.push(Folder {
+                name,
+                validity,
+                next_uid: 1,
+                messages: Vec::new(),
+            });
+            Some(format!("{tag} OK CREATE completed\r\n"))
+        }
         _ => None,
     }
+}
+
+fn has_flag(message: &Stored, flag: &str) -> bool {
+    message
+        .flags
+        .iter()
+        .any(|kept| kept.eq_ignore_ascii_case(flag))
+}
+
+/// The message set and the items of a `FETCH`: `1:3 (UID FLAGS …)`.
+fn fetch_arguments(rest: &str) -> (&str, String) {
+    let set = rest.split_whitespace().next().unwrap_or_default();
+    let items = rest
+        .split_once('(')
+        .map_or_else(String::new, |(_, items)| items.to_ascii_uppercase());
+    (set.trim_matches('('), items)
+}
+
+/// The positions a message set names, `*` being the folder's newest: `1`, `2:4`, `1,3`, `1:*`.
+fn numbers(set: &str, count: usize) -> Vec<u32> {
+    let newest = u32::try_from(count).unwrap_or(0);
+    let mut wanted = Vec::new();
+    for part in set.split(',') {
+        let (first, last) = part.split_once(':').unwrap_or((part, part));
+        let bound = |end: &str| {
+            if end == "*" {
+                newest
+            } else {
+                end.parse().unwrap_or(0)
+            }
+        };
+        let (first, last) = (bound(first), bound(last));
+        if first == 0 || last == 0 {
+            continue;
+        }
+        wanted.extend(first.min(last)..=first.max(last));
+    }
+    wanted
+}
+
+/// The UIDs a message set names, `*` being the folder's newest.
+fn uid_set(set: &str, messages: &[Stored]) -> Vec<u32> {
+    let newest = messages
+        .iter()
+        .map(|message| message.uid)
+        .max()
+        .unwrap_or(0);
+    let mut wanted = Vec::new();
+    for part in set.split(',') {
+        let (first, last) = part.split_once(':').unwrap_or((part, part));
+        let bound = |end: &str| {
+            if end == "*" {
+                newest
+            } else {
+                end.parse().unwrap_or(0)
+            }
+        };
+        let (first, last) = (bound(first), bound(last));
+        wanted.extend(
+            messages
+                .iter()
+                .map(|message| message.uid)
+                .filter(|uid| *uid >= first.min(last) && *uid <= first.max(last)),
+        );
+    }
+    wanted
+}
+
+/// One message as `FETCH` answers it: its position, its flags, when it arrived, and, when
+/// asked for, its words as a literal.
+fn fetch_line(position: u32, message: &Stored, items: &str) -> String {
+    let mut said = format!(
+        "* {position} FETCH (UID {} FLAGS ({})",
+        message.uid,
+        message.flags.join(" ")
+    );
+    if items.contains("INTERNALDATE") {
+        let _ = write!(said, " INTERNALDATE \"{}\"", message.received);
+    }
+    if items.contains("BODY") || items.contains("RFC822") {
+        let _ = write!(said, " BODY[] {{{}}}\r\n", message.raw.len());
+        said.push_str(&String::from_utf8_lossy(&message.raw));
+    }
+    said.push_str(")\r\n");
+    said
+}
+
+/// One key of a search, as far as this server answers them. A message has to match every key
+/// of its search.
+enum SearchKey {
+    /// Words anywhere in the message.
+    Text(String),
+    /// Words in the header of this name alone.
+    Header(String, String),
+    Unseen,
+    Seen,
+    Flagged,
+    /// A range of UIDs, both ends included.
+    Uids(u32, u32),
+    /// `ALL`, and what this server does not know.
+    Any,
+}
+
+impl SearchKey {
+    fn matches(&self, message: &Stored) -> bool {
+        let raw = String::from_utf8_lossy(&message.raw).to_ascii_lowercase();
+        match self {
+            Self::Text(wanted) => raw.contains(wanted),
+            Self::Header(name, wanted) => {
+                let headers = raw.split("\r\n\r\n").next().unwrap_or_default();
+                let prefix = format!("{name}:");
+                headers.lines().any(|line| {
+                    line.strip_prefix(&prefix)
+                        .is_some_and(|value| value.contains(wanted))
+                })
+            }
+            Self::Unseen => !has_flag(message, "\\Seen"),
+            Self::Seen => has_flag(message, "\\Seen"),
+            Self::Flagged => has_flag(message, "\\Flagged"),
+            Self::Uids(first, last) => (*first..=*last).contains(&message.uid),
+            Self::Any => true,
+        }
+    }
+}
+
+/// The keys of the search `query` asks: `TEXT`, `FROM`, `TO`, `SUBJECT`, `HEADER name`, each
+/// with the words it looks for, `UNSEEN`, `SEEN`, `FLAGGED`, and `UID` with a range.
+fn search_keys(query: &str) -> Vec<SearchKey> {
+    let mut words = search_words(query).into_iter();
+    let mut keys = Vec::new();
+    while let Some(word) = words.next() {
+        let mut wanted = || words.next().unwrap_or_default().to_ascii_lowercase();
+        keys.push(match word.to_ascii_uppercase().as_str() {
+            "TEXT" => SearchKey::Text(wanted()),
+            "FROM" | "TO" | "SUBJECT" => SearchKey::Header(word.to_ascii_lowercase(), wanted()),
+            "HEADER" => {
+                let name = wanted();
+                SearchKey::Header(name, wanted())
+            }
+            "UNSEEN" => SearchKey::Unseen,
+            "SEEN" => SearchKey::Seen,
+            "FLAGGED" => SearchKey::Flagged,
+            "UID" => {
+                let set = wanted();
+                let (first, last) = set.split_once(':').unwrap_or((&set, &set));
+                SearchKey::Uids(
+                    first.parse().unwrap_or(0),
+                    if last == "*" {
+                        u32::MAX
+                    } else {
+                        last.parse().unwrap_or(u32::MAX)
+                    },
+                )
+            }
+            _ => SearchKey::Any,
+        });
+    }
+    keys
+}
+
+/// The words of a search, a quoted string as one word without its quotes.
+fn search_words(query: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quoted = false;
+    let mut letters = query.chars();
+    while let Some(letter) = letters.next() {
+        match letter {
+            '\\' if quoted => word.extend(letters.next()),
+            '"' => {
+                if quoted {
+                    words.push(std::mem::take(&mut word));
+                }
+                quoted = !quoted;
+            }
+            ' ' if !quoted => {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+            }
+            letter => word.push(letter),
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+/// When this message arrived, as `INTERNALDATE` writes it: the clock now, in UTC.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "a calendar date is arithmetic over the clock, bounded by the epoch's own days"
+)]
+fn received_now() -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let days = i64::try_from(seconds / 86_400).unwrap_or(0);
+    let rest = seconds % 86_400;
+    // The day counted from 1970-01-01, as a civil date.
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let of_era = shifted - era * 146_097;
+    let year_of_era = (of_era - of_era / 1_460 + of_era / 36_524 - of_era / 146_096) / 365;
+    let day_of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_number = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_number + 2) / 5 + 1;
+    let month = if month_number < 10 {
+        month_number + 3
+    } else {
+        month_number - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    let month = MONTHS
+        .get(usize::try_from(month).unwrap_or(0).saturating_sub(1))
+        .copied()
+        .unwrap_or("Jan");
+    format!(
+        "{day:02}-{month}-{year} {:02}:{:02}:{:02} +0000",
+        rest / 3_600,
+        (rest / 60) % 60,
+        rest % 60
+    )
 }
 
 fn smtp_connection(tcp: TcpStream, taking: &Taking, wrapped: bool) {
@@ -463,8 +1091,10 @@ fn smtp_in_the_clear(tcp: TcpStream, greeting: &str, name: &str) -> Option<TcpSt
     }
 }
 
-/// The secured part of an SMTP connection: what is offered, the sign-in, and no mail taken.
+/// The secured part of an SMTP connection: what is offered, the sign-in, and the mail it
+/// takes, kept in the inbox.
 fn smtp_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking) {
+    let mut signed_in = false;
     while let Some(line) = lines.line() {
         let mut words = line.split(' ');
         let command = words.next().unwrap_or_default().to_ascii_uppercase();
@@ -500,18 +1130,49 @@ fn smtp_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking) {
                 };
                 let accepted = said
                     .as_ref()
-                    .is_some_and(|(login, secret)| taking.takes(login, secret));
+                    .is_some_and(|(login, password)| taking.takes(login, password));
                 let accepted_token = mechanism == "XOAUTH2"
                     && said
                         .as_ref()
                         .is_some_and(|(user, token)| taking.takes_token(user, token));
-                if accepted || accepted_token {
+                signed_in = accepted || accepted_token;
+                if signed_in {
                     lines.say("235 2.7.0 signed in")
                 } else {
                     lines.say("535 5.7.8 the mail stand-in does not take this login")
                 }
             }
-            "MAIL" | "RCPT" | "DATA" => lines.say("554 5.7.1 the mail stand-in sends no mail"),
+            "MAIL" | "RCPT" if signed_in => lines.say("250 ok"),
+            "DATA" if signed_in => {
+                if !lines.say("354 go ahead") {
+                    return;
+                }
+                let mut raw = Vec::new();
+                let mut complete = false;
+                while let Some(line) = lines.line() {
+                    if line == "." {
+                        complete = true;
+                        break;
+                    }
+                    raw.extend_from_slice(line.as_bytes());
+                    raw.extend_from_slice(b"\r\n");
+                }
+                if !complete {
+                    return;
+                }
+                let received = received_now();
+                let kept = taking
+                    .mail
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .keep("INBOX", Vec::new(), raw, received);
+                if kept.is_some() {
+                    lines.say("250 2.0.0 queued in the stand-in's inbox")
+                } else {
+                    lines.say("451 4.3.0 the stand-in's inbox is not there")
+                }
+            }
+            "MAIL" | "RCPT" => lines.say("530 5.7.0 sign in first"),
             "NOOP" | "RSET" => lines.say("250 ok"),
             "QUIT" => {
                 lines.say("221 bye");

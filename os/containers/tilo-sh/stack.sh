@@ -68,14 +68,15 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          invitations), with the links in each
   stack.sh mail-account  the account of this stack's stand-in mail server, as
                          a person types it into Mail's settings: a made-up
-                         address at example.test, its password, and the
-                         incoming and outgoing server and port (TLS from the
-                         first byte for IMAP, STARTTLS for SMTP).
+                         address at this stack's own site name, its password,
+                         and that Mail finds its servers by itself from the
+                         address, the way a provider publishes them.
                          A stack brought up with TILO_SH_MAIL_STAND_IN=1 has
                          it: an IMAP and an SMTP server with real sockets
-                         that show an empty inbox and send nothing, built with
-                         the programs and started with the stack on two of
-                         its base's ports, with its certificate in this
+                         that hold a few made-up messages and keep the mail
+                         they are handed, and an autoconfig document at the
+                         address's domain, built with the programs and
+                         started with the stack, with its certificate in this
                          stack's trust bundle alone
   stack.sh keys          whether the keys of people's sealed stores are kept
                          apart from the state: what the server says in its
@@ -230,9 +231,12 @@ TILO_SH_VM_HOST=0 leaves the VM host out where it could run (it runs as
 root through sudo).
 TILO_SH_MAIL_STAND_IN=1 adds a stand-in mail server to the stack, for
 setting a mail account up in a browser with no real mail server: one
-made-up login at example.test, an empty inbox, nothing sent. \`stack.sh
-mail-account\` prints what a person types. Up without --images only: it is
-built with this checkout's programs, so a rehearsal of what ships has none.
+made-up login at this stack's site name, a few made-up messages, the mail
+it is handed kept in that inbox, and the settings document a provider
+publishes at the address's domain, so Mail finds the servers by itself.
+\`stack.sh mail-account\` prints what a person types. Up without --images
+only: it is built with this checkout's programs, so a rehearsal of what
+ships has none.
 TILO_SH_TERMINAL_ON_MACHINE=1, on a stack with no VM host, has the
 workspaces' Terminal start its programs (cargo, git, ...) on this machine as
 the stack's own user, with the PATH it was brought up with; nothing confines
@@ -275,6 +279,7 @@ releases_port=$((base + 22))   # this checkout's tilo command, as the site's /re
 mail_port=$((base + 23))       # the mail sink the entry's mail goes to instead of Resend
 mail_stand_in_imap_port=$((base + 24))  # the stand-in mail server's IMAP, when TILO_SH_MAIL_STAND_IN=1
 mail_stand_in_smtp_port=$((base + 25))  # its SMTP
+mail_stand_in_document_port=443        # its settings document, where a mail program asks (https)
 discord_rest_port=$((base + 40))
 discord_gateway_port=$((base + 41))
 discord_control_port=$((base + 42))
@@ -931,18 +936,29 @@ start_mail_stand_in() {
     || die "TILO_SH_MAIL_STAND_IN=1 needs mail-stand-in beside the other programs, and $programs holds none: a directory TILO_SH_PROGRAMS names has to be built with it (t's tilo-sh-programs builds one)"
   mkdir -p "$dir"
   stop_mail_stand_in
-  login=lab@example.test
+  # The account is at this stack's own site name, so the address's domain is a
+  # name this machine answers: the stand-in publishes the settings document a
+  # mail provider keeps there, and Mail finds the servers from the address.
+  login="lab@$site_host"
   password=$(cat "$dir/password" 2>/dev/null || true)
   if [[ -z $password ]]; then
     password=$(od -An -tx1 -N12 /dev/urandom | tr -d ' \n')
     (umask 077 && printf '%s\n' "$password" > "$dir/password")
   fi
   printf '%s\n' "$login" > "$dir/login"
+  autoconfig_document "$dir/config-v1.1.xml"
   : > "$log"
-  setsid "$programs/mail-stand-in" --name localhost --login "$login" \
+  # The settings document is served over https on the port every mail program
+  # asks for. Binding it takes root; a stack brought up without it rehearses a
+  # person naming the servers by hand.
+  setsid "$programs/mail-stand-in" --name localhost --name "$site_host" \
+    --name "autoconfig.$site_host" --login "$login" \
     --password-file "$dir/password" --write-certificate "$dir/certificate.pem" \
     --imap "127.0.0.1:$mail_stand_in_imap_port" --smtp "127.0.0.1:$mail_stand_in_smtp_port" \
-    --imap-tls >> "$log" 2>&1 < /dev/null 9>&- &
+    --imap-tls --autoconfig "127.0.0.1:$mail_stand_in_document_port" \
+    --autoconfig "[::1]:$mail_stand_in_document_port" \
+    --autoconfig-document "$dir/config-v1.1.xml" \
+    >> "$log" 2>&1 < /dev/null 9>&- &
   local pid=$!
   printf '%s\n' "$pid" > "$dir/pid"
   # A stand-in that exited failed; one still starting on a loaded machine is given a minute.
@@ -952,7 +968,40 @@ start_mail_stand_in() {
     ((SECONDS < deadline)) || die "the mail stand-in did not start within a minute: $(cat "$log")"
     sleep 0.1
   done
+  if grep -q 'no autoconfig document' "$log" 2>/dev/null; then
+    say "the stand-in cannot serve the settings document on port $mail_stand_in_document_port (it takes root): Mail asks for the servers, which stack.sh mail-account prints"
+  fi
   say "mail stand-in on $mail_stand_in_imap_port (IMAP) and $mail_stand_in_smtp_port (SMTP); stack.sh mail-account prints the account"
+}
+
+# The settings document a mail provider publishes at its address's domain for
+# mail programs to find its servers (RFC 6186's autoconfig): where this stack's
+# stand-in reads and hands in mail, and the address it takes.
+autoconfig_document() {
+  cat > "$1" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<clientConfig version="1.1">
+  <emailProvider id="$site_host">
+    <domain>$site_host</domain>
+    <displayName>The local tilo.sh stack's mail</displayName>
+    <displayShortName>the stack</displayShortName>
+    <incomingServer type="imap">
+      <hostname>localhost</hostname>
+      <port>$mail_stand_in_imap_port</port>
+      <socketType>SSL</socketType>
+      <authentication>password-cleartext</authentication>
+      <username>%EMAILADDRESS%</username>
+    </incomingServer>
+    <outgoingServer type="smtp">
+      <hostname>localhost</hostname>
+      <port>$mail_stand_in_smtp_port</port>
+      <socketType>STARTTLS</socketType>
+      <authentication>password-cleartext</authentication>
+      <username>%EMAILADDRESS%</username>
+    </outgoingServer>
+  </emailProvider>
+</clientConfig>
+EOF
 }
 
 stop_mail_stand_in() {
@@ -977,12 +1026,17 @@ mail_account() {
 A mail account for this stack, as a person types it:
 
   Email address:  $login
-  Username:       $login
   Password:       $password
+
+Mail finds its servers from the address by itself: the stand-in publishes the
+document a provider keeps at https://autoconfig.$site_host/mail/config-v1.1.xml.
+Should it not, name them:
+
   Incoming (IMAP): localhost:$mail_stand_in_imap_port, SSL/TLS
   Outgoing (SMTP): localhost:$mail_stand_in_smtp_port, STARTTLS
 
-It shows an empty inbox, sends no mail, and takes no other login.
+It holds a few made-up messages, keeps the mail it is handed in the inbox, and
+takes no other login.
 EOF
 }
 

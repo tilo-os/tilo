@@ -1772,6 +1772,12 @@ words = ["run", "record", "channel", "space"]
 paths = ["os/containers/tilo-lounge/stories/*", "os/containers/tilo-lounge/integration/shell.mjs", "os/containers/tilo-lounge/integration/people.mjs"]
 
 [[allow]]
+reason = "A mail message's subject line, which the glossary keeps for something else: the stand-in mail server's made-up messages, the IMAP search keys its tests ask with, the page drivers' report of each mail a stack's sink kept, and the story that says which mail it read."
+words = ["subject"]
+paths = ["crates/platform/account-probe/src/stand_in.rs", "crates/platform/account-probe/src/tests/stand_in_tests.rs", "os/containers/tilo-lounge/integration/shell.mjs", "os/containers/tilo-lounge/stories/*"]
+
+
+[[allow]]
 reason = "Rust's std::sync::mpsc channels a test of the Windows Apps worker reads its commands from."
 words = ["channel"]
 identifiers = ["channel"]

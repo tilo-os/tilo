@@ -51,6 +51,8 @@ tilo-test-env = { path = "../../dev/test-env" }
 test-http = { path = "../../dev/test-http" }
 # The stand-in's certificate, in this crate's own tests.
 rcgen.workspace = true
+# The stand-in's mailbox is read in its tests by the client a host's mail session uses.
+futures-util.workspace = true
 
 [lints]
 workspace = true

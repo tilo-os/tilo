@@ -161,14 +161,18 @@ fn on_ports_that_are_tls_from_the_first_byte_both_servers_take_the_one_login() {
     assert!(replied(&mut server, "EHLO [127.0.0.1]").starts_with("250 AUTH PLAIN LOGIN"));
     assert!(replied(&mut server, &plain(OTHER)).starts_with("535 "));
     assert!(replied(&mut server, &plain(TAKEN)).starts_with("235 "));
-    // It sends no mail, and says so instead of taking a message it would drop.
-    assert!(replied(&mut server, "MAIL FROM:<ada@example.test>").starts_with("554 "));
+    // It takes the mail it is handed, and keeps it.
+    assert!(replied(&mut server, &plain(TAKEN)).starts_with("235 "));
+    assert!(replied(&mut server, "MAIL FROM:<ada@example.test>").starts_with("250 "));
+    assert!(replied(&mut server, "RCPT TO:<grace@example.test>").starts_with("250 "));
+    assert!(replied(&mut server, "DATA").starts_with("354 "));
+    assert!(replied(&mut server, "Subject: A note\r\n\r\nIts words\r\n.").starts_with("250 "));
     assert!(replied(&mut server, "QUIT").starts_with("221 "));
 }
 
 /// An account a provider signed in on its own page is proved with the
-/// bearer token it carries: XOAUTH2 to both servers, and the stand-in's
-/// no-mail rule is not a refused sign-in.
+/// bearer token it carries: XOAUTH2 to both servers, and any other token is
+/// refused.
 #[test]
 fn the_sign_in_proof_takes_a_bearer_token_by_xoauth2() {
     let up = started(Serving {
@@ -210,4 +214,157 @@ fn the_sign_in_proof_takes_a_bearer_token_by_xoauth2() {
         )
         .is_err()
     );
+}
+
+/// A client that trusts the stand-in's certificate and nothing else.
+fn trusting(up: &Started) -> Arc<rustls::ClientConfig> {
+    Arc::new(tilo_net::client_config_with_roots(roots_of(up)).expect("a client configuration"))
+}
+
+#[test]
+fn the_inbox_holds_made_up_mail_a_person_reads_and_searches() {
+    let up = stand_in(true);
+    let tls = trusting(&up);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("sockets and a clock");
+    runtime.block_on(async {
+        use futures_util::TryStreamExt as _;
+        let client = crate::imap::open(
+            &crate::imap::Reach::any(),
+            "localhost",
+            up.imap.port(),
+            accounts::email::Security::Tls,
+            tls,
+            STEP,
+        )
+        .await
+        .expect("it greets over TLS");
+        let mut session = client.login(LOGIN, TAKEN).await.expect("signed in");
+        let folders: Vec<String> = session
+            .list(Some(""), Some("*"))
+            .await
+            .expect("it lists")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("it lists")
+            .iter()
+            .map(|folder| folder.name().to_owned())
+            .collect();
+        assert_eq!(folders, vec!["INBOX".to_owned()]);
+        let selected = session.select("INBOX").await.expect("it selects");
+        assert_eq!(selected.exists, 3);
+        let fetched: Vec<async_imap::types::Fetch> = session
+            .fetch("1:3", "(UID FLAGS INTERNALDATE BODY.PEEK[])")
+            .await
+            .expect("it fetches")
+            .try_collect()
+            .await
+            .expect("it fetches");
+        assert_eq!(fetched.len(), 3);
+        let newest = fetched
+            .iter()
+            .find(|fetch| fetch.uid == Some(3))
+            .expect("the newest message");
+        let body = String::from_utf8_lossy(newest.body().expect("its words"));
+        assert!(body.contains("Welcome to the lab"), "{body}");
+        assert!(
+            newest.internal_date().is_some(),
+            "a message says when it came"
+        );
+        assert!(
+            !fetched[0]
+                .flags()
+                .any(|flag| matches!(flag, async_imap::types::Flag::Seen)),
+            "nothing is read before the person reads it"
+        );
+        // A person searches for an older one by its words.
+        let found: Vec<u32> = session
+            .uid_search("SUBJECT \"Quarterly\"")
+            .await
+            .expect("it searches")
+            .into_iter()
+            .collect();
+        assert_eq!(found, vec![1]);
+        // Reading marks it read, as a mail program does.
+        session
+            .uid_store("1", "+FLAGS.SILENT (\\Seen)")
+            .await
+            .expect("it stores")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("it stores");
+        let flags: Vec<async_imap::types::Fetch> = session
+            .uid_fetch("1", "(UID FLAGS)")
+            .await
+            .expect("it fetches")
+            .try_collect()
+            .await
+            .expect("it fetches");
+        assert!(
+            flags[0]
+                .flags()
+                .any(|flag| matches!(flag, async_imap::types::Flag::Seen)),
+            "the message the person read is read"
+        );
+    });
+}
+
+#[test]
+fn a_message_handed_to_smtp_arrives_in_the_inbox() {
+    let up = stand_in(true);
+    let tls = trusting(&up);
+    let name = rustls::pki_types::ServerName::try_from("localhost").expect("a name");
+    let connection = rustls::ClientConnection::new(tls.clone(), name).expect("a client");
+    let tcp = std::net::TcpStream::connect(("127.0.0.1", up.smtp.port())).expect("it answers");
+    let mut server = BufReader::new(rustls::StreamOwned::new(connection, tcp));
+    let token = base64::engine::general_purpose::STANDARD.encode(format!("\0{LOGIN}\0{TAKEN}"));
+    assert!(replied(&mut server, "").starts_with("220 "));
+    assert!(replied(&mut server, "EHLO [127.0.0.1]").starts_with("250 "));
+    assert!(replied(&mut server, &format!("AUTH PLAIN {token}")).starts_with("235 "));
+    assert!(replied(&mut server, "MAIL FROM:<ada@example.test>").starts_with("250 "));
+    assert!(replied(&mut server, "RCPT TO:<grace@example.test>").starts_with("250 "));
+    assert!(replied(&mut server, "DATA").starts_with("354 "));
+    assert!(
+        replied(
+            &mut server,
+            "From: Ada <ada@example.test>\r\nSubject: Re: Welcome to the lab\r\n\r\nThank you.\r\n."
+        )
+        .starts_with("250 ")
+    );
+    assert!(replied(&mut server, "QUIT").starts_with("221 "));
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("sockets and a clock");
+    runtime.block_on(async {
+        use futures_util::TryStreamExt as _;
+        let client = crate::imap::open(
+            &crate::imap::Reach::any(),
+            "localhost",
+            up.imap.port(),
+            accounts::email::Security::Tls,
+            tls,
+            STEP,
+        )
+        .await
+        .expect("it greets over TLS");
+        let mut session = client.login(LOGIN, TAKEN).await.expect("signed in");
+        let selected = session.select("INBOX").await.expect("it selects");
+        assert_eq!(
+            selected.exists, 4,
+            "the message it was handed is in the inbox"
+        );
+        let fetched: Vec<async_imap::types::Fetch> = session
+            .uid_fetch("4", "(UID BODY.PEEK[])")
+            .await
+            .expect("it fetches")
+            .try_collect()
+            .await
+            .expect("it fetches");
+        let body = String::from_utf8_lossy(fetched[0].body().expect("its words"));
+        assert!(body.contains("Subject: Re: Welcome to the lab"), "{body}");
+    });
 }

@@ -39,11 +39,12 @@
 // `stack.sh owner KEY`. The stack is plain http on this machine, so no
 // certificate stands between the browsers, the agent's command and it.
 import {execFile, execFileSync, spawn} from 'node:child_process';
-import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
+import {chmodSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {FIRST_SCREEN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory} from './waits.mjs';
+import {mailLink, poll, pressText, waitForMail, waitingCard} from './shell.mjs';
 
 const [site, server, work, tiloBin, stack] = process.argv.slice(2);
 if (!site || !server || !work || !tiloBin || !stack) {
@@ -123,11 +124,6 @@ const checkPage = async (tab, name) => {
     await fail(`the page failed while ${name}: ${found.slice(0, 5).join(' | ')}`);
   }
 };
-/** Wait until the page answers `expression` something other than an empty
- * string, or say '' when it never did: for reading what a card says next, or
- * what went wrong, without the wait failing the run. */
-const poll = async (tab, expression, timeout = stepLimit(4)) =>
-  tab.waitFor(expression, {timeout}).catch(() => '');
 /** Wait until the page answers `expression` true, or say what it was doing.
  * The page does the waiting: it reads the expression again on each change it
  * shows, and the wait carries on in the next document after a navigation. */
@@ -311,34 +307,11 @@ const pressId = async (tab, id) => {
   })()`, `the control #${id}`));
   await clickAt(tab, box.x, box.y);
 };
-/** A click on the DOM button whose text is `text`, in the card `within`. */
-const pressText = (tab, text, within = 'body') => tab.evaluate(`(() => {
-  const button = [...document.querySelectorAll(${JSON.stringify(within)} + ' button')]
-    .find(candidate => candidate.textContent.trim() === ${JSON.stringify(text)} && !candidate.disabled);
-  if (!button) return false;
-  button.click();
-  return true;
-})()`);
-
 // -- the mails ---------------------------------------------------------------
-/** The mails the entry sent, oldest first: what the sink kept of each. */
-const mails = () => readdirSync(mailDir).filter(name => name.endsWith('.json')).sort()
-  .map(name => JSON.parse(readFileSync(join(mailDir, name), 'utf8')));
-const waitForMail = async (what, count) => {
-  const deadline = Date.now() + stepLimit(6);
-  for (;;) {
-    const kept = mails();
-    if (kept.length >= count) return kept[count - 1];
-    if (Date.now() > deadline) await fail(`${what} never reached the mail sink (${kept.length} mails: ${JSON.stringify(kept.map(mail => mail.subject))})`);
-    await sleep(250);
-  }
-};
-/** The link a mail carries whose path ends in `marker`'s variable, e.g. the
- * confirmation's `wait-list-confirm=<secret>`. */
-const mailLink = (mail, marker) => {
-  const text = `${mail.text ?? ''}\n${mail.html ?? ''}`;
-  return text.match(new RegExp(`https?://[^\\s"'<>]*${marker}[=:][0-9a-zA-Z-]+`))?.[0] ?? null;
-};
+/** The `count`th mail the entry sent, or the failure saying what did not
+ * arrive: the sink keeps each as a file, and `mailLink` reads a link out of it. */
+const mailArrived = (what, count) => waitForMail(mailDir, what, count)
+  .catch(error => fail(error.message));
 
 /** Whether the first screen is in front of the person. Its element is in every
  * page the entry serves (`#first-screen`), so what shows is whether the page set
@@ -491,7 +464,7 @@ try {
   })()`);
   await until(stranger.tab, `document.documentElement.dataset.waitList === 'inbox'`, 'the address being left', stepLimit(4));
   report.inbox = await stranger.tab.evaluate(`document.getElementById('arrival-wait-done')?.textContent?.trim() ?? null`);
-  const confirmation = await waitForMail('the confirmation mail', 1);
+  const confirmation = await mailArrived('the confirmation mail', 1);
   report.confirmationMail = {to: confirmation.to, from: confirmation.from, subject: confirmation.subject};
   const confirmLink = mailLink(confirmation, 'wait-list-confirm');
   if (!confirmLink) await fail(`the confirmation mail carries no confirmation link: ${(confirmation.text ?? '').slice(0, 400)}`);
@@ -527,28 +500,13 @@ try {
   console.log(`ok: one press put an invite link on the operator's clipboard (${report.copiedLink})`);
   mark('one press handed the operator an invite link to give away');
 
-  // The card is on the page before its list is: read it once it has answered
-  // with rows, with nobody on it, or with what went wrong.
-  const cardSeen = async () => {
-    const shown = await poll(operator.tab, `(() => {
-      const card = document.querySelector('.tilo-waiting');
-      if (!card) return '';
-      const error = card.querySelector('.tilo-entry-error');
-      const rows = [...card.querySelectorAll('.tilo-waiting-contact')].map(node => node.textContent.trim());
-      const empty = card.querySelector('.tilo-waiting-none');
-      if (!rows.length && !empty && !(error && !error.hidden)) return '';
-      return JSON.stringify({contacts: rows,
-        said: error && !error.hidden ? error.textContent.trim() : null,
-        buttons: [...card.querySelectorAll('li button')].map(node => node.textContent.trim())});
-    })()`, stepLimit(6));
-    return shown ? JSON.parse(shown) : null;
-  };
   // The waiting card is the workspace's own action, offered to whoever it
   // lets invite: it is in the operator's search once the role reached them.
+  // It is on the page before its list is, so it is read once it has answered.
   let card = null;
   for (const deadline = Date.now() + stepLimit(6); Date.now() < deadline && !card;) {
     await search(operator.tab, 'waiting', 'Waiting to join');
-    card = await cardSeen();
+    card = await waitingCard(operator.tab);
     if (!card) await sleep(500);
   }
   if (!card) await fail(`the operator's search offered no wait list: ${(await pageText(operator.tab)).slice(0, 400)}`);
@@ -574,7 +532,7 @@ try {
     await fail(`the wait list did not mail the invitation (${mailed})`);
   }
   report.sent = await operator.tab.evaluate(`document.querySelector('.tilo-waiting-sent')?.textContent?.trim() ?? null`);
-  const invitation = await waitForMail('the invitation mail', 2);
+  const invitation = await mailArrived('the invitation mail', 2);
   report.invitationMail = {to: invitation.to, from: invitation.from, subject: invitation.subject};
   const inviteLink = mailLink(invitation, 'invite') ?? (invitation.text.match(/https?:\/\/\S+\/i\/[A-Za-z0-9_-]{16}#[A-Za-z0-9_-]{43}/) ?? [])[0];
   if (!inviteLink) await fail(`the invitation mail carries no link: ${(invitation.text ?? '').slice(0, 400)}`);
@@ -832,7 +790,7 @@ try {
   await until(visitor.tab, `document.documentElement.dataset.waitList === 'inbox'`, 'the last visitor leaving an address', stepLimit(6));
   const memberships = await visitor.tab.evaluate(`globalThis.localStorage?.getItem('tilo-host-memberships') ?? null`);
   if (memberships) await fail(`a visitor with no invitation was let in: ${memberships}`);
-  const third = await waitForMail('the last visitor\'s confirmation mail', 3);
+  const third = await mailArrived('the last visitor\'s confirmation mail', 3);
   report.lastMail = {to: third.to, subject: third.subject};
   await dump(visitor.tab, '8-without-an-invitation');
   console.log(`ok: a visitor with no invitation is still on the wait list (${third.to})`);

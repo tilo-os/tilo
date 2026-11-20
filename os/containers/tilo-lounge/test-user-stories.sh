@@ -53,9 +53,17 @@ if ((stacked)); then
   bash "$repo/tools/ci/publish/cli-release.sh" pack "$tilo_bin" "$release/tilo-linux-x86_64.tar.gz"
   export TILO_SH_CLI_DIR=$release TILO_SH_TILO_BIN=$tilo_bin
 fi
-# People arrive as strangers, the entry open to anyone; no app opened in front
-# of them and no VM host.
-export TILO_SH_ADMISSION=${TILO_SH_ADMISSION:-open} TILO_SH_HOME_APP= TILO_SH_VM_HOST=${TILO_SH_VM_HOST:-0}
+# A story says how its stack's entry takes people and whether it starts the
+# stand-in mail server: `admission` (the stack's TILO_SH_ADMISSION, `open` unless
+# the story asks) and `mailStandIn`. People arrive as strangers, the entry open
+# to anyone; no app opened in front of them and no VM host.
+stacks_for_story() { python3 -I -c '
+import json, sys
+story = next(s for s in json.load(open(sys.argv[1]))["stories"] if s["id"] == sys.argv[2])
+print(story.get("admission", "open"))
+print(1 if story.get("mailStandIn") else 0)
+' "$stories/stories.json" "$1"; }
+export TILO_SH_HOME_APP= TILO_SH_VM_HOST=${TILO_SH_VM_HOST:-0}
 export TILO_SH_PORT_BASE=${TILO_SH_PORT_BASE:-25400}
 
 red=()
@@ -64,6 +72,8 @@ for story in "${asked[@]}"; do
   rm -rf "$out"
   mkdir -p "$out"
   driver=$(python3 -I -c 'import json, sys; print(next(s["driver"] for s in json.load(open(sys.argv[1]))["stories"] if s["id"] == sys.argv[2]))' "$stories/stories.json" "$story")
+  { read -r TILO_SH_ADMISSION; read -r TILO_SH_MAIL_STAND_IN; } < <(stacks_for_story "$story")
+  export TILO_SH_ADMISSION TILO_SH_MAIL_STAND_IN
   if ! on_stack "$story"; then
     # A story with no stack walks what it drives itself (its driver says what).
     status=0

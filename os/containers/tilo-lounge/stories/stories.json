@@ -1,5 +1,5 @@
 {
-  "about": "The user stories: what a person sets out to do with Tilo, in their words, and the steps they take. `driver` names the page driver that walks a story as that person; a story with none is listed as not yet automated, and `needs` says what walking it still takes. `stack: false` marks a story walked without a tilo.sh stack of its own. `credentials` marks a story that cannot run without an outside account.",
+  "about": "The user stories: what a person sets out to do with Tilo, in their words, and the steps they take. `driver` names the page driver that walks a story as that person; a story with none is listed as not yet automated, and `needs` says what walking it still takes. `stack: false` marks a story walked without a tilo.sh stack of its own; `admission` is what that stack's entry admits (`open` unless the story asks for production's `invite`), and `mailStandIn` starts the stack's stand-in mail server. `credentials` marks a story that cannot run without an outside account.",
   "stories": [
     {
       "id": "invite-live",
@@ -41,11 +41,13 @@
       "steps": [
         "A stranger opens Tilo and leaves their address on the wait list",
         "They confirm it from the mail",
+        "The host opens the Lounge and becomes its owner",
         "The host invites them from the wait list",
-        "They open the invitation mail's link",
+        "They open the invitation mail’s link",
         "They arrive in a workspace of their own"
       ],
-      "needs": "The stack's entry set to invitation-only and the mail sink read as onboarding.mjs reads it; that flow's steps recorded through the story recorder."
+      "driver": "wait-list-sign-up.mjs",
+      "admission": "invite"
     },
     {
       "id": "desktop-easy",
@@ -92,12 +94,13 @@
       "intent": "A person connects their mail account with only their address and password, then reads, searches and sends mail.",
       "steps": [
         "Ada opens Mail and enters their address and password",
-        "Mail finds the server by itself and connects",
+        "Ada names the server when Mail cannot find it, and connects",
         "Ada reads the newest mail",
         "Ada searches for an older one",
         "Ada sends a reply, and it arrives"
       ],
-      "needs": "A fake mail provider on the runner (IMAP and SMTP with an autoconfig document at its domain) the stack's Mail can reach."
+      "driver": "mail-password.mjs",
+      "mailStandIn": true
     },
     {
       "id": "calendar-invite",
