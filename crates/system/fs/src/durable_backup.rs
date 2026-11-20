@@ -188,7 +188,11 @@ pub fn write(path: &Path, bytes: &[u8], validate: impl Fn(&[u8]) -> bool) -> io:
     Ok(())
 }
 
-fn backup_dir(path: &Path) -> io::Result<PathBuf> {
+/// Where the retained generations of the primary at `path` are kept.
+///
+/// # Errors
+/// `path` has no file name.
+pub fn backup_dir(path: &Path) -> io::Result<PathBuf> {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())

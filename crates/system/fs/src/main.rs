@@ -53,6 +53,60 @@ struct Cli {
 mod namespace_tests {
     use super::*;
 
+    /// The pre-chunk namespace fixture (`src/namespace/fixtures/pre-chunk-namespace.hex`).
+    fn pre_chunk_bytes() -> Vec<u8> {
+        let hex: String = include_str!("namespace/fixtures/pre-chunk-namespace.hex")
+            .split_whitespace()
+            .collect();
+        (0..hex.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).expect("the fixture is hex"))
+            .collect()
+    }
+
+    #[test]
+    fn an_older_image_s_namespace_is_set_aside_and_the_mount_starts_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("namespace.bin");
+        std::fs::write(&path, pre_chunk_bytes()).unwrap();
+        let backups = fs::durable_backup::backup_dir(&path).unwrap();
+        std::fs::create_dir_all(&backups).unwrap();
+        std::fs::write(backups.join("generation-1.bak"), b"older").unwrap();
+
+        let mut opened = open_namespace("updated".into(), Some(&path))
+            .expect("an older image's namespace does not keep the mount down");
+        assert!(
+            opened.lookup(fs::ROOT_INO, "notes").is_none(),
+            "the mount starts from an empty tree, not the older one's"
+        );
+        assert!(
+            !path.exists(),
+            "the older namespace is no longer read in place"
+        );
+        let names: Vec<String> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|name| name.starts_with("namespace.bin.older-image-")),
+            "the older namespace is kept: {names:?}"
+        );
+        assert!(
+            names
+                .iter()
+                .any(|name| name.starts_with(".namespace.bin.") && name.contains(".older-image-")),
+            "its generations are kept with it: {names:?}"
+        );
+
+        // A namespace in the current layout that does not read is still damage: refused, untouched.
+        let damaged = temp.path().join("damaged.bin");
+        std::fs::write(&damaged, b"tilotree\x00\x00").unwrap();
+        assert!(open_namespace("updated".into(), Some(&damaged)).is_err());
+        assert!(damaged.exists(), "damage is left for durable recovery");
+    }
+
     /// Every `fsync` asks for the namespace to be durable, so asking costs a
     /// write only when the document changed since this process last wrote
     /// it, by any path: the barrier itself or the full generation write.
@@ -1725,12 +1779,53 @@ async fn final_flush(
 }
 
 /// A mount's namespace: the persisted copy at `np`, or an empty tree the workspace's Files record
-/// fills.
+/// fills. A copy an older image saved in a layout this build no longer reads (before the tree was
+/// kept in chunks) is set aside with its retained generations and the mount starts from an empty
+/// tree, which the workspace's Files fill again: an update never keeps the mount, and the
+/// session that needs it, down on it. Anything else unreadable stays a refusal for durable
+/// recovery.
 fn open_namespace(author: String, np: Option<&Path>) -> Result<Namespace> {
-    match np.filter(|path| path.exists()) {
-        Some(path) => load_namespace(path, author),
-        None => Ok(Namespace::new(author)?),
+    let Some(path) = np.filter(|path| path.exists()) else {
+        return Ok(Namespace::new(author)?);
+    };
+    let older = std::fs::read(path).is_ok_and(|bytes| Namespace::is_pre_chunk_save(&bytes));
+    if !older {
+        return load_namespace(path, author);
     }
+    let kept = set_aside_older_namespace(path)?;
+    eprintln!(
+        "namespace {} was saved by an older image in a layout this build does not read; kept it \
+         as {} and started from an empty tree the workspace's Files fill again",
+        path.display(),
+        kept.display()
+    );
+    Ok(Namespace::new(author)?)
+}
+
+/// Move the namespace at `path`, and the directory of its retained generations, aside as
+/// `<name>.older-image-<unix seconds>`; returns where the namespace went.
+fn set_aside_older_namespace(path: &Path) -> Result<PathBuf> {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let aside = |of: &Path| {
+        let mut name = of.as_os_str().to_owned();
+        name.push(format!(".older-image-{secs}"));
+        PathBuf::from(name)
+    };
+    let kept = aside(path);
+    std::fs::rename(path, &kept)
+        .with_context(|| format!("set the older namespace {} aside", path.display()))?;
+    let backups = fs::durable_backup::backup_dir(path)?;
+    if backups.exists() {
+        std::fs::rename(&backups, aside(&backups)).with_context(|| {
+            format!(
+                "set the older namespace's generations {} aside",
+                backups.display()
+            )
+        })?;
+    }
+    Ok(kept)
 }
 
 /// FUSE worker threads: `TILO_FS_FUSE_THREADS` when set, else one per CPU between 2 and 16.
