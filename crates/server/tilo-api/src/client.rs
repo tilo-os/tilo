@@ -35,6 +35,14 @@ const MAX_ANSWER: usize = 64 * 1024 * 1024;
 const WAIT_SECONDS: &str = "60";
 /// How long a call keeps asking while the server says it is unavailable.
 const RETRY_DEADLINE: Duration = Duration::from_secs(60);
+/// How long a call keeps asking while the server says the workspace does not serve this key
+/// here yet (`not_ready`): a computer that just logged in, or a workspace that just opened,
+/// answers so until its session is up, and the person's command waits for it rather than
+/// failing on it.
+const READY_DEADLINE: Duration = Duration::from_secs(300);
+/// How long a call waits between two asks while the server says it is unavailable or the
+/// workspace is on its way, unless the server asked for another wait.
+const RETRY_PAUSE: Duration = Duration::from_secs(1);
 /// How long an action waits for the person to answer it.
 const ANSWER_DEADLINE: Duration = Duration::from_secs(300);
 /// How long a request is given, uploads included.
@@ -800,15 +808,34 @@ impl Client {
             headers.push(("prefer", format!("wait={WAIT_SECONDS}")));
         }
         let retry_until = Instant::now().checked_add(RETRY_DEADLINE);
+        let ready_until = Instant::now().checked_add(READY_DEADLINE);
         let answered_until = (waiting == Waiting::ForPerson)
             .then(|| Instant::now().checked_add(ANSWER_DEADLINE))
             .flatten();
         let mut told = false;
         loop {
             let answer = self.send(method, path, &headers, body).await?;
-            if answer.status == 503 && ahead(retry_until) {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue;
+            if answer.status == 503 {
+                let json = answer.json();
+                let code = json
+                    .pointer("/error/code")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                // A workspace that does not serve this key here yet is on its way: the same
+                // call works once it is, so it is waited for longer than a busy server.
+                let until = if matches!(code, "not_ready" | "unanswered") {
+                    ready_until
+                } else {
+                    retry_until
+                };
+                if ahead(until) {
+                    let asked = json
+                        .pointer("/error/retry_after_ms")
+                        .and_then(Value::as_u64)
+                        .map_or(RETRY_PAUSE, Duration::from_millis);
+                    tokio::time::sleep(asked).await;
+                    continue;
+                }
             }
             if waiting == Waiting::ForPerson && answer.status == 202 && ahead(answered_until) {
                 if !told {
@@ -1421,6 +1448,68 @@ mod tests {
         assert_eq!(
             empty.workspace_id("Studio").await.unwrap_err().to_string(),
             "no workspace called \"Studio\": this key reaches no workspaces"
+        );
+    }
+
+    /// A computer that just logged in reaches a workspace that does not serve it yet: the server
+    /// says `not_ready`, and the command the person just made waits for the workspace instead of
+    /// failing on it.
+    #[tokio::test]
+    async fn a_call_waits_for_a_workspace_that_does_not_serve_it_yet() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let asked = std::sync::Arc::new(AtomicUsize::new(0));
+        tokio::spawn({
+            let asked = std::sync::Arc::clone(&asked);
+            async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    let mut request = [0_u8; 4096];
+                    let _ = stream.read(&mut request).await;
+                    let body = if asked.fetch_add(1, Ordering::SeqCst) == 0 {
+                        r#"{"error":{"code":"not_ready","message":"the workspace is not ready for this call yet"}}"#
+                    } else {
+                        r#"{"workspaces":[]}"#
+                    };
+                    let answer = format!(
+                        "HTTP/1.1 {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        if body.contains("not_ready") {
+                            "503 Service Unavailable"
+                        } else {
+                            "200 OK"
+                        },
+                        body.len()
+                    );
+                    let _ = stream.write_all(answer.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                }
+            }
+        });
+        let client = Client {
+            transport: Transport::Http {
+                origin,
+                key: "a key".to_owned(),
+                http: tilo_net::Client::new(),
+            },
+        };
+        let began = Instant::now();
+        let listed = client.get("/v1/workspaces").await.unwrap();
+        assert!(
+            listed.get("workspaces").is_some(),
+            "the call answered once the workspace served it: {listed}"
+        );
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            2,
+            "the call asked again rather than failing on not_ready"
+        );
+        assert!(
+            began.elapsed() >= Duration::from_secs(1),
+            "the call waited for the workspace instead of asking again at once"
         );
     }
 }
