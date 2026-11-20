@@ -470,15 +470,19 @@ fn list(window: &Window, nav: &Nav, filter: Filter, me: Option<MemberId>) -> Ele
     let depths = Rc::clone(&marks);
     let checked = Rc::clone(&boxes);
     Box::new(
-        VirtualList::new(
+        VirtualList::with_selection_delegate(
             model,
             ui::tokens::Metrics::BASE.panel_row_height,
-            move |model, _, key| row(model, *key, &depths, &checked),
+            move |model, _, key, build| {
+                row(model, *key, build.selection.selected, &depths, &checked)
+            },
         )
         .with_id("tasks-list")
         .with_accessible_name(tr("tasks-place-list"))
         .with_tree(marks)
         .with_semantic_key(ToString::to_string)
+        // The issue a press made is shown: the list scrolls to it and marks it chosen.
+        .reveal_when(&nav.made)
         .filling()
         .open_on_press()
         .selection_follows_focus()
@@ -529,10 +533,11 @@ fn list(window: &Window, nav: &Nav, filter: Filter, me: Option<MemberId>) -> Ele
 }
 
 /// One row: the issue's reference and title, indented under its parent, with
-/// the box that finishes it and its status beside them.
+/// the box that finishes it, its status beside them and the chosen row's face.
 fn row(
     model: &IssueRows,
     key: u64,
+    chosen: bool,
     depths: &TreeMarks<u64>,
     boxes: &Rc<RefCell<impl FnMut(u64) + 'static>>,
 ) -> Element {
@@ -563,6 +568,7 @@ fn row(
             .depth(depths.depth(&key))
             .checkbox(closed, toggle)
             .checked(closed)
+            .selected(chosen)
             .value(said.as_str())
             .description(format!("{}, {said}", reference(key))),
     )

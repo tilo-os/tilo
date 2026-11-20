@@ -460,6 +460,11 @@ pub struct VirtualRows {
     rename_on_double_click: bool,
     tab_indents: bool,
     on_delete: Option<KeyCallback<ListKey>>,
+    /// The row a view asks the list to show, read at every sync: what a press in the view
+    /// made of the rows.
+    reveal_asked: Option<Box<dyn FnMut() -> Option<ListKey>>>,
+    /// The row last asked for that the model does not hold yet: shown as soon as it does.
+    reveal_pending: Option<ListKey>,
 }
 
 impl VirtualRows {
@@ -594,6 +599,8 @@ impl VirtualRows {
             jump_hovered: false,
             jump_pressed: false,
             jump_focused: false,
+            reveal_asked: None,
+            reveal_pending: None,
             pill_height: 0.0,
             pill_widths: [0.0; crate::widget::conversation::JUMPS],
             names_item: std::cell::RefCell::new(None),
@@ -619,10 +626,19 @@ impl VirtualRows {
     }
 
     pub fn reveal(&mut self, key: &ListKey) -> bool {
+        let shown = self.scroll_to_key(key);
+        if shown {
+            self.focus_row(key.clone());
+        }
+        shown
+    }
+
+    /// Scroll `key`'s row into view, leaving the keyboard where it is; whether the model
+    /// holds the row.
+    fn scroll_to_key(&mut self, key: &ListKey) -> bool {
         let Some(index) = self.model.index_of(key) else {
             return false;
         };
-        self.focus_row(key.clone());
         let now = crate::motion::frame_now();
         let width = self.rect.width();
         match self
@@ -634,6 +650,39 @@ impl VirtualRows {
         }
         self.visible_window_changed();
         true
+    }
+
+    /// Show the row `asked` names whenever it names one, without taking the keyboard:
+    /// what a view asks when a press made an item the list should show (the row scrolls
+    /// into view and stands chosen). A row the model does not hold yet is shown as soon
+    /// as it does.
+    #[must_use]
+    pub fn following_reveal(
+        mut self,
+        asked: Box<dyn FnMut() -> Option<ListKey>>,
+        initial: Option<ListKey>,
+    ) -> Self {
+        self.reveal_asked = Some(asked);
+        self.reveal_pending = initial;
+        self
+    }
+
+    /// Take the row the view asked to show, and show it; whether it did.
+    fn take_reveal_asked(&mut self) -> bool {
+        if let Some(asked) = self.reveal_asked.as_mut()
+            && let Some(key) = asked()
+        {
+            self.reveal_pending = Some(key);
+        }
+        let Some(key) = self.reveal_pending.clone() else {
+            return false;
+        };
+        if self.model.index_of(&key).is_none() {
+            return false;
+        }
+        self.reveal_pending = None;
+        self.choose_quietly(key.clone());
+        self.scroll_to_key(&key)
     }
 
     fn follow_scroll_to(&mut self, now: Instant) {
@@ -1543,6 +1592,7 @@ impl Widget for VirtualRows {
         // A model that follows the app's state has its changes in the pass that changed it:
         // taken here, the rows it moved are placed in this frame, not the next.
         self.take_model_changes();
+        self.take_reveal_asked();
         let scrolled_only = !self.structure_dirty
             && !self.request_dirty
             && !self.mounted_covers(&self.rows_to_hold());
@@ -1563,6 +1613,7 @@ impl Widget for VirtualRows {
                 now.saturating_duration_since(last)
             });
         let mut changed = self.take_model_changes();
+        changed |= self.take_reveal_asked();
         changed |= self.take_retry();
         let offset = self.viewport.offset();
         if self.scroll.momentum.is_active() {

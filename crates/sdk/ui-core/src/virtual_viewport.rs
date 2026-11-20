@@ -1215,10 +1215,18 @@ where
     }
 
     /// Capture the first visible stable key before a model mutation.
+    ///
+    /// A viewport at its start captures nothing: rows that arrive above it are what the top
+    /// shows now, and following the row that was first would scroll the view down from the
+    /// start the person opened it at (a list reading a collection whose older parts arrive
+    /// after the newest).
     pub fn capture_anchor<F>(&self, mut key_at: F) -> Option<SparseAnchor<K>>
     where
         F: FnMut(usize) -> Option<K>,
     {
+        if self.offset <= self.lead {
+            return None;
+        }
         let index = self
             .index_at_content_offset(self.offset)
             .or_else(|| self.count.checked_sub(1))?;
@@ -2093,6 +2101,37 @@ mod tests {
                 assert_eq!(view.item_height(3), Some(73.0));
                 assert_eq!(view.resident_measurements(), 1);
                 assert!(!view.remap_key(&"missing", "unused"));
+            }
+
+            {
+                // At its start a viewport captures no anchor: rows that arrive above it are
+                // what the top shows now, and following the row that was first would scroll
+                // the view down from the start it was opened at.
+                let mut view = SparseVirtualViewport::new(20.0);
+                view.reconcile(100, |_| None::<usize>, None);
+                view.set_viewport(40.0);
+                assert!(
+                    view.capture_anchor(|index| u64::try_from(index).ok())
+                        .is_none(),
+                    "the start keeps no anchor"
+                );
+                view.set_edges(12.0, 0.0);
+                view.set_offset(6.0);
+                assert!(
+                    view.capture_anchor(|index| u64::try_from(index).ok())
+                        .is_none(),
+                    "nor does a scroll into the lead above the first row"
+                );
+                view.set_offset(32.0);
+                let anchor = view
+                    .capture_anchor(|index| u64::try_from(index).ok())
+                    .expect("scrolled away from the start, the first row is kept");
+                view.reconcile(
+                    120,
+                    |key| usize::try_from(*key).ok().map(|index| index + 20),
+                    Some(&anchor),
+                );
+                assert_eq!(view.item_view_top(21), Some(0.0), "the kept row stays put");
             }
 
             {

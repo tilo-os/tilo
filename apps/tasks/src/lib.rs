@@ -208,6 +208,8 @@ pub(crate) struct Nav {
     pub(crate) filter: LocalState<Option<String>>,
     /// The project or area whose page is open.
     pub(crate) project: LocalState<Option<Id>>,
+    /// The issue a press in this window just made, by its number: the list shows it.
+    pub(crate) made: LocalState<Option<u64>>,
     /// The "New project" dialog is asking.
     pub(crate) asking: LocalState<bool>,
     /// The new project's name, while the dialog asks.
@@ -293,6 +295,7 @@ impl ResourceApp for App {
             open: cx.local(None),
             filter: cx.local(None),
             project: cx.local(None),
+            made: cx.local(None),
             asking,
             named,
         };
@@ -306,8 +309,57 @@ impl ResourceApp for App {
             sample::fill(*scene, chain, me);
         }
         router(cx, &nav, &window);
-        tracker_window(cx, &nav, &window)
+        let shown = nav.clone();
+        let tasks = window.tasks.clone();
+        let me = cx.me().cloned();
+        let landed = cx.dispatcher().landed();
+        cx.upkeep(
+            ui::framework::Upkeep::new()
+                .syncing(move || made_issue_landed(&shown, &tasks, me.as_ref(), &landed)),
+            tracker_window(cx, &nav, &window),
+        )
     }
+}
+
+/// Show the issue a press in this window made: the list scrolls to it and marks it chosen.
+/// Only the list's own field makes one this way, where the window is on the tracker's
+/// issues — the board and an issue's page make their issues where they stand, and show
+/// them there.
+fn made_issue_landed(
+    nav: &Nav,
+    tasks: &LocalState<Tasks>,
+    me: Option<&ui::tilo_resource::MemberId>,
+    landed: &LocalState<Option<ui::framework::Landed>>,
+) {
+    let Some(done) = landed.get() else {
+        return;
+    };
+    if done.action != IssueList::CREATE.id() {
+        return;
+    }
+    let made = done
+        .created
+        .iter()
+        .find_map(|address| ui::tilo_resource::items::item_of_resource::<IssueList>(address))
+        .and_then(|(_, issue)| tasks.with(|tasks| tasks.issues().get(&issue).cloned()));
+    let Some(held) = made else {
+        // The parts have not read the issue yet: it is shown once they have.
+        return;
+    };
+    landed.set(None);
+    // Where the press was made shows it: the board and an issue's page show their own.
+    if nav.place.with(|place| *place != Place::List)
+        || nav.open.with(Option::is_some)
+        || nav.project.with(Option::is_some)
+    {
+        return;
+    }
+    // The sidebar's filters narrow the list: an issue the filter leaves out is shown by
+    // showing every issue, which is where the press made it.
+    if !nav.filter().matches(&held, me) {
+        nav.filter.set(None);
+    }
+    nav.made.set(Some(held.number));
 }
 
 /// The window over the whole tracker: the sidebar, the list, the board and

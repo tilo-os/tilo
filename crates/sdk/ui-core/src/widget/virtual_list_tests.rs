@@ -659,6 +659,36 @@ tilo_test_env::scenario! {
             assert_eq!(list.viewport.item_height(1), Some(55.0));
             assert_eq!(list.viewport.item_top(2), Some(75.0));
         }
+
+        {
+            // A list at its top keeps its top when rows arrive above it: the rows an
+            // older part brings fill in over the ones that came first, and the person
+            // reading from the start stays there.
+            let keys = Rc::new(RefCell::new((0_u64..100).collect::<Vec<_>>()));
+            let mut list = VirtualList::new(
+                SharedOrder {
+                    keys: Rc::clone(&keys),
+                },
+                20.0,
+                |_, _, key| {
+                    Box::new(ProbeRow::new(
+                        key.to_string(),
+                        20.0,
+                        false,
+                        Rc::new(Cell::new(0)),
+                    ))
+                },
+            )
+            .with_viewport_height(40.0);
+            let _ = lay_out(&mut list, 300.0);
+            assert_eq!(list.scroll_offset(), 0.0);
+
+            keys.borrow_mut().splice(0..0, [1_000, 1_001]);
+            list.notify_model_changed();
+            let _ = lay_out(&mut list, 300.0);
+            assert_eq!(list.scroll_offset(), 0.0, "the top stays the top");
+            assert_eq!(list.model().key_at(0), Some(1_000));
+        }
     }
 }
 
@@ -1450,6 +1480,42 @@ tilo_test_env::scenario! {
         assert_eq!(list.focused_key(), Some(&700));
         assert!(list.visible_range().contains(&700));
         assert!(!list.reveal(&5000), "an unknown key reveals nothing");
+    }
+
+    phase a_row_a_view_asks_for_is_shown_and_chosen_without_the_keyboard;
+    // A press that made a row asks for it: the list scrolls to it and stands it chosen,
+    // and the person goes on typing where they made it. A row the model does not hold
+    // yet is shown as soon as it does.
+    {
+        let keys = Rc::new(RefCell::new((0_u64..1000).collect::<Vec<_>>()));
+        let shown: crate::LocalState<Option<u64>> = crate::LocalState::new(None);
+        let mut list = VirtualList::new(
+            SharedOrder {
+                keys: Rc::clone(&keys),
+            },
+            40.0,
+            |_, _, key| Box::new(crate::widget::Text::new(&format!("row {key}"))) as Element,
+        )
+        .reveal_when(&shown)
+        .with_viewport_height(200.0);
+        let _ = lay_out(&mut list, 300.0);
+
+        shown.set(Some(700));
+        let _ = lay_out(&mut list, 300.0);
+        assert!(list.visible_range().contains(&700), "the row is on screen");
+        assert!(list.selection().is_selected(&700), "and stands chosen");
+        assert_eq!(list.focused_key(), None, "the keyboard stays where it was");
+
+        shown.set(Some(1500));
+        let _ = lay_out(&mut list, 300.0);
+        assert_eq!(list.model().index_of(&1500), None, "the model holds no such row");
+        keys.borrow_mut().extend(1000..1600);
+        list.notify_model_changed();
+        let _ = lay_out(&mut list, 300.0);
+        assert!(
+            list.visible_range().contains(&1500),
+            "shown once the model holds it"
+        );
     }
 
     phase the_key_at_a_point_is_the_row_drawn_there;

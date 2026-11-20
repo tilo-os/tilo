@@ -656,6 +656,35 @@ impl<M: ListModel + 'static> VirtualList<M> {
         self.rows.focus_row(ListKey::new(key));
     }
 
+    /// Show the row `shown` names whenever it changes, without taking the keyboard: the
+    /// list scrolls the row into view and stands it chosen. What a view asks when a press
+    /// made the item the row shows, and the person is still typing where they made it.
+    /// The ask is taken once: the list clears it, so a list built again shows its own
+    /// place rather than asking for a row shown before.
+    #[must_use]
+    pub fn reveal_when(mut self, shown: &crate::LocalState<Option<M::Key>>) -> Self {
+        let initial = shown.with(Clone::clone);
+        if initial.is_some() {
+            shown.set(None);
+        }
+        let asked = shown.clone();
+        let mut observed = shown.revision();
+        let poll = Box::new(move || {
+            let revision = asked.revision();
+            if revision == observed {
+                return None;
+            }
+            observed = revision;
+            let key = asked.with(Clone::clone);
+            if key.is_some() {
+                asked.set(None);
+            }
+            key.map(ListKey::new)
+        });
+        self.rows = self.rows.following_reveal(poll, initial.map(ListKey::new));
+        self
+    }
+
     #[must_use]
     pub fn focused_key(&self) -> Option<&M::Key> {
         self.rows.focused_key()?.get()
