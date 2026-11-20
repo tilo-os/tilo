@@ -6,6 +6,10 @@
 //! — signed by this computer's own device and committed into the workspace's document — and what
 //! the shell shows of it is that document, as a shell this device kept shows the shortcuts of the
 //! session before.
+//!
+//! An app's resource is the workspace's: a test's app is a window on the app wire, joined to its
+//! resource's route and writing there, so its change reaches the workspace as every app's write
+//! does — committed by the broker, which notes it in the change stream.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -76,6 +80,9 @@ fn this_computer(
         tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("this computer's identity");
+    // The file store this device's keys are kept in: a device that keeps its workspace seals what
+    // an app writes there, under the workspace's keys.
+    home.env().set("TILO_SECRETS_DIR", secrets());
     let device =
         tilo_device_identity::persist::load_device_key(&paths).expect("this computer's device key");
     let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
@@ -88,6 +95,18 @@ fn this_computer(
         },
     ))));
     (root, device, cert)
+}
+
+/// The file store this process keeps the workspaces' keys in: a process opens the store
+/// `TILO_SECRETS_DIR` names once, so every session of this test binary keeps its keys in the one
+/// store, which outlives each test's home.
+fn secrets() -> &'static std::path::Path {
+    static STORE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("tilo-test-secrets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the secret store's directory");
+        dir
+    })
 }
 
 /// The person a device certificate proves, as the desktop names them.
@@ -180,12 +199,13 @@ fn take_frames<'a>(
 /// device that receives it.
 fn commit(
     owner: &NativeWorkspaceOwner,
+    workspace: &str,
     key: &SigningKey,
     cert: &DeviceCert,
     settings: SettingsChange,
 ) {
     let request = OwnerCommitRequest {
-        workspace: WORKSPACE.to_owned(),
+        workspace: workspace.to_owned(),
         operation: CommitOperation::WorkspaceMembershipCommand {
             invocation: uuid::Uuid::new_v4(),
             caller: cert.clone(),
@@ -203,13 +223,26 @@ fn save(
     owner: &NativeWorkspaceOwner,
     key: &SigningKey,
     cert: &DeviceCert,
+    shortcut: Shortcut,
+) -> SavedShortcut {
+    save_in(owner, WORKSPACE, key, cert, shortcut)
+}
+
+/// [`save`] in `workspace` : the shortcuts of the workspace the session made as well as those of the
+/// one this test founded.
+fn save_in(
+    owner: &NativeWorkspaceOwner,
+    workspace: &str,
+    key: &SigningKey,
+    cert: &DeviceCert,
     mut shortcut: Shortcut,
 ) -> SavedShortcut {
-    tilo_peer_state::workspace::sign_saved_shortcut(WORKSPACE, &mut shortcut, cert, key)
+    tilo_peer_state::workspace::sign_saved_shortcut(workspace, &mut shortcut, cert, key)
         .expect("the person's own device saved it");
     let saved = SavedShortcut::encode(&shortcut);
     commit(
         owner,
+        workspace,
         key,
         cert,
         SettingsChange::Shortcuts(ShortcutChange::Save(Box::new(shortcut))),
@@ -220,20 +253,24 @@ fn save(
 /// [`WORKSPACE`] as `person` 's own, showing the `shortcuts` its document holds: what the shell this
 /// device keeps shows of the workspace, as the session that kept it left it.
 fn kept(person: &str, shortcuts: &[SavedShortcut]) -> Workspace {
-    let mut workspace = Workspace::new(workspace_id(), "Chat");
+    kept_in(person, WORKSPACE, shortcuts)
+}
+
+/// [`kept`] for the workspace `workspace` : the one a session of this device made, as well as the
+/// one this test founded.
+fn kept_in(person: &str, workspace: &str, shortcuts: &[SavedShortcut]) -> Workspace {
+    let mut workspace = Workspace::new(
+        WorkspaceId::parse(workspace).expect("a workspace id"),
+        "Mine",
+    );
     workspace.set_owner(person.to_owned());
     workspace.shortcuts = shortcuts.to_vec();
     workspace
 }
 
 /// A session keeping this device's shell under `state` , with the app wire the shortcuts run on
-/// at `socket` , for `person` , showing the workspace its governance holds.
-fn session_keeping(data: &Path, state: &Path, socket: &Path, person: &str) -> Session {
-    session_launching(data, state, socket, person, Arc::new(Launches::default()))
-}
-
-/// The same session, starting its apps from `launches` : the record of what it started is the
-/// test's, so it can start one.
+/// at `socket` , for `person` , starting its apps from `launches` : the log of what it started is
+/// the test's, so an app may speak on its wire as the process it started.
 fn session_launching(
     data: &Path,
     state: &Path,
@@ -276,12 +313,262 @@ fn showing(
     person: &str,
     workspace: Workspace,
 ) -> Session {
-    let mut session = session_keeping(data, state, socket, person);
+    showing_launching(
+        data,
+        state,
+        socket,
+        person,
+        Arc::new(Launches::default()),
+        workspace,
+    )
+}
+
+/// [`showing`], starting its apps from `launches` : the log of what it started is the test's, so an
+/// app may speak on its wire as the process it started.
+fn showing_launching(
+    data: &Path,
+    state: &Path,
+    socket: &Path,
+    person: &str,
+    launches: Arc<Launches>,
+    workspace: Workspace,
+) -> Session {
+    let mut session = session_launching(data, state, socket, person, launches);
     show(&session, workspace);
     for _ in 0..2 {
         session.step(Duration::from_millis(1)).expect("a frame");
     }
     session
+}
+
+/// The workspace this desktop starts from: the person's own, placed on this device's own workspace
+/// service and held as a member, as every made workspace is. The session after it starts on the
+/// shell this one kept, so the workspace is held here before its engine opens — which is what makes
+/// the session's own roles, the resources a shortcut follows among them, read what the workspace
+/// holds.
+fn made_here(
+    data: &Path,
+    state: &Path,
+    socket: &Path,
+    person: &str,
+    launches: Arc<Launches>,
+) -> String {
+    let mut first = session_launching(data, state, socket, person, launches);
+    // The workspace a person's device starts from is theirs: the session founds it on this device's
+    // own workspace service, off its loop, so a pass after the founding holds it.
+    let workspace = tilo_test_env::wait_for("the workspace the first session holds", || {
+        first.step(Duration::from_millis(2)).expect("a frame");
+        let held = first.held_workspaces();
+        assert!(
+            held.len() <= 1,
+            "a device that starts for the first time holds one workspace: {held:?}"
+        );
+        held.into_iter().next()
+    });
+    drop(first);
+    workspace
+}
+
+/// A word one side of the window says and the other waits for, as long as the test's suite allows.
+#[derive(Default)]
+struct Said {
+    said: std::sync::Mutex<bool>,
+    changed: std::sync::Condvar,
+}
+
+impl Said {
+    /// Say it.
+    fn say(&self) {
+        *self.said.lock().expect("the word") = true;
+        self.changed.notify_all();
+    }
+
+    /// Wait for it, up to `within`; whether it was said.
+    fn taken(&self, within: Duration) -> bool {
+        let said = self.said.lock().expect("the word");
+        let (_said, waited) = self
+            .changed
+            .wait_timeout_while(said, within, |said| !*said)
+            .expect("the word");
+        !waited.timed_out()
+    }
+}
+
+/// An app's window on the app wire: the app's process at this test, joined to its resource's route
+/// in [`WORKSPACE`] and holding the resource's document, as a window of the app holds it. Its
+/// founding write reaches the workspace when it joins, and the edit it is told to make reaches it
+/// through the same wire when the test says so — what the broker commits into the workspace and
+/// notes in the change stream, as it does for every app write.
+struct Window {
+    /// The app's edit, made and sent when the test says.
+    edit: Arc<Said>,
+    /// The test's last word: the window ends once it is said.
+    stop: Arc<Said>,
+    /// The window's ending: what it came to, once it was told to stop.
+    ended: Arc<Said>,
+    outcome: Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+impl Window {
+    /// This app's window on the wire at `socket`, in `workspace` , which this device's service
+    /// holds: joined to its resource's route as the app's own, the resource founded with what the
+    /// window keeps in it, waiting to make the app's edit.
+    fn open(socket: &Path, workspace: &str) -> Self {
+        let socket = socket.to_path_buf();
+        let workspace = workspace.to_owned();
+        let (edit, stop) = (Arc::new(Said::default()), Arc::new(Said::default()));
+        let ended = Arc::new(Said::default());
+        let outcome = Arc::new(std::sync::Mutex::new(None));
+        let (editing, stopping, ending, said) = (
+            Arc::clone(&edit),
+            Arc::clone(&stop),
+            Arc::clone(&ended),
+            Arc::clone(&outcome),
+        );
+        let handle = std::thread::spawn(move || {
+            *said.lock().expect("the outcome") =
+                Some(window_writes(&socket, &workspace, &editing, &stopping));
+            ending.say();
+        });
+        Self {
+            edit,
+            stop,
+            ended,
+            outcome,
+            handle,
+        }
+    }
+
+    /// Make the app's edit to its resource: the change the window's person commits to it.
+    fn commit_edit(&self) {
+        self.edit.say();
+    }
+
+    /// Why the window ended before the test was done with it, if it did.
+    fn ended_early(&self) -> Option<String> {
+        self.ended.taken(Duration::from_millis(1)).then(|| {
+            let outcome = self.outcome.lock().expect("the outcome").take();
+            outcome.map_or_else(
+                || "the window ended before the edit".to_owned(),
+                |outcome| match outcome {
+                    Ok(()) => "the window ended before the edit".to_owned(),
+                    Err(error) => error,
+                },
+            )
+        })
+    }
+
+    /// The window's ending, which is what the app's edit came to: what the wire made of it.
+    fn finish(self) -> Result<(), String> {
+        self.stop.say();
+        if !self.ended.taken(tilo_test_env::hang_bound()) {
+            return Err("the window never answered".to_owned());
+        }
+        self.handle.join().expect("the window's thread");
+        self.outcome
+            .lock()
+            .expect("the outcome")
+            .take()
+            .expect("the window's outcome")
+    }
+}
+
+/// The app's window on the app wire at `socket`: joined to [`RECORD`]'s route in [`WORKSPACE`] as
+/// the app's own document, the resource founded with what the window keeps in it, and the app's
+/// edit committed to the resource once `editing` says — each write the app's, on the wire the
+/// broker commits into the workspace.
+fn window_writes(
+    socket: &Path,
+    workspace: &str,
+    editing: &Said,
+    stopping: &Said,
+) -> Result<(), String> {
+    let cluster = uuid::Uuid::parse_str(workspace).map_err(|error| error.to_string())?;
+    let id = ui::resource::DocumentId::parse(RECORD).ok_or("a resource id")?;
+    let kind = ui::resource::ResourceType::new(KIND);
+    let mut app_wire = std::os::unix::net::UnixStream::connect(socket)
+        .map_err(|error| format!("the app wire's socket: {error}"))?;
+    launcher::services::write_collab_handoff(&mut app_wire, PACKAGE, workspace)
+        .map_err(|error| error.to_string())?;
+    let mut identity =
+        std::os::unix::net::UnixStream::connect(launcher::services::identity_socket())
+            .map_err(|error| format!("the identity service's socket: {error}"))?;
+    launcher::services::write_identity_handshake(&mut identity, PACKAGE, workspace)
+        .map_err(|error| error.to_string())?;
+    // The window's own path to its resource: its connection and identity, as the launcher hands
+    // an app both, and the manager a native window joins its resource with.
+    let mut joined = collaboration::CollaborationManager::join_instance(
+        &kind,
+        std::os::fd::OwnedFd::from(app_wire),
+        std::os::fd::AsFd::as_fd(&identity),
+        collaboration::RouteSpec::document(PACKAGE, cluster, RECORD),
+    )
+    .map_err(|error| format!("the window joins: {error:?}"))?
+    .finish_join()
+    .map_err(|error| format!("the window's resource is joined: {error:?}"))?;
+
+    // The resource as the app keeps it: stamped with what it is, and what the app holds in it
+    // before the person's edit.
+    let mut doc = automerge::AutoCommit::new();
+    ui::resource::init(&mut doc, &id, &kind, workspace);
+    doc.put(automerge::ROOT, "seed", 1)
+        .map_err(|error| error.to_string())?;
+    doc.commit();
+    let founded = doc.save();
+    // What the person's edit is made on: the resource as the window holds it, once it founded it.
+    let founded_heads = doc.get_heads();
+    send(
+        &mut joined,
+        collaboration::CollabRequest::document_snapshot(founded),
+    )?;
+
+    // Nothing of the app's is written until the person edits the resource.
+    if !editing.taken(tilo_test_env::hang_bound()) {
+        return Err("the test never made the edit".to_owned());
+    }
+    doc.put(
+        automerge::ROOT,
+        format!("message-{}", doc.length(automerge::ROOT)),
+        "hi",
+    )
+    .map_err(|error| error.to_string())?;
+    doc.commit_with(
+        automerge::transaction::CommitOptions::default().with_message(a_posted_message_change()),
+    );
+    let change = doc.save_after(&founded_heads);
+    send(
+        &mut joined,
+        collaboration::CollabRequest::document_incremental(change),
+    )?;
+
+    // The window stays up, serving its connection, until the test is done with it: a write the
+    // connection carried but did not flush would be lost with it.
+    // The window keeps serving its connection until the test is done with it: a write the
+    // connection carried but did not flush would be lost with it.
+    while !stopping.taken(Duration::from_millis(5)) {
+        let _ = joined.poll();
+    }
+    Ok(())
+}
+
+/// Send `request` on the window's resource route, again until the connection takes it: the window
+/// polls its connection as it goes, as a window does while its route is still joining.
+fn send(
+    joined: &mut collaboration::CollaborationManager,
+    request: collaboration::CollabRequest,
+) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let mut refused = String::new();
+    while started.elapsed() < tilo_test_env::hang_bound() {
+        let _ = joined.poll();
+        match joined.try_send(request.clone()) {
+            Ok(()) => return Ok(()),
+            Err(error) => refused = error.to_string(),
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    Err(format!("the window's write was never taken: {refused}"))
 }
 
 /// The shortcut named `Tidy` in [`WORKSPACE`], with `trigger` .
@@ -327,60 +614,6 @@ fn pass(session: &mut Session, span: Duration) {
     }
 }
 
-/// Save `rows` (`(id, kind)`) as `package`'s index of `workspace` holds them,
-/// the way the app of a workspace writes it: published in one rename.
-fn write_index(home: &tilo_test_env::TestHome, rows: &[(&str, &str)]) {
-    let directory = app_state::workspace_index_directory(home.data(), PACKAGE, WORKSPACE)
-        .expect("an index directory");
-    let staged = directory.with_file_name("staging-chat");
-    for old in [&staged, &directory] {
-        if old.exists() {
-            std::fs::remove_dir_all(old).expect("the index it replaces");
-        }
-    }
-    std::fs::create_dir_all(&staged).expect("the index's directory");
-    let mut index = automerge::AutoCommit::new();
-    for (id, kind) in rows {
-        let id = ui::resource::DocumentId::parse(id).expect("a record id");
-        assert!(
-            ui::resource::index::reference(
-                &mut index,
-                &id,
-                &ui::resource::ResourceType::new(*kind)
-            ),
-            "the index names {id}"
-        );
-    }
-    std::fs::write(staged.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
-    std::fs::rename(&staged, &directory).expect("the index published");
-}
-
-/// Where the record document lives.
-fn resource_path(home: &tilo_test_env::TestHome) -> std::path::PathBuf {
-    let key = ui::resource::DocumentId::parse(RECORD)
-        .expect("a record id")
-        .storage_key();
-    app_state::DocStore::workspace_document_dir_at(home.data(), PACKAGE, WORKSPACE, &key)
-        .expect("the record's directory")
-        .join(app_state::DOCUMENT_FILE)
-}
-
-/// The record as an app of the workspace wrote it before the session started.
-fn seed_resource(home: &tilo_test_env::TestHome) {
-    let mut doc = automerge::AutoCommit::new();
-    ui::resource::init(
-        &mut doc,
-        &ui::resource::DocumentId::parse(RECORD).expect("a record id"),
-        &ui::resource::ResourceType::new(KIND),
-        WORKSPACE,
-    );
-    doc.put(automerge::ROOT, "seed", 1).expect("a field");
-    doc.commit();
-    let path = resource_path(home);
-    std::fs::create_dir_all(path.parent().expect("the record's directory")).expect("the directory");
-    std::fs::write(&path, doc.save()).expect("the record");
-}
-
 /// What the app commits when its person sends a message: a change whose history entry names the
 /// verb that made it.
 fn a_posted_message_change() -> String {
@@ -393,21 +626,6 @@ fn a_posted_message_change() -> String {
         )))
         .change_message()
         .expect("a change message")
-}
-
-/// The app commits one message to the record, as the person's app does.
-fn post_a_message(home: &tilo_test_env::TestHome) {
-    let path = resource_path(home);
-    let bytes = std::fs::read(&path).expect("the record");
-    let mut doc = automerge::AutoCommit::load(&bytes).expect("the record document");
-    let before = doc.length(&automerge::ROOT);
-    doc.put(automerge::ROOT, format!("message-{before}"), "hi")
-        .expect("a field");
-    doc.commit_with(
-        automerge::transaction::CommitOptions::default().with_message(a_posted_message_change()),
-    )
-    .expect("a committed change");
-    std::fs::write(&path, doc.save()).expect("the record written");
 }
 
 /// Step the session until it started a shortcut `wanted` run.
@@ -431,12 +649,22 @@ fn an_edit_that_matches_a_rule_fires_its_action_once() {
     let person = person_of(&cert);
     let state = tempfile::tempdir().expect("a state directory");
     let socket = home.runtime().join("action.sock");
-    write_index(&home, &[(RECORD, KIND)]);
-    seed_resource(&home);
+    // The app's window is this test's process: the session admits its connection as the launch it
+    // recorded.
+    let launches = Arc::new(Launches::default());
+    // This desktop starts from the person's own workspace, which its first session placed here.
+    let workspace = made_here(
+        home.data(),
+        state.path(),
+        &socket,
+        &person,
+        Arc::clone(&launches),
+    );
+    launches.started(std::process::id(), PACKAGE, &workspace, true);
     let owner = held(state.path());
-    found(&owner, &device, &cert);
-    let tidy = save(
+    let tidy = save_in(
         &owner,
+        &workspace,
         &device,
         &cert,
         tidy_with(&TriggerSpec::ResourceChanged {
@@ -448,18 +676,37 @@ fn an_edit_that_matches_a_rule_fires_its_action_once() {
     );
     drop(owner);
 
-    let mut session = showing(
+    // The shell starts with the workspace before the person's shortcut is on it: the resource is
+    // the app's to found, and the rule arms against the resource as it stands.
+    let mut session = showing_launching(
         home.data(),
         state.path(),
         &socket,
         &person,
-        kept(&person, std::slice::from_ref(&tidy)),
+        Arc::clone(&launches),
+        kept_in(&person, &workspace, &[]),
     );
-    // The pass that shows the shortcut catches up with the record: the first look at a record only
-    // learns its heads, so a message posted before the shortcut is on the shell is not one it fires
-    // on.
-    session.step(Duration::from_millis(1)).expect("a frame");
-    post_a_message(&home);
+    assert!(
+        session
+            .held_workspaces()
+            .iter()
+            .any(|held| held == &workspace),
+        "the session holds the workspace its shell kept"
+    );
+    let window = Window::open(&socket, &workspace);
+    until_the_resource(&mut session, &window, &workspace);
+
+    // The person's shortcut arrives on the shell: the rule arms, and the first look at the
+    // resource only learns its heads, so the app's write of what it already holds never fires it.
+    show(
+        &session,
+        kept_in(&person, &workspace, std::slice::from_ref(&tidy)),
+    );
+    session.step(Duration::from_millis(2)).expect("a frame");
+
+    // The person's app commits a message to the resource: one change, on the wire its window
+    // writes on, which the broker commits into the workspace and notes in the change stream.
+    window.commit_edit();
     let runs = until_a_run(&mut session, 1);
     // Many more passes over the same change start nothing: a fire time is started once, by its
     // run's id.
@@ -469,6 +716,7 @@ fn an_edit_that_matches_a_rule_fires_its_action_once() {
     let again = session.take_finished_invocations();
     assert!(again.is_empty(), "the same change started another run");
     assert_eq!(runs, vec!["tidy".to_string()], "the shortcut ran once");
+    window.finish().expect("the app's window wrote its edit");
 }
 
 #[test]
@@ -478,8 +726,6 @@ fn a_shortcut_saved_by_someone_elses_device_fires_nothing_here() {
     let person = person_of(&cert);
     let state = tempfile::tempdir().expect("a state directory");
     let socket = home.runtime().join("action.sock");
-    write_index(&home, &[(RECORD, KIND)]);
-    seed_resource(&home);
     let owner = held(state.path());
     let governor = found(&owner, &device, &cert);
 
@@ -512,20 +758,59 @@ fn a_shortcut_saved_by_someone_elses_device_fires_nothing_here() {
     drop(their_owner);
     drop(owner);
 
-    let mut session = showing(
+    let launches = Arc::new(Launches::default());
+    launches.started(std::process::id(), PACKAGE, WORKSPACE, true);
+    let mut session = showing_launching(
         home.data(),
         state.path(),
         &socket,
         &person,
-        kept(&person, std::slice::from_ref(&theirs_saved)),
+        Arc::clone(&launches),
+        kept(&person, &[]),
     );
-    post_a_message(&home);
+    let window = Window::open(&socket, WORKSPACE);
+    until_the_resource(&mut session, &window, WORKSPACE);
+    show(&session, kept(&person, std::slice::from_ref(&theirs_saved)));
+    session.step(Duration::from_millis(2)).expect("a frame");
+    // The app's own change to the resource, on its wire, as the test above makes one.
+    window.commit_edit();
     for _ in 0..500 {
         session.step(Duration::from_millis(2)).expect("step");
     }
     assert!(
         session.take_finished_invocations().is_empty(),
         "a shortcut fires on the behalf of the person who saved it, never someone else's"
+    );
+    window.finish().expect("the app's window wrote its edit");
+}
+
+/// Wait, stepping `session` , until the workspace holds the app's resource of the kind the rule
+/// names: the app's window founded it on the wire, and this session's engine took the broker's
+/// write of it.
+fn until_the_resource(session: &mut Session, window: &Window, workspace: &str) {
+    tilo_test_env::wait_for("the app's resource in the workspace", || {
+        if let Some(error) = window.ended_early() {
+            panic!("the app's window ended: {error}");
+        }
+        session.step(Duration::from_millis(2)).expect("step");
+        let held = session
+            .read_resource(workspace, PACKAGE, RECORD)
+            .ok()
+            .flatten();
+        held.is_some().then_some(())
+    });
+    assert!(
+        ui::resource::identity(
+            &automerge::AutoCommit::load(
+                &session
+                    .read_resource(workspace, PACKAGE, RECORD)
+                    .expect("the resource reads")
+                    .expect("the workspace holds the resource")
+            )
+            .expect("the resource is a document")
+        )
+        .is_some_and(|checkout| checkout.kind.as_str() == KIND),
+        "the workspace holds the app's resource, of the kind the rule names"
     );
 }
 
