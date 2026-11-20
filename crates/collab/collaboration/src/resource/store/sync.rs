@@ -440,5 +440,83 @@ mod tests {
             let mut empty = AutoCommit::new();
             assert!(!DocumentSync::builds_on(&mut empty, &delta));
         }
+
+        phase a_large_delivered_resource_is_taken_in_without_rebuilding_its_history;
+        {
+            // A newcomer's window opened the tracker before its workspace delivered it: the
+            // delivery is thousands of changes the window lacks, all at once.
+            const ISSUES: usize = 2_000;
+            let tracker = |want: &DocumentCheckout, store: &ResourceStore| {
+                let mut peer = store.with(&want.id, |doc| doc.clone().fork()).unwrap();
+                let issues = peer
+                    .put_object(automerge::ROOT, "issues", automerge::ObjType::Map)
+                    .unwrap();
+                peer.commit();
+                for at in 0..ISSUES {
+                    let issue = peer
+                        .put_object(&issues, format!("issue-{at}"), automerge::ObjType::Map)
+                        .unwrap();
+                    let title = peer
+                        .put_object(&issue, "title", automerge::ObjType::Text)
+                        .unwrap();
+                    peer.splice_text(&title, 0, 0, &format!("Issue {at}"))
+                        .unwrap();
+                    peer.put(&issue, "status", "open").unwrap();
+                    peer.commit();
+                }
+                peer
+            };
+            let rebuilt = || automerge::work().rebuilt_changes;
+
+            let (store, want) = opened("what the window wrote first");
+            let mut peer = tracker(&want, &store);
+            let mut whole = store.with(&want.id, |doc| doc.clone()).unwrap();
+            whole.merge(&mut peer).unwrap();
+            let heads = peer.get_heads();
+            let mut sync = DocumentSync::new();
+            let before = rebuilt();
+            assert!(
+                sync.merge_delivered(&store, &want, DocumentMutation::Snapshot(peer.save()), heads)
+                    .unwrap()
+            );
+            assert_eq!(
+                rebuilt() - before,
+                0,
+                "taking in a delivered resource rebuilds none of the changes it brought"
+            );
+            let (mut merged, value) = store
+                .with(&want.id, |doc| {
+                    (doc.get_heads(), doc.committed_document().hydrate(None))
+                })
+                .unwrap();
+            let mut expected = whole.get_heads();
+            merged.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(merged, expected, "the window holds every change of both");
+            assert_eq!(
+                value,
+                whole.committed_document().hydrate(None),
+                "the window reads as the two merged whole"
+            );
+            assert!(sync.take_outbound(&store, &want.id).unwrap().is_none());
+
+            // A peer's resource merged without its heads is noted change by change: none of
+            // them goes back, and none is rebuilt to tell them.
+            let (store, want) = opened("ours");
+            let mut sync = DocumentSync::new();
+            let first = sync.take_outbound(&store, &want.id).unwrap().unwrap();
+            sync.advance(first.heads);
+            let mut peer = tracker(&want, &store);
+            let before = rebuilt();
+            assert!(
+                sync.merge(&store, &want, DocumentMutation::Snapshot(peer.save()))
+                    .unwrap()
+            );
+            assert_eq!(rebuilt() - before, 0);
+            assert!(
+                sync.take_own(&store, &want.id).unwrap().is_none(),
+                "every change the peer sent is noted as the peer's"
+            );
+        }
     }
 }

@@ -368,12 +368,13 @@ compared wall-clock times of a change into a long history and a short one,
 so a loaded machine could fail them. `automerge::work()` returns what this
 thread has done: the document ops an apply stepped over one at a time
 (`walk_list`, `MapWalker::next_doc_op`), the `id_ctr` slabs searches for an
-op by its id may have decoded (`OpSet::get_op_id_pos`), and the changes
-ancestry walks visited (`ChangeGraph::traverse_ancestors`). The tests compare
+op by its id may have decoded (`OpSet::get_op_id_pos`), the changes
+ancestry walks visited (`ChangeGraph::traverse_ancestors`), and the changes
+rebuilt from the op set (`ChangeCollector::from_build_meta_inner`). The tests compare
 those counts. A count is one thread-local add next to work that decodes an
 op or a change, and does not change what any of these do. The marked spots
 are `TILO(work-count)` in `src/work.rs`, `batch.rs`, `op_set.rs`,
-`change_graph.rs` and `lib.rs`.
+`change_graph.rs`, `collector.rs` and `lib.rs`.
 
 # Tilo change: the fork's own tests run in CI
 

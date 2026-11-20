@@ -2965,10 +2965,15 @@ impl ResourceStore {
             // delivered change, so the merge's applied changes are listed,
             // and so are the ones still waiting for history this replica
             // lacks. Neither is ever sent back on the route that brought it.
+            // Told by their hashes alone: rebuilding every change the merge brought (a
+            // newcomer's window takes in a tracker of thousands of them at once) decoded each
+            // of their ops again, seconds on a page, for hashes the graph holds.
             let mut observed = candidate
-                .get_changes(&before)
-                .into_iter()
-                .map(|change| change.hash())
+                .committed_document()
+                .change_hashes()
+                .iter()
+                .filter(|hash| !local.has_change(hash))
+                .copied()
                 .collect::<Vec<_>>();
             observed.extend(delivered);
             if let collab_types::DocumentMutation::Incremental(bytes) = &mutation {
