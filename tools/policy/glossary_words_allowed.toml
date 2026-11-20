@@ -1747,3 +1747,14 @@ paths = ["crates/system/fs/tests/workspace_ladder.rs", "crates/system/fs/tests/n
 reason = "The workspace tree's own vocabulary: fs_protocol keeps the tree as records (its own record and one per chunk), the tree travels as the workspace's Files record, and the daemon, its tests and the standalone runtime name them so."
 words = ["record"]
 paths = ["crates/system/fs/src/main.rs", "crates/system/fs/src/namespace*", "crates/system/fs/tests/native_tier1.rs", "crates/system/fs/tests/workspace_ladder.rs", "crates/runtime/tilo-runtime/src/standalone/*"]
+
+[[allow]]
+reason = "The mail servers an account names in its settings (`imap_host`, `smtp_host`) and the names its listing answers them under (`incoming_host`, `outgoing_host`), as mail programs and the account listing call them; and the tests' name for the device whose workspaces a holder serves (`test_host`, `TestHost`)."
+words = ["host"]
+identifiers = ["imap_host", "smtp_host", "incoming_host", "outgoing_host", "test_host", "TestHost"]
+paths = [
+    "apps/mail/src/app/host_mail.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/person_settings.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/person_settings/person_mail.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/actions/host/mail_sign_in_tests.rs",
+]

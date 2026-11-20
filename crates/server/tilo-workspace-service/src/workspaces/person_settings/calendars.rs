@@ -278,6 +278,11 @@ struct Kept {
     synced_at_ms: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     problem: Option<String>,
+    /// The mail account whose service this calendar is, where it was kept
+    /// with one ([`add_service`]): none for an account the person added
+    /// alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mail_account: Option<String>,
     /// By the calendar's address.
     #[serde(default)]
     calendars: BTreeMap<String, KeptCalendar>,
@@ -668,6 +673,59 @@ fn add(root: &Path, reach: &Reach, adding: Add) -> Result<AccountView, String> {
     Ok(view(root, &account))
 }
 
+/// A calendar account kept as the service of a mail account of the same
+/// person's: the server it signs in to and the sign-in the two share.
+pub(super) struct Service {
+    pub server_url: String,
+    pub username: String,
+    pub password: String,
+    pub name: String,
+    /// The mail account it is a service of.
+    pub mail_account: String,
+}
+
+/// Keep the calendar account `service` through the same path a person's own
+/// add takes, and keep beside what is kept of it the mail account it
+/// belongs to. Answers the calendar account's id, which the mail account
+/// keeps for it.
+pub(super) fn add_service(root: &Path, reach: &Reach, service: Service) -> Result<String, String> {
+    let name = if service.name.trim().is_empty() {
+        service.username.clone()
+    } else {
+        service.name
+    };
+    let kept = add(
+        root,
+        reach,
+        Add {
+            server_url: service.server_url,
+            username: service.username,
+            password: service.password,
+            name: Some(name),
+            read_only: false,
+        },
+    )?;
+    let mut state = read_kept(root, &kept.id);
+    state.mail_account = Some(service.mail_account);
+    write_kept(root, &kept.id, &state)?;
+    Ok(kept.id)
+}
+
+/// Whether the calendar account `account` is kept here.
+pub(super) fn is_kept(root: &Path, account: &str) -> bool {
+    accounts_at(root).iter().any(|kept| kept.id == account)
+}
+
+/// The calendar account kept as the service of the mail account `account`,
+/// by what is kept of each: what is asked when the mail account's own
+/// settings name none.
+pub(super) fn linked_to(root: &Path, account: &str) -> Option<String> {
+    accounts_at(root)
+        .into_iter()
+        .find(|calendar| read_kept(root, &calendar.id).mail_account.as_deref() == Some(account))
+        .map(|calendar| calendar.id)
+}
+
 /// Add an account with the sign-in the vault item `adding` names keeps:
 /// a login that belongs to the server's own origin, and to nothing else.
 fn add_with_item(
@@ -704,18 +762,26 @@ fn add_with_item(
 }
 
 fn remove(root: &Path, account: &str) -> Result<Listed, String> {
-    if !accounts_at(root).iter().any(|kept| kept.id == account) {
-        return Err("That calendar account is not kept here".into());
-    }
-    // The account, its sign-in and who was named for it go together.
-    super::remove_mail(root, account)?;
-    let _ = std::fs::remove_file(kept_at(root, account));
+    remove_account(root, account)?;
     Ok(Listed {
         accounts: accounts_at(root)
             .iter()
             .map(|account| view(root, account))
             .collect(),
     })
+}
+
+/// Remove `account`, its sign-in and what was kept of it: what removing a
+/// calendar account alone does, and what a mail account's removal does for
+/// the calendar kept as its service ([`super::remove_mail`]).
+pub(super) fn remove_account(root: &Path, account: &str) -> Result<(), String> {
+    if !accounts_at(root).iter().any(|kept| kept.id == account) {
+        return Err("That calendar account is not kept here".into());
+    }
+    // The account, its sign-in and who was named for it go together.
+    super::remove_mail(root, account)?;
+    let _ = std::fs::remove_file(kept_at(root, account));
+    Ok(())
 }
 
 /// Bring the copies of `accounts` up to date when they are older than a

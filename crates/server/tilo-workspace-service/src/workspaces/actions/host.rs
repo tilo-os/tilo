@@ -1293,6 +1293,8 @@ mod kept_asks_tests;
 mod mail_assistant_tests;
 #[cfg(test)]
 mod mail_reach_tests;
+#[cfg(all(test, feature = "agents"))]
+mod mail_sign_in_tests;
 #[cfg(test)]
 mod mail_turn_tests;
 #[cfg(test)]

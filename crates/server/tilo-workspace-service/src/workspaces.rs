@@ -992,6 +992,10 @@ struct WorkspacesInner {
     /// one ([`repaired_documents`]).
     #[cfg(feature = "agents")]
     repairs: repaired_documents::Repairs,
+    /// Where iCloud accounts' calendars are kept, where a test's calendar
+    /// server stands in for iCloud's own ([`person_settings`]).
+    #[cfg(all(feature = "agents", any(test, feature = "test-support")))]
+    icloud_calendars_at: std::sync::RwLock<Option<String>>,
     /// What members asking for content are answered from.
     content: content::ContentSlot,
     /// Channel access requests and commits of members waiting for the device's
@@ -1239,6 +1243,8 @@ impl Workspaces {
                 telling: person_telling::Telling::default(),
                 #[cfg(feature = "agents")]
                 repairs: repaired_documents::Repairs::default(),
+                #[cfg(all(feature = "agents", any(test, feature = "test-support")))]
+                icloud_calendars_at: std::sync::RwLock::default(),
                 content: content::ContentSlot::default(),
                 channel_notices: std::sync::Mutex::default(),
                 queued_admissions: std::sync::Mutex::default(),

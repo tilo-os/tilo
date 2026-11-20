@@ -338,7 +338,23 @@ impl HostMail {
         match call.get() {
             Arrival::Ready(InvocationUpdate::Item { value, .. }) => {
                 match <MailAccounts as serde::Deserialize>::deserialize(value) {
-                    Ok(accounts) => self.accounts = Some(accounts),
+                    Ok(mut accounts) => {
+                        // An account whose person turned its mail off feeds
+                        // another app alone: this window is not shown it.
+                        accounts.accounts.retain(|account| account.services.mail);
+                        if !accounts
+                            .accounts
+                            .iter()
+                            .any(|account| account.id == accounts.active)
+                        {
+                            accounts.active = accounts
+                                .accounts
+                                .first()
+                                .map(|account| account.id.clone())
+                                .unwrap_or_default();
+                        }
+                        self.accounts = Some(accounts);
+                    }
                     Err(error) => {
                         tracing::warn!(%error, "mail: the host's accounts are not readable");
                     }
@@ -941,6 +957,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use serde_json::json;
+    use ui::tilo_actions::remote::person_accounts::Services;
     use ui::tilo_actions::remote::{
         ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
         InvocationReceipt, InvocationState, InvokeRequest, Pending as HostPending, ReceiptStatus,
@@ -1209,6 +1226,39 @@ mod tests {
         assert_eq!(fetched.1.messages[0].subject, "Hello");
         assert_eq!(fetched.1.messages[0].from.email, "ada@example.test");
         assert_eq!(fetched.1.messages[0].server.map(|at| at.uid), Some(42));
+    }
+
+    /// An account whose person turned its mail off feeds another app alone:
+    /// the window is shown the accounts that feed mail, and chooses one of
+    /// them.
+    #[test]
+    fn a_window_reads_no_account_whose_mail_is_off() {
+        let mut calendar_only = adas_account();
+        calendar_only.id = "ada@calendar.example.test".into();
+        calendar_only.address = "ada@calendar.example.test".into();
+        calendar_only.incoming_host = String::new();
+        calendar_only.services = Services {
+            mail: false,
+            calendar: true,
+            files: false,
+        };
+        let serving = Arc::new(Keeping::of(vec![calendar_only, adas_account()]));
+        let _served = RemoteActions::enter(serving, Caller::local_person("ada"));
+        let (_, mut mail) = engine(tilo_content::ContentStore::memory());
+
+        let listed = taken_accounts(&mut mail);
+        assert_eq!(
+            listed
+                .accounts
+                .iter()
+                .map(|account| account.id.as_str())
+                .collect::<Vec<_>>(),
+            ["ada@example.test"]
+        );
+        assert_eq!(
+            listed.active, "ada@example.test",
+            "the active account is one that feeds mail"
+        );
     }
 
     /// A window scrolled past its oldest message asks the host for the page

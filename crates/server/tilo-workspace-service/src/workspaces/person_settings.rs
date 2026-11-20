@@ -53,6 +53,12 @@ use tilo_user_identity::DeviceCert;
 use super::person_models::kept_location;
 use super::{Workspaces, system_time};
 
+mod person_mail;
+use person_mail::{
+    answers_in_public, kept_mail, linked_calendar, mail_accounts, provider_of_servers,
+    remove_calendar,
+};
+
 /// A person's calendars, kept beside their mail accounts.
 #[cfg(feature = "agents")]
 pub(in crate::workspaces) mod calendars;
@@ -589,24 +595,14 @@ impl Workspaces {
         {
             return Err(ActionCallError::Refused { reason });
         }
+        // What changes the accounts a person keeps is answered before the
+        // rest: finding servers, adding an account, saying what it feeds and
+        // removing it.
+        if let Some(answered) = self.person_mail_action(&root, request).await? {
+            return Ok(answered);
+        }
         match request.target.address.action.as_str() {
             person_accounts::LIST => answer(&mail_accounts(&root)),
-            person_accounts::ADD_MAIL => {
-                let adding: AddMailAccount = argument(request, "an account to add")?;
-                let kept = add_mail_with(self.account_tester(), &root, adding).await;
-                if kept.is_ok() {
-                    self.person_settings_changed();
-                }
-                answer(&kept)
-            }
-            person_accounts::REMOVE => {
-                let account = account_argument(request)?;
-                let kept = remove_mail(&root, &account);
-                if kept.is_ok() {
-                    self.person_settings_changed();
-                }
-                answer(&kept)
-            }
             person_accounts::FETCH => {
                 let asking: FetchMail = argument(request, "a folder to read")?;
                 answer(&fetch_with(self.mail_session(), &root, asking).await)
@@ -754,73 +750,6 @@ pub(super) fn credentials(root: &Path) -> Result<accounts::AccountCredentials, S
     accounts::AccountCredentials::open_in(root)
 }
 
-/// The mail accounts the person keeps, without their secrets.
-fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
-    let store = accounts::AccountStore::load_in(root);
-    let vault = credentials(root)?;
-    Ok(MailAccounts {
-        accounts: store
-            .list(&accounts::AccountTypeId::from(accounts::email::TYPE_ID))
-            .into_iter()
-            .map(|account| MailAccount {
-                id: account.id.to_string(),
-                address: account
-                    .config
-                    .get("email")
-                    .and_then(Value::as_str)
-                    .unwrap_or(account.id.as_str())
-                    .to_owned(),
-                display_name: account.display_name.clone(),
-                incoming_host: field(account, "imap_host"),
-                incoming_port: port(account, "imap_port", 993),
-                outgoing_host: field(account, "smtp_host"),
-                outgoing_port: port(account, "smtp_port", 465),
-                has_secret: vault
-                    .get_for(account)
-                    .is_some_and(|secret| !secret.password.is_empty()),
-                identities: accounts::email::AccountConfig::from_value(account.config.clone())
-                    .map_or_else(
-                        |error| {
-                            tracing::warn!(
-                                account = %account.id,
-                                %error,
-                                "mail: an account's settings do not read, so it is listed with \
-                                 no other addresses it sends as"
-                            );
-                            Vec::new()
-                        },
-                        |config| config.identities,
-                    ),
-                ..MailAccount::default()
-            })
-            .collect(),
-        active: store
-            .active_id(&accounts::AccountTypeId::from(accounts::email::TYPE_ID))
-            .map(ToString::to_string)
-            .unwrap_or_default(),
-        signing_in: Vec::new(),
-        signs_in_with: Vec::new(),
-    })
-}
-
-fn field(account: &accounts::Account, name: &str) -> String {
-    account
-        .config
-        .get(name)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned()
-}
-
-fn port(account: &accounts::Account, name: &str, default: u16) -> u16 {
-    account
-        .config
-        .get(name)
-        .and_then(Value::as_u64)
-        .and_then(|port| u16::try_from(port).ok())
-        .unwrap_or(default)
-}
-
 /// Add `adding` once `tester` saw its server accept its sign-in: the secret
 /// into the person's vault first, then the account into the shared store, so
 /// an account never shows without the sign-in it needs. A test's tester
@@ -866,7 +795,19 @@ pub(super) async fn add_mail_with(
     } else {
         config.display_name.clone_into(&mut account.display_name);
     }
-    account.config = config.to_value().map_err(|error| error.to_string())?;
+    // Who provides the account, and which of its services its person uses:
+    // what every later reading answers and what Mail reads it by.
+    let provider = provider_of_servers(&config.imap_host, &config.smtp_host);
+    let mut settings = config.to_value().map_err(|error| error.to_string())?;
+    if let Value::Object(settings) = &mut settings {
+        settings.insert("provider".into(), Value::String(provider.key().to_owned()));
+        settings.insert(
+            "services".into(),
+            serde_json::to_value(adding.services.within(provider))
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    account.config = settings;
 
     if !adding.password.is_empty() {
         let checking = account.clone();
@@ -881,17 +822,15 @@ pub(super) async fn add_mail_with(
     let mut store = accounts::AccountStore::load_in(root);
     store.upsert(account.clone());
     store.save_in(root).map_err(|error| error.to_string())?;
-    let kept = mail_accounts(root)?;
-    kept.accounts
-        .into_iter()
-        .find(|kept| kept.id == account.id.as_str())
-        .ok_or_else(|| "the account was kept but did not read back".to_owned())
+    kept_mail(root, account.id.as_str())
 }
 
-/// Remove `account` and its secret together.
+/// Remove `account` and its secret together, and the calendar account kept
+/// as its service where it has one.
 fn remove_mail(root: &Path, account: &str) -> Result<MailAccounts, String> {
     let mut store = accounts::AccountStore::load_in(root);
     let id = accounts::AccountId::from(account.to_owned());
+    let linked = store.get(&id).and_then(|kept| linked_calendar(root, kept));
     if !store.remove(&id) {
         return Err("That account is not kept here".into());
     }
@@ -904,6 +843,17 @@ fn remove_mail(root: &Path, account: &str) -> Result<MailAccounts, String> {
     let mut named = assistants(root);
     if named.remove(account).is_some() {
         write_assistants(root, &named)?;
+    }
+    // The calendars kept as its service go with it.
+    if let Some(calendar) = &linked
+        && let Err(why) = remove_calendar(root, calendar)
+    {
+        tracing::warn!(
+            calendar = %calendar,
+            account,
+            %why,
+            "mail: a removed account's calendar account could not be removed"
+        );
     }
     mail_accounts(root)
 }

@@ -52,7 +52,7 @@ use tilo_actions::remote::{
 };
 use tilo_lock::MutexRecover as _;
 
-use super::{argument, remove_mail, say_assistant};
+use super::{answers_in_public, argument, remove_mail, say_assistant};
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::{CARRIED_OUT, HostedTurn, KeepersTurn, NOTHING_WAITS};
 
@@ -323,13 +323,6 @@ fn named_server(said: &str, usual: u16) -> Option<Server> {
         return None;
     };
     (port != 0 && is_server_name(name)).then(|| Server::new(name, port))
-}
-
-/// Whether every address `name` answers with is on the public internet. A
-/// name nobody answers for is asked nothing either. Looks the name up, so it
-/// is called off the threads that carry out turns.
-fn answers_in_public(name: &str) -> bool {
-    tilo_account_probe::imap::Reach::public().takes(name)
 }
 
 /// The server that refused the password, where `why` is a mail server's
