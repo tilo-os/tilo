@@ -348,8 +348,6 @@ mod renewal;
 #[cfg(target_os = "linux")]
 mod resource_index;
 #[cfg(target_os = "linux")]
-mod resource_reads;
-#[cfg(target_os = "linux")]
 pub mod restart;
 #[cfg(target_os = "linux")]
 mod restore;

@@ -990,37 +990,6 @@ impl Engine {
         }))
     }
 
-    /// The revision `workspace`'s `app`'s `document` stands at for the reader this device is,
-    /// decided as [`Self::read_resource`] decides it but reading nothing out: `None` while the
-    /// document is not here yet, or only a read decides it (this device's own writes the replica
-    /// has not taken in yet).
-    ///
-    /// # Errors
-    /// As [`Self::read_resource`].
-    pub fn document_revision(
-        &self,
-        workspace: &str,
-        app: &str,
-        document: &str,
-    ) -> Result<Option<[u8; 32]>, String> {
-        if self.own_writes(workspace, app, document).is_some() {
-            return Ok(None);
-        }
-        let own = self.identity.device_cert.device_public_key;
-        Ok(self
-            .opened(workspace, (app, document), &mut |workspace, open, kept| {
-                self.owner.with_current(workspace, |view| {
-                    view.document_revision(
-                        Admission::of(view, own).reader(own),
-                        (app, document),
-                        tilo_clock::wall(),
-                        History { open, kept },
-                    )
-                })
-            })?
-            .flatten())
-    }
-
     /// A digest of what this device's replica admitted of `workspace`'s `app`'s `document`, sealed
     /// or in the clear, reading and opening nothing: equal at two moments, nothing was admitted
     /// to it between them, so a reader that read it at the first need not read it again. `None`
@@ -1394,36 +1363,6 @@ impl Engine {
     #[must_use]
     pub fn arrivals(&self) -> Arc<crate::arrivals::Arrivals> {
         Arc::clone(&self.arrivals)
-    }
-
-    /// Whether `certificate`'s holder reads `app`'s `record` in `workspace` here now: the workspace
-    /// is held with this device's ownership of it, its people certify the caller, and the caller's
-    /// device is one the workspace's policy lets read the record.
-    /// # Errors
-    /// The workspace is not held here, this device has no ownership of it, or the caller may not
-    /// read the record now.
-    pub fn authorizes_read(
-        &self,
-        workspace: &str,
-        certificate: &tilo_user_identity::DeviceCert,
-        app: &str,
-        record: &str,
-    ) -> Result<(), String> {
-        use tilo_broker_core::owner_service::OwnerService as _;
-        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        self.check_ownership(&self.owner, workspace)?;
-        let reader = certificate.device_public_key;
-        self.owner.with_current(workspace, |view| {
-            let certified = view.peer().certificates().iter().any(|held| {
-                held.device_public_key == certificate.device_public_key
-                    && held.user_public_key == certificate.user_public_key
-            });
-            if !certified {
-                return Err("the reader is no device the workspace certifies".to_owned());
-            }
-            view.peer()
-                .check_document_read(reader, app, record, tilo_clock::wall())
-        })
     }
 
     /// A live local document read check for consumers of cached copies.

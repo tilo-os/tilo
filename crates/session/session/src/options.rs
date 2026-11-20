@@ -264,7 +264,7 @@ pub(crate) fn start_collaboration(
     crate::broker_services::HeldResources,
 ) {
     // What the broker reads its workspaces' resources from.
-    let reads = crate::broker_services::document_reads(service.clone(), engine.as_ref());
+    let reads = crate::broker_services::document_reads(service.clone());
     // Where apps write and read their resources: the service's store, which alone holds them.
     let resources = crate::broker_services::resources(service.clone());
     let founding = engine.clone();
