@@ -6495,6 +6495,31 @@ outputs = ["/target/peer-kill-midwrite/state/logs/*.log", "/target/peer-kill-mid
 evidence = ["/target/peer-kill-midwrite/state/logs/**"]
 timeout_secs = 1800
 
+# A holder that runs for a long time under a large change stays responsive: on a fresh stack from
+# tilo-sh-programs' one build (test-peer-kill-midwrite.sh long), files are written, rewritten,
+# renamed and removed in a mounted folder for 20 minutes, tens of thousands of them, while
+# `tilo status` and `tilo ls` are asked every second; each must answer within 10 seconds, none
+# may say the background sync is busy, and the tree must then reach the workspace whole.
+[[check]]
+name = "peer-long-change"
+# Not a default check: it runs for 20 minutes of a stack.
+default = false
+# No egress: the holder and the stack meet on loopback alone.
+run = "bash os/containers/tilo-sh/test-peer-kill-midwrite.sh /target/peer-long-change long"
+needs = ["tilo-sh-programs", "lounge-fonts", "tilo-sh-caddy"]
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh-programs", TILO_SH_FONTS = "/target/publish/lounge/fonts", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy" }
+requires = ["arch=x86_64", "/dev/fuse"]
+isolation = "nested"
+# The stack lays the server's context out itself, from the apps' history (lounge-context.sh).
+git = true
+outputs = ["/target/peer-long-change/state/logs/*.log", "/target/peer-long-change/state/logs/kill-midwrite/*.log"]
+# What a failure keeps of why: every service's log, the holder's and the run's.
+evidence = ["/target/peer-long-change/state/logs/**"]
+timeout_secs = 3000
+
 # A git checkout of this repository into a mounted folder runs at the files a second it must
 # and survives its holder ending halfway: on a fresh stack from tilo-sh-programs' one build
 # (test-peer-kill-midwrite.sh git), the whole checkout is timed from git's progress, then

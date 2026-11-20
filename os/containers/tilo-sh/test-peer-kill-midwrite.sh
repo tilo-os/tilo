@@ -9,15 +9,17 @@
 # The script starts inside a user namespace where it is root, because a folder is mounted with
 # FUSE, as test-peer-handover.sh says.
 #
-# usage: test-peer-kill-midwrite.sh WORK [files|git]
+# usage: test-peer-kill-midwrite.sh WORK [files|git|long]
 #
 # With `git`, the write is a checkout of this repository instead (peer-git-midwrite.sh): timed,
-# and ended halfway by SIGKILL, a newer program's holder and SIGTERM.
+# and ended halfway by SIGKILL, a newer program's holder and SIGTERM. With `long`, one holder
+# lives under a change that goes on for many minutes (peer-long-change.sh), and `tilo status` and
+# `tilo ls` must answer within seconds the whole time.
 #
 # WORK keeps the stack's state (WORK/state) and its logs (WORK/state/logs, the write's among
 # them). From the environment: what test-peer-handover.sh reads.
 set -euo pipefail
-usage='usage: test-peer-kill-midwrite.sh WORK [files|git]'
+usage='usage: test-peer-kill-midwrite.sh WORK [files|git|long]'
 work=${1:?$usage}
 write=${2:-files}
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -50,10 +52,11 @@ stack up >/dev/null || die 'the stack did not come up'
 case $write in
   files) script=peer-kill-midwrite.sh ;;
   git) script=peer-git-midwrite.sh ;;
+  long) script=peer-long-change.sh ;;
   *) die "$usage" ;;
 esac
 mkdir -p "$TILO_SH_STATE/logs/kill-midwrite"
 unshare --user --map-root-user --mount -- env "TILO=$programs/tilo" "REPO=$repo" \
-  "TILO_KILL_LOGS=$TILO_SH_STATE/logs/kill-midwrite" \
+  "TILO_KILL_LOGS=$TILO_SH_STATE/logs/kill-midwrite" "TILO_LONG_LOGS=$TILO_SH_STATE/logs/kill-midwrite" \
   bash "$here/integration/$script" \
   || die "the $write write did not survive its holder ending (above)"
