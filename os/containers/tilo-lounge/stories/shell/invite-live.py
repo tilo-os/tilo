@@ -82,6 +82,12 @@ def stand_in(one: Person, workspace: str) -> None:
           lambda: (front(one) or {}).get("id") == workspace, 60, 0.25)
 
 
+def holds(one: Person, text: str) -> bool:
+    """Whether `one`'s computer keeps `text` in a Notes record: the bytes on its disk."""
+    return any(text.encode() in path.read_bytes()
+               for path in one.state.rglob("*.automerge") if NOTES in str(path))
+
+
 def name_self(one: Person, name: str) -> None:
     """Give `one` the name `name` as a person does: their own face in the top bar opens their
     profile card, whose field asks for the name. Read back off the top bar and the identity record
@@ -225,6 +231,54 @@ def steps(story: Story) -> None:
         story.note("before", before)
 
     story.step("Grace follows Ada", grace_follows)
+
+    def ada_starts_note():
+        ada.session.launch("notes")
+        ada.session.answering("notes", deadline=120)
+        ada.press("New note", "Notes' New note on Ada's shell", deadline=30)
+        # Following Ada, Grace is shown what Ada works in: Notes, as her people list says Ada is.
+        workspace = shared["id"]
+        own, _ = peers(ada, workspace)
+
+        def grace_shown():
+            _, rows = peers(grace, workspace)
+            ada_row = next((r for r in rows if r.get("publisher") == own.get("publisher")), {})
+            focus = (ada_row.get("focus") or {}).get("app")
+            on_screen = any(w.get("app_id") == NOTES for w in grace.session.windows())
+            return focus == NOTES and on_screen
+
+        try:
+            until("Ada's Notes on Grace's screen", grace_shown, 15, 0.2)
+        finally:
+            story.note("grace-windows-at-note", grace.session.windows())
+            story.note("grace-peers-at-note", (grace.session.state_dump() or {}).get("peers"))
+            story.note("grace-controls-at-note", grace.names())
+
+    story.step("Ada opens Notes and starts a note", ada_starts_note)
+
+    words = f"Seeds for spring {int(time.time()) % 100000:05d}"
+    typed = {}
+
+    def ada_types():
+        for ch in words:
+            ada.session.type(ch)
+            time.sleep(0.08)
+        typed["last"] = time.monotonic()
+        until("Ada's words in Ada's note", lambda: holds(ada, words), 15, 0.1)
+
+    story.step("Ada types a line in the note", ada_types, people=[ada])
+
+    def grace_sees():
+        until("Ada's words on Grace's computer", lambda: holds(grace, words), 30, 0.05)
+        took = (time.monotonic() - typed["last"]) * 1000
+        story.timing("Ada's words on Grace's computer, after Ada's last key", took)
+        try:
+            until("Ada's words on Grace's screen", lambda: grace.shows(words), 10, 0.1)
+        finally:
+            story.note("grace-controls-at-words", grace.names())
+        return {"tookMs": took}
+
+    story.step("Grace sees Ada’s words", grace_sees)
 
 
 if __name__ == "__main__":
