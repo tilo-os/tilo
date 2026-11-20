@@ -167,6 +167,8 @@ impl AccountsModel {
         self.server.set(String::new());
         self.incoming.set(String::new());
         self.outgoing.set(String::new());
+        self.incoming_port.set("993".into());
+        self.outgoing_port.set("465".into());
         self.username.set(String::new());
     }
 
@@ -1197,6 +1199,29 @@ mod tests {
     /// Google signs in on its own page: the page asks the server to begin
     /// with what the person chose to use the account for, and nothing it
     /// sends carries a password.
+    /// A cancelled step leaves nothing typed for the next: the servers, ports
+    /// and password start over, so another account never inherits them.
+    #[test]
+    fn a_cancelled_step_starts_the_next_one_over() {
+        en();
+        let provider = provider(None);
+        let mut accounts = model(&provider);
+        accounts
+            .apply(PersonSettingsEffect::ChooseProvider {
+                provider: "other".into(),
+            })
+            .unwrap();
+        accounts.incoming.set("imap.example.test".into());
+        accounts.incoming_port.set("29124".into());
+        accounts.outgoing_port.set("29125".into());
+        accounts.password.set("secret".into());
+        accounts.apply(PersonSettingsEffect::CancelAdding).unwrap();
+        assert_eq!(accounts.incoming.get(), "");
+        assert_eq!(accounts.incoming_port.get(), "993");
+        assert_eq!(accounts.outgoing_port.get(), "465");
+        assert_eq!(accounts.password.get(), "");
+    }
+
     #[test]
     fn google_signs_in_on_its_own_page() {
         en();
