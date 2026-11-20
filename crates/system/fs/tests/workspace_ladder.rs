@@ -48,6 +48,8 @@ use iroh::{Endpoint, endpoint::presets, protocol::Router};
 
 const SMALL_BYTES: u64 = 4096;
 const RANGE_BYTES: u64 = 1024 * 1024;
+/// Hydration's request granularity: what one range read may fetch at most.
+const FETCH_BOUND: u64 = 64 * 1024 * 1024;
 const BLOCK: usize = 8 * 1024 * 1024;
 
 fn env_u64(name: &str, default: u64) -> u64 {
@@ -484,13 +486,13 @@ async fn a_workspace_on_a_size_ladder() {
     let base = bench_dir();
     let mut measured = Vec::new();
     for total_mib in rungs {
-        let rung = measure_rung(
+        let rung = Box::pin(measure_rung(
             &base,
             total_mib,
             huge_files,
             dir_entries,
             env_u64("TILO_FS_LADDER_SMALL_FILES", total_mib.saturating_mul(4)),
-        )
+        ))
         .await;
         summary(&rung);
         measured.push(rung);
@@ -588,7 +590,6 @@ fn assert_work_is_flat(rungs: &[Rung]) {
         );
         // Reading two ranges fetches at most hydration's request granularity each, whatever
         // the workspace's size.
-        const FETCH_BOUND: u64 = 64 * 1024 * 1024;
         assert!(
             rung.fetched_bytes <= FETCH_BOUND,
             "reading {} B of ranges at {} MiB fetched {} B",
