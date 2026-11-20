@@ -230,7 +230,7 @@ impl RecentTarget {
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    tracing::warn!(%error, "could not read the recent terminal environment")
+                    tracing::warn!(%error, "could not read the recent terminal environment");
                 }
             }
         }

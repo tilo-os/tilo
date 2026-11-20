@@ -16,18 +16,17 @@ use tilo_sort::CompactSort as _;
 use automerge::AutoCommit;
 use vello::kurbo::{Point, Rect};
 
+use ui::framework::{Dispatcher, Submit, WorkspaceResource};
 use ui::icons::Icon;
 use ui::widget::toast::ToastKind;
 
 use crate::account::AccountStore;
-use ui::framework::Dispatcher;
 
 use crate::actions::{IngestBaseline, ServerUpdate};
 use crate::engine::EngineRequest;
 use crate::message_states::MessageStates;
 use crate::model::{AccountConfig, Draft, Folder, Mailbox, MessageId, Thread};
 use crate::resource::{Mail, mailbox};
-use ui::framework::Submit;
 
 pub type Shared = Rc<RefCell<MailState>>;
 
@@ -328,7 +327,7 @@ impl MailState {
             || self
                 .workspace_copies
                 .as_ref()
-                .is_some_and(|record| record.may_read())
+                .is_some_and(WorkspaceResource::may_read)
     }
 
     pub(crate) fn purge_workspace_messages(&mut self, ids: &std::collections::HashSet<MessageId>) {
@@ -383,7 +382,8 @@ impl MailState {
         self.sender_trust.as_ref().is_none_or(|opener| {
             opener
                 .open(crate::trusted_senders::DOCUMENT)
-                .is_some_and(|record| record.may_read())
+                .as_ref()
+                .is_some_and(WorkspaceResource::may_read)
         }) && self.remote_senders.contains(&address.to_ascii_lowercase())
     }
 
@@ -393,7 +393,7 @@ impl MailState {
         };
         let current = opener
             .open(crate::trusted_senders::DOCUMENT)
-            .filter(|record| record.may_read())
+            .filter(WorkspaceResource::may_read)
             .and_then(|record| record.try_get())
             .map_or_else(Default::default, |state| state.addresses());
         if current != self.remote_senders {
@@ -438,7 +438,7 @@ impl MailState {
         if let Some(opener) = &self.sender_trust {
             let record = opener
                 .open(DOCUMENT)
-                .filter(|record| record.may_read())
+                .filter(WorkspaceResource::may_read)
                 .ok_or("the workspace sender list is unavailable")?;
             let change = if trust {
                 TrustedSenders::TRUST.with(sender)

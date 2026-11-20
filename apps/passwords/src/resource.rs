@@ -129,7 +129,7 @@ fn answer_effects(
                 }
             }
             let vault = crate::workspace_vault::WorkspaceVault::new(opener.clone());
-            let imported = vault.import_device_vault(migration.as_ref(), cx.invoker())?;
+            let imported = vault.import_device_vault(migration.as_ref(), cx.invoker().as_ref())?;
             answer.borrow_mut().refresh();
             return Ok(Effected::value(serde_json::json!({ "imported": imported })));
         }

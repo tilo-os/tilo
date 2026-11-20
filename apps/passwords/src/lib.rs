@@ -144,7 +144,7 @@ impl PasswordsModel {
     }
     fn credential_owner(&self) -> Option<&CredentialOwner> {
         match &self.store {
-            Some(Vault::Shared(owner)) | Some(Vault::Workspace(_, Some(owner))) => Some(owner),
+            Some(Vault::Shared(owner) | Vault::Workspace(_, Some(owner))) => Some(owner),
             _ => None,
         }
     }

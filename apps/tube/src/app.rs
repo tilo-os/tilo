@@ -13,7 +13,9 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::framework::{Actions, Dispatcher, Effected, Live, Publishes, ResourceOpener, ViewCx};
+use ui::framework::{
+    Actions, Dispatcher, Effected, Live, Publishes, ResourceOpener, ViewCx, WorkspaceResource,
+};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -464,7 +466,7 @@ impl Tube {
         let edited = if let Some(opener) = &self.history {
             opener
                 .open(crate::history::DOCUMENT)
-                .filter(|record| record.may_read())
+                .filter(WorkspaceResource::may_read)
                 .ok_or_else(|| "the workspace watch history is unavailable".to_owned())
                 .and_then(|record| {
                     record
@@ -525,7 +527,7 @@ impl Tube {
         };
         let (stored, positions) = opener
             .open(crate::history::DOCUMENT)
-            .filter(|record| record.may_read())
+            .filter(WorkspaceResource::may_read)
             .map(|record| {
                 let history = record.get();
                 (history.videos(), history.positions())
@@ -543,7 +545,7 @@ impl Tube {
         match (&self.history, &self.local_history) {
             (Some(opener), _) => opener
                 .open(crate::history::DOCUMENT)
-                .filter(|record| record.may_read())
+                .filter(WorkspaceResource::may_read)
                 .map(|record| record.get().positions())
                 .unwrap_or_default(),
             (None, Some(replica)) => replica

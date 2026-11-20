@@ -23,6 +23,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resources the app draws: their types, verbs and typed action arguments.
 disk-usage-model = { path = "../disk-usage-model" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+serde.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

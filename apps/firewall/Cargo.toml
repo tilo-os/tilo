@@ -34,6 +34,7 @@ firewall-model = { path = "../firewall-model" }
 tilo-actions = { path = "../../crates/collab/actions" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 automerge.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 vello.workspace = true

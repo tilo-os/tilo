@@ -1,4 +1,7 @@
-use super::*;
+use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+
+use super::{BulkAction, CtxAction, Intent, MailApp, NavPane};
 
 impl MailApp {
     #[allow(

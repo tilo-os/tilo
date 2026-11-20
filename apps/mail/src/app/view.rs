@@ -92,31 +92,7 @@ fn holds_account(state: &MailState, address: &str) -> bool {
         .any(|account| account.config.email == address)
 }
 
-pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
-    window.live = Some(cx.live().clone());
-    window.attach_framework(cx.dispatcher());
-    let trust = cx.resource_opener::<crate::trusted_senders::TrustedSenders>(ui::apps::MAIL);
-    let saved_copies = cx.resource_opener::<crate::copies::MailCopies>(ui::apps::MAIL);
-    let mailbox = cx.resource_opener::<Mail>(ui::apps::MAIL);
-    if cx.mode().is_live() {
-        window.wake_from_workers(cx.waker());
-        window.follow_preferences(cx.settings::<crate::resource::MailPreferences>());
-        {
-            let mut state = window.shared.borrow_mut();
-            state.sender_trust = Some(trust.clone());
-            state.sync_trusted_senders();
-        }
-        window.state().contact_directory =
-            cx.shared_person::<tilo_contact_directory::ContactDirectory>();
-        // A page keeps no accounts of its own: it reads the ones the host
-        // that runs its workspace keeps, through the host's mail session.
-        #[cfg(feature = "live")]
-        if let Some(accounts) = cx.shared_person::<PersonAccounts>() {
-            window.follow_person_accounts(accounts);
-        }
-        window.copies_opener = Some(saved_copies.clone());
-        window.open_peer_copies();
-    }
+fn carry_server_updates(cx: &ViewCx<Mail>, window: &mut MailApp) {
     // Every change the document records that a mail server does not hold
     // yet — whoever made it — goes to the server from a live window on a
     // device with the account, and the engine's acknowledgement records it
@@ -143,9 +119,9 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
         },
     );
     window.follow_projection(projection);
-    carry_owed(cx, &window);
+    carry_owed(cx, window);
     let outbox = window.server_outbox();
-    let reaches = reaches(&window);
+    let reaches = reaches(window);
     let delivery = cx.outbox(
         Mail::paths().outbox,
         move |_, outgoing: &Outgoing| reaches(&outgoing.account),
@@ -164,6 +140,34 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
         },
     );
     window.follow_delivery(delivery);
+}
+
+pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
+    window.live = Some(cx.live().clone());
+    window.attach_framework(cx.dispatcher());
+    let trust = cx.resource_opener::<crate::trusted_senders::TrustedSenders>(ui::apps::MAIL);
+    let saved_copies = cx.resource_opener::<crate::copies::MailCopies>(ui::apps::MAIL);
+    let mailbox = cx.resource_opener::<Mail>(ui::apps::MAIL);
+    if cx.mode().is_live() {
+        window.wake_from_workers(cx.waker());
+        window.follow_preferences(cx.settings::<crate::resource::MailPreferences>());
+        {
+            let mut state = window.shared.borrow_mut();
+            state.sender_trust = Some(trust.clone());
+            state.sync_trusted_senders();
+        }
+        window.state().contact_directory =
+            cx.shared_person::<tilo_contact_directory::ContactDirectory>();
+        // A page keeps no accounts of its own: it reads the ones the host
+        // that runs its workspace keeps, through the host's mail session.
+        #[cfg(feature = "live")]
+        if let Some(accounts) = cx.shared_person::<PersonAccounts>() {
+            window.follow_person_accounts(accounts);
+        }
+        window.copies_opener = Some(saved_copies.clone());
+        window.open_peer_copies();
+    }
+    carry_server_updates(cx, &mut window);
     carry_checks(cx, &mut window);
     cx.on_open(window.opener());
     let shared = window.room();
@@ -220,6 +224,10 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
             }
         });
     }
+    publish(cx, window, shared)
+}
+
+fn publish(cx: &ViewCx<Mail>, window: MailApp, shared: Rc<RefCell<Mailroom>>) -> Element {
     let (rows, row, entries, query, statuses) = (
         Rc::clone(&shared),
         Rc::clone(&shared),

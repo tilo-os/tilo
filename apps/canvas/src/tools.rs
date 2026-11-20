@@ -426,7 +426,7 @@ impl Default for Tools {
             kept: LocalState::new(None),
             shows: None,
             notice: LocalState::new(None),
-            recents: LocalState::new(Default::default()),
+            recents: LocalState::new(crate::document::DeviceArtworkRecents::default()),
             recent_workspace: Rc::from(""),
             welcomed: LocalState::new(false),
             menu: LocalState::new(String::new()),

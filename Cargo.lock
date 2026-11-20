@@ -4356,6 +4356,7 @@ version = "0.1.0"
 dependencies = [
  "disk-usage-model",
  "runtime-dylib",
+ "serde",
  "serde_json",
  "tilo-app",
  "tilo-paths",
@@ -5454,6 +5455,7 @@ dependencies = [
  "firewall",
  "firewall-model",
  "runtime-dylib",
+ "serde",
  "serde_json",
  "taffy",
  "tilo-actions",

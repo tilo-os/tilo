@@ -103,7 +103,7 @@ impl ResourceApp for App {
             .then(|| document::DeviceArtworkRecents::open(cx, &workspace));
         let tools = tools::Tools {
             recents: recents.as_ref().map_or_else(
-                || LocalState::new(Default::default()),
+                || LocalState::new(document::DeviceArtworkRecents::default()),
                 ui::framework::Setting::state,
             ),
             recent_workspace: workspace,

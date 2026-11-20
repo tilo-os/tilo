@@ -72,7 +72,7 @@ impl DeviceChoices {
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    tracing::warn!(%error, "clocks: earlier device choices could not be read")
+                    tracing::warn!(%error, "clocks: earlier device choices could not be read");
                 }
             }
         }

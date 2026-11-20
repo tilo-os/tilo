@@ -485,18 +485,7 @@ pub(super) fn build(cx: &ViewCx<Messages>, services: &Services) -> Element {
     let selection = LocalState::new(Selection::default());
     let live = cx.mode().is_live() && !cx.is_past();
     let (sending, held_drafts) = sending_and_drafts(cx, live, sources.tilo, services);
-    let history = crate::history::HistoryView::new(
-        sending
-            .history()
-            .or_else(|| live.then(|| services.history.clone()).flatten()),
-        cx.me().and_then(MemberId::as_person),
-        sources.tilo,
-    );
-    if !cx.mode().is_live()
-        && let Some(capture) = cx.fixture::<crate::history::CaptureHistory>()
-    {
-        history.stage_capture(capture.0.clone());
-    }
+    let history = history_view(cx, services, &sending, live, sources.tilo);
     let setup = crate::setup::SetupView::new(
         sending.client(),
         live.then(|| enrollment(services)).flatten(),
@@ -583,6 +572,28 @@ pub(super) fn build(cx: &ViewCx<Messages>, services: &Services) -> Element {
         .with_wake_deadline(move || scheduled_setup.next_wake_deadline()),
     );
     Box::new(crate::window_bar::MessagesWindow { content, bar })
+}
+
+fn history_view(
+    cx: &ViewCx<Messages>,
+    services: &Services,
+    sending: &crate::sending::Sending,
+    live: bool,
+    direct: bool,
+) -> crate::history::HistoryView {
+    let history = crate::history::HistoryView::new(
+        sending
+            .history()
+            .or_else(|| live.then(|| services.history.clone()).flatten()),
+        cx.me().and_then(MemberId::as_person),
+        direct,
+    );
+    if !cx.mode().is_live()
+        && let Some(capture) = cx.fixture::<crate::history::CaptureHistory>()
+    {
+        history.stage_capture(capture.0.clone());
+    }
+    history
 }
 
 /// The person's accounts in the messaging service, when the launcher connected this app to

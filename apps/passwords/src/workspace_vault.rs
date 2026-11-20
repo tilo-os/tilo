@@ -111,7 +111,7 @@ impl WorkspaceVault {
     pub(crate) fn import_device_vault(
         &self,
         owner: Option<&CredentialOwner>,
-        invoker: Option<ui::tilo_actions::ActionInvoker>,
+        invoker: Option<&ui::tilo_actions::ActionInvoker>,
     ) -> Result<usize, String> {
         let record = self.record()?;
         if !record.may("import-sealed") {
@@ -131,7 +131,7 @@ impl WorkspaceVault {
                 .map_err(|error| format!("could not read vault: {error:?}"))??,
             None => read(&SecretStore::open())?,
         };
-        let mut imported = 0;
+        let mut imported = 0_usize;
         for item in items.iter().filter(|item| item.may_share_with_workspace()) {
             let id = Id::from_raw(&item.id.0);
             let state = record
@@ -142,12 +142,12 @@ impl WorkspaceVault {
             }
             let ciphertext = Self::seal_item(&link, item)?;
             let action = WorkspaceVaultEntries::IMPORT_SEALED.with((item.id.0.clone(), ciphertext));
-            match &invoker {
+            match invoker {
                 Some(invoker) => record.invoke_as(invoker, &action),
                 None => record.invoke(&action),
             }
             .map_err(|error| error.to_string())?;
-            imported += 1;
+            imported = imported.saturating_add(1);
         }
         Ok(imported)
     }
