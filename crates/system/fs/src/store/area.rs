@@ -1273,7 +1273,9 @@ impl FileArea {
             return Ok(false);
         }
         // Persists take this lock, so a record committed after the drain below is one the next
-        // barrier covers, never one this barrier makes durable without its bytes.
+        // barrier covers, never one this barrier makes durable without its bytes. A fetch that
+        // fills an entry writes its bytes before it persists, so a range it lands while this
+        // fsyncs is either in the bytes below or in a record that waits for the next barrier.
         let _commit = self.commit.lock_recover();
         let pending = std::mem::take(&mut *self.written.lock_recover());
         let mut first = None;
