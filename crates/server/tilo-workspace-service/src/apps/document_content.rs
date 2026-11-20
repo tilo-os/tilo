@@ -50,20 +50,26 @@
 //! a member that might hold it is yet to connect. The members a host
 //! reaches are peers of the route ([`ContentSources::peers`]).
 //!
-//! The state follows the host's connections, never a timer: the host says
-//! when they change ([`RouteContent::sources_changed`]), and a device that
-//! connects is asked for what is still wanted.
+//! The state follows the connections of the devices serving the workspace,
+//! never a timer: those devices say when they change
+//! ([`RouteContent::sources_changed`]), and a device that connects is asked
+//! for what is still wanted. A want that got no content is asked again once
+//! the patience of its last answer passed ([`RouteContent::retry`],
+//! [`patience_ms`]), naming the pieces it holds: a device that said it keeps
+//! none may keep the bytes a moment later, and an answer carries only one
+//! window of a large content at a time.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
+use neighbour_wire::content::{Span, WANT_TTL_MS, answer_pieces, patience_ms};
 pub use tilo_content::ContentState;
 use tilo_content::{hash_bytes, valid_hash};
 use tokio::sync::mpsc;
 
 use crate::apps::route::CrdtRoute;
 
-pub use neighbour_wire::content::{MAX_CONTENT_BYTES, PIECE_BYTES};
+pub use neighbour_wire::content::{MAX_CONTENT_BYTES, PIECE_BYTES, PIECES_PER_ANSWER};
 
 /// Requests this device keeps open at once; past it, the oldest go.
 const MAX_OPEN_WANTS: usize = 256;
@@ -113,8 +119,9 @@ pub struct ContentPiece {
 
 /// The record's route on the network.
 pub trait ContentPeers: Send + Sync {
-    /// Ask the devices on `route` for `hash`.
-    fn want(&self, route: &CrdtRoute, hash: &str);
+    /// Ask the devices on `route` for `hash`, naming `have`, the stretches of
+    /// it this device holds already: an answer carries only the pieces missing.
+    fn want(&self, route: &CrdtRoute, hash: &str, have: &[Span]);
     /// Send `piece` of content to `peer`, which asked for it on `route`.
     fn answer(&self, route: &CrdtRoute, peer: ContentPeer, piece: ContentPiece);
     /// Tell `peer`, which asked on `route` for `hash`, that this device
@@ -190,6 +197,16 @@ struct Want {
     /// Offsets of the pieces gathered, so a piece two devices both sent
     /// counts once.
     pieces: std::collections::BTreeSet<u64>,
+    /// When the want was made, so it stops being asked again on the pass of
+    /// [`patience_ms`] after [`WANT_TTL_MS`]: whoever wants it asks afresh
+    /// by then.
+    wanted_ms: u64,
+    /// When it was last asked of the route, and when the last piece arrived:
+    /// what says whether a holder that said it keeps none has had time to
+    /// keep it, and how long to wait before asking again.
+    asked_ms: u64,
+    last_piece_ms: u64,
+    reasks: u32,
 }
 
 /// The host's record-content service: what the broker's `offerBlob`,
@@ -252,6 +269,45 @@ impl Want {
         self.asked.extend(sources.iter().copied());
         new
     }
+
+    /// What the route is told this device holds, so an answer carries only
+    /// the pieces missing: the stretches of the content that arrived.
+    fn have(&self) -> Vec<Span> {
+        let Some(total) = self.total else {
+            return Vec::new();
+        };
+        let mut spans: Vec<Span> = Vec::new();
+        for offset in &self.pieces {
+            let len = total
+                .saturating_sub(*offset)
+                .min(u64::try_from(PIECE_BYTES).unwrap_or(u64::MAX));
+            match spans.last_mut() {
+                Some(last) if last.offset.saturating_add(last.len) == *offset => {
+                    last.len = last.len.saturating_add(len);
+                }
+                _ => spans.push(Span {
+                    offset: *offset,
+                    len,
+                }),
+            }
+        }
+        spans
+    }
+
+    /// Whether the want is to be asked again at `now_ms`: nothing arrived
+    /// since it was last asked, and the patience of its last answers has
+    /// passed. A holder that said it keeps none may keep it a moment later,
+    /// and an answer that was lost leaves the content short until the
+    /// missing pieces are asked for.
+    fn due(&self, now_ms: u64) -> bool {
+        now_ms.saturating_sub(self.last_piece_ms.max(self.asked_ms)) >= patience_ms(self.reasks)
+    }
+
+    /// Note that the want went out to the route at `now_ms`.
+    fn asked_at(&mut self, now_ms: u64) {
+        self.asked_ms = now_ms;
+        self.reasks = self.reasks.saturating_add(1);
+    }
 }
 
 impl RouteContent {
@@ -290,9 +346,12 @@ impl RouteContent {
         Ok(())
     }
 
-    /// An app on `route` lacks `hash`, which its record references: hand it
+    /// An app on `route` lacks `hash`, which its document references: hand it
     /// over when this device keeps it, otherwise ask the route's devices.
-    /// The answer arrives on [`Self::subscribe`].
+    /// The answer arrives on [`Self::subscribe`]. An ask that was answered
+    /// with word that the devices keep none of it is asked again once the
+    /// patience of that answer passed: the content may have reached a holder
+    /// since, and an answer may have been lost.
     pub fn want(&self, route: &CrdtRoute, hash: &str) {
         let hash = hash.to_ascii_lowercase();
         if !valid_hash(&hash) {
@@ -303,15 +362,22 @@ impl RouteContent {
             self.tell(&scope, &ContentNews::arrived(&hash, &bytes));
             return;
         }
+        let now_ms = tilo_clock::unix_now_ms();
         let sources = self.peers.sources(route);
-        let (ask, state) = {
+        let (ask, state, have) = {
             let Ok(mut wants) = self.wants.lock() else {
                 return;
             };
             let key = (scope.clone(), hash.clone());
-            if let Some(want) = wants.open.get(&key) {
-                // Asked already: the asker hears where it stands.
-                (false, want.state)
+            if let Some(want) = wants.open.get_mut(&key) {
+                // Asked before: the asker hears where it stands, and a want
+                // nobody answered lately is asked again.
+                let ask = want.due(now_ms);
+                let have = if ask { want.have() } else { Vec::new() };
+                if ask {
+                    want.asked_at(now_ms);
+                }
+                (ask, want.state, have)
             } else {
                 if wants.open.len() >= MAX_OPEN_WANTS
                     && let Some(oldest) = wants
@@ -333,12 +399,16 @@ impl RouteContent {
                     bytes: Vec::new(),
                     received: 0,
                     pieces: BTreeSet::new(),
+                    wanted_ms: now_ms,
+                    asked_ms: now_ms,
+                    last_piece_ms: now_ms,
+                    reasks: 0,
                 };
                 want.follow(&sources);
                 want.state = want.current_state(&sources);
                 let state = want.state;
                 wants.open.insert(key, want);
-                (true, state)
+                (true, state, Vec::new())
             }
         };
         self.tell(
@@ -350,7 +420,7 @@ impl RouteContent {
             },
         );
         if ask {
-            self.peers.want(route, &hash);
+            self.peers.want(route, &hash, &have);
         }
     }
 
@@ -374,6 +444,7 @@ impl RouteContent {
             .collect();
         let mut asks = Vec::new();
         let mut news = Vec::new();
+        let now_ms = tilo_clock::unix_now_ms();
         {
             let Ok(mut wants) = self.wants.lock() else {
                 return;
@@ -383,7 +454,8 @@ impl RouteContent {
                     continue;
                 };
                 if want.follow(sources) {
-                    asks.push((want.route.clone(), hash.clone()));
+                    want.asked_at(now_ms);
+                    asks.push((want.route.clone(), hash.clone(), want.have()));
                 }
                 let state = want.current_state(sources);
                 if state != want.state {
@@ -402,14 +474,61 @@ impl RouteContent {
         for (scope, news) in news {
             self.tell(&scope, &news);
         }
-        for (route, hash) in asks {
-            self.peers.want(&route, &hash);
+        for (route, hash, have) in asks {
+            self.peers.want(&route, &hash, &have);
+        }
+    }
+
+    /// Ask the route again for what is still wanted and has not arrived
+    /// since its last ask: a device that said it keeps none of the content
+    /// may keep it a moment later, and only an ask brings it. A device's
+    /// content service calls this on a pass of [`patience_ms`], so content
+    /// that arrives at a holder after a first failed ask reaches the device
+    /// that wants it without a restart. `now_ms` is the current time.
+    pub fn retry(&self, now_ms: u64) {
+        let mut asks: Vec<(CrdtRoute, String, Vec<Span>)> = Vec::new();
+        {
+            let Ok(mut wants) = self.wants.lock() else {
+                return;
+            };
+            for ((_, hash), want) in &mut wants.open {
+                if now_ms.saturating_sub(want.wanted_ms) >= WANT_TTL_MS || !want.due(now_ms) {
+                    continue;
+                }
+                let have = want.have();
+                want.asked_at(now_ms);
+                asks.push((want.route.clone(), hash.clone(), have));
+            }
+        }
+        for (route, hash, have) in asks {
+            self.peers.want(&route, &hash, &have);
         }
     }
 
     /// `peer` said it keeps none of `hash`, asked on `route`. When no
     /// connected device is left that might, the want is unavailable.
     pub fn peer_lacks(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str) {
+        self.answered_none(route, peer, hash, None);
+    }
+
+    /// `peer` refused `hash`, asked on `route`, because the ask named another
+    /// device than the one that sent it ([`neighbour_wire::content::answer`]).
+    /// The ask goes no further as addressed: the refusal is logged here, and
+    /// the device is counted out of this want as one that keeps none of it,
+    /// so the asker waits on the devices that can answer instead of on one
+    /// that never will.
+    pub fn peer_refused(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str) {
+        self.answered_none(
+            route,
+            peer,
+            hash,
+            Some("an ask for content named another device"),
+        );
+    }
+
+    /// `peer` answered the ask for `hash` on `route` with no content, for
+    /// `why`: it keeps none of it, or refused an ask misaddressed to it.
+    fn answered_none(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str, why: Option<&str>) {
         let hash = hash.to_ascii_lowercase();
         let scope = ContentScope::of(route);
         let sources = self.peers.sources(route);
@@ -425,6 +544,7 @@ impl RouteContent {
             if !sources.all().contains(&peer) || !want.lacking.insert(peer) {
                 return;
             }
+            want.last_piece_ms = tilo_clock::unix_now_ms();
             let state = want.current_state(&sources);
             if state == want.state {
                 return;
@@ -432,6 +552,9 @@ impl RouteContent {
             want.state = state;
             state
         };
+        if let Some(why) = why {
+            tracing::debug!(peer, %hash, why, "a device answered an ask for content with no content");
+        }
         self.tell(
             &scope,
             &ContentNews {
@@ -463,12 +586,19 @@ impl RouteContent {
         receiver
     }
 
-    /// `peer` asked for `hash` on `route`. Answer, in pieces, when the host
-    /// says the peer may read the route (`may_read`) and this device keeps
-    /// the content under the record's scope; say it keeps none when it may
-    /// read and this device does not. A device that may not read hears
-    /// nothing.
-    pub fn peer_wants(&self, route: &CrdtRoute, peer: ContentPeer, may_read: bool, hash: &str) {
+    /// `peer` asked for `hash` on `route`, naming `have`, what it holds of it
+    /// already. Answer, in the pieces it lacks, when this device says the peer
+    /// may read the route (`may_read`) and keeps the content under the
+    /// document's scope; say it keeps none when it may read and this device
+    /// does not. A device that may not read hears nothing.
+    pub fn peer_wants(
+        &self,
+        route: &CrdtRoute,
+        peer: ContentPeer,
+        may_read: bool,
+        hash: &str,
+        have: &[Span],
+    ) {
         let hash = hash.to_ascii_lowercase();
         if !may_read || !valid_hash(&hash) {
             return;
@@ -483,7 +613,7 @@ impl RouteContent {
             self.peers.lacks(route, peer, &hash);
             return;
         };
-        self.send(route, peer, &hash, &bytes);
+        self.send(route, peer, &hash, &bytes, have);
     }
 
     /// Remember that `peer`, which may read `route`, asked for `hash` while
@@ -549,12 +679,14 @@ impl RouteContent {
                 );
                 continue;
             }
-            self.send(&owed.route, peer, hash, bytes);
+            self.send(&owed.route, peer, hash, bytes, &[]);
         }
     }
 
-    /// Send `bytes`, the content `hash`, to `peer` in pieces.
-    fn send(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str, bytes: &[u8]) {
+    /// Send `bytes`, the content `hash`, to `peer`: the pieces it does not
+    /// hold yet (`have`), in one bounded window, so the asker asks again for
+    /// the next rather than one answer filling its outbound queue.
+    fn send(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str, bytes: &[u8], have: &[Span]) {
         let hash = hash.to_owned();
         let total = bytes.len() as u64;
         if bytes.is_empty() {
@@ -570,19 +702,24 @@ impl RouteContent {
             );
             return;
         }
-        let mut offset = 0_u64;
-        for chunk in bytes.chunks(PIECE_BYTES) {
+        for span in answer_pieces(bytes, have) {
+            let (Ok(start), Ok(len)) = (usize::try_from(span.offset), usize::try_from(span.len))
+            else {
+                continue;
+            };
+            let Some(chunk) = bytes.get(start..start.saturating_add(len)) else {
+                continue;
+            };
             self.peers.answer(
                 route,
                 peer,
                 ContentPiece {
                     hash: hash.clone(),
                     total,
-                    offset,
+                    offset: span.offset,
                     bytes: chunk.to_vec(),
                 },
             );
-            offset = offset.saturating_add(chunk.len() as u64);
         }
     }
 
@@ -603,6 +740,7 @@ impl RouteContent {
         let hash = piece.hash.to_ascii_lowercase();
         let scope = ContentScope::of(route);
         let key = (scope.clone(), hash.clone());
+        let now_ms = tilo_clock::unix_now_ms();
         let gathered = {
             let Ok(mut wants) = self.wants.lock() else {
                 return;
@@ -610,15 +748,24 @@ impl RouteContent {
             let Some(want) = wants.open.get_mut(&key) else {
                 return;
             };
-            if !Self::gather(want, piece) {
+            let before = want.pieces.len();
+            if Self::gather(want, piece) {
+                want.last_piece_ms = now_ms;
+                if want.pieces.len() > before {
+                    // The transfer is moving: the next ask waits the
+                    // patience of a fresh one rather than a failed ask's.
+                    want.reasks = 0;
+                }
+                if want.total.is_some_and(|total| want.received >= total) {
+                    Some(want.restart())
+                } else {
+                    return;
+                }
+            } else {
                 // A piece that contradicts what arrived before spoils what
                 // was gathered.
                 want.restart();
                 None
-            } else if want.total.is_some_and(|total| want.received >= total) {
-                Some(want.restart())
-            } else {
-                return;
             }
         };
         match gathered {
@@ -637,8 +784,18 @@ impl RouteContent {
             }
             None => {}
         }
-        // Spoiled: it is asked for again.
-        self.peers.want(route, &hash);
+        // Spoiled: what is still missing is asked for again.
+        let have = {
+            let Ok(mut wants) = self.wants.lock() else {
+                return;
+            };
+            let Some(want) = wants.open.get_mut(&key) else {
+                return;
+            };
+            want.asked_at(now_ms);
+            want.have()
+        };
+        self.peers.want(route, &hash, &have);
     }
 
     /// Fold `piece` into `want`; `false` when it does not fit.

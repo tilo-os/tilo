@@ -99,6 +99,7 @@ impl Device {
                             msg,
                             NeighbourMsg::DocumentContentPiece { .. }
                                 | NeighbourMsg::DocumentContentLacks { .. }
+                                | NeighbourMsg::DocumentContentRefused { .. }
                         ),
                         "only an answer travels to the device that asked: {msg:?}"
                     );

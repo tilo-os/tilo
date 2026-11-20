@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the server session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 58
+version = 59
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -510,6 +510,12 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "NeighbourMsg::DocumentContentPiece.requester" = "#1 PeerId"
 "NeighbourMsg::DocumentContentPiece.responder" = "#0 PeerId"
 "NeighbourMsg::DocumentContentPiece.total" = "#5 u64"
+"NeighbourMsg::DocumentContentRefused" = "#27 struct"
+"NeighbourMsg::DocumentContentRefused.app_id" = "#2 String"
+"NeighbourMsg::DocumentContentRefused.cluster_id" = "#3 String"
+"NeighbourMsg::DocumentContentRefused.hash" = "#4 String"
+"NeighbourMsg::DocumentContentRefused.requester" = "#1 PeerId"
+"NeighbourMsg::DocumentContentRefused.responder" = "#0 PeerId"
 "NeighbourMsg::DocumentContentWant" = "#19 struct"
 "NeighbourMsg::DocumentContentWant.app_id" = "#1 String"
 "NeighbourMsg::DocumentContentWant.cluster_id" = "#2 String"

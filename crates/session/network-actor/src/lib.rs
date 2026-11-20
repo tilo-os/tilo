@@ -727,6 +727,7 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                         | NeighbourMsg::RemoteAction { .. }
                         | NeighbourMsg::DocumentContentPiece { .. }
                         | NeighbourMsg::DocumentContentLacks { .. }
+                        | NeighbourMsg::DocumentContentRefused { .. }
                 ) {
                     tracing::warn!(peer = %peer, "invalid message on direct surface/control ALPN");
                     continue;
@@ -771,6 +772,7 @@ async fn enqueue_surface_event(
                 | NeighbourMsg::RemoteAction { .. }
                 | NeighbourMsg::DocumentContentPiece { .. }
                 | NeighbourMsg::DocumentContentLacks { .. }
+                | NeighbourMsg::DocumentContentRefused { .. }
                 | NeighbourMsg::SurfaceStreamStart { .. }
                 | NeighbourMsg::SurfaceStreamEnd { .. }
                 | NeighbourMsg::PermissionGrant { .. },
@@ -1704,7 +1706,9 @@ impl ActorState {
         let RecordContentDelivery { ws, target, msg } = delivery;
         if !matches!(
             msg,
-            NeighbourMsg::DocumentContentPiece { .. } | NeighbourMsg::DocumentContentLacks { .. }
+            NeighbourMsg::DocumentContentPiece { .. }
+                | NeighbourMsg::DocumentContentLacks { .. }
+                | NeighbourMsg::DocumentContentRefused { .. }
         ) {
             tracing::warn!(
                 ws = %ws,
@@ -1783,7 +1787,9 @@ impl ActorState {
         // an action frame (up to a catalogue page) is worth waiting for.
         let budget = if matches!(
             msg,
-            NeighbourMsg::DocumentContentPiece { .. } | NeighbourMsg::DocumentContentLacks { .. }
+            NeighbourMsg::DocumentContentPiece { .. }
+                | NeighbourMsg::DocumentContentLacks { .. }
+                | NeighbourMsg::DocumentContentRefused { .. }
         ) {
             Duration::from_secs(2)
         } else {
@@ -1836,6 +1842,7 @@ impl ActorState {
         match msg {
             NeighbourMsg::DocumentContentPiece { .. }
             | NeighbourMsg::DocumentContentLacks { .. }
+            | NeighbourMsg::DocumentContentRefused { .. }
             | NeighbourMsg::RemoteInput { .. }
             | NeighbourMsg::SurfaceKeyframeRequest { .. }
             | NeighbourMsg::SurfaceViewRequest { .. }
@@ -3826,9 +3833,9 @@ fn record_content_event(from: &[u8; 32], frame: &[u8]) -> Option<HostEvent> {
     let author = EndpointId::from_bytes(from).ok()?;
     let msg = postcard::from_bytes(frame).ok()?;
     let fingerprint = match msg {
-        NeighbourMsg::DocumentContentPiece { .. } | NeighbourMsg::DocumentContentLacks { .. } => {
-            message_fingerprint(frame)
-        }
+        NeighbourMsg::DocumentContentPiece { .. }
+        | NeighbourMsg::DocumentContentLacks { .. }
+        | NeighbourMsg::DocumentContentRefused { .. } => message_fingerprint(frame),
         // A viewer's input repeats itself (the same key pressed twice): it is
         // never deduplicated, as a remote action is not.
         NeighbourMsg::RemoteInput { .. }

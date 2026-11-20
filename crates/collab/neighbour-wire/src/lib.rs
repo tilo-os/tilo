@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 58;
+pub const PEER_PROTOCOL_VERSION: u32 = 59;
 
 /// The oldest peer version this build still works with: the one before
 /// [`PEER_PROTOCOL_VERSION`] when this build reads and writes the frames of
@@ -56,7 +56,7 @@ pub const PEER_PROTOCOL_VERSION: u32 = 58;
 /// version wrote are kept beside `tilo-server-protocol`
 /// (`previous/peer-v<N>.txt`), and its test fails a build that reads or
 /// writes them differently.
-pub const OLDEST_PEER_PROTOCOL_VERSION: u32 = 57;
+pub const OLDEST_PEER_PROTOCOL_VERSION: u32 = 58;
 
 // A version bump moves `OLDEST_PEER_PROTOCOL_VERSION` in the same change, and
 // `previous-peer-frames.txt` with it: the window is one version wide, so a
@@ -768,6 +768,20 @@ pub enum NeighbourMsg {
     /// the person's devices, which proves who asks. Appended to preserve every
     /// existing Postcard discriminant.
     MlsGovernanceWanted { workspace: String, from_epoch: u64 },
+    /// `responder`'s answer to a [`Self::DocumentContentWant`] that named
+    /// another device than the one that sent it: the ask cannot be answered
+    /// as addressed, so it goes to the device that actually sent it, which
+    /// logs it and stops counting on this responder instead of waiting on an
+    /// answer that never comes. `requester` is that sending device, never the
+    /// one the ask named. Appended to preserve every existing Postcard
+    /// discriminant.
+    DocumentContentRefused {
+        responder: PeerId,
+        requester: PeerId,
+        app_id: String,
+        cluster_id: String,
+        hash: String,
+    },
 }
 
 impl NeighbourMsg {
@@ -847,7 +861,8 @@ impl NeighbourMsg {
             | Self::LivePresence { .. }
             | Self::SurfaceViewRequest { .. }
             | Self::WriteRefusals { .. }
-            | Self::MlsGovernanceWanted { .. } => false,
+            | Self::MlsGovernanceWanted { .. }
+            | Self::DocumentContentRefused { .. } => false,
         }
     }
 
@@ -894,6 +909,7 @@ impl NeighbourMsg {
             Self::DocumentContentLacks { .. } => "DocumentContentLacks",
             Self::WriteRefusals { .. } => "WriteRefusals",
             Self::MlsGovernanceWanted { .. } => "MlsGovernanceWanted",
+            Self::DocumentContentRefused { .. } => "DocumentContentRefused",
         }
     }
 }
@@ -1046,6 +1062,16 @@ mod tests {
                     at_ns: 9,
                     signature: vec![0x44; 4],
                 }],
+            },
+        ));
+        all.push((
+            "content request refused",
+            NeighbourMsg::DocumentContentRefused {
+                responder: 3,
+                requester: 4,
+                app_id: "so.tilo.slides".into(),
+                cluster_id: "workspace".into(),
+                hash: "ab".into(),
             },
         ));
         all
@@ -1426,7 +1452,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 26;
+    const VARIANT_COUNT: usize = 27;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1477,7 +1503,7 @@ mod tests {
         (
             "identity hello",
             concat!(
-                "093a010101010101010101010101010101010101010101010101010101010101010102020202",
+                "093b010101010101010101010101010101010101010101010101010101010101010102020202",
                 "02020202020202020202020202020202020202020202020202020202064c6170746f70010000",
                 "000a004003030303030303030303030303030303030303030303030303030303030303030303",
                 "03030303030303030303030303030303030303030303030303030303030300",
@@ -1584,6 +1610,10 @@ mod tests {
                 "73696f6e33333333333333333333333333333333333333333333333333333333333333330904",
                 "44444444",
             ),
+        ),
+        (
+            "content request refused",
+            "1b03040e736f2e74696c6f2e736c6964657309776f726b7370616365026162",
         ),
     ];
 

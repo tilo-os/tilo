@@ -1229,6 +1229,7 @@ impl Workspaces {
                     frame.message,
                     NeighbourMsg::DocumentContentPiece { .. }
                         | NeighbourMsg::DocumentContentLacks { .. }
+                        | NeighbourMsg::DocumentContentRefused { .. }
                 );
                 let asking = matches!(frame.message, NeighbourMsg::DocumentContentWant { .. });
                 let Ok(body) = postcard::to_allocvec(&frame.message) else {

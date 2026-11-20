@@ -14,12 +14,12 @@
 use std::collections::{BTreeSet, HashMap};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iroh::EndpointId;
-use neighbour_wire::content::MAX_CONTENT_BYTES;
+use neighbour_wire::content::{MAX_CONTENT_BYTES, PIECE_PATIENCE_MS, Span};
 use neighbour_wire::{NeighbourMsg, peer_handle};
 use tilo_broker_core::route::CrdtRoute;
 use tilo_broker_core::services::{CONTENT_PUT_SCOPE, ContentSink, ContentStoreServices};
@@ -283,7 +283,7 @@ fn inbound(
             app_id,
             cluster_id,
             hash,
-            ..
+            have,
         } => {
             if *cluster_id != workspace || *requester == peers.own() {
                 return None;
@@ -298,6 +298,7 @@ fn inbound(
                 on: CrdtRoute::app(app_id.clone(), cluster_id.clone()),
                 peer: *requester,
                 hash: hash.clone(),
+                have: have.clone(),
             }
         }
         NeighbourMsg::DocumentContentPiece {
@@ -332,6 +333,13 @@ fn inbound(
             app_id,
             cluster_id,
             hash,
+        }
+        | NeighbourMsg::DocumentContentRefused {
+            responder,
+            requester,
+            app_id,
+            cluster_id,
+            hash,
         } => {
             if *cluster_id != workspace
                 || *requester != peers.own()
@@ -339,10 +347,11 @@ fn inbound(
             {
                 return None;
             }
-            Inbound::Lacks {
+            Inbound::NoContent {
                 on: CrdtRoute::app(app_id.clone(), cluster_id.clone()),
                 peer: *responder,
                 hash: hash.clone(),
+                refused: matches!(msg, NeighbourMsg::DocumentContentRefused { .. }),
             }
         }
         _ => return None,
@@ -352,33 +361,59 @@ fn inbound(
 
 /// A message about a record's content, for [`RouteContent`]'s worker.
 enum Inbound {
-    /// A member asked the workspace for content it lacks.
+    /// A member asked the workspace for content it lacks, naming what it
+    /// holds already.
     Want {
         on: CrdtRoute,
         peer: ContentPeer,
         hash: String,
+        have: Vec<Span>,
     },
     /// A piece of content this device asked for.
     Piece { on: CrdtRoute, piece: ContentPiece },
-    /// A member keeps none of the content this device asked it for.
-    Lacks {
+    /// A device keeps none of the content this device asked it for, or
+    /// refused an ask misaddressed to it.
+    NoContent {
         on: CrdtRoute,
         peer: ContentPeer,
         hash: String,
+        refused: bool,
     },
 }
 
 /// Hand what the workspace's members said about content to `content` , off the session's loop: the
 /// service reads and writes this device's store, which the loop, which walks no path, must not do
-/// itself. Ends when the content service drops.
+/// itself. A pass of the patience of a want asks again for what is still missing, so content that
+/// reached a holder after a first failed ask arrives without a restart. Ends when the content
+/// service drops.
 fn serve(content: &RouteContent, arriving: &Receiver<Inbound>) {
-    while let Ok(entry) = arriving.recv() {
-        match entry {
-            // A member that reached here was admitted to the workspace by its policy, which lets it
-            // read the records the content belongs to.
-            Inbound::Want { on, peer, hash } => content.peer_wants(&on, peer, true, &hash),
-            Inbound::Piece { on, piece } => content.peer_piece(&on, &piece),
-            Inbound::Lacks { on, peer, hash } => content.peer_lacks(&on, peer, &hash),
+    loop {
+        match arriving.recv_timeout(Duration::from_millis(PIECE_PATIENCE_MS)) {
+            Ok(entry) => match entry {
+                // A member that reached here was admitted to the workspace by its policy, which lets it
+                // read the records the content belongs to.
+                Inbound::Want {
+                    on,
+                    peer,
+                    hash,
+                    have,
+                } => content.peer_wants(&on, peer, true, &hash, &have),
+                Inbound::Piece { on, piece } => content.peer_piece(&on, &piece),
+                Inbound::NoContent {
+                    on,
+                    peer,
+                    hash,
+                    refused: false,
+                } => content.peer_lacks(&on, peer, &hash),
+                Inbound::NoContent {
+                    on,
+                    peer,
+                    hash,
+                    refused: true,
+                } => content.peer_refused(&on, peer, &hash),
+            },
+            Err(RecvTimeoutError::Timeout) => content.retry(tilo_clock::unix_now_ms()),
+            Err(RecvTimeoutError::Disconnected) => return,
         }
     }
 }
@@ -720,7 +755,7 @@ impl Peers {
 }
 
 impl ContentPeers for Peers {
-    fn want(&self, route: &CrdtRoute, hash: &str) {
+    fn want(&self, route: &CrdtRoute, hash: &str, have: &[Span]) {
         let Some(ws) = topic(route) else {
             return;
         };
@@ -729,7 +764,7 @@ impl ContentPeers for Peers {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id.clone(),
             hash: hash.to_owned(),
-            have: Vec::new(),
+            have: have.to_vec(),
         };
         self.say(ws, msg);
     }

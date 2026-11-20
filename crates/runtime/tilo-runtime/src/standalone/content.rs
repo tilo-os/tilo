@@ -11,9 +11,11 @@ use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use neighbour_wire::NeighbourMsg;
+use neighbour_wire::content::{PIECE_PATIENCE_MS, Span};
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::peer_handle;
 use tilo_workspace_service::apps::{
@@ -83,7 +85,7 @@ impl MemberPeers {
 }
 
 impl ContentPeers for MemberPeers {
-    fn want(&self, route: &CrdtRoute, hash: &str) {
+    fn want(&self, route: &CrdtRoute, hash: &str, have: &[Span]) {
         let Some(workspace) = Self::workspace(route) else {
             return;
         };
@@ -92,7 +94,7 @@ impl ContentPeers for MemberPeers {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id.clone(),
             hash: hash.to_owned(),
-            have: Vec::new(),
+            have: have.to_vec(),
         };
         if self.0.holds(workspace) {
             let _ = self.0.copies().send_member(workspace, message);
@@ -169,6 +171,15 @@ impl ContentKeeper for MemberContent {
             }) => self
                 .0
                 .peer_lacks(&CrdtRoute::app(app_id, cluster_id), responder, &hash),
+            Ok(NeighbourMsg::DocumentContentRefused {
+                responder,
+                app_id,
+                cluster_id,
+                hash,
+                ..
+            }) => self
+                .0
+                .peer_refused(&CrdtRoute::app(app_id, cluster_id), responder, &hash),
             _ => {}
         }
     }
@@ -183,6 +194,12 @@ impl ContentKeeper for MemberContent {
                     ..
                 }
                 | NeighbourMsg::DocumentContentLacks {
+                    app_id,
+                    cluster_id,
+                    hash,
+                    ..
+                }
+                | NeighbourMsg::DocumentContentRefused {
                     app_id,
                     cluster_id,
                     hash,
@@ -223,5 +240,15 @@ pub(super) fn record_content_on(
     let keeper: Arc<dyn ContentKeeper> = Arc::new(MemberContent(Arc::clone(&content)));
     workspaces.service().workspaces().keep_content(&keeper);
     workspaces.install_keeper(keeper);
+    // A want that got no content is asked again once the patience of its
+    // last answer passed: a holder that said it keeps none may keep it a
+    // moment later, and a large content crosses in windows of one answer.
+    let ticking = Arc::clone(&content);
+    tilo_rt::app().spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(PIECE_PATIENCE_MS)).await;
+            ticking.retry(tilo_clock::unix_now_ms());
+        }
+    });
     content
 }

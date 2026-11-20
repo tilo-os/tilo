@@ -26,7 +26,7 @@ pub const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
 pub const PIECE_BYTES: usize = 192 * 1024;
 /// How long an unanswered request keeps collecting pieces, and how long
 /// before the same content is asked of the workspace again.
-const WANT_TTL_MS: u64 = 60_000;
+pub const WANT_TTL_MS: u64 = 60_000;
 /// Requests open at once; past it, the oldest goes.
 const MAX_OPEN_WANTS: usize = 256;
 /// How long a piece of content being gathered waits for the next one before
@@ -45,6 +45,40 @@ const REASK_CAP_MS: u64 = 5_000;
 /// a session's outbound queue holds, so a burst of content leaves room for
 /// the presence, deltas and answers travelling beside it.
 pub const PIECES_PER_ANSWER: usize = 64;
+
+/// How long a want that got nothing waits before it is asked again, after
+/// `reasks` asks that brought no piece: the first wait is
+/// [`PIECE_PATIENCE_MS`], and each failed ask doubles it up to
+/// [`REASK_CAP_MS`]. An asker that waits for content any holder said it
+/// lacks asks again after this, naming what it holds, because a holder may
+/// keep the bytes a moment later.
+#[must_use]
+pub fn patience_ms(reasks: u32) -> u64 {
+    PIECE_PATIENCE_MS
+        .saturating_mul(1_u64 << reasks.min(4))
+        .min(REASK_CAP_MS)
+}
+
+/// The pieces an answer to an ask carries: at most [`PIECES_PER_ANSWER`] of
+/// the content's [`PIECE_BYTES`]-long pieces, in order, leaving out what
+/// `have`, the stretches of bytes the asker holds, already covers. A piece is
+/// a stretch of `bytes` an answer sends whole.
+#[must_use]
+pub fn answer_pieces(bytes: &[u8], have: &[Span]) -> Vec<Span> {
+    let mut pieces = Vec::new();
+    for (index, chunk) in bytes.chunks(PIECE_BYTES).enumerate() {
+        if pieces.len() >= PIECES_PER_ANSWER {
+            break;
+        }
+        let offset = u64::try_from(index.saturating_mul(PIECE_BYTES)).unwrap_or(u64::MAX);
+        let len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+        if holds(have, offset, len) {
+            continue;
+        }
+        pieces.push(Span { offset, len });
+    }
+    pieces
+}
 
 /// A run of content bytes: `len` bytes from `offset`. What an asker already
 /// holds of what it asks for, so an answer carries only what it lacks.
@@ -145,10 +179,7 @@ impl<T> Want<T> {
     /// first wait is the patience of a transfer that started, and each failed
     /// ask doubles it up to [`REASK_CAP_MS`].
     fn patience_ms(&self) -> u64 {
-        let waits = self.reasks.min(4);
-        PIECE_PATIENCE_MS
-            .saturating_mul(1_u64 << waits)
-            .min(REASK_CAP_MS)
+        patience_ms(self.reasks)
     }
 }
 
@@ -362,9 +393,12 @@ impl<T> ContentWants<T> {
 /// `NeighbourMsg::DocumentContentPiece`s of what `read` (given the request's
 /// app, workspace and hash) keeps under it that the asker does not hold yet,
 /// or one `DocumentContentLacks` when it keeps nothing, so the asker stops
-/// counting on this responder. Empty when the request is not one this
-/// responder answers. What `read` returns is sent only when it hashes to what
-/// was asked for.
+/// counting on this responder. A request that names another device than the
+/// one that sent it is answered with one `DocumentContentRefused`, addressed
+/// to the sender: the ask can never be answered as addressed, and the device
+/// that asked logs it instead of waiting on this responder for ever. Empty
+/// when the request is not one this responder answers. What `read` returns is
+/// sent only when it hashes to what was asked for.
 ///
 /// `device` may be the asker: a server's own agents join its workspaces as the
 /// server's device, with nothing kept from before it started, and the server's
@@ -393,8 +427,20 @@ pub fn answer(
     };
     let hash = hash.to_ascii_lowercase();
     let responder = crate::peer_handle(device);
+    let sender = crate::peer_handle(asker);
+    if requester != sender {
+        return postcard::to_allocvec(&crate::NeighbourMsg::DocumentContentRefused {
+            responder,
+            requester: sender,
+            app_id,
+            cluster_id,
+            hash,
+        })
+        .into_iter()
+        .collect();
+    }
     let valid = hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
-    if requester != crate::peer_handle(asker) || !valid {
+    if !valid {
         return Vec::new();
     }
     let Some(bytes) = read(&app_id, &cluster_id, &hash).filter(|bytes| {
@@ -428,21 +474,15 @@ pub fn answer(
     if bytes.is_empty() {
         return piece(0, &[]).into_iter().collect();
     }
-    let mut pieces = Vec::new();
-    for (index, chunk) in bytes.chunks(PIECE_BYTES).enumerate() {
-        if pieces.len() >= PIECES_PER_ANSWER {
-            break;
-        }
-        let offset = u64::try_from(index.saturating_mul(PIECE_BYTES)).unwrap_or(u64::MAX);
-        let len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
-        if holds(&have, offset, len) {
-            continue;
-        }
-        if let Some(frame) = piece(offset, chunk) {
-            pieces.push(frame);
-        }
-    }
-    pieces
+    answer_pieces(&bytes, &have)
+        .into_iter()
+        .filter_map(|span| {
+            let start = usize::try_from(span.offset).ok()?;
+            let len = usize::try_from(span.len).ok()?;
+            let chunk = bytes.get(start..start.checked_add(len)?)?;
+            piece(span.offset, chunk)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -571,8 +611,13 @@ mod tests {
         assert_eq!(arrived.bytes, bytes, "the asker assembles and verifies it");
 
         assert!(
-            answer(&page, &[3; 32], &request, kept).is_empty(),
-            "only the device that asked is answered"
+            refused(
+                &answer(&page, &[3; 32], &request, kept),
+                &page,
+                &[3; 32],
+                &hash
+            ),
+            "a request naming another device is refused to the one that sent it"
         );
         assert_eq!(
             answer(&host, &host, &request, kept).len(),
@@ -597,6 +642,54 @@ mod tests {
                 Ok(crate::NeighbourMsg::DocumentContentLacks { .. })
             )
         )
+    }
+
+    /// Whether `frames` is one refusal that `responder` refuses the ask
+    /// `asker` sent for `hash`, addressed to the one that sent it.
+    fn refused(frames: &[Vec<u8>], responder: &[u8; 32], asker: &[u8; 32], hash: &str) -> bool {
+        matches!(
+            frames,
+            [frame] if matches!(
+                postcard::from_bytes(frame),
+                Ok(crate::NeighbourMsg::DocumentContentRefused {
+                    responder: refused_by,
+                    requester,
+                    hash: refused_hash,
+                    ..
+                }) if refused_by == crate::peer_handle(responder)
+                    && requester == crate::peer_handle(asker)
+                    && refused_hash == hash
+            )
+        )
+    }
+
+    #[test]
+    fn a_request_that_names_another_device_is_refused_visibly() {
+        let (named, page, stranger) = ([1; 32], [2; 32], [3; 32]);
+        let bytes: Vec<u8> = (0..=u8::MAX).cycle().take(PIECE_BYTES + 7).collect();
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        let workspace = ("so.tilo.chat", "workspace");
+        // The ask was made as `named` would ask it, but `page` sent it: no
+        // answer can go where the ask names, so the one that sent it hears
+        // why and stops waiting.
+        let request = postcard::to_allocvec(&crate::NeighbourMsg::DocumentContentWant {
+            requester: crate::peer_handle(&named),
+            app_id: workspace.0.into(),
+            cluster_id: workspace.1.into(),
+            hash: hash.clone(),
+            have: Vec::new(),
+        })
+        .unwrap();
+        let kept = |_: &str, _: &str, _: &str| Some(bytes.clone());
+        let frames = answer(&page, &stranger, &request, kept);
+        assert!(
+            refused(&frames, &page, &stranger, &hash),
+            "the refusal names the device that sent the ask and is addressed to it"
+        );
+        assert!(
+            answer(&page, &stranger, b"not a request", kept).is_empty(),
+            "a frame that is no ask is nothing to refuse"
+        );
     }
 
     #[test]

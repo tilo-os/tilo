@@ -44,7 +44,8 @@ pub(crate) fn from_device(message: &NeighbourMsg, device: [u8; 32]) -> bool {
         // the handle the workspace knows it by.
         NeighbourMsg::DocumentContentWant { requester, .. } => *requester == peer_handle(&device),
         NeighbourMsg::DocumentContentPiece { responder, .. }
-        | NeighbourMsg::DocumentContentLacks { responder, .. } => {
+        | NeighbourMsg::DocumentContentLacks { responder, .. }
+        | NeighbourMsg::DocumentContentRefused { responder, .. } => {
             *responder == peer_handle(&device)
         }
         NeighbourMsg::LivePresence { peer, .. } | NeighbourMsg::Heartbeat { peer, .. } => {

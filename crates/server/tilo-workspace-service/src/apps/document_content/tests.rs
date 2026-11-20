@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::*;
+use neighbour_wire::NeighbourMsg;
+use neighbour_wire::peer_handle;
 
 /// A device content store in memory.
 #[derive(Default)]
@@ -100,10 +102,10 @@ impl Wire {
 }
 
 impl ContentPeers for Wire {
-    fn want(&self, route: &CrdtRoute, hash: &str) {
+    fn want(&self, route: &CrdtRoute, hash: &str, have: &[Span]) {
         self.sent.lock().unwrap().push(format!("want {hash}"));
         for (other, _, lets_me) in self.reach() {
-            other.peer_wants(route, self.me, lets_me.load(Ordering::Acquire), hash);
+            other.peer_wants(route, self.me, lets_me.load(Ordering::Acquire), hash, have);
         }
     }
     fn answer(&self, route: &CrdtRoute, peer: ContentPeer, piece: ContentPiece) {
@@ -124,7 +126,7 @@ impl ContentPeers for Wire {
     fn sources(&self, _route: &CrdtRoute) -> ContentSources {
         ContentSources {
             peers: self.reach().into_iter().map(|(_, peer, _)| peer).collect(),
-            hosts: BTreeSet::new(),
+            ..ContentSources::default()
         }
     }
     fn may_read(&self, _route: &CrdtRoute, peer: ContentPeer) -> bool {
@@ -249,6 +251,110 @@ pub(crate) fn fan() -> Fan {
 pub(crate) fn pair(b_may_read: bool) -> (Arc<RouteContent>, Arc<RouteContent>, Arc<Wire>) {
     let pair = hosts(true, b_may_read);
     (pair.a, pair.b, pair.wire_b)
+}
+
+/// A device serving a workspace, as a member reaches it, as the runtime
+/// does: it answers the member's asks with the shared
+/// [`neighbour_wire::content::answer`], one window of what the device lacks
+/// at a time, from a store that may fill after a first ask.
+struct ServingPeers {
+    /// What the serving device keeps.
+    shelf: Arc<Shelf>,
+    /// The serving device, which answers.
+    serving: [u8; 32],
+    /// The device that asks, as its own requests name it.
+    asker: [u8; 32],
+    /// The device a misaddressed ask names instead, for a test of the
+    /// refusal; the asker itself when `None`.
+    named: Option<[u8; 32]>,
+    /// The device's content service, where the answers go.
+    content: Mutex<Option<std::sync::Weak<RouteContent>>>,
+}
+
+impl ContentPeers for ServingPeers {
+    fn want(&self, route: &CrdtRoute, hash: &str, have: &[Span]) {
+        let request = postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
+            requester: peer_handle(&self.named.unwrap_or(self.asker)),
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id.clone(),
+            hash: hash.to_owned(),
+            have: have.to_vec(),
+        })
+        .unwrap();
+        let scope = ContentScope::of(route);
+        let frames =
+            neighbour_wire::content::answer(&self.serving, &self.asker, &request, |_, _, hash| {
+                self.shelf.read(&scope, hash)
+            });
+        let Some(content) = self
+            .content
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+        else {
+            return;
+        };
+        for frame in frames {
+            match postcard::from_bytes::<NeighbourMsg>(&frame) {
+                Ok(NeighbourMsg::DocumentContentPiece {
+                    hash,
+                    total,
+                    offset,
+                    bytes,
+                    ..
+                }) => content.peer_piece(
+                    route,
+                    &ContentPiece {
+                        hash,
+                        total,
+                        offset,
+                        bytes,
+                    },
+                ),
+                Ok(NeighbourMsg::DocumentContentLacks { hash, .. }) => {
+                    content.peer_lacks(route, peer_handle(&self.serving), &hash);
+                }
+                Ok(NeighbourMsg::DocumentContentRefused { hash, .. }) => {
+                    content.peer_refused(route, peer_handle(&self.serving), &hash);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn answer(&self, _route: &CrdtRoute, _peer: ContentPeer, _piece: ContentPiece) {}
+
+    fn lacks(&self, _route: &CrdtRoute, _peer: ContentPeer, _hash: &str) {}
+
+    fn sources(&self, _route: &CrdtRoute) -> ContentSources {
+        ContentSources {
+            peers: BTreeSet::new(),
+            hosts: [peer_handle(&self.serving)].into_iter().collect(),
+        }
+    }
+}
+
+/// A device whose content the workspace's serving device answers, and that
+/// device's store: the bytes reach it when content is kept there, as a
+/// member's content reaches the device serving the workspace.
+fn served() -> (Arc<RouteContent>, Arc<ServingPeers>) {
+    served_naming(None)
+}
+
+/// [`served`] whose asks name `named` instead of the device that sends them.
+fn served_naming(named: Option<[u8; 32]>) -> (Arc<RouteContent>, Arc<ServingPeers>) {
+    let peers = Arc::new(ServingPeers {
+        shelf: Arc::new(Shelf::default()),
+        serving: [9; 32],
+        asker: [8; 32],
+        named,
+        content: Mutex::default(),
+    });
+    let answering: Arc<dyn ContentPeers> = peers.clone();
+    let content = RouteContent::new(Arc::new(Shelf::default()), answering);
+    *peers.content.lock().unwrap() = Some(Arc::downgrade(&content));
+    (content, peers)
 }
 
 /// The next content that arrived on `news`, past where wants stand.
@@ -559,6 +665,132 @@ tilo_test_env::scenario! {
                 .iter()
                 .all(|sent| sent.ends_with("to 3")),
             "the bytes went to the device that may still read them"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
+    fn a_want_answered_with_nothing_is_asked_again_until_the_content_arrives;
+
+    phase a_holder_that_keeps_the_bytes_after_saying_it_lacks_is_asked_again;
+    // The device serving a workspace answered once that it kept none of the
+    // content — the writer had published its document and not yet the bytes.
+    // Content that reaches that device later is the asker's once the want is
+    // asked again, never only after a restart.
+    {
+        let (content, serving) = served();
+        let bytes = picture(PIECE_BYTES + 17);
+        let hash = hash_bytes(&bytes);
+        let mut news = content.subscribe(&route());
+        content.want(&route(), &hash);
+        assert_eq!(
+            states(&mut news),
+            [ContentState::Pending, ContentState::Waiting],
+            "the serving device keeps none of it yet"
+        );
+
+        // The bytes reach the serving device after the first ask.
+        serving.shelf
+            .keep(&ContentScope::of(&route()), &hash, &bytes)
+            .unwrap();
+        content.retry(
+            tilo_clock::unix_now_ms().saturating_add(patience_ms(0).saturating_mul(2)),
+        );
+        let arrived = arrival(&mut news).expect("the device asked again and got it");
+        assert_eq!(arrived.bytes, bytes);
+        assert_eq!(
+            content.shelf.read(&ContentScope::of(&route()), &hash),
+            Some(bytes),
+            "and keeps it under the document's scope"
+        );
+    }
+
+    phase content_larger_than_one_answer_arrives_whole_in_windows;
+    // An answer carries at most a window of the pieces an asker lacks; the
+    // asker asks again for what is missing until the content is whole.
+    {
+        let (content, serving) = served();
+        let bytes = picture(PIECE_BYTES * (PIECES_PER_ANSWER + 3));
+        let hash = hash_bytes(&bytes);
+        serving
+            .shelf
+            .keep(&ContentScope::of(&route()), &hash, &bytes)
+            .unwrap();
+        let mut news = content.subscribe(&route());
+        content.want(&route(), &hash);
+        assert!(
+            arrival(&mut news).is_none(),
+            "one answer cannot carry {} bytes",
+            bytes.len()
+        );
+
+        let mut now = tilo_clock::unix_now_ms();
+        let mut rounds = 0;
+        let mut arrived = None;
+        while arrived.is_none() {
+            assert!(
+                rounds < 4,
+                "the content crossed in windows rather than never"
+            );
+            rounds += 1;
+            now = now.saturating_add(patience_ms(rounds));
+            content.retry(now);
+            arrived = arrival(&mut news);
+        }
+        assert_eq!(arrived.unwrap().bytes, bytes, "every piece arrived once");
+    }
+
+    phase a_misaddressed_ask_is_refused_to_the_device_that_asked;
+    // An ask that names another device than the one that sent it can never
+    // be answered as addressed: the serving device refuses it to the sender,
+    // which counts that device out instead of waiting on an answer for ever.
+    {
+        let (content, serving) = served_naming(Some([7; 32]));
+        let bytes = picture(PIECE_BYTES + 5);
+        let hash = hash_bytes(&bytes);
+        serving
+            .shelf
+            .keep(&ContentScope::of(&route()), &hash, &bytes)
+            .unwrap();
+
+        // What the serving device answers such an ask, word for word.
+        let request = postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
+            requester: peer_handle(&[7; 32]),
+            app_id: route().app_id,
+            cluster_id: route().cluster_id,
+            hash: hash.clone(),
+            have: Vec::new(),
+        })
+        .unwrap();
+        let frames = neighbour_wire::content::answer(&serving.serving, &serving.asker, &request, |_, _, _| {
+            Some(bytes.clone())
+        });
+        let [frame] = frames.as_slice() else {
+            panic!("one refusal answers a misaddressed ask");
+        };
+        let NeighbourMsg::DocumentContentRefused {
+            responder,
+            requester,
+            hash: refused,
+            ..
+        } = postcard::from_bytes(frame).unwrap()
+        else {
+            panic!("the answer is a refusal, not content or silence");
+        };
+        assert_eq!(
+            (responder, requester),
+            (peer_handle(&serving.serving), peer_handle(&serving.asker)),
+            "the refusal is addressed to the device that sent the ask"
+        );
+        assert_eq!(refused, hash);
+
+        let mut news = content.subscribe(&route());
+        content.want(&route(), &hash);
+        assert_eq!(
+            states(&mut news),
+            [ContentState::Pending, ContentState::Waiting],
+            "the device acted on the refusal instead of waiting on the serving device"
         );
     }
 }

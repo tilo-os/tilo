@@ -66,6 +66,7 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         | NeighbourMsg::DocumentContentWant { .. }
         | NeighbourMsg::DocumentContentPiece { .. }
         | NeighbourMsg::DocumentContentLacks { .. }
+        | NeighbourMsg::DocumentContentRefused { .. }
         // A viewer asking for a keyframe of a stream it receives; the owner checks it is one.
         | NeighbourMsg::SurfaceKeyframeRequest { .. }
         // A member saying which of the receiving device's windows it views: it may see the
@@ -372,6 +373,16 @@ mod tests {
                 Some(read()),
             ),
             (
+                NeighbourMsg::DocumentContentRefused {
+                    responder: 1,
+                    requester: 2,
+                    app_id: "so.tilo.notes".into(),
+                    cluster_id: WORKSPACE.into(),
+                    hash: "ab".into(),
+                },
+                Some(read()),
+            ),
+            (
                 NeighbourMsg::SurfaceKeyframeRequest {
                     peer: 1,
                     surface: 7,
@@ -427,7 +438,7 @@ mod tests {
             table.len(),
             "one message per variant, none repeated"
         );
-        assert_eq!(table.len(), 27, "every NeighbourMsg variant has an entry");
+        assert_eq!(table.len(), 28, "every NeighbourMsg variant has an entry");
         for (message, expected) in &table {
             assert_eq!(required_workspace_action(message), *expected, "{message:?}");
             // A retired generation is never admitted as a workspace's traffic.

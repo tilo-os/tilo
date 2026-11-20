@@ -274,6 +274,7 @@ impl Workspaces {
                     frame.message,
                     NeighbourMsg::DocumentContentPiece { .. }
                         | NeighbourMsg::DocumentContentLacks { .. }
+                        | NeighbourMsg::DocumentContentRefused { .. }
                 );
                 let Ok(body) = postcard::to_allocvec(&frame.message) else {
                     continue;
