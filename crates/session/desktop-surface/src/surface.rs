@@ -1072,6 +1072,10 @@ pub struct DesktopSurface {
     /// ([`Widget::take_app_activation`]): it waits while the tab's app is still loading, so a
     /// window opened before its app arrived still takes the keyboard once it does.
     activation: Option<(StripId, TabId)>,
+    /// The window whose title a press landed on. Once the button is up the strip eases it wholly
+    /// into view: a click on a window's title says "this one", and nothing of it moves while the
+    /// pointer is still down. A press in a window's content never moves the strip.
+    reveal_on_release: Option<(StripId, GroupId)>,
     /// The windows shared live, and the views windows embed of them.
     live_shares: live_shares::LiveShares,
     /// The strip or workspace change the frame draws as a slide, and where each strip stood when it
@@ -1167,6 +1171,7 @@ impl DesktopSurface {
             controls: None,
             keyboard_tab: None,
             activation: None,
+            reveal_on_release: None,
             live_shares: live_shares::LiveShares::default(),
             slides: std::cell::RefCell::new(slide::Slides::default()),
             motion: ui::tokens::EffectiveMotion::default(),
@@ -2486,6 +2491,10 @@ impl Widget for DesktopSurface {
             // pointer before the person has finished with them.
             self.focus_pressed_display();
             self.focus_clicked_group();
+            self.reveal_on_release = self.shown.and_then(|strip| {
+                let group = self.rows.get(&strip)?.group_title_under_cursor()?;
+                Some((strip, group))
+            });
         }
         self.route_pointer(event, ctx, &children);
         for row in self.rows.values_mut() {
@@ -2494,6 +2503,22 @@ impl Widget for DesktopSurface {
         // A tab's name field opened or closed under the event: the shell holds the keyboard for it,
         // or gives it back to the window.
         self.publish_bar_typing();
+        if let WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        } = event
+            && let Some((strip, group)) = self.reveal_on_release.take()
+            && self.shown == Some(strip)
+            && self
+                .shown_row_ref()
+                .is_some_and(|row| !row.groups.iter().any(|g| g.maximized))
+        {
+            // A window whose title was clicked while it hung off the screen eases into view once
+            // the click is over, as focusing it from the keyboard brings it.
+            self.shared.borrow_mut().followed = Some(group);
+            self.relayout = true;
+        }
         if let WindowEvent::MouseWheel { delta, .. } = event
             && !ui::content_zoom::is_zoom_scroll(event, ctx.modifiers)
         {

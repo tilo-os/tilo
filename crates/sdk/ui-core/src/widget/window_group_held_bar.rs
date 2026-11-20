@@ -9,6 +9,18 @@ use vello::kurbo::{Affine, Point};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 impl WindowGroup {
+    /// Whether `p` lands on the window's title: its tabs or the bar's bare ground, where no
+    /// control, toolbar button or search takes it and no edge resizes it.
+    pub fn bar_title_hit(&self, p: Point) -> bool {
+        self.shows_its_bar()
+            && self.bar_rect().contains(p)
+            && !self.resize_grab_hit(p)
+            && !self.new_tab_hit(p)
+            && !self.bar.toolbar_hit(p)
+            && !self.search.hit(p)
+            && !self.window_control_hit(p)
+    }
+
     pub fn bar_rect(&self) -> vello::kurbo::Rect {
         self.held_bar
             .map_or_else(|| self.bar.bar_rect(), |slot| slot.row)

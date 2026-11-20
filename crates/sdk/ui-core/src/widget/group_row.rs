@@ -1380,6 +1380,16 @@ impl GroupRow {
 
     /// The shown group a left press at the remembered cursor lands in; mouse buttons carry
     /// no position of their own.
+    /// The window whose title the pointer is on ([`WindowGroup::bar_title_hit`]), if any.
+    pub fn group_title_under_cursor(&self) -> Option<u64> {
+        let id = self.group_under_cursor()?;
+        self.groups
+            .iter()
+            .find(|group| group.id == id)
+            .filter(|group| group.bar_title_hit(self.last_cursor))
+            .map(|group| group.id)
+    }
+
     pub fn group_under_cursor(&self) -> Option<u64> {
         self.float_group_at(self.last_cursor).or_else(|| {
             self.window_under(self.last_cursor, None)
