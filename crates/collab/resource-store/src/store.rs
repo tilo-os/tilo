@@ -770,18 +770,41 @@ impl Store {
     #[must_use]
     pub fn versions(&self, kind: &str, id: &str) -> Vec<crate::history::Version> {
         let mut versions = Vec::new();
-        if let Some(held) = self.index.get(kind, id)
-            && let Some(doc) = self.docs.get(&held.doc)
-        {
-            versions.extend(crate::history::of(doc, &held.doc, id));
-        }
-        if let Ok((content, _)) = self.content_of(kind, id)
-            && let Some(doc) = self.docs.get(&content)
-        {
-            versions.extend(crate::history::of(doc, &content, id));
+        for doc in self.version_documents(kind, id) {
+            if let Some(document) = self.docs.get(&doc) {
+                versions.extend(crate::history::of(document, &doc, id));
+            }
         }
         versions.sort_by_key(|version| version.op);
         versions
+    }
+
+    /// The resource's versions, including documents evicted or indexed from snapshots. The
+    /// caller checks the resource's readers before asking for its history.
+    ///
+    /// # Errors
+    /// A saved document does not decode.
+    pub fn read_versions(
+        &mut self,
+        kind: &str,
+        id: &str,
+    ) -> Result<Vec<crate::history::Version>, StoreError> {
+        let mut versions = Vec::new();
+        for doc in self.version_documents(kind, id) {
+            if let Some(document) = self.docs.get(&doc) {
+                versions.extend(crate::history::of(document, &doc, id));
+            } else if let Some(bytes) = self.source.as_mut().and_then(|source| source(&doc)) {
+                versions.extend(crate::history::of(&Automerge::load(&bytes)?, &doc, id));
+            }
+        }
+        versions.sort_by_key(|version| version.op);
+        Ok(versions)
+    }
+
+    fn version_documents(&self, kind: &str, id: &str) -> impl Iterator<Item = String> + use<> {
+        let resource = self.index.get(kind, id).map(|held| held.doc.clone());
+        let content = self.content_of(kind, id).ok().map(|(content, _)| content);
+        resource.into_iter().chain(content)
     }
 
     /// The types and verbs declared so far: what a peer's change is checked against.

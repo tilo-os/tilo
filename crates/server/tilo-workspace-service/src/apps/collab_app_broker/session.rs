@@ -194,6 +194,7 @@ impl JoinedChannel {
     pub(super) fn resources_dispatch(
         &self,
         body: &[u8],
+        on_behalf_of: &[u8],
     ) -> Result<crate::apps::services::ResourceAnswer, BrokerError> {
         if body.len() > tilo_resource_store::wire::MAX_WIRE_BYTES {
             return Err(BrokerError::failed(
@@ -202,12 +203,18 @@ impl JoinedChannel {
         }
         let command: tilo_resource_store::wire::Command = serde_json::from_slice(body)
             .map_err(|error| BrokerError::failed(format!("no resource command: {error}")))?;
-        self.state
-            .revalidate_admission(&self.route(), &self.verified_identity)?;
+        let route = self.route();
+        let current = self
+            .state
+            .revalidate_admission(&route, &self.verified_identity)?;
         if command.writes() {
             self.writable()?;
+            if !on_behalf_of.is_empty() || current.agent_id.is_some() {
+                return Err(BrokerError::failed(
+                    "this resource route has no caller-scoped signer for the write".into(),
+                ));
+            }
         }
-        let route = self.route();
         if route.app_id.is_empty() || route.cluster_id.is_empty() {
             return Err(BrokerError::failed(
                 "resources are written and read on a certified app and workspace route".into(),
@@ -216,9 +223,11 @@ impl JoinedChannel {
         let service = self.state.services.resources.clone().ok_or_else(|| {
             BrokerError::failed("this device keeps no store for apps' resources".into())
         })?;
+        let caller = current.certified_caller(&route.cluster_id, false);
         let context = crate::apps::services::ResourceRequestContext::authenticated(
             route.app_id,
             route.cluster_id,
+            caller,
         );
         Ok(service.command(&context, command))
     }

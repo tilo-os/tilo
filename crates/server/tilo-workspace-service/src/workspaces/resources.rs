@@ -628,15 +628,9 @@ impl Workspaces {
         Ok(permitted.then_some(message))
     }
 
-    /// The person key the store's reader sets name for this device's person.
-    #[cfg(feature = "apps")]
-    fn resource_reader(&self) -> Result<String, String> {
-        Ok(hex::encode(self.member_identity()?.cert.user_public_key))
-    }
-
-    /// Carries out `app`'s `command` in `workspace`'s store: a write as this device, committed as
-    /// its signed write of every document it changed; a read of only what this device's person
-    /// may read. A batch the store refused partway commits what it wrote before the refusal.
+    /// Carries out an app's command on its certified route. A write requires the caller's
+    /// matching local signer, and a read returns only what this device's person may read.
+    /// A batch the store refused partway commits what it wrote before the refusal.
     ///
     /// # Errors
     /// The workspace is not held here, the store refused the write, or the workspace refused a
@@ -644,33 +638,79 @@ impl Workspaces {
     #[cfg(feature = "apps")]
     pub(crate) async fn resource_command(
         &self,
-        workspace: &str,
-        app: &str,
-        command: tilo_resource_store::wire::Command,
+        context: &crate::apps::services::ResourceRequestContext,
+        mut command: tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
-        use tilo_resource_store::wire::{Reply, read};
+        use tilo_resource_store::wire::{Command, Reply, read};
+        let workspace = context.workspace_id();
+        let device = self.member_identity()?;
+        let writing = command.writes();
+        if writing {
+            let caller = context.caller();
+            if caller.workspace() != Some(workspace)
+                || caller.user_public_key() != Some(&device.cert.user_public_key)
+                || caller.device_public_key() != Some(&device.device())
+            {
+                return Err("the resource write requires the certified caller's own signer".into());
+            }
+            let person = caller
+                .acting()
+                .person_id()
+                .ok_or("this resource route has no caller-scoped signer for the write")?;
+            stamp_resource_invoker(&mut command, person);
+        }
         let state = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        if !command.writes() {
-            let may_read = may_read(self.resource_reader()?);
+        if !writing {
+            let may_read = may_read(hex::encode(device.cert.user_public_key));
             let mut governed = state.lock().await;
-            return Ok(
-                read(governed.store_with_surfaces(), &command, &may_read).unwrap_or(Reply::Written)
-            );
+            let store = governed.store_with_surfaces();
+            let answer = match &command {
+                Command::Versions { kind, id } if store.get(kind, id, &may_read).is_some() => {
+                    Reply::Versions(
+                        store
+                            .read_versions(kind, id)
+                            .map_err(|error| error.to_string())?,
+                    )
+                }
+                Command::Versions { .. } => Reply::Versions(Vec::new()),
+                _ => read(store, &command, &may_read).unwrap_or(Reply::Written),
+            };
+            drop(governed);
+            return Ok(answer);
         }
-        let device = self.member_identity()?;
         let (requests, refused) = {
             let mut governed = state.lock().await;
             governed
-                .prepare_resource_write(&device, app, command)
+                .prepare_resource_write(&device, context.app_id(), command)
                 .await?
         };
         for request in requests {
             self.commit_local_document(workspace, request).await?;
         }
         refused.map_or(Ok(Reply::Written), Err)
+    }
+}
+
+/// The command names the verb and invocation, and the broker names who made it.
+#[cfg(feature = "apps")]
+fn stamp_resource_invoker(command: &mut tilo_resource_store::wire::Command, invoker: &str) {
+    use tilo_resource_store::wire::Command;
+    match command {
+        Command::Put { stamp, .. }
+        | Command::Remove { stamp, .. }
+        | Command::Undo { stamp, .. }
+        | Command::Edit { stamp, .. } => invoker.clone_into(&mut stamp.invoker),
+        Command::Batch(commands) => commands
+            .iter_mut()
+            .for_each(|command| stamp_resource_invoker(command, invoker)),
+        Command::Get { .. }
+        | Command::Query(_)
+        | Command::Count { .. }
+        | Command::Content { .. }
+        | Command::Versions { .. } => {}
     }
 }
 

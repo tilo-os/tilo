@@ -31,13 +31,12 @@ impl ServiceResources {
 
 impl ResourceServices for ServiceResources {
     fn command(&self, context: &ResourceRequestContext, command: Command) -> ResourceAnswer {
-        let app = context.app_id().to_owned();
-        let workspace = context.workspace_id().to_owned();
+        let context = context.clone();
         let workspaces = self.workspaces();
         Box::pin(async move {
             let workspaces =
                 workspaces.ok_or("this device's workspace service holds no workspaces")?;
-            workspaces.resource_command(&workspace, &app, command).await
+            workspaces.resource_command(&context, command).await
         })
     }
 }

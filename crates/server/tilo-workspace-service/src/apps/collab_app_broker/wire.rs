@@ -331,8 +331,9 @@ impl ChannelSession {
                     Ok(Box::pin(async move { reply.await.map_err(Refusal::refusal) }) as Answering)
                 }
                 Service::Resources => {
+                    // Keep the continuation reference so the broker can refuse unsupported writes.
                     channel
-                        .resources_dispatch(body)
+                        .resources_dispatch(body, on_behalf_of)
                         .map_err(failed)
                         .map(|reply| -> Answering {
                             Box::pin(async move {

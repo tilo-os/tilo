@@ -550,18 +550,22 @@ async fn an_app_reads_through_its_certified_route_but_cannot_write_through_a_rea
             });
             let (connection, outgoing, handle) = workspace.connection(9, RouteAccess::ReadOnly);
             let mut endpoint = Endpoint::serve(connection, outgoing, handle);
-            let ask = |command: Command| Operation::Command {
+            let ask = |handle, command: &Command, on_behalf_of| Operation::Command {
                 channel: handle,
                 service: Service::Resources,
-                body: serde_json::to_vec(&command).unwrap(),
-                on_behalf_of: Vec::new(),
+                body: serde_json::to_vec(command).unwrap(),
+                on_behalf_of,
             };
 
             let answer = endpoint
-                .call(ask(Command::Count {
-                    kind: "tasks.issue".to_owned(),
-                    filters: Vec::new(),
-                }))
+                .call(ask(
+                    handle,
+                    &Command::Count {
+                        kind: "tasks.issue".to_owned(),
+                        filters: Vec::new(),
+                    },
+                    Vec::new(),
+                ))
                 .await
                 .unwrap();
             let Reply::Answer(bytes) = answer else {
@@ -570,12 +574,13 @@ async fn an_app_reads_through_its_certified_route_but_cannot_write_through_a_rea
             let reply: tilo_resource_store::wire::Reply = serde_json::from_slice(&bytes).unwrap();
             assert!(matches!(reply, tilo_resource_store::wire::Reply::Count(1)));
 
+            let write = Command::Remove {
+                kind: "notes.note".to_owned(),
+                id: "meeting-notes".to_owned(),
+                stamp: tilo_resource_store::Stamp::default(),
+            };
             let denied = endpoint
-                .call(ask(Command::Remove {
-                    kind: "notes.note".to_owned(),
-                    id: "meeting-notes".to_owned(),
-                    stamp: tilo_resource_store::Stamp::default(),
-                }))
+                .call(ask(handle, &write, Vec::new()))
                 .await
                 .unwrap_err();
             assert!(denied.contains("changes nothing on it"));
@@ -587,6 +592,20 @@ async fn an_app_reads_through_its_certified_route_but_cannot_write_through_a_rea
                 )],
                 "only the read reaches the store, under the admitted route"
             );
+
+            let (connection, outgoing, handle) = workspace.connection(9, RouteAccess::Own);
+            let mut endpoint = Endpoint::serve(connection, outgoing, handle);
+            let denied = endpoint
+                .call(ask(handle, &write, vec![1; 16]))
+                .await
+                .unwrap_err();
+            assert!(denied.contains("no caller-scoped signer"));
+            assert_eq!(store.0.lock().unwrap().len(), 1);
+            endpoint
+                .call(ask(handle, &write, Vec::new()))
+                .await
+                .unwrap();
+            assert_eq!(store.0.lock().unwrap().len(), 2);
         })
         .await;
 }

@@ -802,22 +802,24 @@ pub trait HostedWorkspaces: Send + Sync {
     ) -> Option<Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>>;
 }
 
-/// The app and workspace a resource command comes from, as the broker certified its route: the
-/// service never takes them from the command.
+/// A resource command's certified route and caller, supplied by the broker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResourceRequestContext {
     app_id: String,
     workspace_id: String,
+    caller: tilo_actions::remote::Caller,
 }
 
 impl ResourceRequestContext {
     pub(crate) fn authenticated(
         app_id: impl Into<String>,
         workspace_id: impl Into<String>,
+        caller: tilo_actions::remote::Caller,
     ) -> Self {
         Self {
             app_id: app_id.into(),
             workspace_id: workspace_id.into(),
+            caller,
         }
     }
 
@@ -829,6 +831,11 @@ impl ResourceRequestContext {
     #[must_use]
     pub fn workspace_id(&self) -> &str {
         &self.workspace_id
+    }
+
+    #[must_use]
+    pub fn caller(&self) -> &tilo_actions::remote::Caller {
+        &self.caller
     }
 }
 

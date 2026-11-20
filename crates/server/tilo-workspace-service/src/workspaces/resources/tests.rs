@@ -21,9 +21,19 @@ use tilo_resource_store::{Cell, Query, Resource, Stamp, Store, Value};
 use super::super::Workspaces;
 use super::super::fixtures::{TestGroupKeys, governor_with, test_host_holding};
 use super::super::sealed_documents::fixtures::member_device;
+use crate::apps::services::ResourceRequestContext;
 
 const APP: &str = "so.tilo.tasks";
 const KIND: &str = "tasks.issue";
+
+fn context(workspace: &str, cert: &tilo_user_identity::DeviceCert) -> ResourceRequestContext {
+    ResourceRequestContext::authenticated(
+        APP,
+        workspace,
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(workspace),
+    )
+}
 
 /// A member device writing a workspace's resources through a store of its own, sealing each
 /// document's change under the workspace's keys as its engine does.
@@ -136,21 +146,107 @@ async fn title(workspaces: &Workspaces, workspace: &str, id: &str) -> Option<Val
 /// The title of the issue `id` of `workspace`, as an app reads it through the service.
 async fn title_through_service(
     workspaces: &Workspaces,
-    workspace: &str,
+    context: &ResourceRequestContext,
     id: &str,
 ) -> Option<Value> {
     let get = Command::Get {
         kind: KIND.to_owned(),
         id: id.to_owned(),
     };
-    match workspaces
-        .resource_command(workspace, APP, get)
-        .await
-        .unwrap()
-    {
+    match workspaces.resource_command(context, get).await.unwrap() {
         Reply::Resource(held) => held.map(|held| held.scalar("title")),
         _ => None,
     }
+}
+
+async fn assert_delegated_write_refused(
+    workspaces: &Workspaces,
+    context: &ResourceRequestContext,
+    cert: &tilo_user_identity::DeviceCert,
+    resource: Resource,
+    stamp: Stamp,
+) {
+    let delegated = ResourceRequestContext::authenticated(
+        APP,
+        context.workspace_id(),
+        tilo_actions::remote::Caller::delegated_agent(
+            "scribe",
+            cert.user_public_key,
+            cert.device_public_key,
+        )
+        .in_workspace(context.workspace_id()),
+    );
+    let denied = workspaces
+        .resource_command(
+            &delegated,
+            Command::Put {
+                kind: KIND.into(),
+                id: "denied".into(),
+                resource,
+                stamp,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(denied.contains("no caller-scoped signer"));
+    assert!(
+        title_through_service(workspaces, context, "denied")
+            .await
+            .is_none()
+    );
+}
+
+async fn assert_certified_history(
+    workspaces: &Workspaces,
+    context: &ResourceRequestContext,
+    person: &str,
+) {
+    let Reply::Versions(versions) = workspaces
+        .resource_command(
+            context,
+            Command::Versions {
+                kind: KIND.into(),
+                id: "i-1".into(),
+            },
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("the resource has a history");
+    };
+    assert_eq!(versions.len(), 2);
+    assert!(versions.iter().all(|version| {
+        version
+            .stamp
+            .as_ref()
+            .is_some_and(|stamp| stamp.invoker == person)
+    }));
+}
+
+/// The replica follows the document placed by the store so other members hear its changes.
+async fn assert_replica_holds_issue(workspaces: &Workspaces, workspace: &str) {
+    let governed = workspaces.workspace(workspace).await.unwrap();
+    let governed = governed.lock().await;
+    let held = {
+        let store = governed.resources.store();
+        let doc = store
+            .index()
+            .documents()
+            .next()
+            .map(str::to_owned)
+            .expect("the store placed a document");
+        (
+            doc,
+            store
+                .index()
+                .len(&Query::of(KIND, 10), &|readers| readers == "*"),
+        )
+    };
+    assert_eq!(held.1, 1, "the store indexes the issue");
+    assert!(
+        governed.peer().holds_document(APP, &held.0),
+        "the workspace's replica holds the document the store placed"
+    );
 }
 
 /// The service writes its device's resources through its own store, as the device's signed and
@@ -169,6 +265,7 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
     }));
     let created = workspaces.create("Tasks").await.unwrap();
     let workspace = created.workspace;
+    let context = context(&workspace, &cert);
     // The workspace's content keys are here before an app writes in it.
     let route = tilo_peer_state::document_frame::DocumentRoute {
         app_id: APP.into(),
@@ -189,11 +286,12 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
         order: None,
         fields: BTreeMap::from([("title".to_owned(), Cell::One(Value::Text(title.into())))]),
     };
+    assert_delegated_write_refused(&workspaces, &context, &cert, issue("Denied"), stamp.clone())
+        .await;
     for title in ["First", "Renamed"] {
         workspaces
             .resource_command(
-                &workspace,
-                APP,
+                &context,
                 Command::Put {
                     kind: KIND.to_owned(),
                     id: "i-1".to_owned(),
@@ -204,40 +302,15 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
             .await
             .unwrap();
         assert_eq!(
-            title_through_service(&workspaces, &workspace, "i-1").await,
+            title_through_service(&workspaces, &context, "i-1").await,
             Some(Value::Text(title.into())),
             "the write is read back at once"
         );
     }
-    // The workspace's replica follows the document its store holds: its next change is drafted
-    // after it, and the workspace's other members hear the write as they hear any.
-    {
-        let governed = workspaces.workspace(&workspace).await.unwrap();
-        let governed = governed.lock().await;
-        let held = {
-            let store = governed.resources.store();
-            let doc = store
-                .index()
-                .documents()
-                .next()
-                .map(str::to_owned)
-                .expect("the store placed a document");
-            (
-                doc,
-                store
-                    .index()
-                    .len(&Query::of(KIND, 10), &|readers| readers == "*"),
-            )
-        };
-        assert_eq!(held.1, 1, "the store indexes the issue");
-        assert!(
-            governed.peer().holds_document(APP, &held.0),
-            "the workspace's replica holds the document the store placed"
-        );
-    }
+    assert_replica_holds_issue(&workspaces, &workspace).await;
     // A reader the issue's set leaves out reads nothing of it.
     assert!(
-        title_through_service(&workspaces, &workspace, "i-2")
+        title_through_service(&workspaces, &context, "i-2")
             .await
             .is_none(),
         "an issue nobody wrote is not there"
@@ -250,10 +323,16 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
         cert: cert.clone(),
         signer: Arc::new(key),
     }));
+    assert_certified_history(&workspaces, &context, &hex::encode(cert.user_public_key)).await;
     assert_eq!(
-        title_through_service(&workspaces, &workspace, "i-1").await,
+        title_through_service(&workspaces, &context, "i-1").await,
         Some(Value::Text("Renamed".into())),
         "a restart reads the store back"
+    );
+    assert!(
+        title_through_service(&workspaces, &context, "denied")
+            .await
+            .is_none()
     );
     drop(workspaces);
     server.shutdown().await;
