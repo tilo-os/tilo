@@ -8,7 +8,6 @@
 
 use super::Session;
 use serde_json::Map;
-use tilolang_tilo::action::resource_ids;
 use ui::time::testing::with_wall;
 
 use crate::change_marks::{Driven as _, action_id, named, published_with, run, settle};
@@ -19,7 +18,7 @@ const NOTES: &str = "so.tilo.lang.notes";
 fn a_notes_history_shows_who_changed_it_and_when_and_reads_anew_as_time_passes() {
     let _settled = ui::motion::testing::settled();
     let mut app = Session::notes();
-    let root = app.read(|doc| resource_ids(doc, NOTES)).remove(0);
+    let root = super::root_id(&app, NOTES);
     let notebook = format!("tl:{NOTES}:{root}");
     let new_note = action_id(&mut app, &notebook, "New note");
     let made = ui::time::SystemTime::now();

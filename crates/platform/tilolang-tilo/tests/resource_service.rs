@@ -1,11 +1,8 @@
-//! A workspace's tilolang documents as session resources: a note made through the notes app's own
+//! A workspace's tilolang resources as session resources: a note made through the notes app's own
 //! action is published, its reading is what a runtime loading notes as another app's package
-//! reads back, and a change to the note moves the reading. A change too large to record whole
-//! keeps its large parts in the document's content store, which the session lends
-//! ([`ResourceService::provide_content`]), so an agent's paste is recorded and reads back here and
-//! on a peer.
+//! reads back, and a change to the note moves the reading.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use serde_json::{Map, Value as Json, json};
 use tilo_service::notice::Notice;
 use tilo_service::{Service, Started};
@@ -45,7 +42,7 @@ view note_card(n: notes.Note) {
 
 /// Ada's workspace with its notebook, published.
 fn service() -> (ResourceService, tilolang_runtime::Meta) {
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, NOTES]);
+    let (ada, packages) = Replica::new("ada", Workspace::new(), &[DISCUSSION, NOTES]);
     ada.host.root_of(APP).unwrap();
     ada.commit();
     (
@@ -76,41 +73,16 @@ fn new_note(service: &mut ResourceService) -> String {
 }
 
 #[test]
-fn an_action_through_the_service_is_written_once_as_its_change() {
+fn an_action_through_the_service_is_written_as_one_change() {
     let (mut service, _) = service();
-    let before = service.host().store().stats();
-    let heads = service.record().get_heads();
+    let watch = service.host().store().watch();
     new_note(&mut service);
-    let after = service.host().store().stats();
+    let moved = watch.take();
     assert_eq!(
-        after.written_once,
-        before.written_once + 1,
-        "what the action's plan wrote is its change"
+        moved.docs.len(),
+        1,
+        "the action's plan wrote one document: {moved:?}"
     );
-    assert_eq!(
-        after.merges, before.merges,
-        "no copy of the document is merged in"
-    );
-
-    // A peer replaying the action the change documents gets the same change, to the byte.
-    let mut peer = service.record();
-    let arrived: Vec<_> = peer
-        .get_changes(&heads)
-        .iter()
-        .map(automerge::Change::hash)
-        .collect();
-    assert_eq!(arrived.len(), 1, "the action is one change");
-    let mut registry = tilo_actions::ActionRegistry::new();
-    tilolang_tilo::history::register(&mut registry);
-    for change in arrived {
-        let verified = service
-            .host()
-            .with_schemas(|| tilo_actions::verify_change(&mut peer, change, &registry));
-        assert!(
-            matches!(verified, Ok(tilo_actions::Verified::Reproduced)),
-            "a peer replaying the change gets the same one: {verified:?}"
-        );
-    }
 }
 
 /// Every text a tree shows, in its props.
@@ -156,7 +128,9 @@ tilo_test_env::scenario! {
             .expect("the note publishes its own open");
         assert!(open.encode_immediate().is_some(), "its open takes no input");
 
-        let before = service.record().get_heads();
+        let watch = service.host().store().watch();
+        // A new watch says everything moved until it is first taken.
+        let _ = watch.take();
         // Invoked as an agent answering in a conversation, the open is answered with nothing done to
         // the document: the session places the note beside that conversation.
         let agent =
@@ -170,10 +144,9 @@ tilo_test_env::scenario! {
             Started::Done(tilo_actions::ActionOutput::default()),
             "it changed nothing of the document"
         );
-        assert_eq!(
-            service.record().get_heads(),
-            before,
-            "the document did not change"
+        assert!(
+            watch.take().is_empty(),
+            "the store did not change"
         );
         // What it asked stands for the session to place: the note, beside the conversation that asked,
         // and the actor that asked is the agent's.
@@ -245,7 +218,7 @@ tilo_test_env::scenario! {
         let reading = service.read(&note).unwrap();
 
         // The shell's side: notes is another app's package here, its documents read from the session.
-        let shell = Host::new(&AutoCommit::new(), Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), || None).unwrap();
+        let shell = Host::new(Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), || None).unwrap();
         let discussion =
             tilolang::compile_package(DISCUSSION.0, &IdsLock::parse(DISCUSSION.1).unwrap(), &[])
                 .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
@@ -296,7 +269,7 @@ tilo_test_env::scenario! {
 /// with no window of the app open, and the clock its app and its triggers read.
 fn tasks() -> (ResourceService, std::rc::Rc<std::cell::RefCell<String>>) {
     let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-10-27T09:00:00Z".to_owned()));
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, TASKS]);
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[DISCUSSION, TASKS]);
     ada.host.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
@@ -421,7 +394,8 @@ fn a_reminder_writes_the_notice_of_its_person_at_its_moment_once() {
 /// The notices the document holds: each one's person, what it says, and the resource it opens.
 fn notices(host: &Host) -> Vec<(String, String, String, String)> {
     host.store()
-        .resources_of(tilolang::HOST_APP, tilolang::NOTICE_TYPE)
+        .resources_of(tilolang::NOTICE_TYPE)
+        .unwrap_or_default()
         .into_iter()
         .filter_map(|id| {
             let at = ResourceRef::root(id, tilolang::NOTICE_TYPE.to_owned());
@@ -446,142 +420,6 @@ fn notices(host: &Host) -> Vec<(String, String, String, String)> {
             Some((to, title, body, opens))
         })
         .collect()
-}
-
-/// A body past a mebibyte, a paragraph a line: what an agent pastes into a note.
-fn pasted_body() -> String {
-    use std::fmt::Write as _;
-    let mut body = String::new();
-    for at in 0..17 {
-        let _ = writeln!(body, "Pasted paragraph {at}: {}", "words ".repeat(11_000));
-    }
-    body
-}
-
-/// The change of `doc` whose recorded action keeps parts as content, and those parts.
-fn kept_as_content(doc: &mut tilo_resource::Doc) -> (automerge::ChangeHash, Vec<String>) {
-    let document = doc.document();
-    document
-        .get_changes(&[])
-        .iter()
-        .rev()
-        .find_map(|change| {
-            let hash = change.hash();
-            let action = tilo_actions::entry_of(document, hash)?.action?;
-            let parts = action.content_parts();
-            (!parts.is_empty()).then_some((hash, parts))
-        })
-        .expect("the paste's change keeps its body as content")
-}
-
-/// The address a sealed reference names its ciphertext by.
-fn address(reference: &str) -> &str {
-    reference
-        .split_once('.')
-        .map_or(reference, |(hash, _)| hash)
-}
-
-/// A note whose body is past a mebibyte, written by an agent through the documents service, is kept
-/// as content in the document's store: the paste is recorded rather than refused, the note reads it
-/// back, and the change decodes from the store alone — after the document opens again, and on a
-/// peer that asks the document's route for its parts.
-#[test]
-fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
-    let (mut service, _) = service();
-    let store = tilo_content::ContentStore::memory().sealing();
-    service.provide_content(APP, store.clone());
-    let note = new_note(&mut service);
-    let body = pasted_body();
-    let agent = tilo_actions::ActionInvoker::agent("tide");
-    let started = service
-        .invoke_as(
-            &agent,
-            &note,
-            tilolang_tilo::action::EDIT_TEXT_ACTION,
-            &args(json!({"field": "body", "value": body})),
-        )
-        .expect("the paste is recorded rather than refused");
-    assert!(matches!(started, Started::Done(_)), "the paste is done");
-    service.settle();
-    let reading = serde_json::to_string(&service.read(&note).expect("the note is published"))
-        .expect("the reading reads");
-    assert!(
-        reading.contains("Pasted paragraph 16:"),
-        "the note reads the paste back: {reading:.200}"
-    );
-
-    // Its change keeps the body as content, sealed, in the document's store.
-    let (paste, parts) = kept_as_content(&mut service.record());
-    assert!(
-        parts.iter().all(|part| tilo_content::is_sealed(part)),
-        "a document's parts are sealed: {parts:?}"
-    );
-    assert!(
-        parts.iter().all(|part| store.has(part)),
-        "the document's store keeps every part: {parts:?}"
-    );
-
-    // The document opens again over what the device holds: the change decodes from the store alone,
-    // and the note the reopened document publishes reads the paste back.
-    let reopened = reopened_service(&service.record(), &store);
-    assert_eq!(
-        crate::window::decoded(reopened.record(), paste, store.clone()).unwrap(),
-        tilo_actions::Verified::Reproduced,
-        "after the document opens again, the paste reads back as it ran"
-    );
-    let reading = serde_json::to_string(&reopened.read(&note).expect("the note is published"))
-        .expect("the reading reads");
-    assert!(
-        reading.contains("Pasted paragraph 16:"),
-        "the reopened document reads the paste back: {reading:.200}"
-    );
-
-    // A peer holds the change and not its parts: decoding asks the document's route, and once what
-    // was offered there arrives, the action reproduces its change there too.
-    let link = std::sync::Arc::new(collaboration::document_content::ContentLink::default());
-    let theirs = collaboration::document_content::DocumentContent::store(
-        tilo_content::ContentStore::memory(),
-        std::sync::Arc::clone(&link),
-    );
-    assert!(
-        matches!(
-            crate::window::decoded(reopened.record(), paste, theirs.clone()).unwrap(),
-            tilo_actions::Verified::ContentMissing(_)
-        ),
-        "the peer lacks the paste until it arrives"
-    );
-    let wanted: Vec<String> = link.take_requests().wants;
-    assert!(
-        parts
-            .iter()
-            .any(|part| wanted.iter().any(|hash| hash == address(part))),
-        "the peer asks the document's route for the paste: wanted {wanted:?}"
-    );
-    for part in &parts {
-        let hash = address(part);
-        let bytes = store
-            .read(hash)
-            .expect("the document's store keeps the ciphertext");
-        link.arrive(hash.to_owned(), bytes);
-    }
-    assert_eq!(
-        crate::window::decoded(reopened.record(), paste, theirs).unwrap(),
-        tilo_actions::Verified::Reproduced,
-        "once the paste arrived, the peer's action reproduces its change"
-    );
-}
-
-/// The document `doc` opened again, its content kept in `store`: a fresh service over the document
-/// the device holds, as the session opens it on the next start.
-fn reopened_service(
-    doc: &tilo_resource::Doc,
-    store: &tilo_content::ContentStore,
-) -> ResourceService {
-    let (replica, _) = Replica::new("ada", doc.clone(), &[DISCUSSION, NOTES]);
-    let mut service = replica.into_service("ada");
-    service.provide_content(APP, store.clone());
-    service.settle();
-    service
 }
 
 /// An action that sets what its document holds already changes nothing and is done, as any caller
@@ -613,7 +451,7 @@ const MAIL_APP: &str = "so.tilo.lang.mail";
 /// Ada's workspace with Mail's inbox a week in, as the session keeps it: a `ResourceService`
 /// over the document, and its first conversation's published id.
 fn mail_inbox() -> (ResourceService, String) {
-    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[MAIL]);
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[MAIL]);
     let meta = loaded.last().unwrap().meta.clone();
     ada.host.root_of(MAIL_APP).unwrap();
     ada.commit();

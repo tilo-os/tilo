@@ -284,7 +284,12 @@ impl Host {
     /// The anchor names nothing in this workspace.
     pub fn open_plan(&self, anchor: &str, view: Option<&str>) -> Result<OpenPlan, String> {
         use tilolang_runtime::store::Store as _;
-        let probe = ResourceRef::parse_id(anchor, String::new())
+        // The store answers by a resource's type: it is the one the store holds the anchor as.
+        let ty = self
+            .store()
+            .type_of_id(anchor)
+            .ok_or_else(|| format!("`{anchor}` is not in this workspace"))?;
+        let probe = ResourceRef::parse_id(anchor, ty)
             .ok_or_else(|| format!("`{anchor}` is not a resource id"))?;
         let (package, _, _) = self
             .records()
@@ -348,7 +353,11 @@ impl Host {
                     json!({
                         "item": crate::publish::resource_id(&package.meta.app, &doc),
                         "kind": package.meta.kind_of(&type_name),
-                        "title": self.label_of(&doc),
+                        "title": package
+                            .meta
+                            .type_named(&type_name)
+                            .map(|declared| self.label_of(&doc, &declared.id))
+                            .unwrap_or_default(),
                     })
                 })
                 .collect::<Vec<_>>();
@@ -445,7 +454,7 @@ impl Host {
         };
         let as_invocation = self
             .invocation_ref(target)
-            .filter(|invocation| self.store().contains(&invocation.doc));
+            .filter(|invocation| self.store().contains(invocation));
         if let Some(invocation) = as_invocation {
             let state = self
                 .runtime()

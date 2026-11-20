@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionSpec, Pick, Target};
 use tilo_resource::{JsonSchema, Model, Replica as Record, resource};
@@ -143,7 +143,7 @@ tilo_test_env::scenario! {
     // (`outside:youtube.search`), so text naming a kind of that outside service finds the app's own
     // action that asks its origin; an action that asks nothing outside carries no such tag.
     {
-        let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(SEARCHES, "")]);
+        let (_, packages) = Replica::new("ada", Workspace::new(), &[(SEARCHES, "")]);
         let meta = &packages[0].meta;
         let spec = |name: &str, kind: &str| {
             let action = meta
@@ -300,7 +300,7 @@ tilo_test_env::scenario! {
     // own menus do: what the published spec is given is the resource, so the parameters after it
     // are the form's. One that acts on what it is given reads plainly.
     {
-        let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(ASKS, "")]);
+        let (_, packages) = Replica::new("ada", Workspace::new(), &[(ASKS, "")]);
         let meta = &packages[0].meta;
         let label = |name: &str| {
             let action = meta
@@ -378,7 +378,7 @@ impl Planner for NoPlanner {
 }
 
 fn shapes() -> Meta {
-    let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(SHAPES, "")]);
+    let (_, packages) = Replica::new("ada", Workspace::new(), &[(SHAPES, "")]);
     packages[0].meta.clone()
 }
 
@@ -454,7 +454,7 @@ tilo_test_env::scenario! {
     // What the API binds is what the planner takes: a case by its name, a document by the
     // catalogue's reference, refused when it names a resource of another kind.
     {
-        let (replica, packages) = Replica::new("ada", AutoCommit::new(), &[(SHAPES, "")]);
+        let (replica, packages) = Replica::new("ada", Workspace::new(), &[(SHAPES, "")]);
         let meta = &packages[0].meta;
         let root = replica.host.root_of(&meta.app).unwrap();
         let id = |name: &str| {
@@ -477,7 +477,7 @@ tilo_test_env::scenario! {
             })
         };
         let resized = plan(&id("resize"), serde_json::json!({"size": "large"})).unwrap();
-        assert!(!resized.edits.is_empty());
+        assert_eq!(resized.args.get("size"), Some(&serde_json::json!("large")));
         assert!(plan(&id("resize"), serde_json::json!({"size": "huge"})).is_err());
         let wrong = serde_json::json!({"item": {
             "app": meta.app,

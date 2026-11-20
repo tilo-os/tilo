@@ -4,7 +4,7 @@
 //! makes what the app's entry would. What it is made from, when it is made from something, is
 //! the change's.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use serde_json::{Value as Json, json};
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::store::Store as _;
@@ -12,7 +12,7 @@ use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::{Actor, InvokeOutcome, Value};
 use tilolang_tilo::DynAction;
 use tilolang_tilo::meta::MetaExt as _;
-use tilolang_tilo::publish::PlanRequest;
+
 
 use crate::fixtures::Replica;
 
@@ -42,20 +42,14 @@ fn planned(
         .actions
         .iter()
         .find(|a| a.name == action)
-        .unwrap_or_else(|| panic!("no action {action}"));
+        .unwrap_or_else(|| panic!("no action {action}"))
+        .id
+        .clone();
     let root = replica.host.root_of(app).unwrap().id_string();
     let kind = meta.kind_of("Tasks");
+    let args = args.as_object().cloned().unwrap_or_default();
     replica
-        .host
-        .plan(&PlanRequest {
-            app,
-            kind: &kind,
-            action_id: &declared.id,
-            resource: Some(&root),
-            args: args.as_object().unwrap(),
-            caller: None,
-            from,
-        })
+        .carry(app, &kind, &declared, Some(&root), &args, None, from)
         .unwrap()
 }
 
@@ -130,9 +124,9 @@ fn create(replica: &Replica) -> String {
 
 #[test]
 fn one_line_from_anywhere_makes_the_task_its_words_say() {
-    let (mut ada, _) = Replica::new(
+    let (ada, _) = Replica::new(
         "ada",
-        AutoCommit::new(),
+        Workspace::new(),
         &[
             (DISCUSSION, DISCUSSION_IDS),
             (CHAT, CHAT_IDS),
@@ -148,7 +142,6 @@ fn one_line_from_anywhere_makes_the_task_its_words_say() {
     // the moment out of it, and what is left titles the task.
     let line = "Call the landlord fri 10am";
     let made = planned(&ada, TASKS_APP, "new_task", json!({ "title": line }), None);
-    ada.apply(&made);
     ada.commit();
 
     let today = tilolang::calendar::instant(NOW)
@@ -178,17 +171,16 @@ fn one_line_from_anywhere_makes_the_task_its_words_say() {
     assert_eq!(made.args.get("at"), Some(&json!(at)));
 
     // A line of nothing the task says adds no task: capture never blocks on a field.
-    let empty = planned(&ada, TASKS_APP, "new_task", json!({ "title": "" }), None);
-    ada.apply(&empty);
+    let _ = planned(&ada, TASKS_APP, "new_task", json!({ "title": "" }), None);
     ada.commit();
     assert_eq!(tasks(&ada).len(), 1);
 }
 
 #[test]
 fn a_task_captured_from_a_message_says_what_it_was_made_from() {
-    let (mut ada, _) = Replica::new(
+    let (ada, _) = Replica::new(
         "ada",
-        AutoCommit::new(),
+        Workspace::new(),
         &[
             (DISCUSSION, DISCUSSION_IDS),
             (CHAT, CHAT_IDS),
@@ -247,19 +239,17 @@ fn a_task_captured_from_a_message_says_what_it_was_made_from() {
     let root = ada.host.root_of(TASKS_APP).unwrap();
     let root = root.id_string();
     let kind = ada.host.package(TASKS_APP).unwrap().meta.kind_of("Tasks");
-    let made = ada
-        .host
-        .plan(&PlanRequest {
-            app: TASKS_APP,
-            kind: &kind,
-            action_id: &create(&ada),
-            resource: Some(&root),
-            args: &arguments,
-            caller: None,
-            from: Some(&from),
-        })
-        .unwrap();
-    ada.apply(&made);
+    let made = create(&ada);
+    ada.carry(
+        TASKS_APP,
+        &kind,
+        &made,
+        Some(&root),
+        &arguments,
+        None,
+        Some(&from),
+    )
+    .unwrap();
     ada.commit();
     let list = tasks(&ada);
     let [task] = list.as_slice() else {

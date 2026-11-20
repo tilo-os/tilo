@@ -10,7 +10,8 @@
 )]
 
 use crate::change_marks::{Driven as _, settle};
-use tilolang_tilo::action::resource_ids;
+use tilolang_tilo::runtime::store::Store as _;
+use tilolang_tilo::runtime::Value;
 
 const COUNTER: &str = "so.tilo.lang.counter";
 
@@ -36,39 +37,36 @@ fn a_persons_click_on_a_button_runs_the_action_and_history_names_them() {
         app.harness().click_named(&plus).unwrap();
         settle(&mut app);
     }
-    let counter = app.read(|doc| {
-        let id = resource_ids(doc, COUNTER).remove(0);
-        let chunks = tilolang_tilo::chunk::Chunks::of(doc.clone());
-        let record = tilolang_tilo::action::read_resource(&chunks, COUNTER, &id).unwrap();
-        record
-            .schema()
-            .fields
-            .iter()
-            .find_map(|field| match record.get(&field.id) {
-                Some(tilolang_tilo::DynValue::Counter(counter)) => Some(counter.get()),
-                _ => None,
-            })
-            .unwrap()
-    });
+    let root = app.instance_host().root_of(COUNTER).expect("the counter");
+    let counter = match app
+        .instance_host()
+        .runtime()
+        .read(&root, "value")
+        .expect("the counter reads")
+    {
+        Value::Int(n) => n,
+        other => panic!("a counter: {other:?}"),
+    };
     assert_eq!(counter, 3, "each click counted once");
-    let versions = app.read(ui::tilo_resource::history::versions);
+    let versions = app
+        .instance_host()
+        .store()
+        .versions(&root)
+        .expect("the counter's history");
     let presses = versions
         .iter()
         .filter(|version| {
-            version.context.as_ref().is_some_and(|context| {
-                context
-                    .what
-                    .as_ref()
-                    .is_some_and(|did| format!("{did:?}").contains("Verb"))
-            })
+            version
+                .who
+                .as_ref()
+                .is_some_and(|who| format!("{who:?}").contains("ada"))
         })
         .count();
-    assert!(presses >= 3, "the presses are in history: {versions:#?}");
+    assert!(presses >= 3, "the presses name the person: {versions:#?}");
     for version in &versions {
-        let context = version.context.as_ref();
         assert!(
-            context.is_none_or(|context| context.group.is_none()),
-            "a person's own change is ungrouped"
+            version.run.is_none(),
+            "a person's own change is ungrouped: {version:#?}"
         );
     }
 }

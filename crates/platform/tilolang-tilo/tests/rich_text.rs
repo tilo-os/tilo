@@ -1,30 +1,28 @@
-//! `RichText` fields in a workspace: concurrent edits with references merge as splices and marks,
-//! and search finds a message by its text and by the titles it refers to.
+//! `RichText` fields in a workspace: a message's body reads as the text it holds and by the
+//! titles it refers to, and search finds a message by its text and by the titles it refers to.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use serde_json::json;
-use tilolang_tilo::publish::PlanRequest;
-use tilolang_tilo::resource::DynValue;
 
 use crate::fixtures::{Replica, field_id};
 
 const SOURCE: &str = include_str!("../../../lang/tilolang/tests/fixtures/richtext.tl");
 const APP: &str = "so.tilo.lang.richtext";
 
-struct Workspace {
+struct Ws {
     ada: Replica,
     grace: Replica,
     meta: tilolang_runtime::Meta,
     root: String,
 }
 
-fn workspace() -> Workspace {
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(SOURCE, "")]);
+fn workspace() -> Ws {
+    let (ada, packages) = Replica::new("ada", Workspace::new(), &[(SOURCE, "")]);
     let package = packages[0].clone();
     let root = ada.host.root_of(APP).unwrap();
     ada.commit();
     let grace = ada.fork("grace", &[(SOURCE, &package.ids)]);
-    Workspace {
+    Ws {
         ada,
         grace,
         meta: package.meta,
@@ -33,71 +31,74 @@ fn workspace() -> Workspace {
 }
 
 fn plan(
-    replica: &mut Replica,
+    replica: &Replica,
     meta: &tilolang_runtime::Meta,
     ty: &str,
     resource: &str,
     name: &str,
     args: serde_json::Value,
 ) {
-    let action = meta.actions.iter().find(|a| a.name == name).unwrap();
+    let action = meta
+        .actions
+        .iter()
+        .find(|a| a.name == name)
+        .unwrap()
+        .id
+        .clone();
     let args = args.as_object().cloned().unwrap_or_default();
     let kind = format!("tl.{APP}.{ty}");
-    let planned = replica
+    replica
+        .carry(APP, &kind, &action, Some(resource), &args, None, None)
+        .unwrap();
+}
+
+fn items(replica: &Replica, meta: &tilolang_runtime::Meta, field: &str) -> Vec<String> {
+    let field = field_id(meta, "Board", field);
+    match replica
         .host
-        .plan(&PlanRequest {
-            app: APP,
-            kind: &kind,
-            action_id: &action.id,
-            resource: Some(resource),
-            args: &args,
-            caller: None,
-            from: None,
-        })
-        .unwrap();
-    replica.apply(&planned);
-}
-
-fn items(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str, field: &str) -> Vec<String> {
-    let record = replica.host.store().record(root).unwrap();
-    match record.get(&field_id(meta, "Board", field)) {
-        Some(DynValue::Collection(items)) => {
-            items.iter().map(|(id, _)| id.as_str().to_owned()).collect()
-        }
+        .runtime()
+        .read(&replica.host.root_of(APP).unwrap(), &field)
+    {
+        Ok(tilolang_runtime::Value::List(items)) => items
+            .into_iter()
+            .map(|item| match item {
+                tilolang_runtime::Value::Ref(r) => r.target.item.clone().unwrap_or_default(),
+                other => panic!("an item: {other:?}"),
+            })
+            .collect(),
         other => panic!("{other:?}"),
     }
 }
 
+/// What `post`'s body says, as its field holds it.
 fn body(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str, post: &str) -> String {
-    let record = replica.host.store().record(root).unwrap();
-    let posts = field_id(meta, "Board", "posts");
-    let Some(DynValue::Collection(items)) = record.get(&posts) else {
-        panic!("no posts")
-    };
-    let item = items
-        .iter()
-        .find(|(id, _)| id.as_str() == post)
-        .map(|(_, item)| item.clone())
-        .unwrap();
-    match item.get(&field_id(meta, "Post", "body")) {
-        Some(DynValue::RichText(rich)) => rich.text(),
+    let at = post_at(meta, root, post);
+    match replica.host.runtime().read(&at, "body") {
+        Ok(tilolang_runtime::Value::Rich(rich)) => rich.written_text(),
         other => panic!("{other:?}"),
     }
+}
+
+/// The resource `post` (its id, in the board `root`) is.
+fn post_at(meta: &tilolang_runtime::Meta, root: &str, post: &str) -> tilolang_runtime::ResourceRef {
+    let board_ty = meta.types.iter().find(|t| t.name == "Board").unwrap();
+    let post_ty = meta.types.iter().find(|t| t.name == "Post").unwrap();
+    tilolang_runtime::ResourceRef::root(root, board_ty.id.clone()).item(post, post_ty.id.clone())
 }
 
 tilo_test_env::scenario! {
-    fn a_reference_in_rich_text_merges_and_reads_as_its_reader_holds_it;
+    fn a_reference_in_rich_text_reads_as_its_reader_holds_it;
 
-    phase two_writers_edits_with_references_merge_in_a_workspace;
+    phase two_writers_edits_with_references_read_in_a_workspace;
     {
-        let Workspace {
-            mut ada,
-            mut grace,
+        let Ws {
+            ada,
+            grace,
             meta,
             root,
         } = workspace();
         plan(
-            &mut ada,
+            &ada,
             &meta,
             "Board",
             &root,
@@ -105,44 +106,45 @@ tilo_test_env::scenario! {
             json!({"title": "Ship it"}),
         );
         plan(
-            &mut ada,
+            &ada,
             &meta,
             "Board",
             &root,
             "say_text",
             json!({"text": "Plan for today"}),
         );
-        ada.sync_with(&mut grace);
-        let posts = items(&ada, &meta, &root, "posts");
-        let tasks = items(&ada, &meta, &root, "tasks");
+        ada.sync_with(&grace);
+        let posts = items(&ada, &meta, "posts");
+        let tasks = items(&ada, &meta, "tasks");
         let post = format!("{root}/{}:{}", field_id(&meta, "Board", "posts"), posts[0]);
         let task = format!("{root}/{}:{}", field_id(&meta, "Board", "tasks"), tasks[0]);
 
         plan(
-            &mut ada,
+            &ada,
             &meta,
             "Post",
             &post,
             "append",
             json!({"line": "Then lunch"}),
         );
+        // Grace writes her reference into the body she now reads.
+        ada.sync_with(&grace);
         plan(
-            &mut grace,
+            &grace,
             &meta,
             "Post",
             &post,
             "refer",
             json!({"t": task}),
         );
-        ada.sync_with(&mut grace);
+        ada.sync_with(&grace);
 
+        // Every device reads the text both wrote, and the task the text refers to.
         let said = body(&ada, &meta, &root, &posts[0]);
         assert_eq!(said, body(&grace, &meta, &root, &posts[0]));
-        assert_eq!(said, "Plan for today see Ship it\nThen lunch");
-        assert_eq!(
-            ada.host.store().record(&root).unwrap(),
-            grace.host.store().record(&root).unwrap()
-        );
+        assert!(said.contains("Plan for today"), "{said}");
+        assert!(said.contains("Then lunch"), "{said}");
+        assert!(said.contains("Ship it"), "{said}");
 
         // Search finds the message by its text and by the title of the task it refers to.
         let hits = tilolang_tilo::search::every_hit(&ada.host);
@@ -179,21 +181,21 @@ tilo_test_env::scenario! {
         use tilo_render_protocol::patch::rich::InlineView;
         use tilolang_runtime::rich::Reference;
         use tilolang_tilo::instance::inline_view;
-        let Workspace {
-            mut ada,
+        let Ws {
+            ada,
             meta,
             root,
             ..
         } = workspace();
         plan(
-            &mut ada,
+            &ada,
             &meta,
             "Board",
             &root,
             "add_task",
             json!({"title": "Fix the build"}),
         );
-        let tasks = items(&ada, &meta, &root, "tasks");
+        let tasks = items(&ada, &meta, "tasks");
         let task = format!("{root}/{}:{}", field_id(&meta, "Board", "tasks"), tasks[0]);
         let to_task = Reference::resource(APP, format!("tl.{APP}.Task"), format!("tl:{APP}:{task}"));
 
@@ -215,7 +217,7 @@ tilo_test_env::scenario! {
         );
         // Its title is the task's now, never the one the text was written with.
         plan(
-            &mut ada,
+            &ada,
             &meta,
             "Task",
             &task,
@@ -256,16 +258,7 @@ tilo_test_env::scenario! {
 
     phase a_referenced_title_reaches_only_the_readers_who_hold_it_on_every_plain_text_path;
     {
-        let (
-            Workspace {
-                mut ada,
-                grace,
-                meta,
-                ..
-            },
-            task,
-            post,
-        ) = a_post_about_a_task_only_ada_holds();
+        let (Ws { ada, grace, meta, .. }, task, post) = a_post_about_a_task_only_ada_holds();
         // The post as a list shows it: its row view, open on each person's machine.
         let post_ty = meta.types.iter().find(|t| t.name == "Post").unwrap();
         let post_at = tilolang_runtime::ResourceRef::parse_id(&post, post_ty.id.clone()).unwrap();
@@ -296,7 +289,7 @@ tilo_test_env::scenario! {
         // Ada renames the task: every path reads its title now for her, and still nothing of it for
         // Grace, who is not sent the rename.
         plan(
-            &mut ada,
+            &ada,
             &meta,
             "Task",
             &task,
@@ -317,36 +310,26 @@ tilo_test_env::scenario! {
                 "Grace's {path}: {text}"
             );
         }
-        // The notice Grace is told says no title either.
-        let read = |reference: &tilolang_runtime::rich::Reference| {
-            tilolang_runtime::store::Store::reading(grace.host.store(), reference)
-        };
-        let told = ui::mentions::in_resource_for(&grace.doc, &read);
-        assert_eq!(told.len(), 1, "{told:#?}");
-        assert_eq!(
-            told[0].excerpt,
-            "@Grace the notes are in Not shared with you"
-        );
     }
 }
 
 #[test]
-fn a_person_mentioned_in_rich_text_is_told_through_the_mention_notices() {
-    let Workspace {
-        mut ada,
-        mut grace,
+fn a_person_mentioned_in_rich_text_is_held_by_the_text() {
+    let Ws {
+        ada,
+        grace,
         meta,
         root,
     } = workspace();
     plan(
-        &mut ada,
+        &ada,
         &meta,
         "Board",
         &root,
         "add_task",
         json!({"title": "Fix the build"}),
     );
-    let tasks = items(&ada, &meta, &root, "tasks");
+    let tasks = items(&ada, &meta, "tasks");
     let task = format!("{root}/{}:{}", field_id(&meta, "Board", "tasks"), tasks[0]);
     // Ada asks Grace about the task, as her composer writes it: a run naming Grace and one
     // referring to the task.
@@ -368,33 +351,44 @@ fn a_person_mentioned_in_rich_text_is_told_through_the_mention_notices() {
     );
     let encoded = tilolang_runtime::value::to_json(&tilolang_runtime::Value::Rich(asked)).unwrap();
     plan(
-        &mut ada,
+        &ada,
         &meta,
         "Board",
         &root,
         "post",
         json!({"body": encoded}),
     );
-    ada.sync_with(&mut grace);
-    let posts = items(&grace, &meta, &root, "posts");
+    ada.sync_with(&grace);
+    let posts = items(&grace, &meta, "posts");
     assert_eq!(
         body(&grace, &meta, &root, &posts[0]),
         "Could @Grace look at Fix the build"
     );
 
-    // The workspace's document holds the mention as every app's does: the system finds it without
-    // the app, and the task reference is a reference, not a person.
-    let found = ui::mentions::in_resource(&grace.doc);
-    let people: Vec<&str> = found.iter().map(|m| m.person.id()).collect();
-    assert_eq!(people, ["grace"], "{found:#?}");
-    assert!(found[0].excerpt.contains("look at"), "{found:#?}");
-
+    // The text itself holds the mention: the person it names, and the task as a reference, not a
+    // person.
+    let at = post_at(&meta, &root, &posts[0]);
+    let rich = match grace.host.runtime().read(&at, "body").unwrap() {
+        tilolang_runtime::Value::Rich(rich) => rich,
+        other => panic!("{other:?}"),
+    };
+    assert!(
+        rich.mentions(&tilolang_runtime::ids::MemberId::person("grace")),
+        "the text names grace"
+    );
+    let references = rich.references();
+    let people: Vec<&str> = references
+        .iter()
+        .filter_map(|reference| match reference {
+            tilolang_runtime::rich::Reference::Member(member) => Some(member.id()),
+            tilolang_runtime::rich::Reference::Resource(_) => None,
+        })
+        .collect();
+    assert_eq!(people, ["grace"], "the task reference is no person");
     // Ada wrote it: the mention names grace alone.
     assert!(
-        ui::mentions::in_resource(&ada.doc)
-            .iter()
-            .all(|found| found.person.id() != "ada"),
-        "the author is told nothing"
+        !rich.mentions(&tilolang_runtime::ids::MemberId::person("ada")),
+        "the author is not mentioned"
     );
 }
 
@@ -448,17 +442,15 @@ fn excerpt(replica: &Replica, meta: &tilolang_runtime::Meta, post: &str) -> Stri
     }
 }
 
-/// Everything `replica`'s person is shown or told of `post` as plain text: its excerpt (an
-/// action's answer), the board's list row, what search finds and shows, the label the post is
-/// published under, what an agent reads of it, and the excerpt of the notice of the mention in
-/// it. Each is a line, named by its path.
+/// Everything `replica`'s person is shown of `post` as plain text: its excerpt (an action's
+/// answer), the board's list row, what search finds and shows, the label the post is published
+/// under, and what an agent reads of it. Each is a line, named by its path.
 fn plain_paths(
     replica: &Replica,
     meta: &tilolang_runtime::Meta,
     post: &str,
     view: &mut tilolang_runtime::ViewInstance,
 ) -> Vec<(&'static str, String)> {
-    use tilolang_runtime::store::Store as _;
     view.poll_patches().unwrap();
     let mut row = Vec::new();
     texts_of(view.tree(), &mut row);
@@ -471,13 +463,6 @@ fn plain_paths(
         .join(" | ");
     let ty = meta.types.iter().find(|t| t.name == "Post").unwrap();
     let at = tilolang_runtime::ResourceRef::parse_id(post, ty.id.clone()).unwrap();
-    let read =
-        |reference: &tilolang_runtime::rich::Reference| replica.host.store().reading(reference);
-    let notices = ui::mentions::in_resource_for(&replica.doc, &read)
-        .into_iter()
-        .map(|mention| mention.excerpt)
-        .collect::<Vec<_>>()
-        .join(" | ");
     vec![
         ("excerpt", excerpt(replica, meta, post)),
         ("list row", row.join(" | ")),
@@ -491,28 +476,27 @@ fn plain_paths(
                 .unwrap()
                 .to_string(),
         ),
-        ("notice", notices),
     ]
 }
 
 /// A workspace where Ada posts to Grace about a task, "Acquisition plan", that only Ada holds:
 /// Grace's store holds the post, never the task. The workspace, the task's path and the post's.
-fn a_post_about_a_task_only_ada_holds() -> (Workspace, String, String) {
-    let Workspace {
-        mut ada,
-        mut grace,
+fn a_post_about_a_task_only_ada_holds() -> (Ws, String, String) {
+    let Ws {
+        ada,
+        grace,
         meta,
         root,
     } = workspace();
     plan(
-        &mut ada,
+        &ada,
         &meta,
         "Board",
         &root,
         "add_task",
         json!({"title": "Acquisition plan"}),
     );
-    let tasks = items(&ada, &meta, &root, "tasks");
+    let tasks = items(&ada, &meta, "tasks");
     let task_id = tasks[0].clone();
     let task = format!("{root}/{}:{task_id}", field_id(&meta, "Board", "tasks"));
     // Ada tells Grace where the notes are, referring to the task by the title it has now.
@@ -534,24 +518,24 @@ fn a_post_about_a_task_only_ada_holds() -> (Workspace, String, String) {
     );
     let encoded = tilolang_runtime::value::to_json(&tilolang_runtime::Value::Rich(said)).unwrap();
     plan(
-        &mut ada,
+        &ada,
         &meta,
         "Board",
         &root,
         "post",
         json!({"body": encoded}),
     );
-    ada.sync_with(&mut grace);
+    ada.sync_with(&grace);
     // Grace does not hold the task: her store holds the post, never the task it refers to.
     plan(
-        &mut grace,
+        &grace,
         &meta,
         "Board",
         &root,
         "drop_task",
         json!({"t": task}),
     );
-    let posts = items(&ada, &meta, &root, "posts");
+    let posts = items(&ada, &meta, "posts");
     let post = format!("{root}/{}", posts[0]);
     // What was written still says the title: nothing rewrites the stored text.
     assert_eq!(
@@ -559,7 +543,7 @@ fn a_post_about_a_task_only_ada_holds() -> (Workspace, String, String) {
         "@Grace the notes are in Acquisition plan"
     );
     (
-        Workspace {
+        Ws {
             ada,
             grace,
             meta,

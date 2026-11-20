@@ -171,15 +171,6 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
         .scenario
         .clone()
         .or_else(|| app.scenarios.first().map(|scenario| scenario.name.clone()));
-    let record = options
-        .seed
-        .filter(|n| *n > 0)
-        .map(|n| {
-            let mut doc = tilolang_tilo::bench::seeded_record(&compiled, n)?;
-            ui::automerge::AutoCommit::load(&doc.save())
-                .map_err(|error| format!("the seeded workspace does not load: {error}"))
-        })
-        .transpose()?;
     let viewport = options.size;
     let theme = ui::Theme::light();
     let input = InteractionEnvironment::POINTER;
@@ -192,7 +183,7 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
             stage::Staging {
                 scenario: scenario.clone(),
                 root: options.root.clone(),
-                record,
+                seed: options.seed.unwrap_or(0),
                 costs: true,
                 states: Vec::new(),
             },

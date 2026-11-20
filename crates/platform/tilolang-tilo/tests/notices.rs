@@ -2,7 +2,7 @@
 //! shows it and no one else's does, what one of them does with it is what all of them see, and
 //! what it opens resolves from any of them.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use serde_json::{Map, Value as Json, json};
 use tilo_service::notice::{Closed, Notice};
 use tilo_service::{Service, Started};
@@ -115,41 +115,76 @@ fn args(value: Json) -> Map<String, Json> {
     value.as_object().cloned().unwrap()
 }
 
-/// A session's document service over `document`, for `person`, telling what it shows to a recorder.
+/// One device of a workspace: its service over its copy of the workspace's resources.
+struct Device {
+    service: ResourceService,
+    doc: Workspace,
+}
+
+impl Device {
+    fn poll(&mut self) -> bool {
+        self.service.poll()
+    }
+
+    fn settle(&mut self) {
+        self.service.settle();
+    }
+
+    fn host(&self) -> &Host {
+        self.service.host()
+    }
+
+    fn notice_seen(&mut self, id: &str) {
+        self.service.notice_seen(id);
+    }
+
+    fn told_kept(&self) -> Vec<String> {
+        self.service.told_kept()
+    }
+
+    fn take_up_told(&mut self, kept: impl IntoIterator<Item = String>) {
+        self.service.take_up_told(kept);
+    }
+
+    /// Take in what another device wrote, as sync does, and take the turn that tells the person.
+    fn take_in(&mut self, other: &Workspace) {
+        if self.doc.take_in(other) {
+            self.service.host().store().moved();
+        }
+        self.poll();
+    }
+}
+
+/// A session's service over a copy of `base`, for `person`, telling what it shows to a recorder.
 /// Its clock stands before the reminder, so its own turn runs nothing until it is told to.
-fn service(name: &str, person: &str, record: &AutoCommit) -> (ResourceService, Recorder) {
-    let Replica { host, .. } = Replica::new(name, record.clone(), &[DISCUSSION, TASKS]).0;
-    let mut service = ResourceService::new(host, person);
+fn service(name: &str, person: &str, base: &Workspace) -> (Device, Recorder) {
+    let (replica, _) = Replica::new(name, base.fork(), &[DISCUSSION, TASKS]);
+    let (mut service, doc) = replica.into_service_with_workspace(person);
     service.set_clock(|| "2026-10-27T09:00:00Z".to_owned());
     let recorder = Recorder::default();
     service.set_tell(recorder.clone());
-    (service, recorder)
+    (Device { service, doc }, recorder)
 }
 
 /// Ada's workspace with its tasks, as the session runs them, and the clock its app and its
 /// triggers read.
-fn ada_workspace() -> (
-    ResourceService,
-    Recorder,
-    std::rc::Rc<std::cell::RefCell<String>>,
-) {
+fn ada_workspace() -> (Device, Recorder, std::rc::Rc<std::cell::RefCell<String>>) {
     let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-10-27T09:00:00Z".to_owned()));
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, TASKS]);
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[DISCUSSION, TASKS]);
     ada.host.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
     });
     ada.host.root_of(TASKS_APP).unwrap();
     ada.commit();
-    let Replica { host, .. } = ada;
-    let mut service = ResourceService::new(host, "ada");
+    let (mut service, doc) = ada.into_service_with_workspace("ada");
     service.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
     });
     let recorder = Recorder::default();
     service.set_tell(recorder.clone());
-    (service, recorder, clock)
+    (Device { service, doc }, recorder, clock)
 }
 
 /// The id of the app's published root: the tasks.
@@ -163,9 +198,10 @@ fn tasks_root(service: &ResourceService) -> tilo_actions::ResourceId {
 }
 
 /// A task added under `title`: its id as the workspace names it.
-fn task(service: &mut ResourceService, title: &str) -> String {
-    let root = tasks_root(service);
+fn task(service: &mut Device, title: &str) -> String {
+    let root = tasks_root(&service.service);
     let started = service
+        .service
         .invoke(root.as_str(), "new_task", &args(json!({ "title": title })))
         .unwrap();
     let Started::Done(output) = started else {
@@ -176,21 +212,21 @@ fn task(service: &mut ResourceService, title: &str) -> String {
 }
 
 /// Ada makes `call` due today and Bo's, with a reminder in an hour; then the moment comes.
-fn remind(service: &mut ResourceService, call: &str, clock: &std::cell::RefCell<String>) {
+fn remind(service: &mut Device, call: &str, clock: &std::cell::RefCell<String>) {
     for (action, values) in [
         ("assign", json!({ "who": { "person": "bo" } })),
         ("due_today", json!({})),
         ("remind_at", json!({ "when": "2026-10-27T10:00:00Z" })),
     ] {
-        service.invoke(call, action, &args(values)).unwrap();
+        service.service.invoke(call, action, &args(values)).unwrap();
     }
     "2026-10-27T10:00:00Z".clone_into(&mut clock.borrow_mut());
     assert!(service.poll(), "the reminder's moment came");
 }
 
 /// The document as it is here, to give the next device.
-fn document_of(service: &ResourceService) -> AutoCommit {
-    service.record()
+fn document_of(device: &Device) -> Workspace {
+    device.doc.fork()
 }
 
 /// What the notice's tag names: its id in the document.
@@ -210,7 +246,7 @@ fn place(notice: &Notice) -> tilo_service::notice::Place {
 
 /// Invoke the action `name` of `meta`'s package on `args` as the replica's own person, commit
 /// what it made, and answer what it returned.
-fn invoke(replica: &mut Replica, meta: &Meta, name: &str, args: Vec<Value>) -> Value {
+fn invoke(replica: &Replica, meta: &Meta, name: &str, args: Vec<Value>) -> Value {
     let id = action_id(meta, name);
     let InvokeOutcome::Done(value) = replica
         .host
@@ -231,7 +267,7 @@ fn invoke(replica: &mut Replica, meta: &Meta, name: &str, args: Vec<Value>) -> V
 /// nine, with the clock at nine as the actions were made.
 fn reminded_workspace() -> (Replica, Meta, std::rc::Rc<std::cell::RefCell<String>>) {
     let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-10-27T09:00:00Z".to_owned()));
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, TASKS]);
+    let (ada, packages) = Replica::new("ada", Workspace::new(), &[DISCUSSION, TASKS]);
     ada.host.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
@@ -240,7 +276,7 @@ fn reminded_workspace() -> (Replica, Meta, std::rc::Rc<std::cell::RefCell<String
     let tasks = ada.host.root_of(TASKS_APP).unwrap();
     ada.commit();
     let Value::Ref(task) = invoke(
-        &mut ada,
+        &ada,
         &meta,
         "new_task",
         vec![
@@ -257,7 +293,7 @@ fn reminded_workspace() -> (Replica, Meta, std::rc::Rc<std::cell::RefCell<String
     };
     let task = tilolang_runtime::value::ResourceRef::clone(&task.target);
     invoke(
-        &mut ada,
+        &ada,
         &meta,
         "assign",
         vec![
@@ -267,9 +303,9 @@ fn reminded_workspace() -> (Replica, Meta, std::rc::Rc<std::cell::RefCell<String
             ))),
         ],
     );
-    invoke(&mut ada, &meta, "due_today", vec![Value::resource(&task)]);
+    invoke(&ada, &meta, "due_today", vec![Value::resource(&task)]);
     invoke(
-        &mut ada,
+        &ada,
         &meta,
         "remind_at",
         vec![Value::resource(&task), Value::text("2026-10-27T10:00:00Z")],
@@ -311,13 +347,13 @@ fn teller_access(meta: &Meta, who: &str) -> tilo_action_policy::MemberAccess {
 /// Two replicas of a teller workspace: ada told the note's person about it, and sealing the note
 /// waits on an answer either of them may give.
 fn teller_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
-    let (_, probe) = Replica::new("probe", AutoCommit::new(), &[TELLER]);
+    let (_, probe) = Replica::new("probe", Workspace::new(), &[TELLER]);
     let meta = probe[0].meta.clone();
     let ids = probe[0].ids.clone();
     let packages = [(TELLER.0, ids.as_str())];
-    let (mut ada, _) = Replica::access(
+    let (ada, _) = Replica::access(
         "ada",
-        AutoCommit::new(),
+        Workspace::new(),
         &packages,
         Some(teller_access(&meta, "ada")),
     );
@@ -366,7 +402,7 @@ tilo_test_env::scenario! {
 
     phase a_notice_a_run_writes_before_it_asks_is_one_when_both_replicas_run_it;
     {
-        let (mut ada, mut grace, invocation) = teller_workspace();
+        let (ada, grace, invocation) = teller_workspace();
         // Ada answers: the run goes on from its journal, and the notice the prefix wrote stays one.
         assert_eq!(
             ada.host
@@ -402,7 +438,7 @@ tilo_test_env::scenario! {
             "one notice on her device too"
         );
 
-        ada.sync_with(&mut grace);
+        ada.sync_with(&grace);
         for replica in [&ada, &grace] {
             assert_eq!(notices(&replica.host).len(), 1, "one notice between them");
         }
@@ -410,12 +446,12 @@ tilo_test_env::scenario! {
 
     phase a_reminder_its_trigger_runs_on_two_devices_is_told_once;
     {
-        let (mut ada, _, clock) = reminded_workspace();
+        let (ada, _, clock) = reminded_workspace();
         let ten = tilolang::calendar::instant("2026-10-27T10:00:00Z").unwrap();
 
         // Another device of the workspace, which has not heard from ada's yet: both come to run the
         // reminder at its moment, as they do when the origin moves between them.
-        let mut bo = ada.fork("bo", &[DISCUSSION, TASKS]);
+        let bo = ada.fork("bo", &[DISCUSSION, TASKS]);
         bo.host.set_clock({
             let clock = std::rc::Rc::clone(&clock);
             move || clock.borrow().clone()
@@ -431,7 +467,7 @@ tilo_test_env::scenario! {
         );
         bo.commit();
 
-        ada.sync_with(&mut bo);
+        ada.sync_with(&bo);
         for replica in [&ada, &bo] {
             let told = notices(&replica.host);
             assert_eq!(told.len(), 1, "one notice between them: {told:#?}");
@@ -634,7 +670,7 @@ fn a_notice_from_an_app_with_its_own_documents_opens_the_persons_own() {
     // app declaring `resources: .own`; a notice about what they keep there names that document, so
     // it opens on any device of theirs.
     let person = "ab".repeat(32);
-    let mut own = Replica::new(&person, AutoCommit::new(), &[OWN]).0;
+    let own = Replica::new(&person, Workspace::new(), &[OWN]).0;
     own.host.root_of("so.tilo.test.own").unwrap();
     own.commit();
 
@@ -674,7 +710,8 @@ fn a_notice_from_an_app_with_its_own_documents_opens_the_persons_own() {
 /// The notices the document holds: each one's person, what it says, and the resource it opens.
 fn notices(host: &Host) -> Vec<(String, String, String, String)> {
     host.store()
-        .resources_of(tilolang::HOST_APP, tilolang::NOTICE_TYPE)
+        .resources_of(tilolang::NOTICE_TYPE)
+        .unwrap_or_default()
         .into_iter()
         .filter_map(|id| {
             let at = tilolang_runtime::ResourceRef::root(id, tilolang::NOTICE_TYPE.to_owned());

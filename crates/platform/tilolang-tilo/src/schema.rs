@@ -146,49 +146,6 @@ impl FieldSchema {
     }
 }
 
-/// What a filter column holds (search.md, "Who indexes"): how its values are written so that
-/// their order is the values' order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ColumnKind {
-    Bool,
-    Int,
-    Float,
-    /// Text, by its letters without regard to case, then as written.
-    Text,
-    Date,
-    Time,
-    /// A case of an enum, by its id.
-    Enum,
-    /// A resource, by its id.
-    Ref,
-    /// An identifier, `scheme:value`, without regard to case.
-    Ident,
-    /// A person or agent of the workspace, by the id the host names them with.
-    Actor,
-}
-
-/// A filter column of a type (search.md, "Who indexes"): the index keeps, per collection of the
-/// type's resources and (for the type's filters) across the workspace, a list of them ordered
-/// by the column's value, each value written in [`ColumnKind`]'s order.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ColumnSchema {
-    /// What names it in the index: the field's id, or `=key` for a named filter.
-    pub name: String,
-    /// The field it holds, by id; none for a named filter.
-    pub field: Option<String>,
-    pub kind: ColumnKind,
-    /// Whether the field holds several values (a set): one entry per member.
-    pub many: bool,
-    /// A named filter's predicate over the resource's own fields: the column holds whether it
-    /// holds.
-    pub pred: Option<tilolang::pred::Pred<String>>,
-    /// Whether it is one of the type's filters, kept across the workspace as well as per
-    /// collection.
-    pub filter: bool,
-    /// The values it can hold, when they are known: an enum's cases by id.
-    pub cases: Vec<String>,
-}
-
 /// A record type: its id, the app that declared it and its fields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeSchema {
@@ -196,8 +153,6 @@ pub struct TypeSchema {
     pub app: String,
     pub name: String,
     pub fields: Vec<FieldSchema>,
-    /// Its filter columns: its filters' and those of every other field a `filter` compares.
-    pub columns: Vec<ColumnSchema>,
     /// The outside kind it holds (`type Message (origin: imap.message)`), when it holds one.
     pub origin: Option<String>,
     /// The field the type says names its documents (`(title: subject)`), by id: the first text
@@ -244,7 +199,6 @@ impl TypeSchema {
             app: app.into(),
             name: name.into(),
             fields: Vec::new(),
-            columns: Vec::new(),
             origin: None,
             title: None,
             untitled: None,
@@ -270,12 +224,6 @@ impl TypeSchema {
     #[must_use]
     pub fn field(&self, id: &str) -> Option<&FieldSchema> {
         self.fields.iter().find(|field| field.id == id)
-    }
-
-    /// The column `name`.
-    #[must_use]
-    pub fn column(&self, name: &str) -> Option<&ColumnSchema> {
-        self.columns.iter().find(|column| column.name == name)
     }
 
     /// The order [`crate::reads::first_text`] looks at the fields: every text of the resource's

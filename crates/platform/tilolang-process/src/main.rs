@@ -89,10 +89,9 @@ impl Exit {
     }
 }
 
-/// The storage the session granted this host, its own compiled modules kept in it: what a later
-/// start of this host starts compiled. A package's directory is not one: those never start with a
-/// dot.
-fn granted_storage() -> Option<std::path::PathBuf> {
+/// Keep this host's own compiled modules in the storage the session granted it: what a later start
+/// of this host starts compiled.
+fn keep_compiled() {
     let storage = std::env::var_os(STORAGE_ENV)
         .filter(|dir| !dir.is_empty())
         .map(std::path::PathBuf::from);
@@ -102,7 +101,6 @@ fn granted_storage() -> Option<std::path::PathBuf> {
     {
         tracing::warn!(%error, "compiled tilolang modules are not kept");
     }
-    storage
 }
 
 /// Run the host's frames until nothing changes: what a frame changed may ask for another (a view
@@ -141,9 +139,9 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
         Ok(wake) => wake,
         Err(error) => return (Exit::failed(format!("no wake: {error}")), Some(api)),
     };
-    let storage = granted_storage();
+    keep_compiled();
     let stop = stop_watching();
-    let mut host = TilolangProcess::new(storage, wake.waker());
+    let mut host = TilolangProcess::new(wake.waker());
     let mut api = Some(api);
     // Why the API closed, when the session did not close it.
     let mut api_failed: Option<String> = None;

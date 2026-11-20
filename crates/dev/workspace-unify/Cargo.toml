@@ -353,6 +353,7 @@ doc = false
 "example-tree-browser" = { path = "../../../examples/apps/tree-browser", default-features = false, features = [] }
 "example-virtual-list" = { path = "../../../examples/apps/virtual-list", default-features = false, features = [] }
 "fake-discord" = { path = "../../../crates/dev/fake-discord", default-features = false, features = [] }
+"fake-model-providers" = { path = "../../../crates/dev/fake-model-providers", default-features = false, features = [] }
 "fallible-iterator-0_2_0" = { package = "fallible-iterator", version = "^0.2.0", default-features = false, features = ["default", "std"] }
 "fallible-iterator-0_3_0" = { package = "fallible-iterator", version = "^0.3.0", default-features = false, features = ["alloc", "default"] }
 "fallible-streaming-iterator-0_1_9" = { package = "fallible-streaming-iterator", version = "^0.1.9", default-features = false, features = [] }
@@ -1166,7 +1167,7 @@ doc = false
 "tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["test-support"] }
 "tilo-activities" = { path = "../../../crates/session/activities", default-features = false, features = [] }
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
-"tilo-agent-session" = { path = "../../../crates/agent/agent-session", default-features = false, features = [] }
+"tilo-agent-session" = { path = "../../../crates/agent/agent-session", default-features = false, features = ["test-support"] }
 "tilo-agent-turn" = { path = "../../../crates/agent/agent-turn", default-features = false, features = [] }
 "tilo-agent-web-tools" = { path = "../../../crates/agent/agent-web-tools", default-features = false, features = ["fixture-servers"] }
 "tilo-api" = { path = "../../../crates/server/tilo-api", default-features = false, features = ["test-support"] }
@@ -1440,7 +1441,7 @@ doc = false
 "tilolang-mail" = { path = "../../../crates/platform/tilolang-mail", default-features = false, features = ["default", "engine"] }
 "tilolang-process" = { path = "../../../crates/platform/tilolang-process", default-features = false, features = ["test-support"] }
 "tilolang-runtime" = { path = "../../../crates/lang/tilolang-runtime", default-features = false, features = ["default", "wasmtime"] }
-"tilolang-tilo" = { path = "../../../crates/platform/tilolang-tilo", default-features = false, features = ["document"] }
+"tilolang-tilo" = { path = "../../../crates/platform/tilolang-tilo", default-features = false, features = [] }
 "tilolang-youtube" = { path = "../../../crates/platform/tilolang-youtube", default-features = false, features = ["connector", "default", "live"] }
 "time-0_3_47" = { package = "time", version = "^0.3.47", default-features = false, features = ["alloc", "default", "formatting", "local-offset", "macros", "parsing", "serde", "serde-human-readable", "serde-well-known", "std"] }
 "time-core-0_1_8" = { package = "time-core", version = "^0.1.8", default-features = false, features = [] }
@@ -4055,7 +4056,7 @@ doc = false
 "tilolang-lex" = { path = "../../../crates/lang/tilolang-lex", default-features = false, features = [] }
 "tilolang-mail" = { path = "../../../crates/platform/tilolang-mail", default-features = false, features = ["default", "engine"] }
 "tilolang-runtime" = { path = "../../../crates/lang/tilolang-runtime", default-features = false, features = ["default", "wasmtime"] }
-"tilolang-tilo" = { path = "../../../crates/platform/tilolang-tilo", default-features = false, features = ["document"] }
+"tilolang-tilo" = { path = "../../../crates/platform/tilolang-tilo", default-features = false }
 "tilolang-youtube" = { path = "../../../crates/platform/tilolang-youtube", default-features = false, features = ["connector", "default", "live"] }
 "time-0_3_47" = { package = "time", version = "^0.3.47", default-features = false, features = ["alloc", "default", "formatting", "local-offset", "macros", "parsing", "serde", "serde-human-readable", "serde-well-known", "std"] }
 "time-core-0_1_8" = { package = "time-core", version = "^0.1.8", default-features = false, features = [] }

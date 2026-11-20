@@ -38,7 +38,6 @@ use tilolang_runtime::store::{
 use tilolang_runtime::value::split_id;
 
 use crate::bundle::Bundle;
-use crate::reads::{default_value, element_key, field_of_json, scalar_of_json};
 use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup};
 use crate::task::Answered;
 use tilolang_runtime::store::field_json;
@@ -1033,6 +1032,101 @@ fn printed(value: &Json) -> String {
         Json::String(text) => text.clone(),
         Json::Object(_) => serde_json::to_string(value).unwrap_or_default(),
         other => other.to_string(),
+    }
+}
+
+fn scalar_of_json(value: &Json, composite: bool) -> Scalar {
+    if composite {
+        return Scalar::Json(value.clone());
+    }
+    match value {
+        Json::Bool(flag) => Scalar::Bool(*flag),
+        Json::Number(number) => number.as_i64().map_or_else(
+            || Scalar::Float(number.as_f64().unwrap_or(0.0)),
+            Scalar::Int,
+        ),
+        Json::String(text) => Scalar::Text(text.clone()),
+        other => Scalar::Json(other.clone()),
+    }
+}
+
+fn element_key(value: &Json) -> String {
+    match value {
+        Json::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// The value of `field` from `json`, what its key held as JSON at some version
+/// ([`tilo_resource::history::held_at`]): [`field_of_slot`] of a value read from history.
+///
+/// # Errors
+/// `Backend` when the value does not have the field's shape.
+fn field_of_json(json: &Json, field: &FieldSchema) -> Result<FieldValue, StoreError> {
+    let shape = |what: &str| {
+        StoreError::Backend(format!(
+            "field `{}` held {json} where it holds {what}",
+            field.id
+        ))
+    };
+    Ok(match field.kind {
+        MergeKind::Register => {
+            let value = if json.is_null() { &field.default } else { json };
+            if value.is_null() {
+                FieldValue::Absent
+            } else {
+                FieldValue::Scalar(scalar_of_json(value, field.composite))
+            }
+        }
+        MergeKind::Counter => match json {
+            Json::Null => FieldValue::Counter(0),
+            other => FieldValue::Counter(other.as_i64().ok_or_else(|| shape("a count"))?),
+        },
+        MergeKind::Text => match json {
+            Json::Null => FieldValue::Text(String::new()),
+            Json::String(text) => FieldValue::Text(text.clone()),
+            _ => return Err(shape("text")),
+        },
+        MergeKind::Set => match json {
+            Json::Null => FieldValue::Keys(Vec::new()),
+            Json::Object(elements) => {
+                let mut keys: Vec<String> = elements.keys().cloned().collect();
+                keys.sort();
+                FieldValue::Keys(keys)
+            }
+            _ => return Err(shape("a set")),
+        },
+        MergeKind::Map => match json {
+            Json::Null => FieldValue::Entries(Vec::new()),
+            Json::Object(entries) => FieldValue::Entries(
+                entries
+                    .iter()
+                    .map(|(key, value)| (key.clone(), scalar_of_json(value, false)))
+                    .collect(),
+            ),
+            _ => return Err(shape("a map")),
+        },
+        MergeKind::RichText | MergeKind::Collection | MergeKind::Record => {
+            return Err(StoreError::Invalid(format!(
+                "field `{}` is not read from what its key held",
+                field.id
+            )));
+        }
+    })
+}
+
+/// What `field` of an item stored as its order key alone reads as.
+#[must_use]
+fn default_value(field: &FieldSchema) -> FieldValue {
+    match field.kind {
+        MergeKind::Register if field.default.is_null() => FieldValue::Absent,
+        MergeKind::Register => FieldValue::Scalar(scalar_of_json(&field.default, field.composite)),
+        MergeKind::Counter => FieldValue::Counter(0),
+        MergeKind::Text => FieldValue::Text(String::new()),
+        MergeKind::RichText => FieldValue::Rich(tilolang_runtime::rich::RichValue::default()),
+        MergeKind::Set => FieldValue::Keys(Vec::new()),
+        MergeKind::Map => FieldValue::Entries(Vec::new()),
+        MergeKind::Collection | MergeKind::Record => FieldValue::Items(Vec::new()),
     }
 }
 

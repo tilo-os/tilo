@@ -3,7 +3,7 @@
 //! show of it: the task's row naming the message it came from, the message drawing the task in
 //! its own row view.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::store::{LinkHow, Store as _};
 use tilolang_runtime::value::ResourceRef;
@@ -140,9 +140,9 @@ fn menu(row: &UiNode, group: &str, label: &str) -> String {
 
 /// Ada's workspace with Chat and Tasks, a channel `design`, and Bo's message in it.
 fn workspace() -> (Replica, ResourceRef, ResourceRef) {
-    let (mut ada, _) = Replica::new(
+    let (ada, _) = Replica::new(
         "ada",
-        AutoCommit::new(),
+        Workspace::new(),
         &[
             (CHAT, CHAT_IDS),
             (DISCUSSION, DISCUSSION_IDS),
@@ -179,7 +179,7 @@ fn workspace() -> (Replica, ResourceRef, ResourceRef) {
 
 #[test]
 fn a_task_made_from_a_message_links_both_ways() {
-    let (mut ada, design, message) = workspace();
+    let (ada, design, message) = workspace();
 
     // The message's own menu offers making a task of it, and running that carries the message
     // through the API: the action it runs is made from the message, its title its text.

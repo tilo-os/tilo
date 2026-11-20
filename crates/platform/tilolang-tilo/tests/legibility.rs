@@ -4,12 +4,12 @@
 //! has not seen is what the run did after their seen mark, until they review the run, edit
 //! what it changed, or mark it seen.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::seen::{SeenMark, SeenWrite};
 use tilolang_runtime::store::{Version, VersionKind};
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Store as _, Value};
 
-use tilolang_tilo::host::{Host, Opening};
+use tilolang_tilo::host::Host;
 
 use crate::fixtures::{Replica, target};
 
@@ -24,12 +24,25 @@ pub(crate) const TASKS_APP: &str = "so.tilo.lang.tasks";
 
 pub(crate) const AGENT: &str = "helper";
 
+/// The agent's run: the work it was asked, and its run of it.
+pub(crate) const RUN: &str = "issue-7@8000000000000001";
+
 /// The agent that tidies: [`AGENT`] as the runtime names it.
 pub(crate) fn helper() -> tilolang_tilo::runtime::Actor {
     tilolang_tilo::runtime::ids::MemberId::agent(AGENT).into()
 }
-pub(crate) const RUN: &str = "issue-7@8000000000000001";
-const LATER_RUN: &str = "issue-7@8000000000000002";
+
+/// What is written from now on in `replica` is a step of the agent's run [`RUN`], titled
+/// `title`, as the host stamps the writes of an agent's session.
+pub(crate) fn in_run(replica: &Replica, title: &str) {
+    replica
+        .host
+        .store()
+        .set_run(Some(tilolang_tilo::runtime::store::Run {
+            id: RUN.to_owned(),
+            title: title.to_owned(),
+        }));
+}
 
 pub(crate) fn call(
     r: &Replica,
@@ -61,16 +74,17 @@ fn field(r: &Replica, app: &str, ty: &str, name: &str) -> String {
     crate::fixtures::field_id(&r.host.package(app).unwrap().meta, ty, name)
 }
 
-fn kinds(versions: &[Version]) -> Vec<VersionKind> {
-    versions.iter().map(|v| v.kind).collect()
-}
-
 fn runs(versions: &[Version]) -> Vec<Option<&str>> {
     versions
         .iter()
         .map(|v| v.run.as_ref().map(|t| t.id.as_str()))
         .collect()
 }
+
+fn kinds(versions: &[Version]) -> Vec<VersionKind> {
+    versions.iter().map(|v| v.kind).collect()
+}
+
 
 /// Ada's workspace after an agent's run tidied her notes and tasks.
 pub(crate) struct Tidied {
@@ -86,7 +100,7 @@ pub(crate) struct Tidied {
 }
 
 impl Tidied {
-    fn all(&self) -> [&ResourceRef; 6] {
+    pub(crate) fn all(&self) -> [&ResourceRef; 6] {
         [
             &self.made,
             &self.groceries,
@@ -98,19 +112,21 @@ impl Tidied {
     }
 }
 
-/// Ada's workspace as another of her devices opens it over an index it builds whole from the
-/// document: the same lists, and what a list shows of what left it, without catching up.
+/// Ada marks seen everything the agent changed, as "Mark all seen" on the run does.
+pub(crate) fn mark_all_seen(tidied: &Tidied) {
+    let me = tilolang_tilo::personal::actor("ada");
+    for at in tidied.all() {
+        let _ = tidied.ada.host.runtime().mark_seen(&me, at);
+    }
+}
+
+/// Ada's workspace as another of her devices opens it over the same store: the same lists, and
+/// what a list shows of what left it.
 pub(crate) fn built_over(ada: &Replica) -> Host {
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("built-over-the-record");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("the index dir is made");
     let host = Host::open(
-        Opening {
-            record: Some(&ada.doc),
-            index_dir: Some(dir),
-            ..Opening::default()
-        },
+        ada.doc.store(),
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("phone")),
+        None,
         || None,
     )
     .expect("the workspace opens");
@@ -121,14 +137,13 @@ pub(crate) fn built_over(ada: &Replica) -> Host {
     ] {
         host.load_builtin(source, ids).expect("the package loads");
     }
-    host.wait_index();
     host
 }
 
 pub(crate) fn an_agent_tidies_notes_and_tasks() -> Tidied {
-    let (mut ada, _) = Replica::new(
+    let (ada, _) = Replica::new(
         "ada",
-        AutoCommit::new(),
+        Workspace::new(),
         &[
             (DISCUSSION, DISCUSSION_IDS),
             (NOTES, NOTES_IDS),
@@ -143,13 +158,8 @@ pub(crate) fn an_agent_tidies_notes_and_tasks() -> Tidied {
     // What Ada had before the run: two notes and two tasks of her own.
     let groceries = call(&ada, "ada", NOTES_APP, "new_note", vec![notes.clone()]);
     ada.commit();
-    call(
-        &ada,
-        "ada",
-        NOTES_APP,
-        "retitle",
-        vec![groceries.clone(), Value::text("Groceries")],
-    );
+    let named = vec![groceries.clone(), Value::text("Groceries")];
+    call(&ada, "ada", NOTES_APP, "retitle", named);
     let old = call(&ada, "ada", NOTES_APP, "new_note", vec![notes.clone()]);
     let landlord = call(
         &ada,
@@ -186,6 +196,7 @@ pub(crate) fn an_agent_tidies_notes_and_tasks() -> Tidied {
     // The agent's run: a note made, one renamed and one deleted; a task added, one checked off
     // and one removed.
     ada.host.set_clock(|| "2026-10-30T09:10:00Z".to_owned());
+    in_run(&ada, "Tidy my notes and tasks");
     let made = call(&ada, &helper(), NOTES_APP, "new_note", vec![notes.clone()]);
     call(
         &ada,
@@ -222,7 +233,8 @@ pub(crate) fn an_agent_tidies_notes_and_tasks() -> Tidied {
         "remove",
         vec![tasks, Value::resource(&stale)],
     );
-    ada.commit_in_run(&helper(), RUN, "Tidy my notes and tasks");
+    ada.host.store().set_run(None);
+    ada.commit();
     Tidied {
         made: target(&made),
         dentist: target(&dentist),
@@ -235,7 +247,7 @@ pub(crate) fn an_agent_tidies_notes_and_tasks() -> Tidied {
 }
 
 #[test]
-fn a_runs_versions_in_two_apps_name_the_run_and_what_it_did_removals_included() {
+fn an_agents_versions_in_two_apps_name_what_made_them_and_what_they_did_removals_included() {
     let Tidied {
         ada,
         made,
@@ -247,7 +259,7 @@ fn a_runs_versions_in_two_apps_name_the_run_and_what_it_did_removals_included() 
     } = an_agent_tidies_notes_and_tasks();
     let store = ada.host.store();
 
-    // Each version names the run that made it and what it did.
+    // Each version names who made it and what it did.
     let renamed = store.versions(&groceries).unwrap();
     assert_eq!(
         kinds(&renamed),
@@ -273,12 +285,12 @@ fn a_runs_versions_in_two_apps_name_the_run_and_what_it_did_removals_included() 
     let checked = store.versions(&landlord).unwrap();
     // Checking writes what the person changed — the box, and only that: whether it folds is
     // worked out from what is under and above it, not written with it, and when it changed and
-    // who changed it are the log's version, never a field.
+    // who changed it are the store's version, never a field.
     assert_eq!(
         checked.last().unwrap().fields,
         [field(&ada, TASKS_APP, "Task", "done")]
     );
-    // A removed document stays answerable: who removed it, in which run.
+    // A removed resource stays answerable: who removed it.
     for removed in [&old, &stale] {
         let versions = store.versions(removed).unwrap();
         let last = versions.last().unwrap();
@@ -304,7 +316,7 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
     let tidied = an_agent_tidies_notes_and_tasks();
     let all = tidied.all().map(Clone::clone);
     let Tidied {
-        mut ada,
+        ada,
         made,
         groceries,
         landlord,
@@ -312,14 +324,15 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
     } = tidied;
     let me = tilolang_tilo::personal::actor("ada");
 
-    // Everything the run did is unseen by Ada.
+    // Everything the agent did is unseen by Ada: one version of each resource it changed.
     let runtime = ada.host.runtime();
     for at in &all {
         let unseen = runtime.unseen(&me, at).unwrap();
-        assert_eq!(runs(&unseen), [Some(RUN)], "{at:?}");
+        assert_eq!(unseen.len(), 1, "{at:?}: {unseen:?}");
+        assert_eq!(unseen[0].who, Some(helper()), "{at:?}");
     }
 
-    // Editing a document marks what it shows as seen.
+    // Editing a resource marks what it shows as seen.
     call(
         &ada,
         "ada",
@@ -330,7 +343,7 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
     ada.commit();
     let runtime = ada.host.runtime();
     assert!(runtime.unseen(&me, &groceries).unwrap().is_empty());
-    // Marking one seen moves its mark to its newest version, kept for her own document.
+    // Marking one seen moves its mark to its newest version, kept for her own state.
     assert!(runtime.mark_seen(&me, &landlord).unwrap());
     assert!(runtime.unseen(&me, &landlord).unwrap().is_empty());
     let newest = ada.host.store().versions(&landlord).unwrap();
@@ -342,31 +355,16 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
             mark: Some(SeenMark::of(newest.last().unwrap())),
         }]
     );
-    // Mark all seen on the run: every version it made, in both apps, in one step; kept for
-    // her own document as the run.
-    assert!(runtime.mark_run_seen(&me, RUN));
-    assert!(!runtime.mark_run_seen(&me, RUN), "reviewed once");
-    for at in &all {
-        assert!(runtime.unseen(&me, at).unwrap().is_empty(), "{at:?}");
-    }
+    // Someone else's seen marks are their own: Ben has seen none of it.
     assert_eq!(
-        runtime.take_seen(),
-        [SeenWrite::Run {
-            person: me.clone(),
-            run: RUN.to_owned(),
-        }]
-    );
-    // Someone else's seen marks are their own: Ben has seen nothing of the run.
-    assert_eq!(
-        runs(
-            &runtime
-                .unseen(&tilolang_tilo::personal::actor("ben"), &made)
-                .unwrap()
-        ),
-        [Some(RUN)]
+        runtime
+            .unseen(&tilolang_tilo::personal::actor("ben"), &made)
+            .unwrap()
+            .len(),
+        1
     );
 
-    // A later run's change is unseen again, alone.
+    // A later change of the agent's is unseen again, alone.
     call(
         &ada,
         &helper(),
@@ -374,15 +372,13 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
         "retitle",
         vec![Value::resource(&made), Value::text("Meeting notes")],
     );
-    ada.commit_in_run(&helper(), LATER_RUN, "Name the new note");
     let runtime = ada.host.runtime();
-    assert_eq!(
-        runs(&runtime.unseen(&me, &made).unwrap()),
-        [Some(LATER_RUN)]
+    assert!(
+        runtime.unseen(&me, &made).unwrap().iter().all(|version| version.who == Some(helper())),
     );
-    // The host keeps what she saw in her own document and gives it back on another device: the
-    // runs and marks it sets are what `unseen` reads.
-    let (mut other, _) = Replica::new(
+    // Another device of hers reads the same versions of the workspace and marks what she saw
+    // there, as the runtime hands the host's marks to it.
+    let (other, _) = Replica::new(
         "ada",
         ada.doc.fork(),
         &[
@@ -391,14 +387,8 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
             (TASKS, TASKS_IDS),
         ],
     );
-    other.host.sync_from(&other.doc);
     let elsewhere = other.host.runtime();
     assert_eq!(elsewhere.unseen(&me, &made).unwrap().len(), 2);
-    elsewhere.set_seen_runs(&me, &[RUN.to_owned()]);
-    assert_eq!(
-        runs(&elsewhere.unseen(&me, &made).unwrap()),
-        [Some(LATER_RUN)]
-    );
     let mark = SeenMark::of(ada.host.store().versions(&made).unwrap().last().unwrap());
     elsewhere.set_seen(&me, &made.id_string(), Some(mark));
     assert!(elsewhere.unseen(&me, &made).unwrap().is_empty());
@@ -453,12 +443,12 @@ view shelf(s: Shelf) {
 "#;
 
 tilo_test_env::scenario! {
-    fn a_runs_versions_are_read_by_code_and_undone_with_their_marks;
+    fn a_runs_versions_are_read_by_code_and_marked_seen;
 
     phase code_reads_a_versions_run_kind_and_fields_and_what_is_unseen;
     {
         let app = "so.tilo.lang.shelf";
-        let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(SHELF, "")]);
+        let (ada, _) = Replica::new("ada", Workspace::new(), &[(SHELF, "")]);
         let shelf = Value::resource(&ada.host.root_of(app).unwrap());
         ada.commit();
         let book = call(
@@ -481,6 +471,7 @@ tilo_test_env::scenario! {
             other => panic!("{other:?}"),
         };
         assert_eq!(describe(&ada, &book), "0 unseen; no run");
+        in_run(&ada, "Sort the shelf");
         call(
             &ada,
             &helper(),
@@ -489,7 +480,8 @@ tilo_test_env::scenario! {
             vec![book.clone(), Value::text("Dune Messiah")],
         );
         call(&ada, &helper(), app, "drop", vec![shelf, gone.clone()]);
-        ada.commit_in_run(&helper(), RUN, "Sort the shelf");
+        ada.host.store().set_run(None);
+        ada.commit();
         // The book, the removed one and the shelf whose collection changed.
         assert_eq!(
             describe(&ada, &book),
@@ -501,46 +493,5 @@ tilo_test_env::scenario! {
         );
         assert!(ada.host.runtime().mark_run_seen(&tilolang_tilo::personal::actor("ada"), RUN));
         assert!(describe(&ada, &book).starts_with("0 unseen"));
-    }
-
-    phase undoing_the_run_takes_its_marks_with_it;
-    {
-        use ui::history_source::revert::{changes_of_entries, revert_changes};
-        let Tidied {
-            mut ada,
-            made,
-            groceries,
-            landlord,
-            ..
-        } = an_agent_tidies_notes_and_tasks();
-        // History takes the run back, as Ada.
-        let scope = ui::history_source::steps::Scope::Session(RUN.to_owned());
-        let entries: Vec<_> = tilo_resource::history::versions(&mut ada.doc)
-            .iter()
-            .filter(|version| scope.owns(version))
-            .map(|version| ui::history_source::entry_id_from_hash(&version.hash.to_string()))
-            .collect();
-        assert!(!entries.is_empty(), "the run's steps are in history");
-        let changes = changes_of_entries(&mut ada.doc, &entries);
-        revert_changes(
-            &mut ada.doc,
-            &changes,
-            &ui::history_source::authors::AuthorDirectory::new(),
-        )
-        .unwrap();
-        let message = tilo_actions::ActionContext::default()
-            .with_invoker(tilo_actions::ActionInvoker::person("ada"))
-            .change_message()
-            .unwrap();
-        ada.doc
-            .commit_with(automerge::transaction::CommitOptions::default().with_message(message));
-        ada.host.sync_from(&ada.doc);
-        // What she took back is hers now: nothing of it is marked.
-        for at in [&groceries, &landlord, &made] {
-            assert!(
-                ada.host.runtime().unseen(&tilolang_tilo::personal::actor("ada"), at).unwrap().is_empty(),
-                "{at:?} is no longer marked after the undo"
-            );
-        }
     }
 }

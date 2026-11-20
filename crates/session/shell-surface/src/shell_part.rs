@@ -30,9 +30,9 @@ use tilo_render_protocol::patch::local::pair;
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::{Config, Instance, Mode};
+use tilolang_tilo::resources::{ResourceStore, Watch};
 use tilolang_tilo::origin::{Origin, OriginCx, OriginType, Polled, origin_types};
 use tilolang_tilo::platform_apps::platform_packages;
-use tilolang_tilo::publish::{COMMIT, HOST_RESOURCE};
 use tilolang_tilo::runtime::origin::OriginWrite;
 use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 use tilolang_tilo::tilolang::Compiled;
@@ -616,8 +616,9 @@ impl SessionOrigin {
             // A shell without a layout view keeps its bar alone: nothing to write.
             return false;
         };
-        let root = if cx.host.store().contains(&format!("root-{}", kind.ty)) {
-            ResourceRef::root(format!("root-{}", kind.ty), kind.ty.clone())
+        let made = ResourceRef::root(format!("root-{}", kind.ty), kind.ty.clone());
+        let root = if cx.host.store().contains(&made) {
+            made
         } else {
             match cx.host.runtime().create_root(&kind.ty) {
                 Ok(root) => root,
@@ -861,9 +862,10 @@ pub struct ShellWork {
 pub struct ShellPart {
     widgets: WidgetSurface,
     instance: Instance,
-    /// The shell's record, shared by every part of one shell: every display draws the same
-    /// record, so a change any part commits is the whole shell's.
-    record: Rc<RefCell<tilo_resource::Doc>>,
+    /// What moved in the shell's store since the part last drew it: a write of another part
+    /// (every display draws the same store, so a change any part writes is the whole shell's),
+    /// or of a connection the session admits (a REPL, an agent).
+    moved: Watch,
     origin: Rc<RefCell<SessionOrigin>>,
     /// Input reached the part since its last turn.
     input: bool,
@@ -889,9 +891,6 @@ pub struct ShellPart {
     /// launcher, the notifications), is up: the part stands over its output even where a
     /// fullscreen window owns it, so what the person opened shows.
     cover: bool,
-    /// The shell's record's heads the instance was last brought up to date with: a commit any
-    /// part of the shell made reaches this one by them, so every display shows one shell.
-    seen_heads: Vec<ui::automerge::ChangeHash>,
     /// The previews the part's views name ([`ui::widget::WindowPreview`]), and which of the
     /// compositor's windows each is: the part hands the compositor every window's live picture
     /// where its view would draw it, and none for a window `windows` leaves out (one that may
@@ -925,10 +924,10 @@ pub struct ShellIdentity<'a> {
     pub person: &'a str,
     /// The link the session publishes its readings on and the shell asks through.
     pub link: Rc<SessionLink>,
-    /// The shell's record, shared by every part of the shell.
-    pub record: Rc<RefCell<tilo_resource::Doc>>,
-    /// The first part of a shell makes its record and seeds it; every other part finds it
-    /// made, so one shell has one record and one seed, however many displays draw it.
+    /// The shell's store, shared by every part of the shell.
+    pub store: ResourceStore,
+    /// The first part of a shell makes its roots and seeds them; every other part finds them
+    /// made, so one shell has one seed, however many displays draw it.
     pub seed: bool,
 }
 
@@ -954,7 +953,7 @@ impl ShellPart {
             packages,
             person,
             link,
-            record,
+            store,
             seed,
         } = identity;
         let placement = Placement {
@@ -970,8 +969,7 @@ impl ShellPart {
                 me: person.into(),
                 mode: Mode::Live,
                 device: None,
-                index_dir: None,
-                document_loader: None,
+                store: store.clone(),
                 sink: None,
                 // The shell's whole screen, not whatever root the package lists first.
                 root: screen_layer(),
@@ -989,10 +987,7 @@ impl ShellPart {
         instance.set_access(Rc::new(shell_access(app, person)));
         let origin = Rc::new(RefCell::new(SessionOrigin::new(link)));
         instance.add_origin(Rc::clone(&origin) as tilolang_tilo::origin::SharedOrigin);
-        {
-            let record = record.borrow();
-            instance.sync(Some(&record));
-        }
+        instance.sync();
         let window = AppWindow::part(Box::new(window_end));
         // The whole screen lies under the windows, which stand in its wells; the bar rides over
         // them.
@@ -1002,7 +997,7 @@ impl ShellPart {
         let mut part = Self {
             widgets,
             instance,
-            record,
+            moved: store.watch(),
             origin,
             input: false,
             again: true,
@@ -1013,7 +1008,6 @@ impl ShellPart {
             gone: None,
             fullscreen: Vec::new(),
             cover: false,
-            seen_heads: Vec::new(),
             previews: None,
             deadline: None,
             content: None,
@@ -1035,11 +1029,9 @@ impl ShellPart {
         part
     }
 
-    /// Make the shell's own record (`root shell: Shell`) and let the package's migration seed
-    /// it — the bar's fields and the dock's items, on a shell never arranged — as the package
-    /// version's change, as an app's migration is. Both go through the part's own turns: the
-    /// record is created as a queued change, the migration runs once the record is had, and
-    /// [`Self::commit`] writes each into the part's record.
+    /// Make the shell's own roots (`root shell: Shell`, `root viewing: Viewing`) and let the
+    /// package's migration seed them — the bar's fields and the dock's items, on a shell never
+    /// arranged — as an app's migration seeds its own, written to the shell's store.
     fn seed(&mut self) {
         let Some(host) = self.instance.host() else {
             return;
@@ -1050,30 +1042,24 @@ impl ShellPart {
             .unwrap_or_default();
         for root in &roots {
             if let Err(error) = host.root_resource(self.instance.app(), &root.ty) {
-                tracing::warn!(%error, "the shell's record could not be made");
+                tracing::warn!(%error, "the shell's roots could not be made");
                 return;
             }
         }
         if roots.is_empty() {
             return;
         }
-        // The package's migrations run for the room's origin alone, as an app's do. Each
-        // committed action is written into the part's record, as the API writes an app's: the
-        // record's making first, then the seed that runs once the record is had.
+        // The package's migrations run where the shell's resources originate, as an app's do:
+        // the roots' making first, then the seed that runs once they are had.
         self.instance.set_origin(true);
         for _ in 0..3 {
-            {
-                let record = self.record.borrow();
-                self.instance.sync(Some(&record));
-            }
-            self.instance.commit_planned();
+            self.instance.sync();
             if !self.commit() {
                 break;
             }
         }
-        // What the seed wrote is the shell's for every part: the heads here are the ones a
-        // part made later finds and takes in.
-        self.seen_heads = self.record.borrow().committed_heads();
+        // What the seed wrote is drawn: the part starts from it, not from a move.
+        let _ = self.moved.take();
     }
 
     /// Stand on this part's whole output: the shell draws the whole screen, its bar and dock
@@ -1431,52 +1417,18 @@ impl ShellPart {
             .downcast_ref::<AppWindow>()
     }
 
-    /// Commit what the instance planned to the shell's record, as the API would, and bring
-    /// the instance up to date with it. Whether anything was committed.
+    /// Write what the instance planned to the shell's store, and bring the instance up to date
+    /// with it. Whether anything was written.
     fn commit(&mut self) -> bool {
-        let mut committed = false;
-        while let Some((invocation, _)) = self.instance.take_invocation() {
-            let address = invocation.address.clone();
-            if address.resource != HOST_RESOURCE || address.action != COMMIT {
-                self.instance.answered(
-                    &address,
-                    Some("a shell part runs only its own commits".to_owned()),
-                );
-                continue;
-            }
-            let ticket = invocation
-                .arguments
-                .get("ticket")
-                .and_then(Json::as_u64)
-                .unwrap_or_default();
-            let applied = self
-                .instance
-                .host()
-                .and_then(|host| Some((host.store().take_ticket(ticket)?, host)))
-                .ok_or_else(|| format!("no committed action {ticket}"))
-                .and_then(|(action, host)| {
-                    crate::commit::recorded(&host, &mut self.record.borrow_mut(), &action)
-                });
-            if let Err(why) = &applied {
-                tracing::error!(why, "a shell change could not be committed");
-            }
-            self.instance.answered(&address, applied.err());
-            committed = true;
+        self.instance.commit_planned();
+        if self.moved.peek().is_empty() {
+            return false;
         }
-        if committed {
-            // The record holds the changes once they are committed: the instance reads them
-            // from its heads, and every view runs again, since the change is the record's.
-            {
-                let mut record = self.record.borrow_mut();
-                record.commit();
-                self.seen_heads = record.committed_heads();
-            }
-            let at = std::time::Instant::now();
-            let record = self.record.borrow();
-            self.instance.sync(Some(&record));
-            self.work.syncing = self.work.syncing.saturating_add(at.elapsed());
-        }
-        committed
+        let _ = self.moved.take();
+        let at = std::time::Instant::now();
+        self.instance.sync();
+        self.work.syncing = self.work.syncing.saturating_add(at.elapsed());
+        true
     }
 
     /// Let the window and the instance answer each other until neither has more to say.
@@ -1497,13 +1449,6 @@ impl ShellPart {
             if let Some(window) = self.window() {
                 window.flush();
             }
-            // An index built off the frame is taken in here, as a window's turn takes it in: the
-            // shell's own views read what it holds, so the turn that takes it in draws them. A
-            // shell whose indexes are all read from (every frame after the open) asks nothing.
-            if self.index_building() {
-                let record = self.record.borrow();
-                self.instance.sync(Some(&record));
-            }
             let updated = self.instance.update();
             self.work.updating = self.work.updating.saturating_add(lap(&mut at));
             let committed = self.commit();
@@ -1522,12 +1467,12 @@ impl ShellPart {
             self.widgets.relayout();
             self.work.laying_out = self.work.laying_out.saturating_add(at.elapsed());
         }
-        // A change another display's part of this shell committed reaches this one: the record
-        // it shares moved on from the heads this instance saw, and it draws the shell as it is
-        // now. Nothing else changed, so no other frame is owed.
+        // A change another display's part of this shell wrote reaches this one: the store it
+        // shares moved, and it draws the shell as it is now. Nothing else changed, so no other
+        // frame is owed.
         if self.record_moved() {
-            self.seen_heads = self.record.borrow().committed_heads();
-            self.instance.sync(Some(&self.record.borrow()));
+            let _ = self.moved.take();
+            self.instance.sync();
             // The views that read a bound field run again in this turn, so the part draws the
             // shell's change now rather than a frame late.
             let mut at = std::time::Instant::now();
@@ -1632,22 +1577,13 @@ impl ShellPart {
             || self.owes()
             || self.origin.borrow().due()
             || self.record_moved()
-            || self.index_building()
     }
 
-    /// Whether the shell's instance still waits for the index its packages' load builds off the
-    /// frame: until a frame takes it in the views read nothing, and nothing else wakes the part
-    /// for it — a hosted app's window is asked for its index's frame, and the shell, which draws
-    /// its own, asks for the frames itself.
-    fn index_building(&self) -> bool {
-        self.instance.host().is_some_and(|host| !host.index_ready())
-    }
-
-    /// Whether the shell's record holds changes this part has not drawn: another part of the
-    /// shell committed them, or a connection the session admits (a REPL, an agent) changed the
-    /// record the shell's own actions are published on, and the part draws them next frame.
+    /// Whether the shell's store holds changes this part has not drawn: another part of the
+    /// shell wrote them, or a connection the session admits (a REPL, an agent) changed the
+    /// resources the shell's own actions are published on, and the part draws them next frame.
     fn record_moved(&self) -> bool {
-        self.record.borrow().committed_heads() != self.seen_heads
+        !self.moved.peek().is_empty()
     }
 }
 

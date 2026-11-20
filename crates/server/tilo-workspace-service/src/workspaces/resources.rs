@@ -628,7 +628,7 @@ impl GovernedWorkspace {
         write: &tilo_resource_store::Written,
     ) -> Result<OwnerCommitRequest, String> {
         let keys = self
-            .reader_keys(&write.readers)
+            .writer_keys(&write.readers)
             .await
             .ok_or("this device holds no keys of the document's readers yet")??;
         let founding = !self.peer().holds_document(app, &write.doc);

@@ -8,7 +8,6 @@ use crate::tasks::{
     APP, ShownPlace, ShownSection, call, count, create, go_to, home_list_rows, key_of, node_of,
     places, read, shown_count, shown_title, target, task, workspace,
 };
-#[cfg(feature = "document")]
 use crate::tasks::{bound_key, task_page};
 
 /// The places under each heading of the sidebar, in order.
@@ -54,7 +53,7 @@ tilo_test_env::scenario! {
     // the filter of a place asks for a count, and the projects the root holds under a heading that
     // adds one of them.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let project = call(&ada, "new_project", vec![root.clone()]);
         call(
             &ada,
@@ -126,7 +125,7 @@ tilo_test_env::scenario! {
     // A project's place shows that project's tasks in the same window, and the entry at the
     // list's foot adds into it: choosing a place navigates in place, never away.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let project = call(&ada, "new_project", vec![root.clone()]);
         call(
             &ada,
@@ -191,7 +190,7 @@ tilo_test_env::scenario! {
     // Every place of the sidebar leads to a page of its own: a list, or the list's own empty
     // state. None lands on the window of nothing chosen.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let project = call(&ada, "new_project", vec![root.clone()]);
         call(&ada, "rename", vec![project, Value::text("Groceries")]);
         call(&ada, "new_task", create(&root, "Book a haircut"));
@@ -219,7 +218,7 @@ tilo_test_env::scenario! {
     // With every task in the place done, the place says so calmly, over the foot that folds what is
     // done away, and the places that count count nothing: what is done with leaves nothing open.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         // A project, the place that folds what is done with under its list: the places that count
         // count what they leave open, so theirs counts nothing.
         let project = call(&ada, "new_project", vec![root.clone()]);
@@ -282,7 +281,7 @@ tilo_test_env::scenario! {
     // A place that holds nothing says it holds nothing: nothing there waits, but nothing there is
     // done with either, so it is not that all of it is.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         // Due today, so the place of what nobody sorted does not hold it.
         let task = call(&ada, "new_task", create(&root, "Buy oat milk"));
         call(
@@ -325,7 +324,7 @@ tilo_test_env::scenario! {
     {
         use tilolang_runtime::members::Member;
 
-        let (mut ada, _root) = workspace();
+        let (ada, _root) = workspace();
         let mut view = ada.view(APP);
         view.poll_patches().unwrap();
         assert!(
@@ -384,10 +383,9 @@ tilo_test_env::scenario! {
 
 /// The assignee's person field offers the workspace's members and its agents, by the people
 /// and software a staged workspace has in it.
-#[cfg(feature = "document")]
 #[test]
 fn the_assignee_offers_the_workspaces_people_and_agents() {
-    let (mut ada, _root) = workspace();
+    let (ada, _root) = workspace();
     let scenario = ada
         .host
         .package(APP)

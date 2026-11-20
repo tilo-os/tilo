@@ -2,9 +2,8 @@
 //! ordinary workspace document under the library's app id, and the package reads it back through
 //! the library's own function.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::{UiNode, Value, ViewInstance};
-use tilolang_tilo::resource::DynValue;
 
 use crate::fixtures::{Replica, button_key, field_id};
 
@@ -112,7 +111,7 @@ fn texts(view: &ViewInstance) -> Vec<Option<&Value>> {
 
 #[test]
 fn a_library_owns_the_documents_its_action_writes() {
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(MARKS, ""), (NOTES, "")]);
+    let (ada, packages) = Replica::new("ada", Workspace::new(), &[(MARKS, ""), (NOTES, "")]);
     let (library, _user) = (&packages[0], &packages[1]);
     ada.host.root_of(LIBRARY).unwrap();
     ada.host.root_of(USER).unwrap();
@@ -124,17 +123,20 @@ fn a_library_owns_the_documents_its_action_writes() {
     ada.commit();
 
     // The press ran the user's action, which applied the library's action: the mark is in the
-    // library's root document, under the library's app id.
-    let record = ada.root(LIBRARY);
-    let Some(DynValue::Collection(marks)) = record.get(&field_id(&library.meta, "Marks", "marks"))
-    else {
-        panic!("the board holds its marks: {record:?}");
+    // library's root, under the library's app id.
+    let marks = ada.read(&ada.root(LIBRARY), "marks");
+    let items = match marks {
+        Value::List(items) => items,
+        other => panic!("the board holds its marks: {other:?}"),
     };
-    assert_eq!(marks.len(), 1, "the mark the user's press added");
-    let mark = marks.at(0).expect("the one mark").1;
+    assert_eq!(items.len(), 1, "the mark the user's press added");
+    let mark = match &items[0] {
+        Value::Ref(mark) => mark.target.clone(),
+        other => panic!("a mark: {other:?}"),
+    };
     assert_eq!(
-        mark.get(&field_id(&library.meta, "Mark", "title")),
-        Some(&DynValue::Text("High".to_owned()))
+        ada.read(&mark, &field_id(&library.meta, "Mark", "title")),
+        Value::text("High")
     );
     assert_eq!(
         texts(&ada.view(USER)),
