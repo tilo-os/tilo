@@ -56,14 +56,8 @@ impl Beckon {
     };
     const PULSE_DELAY: Duration = Duration::from_millis(140);
     const PULSE_END: f64 = 0.97;
-    /// One loop of the picture's gesture.
-    pub const GESTURE_PERIOD: Duration = Duration::from_millis(2600);
-    /// Where in its loop the picture rests when motion may not loop: the gesture well under way, so the
-    /// still picture says what to do.
-    pub const RESTING_PHASE: f64 = 0.7;
-    /// How many times the picture shows its gesture before it rests: the last loop stops at
-    /// [`Self::RESTING_PHASE`], where it rests.
-    pub const GESTURE_LOOPS: u32 = 3;
+    /// How long the pill takes to arrive; it asks for frames until then and rests after.
+    pub const ARRIVAL: Duration = Duration::from_millis(700);
     const CHECK: SpringSpec = SpringSpec {
         response: 0.34,
         damping: 1.0,
@@ -116,30 +110,6 @@ impl Beckon {
             approach: Self::ARRIVE_FROM_PX * (1.0 - travel),
             pulse,
         }
-    }
-
-    /// Where the picture is in its gesture's loop, `0..1`, `age` after the card began to arrive;
-    /// [`Self::RESTING_PHASE`] where motion may not loop.
-    #[must_use]
-    pub fn gesture_phase(age: Duration, motion: EffectiveMotion) -> f64 {
-        if !motion.loops() || super::clock::testing::is_settled() || age >= Self::loops_end() {
-            return Self::RESTING_PHASE;
-        }
-        (age.as_secs_f64() / Self::GESTURE_PERIOD.as_secs_f64()).fract()
-    }
-
-    /// How long after the card began to arrive its picture stops looping: [`Self::GESTURE_LOOPS`]
-    /// loops, the last ending at its resting pose.
-    fn loops_end() -> Duration {
-        Self::GESTURE_PERIOD.mul_f64(f64::from(Self::GESTURE_LOOPS - 1) + Self::RESTING_PHASE)
-    }
-
-    /// How far one stroke of the picture's gesture, which runs over `from..to` of its loop, has got at
-    /// `phase`: `0..=1`, starting and stopping gently as a hand does.
-    #[must_use]
-    pub fn stroke(phase: f64, from: f64, to: f64) -> f64 {
-        let t = stage(phase, from, to);
-        t * t * (3.0 - 2.0 * t)
     }
 
     /// The card going away unanswered, `age` after it began to: it fades where it is, at `base` (`fast`
@@ -214,14 +184,12 @@ impl Beckon {
         })
     }
 
-    /// When a hint shown since `shown` next needs a frame: soon while it arrives or its picture loops,
-    /// never once it rests still.
+    /// When a hint shown since `shown` next needs a frame: soon while it arrives, never once it
+    /// rests still.
     #[must_use]
-    pub fn next_frame(shown: Instant, now: Instant, motion: EffectiveMotion) -> Option<Instant> {
+    pub fn next_frame(shown: Instant, now: Instant, _motion: EffectiveMotion) -> Option<Instant> {
         let age = now.saturating_duration_since(shown);
-        let arriving = age < Self::GESTURE_PERIOD;
-        let looping = motion.loops() && age < Self::loops_end();
-        (looping || arriving).then(|| now + Duration::from_millis(16))
+        (age < Self::ARRIVAL).then(|| now + Duration::from_millis(16))
     }
 }
 
@@ -269,7 +237,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_beckon_arrives_loops_completes_and_only_fades_when_reduced;
+        fn a_beckon_arrives_completes_and_only_fades_when_reduced;
 
         phase the_card_arrives_with_a_small_overshoot_and_settles;
         {
@@ -296,32 +264,24 @@ mod tests {
                 assert!(a.approach.abs() < f64::EPSILON);
                 assert!(a.pulse.is_none());
             }
-            assert!(
-                (Beckon::gesture_phase(Duration::from_millis(1234), reduced()) - Beckon::RESTING_PHASE)
-                    .abs()
-                    < f64::EPSILON
-            );
             let c = Beckon::completion(Duration::from_millis(500), reduced()).unwrap();
             assert!(c.drift.abs() < f64::EPSILON && c.fold.abs() < f64::EPSILON);
         }
 
-        phase the_picture_loops_a_few_times_then_rests;
-        // The picture shows its gesture a few times, comes to rest where its last loop stops, and then
-        // asks for no frames.
+        phase a_hint_asks_for_frames_only_while_it_arrives;
+        // The pill arrives, rests still where it stands, and then asks for no frames.
         {
             let shown = crate::time::now();
-            let at = |secs: f64| Duration::from_secs_f64(secs);
-            let period = Beckon::GESTURE_PERIOD.as_secs_f64();
-            assert!(Beckon::next_frame(shown, shown + at(period * 1.5), on()).is_some());
-            let end = period * (f64::from(Beckon::GESTURE_LOOPS - 1) + Beckon::RESTING_PHASE);
-            let before = Beckon::gesture_phase(at(end - 0.001), on());
-            assert!((before - Beckon::RESTING_PHASE).abs() < 0.01, "{before}");
-            for secs in [end, end + 1.0, end + 60.0] {
+            assert!(Beckon::next_frame(shown, shown, on()).is_some());
+            assert!(
+                Beckon::next_frame(shown, shown + Beckon::ARRIVAL / 2, on()).is_some(),
+                "still arriving"
+            );
+            for after in [Beckon::ARRIVAL, Beckon::ARRIVAL + Duration::from_secs(60)] {
                 assert!(
-                    (Beckon::gesture_phase(at(secs), on()) - Beckon::RESTING_PHASE).abs()
-                        < f64::EPSILON
+                    Beckon::next_frame(shown, shown + after, on()).is_none(),
+                    "at rest after {after:?}"
                 );
-                assert!(Beckon::next_frame(shown, shown + at(secs), on()).is_none());
             }
         }
 

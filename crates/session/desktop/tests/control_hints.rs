@@ -91,7 +91,16 @@ fn chrome_over_at(tree: &Layout, feed: &HintsFeed, width: u32) -> (FrameHarness,
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(SketchTiles));
     // The strip reads where its windows show text and controls, as it does while a hint may show.
     handle.read_hint_ink(true);
-    let mut shell = FrameHarness::new(ui::state::State::new(), Box::new(surface), (width, 800));
+    // The bar is shown over the desktop, as it is when the person sees it: their windows settle
+    // below it, whole, as the shell tells the strip.
+    handle.set_top_overlay_inset(f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX));
+    // The windows settle below the bar at once, as they do when the person asks for less motion.
+    let mut shell = FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (width, 800),
+        ui::Theme::dark().with_reduce_motion(true),
+    );
     shell.relayout();
     let mut chrome = DesktopChrome::new(
         handle.clone(),
@@ -262,7 +271,7 @@ fn draw_shell(shell: &mut FrameHarness) {
     surface.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
 }
 
-/// The card the hint `unlearned` paints over `tree`, as the chrome drives it, with the strip's own
+/// The pill the hint `unlearned` paints over `tree`, as the chrome drives it, with the strip's own
 /// places: the real geometry the hint is placed against, and the desktop under the bar it may be
 /// placed in. `cues` are what the person did just before it, for a hint whose moment is one of
 /// those; they are noted here, after the shell's own frames have drawn, since a frame of the chrome
@@ -308,9 +317,9 @@ fn painted_hint(
     (hints.card_rect(), row, area)
 }
 
-/// The height of a hint's card: its picture's tile with the padding around it. A hint is always
-/// that card, never a line-tall label.
-const CARD_HEIGHT: f64 = 56.0;
+/// The tallest a hint's pill may be: a small chip a line tall, nothing like the old card with its
+/// picture.
+const PILL_HEIGHT_MAX: f64 = 34.0;
 
 /// Every place the strip says its windows show text and controls.
 fn ink_of(row: &ui::widget::HintPlaces) -> Vec<Rect> {
@@ -319,19 +328,40 @@ fn ink_of(row: &ui::widget::HintPlaces) -> Vec<Rect> {
         .expect("fixture: the strip read its windows' text and controls")
 }
 
-/// Whether `card` covers none of what `row`'s windows show.
+/// Whether `card` covers none of what `row`'s windows show, and none of their content either: a
+/// hint stands outside every window or on a window's bar ground, never over the body.
 fn covers_nothing(card: Rect, row: &ui::widget::HintPlaces) {
     for ink in ink_of(row) {
         assert!(!card.overlaps(ink), "the hint {card:?} covers {ink:?}");
     }
+    for window in &row.windows_on_strip {
+        let bar = row
+            .bars
+            .iter()
+            .find(|bar| bar.x0 == window.x0 && bar.x1 == window.x1)
+            .copied()
+            .unwrap_or(*window);
+        let body = Rect::new(window.x0, bar.y1.max(window.y0), window.x1, window.y1);
+        if !body.is_zero_area() {
+            assert!(
+                !card.overlaps(body),
+                "the hint {card:?} stands over {body:?}"
+            );
+        }
+    }
 }
 
-/// Every hint is a card over the desktop, under the bar and never in it, at its gesture, and
-/// covering none of the windows' text and controls: search comes down just under the bar, the
-/// view's hint sits at the edge the windows hide past, and the move and resize hints sit at the
-/// bar and edge they teach.
+/// Whether `card` stands on a window's bar ground.
+fn on_a_bar(card: Rect, row: &ui::widget::HintPlaces) -> bool {
+    row.bars.iter().any(|bar| bar.contains_rect(card))
+}
+
+/// Every hint is a small pill over the desktop, under the bar and never in it, at its gesture,
+/// and covering none of the windows' text, controls or content: search comes down just under the
+/// bar, the view's hint sits at the edge the windows hide past, and the move and resize hints
+/// stand on the bar beside the stretch or edge they teach.
 #[test]
-fn every_hint_is_a_card_over_the_desktop_at_its_gesture() {
+fn every_hint_is_a_pill_over_the_desktop_at_its_gesture() {
     for tree in [layout_tree(0), layout_tree(2), maximised(3), busy_shell()] {
         let (painted, row, area) = painted_hint(
             &tree,
@@ -346,7 +376,7 @@ fn every_hint_is_a_card_over_the_desktop_at_its_gesture() {
             card.y1 <= area.center().y,
             "in the top half of the desktop: {card:?}"
         );
-        assert_eq!(card.height(), CARD_HEIGHT, "the card with its picture");
+        assert!(card.height() <= PILL_HEIGHT_MAX, "a small pill: {card:?}");
         covers_nothing(card, &row);
     }
     let (painted, _, area) = painted_hint(
@@ -374,7 +404,7 @@ fn every_hint_is_a_card_over_the_desktop_at_its_gesture() {
         area.x1 - card.x1 < 40.0,
         "at the edge the windows hide past: {card:?} in {area:?}"
     );
-    assert_eq!(card.height(), CARD_HEIGHT);
+    assert!(card.height() <= PILL_HEIGHT_MAX, "a small pill: {card:?}");
     covers_nothing(card, &row);
     let (painted, row, _) = painted_hint(
         &layout_tree(2),
@@ -386,9 +416,10 @@ fn every_hint_is_a_card_over_the_desktop_at_its_gesture() {
     let card = painted.expect("the resize hint shows");
     let (line, _) = row.focused_edge.expect("fixture: an edge to take");
     assert!(
-        (card.x0 > line.p0.x && card.x0 - line.p0.x < 24.0)
+        on_a_bar(card, &row)
+            || (card.x0 > line.p0.x && card.x0 - line.p0.x < 24.0)
             || (card.x1 < line.p0.x && line.p0.x - card.x1 < 24.0),
-        "right beside the edge it teaches: {card:?} by {line:?}"
+        "beside the edge it teaches, or on the bar above it: {card:?} by {line:?}"
     );
     covers_nothing(card, &row);
     let (painted, row, _) = painted_hint(
@@ -400,9 +431,19 @@ fn every_hint_is_a_card_over_the_desktop_at_its_gesture() {
     );
     let card = painted.expect("the move hint shows");
     let bar = row.focused_bar.expect("fixture: a bar to take");
+    let window_bar = row
+        .bars
+        .iter()
+        .find(|b| b.contains_rect(bar))
+        .copied()
+        .expect("fixture: the stretch sits on a bar");
     assert!(
-        card.y0 > bar.y1 && card.y0 - bar.y1 < 24.0,
-        "just below the bar it teaches: {card:?} under {bar:?}"
+        window_bar.contains_rect(card),
+        "on the bar it teaches, beside the stretch that takes it: {card:?} on {window_bar:?}"
+    );
+    assert!(
+        !card.overlaps(bar),
+        "beside the stretch, never on it: {card:?} against {bar:?}"
     );
     covers_nothing(card, &row);
 }
@@ -433,12 +474,13 @@ fn the_resize_hint_beside_the_screens_edge_covers_no_text_or_control() {
             "fixture: two windows {:?}",
             row.windows_on_strip
         );
-        let card = painted.expect("Chat has empty ground beside its edge");
+        let card = painted.expect("Chat has its bar's ground");
         covers_nothing(card, &row);
         assert!(
-            (card.x0 > line.p0.x && card.x0 - line.p0.x < 24.0)
+            on_a_bar(card, &row)
+                || (card.x0 > line.p0.x && card.x0 - line.p0.x < 24.0)
                 || (card.x1 < line.p0.x && line.p0.x - card.x1 < 24.0),
-            "{width}: beside the edge it teaches: {card:?} by {line:?}"
+            "{width}: beside the edge it teaches, or on the bar above it: {card:?} by {line:?}"
         );
     }
 }

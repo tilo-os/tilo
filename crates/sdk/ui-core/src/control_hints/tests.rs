@@ -1,6 +1,6 @@
 //! The schedule's rules, through the coach interface.
 
-use super::coach::{CUE_FRESH, IGNORED_AFTER, MIN_GAP, RETURN_AFTER};
+use super::coach::{CUE_FRESH, IGNORED_AFTER, MIN_GAP};
 use super::*;
 use crate::time::{Duration, Instant};
 
@@ -228,7 +228,7 @@ tilo_test_env::scenario! {
         ));
     }
 
-    phase an_ignored_hint_goes_and_comes_back_once_much_later;
+    phase an_ignored_hint_goes_and_never_comes_back;
     {
         let mut run = Run::new();
         run.tick(17);
@@ -240,16 +240,13 @@ tilo_test_env::scenario! {
         ));
         run.tick(ignored + 1);
         assert_eq!(run.coach.current(), None);
-        run.tick(ignored + 120);
-        assert_eq!(run.showing(), None, "not again soon");
-        let back = ignored + RETURN_AFTER.as_secs();
-        run.tick(back);
-        assert_eq!(run.showing(), Some("open"), "once, much later");
-        run.tick(back + IGNORED_AFTER.as_secs());
-        run.tick(back + IGNORED_AFTER.as_secs() + 1);
-        run.tick(back + 3 * RETURN_AFTER.as_secs());
-        assert_eq!(run.showing(), None, "never a third time");
-        assert_eq!(run.coach.learned().showings("open"), 2);
+        // The person has seen it, whether they took it or not: it never shows again, not this
+        // minute nor an hour later.
+        for secs in [ignored + 120, ignored + 3600, ignored + 86_400] {
+            run.tick(secs);
+            assert_eq!(run.showing(), None, "not again at {secs}s");
+        }
+        assert_eq!(run.coach.learned().showings("open"), 1);
     }
 
     phase turned_off_nothing_shows_and_a_showing_hint_goes;
@@ -288,7 +285,7 @@ tilo_test_env::scenario! {
     {
         let mut learned = Learned::default();
         learned.learn("open");
-        learned.shown.insert("move".into(), 2);
+        learned.shown.insert("move".into(), 1);
         let mut run = Run::with(learned);
         run.see(1, Sig::BarHovered);
         run.tick(20);

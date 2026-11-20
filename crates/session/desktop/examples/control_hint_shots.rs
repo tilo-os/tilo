@@ -3,8 +3,8 @@
 //! The shell under its bar as a page stacks them (the windows' layer, then the chrome with its
 //! hints), at a desktop's size, with windows that show text and a field where everyday apps do:
 //! Notes and Chat side by side with Chat in front, its edge at the screen's leaving nothing past
-//! it, and a lone window. Each in both themes. The program fails when a hint's card covers a
-//! window's text or controls.
+//! it, and a lone window. Each in both themes. The program fails when a hint's pill is not small,
+//! or covers a window's text, controls or content.
 //!
 //! Its one argument is the directory the pictures are written to.
 
@@ -199,15 +199,41 @@ fn settle(frame: &mut FrameHarness) {
     }
 }
 
-/// The hint's card, as the chrome last drew it, and where the windows show text and controls, as
-/// the shell last drew them: the program stops when one covers the other, or no card shows.
+/// The tallest a hint's pill may be.
+const PILL_HEIGHT_MAX: f64 = 34.0;
+
+/// The hint's pill, as the chrome last drew it, and where the windows show text, controls and
+/// content, as the shell last drew them: the program stops when the pill is not small, when it
+/// covers any of that, or when no pill shows.
 fn check(frame: &mut FrameHarness, handle: &DesktopHandle, what: &str) -> Result<(), String> {
     let card = frame.root_mut::<Stage>().top.hints().card_rect();
-    let ink = handle.hint_places().ink.unwrap_or_default();
+    let places = handle.hint_places();
+    let ink = places
+        .ink
+        .clone()
+        .ok_or_else(|| format!("{what}: the strip has not read its ink"))?;
+    if places.windows_on_strip.is_empty() {
+        return Err(format!("{what}: the strip shows no windows"));
+    }
     println!("{what}: hint {card:?}");
     let card = card.ok_or_else(|| format!("{what}: no hint shows"))?;
+    if card.height() > PILL_HEIGHT_MAX {
+        return Err(format!("{what}: the hint is a card, not a pill: {card:?}"));
+    }
     if let Some(ink) = ink.iter().find(|ink| ink.overlaps(card)) {
         return Err(format!("{what}: the hint {card:?} covers {ink:?}"));
+    }
+    for window in &places.windows_on_strip {
+        let bar = places
+            .bars
+            .iter()
+            .find(|bar| (bar.x0 - window.x0).abs() < 0.5 && (bar.x1 - window.x1).abs() < 0.5)
+            .copied()
+            .unwrap_or(*window);
+        let body = Rect::new(window.x0, bar.y1.max(window.y0), window.x1, window.y1);
+        if !body.is_zero_area() && card.overlaps(body) {
+            return Err(format!("{what}: the hint {card:?} stands over {body:?}"));
+        }
     }
     Ok(())
 }

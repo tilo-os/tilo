@@ -1,4 +1,4 @@
-//! A host's control hints on screen: the [`Coach`] deciding, the card placed beside its anchor, over
+//! The shell's control hints on screen: the [`Coach`] deciding, the pill placed beside its anchor, over
 //! the windows, drawn through its motion.
 
 use super::card::{self, Contents, Frame, Look};
@@ -20,7 +20,7 @@ use vello::peniko::Fill;
 pub struct HintPlace {
     /// What the hint points at: where its gesture is done.
     pub anchor: Rect,
-    /// Which side of the anchor the card is on.
+    /// Which side of the anchor the pill is on.
     pub side: PopoverSide,
     /// A line the gesture takes (a window's edge, the side the windows hide past), lit in the
     /// person's colour while the hint shows.
@@ -29,19 +29,19 @@ pub struct HintPlace {
     pub words: String,
     /// The keys it names, as the keyboard spells them; empty for none.
     pub keys: Vec<String>,
-    /// Whether the card points at its anchor; one that only sits near where its gesture leads
+    /// Whether the pill points at its anchor; one that only sits near where its gesture leads
     /// (search, which no control on screen opens) points at nothing.
     pub points: bool,
-    /// The person points by touch: the picture shows a finger on the screen rather than a pointer or a
-    /// touchpad.
-    pub touch: bool,
-    /// The stretch the card may slide along to find free ground, beside the anchor: the edge it
-    /// teaches, the bar it is held by. A card that points at nothing may also move away from its
-    /// anchor as far as this reaches. The anchor alone where the card stays at its middle.
+    /// The stretch the pill may slide along to find free ground, beside the anchor: the edge it
+    /// teaches, the bar it is held by. A pill that points at nothing may also move away from its
+    /// anchor as far as this reaches. The anchor alone where the pill stays at its middle.
     pub along: Rect,
-    /// Every window and card on screen, whole: the card stands outside them where it fits.
+    /// Every window and card on screen, whole: the pill stands outside them where it fits.
     pub windows: Vec<Rect>,
-    /// What the card never covers: the text and controls on screen.
+    /// Each window's bar band, whole: the ground the pill may stand on beside its gesture where
+    /// there is no ground outside a window. The window's content is never such ground.
+    pub bars: Vec<Rect>,
+    /// What the pill never covers: the text and controls on screen.
     pub ink: Vec<Rect>,
 }
 
@@ -161,7 +161,7 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
         }
     }
 
-    /// The card as last drawn, for hit tests and capture checks.
+    /// The pill as last drawn, for hit tests and capture checks.
     #[must_use]
     pub fn card_rect(&self) -> Option<Rect> {
         self.placed
@@ -170,7 +170,7 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
             .filter(|card| !card.is_zero_area())
     }
 
-    /// Everything the last draw painted (the card with its shadow, a lit edge, the dot it folds into
+    /// Everything the last draw painted (the pill with its shadow, a lit edge, the dot it folds into
     /// and where that goes): while the hint moves, the only pixels it changes are under this and the
     /// last draw's.
     #[must_use]
@@ -215,15 +215,11 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
         };
         let mut painted = Painted::default();
         let motion = theme.motion();
-        let specs = self.coach.specs();
-        let Some((index, since, spot)) = self
+        let Some((since, spot)) = self
             .placed
             .as_ref()
-            .map(|placed| (placed.index, placed.since, placed.place.clone()))
+            .map(|placed| (placed.since, placed.place.clone()))
         else {
-            return;
-        };
-        let Some(spec) = specs.get(index) else {
             return;
         };
         let person = look.colour.map_or(theme.tokens.colors.intent.you, |rgb| {
@@ -231,8 +227,6 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
         });
         let colours = Look::of(person, theme);
         let contents = Contents {
-            gesture: spec.gesture,
-            touch: spot.touch,
             words: &spot.words,
             keys: &spot.keys,
         };
@@ -268,7 +262,6 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
             return;
         };
         let age = now.saturating_duration_since(since);
-        let phase = Beckon::gesture_phase(age, motion);
         let (rect, notch) = (placed.card, placed.notch);
         match current.phase {
             Phase::Shown(_) => {
@@ -284,8 +277,6 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                     notch,
                     look: colours,
                     contents,
-                    phase,
-                    check: 0.0,
                     opacity: arrival.opacity,
                     content_opacity: 1.0,
                     pulse: arrival.pulse,
@@ -304,8 +295,6 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                     notch,
                     look: colours,
                     contents,
-                    phase,
-                    check: 0.0,
                     opacity,
                     content_opacity: 1.0,
                     pulse: None,
@@ -336,8 +325,6 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                         notch: notch.filter(|_| done.fold <= 0.0),
                         look: colours,
                         contents,
-                        phase,
-                        check: done.check,
                         opacity: done.opacity,
                         content_opacity,
                         pulse: None,
@@ -408,98 +395,128 @@ const DOT: f64 = 14.0;
 const DOT_KEPT: f64 = 7.0;
 const LANDING: f64 = 24.0;
 const ANCHOR_GAP: f64 = 4.0;
-const AREA_MARGIN: f64 = 8.0;
 
-/// How far a card keeps from the text and controls it stands beside: less than the card's own
-/// distance from its anchor, so a card may still stand right beside the bar or the window it
-/// points at.
+/// How far a pill keeps from the text and controls it stands beside: less than the pill's own
+/// distance from its anchor, so it may still stand right beside the bar or the window it points
+/// at.
 const INK_MARGIN: f64 = card::NOTCH_D + ANCHOR_GAP - 1.0;
-/// The step a card slides by along its anchor, looking for free ground.
+/// The step a pill slides by along its anchor or a bar, looking for free ground.
 const SLIDE_STEP: f64 = 8.0;
 
-/// Where a card of `size` is placed for `place` inside `area`, and where its notch points: beside
-/// its anchor, on its side or the other, slid along the anchor's stretch to the nearest spot that
-/// covers none of [`HintPlace::ink`]. A spot outside every window comes first, then one on a
-/// window's empty ground. `previous`, where the card stood last frame, stays while it is still such
-/// a spot, so the card does not wander as the content under it changes. `None` where no spot is
-/// free: the hint does not show there.
+/// Where a pill of `size` is placed for `place` inside `area`, and where its notch points: beside
+/// its anchor or, where no ground is free there, on a window's bar band next to its gesture. The
+/// pill stands outside every window where it fits, or else on a bar's empty ground; it never
+/// stands over a window's content, nor covers [`HintPlace::ink`] (the text and controls on
+/// screen), and it keeps off the anchor it points at while any ground beside it is free.
+/// `previous`, where the pill stood last frame, stays while it is still such a spot, so it does
+/// not wander as the content under it changes. `None` where no spot is free: the hint does not
+/// show there.
 fn place(
     place: &HintPlace,
     size: (f64, f64),
     area: Rect,
     previous: Option<Rect>,
 ) -> Option<(Rect, Option<(PopoverSide, f64)>)> {
-    let spare = area.inset(-AREA_MARGIN);
-    let covers_ink = |rect: Rect| {
+    let spare = area;
+    let clear = |rect: Rect| {
         let near = rect.inflate(INK_MARGIN, INK_MARGIN);
-        place.ink.iter().any(|ink| ink.overlaps(near))
+        spare.contains_rect(rect) && !place.ink.iter().any(|ink| ink.overlaps(near))
     };
+    // The ground a pill may stand on: outside every window, or on a window's bar band. A window's
+    // content is never ground, so what the person reads there stays uncovered.
     let outside = |rect: Rect| !place.windows.iter().any(|window| window.overlaps(rect));
-    let sides = [place.side, place.side.opposite()];
-    let free = |rect: &Rect| !covers_ink(*rect);
+    let on_bar = |rect: Rect| place.bars.iter().any(|bar| bar.contains_rect(rect));
+    let ground = |rect: Rect| clear(rect) && (outside(rect) || on_bar(rect));
+    // Beside the anchor, never on it: one that points at a stretch of bar does not hide it.
+    let beside = |rect: Rect| ground(rect) && !rect.overlaps(place.anchor);
     let kept = previous
         .filter(|previous| {
             (previous.width() - size.0).abs() < 0.5 && (previous.height() - size.1).abs() < 0.5
         })
-        .and_then(|previous| {
-            sides
-                .into_iter()
-                .find(|side| {
-                    spots(place, *side, size, spare).any(|spot| spot == previous) && free(&previous)
-                })
-                .map(|side| (side, previous))
-        });
-    let (side, rect) = kept
+        .filter(|previous| beside(*previous));
+    let sides = [place.side, place.side.opposite()];
+    let rect = kept
         .or_else(|| {
             sides.into_iter().find_map(|side| {
-                spots(place, side, size, spare)
-                    .find(|spot| free(spot) && outside(*spot))
-                    .map(|spot| (side, spot))
+                spots(place, side, size, spare).find(|spot| beside(*spot) && outside(*spot))
             })
         })
         .or_else(|| {
-            sides.into_iter().find_map(|side| {
-                spots(place, side, size, spare)
-                    .find(free)
-                    .map(|spot| (side, spot))
-            })
+            sides
+                .into_iter()
+                .find_map(|side| spots(place, side, size, spare).find(|spot| beside(*spot)))
+        })
+        .or_else(|| {
+            // The bar ground nearest where the gesture is, across every window's bar: the last
+            // resort where a bar has no free stretch beside the place that takes it.
+            bar_spots(place, size, spare)
+                .filter(|spot| ground(*spot))
+                .min_by(|a, b| reach(*a, place.anchor).total_cmp(&reach(*b, place.anchor)))
         })?;
-    let card = rect.center();
-    // The notch is on the card's side facing the anchor, where the card meets it.
-    let notch = match side {
-        PopoverSide::Below => (
-            PopoverSide::Above,
-            card.x.clamp(place.anchor.x0, place.anchor.x1),
-        ),
-        PopoverSide::Above => (
-            PopoverSide::Below,
-            card.x.clamp(place.anchor.x0, place.anchor.x1),
-        ),
-        PopoverSide::Right => (
-            PopoverSide::Left,
-            card.y.clamp(place.anchor.y0, place.anchor.y1),
-        ),
-        PopoverSide::Left => (
-            PopoverSide::Right,
-            card.y.clamp(place.anchor.y0, place.anchor.y1),
-        ),
-    };
-    // Only where the card still faces its anchor: slid past it, a notch would point at nothing.
-    let faces = match notch.0 {
-        PopoverSide::Above | PopoverSide::Below => {
-            notch.1 > rect.x0 + card::radius(rect) && notch.1 < rect.x1 - card::radius(rect)
-        }
-        PopoverSide::Left | PopoverSide::Right => {
-            notch.1 > rect.y0 + card::radius(rect) && notch.1 < rect.y1 - card::radius(rect)
-        }
-    };
-    Some((rect, (faces && place.points).then_some(notch)))
+    Some((rect, notch_for(rect, place.anchor, place.points)))
 }
 
-/// Every spot a card of `size` may take on `side` of `place`'s anchor inside `spare`, nearest the
-/// anchor's middle first: just beside the anchor, slid along [`HintPlace::along`] a step at a time
-/// either way; a card that points at nothing also moves away from the anchor, a step at a time,
-/// as far as that stretch reaches. None where the card does not fit on that side.
+/// How far apart two rects are, corner to corner: `0` where they touch or overlap.
+fn reach(a: Rect, b: Rect) -> f64 {
+    let dx = (b.x0 - a.x1).max(a.x0 - b.x1).max(0.0);
+    let dy = (b.y0 - a.y1).max(a.y0 - b.y1).max(0.0);
+    dx.hypot(dy)
+}
+
+/// On which side of `rect` its notch stands and where along it, pointing at `anchor`: the side
+/// facing the anchor, along the axis the anchor lies further on. `None` where the pill stands on
+/// its anchor (nothing to point at) or where the notch would not fit its side.
+fn notch_for(rect: Rect, anchor: Rect, points: bool) -> Option<(PopoverSide, f64)> {
+    if !points {
+        return None;
+    }
+    let x_gap = if anchor.x1 <= rect.x0 {
+        rect.x0 - anchor.x1
+    } else if rect.x1 <= anchor.x0 {
+        anchor.x0 - rect.x1
+    } else {
+        0.0
+    };
+    let y_gap = if anchor.y1 <= rect.y0 {
+        rect.y0 - anchor.y1
+    } else if rect.y1 <= anchor.y0 {
+        anchor.y0 - rect.y1
+    } else {
+        0.0
+    };
+    if x_gap <= 0.0 && y_gap <= 0.0 {
+        return None;
+    }
+    let radius = card::radius(rect);
+    if y_gap >= x_gap {
+        (rect.width() >= 2.0 * radius + card::NOTCH_W).then(|| {
+            let side = if anchor.y1 <= rect.y0 {
+                PopoverSide::Above
+            } else {
+                PopoverSide::Below
+            };
+            let at = anchor.center().x.clamp(rect.x0 + radius, rect.x1 - radius);
+            (side, at)
+        })
+    } else {
+        (rect.height() >= 2.0 * radius + card::NOTCH_W).then(|| {
+            let side = if anchor.x1 <= rect.x0 {
+                PopoverSide::Left
+            } else {
+                PopoverSide::Right
+            };
+            let at = anchor.center().y.clamp(rect.y0 + radius, rect.y1 - radius);
+            (side, at)
+        })
+    }
+}
+
+/// Every spot a pill of `size` may take on `side` of `place`'s anchor inside `spare`, nearest the
+/// anchor's middle first: beside the anchor, slid along [`HintPlace::along`] a step at a time
+/// either way, or on the anchor's own band where the anchor is as deep as the pill (a window's
+/// bar, beside the stretch that takes it); a pill that points at nothing also moves away from the
+/// anchor, a step at a time, as far as that stretch reaches. None where the pill does not fit on
+/// that side.
 fn spots(
     place: &HintPlace,
     side: PopoverSide,
@@ -509,21 +526,15 @@ fn spots(
     let (w, h) = size;
     let anchor = place.anchor;
     let gap = card::NOTCH_D + ANCHOR_GAP;
-    let across = match side {
-        PopoverSide::Below => Some(anchor.y1 + gap).filter(|y| y + h <= spare.y1),
-        PopoverSide::Above => Some(anchor.y0 - gap - h).filter(|y| *y >= spare.y0),
-        PopoverSide::Right => Some(anchor.x1 + gap).filter(|x| x + w <= spare.x1),
-        PopoverSide::Left => Some(anchor.x0 - gap - w).filter(|x| *x >= spare.x0),
-    };
-    // How far the card may move away from the anchor: as far as the stretch reaches past it on
-    // that side, kept inside the area. A card that points at its anchor stays right beside it.
+    let along_side = matches!(side, PopoverSide::Left | PopoverSide::Right);
+    // How far the pill may move away from the anchor: as far as the stretch reaches past it on
+    // that side, kept inside the area. A pill that points at its anchor stays right beside it.
     let away = match side {
         PopoverSide::Below => (place.along.y1 - anchor.y1).min(spare.y1 - h - anchor.y1 - gap),
         PopoverSide::Above => (anchor.y0 - place.along.y0).min(anchor.y0 - gap - h - spare.y0),
         PopoverSide::Right => (place.along.x1 - anchor.x1).min(spare.x1 - w - anchor.x1 - gap),
         PopoverSide::Left => (anchor.x0 - place.along.x0).min(anchor.x0 - gap - w - spare.x0),
     };
-    let away = if place.points { 0.0 } else { away.max(0.0) };
     let outward = match side {
         PopoverSide::Below | PopoverSide::Right => 1.0,
         PopoverSide::Above | PopoverSide::Left => -1.0,
@@ -533,10 +544,30 @@ fn spots(
         clippy::cast_sign_loss,
         reason = "a count of steps across a stretch of the screen"
     )]
-    let rows = (away / SLIDE_STEP).floor() as u32;
-    let sideways = matches!(side, PopoverSide::Left | PopoverSide::Right);
-    // Where the card's middle may go along the anchor: over its stretch, kept inside the area.
-    let (half, lo, hi, edge_lo, edge_hi, mid) = if sideways {
+    let rows = ((if place.points { 0.0 } else { away.max(0.0) }) / SLIDE_STEP).floor() as u32;
+    // The pill's own band of the anchor, where the anchor is as deep as the pill there: beside
+    // the stretch a window's bar takes it by.
+    let band = if along_side {
+        (anchor.width() >= w).then(|| anchor.center().x - w / 2.0)
+    } else {
+        (anchor.height() >= h).then(|| anchor.center().y - h / 2.0)
+    };
+    let across: Vec<Option<f64>> = vec![
+        match side {
+            PopoverSide::Below => Some(anchor.y1 + gap).filter(|y| y + h <= spare.y1),
+            PopoverSide::Above => Some(anchor.y0 - gap - h).filter(|y| *y >= spare.y0),
+            PopoverSide::Right => Some(anchor.x1 + gap).filter(|x| x + w <= spare.x1),
+            PopoverSide::Left => Some(anchor.x0 - gap - w).filter(|x| *x >= spare.x0),
+        },
+        band.filter(|at| {
+            if along_side {
+                *at >= spare.x0 && at + w <= spare.x1
+            } else {
+                *at >= spare.y0 && at + h <= spare.y1
+            }
+        }),
+    ];
+    let (half, lo, hi, edge_lo, edge_hi, mid) = if along_side {
         let along = place.along.union(anchor);
         (
             h / 2.0,
@@ -568,7 +599,7 @@ fn spots(
         reason = "a count of steps along a stretch of the screen"
     )]
     let steps = steps.max(0.0) as u32;
-    let across = across.into_iter().flat_map(move |across| {
+    let across = across.into_iter().flatten().flat_map(move |across| {
         (0..=rows).map(move |row| across + outward * f64::from(row) * SLIDE_STEP)
     });
     across.flat_map(move |across| {
@@ -580,12 +611,48 @@ fn spots(
                 mid - offset
             };
             (lo..=hi).contains(&centre).then(|| {
-                if sideways {
+                if along_side {
                     Rect::new(across, centre - h / 2.0, across + w, centre + h / 2.0)
                 } else {
                     Rect::new(centre - w / 2.0, across, centre + w / 2.0, across + h)
                 }
             })
+        })
+    })
+}
+
+/// Every spot a pill of `size` may take on a window's bar band inside `spare`, nearest where the
+/// gesture is first: the ground that belongs to the window's own chrome, never to its content.
+fn bar_spots(place: &HintPlace, size: (f64, f64), spare: Rect) -> impl Iterator<Item = Rect> {
+    let (w, h) = size;
+    let bars: Vec<Rect> = place
+        .bars
+        .iter()
+        .filter(|bar| bar.height() >= h && bar.width() >= w)
+        .copied()
+        .collect();
+    let mid_x = place.anchor.center().x;
+    bars.into_iter().flat_map(move |bar| {
+        let band = bar.center().y - h / 2.0;
+        let lo = bar.x0.clamp(spare.x0, (spare.x1 - w).max(spare.x0));
+        let hi = (bar.x1 - w).clamp(lo, (spare.x1 - w).max(lo));
+        let mid = (mid_x - w / 2.0).clamp(lo, hi);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a count of steps along a bar"
+        )]
+        let steps = ((hi - lo) / SLIDE_STEP).ceil().max(0.0) as u32;
+        (0..=steps.saturating_mul(2)).filter_map(move |i| {
+            let offset = f64::from(i.div_ceil(2)) * SLIDE_STEP;
+            let x0 = if i % 2 == 1 {
+                mid + offset
+            } else {
+                mid - offset
+            };
+            (lo..=hi)
+                .contains(&x0)
+                .then(|| Rect::new(x0, band, x0 + w, band + h))
         })
     })
 }
@@ -650,20 +717,27 @@ fn stage_opacity(opacity: f32) -> f32 {
 mod place_tests {
     use super::*;
 
-    /// The card's size, as the resize hint's card measures.
-    const CARD: (f64, f64) = (186.0, 56.0);
+    /// The pill's size, as the resize hint's measures.
+    const PILL: (f64, f64) = (128.0, 30.0);
     /// The desktop under the top bar, on a 1400 × 900 page.
     const AREA: Rect = Rect::new(0.0, 32.0, 1400.0, 900.0);
 
     /// Notes on the left and Chat on the right, side by side and filling the desktop, as a page
-    /// shows them: each window whole (bar and body), and where each shows text and controls.
-    fn side_by_side() -> (Vec<Rect>, Vec<Rect>) {
+    /// shows them: each window whole (bar and body), its bar, and where each shows text and
+    /// controls: the bars' tabs and window controls, and the content under them.
+    fn side_by_side() -> (Vec<Rect>, Vec<Rect>, Vec<Rect>) {
         let notes = Rect::new(32.0, 36.0, 696.0, 888.0);
         let chat = Rect::new(704.0, 36.0, 1368.0, 888.0);
-        let ink = vec![
-            // The two bars.
+        let bars = vec![
             Rect::new(32.0, 36.0, 696.0, 80.0),
             Rect::new(704.0, 36.0, 1368.0, 80.0),
+        ];
+        let ink = vec![
+            // The two bars' tabs and window controls.
+            Rect::new(40.0, 48.0, 180.0, 68.0),
+            Rect::new(646.0, 48.0, 690.0, 68.0),
+            Rect::new(712.0, 48.0, 852.0, 68.0),
+            Rect::new(1318.0, 48.0, 1362.0, 68.0),
             // Notes: its list and its note.
             Rect::new(48.0, 96.0, 260.0, 124.0),
             Rect::new(48.0, 160.0, 260.0, 214.0),
@@ -674,10 +748,34 @@ mod place_tests {
             Rect::new(1035.0, 446.0, 1280.0, 506.0),
             Rect::new(972.0, 818.0, 1344.0, 864.0),
         ];
-        (vec![notes, chat], ink)
+        (vec![notes, chat], bars, ink)
     }
 
-    fn resize_at(edge_x: f64, side: PopoverSide, windows: Vec<Rect>, ink: Vec<Rect>) -> HintPlace {
+    /// The body of each `window`: what it shows under `bars`, where no pill may stand.
+    fn bodies(windows: &[Rect], bars: &[Rect]) -> Vec<Rect> {
+        windows
+            .iter()
+            .filter_map(|window| {
+                let bar = bars
+                    .iter()
+                    .find(|bar| bar.x0 == window.x0 && bar.x1 == window.x1)?;
+                Some(Rect::new(
+                    window.x0,
+                    bar.y1.max(window.y0),
+                    window.x1,
+                    window.y1,
+                ))
+            })
+            .collect()
+    }
+
+    fn resize_at(
+        edge_x: f64,
+        side: PopoverSide,
+        windows: Vec<Rect>,
+        bars: Vec<Rect>,
+        ink: Vec<Rect>,
+    ) -> HintPlace {
         let edge = Rect::new(edge_x, 92.0, edge_x, 876.0);
         HintPlace {
             anchor: edge,
@@ -686,63 +784,72 @@ mod place_tests {
             words: "Drag to resize".into(),
             keys: Vec::new(),
             points: true,
-            touch: false,
             along: edge,
             windows,
+            bars,
             ink,
         }
     }
 
-    /// The case a person saw: Chat in front, its trailing edge at the screen's, with nothing past
-    /// it. The card stands beside the edge, on Chat's empty ground, clear of the empty state's
-    /// words it used to cover, and still points at the edge.
-    #[test]
-    fn a_resize_hint_at_the_screens_edge_covers_no_text_or_control() {
-        let (windows, ink) = side_by_side();
-        let place_for = resize_at(1368.0, PopoverSide::Right, windows, ink.clone());
-        let (card, notch) = place(&place_for, CARD, AREA, None).expect("Chat has empty ground");
-        for ink in &ink {
+    fn covers_no_text_or_content(place_for: &HintPlace, card: Rect) {
+        for ink in &place_for.ink {
             assert!(!card.overlaps(*ink), "{card:?} covers {ink:?}");
         }
-        let gap = card::NOTCH_D + ANCHOR_GAP;
-        assert_eq!(
-            card.x1,
-            1368.0 - gap,
-            "beside the edge it teaches: {card:?}"
-        );
-        let (side, at) = notch.expect("it points at the edge");
-        assert_eq!(side, PopoverSide::Right);
-        assert!((92.0..=876.0).contains(&at), "{at}");
+        for body in bodies(&place_for.windows, &place_for.bars) {
+            assert!(!card.overlaps(body), "{card:?} stands over {body:?}");
+        }
     }
 
-    /// Wherever its edge, the card never covers text or controls; where it fits outside
-    /// every window, it stands there, over no window's content at all.
+    /// Chat in front, its trailing edge at the screen's, with nothing past it. The pill stands on
+    /// Chat's bar, clear of its tab and its window controls and every word Chat shows, and still
+    /// points at the edge it teaches.
     #[test]
-    fn a_hints_card_never_covers_a_windows_text_or_controls() {
-        let (windows, ink) = side_by_side();
+    fn a_resize_hint_at_the_screens_edge_covers_no_text_or_control() {
+        let (windows, bars, ink) = side_by_side();
+        let place_for = resize_at(1368.0, PopoverSide::Right, windows, bars, ink);
+        let (card, notch) = place(&place_for, PILL, AREA, None).expect("Chat's bar has ground");
+        covers_no_text_or_content(&place_for, card);
+        let chat_bar = Rect::new(704.0, 36.0, 1368.0, 80.0);
+        assert!(chat_bar.contains_rect(card), "on the bar: {card:?}");
+        let (side, at) = notch.expect("it points at the edge");
+        assert_eq!(side, PopoverSide::Right);
+        assert!((card.y0..=card.y1).contains(&at), "{at} on {card:?}");
+    }
+
+    /// Wherever its edge, the pill never covers text, controls or a window's body; where it fits
+    /// outside every window, it stands there.
+    #[test]
+    fn a_hints_pill_never_covers_a_windows_text_or_content() {
+        let (windows, bars, ink) = side_by_side();
         for (edge_x, side) in [
             (696.0, PopoverSide::Right),
             (704.0, PopoverSide::Left),
             (1368.0, PopoverSide::Right),
             (32.0, PopoverSide::Left),
         ] {
-            let spot = resize_at(edge_x, side, windows.clone(), ink.clone());
-            if let Some((card, _)) = place(&spot, CARD, AREA, None) {
+            let spot = resize_at(edge_x, side, windows.clone(), bars.clone(), ink.clone());
+            if let Some((card, _)) = place(&spot, PILL, AREA, None) {
                 assert!(spare_holds(AREA, card), "{card:?} on the desktop");
-                for ink in &ink {
-                    assert!(!card.overlaps(*ink), "{edge_x}: {card:?} covers {ink:?}");
-                }
+                covers_no_text_or_content(&spot, card);
             }
         }
         // One window, narrower than the desktop: free ground past its trailing edge, outside it.
         let window = Rect::new(32.0, 36.0, 900.0, 888.0);
+        let bar = Rect::new(32.0, 36.0, 900.0, 80.0);
         let ink = vec![
-            Rect::new(32.0, 36.0, 900.0, 80.0),
+            Rect::new(40.0, 48.0, 180.0, 68.0),
+            Rect::new(850.0, 48.0, 894.0, 68.0),
             Rect::new(48.0, 96.0, 880.0, 870.0),
         ];
         let (card, _) = place(
-            &resize_at(900.0, PopoverSide::Right, vec![window], ink),
-            CARD,
+            &resize_at(
+                900.0,
+                PopoverSide::Right,
+                vec![window],
+                vec![bar],
+                ink.clone(),
+            ),
+            PILL,
             AREA,
             None,
         )
@@ -753,8 +860,8 @@ mod place_tests {
         );
         // The same edge with the free ground on its other side: it flips there.
         let (card, _) = place(
-            &resize_at(900.0, PopoverSide::Left, vec![window], vec![window]),
-            CARD,
+            &resize_at(900.0, PopoverSide::Left, vec![window], vec![bar], ink),
+            PILL,
             AREA,
             None,
         )
@@ -762,16 +869,49 @@ mod place_tests {
         assert!(card.x0 > 900.0, "flipped outside the window: {card:?}");
     }
 
-    /// A window whose every stretch beside the edge shows text or controls leaves the card no
-    /// spot: the hint does not stand there, rather than cover them.
+    /// The move hint points at the stretch of bar that takes the window, and the pill stands on
+    /// the bar's ground beside it: never on the stretch itself, never over the tab or the window
+    /// controls, never over the window's content.
+    #[test]
+    fn a_move_hint_stands_on_the_bar_beside_the_stretch_that_takes_it() {
+        let (windows, bars, ink) = side_by_side();
+        let grab = Rect::new(300.0, 36.0, 340.0, 80.0);
+        let spot = HintPlace {
+            anchor: grab,
+            side: PopoverSide::Below,
+            edge: None,
+            words: "Drag to move".into(),
+            keys: Vec::new(),
+            points: true,
+            along: Rect::new(32.0, 36.0, 696.0, 80.0),
+            windows,
+            bars,
+            ink,
+        };
+        let (card, notch) = place(&spot, PILL, AREA, None).expect("the bar has ground");
+        covers_no_text_or_content(&spot, card);
+        assert!(
+            !card.overlaps(grab),
+            "beside the stretch, not on it: {card:?}"
+        );
+        assert!(
+            Rect::new(32.0, 36.0, 696.0, 80.0).contains_rect(card),
+            "on the bar it teaches: {card:?}"
+        );
+        let (side, _) = notch.expect("it points at the stretch it teaches");
+        assert!(matches!(side, PopoverSide::Left | PopoverSide::Right));
+    }
+
+    /// A window whose bar and body hold nothing free leaves the pill no spot: the hint does not
+    /// stand there, rather than cover what the person reads.
     #[test]
     fn a_hint_with_no_free_spot_does_not_stand() {
-        let (windows, _) = side_by_side();
+        let (windows, bars, _) = side_by_side();
         let ink = windows.clone();
         assert_eq!(
             place(
-                &resize_at(700.0, PopoverSide::Right, windows, ink),
-                CARD,
+                &resize_at(700.0, PopoverSide::Right, windows, bars, ink),
+                PILL,
                 AREA,
                 None
             ),
@@ -779,19 +919,23 @@ mod place_tests {
         );
     }
 
-    /// A card on screen keeps its spot while that stays free, rather than wander back toward
+    /// A pill on screen keeps its spot while that stays free, rather than wander back toward
     /// the edge's middle each frame.
     #[test]
-    fn a_card_on_screen_keeps_its_free_spot() {
-        let (windows, ink) = side_by_side();
-        let spot = resize_at(1368.0, PopoverSide::Right, windows, ink);
-        let (first, _) = place(&spot, CARD, AREA, None).expect("a free spot");
-        let lower = first + Vec2::new(0.0, 4.0 * SLIDE_STEP);
-        let (kept, _) = place(&spot, CARD, AREA, Some(lower)).expect("a free spot");
-        assert_eq!(kept, lower);
+    fn a_pill_on_screen_keeps_its_free_spot() {
+        let (windows, bars, ink) = side_by_side();
+        let spot = resize_at(1368.0, PopoverSide::Right, windows, bars, ink);
+        let (first, _) = place(&spot, PILL, AREA, None).expect("a free spot");
+        let beside = first + Vec2::new(-2.0 * SLIDE_STEP, 0.0);
+        assert!(
+            Rect::new(704.0, 36.0, 1368.0, 80.0).contains_rect(beside),
+            "fixture: the shifted spot is still on the bar: {beside:?}"
+        );
+        let (kept, _) = place(&spot, PILL, AREA, Some(beside)).expect("a free spot");
+        assert_eq!(kept, beside);
     }
 
-    /// A hint whose card finds no free spot before it ever shows does not count as shown, and
+    /// A hint whose pill finds no free spot before it ever shows does not count as shown, and
     /// comes back at the next chance.
     #[test]
     fn a_hint_with_nowhere_to_stand_waits_for_its_next_chance() {
@@ -805,8 +949,14 @@ mod place_tests {
             words: "resize",
             touch_words: None,
         }];
-        let (windows, _) = side_by_side();
-        let blocked = resize_at(700.0, PopoverSide::Right, windows.clone(), windows.clone());
+        let (windows, bars, _) = side_by_side();
+        let blocked = resize_at(
+            700.0,
+            PopoverSide::Right,
+            windows.clone(),
+            bars.clone(),
+            windows.clone(),
+        );
         let mut hints = HintLayer::new(RESIZE, Learned::default());
         let at = crate::time::now();
         let draw = |hints: &mut HintLayer<()>, at| {
@@ -835,8 +985,8 @@ mod place_tests {
         assert!(hints.card_rect().is_none());
         assert_eq!(hints.coach().learned().showings("resize"), 0, "nor count");
         let later = at + super::super::coach::RETRY_AFTER;
-        let (_, ink) = side_by_side();
-        let free = resize_at(1368.0, PopoverSide::Right, windows, ink);
+        let (_, _, ink) = side_by_side();
+        let free = resize_at(1368.0, PopoverSide::Right, windows, bars, ink);
         hints.update(
             later,
             &|()| true,
@@ -850,6 +1000,6 @@ mod place_tests {
     }
 
     fn spare_holds(area: Rect, card: Rect) -> bool {
-        area.inset(-AREA_MARGIN).contains_rect(card)
+        area.contains_rect(card)
     }
 }

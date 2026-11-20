@@ -1,9 +1,8 @@
-//! Control hints: a small lit card that teaches one control at the moment it is useful, beside where it
-//! is done, and goes the moment it is done. A host registers its set of hints as data ([`HintSpec`]):
+//! Control hints: a small lit pill that teaches one control at the moment it is useful, beside where
+//! it is done, and goes the moment it is done. A shell registers its set of hints as data ([`HintSpec`]):
 //! when each is useful ([`Cue`]), what must hold while it shows, which of the person's actions mean
-//! they know it, and the gesture its picture shows.
+//! they know it, and the gesture it teaches.
 
-mod art;
 mod card;
 pub mod coach;
 pub(crate) mod ink;
@@ -29,7 +28,7 @@ pub struct HintSpec<S: 'static> {
     pub only_while: &'static [S],
     /// The person's actions that mean they know it: any one of these.
     pub learned_by: &'static [S],
-    /// What its picture shows.
+    /// What its gesture is.
     pub gesture: Gesture,
     /// Its words: a catalogue key, a few words at most.
     pub words: &'static str,
@@ -60,10 +59,10 @@ pub enum Quiet {
     Busy,
 }
 
-/// The gesture a hint's picture shows, drawn with vector shapes and looped while it shows.
+/// The gesture a hint teaches: what the shell places it beside and what its words name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gesture {
-    /// A key chord pressed and a window coming up from search.
+    /// A key chord opening search.
     OpenFromSearch,
     /// A pointer taking a window by its bar and carrying it.
     MoveWindow,
@@ -74,6 +73,6 @@ pub enum Gesture {
     PanView,
 }
 
-/// What the person record keeps about control hints: which they know, how often each showed, and
-/// whether hints show at all.
+/// What the person record keeps about control hints: which they know, how often each showed (at
+/// most once), and whether hints show at all.
 pub use settings_store::control_hints::Learned;

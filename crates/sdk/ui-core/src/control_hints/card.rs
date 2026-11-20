@@ -1,10 +1,8 @@
-//! The hint's card: lit in the person colour, a soft glow of it around, the gesture's picture, a few
-//! words and the keys, and a notch pointing at where the gesture is done.
+//! The hint's pill: lit in the person colour, a soft glow of it around, a few words and the keys,
+//! and a notch pointing at where the gesture is done. Small on purpose: it stands beside the
+//! gesture without taking any of it away.
 
-use super::Gesture;
-use super::art::{self, Ink};
 use crate::color::{Oklch, contrast_ratio};
-use crate::motion::stage;
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -14,39 +12,39 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill, Gradient};
 
-const TILE_W: f64 = 60.0;
-const TILE_H: f64 = 40.0;
-/// Around the tile, and the card's corner: concentric with the tile's.
-pub(super) const PAD: f64 = 8.0;
-const TILE_RADIUS: f64 = 9.0;
-pub(super) const RADIUS: f64 = PAD + TILE_RADIUS;
-const GAP: f64 = 12.0;
-const END: f64 = 16.0;
-/// The notch pointing at the anchor: its width at the card and its depth.
-pub(super) const NOTCH_W: f64 = 16.0;
-pub(super) const NOTCH_D: f64 = 7.0;
-/// Below this contrast against its ink the card's colour moves in
+/// Across the pill, either side of its contents.
+const PAD_X: f64 = 10.0;
+/// Above and below its contents.
+const PAD_Y: f64 = 5.0;
+/// The pill's corner: small, so a notch fits on either of its sides.
+const RADIUS: f64 = 8.0;
+/// Between its words and its keys.
+const GAP: f64 = 8.0;
+/// The notch pointing at the anchor: its width at the pill and its depth.
+pub(super) const NOTCH_W: f64 = 12.0;
+pub(super) const NOTCH_D: f64 = 6.0;
+/// Below this contrast against its ink the pill's colour moves in
 /// lightness until it reads (body text, WCAG AA).
 const INK_CONTRAST: f64 = 4.5;
-const GLOW_BLUR: f32 = 26.0;
+const GLOW_BLUR: f32 = 14.0;
 
-/// The colours one card is drawn in, from the person's colour and the theme.
+/// The colours one pill is drawn in, from the person's colour and the theme.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Look {
-    /// The card's colour: the person's, moved in lightness only as far as its words need.
+    /// The pill's colour: the person's, moved in lightness only as far as its words need.
     pub fill: Color,
-    /// Lighter, toward the card's top, where it is lit from.
+    /// Lighter, toward the pill's top, where it is lit from.
     pub lit: Color,
     /// Darker, toward its foot.
     pub deep: Color,
-    /// Words, picture and check.
+    /// Words and keys.
     pub ink: Color,
     /// The halo around it.
     pub glow: Color,
 }
 
 impl Look {
-    /// The card for a person whose colour is `person` (as the theme's presence palette paints it).
+    /// The pill for a person whose colour is `person` (as the theme's presence palette paints it).
     pub fn of(person: Color, theme: &Theme) -> Self {
         let colors = &theme.tokens.colors;
         let ink = colors.surfaces.content;
@@ -78,11 +76,8 @@ impl Look {
     }
 }
 
-/// The card's contents, for measuring and painting.
+/// The pill's contents, for measuring and painting.
 pub(super) struct Contents<'a> {
-    pub gesture: Gesture,
-    /// The person points by touch ([`super::HintPlace::touch`]).
-    pub touch: bool,
     pub words: &'a str,
     pub keys: &'a [String],
 }
@@ -91,50 +86,46 @@ fn words_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Body).with_weight(TextWeight::Semibold)
 }
 
-/// The card's size for `contents`.
+/// The pill's size for `contents`: its words and keys a few pixels apart, one line tall.
 pub(super) fn size(contents: &Contents<'_>, text: &mut TextRenderer, theme: &Theme) -> (f64, f64) {
-    let (words_w, _) = text.measure_style(contents.words, None, &words_style(theme));
+    let (words_w, words_h) = text.measure_style(contents.words, None, &words_style(theme));
     let keys_w = if contents.keys.is_empty() {
         0.0
     } else {
         GAP + InputHint::measure_keycap_labels(contents.keys, text, theme)
     };
     let words = f64::from(words_w).ceil() + keys_w;
-    (PAD + TILE_W + GAP + words + END, TILE_H + 2.0 * PAD)
+    let line = f64::from(words_h).max(InputHint::keycap_height(theme));
+    (words + 2.0 * PAD_X, line + 2.0 * PAD_Y)
 }
 
-/// The corner a card of `rect` is drawn with: the card, but never more than half its height nor
-/// than half its width.
+/// The corner a pill of `rect` is drawn with: small, never more than half its side.
 pub(super) fn radius(rect: Rect) -> f64 {
     RADIUS.min(rect.width() / 2.0).min(rect.height() / 2.0)
 }
 
-/// The point a done card folds into its dot at: where the card's check stood.
+/// The point a done pill folds into its dot at: where its leading edge stood.
 pub(super) fn dot_centre(rect: Rect) -> Point {
-    Point::new(rect.x0 + PAD + 30.0, rect.center().y)
+    Point::new(rect.x0 + radius(rect), rect.center().y)
 }
 
-/// One painted frame of a card.
+/// One painted frame of a pill.
 pub(super) struct Frame<'a> {
     pub rect: Rect,
-    /// The side of the card its anchor is on, and where along that side the notch points, `None` for no
-    /// notch.
+    /// The side of the pill its anchor is on, and where along that side the notch points, `None` for
+    /// no notch.
     pub notch: Option<(PopoverSide, f64)>,
     pub look: Look,
     pub contents: Contents<'a>,
-    /// Where the picture is in its loop.
-    pub phase: f64,
-    /// How much of the check is drawn (`0` while it teaches).
-    pub check: f64,
-    /// Whole-card opacity.
+    /// Whole-pill opacity.
     pub opacity: f32,
-    /// Opacity of what is on the card, inside its outline.
+    /// Opacity of what is on the pill, inside its outline.
     pub content_opacity: f32,
     /// The arrival's glow pulse: how far it spread and how strong.
     pub pulse: Option<(f64, f32)>,
 }
 
-/// The card's outline with its notch, one closed path: the notch grows out of the edge it sits on, so
+/// The pill's outline with its notch, one closed path: the notch grows out of the edge it sits on, so
 /// the outline's stroke runs round it.
 pub(super) fn outline(rect: Rect, notch: Option<(PopoverSide, f64)>) -> BezPath {
     let (x0, y0, x1, y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
@@ -183,7 +174,7 @@ pub(super) fn outline(rect: Rect, notch: Option<(PopoverSide, f64)>) -> BezPath 
     path
 }
 
-/// Paint one frame of the card.
+/// Paint one frame of the pill.
 pub(super) fn paint(
     scene: &mut Scene,
     transform: Affine,
@@ -205,7 +196,7 @@ pub(super) fn paint(
         transform,
         &rect.inflate(80.0, 80.0),
     );
-    // The halo in the person's colour, and a contact shadow at the foot that holds the card off
+    // The halo in the person's colour, and a contact shadow at the foot that holds the pill off
     // light grounds.
     scene.draw_blurred_rounded_rect(
         transform,
@@ -274,72 +265,22 @@ fn paint_contents(
 ) {
     let rect = frame.rect;
     let look = frame.look;
-    let tile = Rect::new(
-        rect.x0 + PAD,
-        rect.center().y - TILE_H / 2.0,
-        rect.x0 + PAD + TILE_W,
-        rect.center().y + TILE_H / 2.0,
-    );
-    let morph = stage(frame.check, 0.0, 0.55);
-    let disc = Rect::from_center_size(tile.center(), (TILE_H - 4.0, TILE_H - 4.0));
-    let shown_tile = Rect::new(
-        tile.x0 + (disc.x0 - tile.x0) * morph,
-        tile.y0 + (disc.y0 - tile.y0) * morph,
-        tile.x1 + (disc.x1 - tile.x1) * morph,
-        tile.y1 + (disc.y1 - tile.y1) * morph,
-    );
-    let radius = TILE_RADIUS + (disc.height() / 2.0 - TILE_RADIUS) * morph;
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "an opacity is drawn at f32 precision"
-    )]
-    let well = (0.13 + 0.87 * morph) as f32;
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        look.ink.multiply_alpha(well),
-        None,
-        &RoundedRect::from_rect(shown_tile, radius),
-    );
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "an opacity is drawn at f32 precision"
-    )]
-    let picture = (1.0 - stage(frame.check, 0.0, 0.3)) as f32;
-    art::paint(
-        scene,
-        transform,
-        tile,
-        &frame.contents,
-        frame.phase,
-        Ink {
-            line: look.ink,
-            ground: look.fill,
-        },
-        picture,
-    );
-    let drawn = stage(frame.check, 0.3, 1.0);
-    if drawn > 0.0 {
-        check(scene, transform, disc, drawn, look.fill);
-    }
-    let x = tile.x1 + GAP;
     let style = words_style(theme);
     let (words_w, words_h) = text.measure_style(frame.contents.words, None, &style);
     text.draw_style(
         scene,
         frame.contents.words,
         look.ink,
-        transform * Affine::translate((x, rect.center().y - f64::from(words_h) / 2.0)),
+        transform
+            * Affine::translate((rect.x0 + PAD_X, rect.center().y - f64::from(words_h) / 2.0)),
         None,
         &style,
     );
     if !frame.contents.keys.is_empty() {
         let height = InputHint::keycap_height(theme);
-        let press = crate::motion::Beckon::stroke(frame.phase, 0.02, 0.06)
-            - crate::motion::Beckon::stroke(frame.phase, 0.12, 0.16);
         let origin = Point::new(
-            x + f64::from(words_w).ceil() + GAP,
-            rect.center().y - height / 2.0 + 1.5 * press,
+            rect.x0 + PAD_X + f64::from(words_w).ceil() + GAP,
+            rect.center().y - height / 2.0,
         );
         InputHint::paint_keycap_labels_at(
             scene,
@@ -350,36 +291,6 @@ fn paint_contents(
             theme,
         );
     }
-}
-
-fn check(scene: &mut Scene, transform: Affine, disc: Rect, drawn: f64, ink: Color) {
-    let r = disc.height() / 2.0;
-    let c = disc.center();
-    let points = [
-        Point::new(c.x - 0.36 * r, c.y + 0.02 * r),
-        Point::new(c.x - 0.1 * r, c.y + 0.28 * r),
-        Point::new(c.x + 0.38 * r, c.y - 0.26 * r),
-    ];
-    let first = points[0].distance(points[1]);
-    let second = points[1].distance(points[2]);
-    let along = (first + second) * drawn.clamp(0.0, 1.0);
-    let mut path = BezPath::new();
-    path.move_to(points[0]);
-    if along <= first {
-        path.line_to(points[0].lerp(points[1], along / first));
-    } else {
-        path.line_to(points[1]);
-        path.line_to(points[1].lerp(points[2], (along - first) / second));
-    }
-    scene.stroke(
-        &Stroke::new(r * 0.2)
-            .with_caps(vello::kurbo::Cap::Round)
-            .with_join(vello::kurbo::Join::Round),
-        transform,
-        ink,
-        None,
-        &path,
-    );
 }
 
 /// One pulse of light leaving `rect` (corner `radius`): a bloom of the
@@ -423,7 +334,7 @@ pub(super) fn pulse(
     }
 }
 
-/// The dot a done card folds into, at `centre`, `diameter` across.
+/// The dot a done pill folds into, at `centre`, `diameter` across.
 pub(super) fn dot(scene: &mut Scene, transform: Affine, centre: Point, diameter: f64, look: &Look) {
     scene.draw_blurred_rounded_rect(
         transform,

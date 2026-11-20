@@ -548,7 +548,7 @@ impl DesktopHandle {
     }
 
     /// Whether the desktop's control hints may show soon: while they may, each frame also reads
-    /// where the shown windows show text and controls, which a hint's card keeps off.
+    /// where the shown windows show text and controls, which a hint keeps off.
     pub fn read_hint_ink(&self, read: bool) {
         self.shared.borrow_mut().hint_reading = if read {
             HintReading::WithInk

@@ -23,9 +23,12 @@ pub struct HintPlaces {
     /// Every window shown on the strip and every card over it, whole, bar included: a hint
     /// stands outside them where it fits.
     pub windows_on_strip: Vec<Rect>,
-    /// What a hint's card never covers: each shown window's bar, the text and controls its
-    /// content shows (all of it where the content cannot say), and every card over the strip.
-    /// `None` when the row was not asked to read them ([`GroupRow::hint_places`]).
+    /// Each shown window's bar, whole: the ground a hint may stand on beside its gesture where
+    /// there is no ground outside the windows. A window's content is never such ground.
+    pub bars: Vec<Rect>,
+    /// What a hint never covers: each shown window's bar text and controls, the text and controls
+    /// its content shows (all of its body where the content cannot say), and every card over the
+    /// strip. `None` when the row was not asked to read them ([`GroupRow::hint_places`]).
     pub ink: Option<Vec<Rect>>,
 }
 
@@ -92,18 +95,27 @@ impl GroupRow {
             .filter(|(i, group)| shown(*i, group))
             .map(|(_, group)| group)
             .collect();
+        let bars: Vec<Rect> = on_screen
+            .iter()
+            .filter(|group| !self.is_floating(group.id))
+            .map(|group| group.bar_rect())
+            .filter(|bar| !bar.is_zero_area())
+            .collect();
         let ink = read_ink.then(|| {
             on_screen
                 .iter()
                 .flat_map(|group| {
+                    if self.is_floating(group.id) {
+                        return vec![whole(group)];
+                    }
+                    let mut ink = bar_ink(group);
                     let content = (!self.is_floating(group.id))
                         .then(|| group.active_host().and_then(super::TileHost::ink))
                         .flatten();
-                    let mut ink = vec![group.bar_rect()];
                     match content {
                         Some(content) => ink.extend(content),
-                        // A card over the strip, or content that cannot say: all of it.
-                        None => ink.push(whole(group)),
+                        // Content that cannot say: all of its body.
+                        None => ink.push(body(group)),
                     }
                     ink
                 })
@@ -124,6 +136,7 @@ impl GroupRow {
             asking: focused.is_some_and(asking_for_input),
             bar_span,
             windows_on_strip: on_screen.iter().map(|group| whole(group)).collect(),
+            bars,
             ink,
         }
     }
@@ -141,6 +154,32 @@ impl GroupRow {
             performed::note(Performed::HoveredWindowBar);
         }
     }
+}
+
+/// A window's body: what it shows under its bar.
+fn body(group: &super::WindowGroup) -> Rect {
+    let rect = group.get_rect();
+    let bar = group.bar_rect();
+    Rect::new(rect.x0, bar.y1.max(rect.y0), rect.x1, rect.y1)
+}
+
+/// Where a window's bar shows words and controls: its tabs, its new-tab control, its toolbar's
+/// parts, its search and history controls, and its window controls' pill. The bar's ground
+/// between them takes a hint; the controls and titles never do.
+fn bar_ink(group: &super::WindowGroup) -> Vec<Rect> {
+    let bar = group.bar();
+    let controls = bar.window_controls();
+    let (back, forward, location, actions) = bar.toolbar_rects();
+    let mut ink: Vec<Rect> = group.tab_rects().to_vec();
+    ink.extend([back, forward, location]);
+    ink.extend(actions);
+    ink.push(group.new_tab_rect());
+    ink.push(group.window_search().anchor());
+    ink.push(bar.history_action_rect());
+    ink.push(controls.pill);
+    ink.extend(controls.iter().map(|(_, rect)| rect));
+    ink.retain(|rect| !rect.is_zero_area());
+    ink
 }
 
 const GRAB_STEP: f64 = 4.0;
@@ -252,6 +291,7 @@ const LEADING_SHARE: f64 = 0.25;
 mod tests {
     use super::super::GroupRow;
     use super::super::tests::{make_row_with_groups_with_taffy, relayout_row_owned};
+    use crate::widget::Widget as _;
     use vello::kurbo::{Point, Rect};
 
     tilo_test_env::scenario! {
@@ -304,6 +344,41 @@ mod tests {
             row.groups[0].focused = true;
             let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
             anchor_takes_the_window(&row);
+        }
+
+        phase a_bars_words_and_controls_are_ink_but_its_ground_takes_a_hint;
+        // The bar's titles and controls are what a hint must never cover; the ground between them
+        // is where it may stand, and the content under the bar never is.
+        {
+            let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+            for group in &mut row.groups {
+                group.bar_mut().set_window_controls(true);
+            }
+            row.groups[0].focused = true;
+            let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            let places = row.hint_places(true);
+            let group = &row.groups[0];
+            let bar = group.bar_rect();
+            assert!(
+                places
+                    .bars
+                    .iter()
+                    .any(|held| held.x0 == bar.x0 && held.x1 == bar.x1 && held.y0 == bar.y0),
+                "each window's bar is ground: {:?}",
+                places.bars
+            );
+            let ink = places.ink.clone().expect("the row read its ink");
+            for title in group.tab_rects() {
+                assert!(ink.contains(title), "the title {title:?} is ink");
+            }
+            let pill = group.bar_for_tests().window_controls().pill;
+            assert!(ink.contains(&pill), "the window controls' pill is ink");
+            assert!(
+                !ink.contains(&bar),
+                "the bar's ground is no ink: it takes a hint"
+            );
+            let body = Rect::new(bar.x0, bar.y1, bar.x1, group.get_rect().y1);
+            assert!(ink.contains(&body), "the content's body is ink");
         }
 
         phase a_floating_card_is_no_window_a_hint_points_at;

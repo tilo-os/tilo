@@ -97,7 +97,7 @@ const EDGE_INSET: f64 = 3.0;
 pub struct HintFrame {
     /// The shown strip's row ([`ui::widget::GroupRow::hint_places`]).
     pub row: HintPlaces,
-    /// The desktop under the bar: where cards may stand.
+    /// The desktop under the bar: where hints may stand.
     pub area: Rect,
     /// The keys that open search, as the keyboard spells them.
     pub search_keys: Vec<String>,
@@ -214,8 +214,9 @@ impl ControlHints {
     }
 
     /// Whether a hint may show soon, so the strip should read where its windows show text and
-    /// controls as it draws: hints are on, one is on screen or still to learn, and the person is
-    /// not typing. Reading that walks the windows' content, so it stops once every hint is learned.
+    /// controls as it draws: hints are on, one is on screen or still to learn and unseen, and the
+    /// person is not typing. Reading that walks the windows' content, so it stops once every hint
+    /// is learned or has had its one showing.
     pub fn reads_ink(&mut self, now: Instant) -> bool {
         let reads = self.wants_ink(now);
         if reads && !self.reading_ink {
@@ -404,7 +405,7 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
     );
     let row = &frame.row;
     let (anchor, side, edge, keys) = match spec.gesture {
-        // Search comes down at the top of the desktop, at its middle: the card is where search will
+        // Search comes down at the top of the desktop, at its middle: the pill is where search will
         // open, pointing at nothing, since no control on screen opens it.
         Gesture::OpenFromSearch => {
             let at = Point::new(area.center().x, area.y0 + SEARCH_DROP);
@@ -454,9 +455,9 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
             )
         }
     };
-    // What the card may slide along to find free ground: the bar the window is held by, the
-    // edge the view moves toward, the top half of the desktop where search opens. An edge between
-    // two windows is its own stretch.
+    // What the pill may slide along to find free ground: the bar the window is held by, the edge
+    // the view moves toward, the top half of the desktop where search opens. An edge between two
+    // windows is its own stretch.
     let along = match spec.gesture {
         Gesture::OpenFromSearch => Rect::new(area.x0, anchor.y0, area.x1, area.center().y),
         Gesture::MoveWindow => row.bar_span.map_or(anchor, |bar| bar.union(anchor)),
@@ -473,9 +474,9 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
         words,
         keys,
         points: spec.gesture != Gesture::OpenFromSearch,
-        touch: frame.touch,
         along,
         windows: row.windows_on_strip.clone(),
+        bars: row.bars.clone(),
         ink,
     })
 }
@@ -574,7 +575,6 @@ mod tests {
             let mut frame = frame();
             let pointer = place(spec, &frame).unwrap();
             assert_eq!(pointer.words, crate::i18n::t("control-hint-pan"));
-            assert!(!pointer.touch);
             assert!(
                 !pointer.words.to_lowercase().contains("drag"),
                 "{}",
@@ -583,7 +583,6 @@ mod tests {
             frame.touch = true;
             let touch = place(spec, &frame).unwrap();
             assert_eq!(touch.words, crate::i18n::t("control-hint-pan-touch"));
-            assert!(touch.touch);
             assert_ne!(touch.words, pointer.words);
             // The other hints' words stay as they are on either.
             let resize = HINTS
@@ -767,8 +766,6 @@ mod tests {
         performed::note(Performed::OpenedWindow);
         hints.update(&frame, start);
         assert!(hints.is_showing());
-        let loops = Beckon::GESTURE_PERIOD
-            .mul_f64(f64::from(Beckon::GESTURE_LOOPS - 1) + Beckon::RESTING_PHASE);
         let gone = IGNORED_AFTER + Beckon::leaving_time(EffectiveMotion::default());
         // A host that draws a frame whenever one is asked for, or a wake comes due, as the page
         // does.
@@ -781,7 +778,7 @@ mod tests {
                 if hints.needs_animation_frame(now) {
                     last_asked = Some(now.saturating_duration_since(start));
                     assert!(
-                        now < start + loops + Duration::from_millis(20)
+                        now < start + Beckon::ARRIVAL + Duration::from_millis(20)
                             || (now + Duration::from_millis(20) >= start + IGNORED_AFTER
                                 && now < start + gone + Duration::from_millis(40)),
                         "a hint at rest, or gone, asked for a frame {:?} after it came",

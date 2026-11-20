@@ -8,13 +8,12 @@ use crate::time::{Duration, Instant};
 pub const IGNORED_AFTER: Duration = Duration::from_secs(9);
 /// The least time between two hints beginning to show.
 pub const MIN_GAP: Duration = Duration::from_secs(60);
-/// How long after it went unanswered a hint may come back, once, in the same session.
-pub const RETURN_AFTER: Duration = Duration::from_secs(10 * 60);
 /// How long a moment the shell saw ([`Cue::Saw`]) stays the moment to show a hint: one that comes after
 /// this is no longer about what just happened.
 pub const CUE_FRESH: Duration = Duration::from_secs(20);
-/// The most times one hint shows, ever.
-pub const MAX_SHOWINGS: u8 = 2;
+/// The most times one hint shows, ever: once. A hint the person has seen does not come back, whether
+/// they took it or not; one whose gesture they performed is learned and never shows at all.
+pub const MAX_SHOWINGS: u8 = 1;
 /// How long after a hint found no free spot to stand in it may try again.
 pub const RETRY_AFTER: Duration = Duration::from_secs(5);
 
@@ -40,7 +39,6 @@ pub struct Current {
 #[derive(Clone, Copy, Debug, Default)]
 struct Track {
     cued: Option<Instant>,
-    left: Option<Instant>,
 }
 
 /// The schedule of a set of hints over the signals `S` a shell observes.
@@ -147,17 +145,13 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
     }
 
     /// The hint on screen has nowhere to stand now: what it points at is covered, or everything
-    /// beside it is text and controls. It goes, as one whose anchor went, and may come back once
-    /// it has been away.
+    /// beside it is text and controls. It goes, as one whose anchor went.
     pub fn dismiss(&mut self, now: Instant) {
         let Some(current) = self.current else {
             return;
         };
         if !matches!(current.phase, Phase::Shown(_)) {
             return;
-        }
-        if let Some(track) = self.tracks.get_mut(current.index) {
-            track.left = Some(now);
         }
         self.current = Some(Current {
             index: current.index,
@@ -240,8 +234,8 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
         if let Some(held) = self.held_until {
             due = Some(due.map_or(held, |d| d.max(held)));
         }
-        for (index, spec) in self.specs.iter().enumerate() {
-            if self.learned.knows(spec.id) {
+        for spec in self.specs {
+            if self.learned.knows(spec.id) || self.learned.showings(spec.id) >= MAX_SHOWINGS {
                 continue;
             }
             for cue in spec.when {
@@ -249,9 +243,6 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
                     let at = (started + *after).max(due.unwrap_or(started));
                     due = Some(due.map_or(at, |d| d.max(at)));
                 }
-            }
-            if let Some(left) = self.tracks.get(index).and_then(|t| t.left) {
-                due = Some(due.map_or(left + RETURN_AFTER, |d| d.min(left + RETURN_AFTER)));
             }
         }
         // A moment the last tick already reached and began nothing at is
@@ -276,9 +267,6 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
                 let interrupted = matches!(quiet, Some(Quiet::Call | Quiet::Following))
                     || !anchored(current.index);
                 if since(at) >= IGNORED_AFTER || interrupted || !self.learned.enabled {
-                    if let Some(track) = self.tracks.get_mut(current.index) {
-                        track.left = Some(now);
-                    }
                     self.current = Some(Current {
                         index: current.index,
                         phase: Phase::Leaving(now),
@@ -309,12 +297,6 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
             return false;
         };
         if self.learned.knows(spec.id) || self.learned.showings(spec.id) >= MAX_SHOWINGS {
-            return false;
-        }
-        if track
-            .left
-            .is_some_and(|left| now.saturating_duration_since(left) < RETURN_AFTER)
-        {
             return false;
         }
         if !spec.only_while.iter().all(|fact| holds(*fact)) {
