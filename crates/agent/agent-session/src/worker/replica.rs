@@ -123,6 +123,11 @@ struct Inner {
     /// an operation names it by when it takes the content by reference
     /// ([`ConfinedReplica::stored_form`]).
     forms: HashMap<String, String>,
+    /// The content the document (`None`) and each part held beside it name, with the heads
+    /// they were read at ([`referenced_content`]): a document is read again only once it
+    /// moved. Reading every value of a chain's parts cost a second for a tracker of a few
+    /// thousand issues, before every action, and more with every issue it held.
+    named: BTreeMap<Option<DocumentId>, (Vec<automerge::ChangeHash>, BTreeSet<String>)>,
 }
 
 /// Whether `document` is one the store asked its workspace for, which this replica may hold
@@ -293,6 +298,7 @@ impl ConfinedReplica {
                 asked: BTreeSet::new(),
                 found: None,
                 forms: HashMap::new(),
+                named: BTreeMap::new(),
             }),
         };
         if fresh {
@@ -1166,12 +1172,19 @@ impl ConfinedReplica {
     ) -> Result<(), AppError> {
         // The document and each of its parts: what an app keeps in a chain is
         // held beside its own document, and its content is named there.
-        let mut named = referenced_content(&inner.mirror);
-        for part in inner.beside.values_mut() {
+        let Inner {
+            mirror,
+            beside,
+            named: read,
+            ..
+        } = &mut *inner;
+        read.retain(|document, _| document.as_ref().is_none_or(|id| beside.contains_key(id)));
+        let mut named = named_in(read, None, mirror).clone();
+        for (id, part) in beside.iter_mut() {
             let part = part
                 .settled()
                 .map_err(|error| AppError::Merge(error.to_string()))?;
-            named.extend(referenced_content(part));
+            named.extend(named_in(read, Some(id.clone()), part).iter().cloned());
         }
         let missing: Vec<String> = named
             .into_iter()
@@ -1876,6 +1889,7 @@ fn referenced_content(doc: &AutoCommit) -> BTreeSet<String> {
             ValueRef::Scalar(_) => {}
         }
     }
+    let _profile = ui::tilo_resource::profiling::Phase::start("app_worker.content_named");
     let mut named = BTreeSet::new();
     let mut objects = vec![(automerge::ROOT, ObjType::Map)];
     let mut budget = MOST_SCANNED_VALUES;
@@ -1915,6 +1929,21 @@ fn referenced_content(doc: &AutoCommit) -> BTreeSet<String> {
         }
     }
     named
+}
+
+/// The content `doc` names ([`referenced_content`]), read again only when its heads moved
+/// since it was read for `document` in `read`.
+fn named_in<'a>(
+    read: &'a mut BTreeMap<Option<DocumentId>, (Vec<automerge::ChangeHash>, BTreeSet<String>)>,
+    document: Option<DocumentId>,
+    doc: &mut AutoCommit,
+) -> &'a BTreeSet<String> {
+    let heads = doc.get_heads();
+    let entry = read.entry(document).or_default();
+    if entry.0 != heads || heads.is_empty() {
+        *entry = (heads, referenced_content(doc));
+    }
+    &entry.1
 }
 
 /// The content an operation's arguments name: every string that is a

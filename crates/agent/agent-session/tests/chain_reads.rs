@@ -237,3 +237,54 @@ fn a_chat_reads_and_lists_the_messages_of_every_part_its_host_holds() {
         );
     }
 }
+
+/// How many documents `observed` read whole for the content they name.
+fn documents_read_for_content(observed: &[ui::tilo_resource::profiling::Sample]) -> usize {
+    observed
+        .iter()
+        .filter(|sample| sample.phase == "app_worker.content_named")
+        .map(|sample| sample.calls)
+        .sum()
+}
+
+#[test]
+fn the_content_a_chain_names_is_read_again_only_for_the_parts_that_moved() {
+    let mut page = founded();
+    let held = held(&mut page).lending(tilo_content::ContentStore::memory());
+    let mut filled = 0;
+    while filled * chat::chat::MAX_MESSAGE_TEXT_BYTES <= ui::framework::PART_BYTES {
+        let text = format!(
+            "{filled}: {}",
+            "x".repeat(chat::chat::MAX_MESSAGE_TEXT_BYTES.saturating_sub(4))
+        );
+        post(&held, &text);
+        filled = filled.saturating_add(1);
+    }
+    post(&held, "first of the newest part");
+    taken(&held);
+
+    // An effect is given the content its document and every part name.
+    let ((), first) = ui::tilo_resource::profiling::observe(|| held.put_held_content().unwrap());
+    assert!(documents_read_for_content(&first) >= 1, "{first:?}");
+    // Nothing moved: nothing is read again, however much the chain holds.
+    let ((), again) = ui::tilo_resource::profiling::observe(|| held.put_held_content().unwrap());
+    assert_eq!(documents_read_for_content(&again), 0, "{again:?}");
+    // A post moves the newest part and what else it writes; the full part
+    // before it is not read again: of the document and its two parts, two at
+    // most.
+    post(&held, "second of the newest part");
+    taken(&held);
+    let ((), moved) = ui::tilo_resource::profiling::observe(|| held.put_held_content().unwrap());
+    let read = documents_read_for_content(&moved);
+    assert!(
+        (1..=2).contains(&read),
+        "only what the post moved is read again: {read} of 3"
+    );
+}
+
+/// Take what the document and its parts changed, as the server does after each
+/// action it saves.
+fn taken(held: &ConfinedReplica) {
+    held.take_mutation().unwrap();
+    held.take_document_mutations().unwrap();
+}
