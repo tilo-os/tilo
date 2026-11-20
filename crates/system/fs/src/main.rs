@@ -1136,7 +1136,10 @@ async fn replica_workspace(
         endpoint: endpoint.clone(),
         lookup,
     };
-    let hydrator = Arc::new(Hydrator::new(net.clone(), Arc::clone(&store)));
+    let hydrator = Arc::new(
+        Hydrator::new(net.clone(), Arc::clone(&store))
+            .with_identity(Arc::new(transport_identity.clone())),
+    );
     let namespace_path = namespace_path(Some(&bundle.cache_dir));
     let bootstrap = bootstrap_peers(&ticket, Some(&bundle.cache_dir))?;
     for peer in &bootstrap {
@@ -1359,7 +1362,10 @@ async fn serve(
     );
     let store = Arc::new(open_workspace_store(cache_dir.clone(), &backend, workspace_id).await?);
     let author = net.id().to_string();
-    let hydrator = Arc::new(Hydrator::new(net.clone(), store.clone()));
+    let hydrator = Arc::new(
+        Hydrator::new(net.clone(), store.clone())
+            .with_identity(Arc::new(transport_identity.clone())),
+    );
     if let Some(cache_dir) = cache_dir.as_deref() {
         for peer in load_persisted_content_peers(cache_dir)? {
             hydrator.add_peer(peer.endpoint);
@@ -1605,7 +1611,10 @@ async fn mount(
         .transpose()?;
     let store =
         Arc::new(open_workspace_store(cache_dir.clone(), &backend, ticket.workspace_id()).await?);
-    let hydrator = Arc::new(Hydrator::new(net.clone(), store.clone()));
+    let hydrator = Arc::new(
+        Hydrator::new(net.clone(), store.clone())
+            .with_identity(Arc::new(transport_identity.clone())),
+    );
     let author = net.id().to_string();
     let bootstrap = bootstrap_peers(&ticket, cache_dir.as_deref())?;
     for peer in &bootstrap {

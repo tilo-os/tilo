@@ -98,6 +98,9 @@ pub struct Hydrator {
         AsyncMutex<HashMap<(iroh_base::PublicKey, usize), iroh::endpoint::Connection>>,
     pub runtime_handle: tokio::runtime::Handle,
     source: Option<Arc<dyn ContentSource>>,
+    /// This device's certified identity: presented to a peer before the first content request on
+    /// a connection, so a device whose documents arrived another way is known before it asks.
+    identity: Option<Arc<crate::sync::FsTransportIdentity>>,
 }
 
 /// Chunk entries held by the manifest cache: roughly 40 bytes each, so about 20 MiB.
@@ -144,7 +147,15 @@ impl Hydrator {
             blob_connections: AsyncMutex::new(HashMap::new()),
             runtime_handle: tokio::runtime::Handle::current(),
             source: None,
+            identity: None,
         }
+    }
+
+    /// Certify this device to every peer this hydrator fetches from.
+    #[must_use]
+    pub fn with_identity(mut self, identity: Arc<crate::sync::FsTransportIdentity>) -> Self {
+        self.identity = Some(identity);
+        self
     }
 
     #[must_use]

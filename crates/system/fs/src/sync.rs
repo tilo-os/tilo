@@ -615,6 +615,50 @@ fn blob_guard(
     Some(sender)
 }
 
+/// The ALPN a device certifies itself on before a peer's content provider admits its requests:
+/// the same exchange every workspace-sync connection starts with, on a connection of its own, so
+/// a device whose documents arrived another way (the session carries them between devices) is
+/// known to the peer before it asks for the first byte.
+pub(crate) const TILO_FS_CERTIFY_ALPN: &[u8] = b"tilo/fs/certify/1";
+
+/// Certify this device to `peer`, so its content provider knows whose device the requests that
+/// follow come from.
+pub(crate) async fn certify_to_peer(
+    endpoint: &Endpoint,
+    peer: EndpointAddr,
+    identity: &FsTransportIdentity,
+) -> Result<()> {
+    let connection = endpoint.connect(peer, TILO_FS_CERTIFY_ALPN).await?;
+    let (mut send, mut recv) = connection.open_bi().await?;
+    authenticate_connection(
+        endpoint.id(),
+        connection.remote_id(),
+        &mut recv,
+        &mut send,
+        identity,
+    )
+    .await?;
+    let _ = send.finish();
+    connection.close(0u32.into(), b"certified");
+    Ok(())
+}
+
+/// Answer a peer's certification: prove this device to it and remember its person, so a request
+/// arriving on another connection from the same device is admitted.
+async fn answer_certification(
+    connection: Connection,
+    local: EndpointId,
+    identity: &FsTransportIdentity,
+) -> Result<()> {
+    let remote = connection.remote_id();
+    let (mut send, mut recv) = connection.accept_bi().await?;
+    authenticate_connection(local, remote, &mut recv, &mut send, identity).await?;
+    let _ = send.finish();
+    // Keep the handler alive until the peer has read what we sent.
+    connection.closed().await;
+    Ok(())
+}
+
 /// Exchange the current signed workspace authority with one authenticated peer.
 pub async fn submit_workspace_authority(
     endpoint: &Endpoint,
@@ -790,11 +834,13 @@ impl Workspace {
             peers,
             authority: authority.map(|authority| AuthorityProtocol {
                 local: net.id(),
-                identity,
+                identity: identity.clone(),
                 policy,
                 authority: Arc::clone(authority),
                 workspace_id,
             }),
+            local: net.id(),
+            identity,
         };
         Workspace {
             namespace,
@@ -808,11 +854,14 @@ struct Answers {
     blobs: iroh_blobs::BlobsProtocol,
     peers: BlobPeers,
     authority: Option<AuthorityProtocol>,
+    /// This device, as peers know it, and the identity it proves to them.
+    local: EndpointId,
+    identity: FsTransportIdentity,
 }
 
 impl Answer for Answers {
     fn alpns(&self) -> Vec<&'static [u8]> {
-        let mut alpns = vec![iroh_blobs::ALPN];
+        let mut alpns = vec![iroh_blobs::ALPN, TILO_FS_CERTIFY_ALPN];
         if self.authority.is_some() {
             alpns.push(TILO_FS_AUTHORITY_ALPN);
         }
@@ -825,6 +874,18 @@ impl Answer for Answers {
         remote: EndpointId,
         connection: Connection,
     ) -> BoxFuture<'static, Result<(), AcceptError>> {
+        if alpn == TILO_FS_CERTIFY_ALPN {
+            let identity = self.identity.clone();
+            let local = self.local;
+            return async move {
+                answer_certification(connection, local, &identity)
+                    .await
+                    .map_err(|error| {
+                        AcceptError::from_err(std::io::Error::other(error.to_string()))
+                    })
+            }
+            .boxed();
+        }
         if alpn == TILO_FS_AUTHORITY_ALPN
             && let Some(authority) = self.authority.clone()
         {
