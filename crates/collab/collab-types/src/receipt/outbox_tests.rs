@@ -30,12 +30,9 @@ fn document() -> WrittenDocument<'static> {
 }
 
 /// The workspace mailbox's outbox, whose entries any device holding an
-/// account carries out.
+/// account carries out: one unit, as its surface declares the field.
 fn outbox() -> UnitPath {
-    vec![
-        PathStep::Field("outbox".into()),
-        PathStep::Item(crate::surface::ANY_ITEM.into()),
-    ]
+    vec![PathStep::Field("outbox".into())]
 }
 
 /// Mail's mailbox as its package publishes it: a send queues a message in the
@@ -81,7 +78,7 @@ fn held() -> AutoCommit {
     let index = doc
         .put_object(ROOT, crate::units::UNIT_INDEX, ObjType::List)
         .unwrap();
-    doc.insert(&index, 0, "outbox/*").unwrap();
+    doc.insert(&index, 0, "outbox").unwrap();
     doc.put(ROOT, "title", "Mailbox").unwrap();
     let outbox = doc.put_object(ROOT, "outbox", ObjType::Map).unwrap();
     let entry = doc.put_object(&outbox, ENTRY, ObjType::Map).unwrap();
@@ -208,6 +205,28 @@ fn page(policy: &WorkspacePolicy, person: &str) -> MemberAccess {
     MemberAccess::person(policy.clone(), person).on_foreign_device()
 }
 
+/// How a receiver that cannot read the change decides `action`, by the units its
+/// action may write and its claim: `by` made it.
+fn sealed(
+    action: ClaimedAction,
+    units: Vec<UnitPath>,
+    by: &str,
+    signer: &MemberAccess,
+) -> Result<Receipt, ReceiptRefusal> {
+    let claim = crate::claim::ChangeClaim {
+        change: [1; 32],
+        action,
+        units,
+        invoker: Some(Acting::person(by)),
+    };
+    let cx = Context::at_secs(1);
+    let allows = |invoker: Option<&Acting>, node: &TreePath, kind: ActionKind| {
+        ChangeAuthor::answer(signer, invoker, node, kind, &cx) == Answer::Allow
+    };
+    let surface_for = |_: Option<&str>| Some(Arc::new(Mailbox) as Arc<dyn ReceiptSurface>);
+    check_claims_by_kind(&[claim], &document(), Some(KIND), &surface_for, &allows)
+}
+
 tilo_test_env::scenario! {
     /// What a device of the workspace does to a mailbox the workspace owns is
     /// decided by what its change queued, not by what its action may queue.
@@ -255,6 +274,52 @@ tilo_test_env::scenario! {
                 "a change that puts a message in the outbox reaches outside: {page:?}"
             );
         }
+    }
+
+    phase a_sealed_settle_is_no_reach_outside;
+    // A receiver that cannot read the change decides it by its claim, which
+    // names what its action may write: an edit whose path lies inside an
+    // entry wrote there, and it queued nothing, while an edit of the outbox
+    // itself may have put an entry in it.
+    {
+        let mut policy = policy();
+        policy.members.insert("bob".into(), Role::Editor);
+        let settle = ClaimedAction::Edit {
+            kind: KIND.into(),
+            path: vec![
+                PathStep::Field("outbox".into()),
+                PathStep::Item(ENTRY.into()),
+            ],
+        };
+        assert_eq!(
+            sealed(
+                settle,
+                vec![outbox()],
+                "bob",
+                &page(&policy, "bob")
+            ),
+            Ok(Receipt::Admit),
+            "settling an entry is what an editor may write"
+        );
+        let whole = ClaimedAction::Edit {
+            kind: KIND.into(),
+            path: vec![PathStep::Field("outbox".into())],
+        };
+        assert!(
+            matches!(
+                sealed(
+                    whole,
+                    vec![outbox()],
+                    "bob",
+                    &page(&policy, "bob")
+                ),
+                Err(ReceiptRefusal::NotGranted {
+                    kind: ActionKind::Outside,
+                    ..
+                })
+            ),
+            "an edit of the outbox itself may queue, and reaches outside"
+        );
     }
 
     phase a_viewer_writes_nothing_of_the_mailbox;
