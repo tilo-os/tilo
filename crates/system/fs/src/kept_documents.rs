@@ -165,6 +165,23 @@ impl KeptDocuments {
         Ok(())
     }
 
+    /// Make every journal frame this has appended so far durable, then the directory that names
+    /// them: what a mount calls from its flusher and from `fsync`, after the content those frames
+    /// describe is durable. One sync per file here, not per change.
+    ///
+    /// # Errors
+    /// A journal or the directory could not be synced.
+    pub fn sync(&self) -> io::Result<()> {
+        for entry in std::fs::read_dir(&self.dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension() == Some(std::ffi::OsStr::new(JOURNAL)) {
+                std::fs::File::open(&path)?.sync_all()?;
+            }
+        }
+        std::fs::File::open(&self.dir)?.sync_all()
+    }
+
     /// Save each document of `namespace` that changed since its last save, whole, and let go of
     /// the journal that save covers. The namespace is locked while the documents are saved to
     /// memory, not while they are written.

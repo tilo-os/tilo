@@ -192,6 +192,9 @@ async fn measure_rung(
         .create_dir(ROOT_INO, "small", 1_700_000_000)
         .unwrap();
     let mut buf = vec![0_u8; SMALL_BYTES as usize];
+    // What a mount does: content commits without its own sync, and one barrier makes the window
+    // durable, so a copy of small files shares the syncs.
+    store_a.set_sync_writes(false);
     let started = Instant::now();
     let mut small_written = 0_u64;
     let mut small_count = 0_u64;
@@ -231,6 +234,14 @@ async fn measure_rung(
         }
     }
     let put_small = started.elapsed();
+    let sync_started = Instant::now();
+    store_a.sync_pending().unwrap();
+    report(
+        &rung,
+        "put_small_sync_s",
+        sync_started.elapsed().as_secs_f64(),
+        "s",
+    );
     report(&rung, "put_small_s", put_small.as_secs_f64(), "s");
     report(&rung, "put_small_store_s", store_time.as_secs_f64(), "s");
     report(&rung, "put_small_tree_s", tree_time.as_secs_f64(), "s");
@@ -247,23 +258,21 @@ async fn measure_rung(
         "MiB/s",
     );
     eprintln!("ladder: {total_mib} MiB rung: small files put in {put_small:?}");
-    // What the same puts cost when the content database syncs once at the end instead of per
-    // file: the difference is what a batch of writers could share.
-    let deferred_sample = 1_000_u64.min(small_count);
-    store_a.files().set_sync_writes(false);
-    let deferred_started = Instant::now();
-    for i in 0..deferred_sample {
+    // What the same puts cost with a sync per file, the behaviour a batch replaces.
+    let synced_sample = 1_000_u64.min(small_count);
+    store_a.set_sync_writes(true);
+    let synced_started = Instant::now();
+    for i in 0..synced_sample {
         fill(i, 0, &mut buf);
         let _ = store_a.write_content(&buf).await.unwrap();
     }
-    let deferred_s = deferred_started.elapsed();
-    store_a.files().set_sync_writes(true);
-    let _ = store_a.files().sync_db();
-    report(&rung, "put_small_deferred_s", deferred_s.as_secs_f64(), "s");
+    let synced_s = synced_started.elapsed();
+    store_a.set_sync_writes(false);
+    report(&rung, "put_small_synced_s", synced_s.as_secs_f64(), "s");
     report(
         &rung,
-        "put_small_deferred_files_s",
-        deferred_sample as f64 / deferred_s.as_secs_f64(),
+        "put_small_synced_files_s",
+        synced_sample as f64 / synced_s.as_secs_f64(),
         "files/s",
     );
     let started = Instant::now();

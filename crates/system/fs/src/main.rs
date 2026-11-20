@@ -1511,6 +1511,7 @@ async fn serve(
         },
     )
     .await?;
+    let _ = store.sync_pending();
     final_flush(keeper, &namespace, kept.as_ref()).await;
     if let Some(task) = authority_socket_task {
         task.abort();
@@ -1641,6 +1642,7 @@ async fn mount(
         },
     )
     .await?;
+    let _ = store.sync_pending();
     final_flush(keeper, &namespace, kept.as_ref()).await;
     drop(workspace);
     Ok(())
@@ -1721,6 +1723,31 @@ fn spawn_keeper(
             .inspect_err(|error| eprintln!("saving the workspace tree failed: {error}"))
             .map_err(Into::into)
     })
+}
+
+/// Syncs content and journals every [`CONTENT_SYNC_INTERVAL`] while anything was written, so a
+/// person's copy costs one sync per window rather than one per file.
+const CONTENT_SYNC_INTERVAL: Duration = Duration::from_millis(200);
+
+async fn content_flusher(content: Arc<ContentStore>, kept: Option<Arc<KeptTree>>) {
+    loop {
+        tokio::time::sleep(CONTENT_SYNC_INTERVAL).await;
+        let content = Arc::clone(&content);
+        let kept = kept.clone();
+        let flushed = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            content.sync_pending()?;
+            if let Some(kept) = kept.as_ref() {
+                kept.sync()?;
+            }
+            Ok(())
+        })
+        .await;
+        match flushed {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => eprintln!("the workspace content could not be synced: {error}"),
+            Err(error) => eprintln!("the workspace content could not be synced: {error}"),
+        }
+    }
 }
 
 /// The last save of a mount, on shutdown and unmount: stops its keeper (waiting, so the two never
@@ -1875,6 +1902,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         actor,
         mut rebind,
     } = services;
+    let content = Arc::clone(&hydrator.store);
     // Before anything is served: from here on a stop signal ends the mount through the final save
     // instead of killing the process.
     let mut stop = StopSignals::install()?;
@@ -2025,10 +2053,31 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     // Both backends: every change the mount makes is journaled on disk under the namespace's
     // lock, before the request that made it is answered, so a process killed at any instant
     // starts again holding every change it answered for.
-    let fs = match kept.clone() {
-        Some(kept) => fs.with_change_journal(Arc::new(move |namespace| kept.journal(namespace))),
+    let journal: Option<fs::fs::ChangeJournal> = kept.clone().map(|kept| {
+        Arc::new(move |namespace: &mut Namespace| kept.journal(namespace)) as fs::fs::ChangeJournal
+    });
+    let fs = match journal.clone() {
+        Some(journal) => fs.with_change_journal(journal),
         None => fs,
     };
+    // Content and journal reach the disk on one barrier: content first, then the journals that
+    // name it, so a crash never leaves a journaled tree entry whose bytes are missing. A copy of
+    // thousands of small files pays one sync per window instead of one per file; `fsync`,
+    // `fsyncdir` and unmount still sync at once.
+    let barrier = {
+        let content = Arc::clone(&content);
+        let kept = kept.clone();
+        move || -> std::io::Result<()> {
+            content.sync_pending()?;
+            if let Some(kept) = kept.as_ref() {
+                kept.sync()?;
+            }
+            Ok(())
+        }
+    };
+    content.set_sync_writes(false);
+    let _content_flusher = tokio::spawn(content_flusher(Arc::clone(&content), kept.clone()));
+    fs.set_durability_hook(Arc::new(barrier));
     #[cfg(target_os = "linux")]
     if let Some((args, device)) = backend.as_ref()
         && let Some(cfg) = native_config(

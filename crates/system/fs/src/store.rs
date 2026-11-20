@@ -131,6 +131,8 @@ pub struct ContentStore {
     /// sync; see [`ContentStore::defer_sync`].
     deferred: std::sync::Mutex<(usize, bool)>,
     write_syncs: std::sync::atomic::AtomicU64,
+    /// Whether a write since the last sync has not reached the disk.
+    pending: std::sync::atomic::AtomicBool,
     read_bytes: std::sync::atomic::AtomicU64,
     files: Arc<FileArea>,
     _scratch: Option<tempfile::TempDir>,
@@ -282,6 +284,7 @@ impl ContentStore {
             mutation: tokio::sync::Mutex::new(()),
             deferred: std::sync::Mutex::new((0, false)),
             write_syncs: std::sync::atomic::AtomicU64::new(0),
+            pending: std::sync::atomic::AtomicBool::new(false),
             read_bytes: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: None,
@@ -331,6 +334,7 @@ impl ContentStore {
             mutation: tokio::sync::Mutex::new(()),
             deferred: std::sync::Mutex::new((0, false)),
             write_syncs: std::sync::atomic::AtomicU64::new(0),
+            pending: std::sync::atomic::AtomicBool::new(false),
             read_bytes: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: scratch,
@@ -371,6 +375,41 @@ impl ContentStore {
             deferred.0 = deferred.0.saturating_add(1);
         }
         self.files.set_sync_writes(false);
+    }
+
+    /// Make every write this store accepted so far durable with one sync, when anything was
+    /// written since the last one; a mount that syncs on a short window calls this from its
+    /// flusher and from `fsync`. Its writes are committed with `Durability::None`, so until this
+    /// returns they survive the process but not a power loss.
+    ///
+    /// # Errors
+    /// The database could not be synced; the next call tries again.
+    pub fn sync_pending(&self) -> std::io::Result<()> {
+        if !self
+            .pending
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            return Ok(());
+        }
+        match self.files.sync_db() {
+            Ok(()) => {
+                self.write_syncs
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            }
+            Err(error) => {
+                self.pending
+                    .store(true, std::sync::atomic::Ordering::Release);
+                Err(error)
+            }
+        }
+    }
+
+    /// Whether each content write waits for the disk (the default), or a barrier syncs a window of
+    /// them ([`Self::sync_pending`]): a mount serving many small files turns the per-write sync off
+    /// and syncs on a short window and on `fsync`.
+    pub fn set_sync_writes(&self, sync: bool) {
+        self.files.set_sync_writes(sync);
     }
 
     /// How many database syncs writes to this store have made: one per write outside a
@@ -775,6 +814,8 @@ impl ContentStore {
             self.write_syncs
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
+        self.pending
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     async fn persist_owned(&self, data: Bytes) -> Result<Hash> {
