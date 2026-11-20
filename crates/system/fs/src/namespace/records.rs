@@ -87,6 +87,13 @@ impl Namespace {
         Ok((ns, read))
     }
 
+    /// Whether `bytes` are a namespace saved before the tree was kept in chunks (beca68fe58c): one
+    /// plain Automerge document in a layout this build no longer reads, not a bundle of the tree's chunks.
+    #[must_use]
+    pub fn is_pre_chunk_save(bytes: &[u8]) -> bool {
+        bytes.starts_with(&AUTOMERGE_MAGIC)
+    }
+
     /// Every record of the tree, kept as one: what [`Self::from_bytes`] reads back.
     pub fn save(&mut self) -> Vec<u8> {
         self.note_change();
@@ -577,6 +584,9 @@ pub struct ResourceWrite {
 /// [`Namespace::save_incremental`]): this tag, then each record's number and length (each
 /// four bytes, little-endian) and its bytes.
 const BUNDLE_TAG: &[u8; 8] = b"tilotree";
+
+/// The first bytes of every saved Automerge document.
+const AUTOMERGE_MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
 
 /// `records` kept as one; empty when every record is.
 pub(super) fn bundle(records: Vec<(TreeChunk, Vec<u8>)>) -> Vec<u8> {
