@@ -86,3 +86,61 @@ fn a_person_writes_a_note_on_the_notebooks_page() {
         "an unchanged page sends nothing"
     );
 }
+
+/// The page's row saying `words`: the number of the element a press lands on (`page.mjs` finds
+/// the nearest element carrying `data-a` over the words), the target it carries and its tag.
+fn row_saying(html: &str, words: &str) -> Option<(u32, Option<String>, String)> {
+    let at = html.find(&format!(">{words}<"))?;
+    let before = html.get(..at)?;
+    let start = before.rfind("<li")?;
+    let open = before.get(start..)?.split('>').next()?;
+    let number = open.split("data-p=\"").nth(1)?.split('"').next()?;
+    let target = open
+        .split("data-t=\"")
+        .nth(1)
+        .map(|rest| rest.split('"').next().unwrap_or_default().to_owned());
+    Some((number.parse().ok()?, target, open.to_owned()))
+}
+
+/// A person in a browser opens Settings as a page and presses a category in the sidebar: that
+/// category is the chosen one and its pane stands beside it, as a press in a window chooses it.
+/// The category is one below the window's own height, which a page shows all the same.
+#[test]
+fn a_person_chooses_a_settings_category_on_the_page() {
+    let label = settings::categories::Category::ExternalAccounts.label();
+    let settings = ConfinedReplica::open_page(
+        &catalogue(),
+        ("so.tilo.settings", WORKSPACE),
+        &MemberId::person("ada"),
+        &ReplicaActor::Owner,
+        Seed::New,
+    )
+    .expect("settings opens as a page");
+    let _ = settings.take_mutation();
+    let _ = settings.page_show(None);
+    // A new workspace holds none of what the settings page keeps beside it, as its serving
+    // devices answer a page's worker.
+    for wanted in settings.wanted_resources() {
+        settings
+            .workspace_answered(&wanted, ui::resource::WorkspaceAnswer::HoldsNone)
+            .expect("told");
+    }
+    let _ = settings.take_document_mutations();
+    let (_, _, body) = settings.page_show(None).expect("the page shows");
+    let (row, target, tag) = row_saying(&body, &label)
+        .unwrap_or_else(|| panic!("the page's sidebar offers {label}: {body}"));
+    assert!(
+        tag.contains("data-a=\"activate\""),
+        "a press on the row activates it: {tag}"
+    );
+
+    let patches = settings
+        .page_act(Some((row, target, PageAction::Activate)))
+        .expect("the person's press is acted on");
+    let (_, _, after) = settings.page_show(None).expect("the page shows again");
+    let (_, _, chosen) = row_saying(&after, &label).expect("the row stays");
+    assert!(
+        chosen.contains("aria-selected=\"true\""),
+        "the pressed category is the chosen one: {chosen}; the page answered {patches:?}"
+    );
+}

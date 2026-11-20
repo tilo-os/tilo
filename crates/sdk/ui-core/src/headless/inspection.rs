@@ -581,3 +581,45 @@ fn next_widget_path(
     };
     (name, path, current)
 }
+
+impl super::FrameHarness {
+    /// The widget that publishes the semantic `target`: the innermost one whose node, or one of
+    /// whose children, names it.
+    ///
+    /// # Errors
+    ///
+    /// The target is published by several widgets, and no owner can be told.
+    pub(super) fn semantic_target_owner(&self, target: &str) -> Result<Option<String>, String> {
+        fn owners(node: &InspectionNode, target: &str, out: &mut Vec<String>) {
+            if node
+                .semantics
+                .as_ref()
+                .and_then(|semantics| find_semantic_target(semantics, target))
+                .is_some()
+            {
+                out.push(node.path.clone());
+            }
+            for child in &node.children {
+                owners(child, target, out);
+            }
+        }
+        let mut found = Vec::new();
+        owners(&self.inspection().root, target, &mut found);
+        let innermost: Vec<&String> = found
+            .iter()
+            .filter(|path| {
+                !found
+                    .iter()
+                    .any(|other| other.len() > path.len() && other.starts_with(&format!("{path}/")))
+            })
+            .collect();
+        match innermost.as_slice() {
+            [] => Ok(None),
+            [owner] => Ok(Some((*owner).clone())),
+            several => Err(format!(
+                "semantic target {target:?} is published by several widgets ({several:?}); \
+                 name its owner with `perform_semantic_named(owner, Some(target), ..)`"
+            )),
+        }
+    }
+}

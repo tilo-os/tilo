@@ -717,3 +717,71 @@ fn a_chosen_list_row_stands_on_the_selection_lift() {
         "a row at rest stands on the page's ground"
     );
 }
+
+/// The page's row saying `words`: its number and the target it carries, found the way the page's
+/// script finds the element a press lands on (the nearest one carrying `data-a` over the words).
+fn page_row_saying(html: &str, words: &str) -> Option<(u32, Option<String>)> {
+    let at = html.find(&format!(">{words}<"))?;
+    let before = html.get(..at)?;
+    let start = before.rfind("<li")?;
+    let open = before.get(start..)?.split('>').next()?;
+    let number = open.split("data-p=\"").nth(1)?.split('"').next()?;
+    let target = open
+        .split("data-t=\"")
+        .nth(1)
+        .map(|rest| rest.split('"').next().unwrap_or_default().to_owned());
+    Some((number.parse().ok()?, target))
+}
+
+/// A list's row stands on the page even where the window's own height cuts it off, and a press on
+/// it is the row's own action: the page lays every row the list holds out itself, so a press there
+/// is never a point in the frame, where the row stands past the list's end and the press would land
+/// on nothing.
+#[test]
+fn a_page_presses_a_row_the_windows_height_cuts_off() {
+    use crate::widget::{NavItem, NavList, NavSection};
+    let items = (0..12)
+        .map(|index| NavItem::new(format!("item-{index}"), format!("Item {index}")))
+        .collect();
+    let list = NavList::new(vec![NavSection::untitled("pages", items)]);
+    let mut harness = FrameHarness::new(State::new(), Box::new(list), (280, 200));
+    harness.relayout();
+    let composition = harness.composition();
+    // The row pressed is one the window's own height cuts off: a press in the frame would stand
+    // outside the list.
+    let pressed = nodes(&composition.root)
+        .into_iter()
+        .find(|node| {
+            node.tag == Some("li")
+                && node.rect[1] + node.rect[3] / 2.0 > 200.0
+                && node.semantics.is_some()
+        })
+        .and_then(|node| node.semantics.as_ref()?.name.clone())
+        .expect("the page shows a row the window's end cuts off");
+    let mut page = crate::composition::page::Page::new();
+    let html = page.render(&composition);
+    let (id, target) = page_row_saying(&html, &pressed).expect("the page offers the row");
+    let path = page
+        .path(id)
+        .expect("the element stands for a widget")
+        .to_owned();
+    // An element a page numbers for part of a widget is acted on through the widget.
+    let widget = path
+        .split_once('#')
+        .map_or(path.as_str(), |(widget, _)| widget)
+        .to_owned();
+    harness
+        .perform_semantic_named(&widget, target.as_deref(), &crate::a11y::Action::Activate)
+        .expect("the page's press is acted on");
+    // The list chose the row the press named: it is the one selected row a reader finds.
+    let chosen = harness.a11y_nodes().into_iter().find_map(|(_, node)| {
+        (node.role() == crate::accesskit::Role::TreeItem && node.is_selected() == Some(true))
+            .then(|| node.label().map(str::to_owned))
+            .flatten()
+    });
+    assert_eq!(
+        chosen.as_deref(),
+        Some(pressed.as_str()),
+        "the pressed row is the chosen one"
+    );
+}

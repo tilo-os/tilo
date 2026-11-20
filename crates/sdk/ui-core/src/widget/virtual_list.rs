@@ -1555,6 +1555,7 @@ impl Widget for VirtualRows {
         if !chosen.is_empty() {
             cx.choose_children(&chosen);
         }
+        self.name_page_rows(&mut cx.composed.children);
         if self.tree.is_some() {
             let theme = cx.theme().clone();
             let rows = std::mem::take(&mut cx.composed.children);

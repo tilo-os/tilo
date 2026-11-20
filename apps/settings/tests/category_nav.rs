@@ -122,3 +122,53 @@ fn two_consecutive_clicks_navigate() {
     assert!(row_is_active(&mut app, &Category::Permissions.label()));
     assert!(!row_is_active(&mut app, &Category::Displays.label()));
 }
+
+/// The page's element saying `words`: its number and the target it carries, found the way
+/// `page.mjs` finds the element a press lands on (the nearest one carrying `data-a` over the
+/// words).
+fn page_row_saying(html: &str, words: &str) -> Option<(u32, Option<String>)> {
+    let at = html.find(&format!(">{words}<"))?;
+    let before = html.get(..at)?;
+    let start = before.rfind("<li")?;
+    let open = before.get(start..)?.split('>').next()?;
+    let number = open.split("data-p=\"").nth(1)?.split('"').next()?;
+    let target = open
+        .split("data-t=\"")
+        .nth(1)
+        .map(|rest| rest.split('"').next().unwrap_or_default().to_owned());
+    Some((number.parse().ok()?, target))
+}
+
+/// A press on a category in the sidebar of the page a person's browser shows selects that
+/// category, as a press in the window does: the page hands the element's number and target to
+/// the view, which acts on the widget the element stands for. The window is as tall as the one an
+/// app worker lays out, so the category pressed is one its own height cuts off: a page shows every
+/// row its list holds, and a press on one is the list's row action, never a point in the frame.
+#[test]
+fn a_press_on_a_category_in_the_page_selects_it() {
+    let mut app = window((1280, 720));
+    let composition = app.harness().composition();
+    let mut page = ui::composition::page::Page::new();
+    let html = page.render(&composition);
+    let label = Category::ExternalAccounts.label();
+    let (row, target) = page_row_saying(&html, &label)
+        .unwrap_or_else(|| panic!("the page's sidebar offers {label}: {html}"));
+    let path = page
+        .path(row)
+        .expect("the element stands for a widget")
+        .to_owned();
+    // An element a page numbers for part of a widget is acted on through the widget.
+    let widget = path
+        .split_once('#')
+        .map_or(path.as_str(), |(widget, _)| widget)
+        .to_owned();
+    app.harness()
+        .perform_semantic_named(&widget, target.as_deref(), &ui::a11y::Action::Activate)
+        .unwrap_or_else(|error| panic!("the press on the page's row is acted on: {error}"));
+    app.settle();
+    assert_eq!(
+        selected(&mut app),
+        Category::ExternalAccounts,
+        "the pressed category is the chosen one"
+    );
+}

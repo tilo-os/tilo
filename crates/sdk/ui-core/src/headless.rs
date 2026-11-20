@@ -5317,10 +5317,12 @@ impl FrameHarness {
                 return self.perform_semantic_named(&owner, Some(named), action);
             }
         }
-        if let Some(target) = semantic_target {
-            // The generic Focus fallback must never resurrect a removed or
-            // forged synthetic child, nor bypass its published edit guards.
-            let access = self.access_node_named(name, Some(target))?;
+        // The generic Focus fallback must never resurrect a removed or forged synthetic child, nor
+        // bypass its published edit guards. A target this widget does not publish belongs to
+        // another one, and is checked where it is performed.
+        if let Some(target) = semantic_target
+            && let Ok(access) = self.access_node_named(name, Some(target))
+        {
             if access.state.disabled
                 || (access.state.read_only
                     && matches!(
@@ -5413,6 +5415,20 @@ impl FrameHarness {
             self.host_tick();
             self.relayout();
             return Ok(());
+        }
+
+        // An action named by its target is the business of the widget that publishes it: a row's
+        // element may stand for a row its list holds, and the list presses the row wherever the
+        // element's own widget stands (a page lays a list out past the end of the frame).
+        if !handled
+            && let Some(target) = semantic_target
+            && let Some(parent) =
+                std::iter::successors(name.rsplit_once('/').map(|(parent, _)| parent), |path| {
+                    path.rsplit_once('/').map(|(parent, _)| parent)
+                })
+                .find(|parent| self.access_node_named(parent, Some(target)).is_ok())
+        {
+            return self.perform_semantic_named(parent, Some(target), action);
         }
 
         if own_target && matches!(action, SemanticAction::Activate) {
@@ -5634,40 +5650,6 @@ impl FrameHarness {
             }
         }
         targets
-    }
-
-    fn semantic_target_owner(&self, target: &str) -> Result<Option<String>, String> {
-        fn owners(node: &InspectionNode, target: &str, out: &mut Vec<String>) {
-            if node
-                .semantics
-                .as_ref()
-                .and_then(|semantics| find_semantic_target(semantics, target))
-                .is_some()
-            {
-                out.push(node.path.clone());
-            }
-            for child in &node.children {
-                owners(child, target, out);
-            }
-        }
-        let mut found = Vec::new();
-        owners(&self.inspection().root, target, &mut found);
-        let innermost: Vec<&String> = found
-            .iter()
-            .filter(|path| {
-                !found
-                    .iter()
-                    .any(|other| other.len() > path.len() && other.starts_with(&format!("{path}/")))
-            })
-            .collect();
-        match innermost.as_slice() {
-            [] => Ok(None),
-            [owner] => Ok(Some((*owner).clone())),
-            several => Err(format!(
-                "semantic target {target:?} is published by several widgets ({several:?}); \
-                 name its owner with `perform_semantic_named(owner, Some(target), ..)`"
-            )),
-        }
     }
 
     /// App instance bound to a live semantic owner path or stable widget id.

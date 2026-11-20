@@ -1,7 +1,8 @@
-//! A tree list as elements: each row's notes nest in a `<ul>` inside the row's own `<li>`, and
-//! a branch row carries the disclosure its painted chevron stands for. A page therefore shows
-//! the same tree the window paints, folds a branch with the same action, and reads the rows at
-//! the levels the list gives them.
+//! A list as elements: each row is named by the row it is, a tree's notes nest in a `<ul>` inside
+//! the row's own `<li>`, and a branch row carries the disclosure its painted chevron stands for. A
+//! page therefore shows the same rows the window paints, presses a row the list's own way rather
+//! than where the frame put it, folds a branch with the same action, and reads the rows at the
+//! levels the list gives them.
 
 use std::iter::Peekable;
 
@@ -15,6 +16,43 @@ use crate::icons::Icon;
 use crate::theme::Theme;
 
 impl VirtualRows {
+    /// Name each composed row by the row it is, so a page presses the row's own action (`key:`)
+    /// rather than a point in the frame's layout: a page shows every row the list holds, where the
+    /// frame a row composed in may end before it, and a press at a row past that end stands outside
+    /// the list and lands on nothing.
+    pub(super) fn name_page_rows(&self, rows: &mut [Composed]) {
+        let Some(encode) = &self.semantic_key else {
+            return;
+        };
+        // A composed row is paired with the row the list holds as a tree's rows are
+        // ([`Self::tree_html_rows`]): by the order the list composes them in when the two are the
+        // same set, else by the box each stands at, looked for from the one before it as both are
+        // in the list's order.
+        let by_order = rows.len() == self.mounted.len();
+        let mut from = 0;
+        for (at, row) in rows.iter_mut().enumerate() {
+            let mounted = if by_order {
+                self.mounted.get(at)
+            } else {
+                self.mounted[from..]
+                    .iter()
+                    .position(|mounted| same_box(mounted.widget.get_rect(), row))
+                    .and_then(|offset| {
+                        from = from.saturating_add(offset);
+                        self.mounted.get(from)
+                    })
+            };
+            let Some(mounted) = mounted else {
+                continue;
+            };
+            if let Some(semantics) = &mut row.semantics
+                && semantics.action_target.is_none()
+            {
+                semantics.action_target = Some(format!("key:{}", encode(&mounted.key)));
+            }
+        }
+    }
+
     /// The list's rows as elements: a flat list where the list is not a tree, and otherwise
     /// each row's notes nested in a `<ul>` inside the row's own element, with a branch row's
     /// disclosure where its chevron does.
@@ -161,4 +199,12 @@ fn group(parent: &str, row: [f64; 4], children: Vec<Composed>) -> Composed {
 
 fn near(left: f64, right: f64) -> bool {
     (left - right).abs() < 0.5
+}
+
+/// Whether `rect` is the box the `row` element was composed at.
+fn same_box(rect: Rect, row: &Composed) -> bool {
+    near(rect.x0, row.rect[0])
+        && near(rect.y0, row.rect[1])
+        && near(rect.width(), row.rect[2])
+        && near(rect.height(), row.rect[3])
 }
