@@ -1,10 +1,12 @@
 //! A governed workspace as it is read without holding its lock: the replica
-//! every change is made in, the workspace's name and the keys of the device it
-//! is held on. A workspace's lock is held across what takes long — asking the
-//! key service, which settles a newcomer's access first, and a commit's writes
+//! every change is made in, the workspace's name, the keys of the device it
+//! is held on and the invitations its join log and its entry's addresses left
+//! it. A workspace's lock is held across what takes long — asking the key
+//! service, which settles a newcomer's access first, and a commit's writes
 //! — so every read that can answer from the replica alone reads it here.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
@@ -37,6 +39,60 @@ pub(super) struct Reading {
         )
     )]
     pub(super) opened: std::sync::Arc<super::sealed_documents::MergedDocuments>,
+    /// The invitations the workspace honours, as its last write left them.
+    pub(super) invitations: Invitations,
+}
+
+/// What a workspace's join log and entry say of the invitations it issued,
+/// kept beside the workspace: a page reading an invitation reads a card here,
+/// at once, however long the workspace's lock stays taken.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Invitations(Arc<std::sync::Mutex<Arc<Issued>>>);
+
+/// The invitations a workspace issued, as [`Invitations`] answers them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Issued {
+    /// Every invitation its join log keeps, by id: whether someone took it
+    /// back.
+    pub(super) offered: BTreeMap<[u8; 32], bool>,
+    /// The invitations someone redeemed.
+    pub(super) redeemed: BTreeSet<[u8; 32]>,
+    /// The invitations sent to an address at its entry.
+    pub(super) mailed: BTreeSet<[u8; 32]>,
+}
+
+impl Issued {
+    /// What the join log says of the invitation `invite_id`
+    /// ([`tilo_peer_state::join_log::Offer`]).
+    pub(super) fn offer(&self, invite_id: [u8; 32]) -> tilo_peer_state::join_log::Offer {
+        tilo_peer_state::join_log::Offer::of(
+            self.offered.get(&invite_id).copied(),
+            self.redeemed.contains(&invite_id),
+        )
+    }
+
+    /// Whether the invitation `invite_id` was sent to an address left at the
+    /// workspace's entry.
+    pub(super) fn mailed(&self, invite_id: [u8; 32]) -> bool {
+        self.mailed.contains(&invite_id)
+    }
+}
+
+impl Invitations {
+    /// What the workspace's last write left of its invitations.
+    pub(super) fn now(&self) -> Arc<Issued> {
+        Arc::clone(&self.0.lock_recover())
+    }
+
+    /// Keep `change` made to what the workspace's invitations are: the
+    /// workspace writes it under its lock, so a page reading a card always
+    /// sees what it last answered for.
+    pub(super) fn change(&self, change: impl FnOnce(&mut Issued)) {
+        let mut kept = self.0.lock_recover();
+        let mut next = Issued::clone(&kept);
+        change(&mut next);
+        *kept = Arc::new(next);
+    }
 }
 
 type Governed = std::sync::Weak<tokio::sync::Mutex<GovernedWorkspace>>;
@@ -76,6 +132,7 @@ impl GovernedWorkspace {
             workspace: self.workspace().to_owned(),
             device: self.device.clone(),
             opened: std::sync::Arc::default(),
+            invitations: self.invitations.clone(),
         }
     }
 }
@@ -94,6 +151,18 @@ impl Workspaces {
             .readings
             .keep(workspace, &governed, reading.clone());
         Some(reading)
+    }
+
+    /// Keep what `workspace`, held here, is read through without its lock: a
+    /// page's first read of it then needs no turn at the workspace's own.
+    pub(super) async fn keep_reading(
+        &self,
+        workspace: &Arc<tokio::sync::Mutex<GovernedWorkspace>>,
+    ) {
+        let held = workspace.lock().await;
+        let (workspace_id, reading) = (held.workspace_id(), held.reading());
+        drop(held);
+        self.inner.readings.keep(workspace_id, workspace, reading);
     }
 
     /// `answer` of the governance of the workspace `workspace` governed here,

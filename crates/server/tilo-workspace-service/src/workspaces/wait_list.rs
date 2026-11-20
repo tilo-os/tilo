@@ -158,11 +158,17 @@ pub(super) struct WaitList {
     entries: Vec<Entry>,
     mailed: Vec<Mailed>,
     path: PathBuf,
+    /// What a page reads of the invitations sent to these addresses, without
+    /// taking the workspace's lock.
+    invitations: super::readings::Invitations,
 }
 
 impl WaitList {
     /// The wait list of the workspace recorded at `workspace_path` (its `.workspace` file).
-    pub(super) fn open(workspace_path: &Path) -> Result<Self, String> {
+    pub(super) fn open(
+        workspace_path: &Path,
+        invitations: super::readings::Invitations,
+    ) -> Result<Self, String> {
         let path = workspace_path.with_extension("wait-list");
         let stored = match std::fs::read(&path) {
             Ok(bytes) => {
@@ -180,11 +186,26 @@ impl WaitList {
             },
             Err(error) => return Err(error.to_string()),
         };
-        Ok(Self {
+        let wait_list = Self {
             entries: stored.entries,
             mailed: stored.mailed,
             path,
-        })
+            invitations,
+        };
+        wait_list.publish_invitations();
+        Ok(wait_list)
+    }
+
+    /// Keep what a page reads of the invitations sent off these addresses
+    /// current: the card of an invitation a wait-list person was mailed says
+    /// so.
+    fn publish_invitations(&self) {
+        let sent: std::collections::BTreeSet<[u8; 32]> = self
+            .entries
+            .iter()
+            .flat_map(|entry| entry.invites.iter().copied())
+            .collect();
+        self.invitations.change(|issued| issued.mailed = sent);
     }
 
     fn save(&self) -> Result<(), String> {
@@ -230,6 +251,7 @@ impl WaitList {
             self.mailed = mailed;
             return Err(error);
         }
+        self.publish_invitations();
         Ok(result)
     }
 
@@ -434,13 +456,6 @@ impl WaitList {
     pub(super) fn has(&self, request_id: [u8; 32], now_ns: u64) -> bool {
         self.live(now_ns)
             .any(|entry| entry.request_id == request_id && entry.confirmed_at_ns.is_some())
-    }
-
-    /// Whether the invitation `invite_id` was sent for a request still on
-    /// the list: whoever holds it asked to join at the entry, and is new here.
-    pub(super) fn sent(&self, invite_id: [u8; 32], now_ns: u64) -> bool {
-        self.live(now_ns)
-            .any(|entry| entry.invites.contains(&invite_id))
     }
 
     /// Note that the invitation `invite_id` was sent for `request_id` at
@@ -659,6 +674,7 @@ fn push_capped(list: &mut Vec<[u8; 32]>, item: [u8; 32], max: usize) {
 #[allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
 mod tests {
     use super::*;
+    use crate::workspaces::readings::Invitations;
     use tilo_files::native::migration::assert_golden_bytes;
 
     const HOUR: u64 = 3600 * 1_000_000_000;
@@ -733,7 +749,7 @@ mod tests {
     fn one_address_is_one_request_up_to_the_cap_and_survives_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().join("workspace.workspace");
-        let mut list = WaitList::open(&workspace).unwrap();
+        let mut list = WaitList::open(&workspace, Invitations::default()).unwrap();
         assert_eq!(
             list.keep("Ada@Example.org", listed(1), "en", 1, 2),
             Ok(WaitListed::Added { mail: false })
@@ -751,7 +767,7 @@ mod tests {
             Ok(WaitListed::Full)
         );
 
-        let restored = WaitList::open(&workspace).unwrap();
+        let restored = WaitList::open(&workspace, Invitations::default()).unwrap();
         let requests: Vec<_> = restored.entries(5);
         assert_eq!(requests.len(), 2);
         // Kept as first typed.
@@ -767,7 +783,7 @@ mod tests {
             list.keep("cy@example.org", listed(5), "en", 5, 2),
             Ok(WaitListed::Added { mail: false })
         );
-        let kept: Vec<_> = WaitList::open(&workspace)
+        let kept: Vec<_> = WaitList::open(&workspace, Invitations::default())
             .unwrap()
             .entries(6)
             .into_iter()
@@ -788,7 +804,7 @@ mod tests {
             removal,
             confirm: None,
         };
-        let mut list = WaitList::open(&workspace).unwrap();
+        let mut list = WaitList::open(&workspace, Invitations::default()).unwrap();
         list.keep("ada@example.org", with(digest(&secret)), "en", 1, 10)
             .unwrap();
         // The same address left again, from another browser: either secret
@@ -818,7 +834,7 @@ mod tests {
             }))
         );
         assert_eq!(list.leave(digest(&secret), 4), Ok(None));
-        let left: Vec<_> = WaitList::open(&workspace)
+        let left: Vec<_> = WaitList::open(&workspace, Invitations::default())
             .unwrap()
             .entries(5)
             .into_iter()
@@ -838,7 +854,7 @@ mod tests {
     fn a_mailed_address_is_hidden_until_confirmed_and_mailed_at_most_hourly() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().join("workspace.workspace");
-        let mut list = WaitList::open(&workspace).unwrap();
+        let mut list = WaitList::open(&workspace, Invitations::default()).unwrap();
         assert_eq!(
             list.keep("Ada@example.org", mailed(1, 0xc1), "de-DE", 0, 10),
             Ok(WaitListed::Added { mail: true })
@@ -858,7 +874,7 @@ mod tests {
         // Any mailed link confirms it.
         assert_eq!(list.confirm([0xc2; 32], HOUR + 2), Ok(true));
         assert_eq!(list.confirm([0xc3; 32], HOUR + 3), Ok(true));
-        let restored = WaitList::open(&workspace).unwrap();
+        let restored = WaitList::open(&workspace, Invitations::default()).unwrap();
         let entries = restored.entries(HOUR + 4);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].contact, "Ada@example.org");
@@ -879,14 +895,14 @@ mod tests {
     fn an_address_taken_off_and_left_again_within_the_hour_is_not_mailed_again() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().join("workspace.workspace");
-        let mut list = WaitList::open(&workspace).unwrap();
+        let mut list = WaitList::open(&workspace, Invitations::default()).unwrap();
         list.keep("ada@example.org", mailed(1, 0xc1), "en", 0, 10)
             .unwrap();
         assert_eq!(list.leave([1; 32], 1), Ok(None));
         // Its address is gone; only a hash of it is kept, until the hour is.
         let bytes = std::fs::read(workspace.with_extension("wait-list")).unwrap();
         assert!(!bytes.windows(3).any(|window| window == b"ada"));
-        let mut list = WaitList::open(&workspace).unwrap();
+        let mut list = WaitList::open(&workspace, Invitations::default()).unwrap();
         assert_eq!(
             list.keep("Ada@Example.org", mailed(2, 0xc2), "en", 2, 10),
             Ok(WaitListed::Added { mail: false })
@@ -909,7 +925,7 @@ mod tests {
     fn an_unconfirmed_address_is_forgotten_after_two_days() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().join("workspace.workspace");
-        let mut list = WaitList::open(&workspace).unwrap();
+        let mut list = WaitList::open(&workspace, Invitations::default()).unwrap();
         list.keep("ada@example.org", mailed(1, 0xc1), "en", 0, 1)
             .unwrap();
         // While it waits it counts toward the cap.
@@ -940,7 +956,7 @@ mod tests {
         use sha2::Digest as _;
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().join("workspace.workspace");
-        let mut list = WaitList::open(&workspace).unwrap();
+        let mut list = WaitList::open(&workspace, Invitations::default()).unwrap();
         list.keep("ada@example.org", listed(1), "en", 1, 10)
             .unwrap();
         list.keep("bo@example.org", listed(2), "en", 2, 10).unwrap();
@@ -951,7 +967,7 @@ mod tests {
         assert_eq!(list.invited(ada, [0xa1; 32], 50), Ok(true));
         assert_eq!(list.invited([0xee; 32], [0xa2; 32], 50), Ok(false));
         assert_eq!(list.state([1; 32], 50), WaitListStatus::Invited);
-        let restored = WaitList::open(&workspace).unwrap();
+        let restored = WaitList::open(&workspace, Invitations::default()).unwrap();
         assert_eq!(restored.entries(51)[0].invited_at_ns, Some(50));
         assert_eq!(restored.entries(51)[1].invited_at_ns, None);
 
@@ -973,7 +989,13 @@ mod tests {
         assert_eq!(list.joined(|invite| invite == [0xff; 32], 54), Ok(0));
         assert_eq!(list.joined(|invite| invite == [0xa1; 32], 54), Ok(1));
         assert!(!list.has(ada, 54) && list.has(bo, 54));
-        assert_eq!(WaitList::open(&workspace).unwrap().entries(55).len(), 1);
+        assert_eq!(
+            WaitList::open(&workspace, Invitations::default())
+                .unwrap()
+                .entries(55)
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -988,7 +1010,7 @@ mod tests {
         })
         .unwrap();
         std::fs::write(&path, &newer).unwrap();
-        assert!(WaitList::open(&workspace).is_err());
+        assert!(WaitList::open(&workspace, Invitations::default()).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), newer);
     }
 }

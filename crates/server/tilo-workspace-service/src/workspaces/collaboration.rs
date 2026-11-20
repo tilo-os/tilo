@@ -27,6 +27,14 @@ use super::{GovernedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
 use crate::service_authority::ServiceOperation;
 use tilo_lock::MutexRecover as _;
 
+/// The name an invitation carries for a person: what the workspace shows them
+/// by, where they chose one an invitation may sign.
+pub(super) fn carried(name: &str) -> Option<String> {
+    let name = name.trim();
+    (!name.is_empty() && name.chars().count() <= tilo_peer_state::join::MAX_INVITER_NAME_CHARS)
+        .then(|| name.to_owned())
+}
+
 /// Where [`Workspaces::add_member`] puts a person.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MemberPlace {
@@ -290,11 +298,7 @@ impl Workspaces {
             .members
             .into_iter()
             .find(|member| member.root() == Some(root) && !member.removed)
-            .map(|member| member.name.trim().to_owned())
-            .filter(|name| {
-                !name.is_empty()
-                    && name.chars().count() <= tilo_peer_state::join::MAX_INVITER_NAME_CHARS
-            })
+            .and_then(|member| carried(&member.name))
     }
 
     /// Record an invitation `request` asks of `workspace`, unwritten, naming this device at

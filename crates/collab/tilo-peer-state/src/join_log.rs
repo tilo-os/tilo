@@ -404,6 +404,68 @@ fn system_time(now_ns: u64) -> SystemTime {
         .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
+/// What a workspace's join log says of an invitation: whether it still keeps
+/// it, and whether someone took it back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Offer {
+    /// Issued here, and nobody took it back.
+    Kept,
+    /// Issued here, then taken back.
+    Withdrawn,
+    /// One someone already redeemed.
+    Redeemed,
+    /// One this workspace never issued.
+    Unissued,
+}
+
+impl Offer {
+    /// What a log says of an invitation it keeps (`kept`, and whether it was
+    /// taken back) and one it redeemed (`redeemed`).
+    #[must_use]
+    pub const fn of(kept: Option<bool>, redeemed: bool) -> Self {
+        match kept {
+            Some(false) => Self::Kept,
+            Some(true) => Self::Withdrawn,
+            None if redeemed => Self::Redeemed,
+            None => Self::Unissued,
+        }
+    }
+}
+
+/// The refusal an invitation someone already redeemed reads.
+const REDEEMED: &str = "invitation was already redeemed";
+/// The refusal an invitation this workspace never issued reads.
+const UNISSUED: &str = "invitation was not issued by this host";
+/// The refusal an invitation someone took back reads.
+const WITHDRAWN: &str = "invitation was cancelled";
+
+/// The invitation `signed_invitation` offers as `offer` and `revocations`
+/// leave it: what its holder may read, or the refusal a workspace not
+/// honouring it answers with.
+///
+/// # Errors
+///
+/// The invitation was taken back, redeemed, never issued here, or its own
+/// signed layout does not verify.
+pub fn honourable(
+    offer: Offer,
+    revocations: &RevocationList,
+    signed_invitation: &[u8],
+    now: u64,
+) -> Result<VerifiedJoin, JoinError> {
+    match offer {
+        Offer::Kept => Ok(decode_and_verify_invitation(
+            signed_invitation,
+            None,
+            revocations,
+            now,
+        )?),
+        Offer::Withdrawn => Err(JoinError::new(WITHDRAWN)),
+        Offer::Redeemed => Err(JoinError::new(REDEEMED)),
+        Offer::Unissued => Err(JoinError::new(UNISSUED)),
+    }
+}
+
 impl JoinLog {
     /// Whether the log keeps nothing.
     #[must_use]
@@ -711,6 +773,23 @@ impl JoinLog {
             .map(|record| record.issued.clone())
     }
 
+    /// What this log says of the invitation `signed_invitation`: whether it
+    /// keeps it, and whether someone took it back.
+    #[must_use]
+    pub fn offer(&self, signed_invitation: &[u8]) -> Offer {
+        let invite_id = *blake3::hash(signed_invitation).as_bytes();
+        let kept = match self
+            .invitations
+            .iter()
+            .find(|entry| entry.issued.invite_id == invite_id)
+        {
+            Some(entry) if entry.issued.signed_invitation != signed_invitation => None,
+            Some(entry) => Some(entry.cancellation.is_some()),
+            None => None,
+        };
+        Offer::of(kept, self.redeemed(invite_id))
+    }
+
     /// The invitation `signed_invitation`, verified against what this workspace
     /// issued and has not cancelled.
     pub fn inspect(
@@ -719,20 +798,12 @@ impl JoinLog {
         signed_invitation: &[u8],
         now: u64,
     ) -> Result<VerifiedJoin, JoinError> {
-        let invite_id = *blake3::hash(signed_invitation).as_bytes();
-        let record = self.issued(invite_id)?;
-        if record.issued.signed_invitation != signed_invitation {
-            return Err(JoinError::new("invitation bytes do not match issuance"));
-        }
-        if record.cancellation.is_some() {
-            return Err(JoinError::new("invitation was cancelled"));
-        }
-        Ok(decode_and_verify_invitation(
-            signed_invitation,
-            None,
+        honourable(
+            self.offer(signed_invitation),
             &workspace.revocations()?,
+            signed_invitation,
             now,
-        )?)
+        )
     }
 
     /// Record a challenge for `request` from the device at
@@ -930,9 +1001,9 @@ impl JoinLog {
             .find(|record| record.issued.invite_id == invite_id)
             .ok_or_else(|| {
                 JoinError::new(if self.redeemed(invite_id) {
-                    "invitation was already redeemed"
+                    REDEEMED
                 } else {
-                    "invitation was not issued by this host"
+                    UNISSUED
                 })
             })
     }
@@ -940,7 +1011,7 @@ impl JoinLog {
     /// Whether invitation `invite_id` may still be redeemed.
     pub fn redeemable(&self, invite_id: [u8; 32]) -> Result<(), JoinError> {
         if self.issued(invite_id)?.cancellation.is_some() {
-            return Err(JoinError::new("invitation was cancelled"));
+            return Err(JoinError::new(WITHDRAWN));
         }
         Ok(())
     }

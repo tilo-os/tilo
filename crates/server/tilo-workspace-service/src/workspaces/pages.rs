@@ -25,6 +25,7 @@ use tilo_server_protocol::workspaces::{
 use tilo_user_identity::DeviceCert;
 
 use super::authority::WorkspaceOp;
+use super::collaboration::carried;
 use super::hosts::holders_of;
 use super::{
     CancelInvitationRequest, CollaborationError, GovernedWorkspace, IssueInvitationRequest,
@@ -57,6 +58,14 @@ pub(super) struct QueuedAdmission {
     name: String,
     token: Vec<u8>,
     answer: tokio::sync::oneshot::Sender<Result<JoinReply, CollaborationError>>,
+}
+
+/// What the card that opens an invitation says of the workspace itself: its
+/// name, how many people it has, and the name it shows each of them by.
+struct Showing {
+    name: String,
+    members: usize,
+    names: std::collections::BTreeMap<[u8; 32], String>,
 }
 
 /// An invitation a device redeems on the connection that carries its entry,
@@ -1265,21 +1274,26 @@ impl Workspaces {
 
     async fn inspected(&self, invitation: &[u8]) -> Result<JoinReply, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        let workspace = self
-            .workspace(
-                &tilo_peer_state::join_log::invitation_workspace(invitation, now)?.to_string(),
-            )
-            .await?;
-        let workspace = workspace.lock().await;
-        let join = workspace.collaboration().inspect(
-            &workspace.governed(self.serving_certificate()),
+        let workspace_id = tilo_peer_state::join_log::invitation_workspace(invitation, now)?;
+        // Read without the workspace's lock: the card answers at once, however
+        // long the workspace stays taken by what it is in the middle of.
+        let reading = self
+            .reading(workspace_id)
+            .await
+            .ok_or_else(|| CollaborationError::new("this server does not hold that workspace"))?;
+        let issued = reading.invitations.now();
+        let invite_id = *blake3::hash(invitation).as_bytes();
+        let join = tilo_peer_state::join_log::honourable(
+            issued.offer(invite_id),
+            &self.revocations(),
             invitation,
             now,
         )?;
+        let showing = self.showing(&reading);
         Ok(JoinReply::Invitation {
-            workspace: workspace.workspace().to_owned(),
-            workspace_id: workspace.workspace_id(),
-            name: workspace.name(),
+            workspace: reading.workspace.clone(),
+            workspace_id,
+            name: showing.name,
             role: join.grant().role,
             expires_at_ns: join.grant().expires_at_ns,
             inviter: join.inviter().map(|inviter| Inviter {
@@ -1289,16 +1303,50 @@ impl Workspaces {
                 // is answered under the name the workspace shows them now:
                 // the card that opens it names a person, never "someone".
                 name: if inviter.name.trim().is_empty() {
-                    self.member_name_by_root(&workspace, inviter.user_public_key)
+                    showing
+                        .names
+                        .get(&inviter.user_public_key)
+                        .cloned()
                         .unwrap_or_default()
                 } else {
                     inviter.name.clone()
                 },
             }),
-            members: self.people(&workspace).people(),
+            members: showing.members,
             administrator: join.administrator(),
-            owner: self.owner_invitation(join.invite_id(), workspace.workspace()),
-            wait_list: workspace.wait_list.sent(join.invite_id(), now),
+            owner: self.owner_invitation(join.invite_id(), &reading.workspace),
+            wait_list: issued.mailed(invite_id),
+        })
+    }
+
+    /// What the card that opens an invitation says of the workspace itself:
+    /// its name, how many people it has, and the name it shows each of them
+    /// by, as its replica holds them now.
+    fn showing(&self, reading: &super::readings::Reading) -> Showing {
+        reading.replica.read(|peer| {
+            let governance = peer.governance();
+            let name = governance.workspace_name().unwrap_or_default();
+            let listed = governance
+                .governed_members(tilo_clock::wall())
+                .unwrap_or_default()
+                .members;
+            let own = self.own().is_some();
+            let mine = hex::encode(self.serving_certificate().user_public_key);
+            let mut showing = Showing {
+                name,
+                members: 0,
+                names: std::collections::BTreeMap::new(),
+            };
+            for member in listed {
+                if member.removed || (own && member.id.person_id() == Some(mine.as_str())) {
+                    continue;
+                }
+                showing.members = showing.members.saturating_add(1);
+                if let (Some(root), Some(name)) = (member.root(), carried(&member.name)) {
+                    showing.names.insert(root, name);
+                }
+            }
+            showing
         })
     }
 

@@ -325,6 +325,9 @@ struct GovernedWorkspace {
     admissions: admissions::Admissions,
     /// The addresses people left at its entry without an invitation.
     wait_list: wait_list::WaitList,
+    /// The invitations it honours, kept current for the card a page reads
+    /// without taking its lock ([`readings::Invitations`]).
+    invitations: readings::Invitations,
     /// Whom moderation removed, and when: the public entry keeps them out for
     /// the day.
     removals: removals::Removals,
@@ -474,10 +477,11 @@ impl GovernedWorkspace {
     ) -> Result<Self, String> {
         let published_heads = peer.workspace_heads();
         let made_at_ms = peer.governance().made_at_ms();
-        Ok(Self {
+        let invitations = readings::Invitations::default();
+        let workspace = Self {
             admissions: admissions::Admissions::open(&path)
                 .map_err(|error| format!("admissions: {error}"))?,
-            wait_list: wait_list::WaitList::open(&path)
+            wait_list: wait_list::WaitList::open(&path, invitations.clone())
                 .map_err(|error| format!("wait list: {error}"))?,
             removals: removals::Removals::open(&path)
                 .map_err(|error| format!("removals: {error}"))?,
@@ -505,7 +509,10 @@ impl GovernedWorkspace {
             since_base: SinceBase::Withdrew,
             published_heads,
             holders: holding::Holders::default(),
-        })
+            invitations,
+        };
+        workspace.publish_invitations();
+        Ok(workspace)
     }
 
     /// Write the record as it stands ([`document_format::StoredResource`]): the
@@ -518,7 +525,29 @@ impl GovernedWorkspace {
             self.unsure();
             return Err(error);
         }
+        self.publish_invitations();
         Ok(())
+    }
+
+    /// Keep what a page reads of this workspace's invitations current
+    /// ([`readings::Invitations`]): the log's word on each invitation it
+    /// keeps, and which of them someone redeemed.
+    fn publish_invitations(&self) {
+        let log = self.collaboration();
+        let offered = log
+            .invitations
+            .iter()
+            .map(|entry| (entry.issued.invite_id, entry.cancellation.is_some()))
+            .collect();
+        let redeemed = log
+            .join_completions
+            .iter()
+            .map(|completion| completion.bootstrap.invite_id)
+            .collect();
+        self.invitations.change(|issued| {
+            issued.offered = offered;
+            issued.redeemed = redeemed;
+        });
     }
 
     /// The files a write of the workspace file found appended may hold
@@ -1301,7 +1330,13 @@ impl Workspaces {
         }
         let workspaces = Box::pin(this.open_kept(&dir)).await?;
         *this.inner.workspaces.lock().await = workspaces;
-        this.serve_kept(this.served_kept().await).await?;
+        let kept = this.served_kept().await;
+        this.serve_kept(&kept).await?;
+        // A page reading an invitation answers without a workspace's lock
+        // from its first read on.
+        for workspace in &kept {
+            this.keep_reading(workspace).await;
+        }
         // Before any member's session reaches them: what a member reads of
         // the workspace's agents is already all of them.
         this.move_agent_rosters().await;
@@ -1316,7 +1351,7 @@ impl Workspaces {
     /// it left running.
     async fn serve_kept(
         &self,
-        workspaces: Vec<Arc<AsyncMutex<GovernedWorkspace>>>,
+        workspaces: &[Arc<AsyncMutex<GovernedWorkspace>>],
     ) -> Result<(), String> {
         for workspace in workspaces {
             let mut workspace = workspace.lock().await;

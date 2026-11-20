@@ -169,6 +169,7 @@ impl super::Workspaces {
         self.name_own_host(&mut governed).await?;
         self.serve_direct(&governed)?;
         drop(governed);
+        self.keep_reading(&workspace).await;
         tracing::info!(workspace = %summary.workspace, workspace_id = %summary.workspace_id, "governed workspace created");
         Ok(summary)
     }
