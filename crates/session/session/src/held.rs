@@ -1,5 +1,5 @@
 //! What this computer holds of its workspaces: the ones it joined, who they have in them, and what
-//! their apps recorded before it arrived.
+//! their apps wrote before it arrived.
 //! A joined workspace is held by the engine beside the session ([`crate::engine`]). These are what a
 //! person and the apps meet of it: which workspaces reached this computer, who is in them, and what
 //! they hold.
@@ -56,11 +56,14 @@ impl Session {
             .roster(workspace)
     }
 
-    /// What a held workspace has of the app `app`'s `record`, as the
-    /// workspace last admitted it: what it shows of it, and what it held
-    /// before this computer joined. A record the workspace's hosts send only
-    /// once asked (an on-demand record, or a part of a chain behind its head)
-    /// reads as nothing until it is here, and is asked for on its first read.
+    /// What a held workspace has of the app `app`'s document `record`, as
+    /// the workspace last admitted it: what it shows of it, and what it held
+    /// before this computer joined. The workspace's copy is the one this
+    /// device's service holds, where the session's own writes reach it; one
+    /// only this device's replica holds reads from there. A document the
+    /// workspace's hosts send only once asked (an on-demand one, or a part
+    /// of a chain behind its head) reads as nothing until it is here, and is
+    /// asked for on its first read.
     ///
     /// # Errors
     /// The workspace is not held here, or this computer may not read it.
@@ -70,6 +73,11 @@ impl Session {
         app: &str,
         record: &str,
     ) -> Result<Option<Vec<u8>>, String> {
+        // What the workspace holds is what this device's service holds of it, which is where the
+        // session's own writes reach it. One only this device's replica holds reads from there.
+        if let Some(bytes) = self.shared.records.held_document(workspace, app, record) {
+            return Ok(Some(bytes));
+        }
         self.shared
             .engine
             .as_ref()

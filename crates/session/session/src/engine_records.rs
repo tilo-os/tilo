@@ -233,6 +233,24 @@ impl EngineRecords {
         true
     }
 
+    /// What this device's service holds of `app`'s document `resource` in `workspace`, whole: the
+    /// workspace's own copy, where the session's own writes reach it and where its own reads answer
+    /// from. `None` where the service holds nothing of it, cannot read it yet (its keys are on the
+    /// way), or the session opened no service: one only this device's replica holds reads from there.
+    pub(crate) fn held_document(
+        &self,
+        workspace: &str,
+        app: &str,
+        resource: &str,
+    ) -> Option<Vec<u8>> {
+        use tilo_peer_state::workspace_documents::DocumentRead;
+        let reads = self.0.reads.borrow().clone()?;
+        match reads.read(workspace, app, resource, None) {
+            Ok(DocumentRead::Whole { bytes, .. }) => Some(bytes),
+            _ => None,
+        }
+    }
+
     /// What the session's copy of `record` of `app` in `workspace` holds as stored: the record a
     /// test reads back, as the session's own readers do.
     pub(crate) fn stored(&self, app: &str, workspace: &str, record: &str) -> Option<Vec<u8>> {
