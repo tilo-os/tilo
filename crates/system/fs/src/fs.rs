@@ -446,9 +446,10 @@ struct DocumentIndexCursor {
     offset: usize,
 }
 
-/// Retained, authority-specific catalogue. Building it is a mutation or mount-time
-/// operation; serving a v3 page is a bounded slice of it, and no v3 request walks denied
-/// namespace rows.
+/// Retained, authority-specific catalogue. Serving a v3 page is a bounded slice of it, and
+/// no v3 request walks denied namespace rows. It is built at mount, when the ACL is
+/// replaced, and when a request reads it at a revision it was not taken at
+/// ([`QuickFS::acl_visible_document_index`]); never once per change.
 #[derive(Clone)]
 struct AclVisibleDocumentIndex {
     source_revision: String,
@@ -485,6 +486,7 @@ impl AclVisibleDocumentIndex {
 
 pub mod activity;
 mod attributes;
+mod index;
 mod listing;
 pub mod native_ops;
 mod unavailable;
@@ -527,6 +529,9 @@ pub struct QuickFS {
     document_index_cursors: Mutex<HashMap<String, DocumentIndexCursor>>,
     document_index_initial_cursors: Mutex<HashMap<(String, String, u64), String>>,
     acl_visible_document_index: Arc<Mutex<Option<Arc<AclVisibleDocumentIndex>>>>,
+    /// Serialises builds of the retained catalogue, so a burst of requests at one revision
+    /// walks the tree once.
+    acl_index_build: Mutex<()>,
     /// The last directory listing served, and the revision it was taken at: one `readdir` is
     /// many requests, and building the folder again for each of its pages costs the folder on
     /// every page.
@@ -609,6 +614,7 @@ impl QuickFS {
             document_index_cursors: Mutex::new(HashMap::new()),
             document_index_initial_cursors: Mutex::new(HashMap::new()),
             acl_visible_document_index: Arc::new(Mutex::new(None)),
+            acl_index_build: Mutex::new(()),
             readdir_cache: Mutex::new(None),
             rich_metadata: Mutex::new(HashMap::new()),
             enforcement: None,
@@ -1841,48 +1847,6 @@ impl QuickFS {
         Some(properties)
     }
 
-    fn start_document_index_acl_worker(&self) {
-        let Some((acl, identity)) = self.enforcement.clone() else {
-            return;
-        };
-        self.start_document_index_refresh_worker(acl.subscribe_revision(), (acl, identity));
-    }
-
-    fn start_document_index_refresh_worker(
-        &self,
-        mut generations: tokio::sync::watch::Receiver<u64>,
-        enforcement: (AclHandle, crate::acl::IdentityKey),
-    ) {
-        let namespace = Arc::clone(&self.namespace);
-        let retained = Arc::downgrade(&self.acl_visible_document_index);
-        drop(self.hydrator.runtime_handle.spawn(async move {
-            while generations.changed().await.is_ok() {
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                while generations.has_changed().unwrap_or(false) {
-                    let _ = generations.borrow_and_update();
-                }
-                let Some(retained) = retained.upgrade() else {
-                    break;
-                };
-                // The refresh copies the catalogue and evaluates the ACL:
-                // blocking work that must not occupy a runtime worker.
-                let namespace = Arc::clone(&namespace);
-                let enforcement = enforcement.clone();
-                let refreshed = tokio::task::spawn_blocking(move || {
-                    QuickFS::refresh_acl_visible_record_index_into(
-                        &namespace,
-                        Some(&enforcement),
-                        &retained,
-                    );
-                })
-                .await;
-                if refreshed.is_err() {
-                    break;
-                }
-            }
-        }));
-    }
-
     /// Attach a host-side thumbnail provider (cache under `dir`). The mount then answers
     /// the `user.tilo.thumb` xattr with a generated preview and records each thumbnail's
     /// hash on the namespace node so it projects to peers.
@@ -2142,175 +2106,6 @@ impl QuickFS {
             document_id,
             hash.map(|hash| fs_protocol::ContentHash(*hash.as_bytes())),
         );
-    }
-
-    /// The namespace owns the record and path index. This only fingerprints its current
-    /// CRDT heads plus the live ACL generation; it does not enumerate records. Domain and
-    /// length framing prevent an ambiguous concatenation from producing an equivalent
-    /// cursor generation.
-    fn document_catalog_revision(&self) -> String {
-        let namespace = self.ns();
-        let acl_revision = self
-            .enforcement
-            .as_ref()
-            .map_or(0, |(acl, _)| acl.revision());
-        Self::document_catalog_revision_from_index(
-            namespace.indexed_document_revision(),
-            acl_revision,
-        )
-    }
-
-    fn document_catalog_revision_from_index(index_revision: &str, acl_revision: u64) -> String {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"tilo.fs.record-index.v2.revision\\0");
-        let index_revision = index_revision.as_bytes();
-        hasher.update(&(index_revision.len() as u64).to_be_bytes());
-        hasher.update(index_revision);
-        hasher.update(b"acl-revision\\0");
-        hasher.update(&acl_revision.to_be_bytes());
-        hasher.finalize().to_hex().to_string()
-    }
-
-    /// Return a retained projection by cheap shared reference. Serving an xattr
-    /// deliberately never rebuilds it: a remote replay whose refresh notification has not
-    /// arrived is transiently unavailable rather than a corpus walk.
-    fn acl_visible_document_index(&self) -> Option<Arc<AclVisibleDocumentIndex>> {
-        let source_revision = self.document_catalog_revision();
-        let acl_revision = self
-            .enforcement
-            .as_ref()
-            .map_or(0, |(acl, _)| acl.revision());
-        self.acl_visible_document_index
-            .lock_recover()
-            .as_ref()
-            .filter(|index| {
-                index.source_revision == source_revision && index.acl_revision == acl_revision
-            })
-            .cloned()
-    }
-
-    /// Rebuild the retained authority view under one coherent Namespace lock. Call only
-    /// from mount, mutation and sync notification paths, never from an xattr request; it
-    /// replaces the snapshot every subsequent bounded page uses.
-    fn refresh_acl_visible_document_index(&self) {
-        Self::refresh_acl_visible_record_index_into(
-            &self.namespace,
-            self.enforcement.as_ref(),
-            &self.acl_visible_document_index,
-        );
-    }
-
-    /// Rebuild the retained view when the namespace catalogue or the ACL moved. The
-    /// Namespace lock covers only copying the catalogue rows; the ACL is evaluated after it
-    /// is released, and under an unchanged ACL revision only for rows whose path the
-    /// previous view did not judge.
-    fn refresh_acl_visible_record_index_into(
-        namespace: &Arc<Mutex<Namespace>>,
-        enforcement: Option<&(AclHandle, crate::acl::IdentityKey)>,
-        retained: &Arc<Mutex<Option<Arc<AclVisibleDocumentIndex>>>>,
-    ) {
-        let acl_revision = enforcement.map_or(0, |(acl, _)| acl.revision());
-        let previous = retained.lock_recover().clone();
-        let (source_revision, rows) = {
-            let namespace = namespace.lock_recover();
-            let source_revision = Self::document_catalog_revision_from_index(
-                namespace.indexed_document_revision(),
-                acl_revision,
-            );
-            if previous.as_ref().is_some_and(|index| {
-                index.source_revision == source_revision && index.acl_revision == acl_revision
-            }) {
-                return;
-            }
-            let mut rows = Vec::with_capacity(namespace.indexed_document_count());
-            loop {
-                let page = namespace.indexed_document_page(rows.len(), DOCUMENT_INDEX_PAGE_ENTRIES);
-                if page.is_empty() {
-                    break;
-                }
-                // Each row's path is derived here, where the tree is held, for the rows one
-                // page shows; opening a workspace built no path at all.
-                let paths: Vec<Option<String>> = page
-                    .iter()
-                    .map(|entry| namespace.path_for_document(entry))
-                    .collect();
-                rows.extend(page.into_iter().zip(paths));
-            }
-            drop(namespace);
-            (source_revision, rows)
-        };
-        let reusable = previous.filter(|index| index.acl_revision == acl_revision);
-        #[cfg(test)]
-        let mut acl_evaluations = 0_usize;
-        let mut hidden = HashMap::new();
-        let mut records = Vec::with_capacity(rows.len());
-        for (entry, path) in rows {
-            let Some(path) = path else { continue };
-            let visible = reusable
-                .as_deref()
-                .and_then(|index| index.verdict(entry.document_id, &path))
-                .unwrap_or_else(|| {
-                    #[cfg(test)]
-                    {
-                        acl_evaluations = acl_evaluations.saturating_add(1);
-                    }
-                    enforcement.is_none_or(|(acl, identity)| acl.visible(identity, &path))
-                });
-            if visible {
-                records.push(DocumentIndexEntryV1 {
-                    document_id: entry.document_id,
-                    path,
-                    is_dir: entry.is_dir,
-                });
-            } else {
-                hidden.insert(entry.document_id, path);
-            }
-        }
-
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"tilo.fs.record-index.v3.visible-catalogue\\0");
-        hasher.update(&acl_revision.to_be_bytes());
-        hasher.update(&(records.len() as u64).to_be_bytes());
-        for record in &records {
-            hasher.update(record.document_id.0.as_bytes());
-            hasher.update(&(record.path.len() as u64).to_be_bytes());
-            hasher.update(record.path.as_bytes());
-            hasher.update(&[u8::from(record.is_dir)]);
-        }
-        let revision = hasher.finalize().to_hex().to_string();
-        let by_id = records
-            .iter()
-            .cloned()
-            .map(|record| (record.document_id, record))
-            .collect();
-        let index = Arc::new(AclVisibleDocumentIndex {
-            source_revision: source_revision.clone(),
-            acl_revision,
-            revision,
-            records,
-            by_id,
-            hidden,
-            #[cfg(test)]
-            acl_evaluations,
-        });
-        // Do not publish a coherent but old snapshot if a concurrent mutation landed after
-        // releasing the namespace lock above. Its notification builds the next generation.
-        let current_source = {
-            let namespace = namespace.lock_recover();
-            Self::document_catalog_revision_from_index(
-                namespace.indexed_document_revision(),
-                acl_revision,
-            )
-        };
-        // Nor one whose verdicts may mix two ACL generations: the revision bump has its own
-        // refresh coming.
-        if current_source != source_revision
-            || enforcement.map_or(0, |(acl, _)| acl.revision()) != acl_revision
-        {
-            return;
-        }
-        let mut retained = retained.lock_recover();
-        *retained = Some(index);
     }
 
     fn document_index_manifest_v2(&self) -> Option<Vec<u8>> {
@@ -3125,13 +2920,12 @@ impl QuickFS {
         self.announce();
     }
 
+    /// Wake the workers that follow a local change: the pinned-hydration worker. The
+    /// ACL-filtered catalogue is not rebuilt here. It is a projection read on request, built
+    /// at the revision the reader finds, so a pager's next poll still sees a visible addition
+    /// without the write paying for it: a copy of thousands of files would otherwise walk the
+    /// whole tree once per file ([`Self::acl_visible_document_index`]).
     fn announce(&self) {
-        if self.enforcement.is_some() {
-            // Local structural changes already updated the Namespace record index. Refresh the
-            // retained ACL projection before advertising the mutation, so a pager's next poll
-            // observes a visible addition without a request-time scan.
-            self.refresh_acl_visible_document_index();
-        }
         self.wake_pinned_hydration();
     }
 

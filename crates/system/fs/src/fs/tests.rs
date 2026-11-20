@@ -1822,6 +1822,48 @@ mod predictive_tests {
         assert_eq!(regranted.acl_evaluations, rows());
         assert!(regranted.hidden.is_empty());
     }
+
+    /// A change costs the ACL-filtered catalogue nothing: it is built when a projection
+    /// request reads it, once per revision, never on the create and commit a copied file
+    /// makes. Built on every change, the walk priced a folder copy by the workspace's size
+    /// (twice per file), which is tens of milliseconds a photo in a full workspace.
+    #[tokio::test]
+    async fn a_change_never_walks_the_acl_catalogue() {
+        const ME: [u8; 32] = [0xAA; 32];
+        let (namespace, fs) = fixture().await;
+        let mut policy = WorkspaceAcl::new();
+        policy.grant_read(ME, "/");
+        let fs = fs.with_acl(AclHandle::new(policy), ME);
+        let pages = || namespace.lock_recover().document_index_page_read_count();
+        let before = pages();
+        for index in 0..64_u8 {
+            let ino = {
+                let mut ns = namespace.lock_recover();
+                ns.create_file(ROOT_INO, format!("f{index:03}"), None, 0, 1)
+                    .unwrap()
+            };
+            {
+                let mut ns = namespace.lock_recover();
+                ns.set_content(ino, Some(&Hash::from([index; 32])), 1, 2);
+                ns.note_change();
+            }
+            // What a FUSE create and a closed file's commit call.
+            fs.publish();
+        }
+        assert_eq!(pages(), before, "a change does not walk the catalogue");
+
+        let manifest = fs
+            .document_index_manifest_v3()
+            .expect("a poll finds what the changes added, without a walk at change time");
+        assert!(pages() > before, "the poll walked the catalogue");
+        let built = pages();
+        assert_eq!(
+            fs.document_index_manifest_v3().unwrap(),
+            manifest,
+            "the same revision answers the next poll"
+        );
+        assert_eq!(pages(), built, "a revision's walk serves every read of it");
+    }
 }
 
 mod write_stage_tests {
