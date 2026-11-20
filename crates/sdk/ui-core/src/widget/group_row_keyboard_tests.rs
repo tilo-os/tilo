@@ -31,6 +31,15 @@ impl Widget for EveryKey {
             self.keys.set(self.keys.get() + 1);
             *ctx.handled = true;
         }
+        // A press anywhere in it takes the keyboard, as Chat's composer does.
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            ..
+        } = event
+        {
+            *ctx.focus_target = Some(ctx.node_id);
+            *ctx.handled = true;
+        }
     }
     fn build_layout(
         &mut self,
@@ -103,4 +112,120 @@ fn a_letter_follows_the_focused_control_into_its_window() {
     harness.key("r");
     assert_eq!(first.get(), 1);
     assert_eq!(second.get(), 0);
+}
+
+/// A window whose app is one text field, as Tasks' "What needs doing" row is.
+struct Field {
+    input: crate::widget::TextInput,
+}
+
+impl crate::widget::Decorator for Field {
+    type Inner = crate::widget::TextInput;
+    fn inner(&self) -> &crate::widget::TextInput {
+        &self.input
+    }
+    fn inner_mut(&mut self) -> &mut crate::widget::TextInput {
+        &mut self.input
+    }
+}
+
+impl crate::widget::AppWidget for Field {
+    fn app_kind(&self) -> crate::widget::AppKind {
+        crate::widget::AppKind::Editor
+    }
+    fn app_title(&self) -> &str {
+        "Field"
+    }
+    fn app_icon(&self) -> crate::widget::IconDescriptor {
+        crate::widget::IconDescriptor::Glyph("F")
+    }
+}
+
+/// A window whose app reads every key it is handed (Chat), and beside it a window with a text
+/// field (Tasks), in strip order `chat_first` or the other way round. Chat has the keyboard.
+fn chat_and_a_field(chat_first: bool) -> (FrameHarness, Rc<Cell<u32>>) {
+    let keys = Rc::new(Cell::new(0));
+    let mut chat = WindowGroup::new(
+        100,
+        vec![(
+            TabDescriptor::new(1, "Chat"),
+            TileContent::App(Box::new(EveryKey {
+                keys: Rc::clone(&keys),
+                focused: false,
+            })),
+        )],
+        1,
+        WindowWidth::Normal,
+    );
+    let _ = chat.set_focused(true);
+    let field = WindowGroup::new(
+        200,
+        vec![(
+            TabDescriptor::new(2, "Tasks"),
+            TileContent::App(Box::new(Field {
+                input: crate::widget::TextInput::new(vec![crate::presence::PathSegment::Field(
+                    "title".into(),
+                )])
+                .with_id("title"),
+            })),
+        )],
+        2,
+        WindowWidth::Normal,
+    );
+    let groups = if chat_first {
+        vec![chat, field]
+    } else {
+        vec![field, chat]
+    };
+    let mut harness = FrameHarness::for_root(
+        crate::State::new(),
+        GroupRow::new(groups),
+        (1600, 800),
+        Theme::dark(),
+    );
+    harness.relayout();
+    (harness, keys)
+}
+
+/// The words in the control with the keyboard, as assistive technology reads them.
+fn focused_words(harness: &FrameHarness) -> Option<String> {
+    harness.focused_access_node().and_then(|node| node.value)
+}
+
+/// What the person typed into the field they clicked, Enter included, stays the field's: none of
+/// it reaches the window that had the keyboard before, whichever side of the field it stands.
+fn typing_follows_the_clicked_field(chat_first: bool) {
+    let (mut harness, chat_keys) = chat_and_a_field(chat_first);
+    // Typed into Chat first: Chat has the keyboard and reads it.
+    let chat_at = if chat_first { 300.0 } else { 1300.0 };
+    harness.click_at(chat_at, 400.0);
+    harness.relayout();
+    harness.type_text("hi");
+    assert_eq!(
+        chat_keys.get(),
+        2,
+        "Chat reads what is typed while it has the keyboard"
+    );
+    chat_keys.set(0);
+
+    harness.click_named("title").unwrap();
+    harness.relayout();
+    harness.type_text("buy milk");
+    harness.key("Enter");
+    assert_eq!(
+        chat_keys.get(),
+        0,
+        "no key typed into the clicked field, Enter included, reaches the window beside it"
+    );
+    assert_eq!(focused_words(&harness).as_deref(), Some("buy milk"));
+}
+
+#[test]
+fn keys_typed_into_a_field_right_of_chat_stay_in_the_field() {
+    typing_follows_the_clicked_field(true);
+}
+
+#[test]
+fn keys_typed_into_a_field_left_of_chat_stay_in_the_field() {
+    typing_follows_the_clicked_field(false);
 }
