@@ -64,7 +64,7 @@
 //! site through, once.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems};
@@ -83,6 +83,7 @@ use tilo_actions::remote::{
 };
 use tilo_lock::MutexRecover as _;
 
+use super::person_asking::{workspace_store_dir, workspace_store_root};
 use super::{WorkspaceId, Workspaces};
 
 mod web_call;
@@ -683,20 +684,87 @@ fn vault_use_scope(
     }
 }
 
+const VAULT_ASKS_DIR: &str = "vault-asks";
+
+fn is_ask_id(ask: &str) -> bool {
+    ask.len() == 32
+        && ask
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn vault_ask_path(dir: &Path, workspace: &str, ask: &str) -> PathBuf {
+    workspace_store_dir(dir, workspace)
+        .join(VAULT_ASKS_DIR)
+        .join(format!("{ask}.json"))
+}
+
+fn keep_vault_ask(dir: &Path, ask: &OpenAsk) -> Result<(), String> {
+    let bytes = serde_json::to_vec(ask).map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(
+        &vault_ask_path(dir, &ask.workspace, &ask.ask),
+        &bytes,
+        0o600,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn read_kept_vault_ask(path: &Path) -> Option<OpenAsk> {
+    let read = std::fs::read(path)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()));
+    match read {
+        Ok(ask) => Some(ask),
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "a kept ask about a vault use does not read");
+            None
+        }
+    }
+}
+
+fn kept_vault_asks(workspaces_root: &Path) -> Vec<OpenAsk> {
+    let mut asks: Vec<OpenAsk> = std::fs::read_dir(workspaces_root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|ws| {
+            std::fs::read_dir(ws.path().join(VAULT_ASKS_DIR))
+                .into_iter()
+                .flatten()
+        })
+        .flatten()
+        .filter_map(|file| read_kept_vault_ask(&file.path()))
+        .filter(|ask: &OpenAsk| is_ask_id(&ask.ask))
+        .map(|mut ask| {
+            ask.interrupted = ask.started;
+            ask
+        })
+        .collect();
+    asks.sort_by(|a, b| {
+        a.asked_at_ns
+            .cmp(&b.asked_at_ns)
+            .then_with(|| a.ask.cmp(&b.ask))
+    });
+    asks
+}
+
 impl Workspaces {
-    /// In-memory vault asks, never persisted to per-person disk storage.
+    /// Vault asks loaded once from each workspace's store (never `people/<person>/`).
     fn hosted_asks(&self) -> MutexGuard<'_, Option<Vec<OpenAsk>>> {
         let mut asks = self.inner.vault_uses.asks.lock_recover();
         if asks.is_none() {
-            *asks = Some(Vec::new());
+            *asks = Some(kept_vault_asks(&workspace_store_root(&self.inner.dir)));
         }
         asks
     }
 
-    /// Forget the ask `ask` of `person`: nothing is carried out for it any more.
-    fn forget_use(&self, _person: &str, ask: &str) {
+    /// Forget the ask `ask` in `workspace`: nothing is carried out for it any more.
+    fn forget_use(&self, workspace: &str, ask: &str) {
         if let Some(asks) = self.hosted_asks().as_mut() {
             asks.retain(|kept| kept.ask != ask);
+        }
+        if is_ask_id(ask) {
+            let _ = std::fs::remove_file(vault_ask_path(&self.inner.dir, workspace, ask));
         }
     }
 
@@ -986,6 +1054,7 @@ impl Workspaces {
             arguments,
         };
         let _ = root;
+        keep_vault_ask(&self.inner.dir, &kept).map_err(refused)?;
         open.push(kept.clone());
         Ok(TurnUse::Asks(Box::new(kept)))
     }
@@ -994,7 +1063,7 @@ impl Workspaces {
     /// waits for an answer, and the use is asked for again when it is
     /// needed.
     pub fn use_not_asked(&self, ask: &OpenAsk) {
-        self.forget_use(&ask.person, &ask.ask);
+        self.forget_use(&ask.workspace, &ask.ask);
     }
 
     /// The asks kept for `workspace`, oldest first: what whoever carries out its
@@ -1016,7 +1085,7 @@ impl Workspaces {
     /// nobody carries it out now, and it is not carried out a second time.
     pub fn use_interrupted(&self, ask: &OpenAsk) {
         if ask.interrupted {
-            self.forget_use(&ask.person, &ask.ask);
+            self.forget_use(&ask.workspace, &ask.ask);
         }
     }
 
@@ -1061,18 +1130,25 @@ impl Workspaces {
         reason = "the claim is read and written under one lock, so two readers of one answer cannot both take it"
     )]
     pub fn claim_use(&self, ask: &str) -> Result<OpenAsk, ActionCallError> {
-        let mut asks = self.hosted_asks();
-        let Some(kept) = asks
-            .as_mut()
-            .and_then(|asks| asks.iter_mut().find(|kept| kept.ask == ask))
-        else {
-            return Err(refused(NOTHING_WAITS));
+        let claimed = {
+            let mut asks = self.hosted_asks();
+            let Some(kept) = asks
+                .as_mut()
+                .and_then(|asks| asks.iter_mut().find(|kept| kept.ask == ask))
+            else {
+                return Err(refused(NOTHING_WAITS));
+            };
+            if kept.started {
+                return Err(refused(CARRIED_OUT));
+            }
+            kept.started = true;
+            kept.clone()
         };
-        if kept.started {
-            return Err(refused(CARRIED_OUT));
+        if let Err(error) = keep_vault_ask(&self.inner.dir, &claimed) {
+            self.forget_use(&claimed.workspace, &claimed.ask);
+            return Err(refused(error));
         }
-        kept.started = true;
-        Ok(kept.clone())
+        Ok(claimed)
     }
 
     /// Carry out the answer to the ask `claimed` ([`Self::claim_use`]), as
@@ -1088,7 +1164,7 @@ impl Workspaces {
         answer: UseAnswer,
     ) -> Result<Option<Value>, ActionCallError> {
         let carried = self.carry_out(turn, claimed, shown, answer).await;
-        self.forget_use(&claimed.person, &claimed.ask);
+        self.forget_use(&claimed.workspace, &claimed.ask);
         carried
     }
 

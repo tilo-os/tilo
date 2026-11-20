@@ -7,10 +7,11 @@
 //! single pending-confirmation path ([`Workspaces::ask_person_confirmation`]).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::SystemTime;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_action_policy::agent_answers::AnswerScope;
 use tilo_action_policy::{
@@ -47,7 +48,72 @@ pub(super) enum ApprovalChange<'a> {
 #[derive(Default)]
 struct WaitingIndex(Mutex<BTreeMap<String, Vec<(String, Waiting)>>>);
 
-#[derive(Clone, Debug)]
+/// Root directory for per-workspace pending asks and grants (never `people/<person>/`).
+pub(super) fn workspace_store_root(dir: &Path) -> PathBuf {
+    dir.join("workspaces")
+}
+
+/// Directory for one workspace's pending asks and grants.
+pub(super) fn workspace_store_dir(dir: &Path, workspace: &str) -> PathBuf {
+    workspace_store_root(dir).join(hex::encode(workspace.as_bytes()))
+}
+
+fn is_grant_id(id: &str) -> bool {
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn grant_path(dir: &Path, workspace: &str, id: &str) -> PathBuf {
+    workspace_store_dir(dir, workspace)
+        .join("grants")
+        .join(format!("{id}.json"))
+}
+
+fn write_grant(dir: &Path, entry: &PolicyEntry) -> Result<(), String> {
+    let bytes = serde_json::to_vec(entry).map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(
+        &grant_path(dir, &entry.scope.workspace, entry.grant.id.as_str()),
+        &bytes,
+        0o600,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn load_grants(dir: &Path) -> BTreeMap<String, Vec<PolicyEntry>> {
+    let mut by_workspace: BTreeMap<String, Vec<PolicyEntry>> = BTreeMap::new();
+    let files = std::fs::read_dir(workspace_store_root(dir))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|ws| {
+            std::fs::read_dir(ws.path().join("grants"))
+                .into_iter()
+                .flatten()
+        })
+        .flatten();
+    for file in files {
+        let path = file.path();
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(entry) = serde_json::from_slice::<PolicyEntry>(&bytes) else {
+            continue;
+        };
+        if is_grant_id(entry.grant.id.as_str())
+            && id_of(&entry.scope).as_deref() == Some(entry.grant.id.as_str())
+        {
+            by_workspace
+                .entry(entry.scope.workspace.clone())
+                .or_default()
+                .push(entry);
+        }
+    }
+    by_workspace
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct PolicyEntry {
     person: [u8; 32],
     grant: Grant,
@@ -60,14 +126,14 @@ struct PolicyEntry {
     last_used_ms: Option<u64>,
 }
 
-/// Workspace-scoped `tilo-action-policy` grants and pending asks held in memory
-/// (never written under `people/<person>/`).
+/// Workspace-scoped `tilo-action-policy` grants and pending asks, loaded once
+/// from each workspace's store (never under `people/<person>/`).
 #[derive(Default)]
 struct Held {
     asks: kept_asks::KeptAsks,
     waiting: WaitingIndex,
-    /// Grants indexed by workspace id.
-    grants: Mutex<BTreeMap<String, Vec<PolicyEntry>>>,
+    /// Grants indexed by workspace id, loaded once from the workspace store.
+    grants: Mutex<Option<BTreeMap<String, Vec<PolicyEntry>>>>,
 }
 
 type Holders = BTreeMap<PathBuf, (Weak<WorkspacesInner>, Arc<Held>)>;
@@ -336,59 +402,70 @@ impl Workspaces {
         approval_in_policy(&policy, &expected, false)
     }
 
+    fn with_grants<T>(&self, work: impl FnOnce(&mut BTreeMap<String, Vec<PolicyEntry>>) -> T) -> T {
+        let held = self.asking();
+        let mut grants = held.grants.lock_recover();
+        let map = grants.get_or_insert_with(|| load_grants(&self.inner.dir));
+        let done = work(map);
+        drop(grants);
+        done
+    }
+
     /// Decide whether a workspace `tilo-action-policy` grant covers `asked`.
     #[must_use]
     pub fn stands(&self, person: &[u8; 32], asked: &Asked) -> Option<String> {
         if !asked.is_named() {
             return None;
         }
-        let held = self.asking();
-        let grants = held.grants.lock_recover();
-        let Some(entries) = grants.get(&asked.workspace) else {
-            drop(grants);
-            return None;
-        };
-        let matching: Vec<&Grant> = entries
-            .iter()
-            .filter(|entry| entry.person == *person)
-            .map(|entry| &entry.grant)
-            .collect();
-        let node = policy_node(asked);
-        let grantees = [Grantee::agent(&asked.agent)];
-        let decision = decide(
-            matching,
-            &grantees,
-            &node,
-            ActionKind::Outside,
-            &Context::at(tilo_clock::unix_now_ms()),
-        );
-        let found = (decision.answer == Answer::Allow)
-            .then(|| decision.grant().map(|grant| grant.id.as_str().to_owned()))
-            .flatten();
-        drop(grants);
-        found
+        self.with_grants(|grants| {
+            let entries = grants.get(&asked.workspace)?;
+            let matching: Vec<&Grant> = entries
+                .iter()
+                .filter(|entry| entry.person == *person)
+                .map(|entry| &entry.grant)
+                .collect();
+            let node = policy_node(asked);
+            let grantees = [Grantee::agent(&asked.agent)];
+            let decision = decide(
+                matching,
+                &grantees,
+                &node,
+                ActionKind::Outside,
+                &Context::at(tilo_clock::unix_now_ms()),
+            );
+            (decision.answer == Answer::Allow)
+                .then(|| decision.grant().map(|grant| grant.id.as_str().to_owned()))
+                .flatten()
+        })
     }
 
     /// Count a use of the workspace grant `id`.
     pub fn permission_used(&self, person: &[u8; 32], id: &str) {
-        let held = self.asking();
-        let mut grants = held.grants.lock_recover();
-        for entries in grants.values_mut() {
-            if let Some(entry) = entries
-                .iter_mut()
-                .find(|entry| entry.person == *person && entry.grant.id.as_str() == id)
-            {
-                entry.used_times = entry.used_times.saturating_add(1);
-                entry.last_used_ms = Some(tilo_clock::unix_now_ms());
-                return;
+        let updated = self.with_grants(|grants| {
+            for entries in grants.values_mut() {
+                if let Some(entry) = entries
+                    .iter_mut()
+                    .find(|entry| entry.person == *person && entry.grant.id.as_str() == id)
+                {
+                    entry.used_times = entry.used_times.saturating_add(1);
+                    entry.last_used_ms = Some(tilo_clock::unix_now_ms());
+                    return Some(entry.clone());
+                }
             }
+            None
+        });
+        if let Some(entry) = updated
+            && let Err(error) = write_grant(&self.inner.dir, &entry)
+        {
+            tracing::warn!(%error, "a workspace grant's use was not persisted");
         }
     }
 
     /// Keep a workspace-scoped `tilo-action-policy` grant for `allowing`.
     ///
     /// # Errors
-    /// The scope is not made of names or too many grants stand already.
+    /// The scope is not made of names, too many grants stand already, or it
+    /// could not be persisted to the workspace store.
     pub fn let_always(&self, person: &[u8; 32], allowing: Allowing) -> Result<Permission, String> {
         let Allowing {
             scope,
@@ -400,57 +477,56 @@ impl Workspaces {
             return Err(NOT_NAMED.to_owned());
         }
         let id = id_of(&scope).ok_or(NOT_NAMED)?;
-        let held = self.asking();
-        let mut grants = held.grants.lock_recover();
-        let count: usize = grants
-            .values()
-            .flat_map(|entries| entries.iter())
-            .filter(|entry| entry.person == *person)
-            .count();
-        let entries = grants.entry(scope.workspace.clone()).or_default();
-        if let Some(existing) = entries
-            .iter()
-            .find(|entry| entry.person == *person && entry.grant.id.as_str() == id)
-        {
-            return Ok(view(existing));
-        }
-        if count >= MAX_PERMISSIONS {
-            return Err(TOO_MANY.to_owned());
-        }
-        let grant = policy_grant(person, &id, &scope);
-        let entry = PolicyEntry {
-            person: *person,
-            grant,
-            scope,
-            name: worded(&name),
-            words: Words {
-                action: worded(&words.action),
-                on: worded(&words.on),
-                place: worded(&words.place),
-            },
-            since_ms: tilo_clock::unix_now_ms(),
-            asked_by: asked_by.filter(names_a_question),
-            used_times: 0,
-            last_used_ms: None,
-        };
-        let shown = view(&entry);
-        entries.push(entry);
-        drop(grants);
-        Ok(shown)
+        self.with_grants(|grants| {
+            let count: usize = grants
+                .values()
+                .flat_map(|entries| entries.iter())
+                .filter(|entry| entry.person == *person)
+                .count();
+            let entries = grants.entry(scope.workspace.clone()).or_default();
+            if let Some(existing) = entries
+                .iter()
+                .find(|entry| entry.person == *person && entry.grant.id.as_str() == id)
+            {
+                return Ok(view(existing));
+            }
+            if count >= MAX_PERMISSIONS {
+                return Err(TOO_MANY.to_owned());
+            }
+            let grant = policy_grant(person, &id, &scope);
+            let entry = PolicyEntry {
+                person: *person,
+                grant,
+                scope,
+                name: worded(&name),
+                words: Words {
+                    action: worded(&words.action),
+                    on: worded(&words.on),
+                    place: worded(&words.place),
+                },
+                since_ms: tilo_clock::unix_now_ms(),
+                asked_by: asked_by.filter(names_a_question),
+                used_times: 0,
+                last_used_ms: None,
+            };
+            write_grant(&self.inner.dir, &entry)?;
+            let shown = view(&entry);
+            entries.push(entry);
+            Ok(shown)
+        })
     }
 
-    /// Every workspace grant recorded for `person`, oldest first.
+    /// Every workspace grant kept for `person`, oldest first.
     #[must_use]
     pub fn permissions_of(&self, person: &[u8; 32]) -> Permissions {
-        let held = self.asking();
-        let grants = held.grants.lock_recover();
-        let mut entries: Vec<PolicyEntry> = grants
-            .values()
-            .flat_map(|entries| entries.iter())
-            .filter(|entry| entry.person == *person)
-            .cloned()
-            .collect();
-        drop(grants);
+        let mut entries: Vec<PolicyEntry> = self.with_grants(|grants| {
+            grants
+                .values()
+                .flat_map(|entries| entries.iter())
+                .filter(|entry| entry.person == *person)
+                .cloned()
+                .collect()
+        });
         entries.sort_by(|a, b| {
             a.since_ms
                 .cmp(&b.since_ms)
@@ -464,21 +540,30 @@ impl Workspaces {
     /// Revoke the grant `id` for `person`.
     ///
     /// # Errors
-    /// Infallible in-memory; returns whether a grant stood.
+    /// The grant file could not be removed from the workspace store.
     pub fn take_back_permission(&self, person: &[u8; 32], id: &str) -> Result<bool, String> {
-        let held = self.asking();
-        let mut grants = held.grants.lock_recover();
-        let mut removed = false;
-        for entries in grants.values_mut() {
-            let before = entries.len();
-            entries.retain(|entry| !(entry.person == *person && entry.grant.id.as_str() == id));
-            if entries.len() != before {
-                removed = true;
+        let removed_workspaces: Vec<String> = self.with_grants(|grants| {
+            let mut removed = Vec::new();
+            for (ws, entries) in grants.iter_mut() {
+                let before = entries.len();
+                entries.retain(|entry| !(entry.person == *person && entry.grant.id.as_str() == id));
+                if entries.len() != before {
+                    removed.push(ws.clone());
+                }
+            }
+            grants.retain(|_, entries| !entries.is_empty());
+            removed
+        });
+        if is_grant_id(id) {
+            for ws in &removed_workspaces {
+                match std::fs::remove_file(grant_path(&self.inner.dir, ws, id)) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.to_string()),
+                }
             }
         }
-        grants.retain(|_, entries| !entries.is_empty());
-        drop(grants);
-        Ok(removed)
+        Ok(!removed_workspaces.is_empty())
     }
 
     /// Note the questions waiting in `workspace`.

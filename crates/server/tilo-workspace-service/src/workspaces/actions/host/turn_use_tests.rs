@@ -483,10 +483,22 @@ async fn an_answer_is_claimed_once_and_not_carried_out_again_after_the_server_st
         Ok(TurnUse::Waits)
     );
 
-    // Pending vault asks are in-memory only and cleared on restart.
+    // The server stops before the claimed answer was carried out, and starts
+    // again on what it kept.
     server.shutdown().await;
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
+    let kept = workspaces.open_use_asks(&workspace);
+    assert_eq!(kept.len(), 1, "the ask is found again: {kept:?}");
+    assert_eq!(kept[0].ask, open.ask);
+    assert_eq!(kept[0].asked_in, json!({"part": "p0"}));
+    assert!(kept[0].started && kept[0].interrupted, "{:?}", kept[0]);
+    let again = workspaces.claim_use(&open.ask);
+    assert!(
+        matches!(&again, Err(Refused { reason }) if reason == CARRIED_OUT),
+        "nobody carries it out a second time: {again:?}"
+    );
+    workspaces.use_interrupted(&kept[0]);
     assert!(workspaces.open_use_asks(&workspace).is_empty());
     assert!(
         proved.lock().unwrap().is_empty(),

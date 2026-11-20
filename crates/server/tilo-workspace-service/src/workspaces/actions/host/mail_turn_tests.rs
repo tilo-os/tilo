@@ -642,23 +642,25 @@ async fn a_message_that_waits_is_found_again_after_the_server_stopped() {
     let kept = mail.workspaces.keep_ask(&person, new).unwrap().unwrap();
     let workspace = mail.workspace.clone();
     assert!(mail.left().is_empty());
+    drop(mail);
+
+    server.shutdown().await;
+    let server = test_server(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
+    let servers = Arc::new(Watched::answering());
+    workspaces.carry_mail_through(servers.clone());
     let open = workspaces.open_asks(&workspace);
-    assert_eq!(open.len(), 1, "the ask is held in memory: {open:?}");
+    assert_eq!(open.len(), 1, "the ask is found again: {open:?}");
     assert_eq!(open[0].ask, kept.ask);
     assert_eq!(open[0].carrier, SEND_CARRIER);
     let claimed = workspaces.claim_ask(&kept.ask).unwrap();
     let sent = workspaces.send_asked(&claimed, true).await;
     assert!(matches!(sent, Ok(Some(_))), "{sent:?}");
-    assert_eq!(mail.left(), [LUNCH_LEFT]);
+    assert_eq!(servers.asked(), [LUNCH_LEFT]);
+
     assert!(workspaces.claim_ask(&kept.ask).is_err(), "claimed once");
     let twice = workspaces.send_asked(&claimed, true).await;
     assert!(twice.is_err(), "{twice:?}");
-    assert_eq!(mail.left(), [LUNCH_LEFT], "nothing leaves twice");
-    drop(mail);
-
-    server.shutdown().await;
-    let server = test_server(dir.path(), &key, &owner).await;
-    assert!(server.workspaces().open_asks(&workspace).is_empty());
+    assert_eq!(servers.asked(), [LUNCH_LEFT], "nothing leaves twice");
     server.shutdown().await;
 }

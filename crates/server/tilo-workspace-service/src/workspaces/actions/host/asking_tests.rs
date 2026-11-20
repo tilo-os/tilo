@@ -531,7 +531,8 @@ async fn what_stands_covers_exactly_what_was_asked() {
     server.shutdown().await;
 }
 
-/// Lasting approvals are bounded and never persisted to per-person disk files.
+/// What stands is kept, so it stands after the server restarted, and a person
+/// holds a bounded number of them.
 #[tokio::test]
 async fn what_stands_outlives_a_restart_of_the_server_and_is_bounded() {
     let dir = tempfile::tempdir().unwrap();
@@ -544,6 +545,10 @@ async fn what_stands_outlives_a_restart_of_the_server_and_is_bounded() {
     let asked = sending(&workspace, AGENT, Some("letters.box/out"));
     let id = answered_always(workspaces, &person, &asked);
     workspaces.permission_used(&person, &id);
+    server.shutdown().await;
+
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
     assert_eq!(workspaces.stands(&person, &asked), Some(id.clone()));
     let kept = workspaces.permissions_of(&person).permissions;
     assert_eq!(kept.len(), 1);
