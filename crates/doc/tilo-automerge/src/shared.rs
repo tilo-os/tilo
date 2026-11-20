@@ -46,7 +46,8 @@ struct Held {
 
 struct Kept {
     len: usize,
-    digest: [u8; 32],
+    /// The bytes it was kept from, or none for one kept by its heads alone ([`hold_at`]).
+    digest: Option<[u8; 32]>,
     /// The heads it stands at, sorted: the same document saved twice is found by them.
     heads: Vec<ChangeHash>,
     doc: AutoCommit,
@@ -61,21 +62,37 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
 /// loaded from whole. A document with changes not yet committed is not kept, nor one too
 /// small to be slow to load.
 pub fn hold(bytes: &[u8], doc: &AutoCommit) {
-    if bytes.len() < MIN_BYTES || bytes.len() > MAX_BYTES || doc.pending_ops() > 0 {
+    if bytes.len() < MIN_BYTES {
+        return;
+    }
+    keep(bytes.len(), Some(digest(bytes)), doc);
+}
+
+/// Keep `doc` for the next reader that asks for it by its heads ([`held_at`]), counted as
+/// `len` bytes: a reader that brought it up to date by changes it read (a page's replica
+/// opening the writes that landed), for the window it hands those changes to, which takes a
+/// copy instead of applying them again.
+pub fn hold_at(len: usize, doc: &AutoCommit) {
+    keep(len, None, doc);
+}
+
+fn keep(len: usize, digest: Option<[u8; 32]>, doc: &AutoCommit) {
+    if len > MAX_BYTES || doc.pending_ops() > 0 {
         return;
     }
     let mut heads = doc.committed_heads();
     heads.sort_unstable();
-    let digest = digest(bytes);
     // Handed out as a fork: no transaction, no patches, an actor of its own.
     let kept = doc.clone();
     HELD.with_borrow_mut(|held| {
         held.uses = held.uses.wrapping_add(1);
         let used = held.uses;
-        held.kept
-            .retain(|other| !(other.len == bytes.len() && other.digest == digest));
+        held.kept.retain(|other| match digest {
+            Some(_) => !(other.len == len && other.digest == digest),
+            None => other.heads != heads,
+        });
         held.kept.push(Kept {
-            len: bytes.len(),
+            len,
             digest,
             heads,
             doc: kept,
@@ -110,7 +127,7 @@ pub fn held(bytes: &[u8]) -> Option<AutoCommit> {
         let kept = held
             .kept
             .iter_mut()
-            .find(|kept| kept.len == bytes.len() && kept.digest == digest)?;
+            .find(|kept| kept.len == bytes.len() && kept.digest == Some(digest))?;
         kept.used = used;
         Some(kept.doc.fork())
     })

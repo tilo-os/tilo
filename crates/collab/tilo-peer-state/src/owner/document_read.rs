@@ -128,6 +128,10 @@ fn revision_of_sorted(heads: &[[u8; 32]]) -> [u8; 32] {
     )
 }
 
+/// The changes a read hands out from this size on are also kept as the document they bring the
+/// reader to ([`tilo_automerge::shared::hold_at`]): applying them takes milliseconds or more.
+const HELD_CHANGES_BYTES: usize = 16 * 1024;
+
 /// The changes `document` holds since `heads`, at most `maximum` bytes; `None` when only a whole
 /// read answers: no heads, heads not sorted and distinct, a head the document does not hold, or
 /// changes over `maximum`.
@@ -258,7 +262,23 @@ impl NativeCommittedView {
         if holding.revision == Some(revision) {
             return Ok(DocumentRead::Unchanged(revision));
         }
+        // Handing out what changed rebuilds it from the document, as long again as merging a
+        // large write took: within a turn (`crate::opening`) that opening the history used up,
+        // it is left to the next, which opens nothing more and goes on from here.
+        if crate::opening::due() {
+            crate::opening::stopped();
+            return Ok(DocumentRead::Arriving);
+        }
         if let Some(bytes) = changes_after(document, holding.heads, maximum) {
+            // Whoever merges these changes next on this thread (the window of a page showing the
+            // resource) takes a copy of the document they bring it to instead: applying many
+            // of them again, a tracker's write of hundreds of issues, holds a page's thread for
+            // most of a second, and a copy costs a millisecond. A few apply in less.
+            if bytes.len() >= HELD_CHANGES_BYTES {
+                let copy = automerge::AutoCommit::from_document(document.clone());
+                // Counted as what was opened of its history, which it holds in memory.
+                tilo_automerge::shared::hold_at(kept.size().max(bytes.len()), &copy);
+            }
             return Ok(DocumentRead::Changes(DocumentChanges {
                 revision,
                 heads,

@@ -75,13 +75,6 @@ fn observed_read(store: &ResourceStore, id: &DocumentId, document: &AutoCommit) 
     }
 }
 
-/// Apply an incremental stream to `doc`, whole or not at all.
-fn load_incremental(doc: &mut AutoCommit, bytes: &[u8]) -> Result<(), String> {
-    let changes = automerge::Automerge::parse_changes(bytes).map_err(|error| error.to_string())?;
-    doc.apply_incoming(changes)
-        .map_err(|error| error.to_string())
-}
-
 /// One record this process has open but is not currently showing.
 struct Parked {
     /// `None` exactly while checked out — the live document is the
@@ -2924,133 +2917,6 @@ impl ResourceStore {
         .map_err(|error| error.to_string())?
     }
 
-    /// Merge a replica's mutation into the open record, validated on a private
-    /// copy first: whether it changed, and the change hashes it carried.
-    /// # Errors
-    /// The bytes are not a valid mutation of this record, or it is not open.
-    pub fn merge_replica(
-        &self,
-        checkout: &DocumentCheckout,
-        mutation: collab_types::DocumentMutation,
-    ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
-        // The workspace's record may still be decoding off the frame when its
-        // route's committed history arrives: take it in first, as every open
-        // of it does, so the history lands on it.
-        self.try_set_mut()
-            .map_err(|_| ResourceOpenError::Busy.to_string())?
-            .take_in_opening(&checkout.id, true)
-            .map_err(|error| error.to_string())?;
-        let identity = self.replica_identity_stamp(checkout)?;
-        let merged = self.with_action_state(&checkout.id, |doc, history, actions| {
-            let mut local = doc.clone();
-            actions.commit_for_save(&mut local);
-            let before = local.get_heads();
-            let mut candidate;
-            // The heads the payload names: a snapshot re-delivered unchanged
-            // still tells the route that these are the sender's own.
-            let delivered = match &mutation {
-                collab_types::DocumentMutation::Snapshot(bytes) => {
-                    // The workspace's replica on this thread holds the document these bytes
-                    // were saved from: a copy of it, not a load.
-                    let mut incoming =
-                        tilo_automerge::shared::load(bytes).map_err(|error| error.to_string())?;
-                    // The host's empty document for a record a member is
-                    // creating carries nothing to merge, and no identity.
-                    if incoming.get_heads().is_empty() {
-                        return Ok((false, Vec::new()));
-                    }
-                    identity.validate(&incoming)?;
-                    let heads = incoming.get_heads();
-                    // Merging copies every change the receiving side lacks, so
-                    // the local changes go into the snapshot rather than the
-                    // other way round: a late joiner's replica is a few
-                    // changes next to a workspace's checkpoint. Every ancestor of
-                    // the heads both sides know is already in the snapshot.
-                    let shared: Vec<automerge::ChangeHash> = heads
-                        .iter()
-                        .copied()
-                        .filter(|head| local.get_change_meta_by_hash(head).is_some())
-                        .collect();
-                    if shared.len() == heads.len() {
-                        candidate = local.clone();
-                    } else if !local.get_missing_deps(&[]).is_empty() {
-                        // Changes the replica received before the ones they
-                        // build on wait in it, and only there: copying the
-                        // replica's changes into the snapshot would leave
-                        // them behind, so the snapshot's come to the replica.
-                        candidate = local.clone();
-                        candidate
-                            .load_incoming(&incoming.save_after(&[]))
-                            .map_err(|error| error.to_string())?;
-                    } else {
-                        // Merging walks back to what both sides hold. Saving
-                        // after the shared heads alone would re-encode the
-                        // whole local history when the snapshot is ahead.
-                        incoming.set_actor(local.get_actor().clone());
-                        incoming
-                            .merge_incoming(&mut local)
-                            .map_err(|error| error.to_string())?;
-                        candidate = incoming;
-                    }
-                    heads
-                }
-                collab_types::DocumentMutation::Incremental(bytes) => {
-                    candidate = local.clone();
-                    load_incremental(&mut candidate, bytes)?;
-                    Vec::new()
-                }
-            };
-            identity.validate(&candidate)?;
-            let changed = candidate.get_heads() != before;
-            // What the route delivered. A head stands for all of its
-            // ancestors only in an ancestry frontier; this one names each
-            // delivered change, so the merge's applied changes are listed,
-            // and so are the ones still waiting for history this replica
-            // lacks. Neither is ever sent back on the route that brought it.
-            // Told by their hashes alone: rebuilding every change the merge brought (a
-            // newcomer's window takes in a tracker of thousands of them at once) decoded each
-            // of their ops again, seconds on a page, for hashes the graph holds.
-            let mut observed = candidate
-                .committed_document()
-                .change_hashes()
-                .iter()
-                .filter(|hash| !local.has_change(hash))
-                .copied()
-                .collect::<Vec<_>>();
-            observed.extend(delivered);
-            if let collab_types::DocumentMutation::Incremental(bytes) = &mutation {
-                observed.extend(crate::state::changes_beyond(&mut candidate, bytes));
-            }
-            let mut seen = std::collections::HashSet::new();
-            observed.retain(|hash| seen.insert(*hash));
-            if changed {
-                // Finish the local span against LOCAL heads, never the merged
-                // heads: undoing it must leave the remote author's edits intact.
-                actions.finish_external(&mut local, history);
-                history.rebase(&mut candidate);
-                actions.generation = actions.generation.and_then(|value| value.checked_add(1));
-            }
-            // Keep valid changes with dependencies still in flight, too.
-            let missing = candidate.get_missing_deps(&[]);
-            if !missing.is_empty() {
-                // Shown until they arrive; a record that keeps waiting never
-                // received a change another replica built on.
-                tracing::debug!(
-                    record = %checkout.id,
-                    missing = ?missing.iter().take(4).map(|hash| hash.to_string()).collect::<Vec<_>>(),
-                    "remote changes wait for changes this replica has not received"
-                );
-            }
-            *doc = candidate;
-            Ok((changed, observed))
-        })
-        .map_err(|error| error.to_string())?;
-        if let Ok((true, _)) = &merged {
-            self.peer_change_merged(&checkout.id);
-        }
-        merged
-    }
-
     /// Withdraw from the open record `id` the changes `refused` names, which
     /// the workspace refused, with every local change made on top of them, and
     /// note one [`ResourceRefusal`] per action they carried, saying `reason`
@@ -3373,6 +3239,7 @@ mod identity_tests;
 mod arrival;
 mod canonical_read;
 mod opening;
+mod replica_merge;
 mod stored;
 pub use opening::ResourceOpening;
 #[cfg(test)]

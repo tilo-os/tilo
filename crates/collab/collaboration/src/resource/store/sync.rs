@@ -152,7 +152,7 @@ impl DocumentSync {
         if heads.is_empty() {
             return self.merge(store, checkout, mutation);
         }
-        let (changed, _) = store.merge_replica(checkout, mutation)?;
+        let (changed, _) = store.merge_replica_at(checkout, mutation, &heads)?;
         // Every change the mutation carried lies under the heads it stands at.
         self.frontier.hold(heads);
         self.snapshotted = true;
@@ -517,6 +517,117 @@ mod tests {
                 sync.take_own(&store, &want.id).unwrap().is_none(),
                 "every change the peer sent is noted as the peer's"
             );
+        }
+
+        phase large_changes_a_reader_here_brought_its_copy_to_are_taken_in_as_that_copy;
+        {
+            // A tracker's import writes hundreds of issues as one change: a page's replica opens
+            // it, and hands the window only what changed since the window's heads.
+            let write = |peer: &mut AutoCommit, from: usize| {
+                let issues = peer
+                    .put_object(automerge::ROOT, format!("issues-{from}"), automerge::ObjType::Map)
+                    .unwrap();
+                for at in from..from + 200 {
+                    let issue = peer
+                        .put_object(&issues, format!("issue-{at}"), automerge::ObjType::Map)
+                        .unwrap();
+                    let body = peer
+                        .put_object(&issue, "body", automerge::ObjType::Text)
+                        .unwrap();
+                    peer.splice_text(&body, 0, 0, &"What the issue says. ".repeat(20))
+                        .unwrap();
+                }
+                peer.commit();
+            };
+            let verified = || automerge::work().verified_ops;
+            let delivery = |store: &ResourceStore, want: &DocumentCheckout, from: usize| {
+                let (base, mut replica) = store
+                    .with(&want.id, |doc| (doc.get_heads(), doc.clone().fork()))
+                    .unwrap();
+                write(&mut replica, from);
+                (replica.save_after(&base), replica)
+            };
+            let reads_as = |store: &ResourceStore, want: &DocumentCheckout, whole: &mut AutoCommit| {
+                let (mut heads, value) = store
+                    .with(&want.id, |doc| {
+                        (doc.get_heads(), doc.committed_document().hydrate(None))
+                    })
+                    .unwrap();
+                let mut expected = whole.get_heads();
+                heads.sort_unstable();
+                expected.sort_unstable();
+                assert_eq!(heads, expected, "the window holds every change");
+                assert_eq!(value, whole.committed_document().hydrate(None));
+            };
+
+            // The replica on this thread holds the resource at the heads it delivers: the window
+            // takes a copy, and parses or applies none of the changes again.
+            tilo_automerge::shared::clear();
+            let (store, want) = opened("ours");
+            let mut sync = DocumentSync::new();
+            let (changes, mut replica) = delivery(&store, &want, 0);
+            tilo_automerge::shared::hold_at(changes.len(), &replica);
+            let before = verified();
+            assert!(
+                sync.merge_delivered(
+                    &store,
+                    &want,
+                    DocumentMutation::Incremental(changes),
+                    replica.get_heads(),
+                )
+                .unwrap()
+            );
+            assert_eq!(verified() - before, 0, "none of the changes was parsed");
+            reads_as(&store, &want, &mut replica);
+            assert!(sync.take_outbound(&store, &want.id).unwrap().is_none());
+
+            // A window with a change of its own past what the replica holds keeps it, and still
+            // parses none of the changes.
+            let (changes, mut replica) = delivery(&store, &want, 200);
+            tilo_automerge::shared::hold_at(changes.len(), &replica);
+            store.with(&want.id, |doc| {
+                put_text(doc, "mine");
+                doc.commit();
+            });
+            let mut whole = store.with(&want.id, |doc| doc.clone()).unwrap();
+            whole.merge(&mut replica).unwrap();
+            let before = verified();
+            assert!(
+                sync.merge_delivered(
+                    &store,
+                    &want,
+                    DocumentMutation::Incremental(changes),
+                    replica.get_heads(),
+                )
+                .unwrap()
+            );
+            assert_eq!(verified() - before, 0, "none of the changes was parsed");
+            reads_as(&store, &want, &mut whole);
+
+            // Held by nobody here, the changes are parsed once and applied.
+            tilo_automerge::shared::clear();
+            let (changes, mut replica) = delivery(&store, &want, 400);
+            let ops = automerge::Automerge::parse_changes(&changes)
+                .unwrap()
+                .iter()
+                .map(automerge::Change::len)
+                .sum::<usize>();
+            let before = verified();
+            assert!(
+                sync.merge_delivered(
+                    &store,
+                    &want,
+                    DocumentMutation::Incremental(changes),
+                    replica.get_heads(),
+                )
+                .unwrap()
+            );
+            assert_eq!(
+                verified() - before,
+                u64::try_from(ops).unwrap(),
+                "the changes were parsed once"
+            );
+            reads_as(&store, &want, &mut replica);
         }
     }
 }

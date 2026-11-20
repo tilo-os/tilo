@@ -314,6 +314,60 @@ tilo_test_env::scenario! {
             "the reader took the changes in in {changes_reader:?}, the whole document in {whole_reader:?}"
         );
     }
+
+    phase many_changes_are_handed_out_in_a_turn_of_its_own_and_held_as_its_document;
+    // A reader that opens its history a turn at a time (a page) is handed what changed in the
+    // turn after the one that opened it, so the two never hold its thread together; and the
+    // document those changes bring it to is held for the window that merges them next.
+    {
+        let joined = enrolled();
+        let member = member().verifying_key().to_bytes();
+        let held = full(&joined, member);
+        commit(&joined, |chat| {
+            let body = chat.put_object(ROOT, "body", ObjType::Text).unwrap();
+            let mut seed = 0x9e37_79b9_u32;
+            let text: String = std::iter::repeat_with(|| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                char::from(b'a' + u8::try_from(seed % 26).unwrap())
+            })
+            .take(LARGE_CHARACTERS)
+            .collect();
+            chat.splice_text(&body, 0, 0, &text).unwrap();
+        });
+        tilo_automerge::shared::clear();
+        let (late, stopped) = crate::opening::in_turns(|| true, || {
+            changes(&joined, member, &held.heads, usize::MAX)
+        });
+        assert!(
+            matches!(late, Ok(DocumentRead::Arriving)) && stopped,
+            "a turn already over hands out nothing"
+        );
+        let (read, stopped) = crate::opening::in_turns(|| false, || {
+            changes(&joined, member, &held.heads, usize::MAX)
+        });
+        let Ok(DocumentRead::Changes(read)) = read else {
+            panic!("the next turn hands out the changes");
+        };
+        assert!(!stopped);
+        let heads: Vec<_> = read.heads.iter().copied().map(automerge::ChangeHash).collect();
+        let mut copy = tilo_automerge::shared::held_at(&heads).unwrap_or_else(|| {
+            panic!("changes of {} bytes are held as its document", read.bytes.len())
+        });
+        let mut replica = AutoCommit::load(&held.bytes).unwrap();
+        replica.load_incoming(&read.bytes).unwrap();
+        let body = |doc: &AutoCommit| {
+            let body = doc.get(ROOT, "body").unwrap().unwrap().1;
+            doc.text(&body).unwrap()
+        };
+        assert_eq!(body(&copy), body(&replica), "the copy reads as the changes applied");
+        let mut copy_heads = copy.get_heads();
+        let mut replica_heads = replica.get_heads();
+        copy_heads.sort_unstable();
+        replica_heads.sort_unstable();
+        assert_eq!(copy_heads, replica_heads);
+    }
 }
 
 fn full_refused(joined: &Enrolled, reader: [u8; 32]) -> bool {

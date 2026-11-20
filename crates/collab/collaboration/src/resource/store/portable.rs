@@ -424,7 +424,7 @@ mod tests {
             }
             let mut merged = AutoCommit::load(&saved.bytes).unwrap();
             for change in &written {
-                crate::resource::store::load_incremental(&mut merged, change).unwrap();
+                crate::resource::store::replica_merge::load_incremental(&mut merged, change).unwrap();
             }
             let changes = merged.get_changes(&[]);
             let sequences: std::collections::HashSet<_> = changes
@@ -475,7 +475,7 @@ mod tests {
                         (hash, doc.save_after(&heads))
                     })
                     .unwrap();
-                crate::resource::store::load_incremental(&mut relay, &sent).unwrap();
+                crate::resource::store::replica_merge::load_incremental(&mut relay, &sent).unwrap();
                 hash
             };
             send("hello");

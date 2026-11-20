@@ -33,6 +33,7 @@ impl Change {
     ) -> Result<Self, ReadChangeOpError> {
         let mut len = 0;
         let stored = stored.verify_ops(|_| len += 1)?;
+        crate::work::verified_ops(len); // TILO(work-count)
         let compression = if let Some(c) = compressed {
             CompressionState::Compressed(c)
         } else {

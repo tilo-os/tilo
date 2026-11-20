@@ -34,6 +34,9 @@ pub struct Work {
     /// Runs of values the columns of a change being built took in: like ops, such as a text's
     /// letters, give each column one.
     pub change_runs: u64,
+    /// Ops of incoming changes decoded and checked as they were parsed
+    /// (`Change::new_from_unverified`): parsing the same changes twice counts them twice.
+    pub verified_ops: u64,
 }
 
 thread_local! {
@@ -48,6 +51,7 @@ thread_local! {
             column_runs: 0,
             op_set_splices: 0,
             change_runs: 0,
+            verified_ops: 0,
         })
     };
 }
@@ -110,4 +114,9 @@ pub(crate) fn spliced_op_set() {
 #[inline]
 pub(crate) fn wrote_change_run() {
     count(|work| work.change_runs = work.change_runs.saturating_add(1));
+}
+
+#[inline]
+pub(crate) fn verified_ops(ops: usize) {
+    count(|work| work.verified_ops = work.verified_ops.saturating_add(ops as u64));
 }
