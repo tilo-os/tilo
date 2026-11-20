@@ -657,6 +657,7 @@ impl Drop for Lease {
 mod tests {
     use super::*;
     use std::time::Instant;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// A pool member of the test's own: the tests running beside it in this
     /// process lease from the shared pool, never from this one.
@@ -765,7 +766,7 @@ mod tests {
         let running = worker(member).unwrap();
         let killed = Command::new("kill")
             .args(["-9", &running.to_string()])
-            .status()
+            .status_locked()
             .unwrap();
         assert!(killed.success());
         let until = Instant::now() + Duration::from_secs(10);
