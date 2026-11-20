@@ -2,22 +2,57 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {semanticBridge,applySemanticsPatch} from './semantics.mjs';
 import {createKeyboardForwarder,modifierSnapshot,semanticKeyboardRoute} from './host-core.mjs';
+// What one update asks the page's DOM to do, so a test can count its work
+// instead of timing a wall clock: writes are mutations the browser answers,
+// and a selection or scroll read after a write makes it lay the mirror out.
+const page={mark:0,writes:0,layoutReads:0,layoutReadsAfterWrite:0,styles:0,styleFields:0,appendsIntoAttached:0,removes:0};
+const wrote=()=>{page.writes++;};
+const readLayout=()=>{page.layoutReads++;if(page.writes>page.mark)page.layoutReadsAfterWrite++;};
+class Style {
+  constructor(){this._text='';this._values={};}
+  get cssText(){return this._text;}
+  set cssText(text){wrote();page.styles++;this._text=String(text);this._values={};for(const declaration of String(text).split(';')){const at=declaration.indexOf(':');if(at>0)this._values[declaration.slice(0,at).trim()]=declaration.slice(at+1).trim();}}
+  _set(name,value){wrote();page.styleFields++;this._values[name]=String(value);}
+  get left(){return this._values.left??'';} set left(value){this._set('left',value);}
+  get top(){return this._values.top??'';} set top(value){this._set('top',value);}
+  get width(){return this._values.width??'';} set width(value){this._set('width',value);}
+  get height(){return this._values.height??'';} set height(value){this._set('height',value);}
+  get pointerEvents(){return this._values.pointerEvents??'';} set pointerEvents(value){this._set('pointerEvents',value);}
+  get touchAction(){return this._values.touchAction??'';} set touchAction(value){this._set('touchAction',value);}
+}
 class Element {
-  constructor(tag){this.localName=tag;this.dataset={};this.attributes=new Map();this.children=[];this.tabIndex=-1;this.value='';this.selectionStart=0;this.selectionEnd=0;this.selectionDirection='none';this.scrollTop=0;this.scrollLeft=0;this.listeners=new Map();this.style={cssText:''};}
-  setAttribute(name,value){this.attributes.set(name,String(value));}
-  removeAttribute(name){this.attributes.delete(name);}
+  constructor(tag){this.localName=tag;this.dataset={};this.attributes=new Map();this.children=[];this._tabIndex=-1;this._value='';this._selectionStart=0;this._selectionEnd=0;this.selectionDirection='none';this._scrollTop=0;this._scrollLeft=0;this.listeners=new Map();this.style=new Style();this._text='';}
+  setAttribute(name,value){wrote();this.attributes.set(name,String(value));}
+  removeAttribute(name){wrote();this.attributes.delete(name);}
   getAttribute(name){return this.attributes.get(name)??null;}
   getAttributeNames(){return [...this.attributes.keys()];}
+  set tabIndex(value){wrote();this._tabIndex=value;}
+  get tabIndex(){return this._tabIndex;}
+  set id(value){wrote();this._id=value;}
+  get id(){return this._id;}
+  set textContent(value){wrote();this._text=String(value);}
+  get textContent(){return this._text;}
+  set value(value){wrote();this._value=String(value);}
+  get value(){return this._value;}
+  get selectionStart(){readLayout();return this._selectionStart;}
+  set selectionStart(value){wrote();this._selectionStart=value;}
+  get selectionEnd(){readLayout();return this._selectionEnd;}
+  set selectionEnd(value){wrote();this._selectionEnd=value;}
+  get scrollLeft(){readLayout();return this._scrollLeft;}
+  set scrollLeft(value){wrote();this._scrollLeft=value;}
+  get scrollTop(){readLayout();return this._scrollTop;}
+  set scrollTop(value){wrote();this._scrollTop=value;}
   replaceWith(next){const parent=this.parentNode;parent.children[parent.children.indexOf(this)]=next;next.parentNode=parent;this.parentNode=null;if(document.activeElement===this)document.activeElement=document.body;}
   addEventListener(name,listener){const listeners=this.listeners.get(name)??[];listeners.push(listener);this.listeners.set(name,listeners);}
   dispatchEvent(event){event.target??=this;event.currentTarget=this;for(const listener of this.listeners.get(event.type)??[])listener(event);if(event.bubbles&&!event.cancelBubble)this.parentNode?.dispatchEvent(event);return !event.defaultPrevented;}
-  setSelectionRange(start,end,direction='none'){this.selectionStart=start;this.selectionEnd=end;this.selectionDirection=direction;}
-  append(...children){for(const child of children){child.remove();this.children.push(child);child.parentNode=this;}}
+  setSelectionRange(start,end,direction='none'){wrote();this._selectionStart=start;this._selectionEnd=end;this.selectionDirection=direction;}
+  append(...children){for(const child of children){child.remove();this.children.push(child);child.parentNode=this;wrote();if(this._attached){page.appendsIntoAttached++;child.attached?.();}}}
+  attached(){if(this._attached)return;this._attached=true;for(const child of this.children)child.attached?.();}
   contains(node){return node===this||this.children.some(child=>child.contains(node));}
-  focus(options){this.focusOptions=options;if(document.activeElement!==this)document.activeElement?.blur?.();document.activeElement=this;this.dispatchEvent(event('focus'));}
-  blur(){if(document.activeElement===this)document.activeElement=document.body;this.dispatchEvent(event('blur'));}
-  remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(child=>child!==this);this.parentNode=null;}
-  replaceChildren(){for(const child of this.children)child.parentNode=null;this.children=[];}
+  focus(options){wrote();this.focusOptions=options;if(document.activeElement!==this)document.activeElement?.blur?.();document.activeElement=this;this.dispatchEvent(event('focus'));}
+  blur(){wrote();if(document.activeElement===this)document.activeElement=document.body;this.dispatchEvent(event('blur'));}
+  remove(){if(this.parentNode){this.parentNode.children=this.parentNode.children.filter(child=>child!==this);page.removes++;}this.parentNode=null;wrote();}
+  replaceChildren(){for(const child of this.children)child.parentNode=null;this.children=[];wrote();}
 }
 const event=(type,extra={})=>({type,bubbles:['click','keydown','keyup','input','select'].includes(type),defaultPrevented:false,cancelBubble:false,preventDefault(){this.defaultPrevented=true;},stopPropagation(){this.cancelBubble=true;},...extra});
 globalThis.document={createElement:tag=>new Element(tag),activeElement:null,body:new Element('body')};
@@ -972,4 +1007,80 @@ test('a protected field keeps what the person typed, and empties when the app le
   assert.equal(editor.value,'secret','one answer alone is not evidence the app dropped the text');
   bridge.update(snapshot(field(0)));
   assert.equal(editor.value,'','the app cleared the field, so the page does too');
+});
+
+// What an update of the page's DOM asked for, from a mark taken before it.
+const work=()=>{const mark=page.writes;page.mark=mark;const start={...page};return ()=>({writes:page.writes-start.writes,styles:page.styles-start.styles,styleFields:page.styleFields-start.styleFields,layoutReads:page.layoutReads-start.layoutReads,layoutReadsAfterWrite:page.layoutReadsAfterWrite-start.layoutReadsAfterWrite,appendsIntoAttached:page.appendsIntoAttached-start.appendsIntoAttached,removes:page.removes-start.removes});};
+// What one issue's page says: a title and a description, both fields.
+const issuePage=()=>({role:'Group',name:'Issue',semantic_key:'tasks-issue-page',children:[
+  {role:'TextInput',name:'Title',value:'#3 Fix sync',state:{focusable:true},text_selection:{anchor:4,focus:4},bounds:{x0:10,y0:40,x1:700,y1:72}},
+  {role:'MultilineTextInput',name:'Description',value:'The list should open an issue without a pause.',state:{focusable:true,multiline:true},text_selection:{anchor:0,focus:0},bounds:{x0:10,y0:80,x1:700,y1:400}},
+]});
+// A Tasks window: a search field over a list of issue rows.
+const tasksTree=list=>({viewport:[1440,900],keyboard_focus_owner:'Shell[0]/Tasks[0]/Search[0]',root:{path:'Shell[0]',widget:'Shell',rect:[0,0,1440,900],semantics:null,children:[
+  {path:'Shell[0]/Tasks[0]',widget:'Tasks',rect:[0,0,1440,900],semantics:{role:'Group',name:'Tasks',children:[]},children:[
+    {path:'Shell[0]/Tasks[0]/Search[0]',widget:'TextInput',test_id:'search',rect:[0,0,300,32],semantics:{role:'TextInput',name:'What needs doing',semantic_key:'tasks-search',test_id:'tasks-search',value:'',state:{focusable:true,focused:true},text_selection:{anchor:0,focus:0}},children:[]},
+    {path:'Shell[0]/Tasks[0]/Body[0]',widget:'Switch',rect:[0,32,1440,868],semantics:list?{role:'Group',name:'Issues',children:list.map(issue=>({role:'ListItem',name:issue,key:issue,bounds:{x0:0,y0:0,x1:1440,y1:28}}))}:issuePage(),children:[]},
+  ]},
+]}});
+const openIssue=(tree,sequence)=>applySemanticsPatch(tree,sequence,{base:sequence,seq:sequence+1,viewport:[1440,900],keyboard_focus_owner:null,ops:[
+  {p:['root',0,1,'s'],full:issuePage()},
+]});
+test('opening a page reads every field before it writes the first node',()=>{
+  const root=new Element('div');root._attached=true;document.activeElement=document.body;
+  const bridge=semanticBridge(root,()=>true,()=>{});
+  const list=tasksTree(['#1 Speed up sign-in','#2 Remove sync','#3 Fix sync','#4 Add sign-in','#5 Speed up the list']);
+  // The whole window arriving is written from nothing too.
+  const building=work();
+  bridge.update(list);
+  assert.equal(building().layoutReadsAfterWrite,0,'no layout read after a write while building the page');
+  assert.equal(document.activeElement,root.children[1],'the search field holds the page focus');
+  const measurement=work();
+  const opened=openIssue(list,1);
+  assert.ok(opened);
+  bridge.update(opened);
+  const did=measurement();
+  // Reading a selection or a scroll after a write makes the browser lay the
+  // whole mirror out; an issue's page writes hundreds of nodes before it
+  // reaches the second field, so every field's state is read first.
+  assert.equal(did.layoutReadsAfterWrite,0,'no layout read after a write');
+  assert.ok(did.layoutReads<=4,`read ${did.layoutReads} layout properties`);
+});
+
+test('an opened page writes each new element once and joins the tree in one insertion',()=>{
+  const root=new Element('div');root._attached=true;document.activeElement=document.body;
+  const bridge=semanticBridge(root,()=>true,()=>{});
+  const list=tasksTree(['#1 Speed up sign-in','#2 Remove sync','#3 Fix sync']);
+  bridge.update(list);
+  const measurement=work();
+  bridge.update(openIssue(list,1));
+  const did=measurement();
+  // The issue's group and its two fields are new; the search field and the
+  // widget around them stay, and nothing of theirs is written.
+  assert.equal(did.styles,3,'one style write per new element');
+  assert.equal(did.styleFields,0,'placement goes in the same style write');
+  assert.equal(did.appendsIntoAttached,1,'the new subtree joins the page once');
+  assert.equal(did.removes,1,'the rows that went are one removal, not one each');
+  const issue=root.children[2];
+  assert.equal(issue.getAttribute('aria-label'),'Issue');
+  const [title,description]=issue.children;
+  assert.equal(title.getAttribute('aria-label'),'Title');
+  assert.equal(title.style.left,'10px');
+  assert.equal(description.getAttribute('aria-multiline'),'true');
+  assert.equal(title.value,'#3 Fix sync');
+  assert.deepEqual([title.selectionStart,title.selectionEnd],[4,4]);
+});
+
+test('an update of a tree the mirror already shows writes nothing',()=>{
+  const root=new Element('div');root._attached=true;document.activeElement=document.body;
+  const bridge=semanticBridge(root,()=>true,()=>{});
+  const list=tasksTree(['#1 Speed up sign-in','#2 Remove sync']);
+  bridge.update(list);
+  const opened=openIssue(list,1);
+  bridge.update(opened);
+  const measurement=work();
+  bridge.update(opened);
+  const did=measurement();
+  assert.equal(did.writes,0,`wrote ${did.writes} times for a tree it already shows`);
+  assert.equal(did.layoutReadsAfterWrite,0);
 });

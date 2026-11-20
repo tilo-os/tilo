@@ -5,6 +5,7 @@
 use super::{InspectionNode, InspectionSnapshot};
 use crate::a11y::AccessNode;
 use serde::Serialize;
+use std::hash::{Hash, Hasher};
 
 /// How much of a tree a patch carries.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -117,37 +118,75 @@ impl Writer<'_> {
         self.path.pop();
     }
 
-    /// Match `old` and `new` by identity from both ends; what is left in the middle is spliced, the
-    /// matched pairs compared.
+    /// Match each new child to the old child of the same identity, in order:
+    /// what is left over is spliced, and the matched pairs are compared. A
+    /// list that lost or gained a few items in its middle carries only those,
+    /// not everything from the first change to the last.
     fn list<T: Node>(&mut self, old: &[T], new: &mut [T]) {
-        let both = old.len().min(new.len());
-        let mut head = 0;
-        while head < both && old[head].same(&new[head]) {
-            head += 1;
+        // The usual list is every child where it was: compare them in place
+        // without pairing anything.
+        if old.len() == new.len() && old.iter().zip(new.iter()).all(|(a, b)| a.same(b)) {
+            for index in 0..new.len() {
+                self.child(index, &old[index], &mut new[index]);
+            }
+            return;
         }
-        let mut tail = 0;
-        while tail < both - head && old[old.len() - 1 - tail].same(&new[new.len() - 1 - tail]) {
-            tail += 1;
+        let mut buckets: std::collections::HashMap<u64, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (index, item) in old.iter().enumerate() {
+            buckets.entry(item.identity()).or_default().push(index);
         }
-        if head + tail < old.len() || head + tail < new.len() {
-            self.splice(
-                head,
-                &old[head..old.len() - tail],
-                &new[head..new.len() - tail],
-            );
+        // Where in its bucket each identity's search left off, and the first
+        // old child still free to match.
+        let mut reached: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+        let mut cursor = 0;
+        let mut matched = vec![None; new.len()];
+        for (index, item) in new.iter().enumerate() {
+            let identity = item.identity();
+            let bucket = buckets.get(&identity);
+            let mut position = reached.get(&identity).copied().unwrap_or(0);
+            while let Some(candidate) = bucket.and_then(|bucket| bucket.get(position)).copied() {
+                if candidate >= cursor && item.same(&old[candidate]) {
+                    matched[index] = Some(candidate);
+                    cursor = candidate + 1;
+                    position += 1;
+                    break;
+                }
+                position += 1;
+            }
+            reached.insert(identity, position);
         }
-        for index in 0..head {
-            self.child(index, &old[index], &mut new[index]);
+        let mut next_old = 0;
+        let mut index = 0;
+        while index < new.len() {
+            if let Some(old_index) = matched[index] {
+                if next_old < old_index {
+                    self.splice(index, &old[next_old..old_index], &[]);
+                }
+                next_old = old_index + 1;
+                self.child(index, &old[old_index], &mut new[index]);
+                index += 1;
+            } else {
+                let start = index;
+                while index < new.len() && matched[index].is_none() {
+                    index += 1;
+                }
+                let end_old = matched.get(index).copied().flatten().unwrap_or(old.len());
+                self.splice(start, &old[next_old..end_old], &new[start..index]);
+                next_old = end_old;
+            }
         }
-        for back in 0..tail {
-            let (old_index, new_index) = (old.len() - 1 - back, new.len() - 1 - back);
-            self.child(new_index, &old[old_index], &mut new[new_index]);
+        if next_old < old.len() {
+            self.splice(new.len(), &old[next_old..], &[]);
         }
     }
 }
 
 trait Node: Serialize {
     fn same(&self, other: &Self) -> bool;
+    /// A hash of exactly what [`Self::same`] compares, so children are paired
+    /// without comparing every pair.
+    fn identity(&self) -> u64;
     fn count(&self) -> usize;
     fn diff(writer: &mut Writer<'_>, old: &Self, new: &mut Self);
 }
@@ -158,6 +197,15 @@ impl Node for AccessNode {
             && self.key == other.key
             && self.semantic_key == other.semantic_key
             && self.action_target == other.action_target
+    }
+
+    fn identity(&self) -> u64 {
+        let mut hasher = std::hash::DefaultHasher::new();
+        self.role.hash(&mut hasher);
+        self.key.hash(&mut hasher);
+        self.semantic_key.hash(&mut hasher);
+        self.action_target.hash(&mut hasher);
+        hasher.finish()
     }
 
     fn count(&self) -> usize {
@@ -177,6 +225,13 @@ impl Node for AccessNode {
 impl Node for InspectionNode {
     fn same(&self, other: &Self) -> bool {
         self.path == other.path && self.widget == other.widget
+    }
+
+    fn identity(&self) -> u64 {
+        let mut hasher = std::hash::DefaultHasher::new();
+        self.path.hash(&mut hasher);
+        self.widget.hash(&mut hasher);
+        hasher.finish()
     }
 
     fn count(&self) -> usize {
@@ -398,6 +453,57 @@ mod tests {
             assert_eq!(stats.removed, 1);
             assert_eq!(stats.added + stats.changed, 0);
             assert_eq!(text, r#"[{"p":["root",0,"s",1],"splice":[10,1,[]]}]"#);
+        }
+
+        phase only_the_rows_that_changed_in_a_list_are_carried;
+        {
+            // Two rows gone from the middle, with thirteen untouched rows
+            // after them: a patch that matched from both ends would carry
+            // everything between the first change and the last.
+            let old = snapshot(items(0..20), "");
+            let mut new = snapshot(
+                items({
+                    let mut keys: Vec<u64> = (0..20).collect();
+                    keys.retain(|key| *key != 3 && *key != 7);
+                    keys
+                }),
+                "",
+            );
+            let (text, stats) = patch(&old, &mut new);
+            assert_eq!(
+                stats,
+                InspectionPatchStats {
+                    changed: 0,
+                    added: 0,
+                    removed: 2
+                },
+                "{text}"
+            );
+            assert!(
+                text.contains(r#"{"p":["root",0,"s",1],"splice":[3,1,[]]}"#),
+                "{text}"
+            );
+            assert!(
+                text.contains(r#"{"p":["root",0,"s",1],"splice":[6,1,[]]}"#),
+                "{text}"
+            );
+            // Rows arriving apart keep their neighbours' identity too.
+            let old = snapshot(items(0..20), "");
+            let mut arriving: Vec<u64> = (0..20).collect();
+            arriving.insert(3, 90);
+            arriving.insert(13, 91);
+            let mut new = snapshot(items(arriving), "");
+            let (text, stats) = patch(&old, &mut new);
+            assert_eq!(
+                stats,
+                InspectionPatchStats {
+                    changed: 0,
+                    added: 2,
+                    removed: 0
+                },
+                "{text}"
+            );
+            assert_eq!(text.matches("\"splice\"").count(), 2, "{text}");
         }
 
         phase semantics_that_appear_go_whole;

@@ -71,6 +71,9 @@ export function applySemanticsPatch(tree,sequence,patch){
 }
 // Keys kept for one widget before the ones it no longer names are dropped.
 const KEYS_PER_IDENTITY=4096;
+// What a field's page said when the update did not read it: a field this
+// update made holds nothing yet.
+const NOT_READ={active:false,value:'',start:0,end:0,scroll:undefined};
 // Whether two values say the same, looking `depth` objects deep.
 function same(a,b,depth){
   if(a===b)return true;
@@ -144,6 +147,9 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     const next=createElement(true,state.key,element.tiloRole);
     for(const name of element.getAttributeNames())if(name!=='id')next.setAttribute(name,element.getAttribute(name));
     next.style.cssText=element.style.cssText;next.tabIndex=element.tabIndex;next.disabled=element.disabled;next.readOnly=element.readOnly;
+    // The copy says what the element said; the next update compares against
+    // that, so a value it clears is cleared here too.
+    for(const name of next.getAttributeNames())next.tiloAttr[name]=next.getAttribute(name);
     next.tiloRect=element.tiloRect;next.route=element.route;next.tiloRole=element.tiloRole;next.tiloAncestors=element.tiloAncestors;next.tiloOwnerPath=element.tiloOwnerPath;
     Object.assign(next.tiloState,state,{composing:false,compositionScope:null,compositionBase:null,canceledComposition:false,suppressInput:null});
     state.active=false;element.route=undefined;elements.set(state.key,next);restoreCanonical(next);
@@ -175,11 +181,15 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     if(!canonicalSelection)return;
     const [anchor,focus]=canonicalSelection;
     const anchorOffset=domOffset(element.value,anchor),focusOffset=domOffset(element.value,focus);
+    const [start,end]=anchorOffset<=focusOffset?[anchorOffset,focusOffset]:[focusOffset,anchorOffset];
     element.setSelectionRange?.(
-      Math.min(anchorOffset,focusOffset),Math.max(anchorOffset,focusOffset),
+      start,end,
       anchor===focus?'none':anchor<focus?'forward':'backward',
     );
-    element.tiloState.domSelection=[element.selectionStart,element.selectionEnd];
+    // What was just set, not what the field reports: reading a selection back
+    // lays the page out, and an update that sets a field's selection had
+    // already written hundreds of other elements.
+    element.tiloState.domSelection=[start,end];
   }
   function dispatchSelection(element){
     if(!authorized(element)||!currentComposition(element)){restoreCanonical(element);return false;}
@@ -284,7 +294,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     }
     recovery.text+=text;recovery.retained.value=recovery.text;syncRecovery(recovery);
   }
-  function createElement(editable,key,role){
+  function createElement(editable,key,role,style=MIRROR_STYLE){
     // A page shown as HTML (`host`) makes a single-line field its own
     // `<input>`, which the browser can fill in and offer passkeys on.
     const element=document.createElement(editable?(host&&role==='TextInput'?'input':'textarea'):role==='Button'?'button':'div');
@@ -294,7 +304,12 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     // Laid out over the drawn control so magnifiers, touch exploration and
     // element geometry find it there; never painted and never hit by the
     // pointer, which belongs to the canvas underneath.
-    element.style.cssText=MIRROR_STYLE;
+    element.style.cssText=style;
+    // What the mirror last wrote into the element's attributes, so an update
+    // writes only what changed instead of setting and clearing every field.
+    element.tiloAttr={};
+    // Nothing holds the page's focus until an update says so.
+    element.tiloFocused=false;
     element.tiloState={key,active:true,disabled:false,readOnly:false,composing:false,canonicalValue:'',compositionBase:null,suppressInput:null,canonicalSelection:null,lastSelection:null,reconcilingFocus:false,sentLength:0,pendingLength:undefined};
     element.addEventListener('focus',()=>{
       if(!element.tiloState.reconcilingFocus&&act(element,'focus')){inputScope?.capture();pendingFocus={key,remainingSnapshots:1};}
@@ -363,11 +378,18 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
   // scaled to the canvas's CSS box, offset from the mirrored parent it is
   // nested in (every one is absolutely positioned, so that parent is its
   // containing block) or from the mirror's root, which covers the canvas.
-  function place(element){
-    const rect=element.tiloRect,parent=element.parentNode?.tiloRect;
+  function offsets(rect,parent){
     const x=rect[0]*scale[0],y=rect[1]*scale[1],px=parent?parent[0]*scale[0]:0,py=parent?parent[1]*scale[1]:0;
-    const left=x-px,top=y-py,width=Math.max(0,rect[2]*scale[0]),height=Math.max(0,rect[3]*scale[1]);
+    return [x-px,y-py,Math.max(0,rect[2]*scale[0]),Math.max(0,rect[3]*scale[1])];
+  }
+  function placement(rect,parent){
+    const [left,top,width,height]=offsets(rect,parent);
+    return [`${MIRROR_STYLE}left:${left}px;top:${top}px;width:${width}px;height:${height}px;`,[left,top,width,height]];
+  }
+  function place(element,parent){
+    const rect=element.tiloRect;
     const placed=element.tiloPlaced;
+    const [left,top,width,height]=offsets(rect,parent??element.parentNode?.tiloRect);
     if(placed&&placed[0]===left&&placed[1]===top&&placed[2]===width&&placed[3]===height)return;
     element.tiloPlaced=[left,top,width,height];
     const style=element.style;
@@ -383,6 +405,25 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     const live=new Set();
     const ownedBeforeUpdate=new Set(elements.values());
     const activeBeforeUpdate=document.activeElement;
+    // Everything the update compares against the page is read now, before
+    // the first write: a selection or scroll read after a write makes the
+    // browser lay the whole mirror out again, and opening a page writes
+    // hundreds of elements. Every field's selection is read once, here.
+    const readings=new Map();
+    for(const element of elements.values()){
+      if(!element.tiloEditable)continue;
+      const active=element===activeBeforeUpdate;
+      readings.set(element,{
+        active,value:element.value,
+        start:element.selectionStart,end:element.selectionEnd,
+        scroll:active?[element.scrollLeft,element.scrollTop]:undefined,
+      });
+    }
+    const readOf=element=>readings.get(element)??NOT_READ;
+    // Whether a native selection of the HTML layer's text holds the page's
+    // focus (`holdsSelection()` in dom-input.mjs): asked before the writes
+    // too, as reading the page's selection lays it out.
+    const holdsSelection=host?.holdsSelection?.()??false;
     let canonicalFocus;
     const focusedCandidates=[];
     const activeCandidates=[];
@@ -455,8 +496,17 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       if(element&&element.tiloEditable!==editable){
         shortcuts?.blur?.(element);element.tiloState.active=false;element.route=undefined;element.remove();elements.delete(key);element=undefined;
       }
+      // A node without bounds of its own stands for the area it is drawn in.
+      const bounds=node.bounds;
+      const rect=bounds?[bounds.x0,bounds.y0,bounds.x1-bounds.x0,bounds.y1-bounds.y0]:enclosing??[0,0,0,0];
+      const parentRect=parent.tiloRect;
+      const created=!element;
+      // Laid out where it is drawn as it is made: one style write covers both
+      // what every mirrored element needs and where this one sits.
+      const [mirrorStyle,mirrorOffsets]=created?placement(rect,parentRect):[undefined,undefined];
       if(!element){
-        element=createElement(editable,key,node.role);elements.set(key,element);
+        element=createElement(editable,key,node.role,mirrorStyle);
+        elements.set(key,element);
       }
       element.route={owner,target:node.action_target};
       element.tiloRole=node.role;
@@ -468,11 +518,11 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       element.tiloState.readOnly=readOnly;
       if(node.state?.focused&&!disabled)focusedCandidates.push(element);
       if(node.state?.active_descendant&&!disabled)activeCandidates.push(element);
-      if(element.parentNode!==parent)parent.append(element);
-      // A node without bounds of its own stands for the area it is drawn in.
-      const bounds=node.bounds;
-      element.tiloRect=bounds?[bounds.x0,bounds.y0,bounds.x1-bounds.x0,bounds.y1-bounds.y0]:enclosing??[0,0,0,0];
-      place(element);
+      element.tiloRect=rect;
+      if(created)element.tiloPlaced=mirrorOffsets;else place(element,parentRect);
+      // A node that moved to another place in the mirror goes there now; a new
+      // one is added once its subtree is built (below).
+      if(!created&&element.parentNode!==parent)parent.append(element);
       // A node a patch left alone is the very object the element last
       // showed (applySemanticsPatch keeps it), so it says nothing new; one
       // that only moved (a scroll moves every node on screen) says nothing
@@ -480,39 +530,50 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       // most of its time.
       const changed=element.tiloNode!==node&&!sameFace(element.tiloNode,node);element.tiloNode=node;
       if(changed){
+      // Only what differs from what this element says is written: a new
+      // element has nothing to clear, and a changed one usually changes one
+      // field. Every attribute write is a DOM mutation the browser answers.
+      const attr=(name,value)=>{
+        const held=element.tiloAttr;
+        if(value===undefined||value===null){if(name in held){element.removeAttribute(name);delete held[name];}}
+        else{const text=String(value);if(held[name]!==text){element.setAttribute(name,text);held[name]=text;}}
+      };
       const role=node.role&&typeof node.role==='object'?(node.role.Heading?'heading':undefined):roles[node.role];
-      if(role)element.setAttribute('role',role);else element.removeAttribute('role');
-      const level=node.role?.Heading?.level;
-      if(level!==undefined)element.setAttribute('aria-level',String(level));else element.removeAttribute('aria-level');
-      if(node.name)element.setAttribute('aria-label',node.name);else element.removeAttribute('aria-label');
-      if(node.description)element.setAttribute('aria-description',node.description);else element.removeAttribute('aria-description');
-      element.tabIndex=node.state?.focusable&&!node.state?.disabled?0:-1;
+      attr('role',role);
+      attr('aria-level',node.role?.Heading?.level);
+      attr('aria-label',node.name||undefined);
+      attr('aria-description',node.description||undefined);
+      const tabIndex=node.state?.focusable&&!node.state?.disabled?0:-1;
+      if(element.tiloTabIndex!==tabIndex){element.tabIndex=tabIndex;element.tiloTabIndex=tabIndex;}
       for(const flag of ['selected','checked','expanded','disabled','busy','multiline','read_only']){
-        const value=node.state?.[flag]; const attribute=`aria-${flag==='read_only'?'readonly':flag}`;
-        if(value!==undefined&&value!==null)element.setAttribute(attribute,String(value));else element.removeAttribute(attribute);
+        attr(`aria-${flag==='read_only'?'readonly':flag}`,node.state?.[flag]);
       }
-      element.disabled=Boolean(node.state?.disabled);
-      element.readOnly=Boolean(node.state?.read_only);
+      if(element.disabled!==Boolean(node.state?.disabled))element.disabled=Boolean(node.state?.disabled);
+      if(element.readOnly!==Boolean(node.state?.read_only))element.readOnly=Boolean(node.state?.read_only);
       if(element.localName==='input'){
         const type=node.state?.protected?'password':'text';
         if(element.type!==type)element.type=type;
         const autocomplete=AUTOFILL[node.state?.autofill]??'off';
         if(element.getAttribute('autocomplete')!==autocomplete)element.setAttribute('autocomplete',autocomplete);
       }
-      if(node.live)element.setAttribute('aria-live',node.live.toLowerCase());else element.removeAttribute('aria-live');
+      attr('aria-live',node.live?node.live.toLowerCase():undefined);
       // A control that carries the workspace's files out of the window is
       // the one element the pointer reaches: a browser drags a file onto the
       // computer only from a real element (carry-out.mjs).
       const carries=node.carries_out;
-      if(carries){
-        element.draggable=true;element.dataset.tiloCarries=carries;element.style.pointerEvents='auto';element.style.touchAction='none';
-      }else if(element.dataset.tiloCarries!==undefined){
-        element.draggable=false;delete element.dataset.tiloCarries;element.style.pointerEvents='none';element.style.touchAction='';
+      if(carries!==element.tiloCarries){
+        element.tiloCarries=carries;
+        if(carries){
+          element.draggable=true;element.dataset.tiloCarries=carries;element.style.pointerEvents='auto';element.style.touchAction='none';
+        }else{
+          element.draggable=false;delete element.dataset.tiloCarries;element.style.pointerEvents='none';element.style.touchAction='';
+        }
       }
       }
       // A secret is never in the tree; a page's own password field holds
       // what the person typed, which the tree must not wipe.
-      const value=node.state?.protected?(element.localName==='input'?element.value:''):node.value??'';
+      const read=readOf(element);
+      const value=node.state?.protected?(element.localName==='input'?read.value:''):node.value??'';
       // A node a patch left alone over a field that still shows it (its
       // value, and the selection last set) needs nothing done: recounting
       // the selection and setting it again on every field each status
@@ -521,7 +582,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       // Only the field the page's focus is in can have had its selection
       // moved since it was set; reading another field's selection forced
       // a layout of the page for every field in the tree on each status.
-      const shown=state=>!state.canonicalSelection||(element!==document.activeElement&&state.domSelection)||state.domSelection?.[0]===element.selectionStart&&state.domSelection?.[1]===element.selectionEnd;
+      const shown=state=>!state.canonicalSelection||(element!==activeBeforeUpdate&&state.domSelection)||state.domSelection?.[0]===read.start&&state.domSelection?.[1]===read.end;
       if(editable&&node.state?.protected){
         // The field holds the person's own text; the page empties it when the
         // app let the text go.
@@ -532,7 +593,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
           state.canonicalValue='';state.sentLength=0;
           state.canonicalSelection=null;state.selectionBytes=undefined;state.lastSelection=null;
         }
-      }else if(editable&&!changed&&!element.tiloState.composing&&element.value===value&&shown(element.tiloState)){
+      }else if(editable&&!changed&&!element.tiloState.composing&&read.value===value&&shown(element.tiloState)){
         // Already shown.
       }else if(editable){
         const state=element.tiloState;
@@ -554,16 +615,15 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
         // out once per field on every frame of a scroll.
         const sameSelection=selection===state.canonicalSelection
           ||(selection&&state.canonicalSelection&&selection[0]===state.canonicalSelection[0]&&selection[1]===state.canonicalSelection[1]);
-        const unchanged=!state.composing&&state.canonicalValue===value&&sameSelection&&element.value===value&&shown(state);
+        const unchanged=!state.composing&&state.canonicalValue===value&&sameSelection&&read.value===value&&shown(state);
         state.canonicalValue=value;
         state.canonicalSelection=selection;
         if(!state.composing&&!unchanged){
           // Only the field the person is in shows where it is scrolled to;
-          // reading another's scroll laid the page out once per field, and
-          // opening a page of fields (an issue) read every one of them.
-          const kept=element===document.activeElement;
-          const scroll=kept&&[element.scrollLeft,element.scrollTop];
-          if(element.value!==value)element.value=value;
+          // its scroll was read before this update wrote anything.
+          const kept=read.active;
+          const scroll=kept&&read.scroll;
+          if(read.value!==value)element.value=value;
           if(state.canonicalSelection){
             setCanonicalSelection(element,state.canonicalSelection);
             state.lastSelection=[...state.canonicalSelection];
@@ -571,8 +631,17 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
           if(kept)[element.scrollLeft,element.scrollTop]=scroll;
         }
       }
-      else if(changed&&!node.children?.length)element.textContent=value||node.name||'';
-      (node.children??[]).forEach((child,i)=>semantic(child,owner,element,`${index}/${i}`,identity,[...ancestry,key],ownerPath,element.tiloRect));
+      else if(changed&&!node.children?.length){
+        const text=value||node.name||'';
+        const before=element.tiloText;
+        if(before===undefined?text!=='':before!==text){element.textContent=text;element.tiloText=text;}
+      }
+      if(node.children?.length)(node.children).forEach((child,i)=>semantic(child,owner,element,`${index}/${i}`,identity,[...ancestry,key],ownerPath,element.tiloRect));
+      // A new element joins the mirror once its whole subtree is inside it:
+      // one insertion rather than one per node, and every attribute above was
+      // written while it was detached, where the browser's accessibility tree
+      // had nothing to update.
+      if(created&&element.parentNode!==parent)parent.append(element);
       return key;
     }
     function walk(node,parent,ancestry=[],place=[]){
@@ -588,7 +657,14 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       for(const child of node.children??[])walk(child,parent,ancestry,[...place,node.path]);
     }
     walk(snapshot.root,root);
-    for(const [key,element] of elements)if(!live.has(key)){shortcuts?.blur?.(element);element.tiloState.active=false;element.route=undefined;element.remove();elements.delete(key);}
+    // An element whose own ancestor the update drops goes with it: one
+    // removal tells the browser a region went, where taking each node out
+    // told it once per node.
+    for(const [key,element] of elements)if(!live.has(key)){
+      shortcuts?.blur?.(element);element.tiloState.active=false;element.route=undefined;elements.delete(key);
+      const parentKey=element.parentNode?.tiloState?.key;
+      if(parentKey===undefined||live.has(parentKey))element.remove();
+    }
     for(const recovery of recoveries.values())syncRecovery(recovery);
     // Retained owners and their editable/synthetic children may both report
     // focus. An explicitly focused descendant is the more precise contract.
@@ -602,7 +678,9 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     const candidates=keyboardOwner!==undefined?ownedCandidates:focusedCandidates;
     canonicalFocus=candidates.find(candidate=>!candidates.some(other=>other.tiloAncestors.includes(candidate.tiloState.key)));
 
-    const active=document.activeElement;
+    // The focus the page had when this update began: read then, not after
+    // the writes above, which would lay the mirror out to answer.
+    const active=activeBeforeUpdate;
     let awaitingFocus=false;
     if(pendingFocus){
       const target=elements.get(pendingFocus.key);
@@ -617,8 +695,8 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       else pendingFocus=undefined;
     }
     for(const element of elements.values()){
-      const focused=String(element===canonicalFocus);
-      if(element.dataset.tiloFocused!==focused)element.dataset.tiloFocused=focused;
+      const focused=element===canonicalFocus;
+      if(element.tiloFocused!==focused){element.dataset.tiloFocused=String(focused);element.tiloFocused=focused;}
     }
     // Focus stays on the control; the item the keyboard is on inside it is
     // its active descendant, announced without moving focus.
@@ -633,7 +711,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       setActiveDescendant(active,activeItem??canonicalFocus);
     // A person selecting the painted text natively keeps the page's focus
     // where the selection put it: moving it would empty the selection.
-    }else if(canonicalFocus&&active!==canonicalFocus&&(!active||active===document.body||focusWasManaged)&&!host?.holdsSelection?.()){
+    }else if(canonicalFocus&&active!==canonicalFocus&&(!active||active===document.body||focusWasManaged)&&!holdsSelection){
       clearActiveDescendant();
       canonicalFocus.tiloState.reconcilingFocus=true;
       try{canonicalFocus.focus({preventScroll:true});}finally{canonicalFocus.tiloState.reconcilingFocus=false;}
