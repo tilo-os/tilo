@@ -306,8 +306,16 @@ try {
     // It arrives: the account's server holds it, and Mail shows it once it asks
     // the server again.
     await searchAgain(ada.tab, 'refresh folder', 'Refresh folder');
-    await searchAgain(ada.tab, 'thanks, see you', 'Re: Quarterly plan');
-    await shows(ada.tab, words, 'the reply’s words', stepLimit(4));
+    // The reply stands at the top of the inbox once Mail has asked the server
+    // again: a person at the keyboard walks up to it and opens it.
+    let shown = false;
+    for (let walked = 0; walked < 10 && !shown; walked += 1) {
+      await key(ada.tab, 'k');
+      shown = Boolean(await poll(ada.tab, `(${TREE_TEXT}).includes(${JSON.stringify(words)})`, 1200));
+    }
+    if (!shown) fail(`the reply’s words never showed in the inbox: ${await visible(ada.tab)}`);
+    await key(ada.tab, 'Enter');
+    await shows(ada.tab, words, 'the reply’s words', stepLimit(3));
     console.log(`the reply arrived: ${words}`);
   });
 } catch (thrown) {
