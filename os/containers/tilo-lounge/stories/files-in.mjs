@@ -19,7 +19,7 @@ import {join} from 'node:path';
 import {deflateSync} from 'node:zlib';
 import {sleep} from '../../../../tools/web/chrome.mjs';
 import {SHELL, stepLimit} from '../integration/waits.mjs';
-import {click, giveName, key, searcher, settled, showsText as shows, waitUntil}
+import {click, found, giveName, key, pressNamed, searcher, settled, showsText as shows, waitUntil}
   from '../integration/shell.mjs';
 import {computerAt} from './computer.mjs';
 import {recorder, StoryStopped} from './recorder.mjs';
@@ -32,6 +32,13 @@ if (!site || !out) {
 const fail = message => { throw new Error(message); };
 const until = (tab, expression, what, timeout = stepLimit(3)) => waitUntil(tab, expression, what, timeout);
 const {search} = searcher({until, failed: fail, dump: async () => {}});
+const press = (tab, name) => pressNamed(tab, name);
+// Wait until the desktop publishes a node named `name`, then press it.
+const pressWhen = async (tab, name, what, timeout = stepLimit(3)) => {
+  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+  await until(tab, found(name), what, timeout);
+  if (!await press(tab, name)) fail(`${what} is not where a person can press it`);
+};
 // Ctrl+K, the search chord (Meta on a Mac).
 const chord = async tab => (await tab.evaluate('/Mac/.test(navigator.platform)')) ? 4 : 2;
 const arrived = `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`;
@@ -255,10 +262,10 @@ try {
   });
 
   await story.step('Ada opens each file in the workspace', async () => {
-    // Each one searched for by its name, as a person finds a file, and opened
-    // from the palette in the app that reads it: a picture in Photos, a PDF in
-    // PDF Viewer, a text document in Notes and a table in Sheets. Where the
-    // file's own words are on screen, they are read back too.
+    // Each one opened from Files, where she sees them: the row, then Enter, in
+    // the app that reads it — a picture in Photos, a PDF in PDF Viewer, a text
+    // document in Notes and a table in Sheets. Where the file's own words are
+    // on screen, they are read back too.
     const files = [
       {name: PHOTO, app: 'so.tilo.photos'},
       {name: PDF, app: 'so.tilo.pdf-viewer'},
@@ -266,7 +273,10 @@ try {
       {name: SHEET, app: 'so.tilo.sheets', words: 'rent'},
     ];
     for (const file of files) {
-      await search(ada.tab, adaKeys, file.name, file.name, file.app);
+      // Files in front, where its rows are what a press reaches.
+      await pressWhen(ada.tab, 'Files', 'the Files window');
+      await pressWhen(ada.tab, file.name, `the row for ${file.name} in Files`);
+      await key(ada.tab, 'Enter');
       const opened = `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(file.app)})`;
       await until(ada.tab, opened, `${file.name} opening in ${file.app}`, stepLimit(4));
       if (file.words) await shows(ada.tab, file.words, `${file.name} shown in its window`, stepLimit(4));
