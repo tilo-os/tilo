@@ -81,6 +81,12 @@ build_programs() {
 bindgen_tool() {
   local pinned tool
   pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' "$repo/crates/browser/tilo-browser-runtime/Cargo.toml")
+  # The build image carries the pinned CLI (dist/dev/Containerfile.fedora44); a build without
+  # network cannot install one.
+  if [[ "$(wasm-bindgen --version 2>/dev/null)" == "wasm-bindgen $pinned" ]]; then
+    command -v wasm-bindgen
+    return
+  fi
   tool=$CARGO_TARGET_DIR/tools/wasm-bindgen-$pinned
   if [[ ! -x $tool/bin/wasm-bindgen ]]; then
     if ! cargo install --quiet --locked wasm-bindgen-cli --version "=$pinned" --root "$tool.next" \
