@@ -688,3 +688,214 @@ fn an_agents_send_is_the_agents_on_every_member() {
         "Bob, who never saw the agent here, reads it by its own name"
     );
 }
+
+/// Where the window is, as a person reads it: the conversation open, the row
+/// the sidebar marks, the place the window bar names, and whether the call's
+/// stage fills the window.
+#[derive(Debug, PartialEq, Eq)]
+struct Shown {
+    open: String,
+    marked: Option<String>,
+    named: Option<String>,
+    stage: bool,
+}
+
+fn shown(window: &mut Window) -> Shown {
+    window.idle();
+    let (open, marked, stage) = window
+        .with_chat(|chat| {
+            let marked = chat.places.shown().and_then(|(_, selected)| selected);
+            (
+                chat.active_channel.clone(),
+                marked,
+                chat.call.active && chat.call.expanded,
+            )
+        })
+        .expect("a window");
+    let named = ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.location)
+        .map(|location| location.label);
+    Shown {
+        open,
+        marked,
+        named,
+        stage,
+    }
+}
+
+/// The sidebar's rows as the window last laid them out, top to bottom: each
+/// place's id and where a press lands on it.
+fn sidebar_rows(window: &mut Window) -> Vec<(String, vello::kurbo::Point)> {
+    window.harness().relayout();
+    let mut rows: Vec<_> = window
+        .harness()
+        .targets()
+        .into_iter()
+        .filter(|(name, _)| name.contains("NavRow["))
+        .map(|(_, rect)| rect)
+        .collect();
+    rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+    rows.into_iter()
+        .filter_map(|rect| {
+            let (id, _) = window
+                .with_chat(|chat| chat.places.place_at(rect.center()))
+                .flatten()?;
+            Some((id, rect.center()))
+        })
+        .collect()
+}
+
+/// Bob's window with every kind of sidebar row: the channel `chat`, the
+/// voice channel `voice`, a conversation Ada wrote to him and one he started
+/// with Cy.
+struct Sidebar {
+    window: Window,
+    chat: String,
+    voice: String,
+    with_ada: String,
+    with_cy: String,
+    ada: String,
+    cy: String,
+}
+
+impl Sidebar {
+    fn new() -> Self {
+        const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000b";
+        let ada = "ad".repeat(32);
+        let bob = "b0".repeat(32);
+        let cy = "c1".repeat(32);
+        let (mut ada_window, mut window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
+        lists_member(&mut window, &cy, "Cy");
+        send(&mut ada_window, &bob, "hello from Ada");
+        deliver_messages(&mut ada_window, &mut window);
+        send(&mut window, &cy, "hello Cy");
+        let mut sidebar = Self {
+            window,
+            chat: String::new(),
+            voice: String::new(),
+            with_ada: String::new(),
+            with_cy: String::new(),
+            ada,
+            cy,
+        };
+        sidebar.chat = sidebar.row("c_chat");
+        sidebar.voice = sidebar.row("c_voice");
+        sidebar.with_ada = sidebar.row(&sidebar.ada.clone());
+        sidebar.with_cy = sidebar.row(&sidebar.cy.clone());
+        sidebar
+    }
+
+    /// The id of the row whose id holds `part`.
+    fn row(&mut self, part: &str) -> String {
+        let rows = sidebar_rows(&mut self.window);
+        rows.iter().find(|(id, _)| id.contains(part)).map_or_else(
+            || panic!("the sidebar lists {part}: {rows:?}"),
+            |(id, _)| id.clone(),
+        )
+    }
+
+    /// A press on the row `id`, where the window lays it out now.
+    fn press(&mut self, id: &str) {
+        let at = sidebar_rows(&mut self.window)
+            .into_iter()
+            .find(|(row, _)| row == id)
+            .map_or_else(|| panic!("the sidebar lists {id}"), |(_, at)| at);
+        self.window.harness().click_at(at.x, at.y);
+    }
+
+    fn key(&mut self, key: &str) {
+        self.window.harness().key(key);
+    }
+
+    /// The window shows the conversation of row `id`, marked in the sidebar
+    /// and named `name` in the window bar.
+    fn opens(&mut self, id: &str, name: &str, what: &str) {
+        assert_eq!(
+            shown(&mut self.window),
+            Shown {
+                open: id.strip_prefix("channel:").unwrap_or(id).to_owned(),
+                marked: Some(id.to_owned()),
+                named: Some(name.to_owned()),
+                stage: false,
+            },
+            "{what}"
+        );
+    }
+}
+
+/// Every kind of row in Chat's sidebar opens what it names on the first
+/// press, and the sidebar's mark and the window bar follow at once: a
+/// channel, a direct conversation (one written to this person and one they
+/// started), and a voice channel, whose call's stage then fills the window.
+#[test]
+fn every_sidebar_row_opens_on_the_first_press() {
+    let mut bob = Sidebar::new();
+    let (chat, voice) = (bob.chat.clone(), bob.voice.clone());
+    let (with_ada, with_cy) = (bob.with_ada.clone(), bob.with_cy.clone());
+
+    bob.press(&with_ada);
+    bob.opens(&with_ada, "Ada", "a conversation written to Bob");
+    let texts = bob.window.texts();
+    assert!(
+        texts.iter().any(|text| text == "hello from Ada"),
+        "its messages show: {texts:?}"
+    );
+    bob.press(&chat);
+    bob.opens(&chat, "chat", "a channel");
+    bob.press(&with_cy);
+    bob.opens(&with_cy, "Cy", "a conversation Bob started");
+    bob.press(&with_ada);
+    bob.opens(&with_ada, "Ada", "one conversation to the next");
+
+    bob.press(&voice);
+    assert_eq!(
+        shown(&mut bob.window),
+        Shown {
+            // The conversation open stays open behind the call.
+            open: with_ada
+                .strip_prefix("channel:")
+                .unwrap_or(&with_ada)
+                .to_owned(),
+            marked: Some(voice),
+            named: Some("voice".to_owned()),
+            stage: true,
+        },
+        "the call chosen fills the window"
+    );
+    // Bob is listed in the call now, under its channel: the rows below moved.
+    bob.press(&with_cy);
+    bob.opens(&with_cy, "Cy", "a conversation from the call");
+}
+
+/// The arrow keys walk the sidebar's rows, opening each conversation they
+/// reach, and pass the voice channel without joining its call.
+#[test]
+fn the_arrow_keys_walk_past_a_call_to_the_conversations() {
+    let mut bob = Sidebar::new();
+    let chat = bob.chat.clone();
+    let (with_ada, with_cy) = (bob.with_ada.clone(), bob.with_cy.clone());
+
+    bob.press(&chat);
+    bob.opens(&chat, "chat", "the channel");
+    bob.key("ArrowDown");
+    let passing = shown(&mut bob.window);
+    assert_eq!(
+        passing.marked.as_deref(),
+        Some(chat.as_str()),
+        "passing the voice channel opens nothing"
+    );
+    assert!(
+        !bob.window
+            .with_chat(|chat| chat.call.active)
+            .unwrap_or(true),
+        "passing the voice channel joins no call"
+    );
+    bob.key("ArrowDown");
+    bob.opens(&with_ada, "Ada", "the key past the voice channel");
+    bob.key("ArrowDown");
+    bob.opens(&with_cy, "Cy", "the next conversation by key");
+    for _ in 0..3 {
+        bob.key("ArrowUp");
+    }
+    bob.opens(&chat, "chat", "up past the voice channel");
+}

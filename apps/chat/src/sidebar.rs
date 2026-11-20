@@ -230,6 +230,8 @@ impl ChatApp {
             item = item.editable_label();
         }
         if voice {
+            // Choosing a voice channel joins its call: the arrow keys pass it.
+            item = item.chosen_by_press();
             let now = ui::time::now();
             let people: Vec<NavItem> = self
                 .voice_people(&channel.id)
@@ -245,6 +247,7 @@ impl ChatApp {
                         )
                         .person_face(self.user_name(&person), None)
                         .without_actions()
+                        .chosen_by_press()
                 })
                 .collect();
             if !people.is_empty() {

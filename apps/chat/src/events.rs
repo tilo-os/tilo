@@ -1019,6 +1019,13 @@ impl ChatApp {
         let kind = self.channel(&id).map(|c| c.kind);
         if kind == Some(ChannelKind::Voice) {
             self.join_voice(&id, doc);
+            // The call chosen is what the window shows: its stage, joined
+            // now or already.
+            if self.call.active && self.call.channel == id {
+                self.call.expanded = true;
+                self.focus = Focus::Main;
+                self.request_relayout();
+            }
         } else {
             if self.call.expanded {
                 // The conversation chosen shows; the call floats over it.
