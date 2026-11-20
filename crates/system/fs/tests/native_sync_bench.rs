@@ -46,6 +46,7 @@
     reason = "in a benchmark these are the assertion or fixture arithmetic, not a hazard"
 )]
 
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -1340,11 +1341,12 @@ fn copying_a_folder_in_and_restarting() {
         let mut listing = String::new();
         if let Ok(entries) = std::fs::read_dir(&kept) {
             for entry in entries.flatten() {
-                listing.push_str(&format!(
-                    "  {} {} B\n",
+                let _ = writeln!(
+                    listing,
+                    "  {} {} B",
                     entry.file_name().to_string_lossy(),
                     entry.metadata().map_or(0, |meta| meta.len())
-                ));
+                );
             }
         }
         let root = std::fs::read_dir(&pair.host.mount).map(|entries| entries.count());
