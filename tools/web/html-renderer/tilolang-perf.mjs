@@ -14,7 +14,7 @@
 // slower). Every interaction past a frame (25 ms from input to its paint, with a margin for a headless
 // browser's own scheduling) or with a task over 50 ms is said. `--budget` fails when the numbers
 // are past those pinned in tilolang-perf.pinned.json, which `--pin` writes from the measurement
-// with a margin for noise; they are pinned on the builder (`rcargo exec`, CHROME=chromium-browser),
+// with a margin for noise; they are pinned on the builder (a cargo drop-in's `exec`, CHROME=chromium-browser),
 // whose idle cores measure steadier than a shared laptop. `--attempts N` measures up to N times
 // and passes on the first within them. `--profile DIR` keeps a CPU profile of the start and of
 // each interaction there, as `<interaction>.cpuprofile` (DevTools opens it). `--cpu N` slows the

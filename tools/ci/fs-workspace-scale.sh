@@ -21,13 +21,13 @@
 # The full ladder is a rung list (about 300 GiB in TILO_FS_LADDER_DIR):
 #
 #   TILO_FS_LADDER_RUNGS_MIB=10240,102400,256000 \
-#     rcargo exec -- bash tools/ci/fs-workspace-scale.sh ladder
+#     $CARGO exec -- bash tools/ci/fs-workspace-scale.sh ladder
 #
 # and, per run, one rung through the daemons (needs /dev/fuse; run it in a
 # user namespace as CI does, or as a user who may mount FUSE):
 #
 #   TILO_FS_LADDER_TOTAL_MIB=10240 \
-#     rcargo exec -- bash tools/ci/fs-workspace-scale.sh daemons
+#     $CARGO exec -- bash tools/ci/fs-workspace-scale.sh daemons
 #
 # The harnesses remove what they write; a killed run leaves
 # TILO_FS_LADDER_DIR / TILO_FS_BENCH_DIR behind, which are under the build's

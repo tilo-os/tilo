@@ -342,6 +342,17 @@ remote_capable() {
   [[ $remote_capable_said == 1 ]]
 }
 
+# The drop-in's own switch to run one call on the builder that builds rather
+# than hand it to another one, where a drop-in has one. Asked once; a drop-in
+# without it runs the call where it builds anyway.
+builder_flags() {
+  if [[ -z ${builder_flags_set:-} ]]; then
+    builder_flags=()
+    builder_flags_set=1
+    $cargo --on-builder --version >/dev/null 2>&1 && builder_flags=(--on-builder)
+  fi
+}
+
 # Where the services run: here, or on the build server in this checkout's
 # build container with the ports below served from there on this machine's
 # loopback under the same numbers (remote_mode). TILO_SH_REMOTE=1 sends them
@@ -1564,9 +1575,9 @@ builder_build() {
   local args=("$run" "$builder_stage" "${what[@]}")
   [[ ${TILO_SH_BUNDLE_NAMES:-0} != 1 ]] || args+=(--names)
   say "building the ${what[*]} on the build server ($cargo exec build-on-builder.sh; only what changed compiles)"
-  # A drop-in that mirrors a directory back (rcargo) takes the stage's name alone; one that copies
-  # the files a glob matches (t, which rcargo hands the call to when it routes to t) needs the
-  # stage's files named, since a stage is a directory of files below it.
+  # A drop-in that mirrors a directory back takes the stage's name alone; one that copies the files
+  # a glob matches (a routing drop-in hands the call to a remote builder, whose exec copies files)
+  # needs the stage's files named, since a stage is a directory of files below it.
   local fetch=$builder_stage
   remote_capable || fetch=$builder_stage/'**'
   (cd "$repo" && $cargo --fetch "$fetch" exec bash os/containers/tilo-sh/build-on-builder.sh "${args[@]}" >&2) \
@@ -2110,7 +2121,7 @@ up_native() {
   # at the server, whose home relay is that TLS origin, so the host is given the
   # authority that signed it — which this makes. The host starts before the
   # server, which reads where to place a workspace once, when it starts.
-  [[ -z $discord ]] || start_native_discord
+  [[ -z ${discord:-} ]] || start_native_discord
   [[ -z ${fake_oauth:-} ]] || start_native_fake_oauth
   start_mail
   # Before the TLS and the bundle, so its certificate is trusted by the server
@@ -2725,13 +2736,14 @@ remote_env() {
 # The script is named from the repository (`self`), since the build server keeps a copy of it at
 # a root of its own.
 #
-# A remote stack lives in the container rcargo builds in, and these commands have to act there: a
-# drop-in that routes other work elsewhere (rcargo hands exec to t by default) is not routed for
-# them, since that other place holds neither the stack nor its state.
+# A remote stack lives in the container its cargo drop-in builds in, and these commands have to act
+# there: a drop-in that routes other work elsewhere (exec handed to a builder) is asked for these
+# on the builder itself, since that other place holds neither the stack nor its state.
 remote_cmd() {
   local envs=()
   mapfile -t envs < <(remote_env)
-  ( cd "$repo" && RCARGO_T=0 "$cargo" exec -- env "${envs[@]}" bash "$self" "$@" )
+  builder_flags
+  ( cd "$repo" && "$cargo" "${builder_flags[@]}" exec -- env "${envs[@]}" bash "$self" "$@" )
 }
 
 # remote_shell COMMAND: a command on the build server, for what stack.sh has
@@ -2739,7 +2751,8 @@ remote_cmd() {
 remote_shell() {
   local envs=()
   mapfile -t envs < <(remote_env)
-  ( cd "$repo" && RCARGO_T=0 "$cargo" exec -- env "${envs[@]}" bash -c "$1" )
+  builder_flags
+  ( cd "$repo" && "$cargo" "${builder_flags[@]}" exec -- env "${envs[@]}" bash -c "$1" )
 }
 
 # start_supervisor ARGS…: the stack on the build server as one long-running
@@ -2752,7 +2765,8 @@ start_supervisor() {
   local envs=() inner
   mapfile -t envs < <(remote_env)
   inner=$(printf 'bash %q ' "$self"; printf '%q ' "$@")
-  ( cd "$repo" && setsid env "TILO_SH_STATE=$remote_state" RCARGO_T=0 "$cargo" exec \
+  builder_flags
+  ( cd "$repo" && setsid env "TILO_SH_STATE=$remote_state" "$cargo" "${builder_flags[@]}" exec \
       --forward "$(forward_tcp)" --forward "udp:$(forward_udp)" \
       -- env "${envs[@]}" bash -c "$inner && exec sleep infinity" ) \
     >> "$state/logs/remote.log" 2>&1 < /dev/null 9>&- &
