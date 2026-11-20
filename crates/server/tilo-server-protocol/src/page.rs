@@ -13,13 +13,15 @@ use serde::{Deserialize, Serialize};
 
 /// Where a page of a workspace's app is: `/w/<workspace>/<app>`, and
 /// `/w/<workspace>/<app>/<target>` for one thing it shows (a note).
+/// `/w/<workspace>` is the workspace itself: the apps a member opens there.
 pub const PAGE_PREFIX: &str = "/w/";
 
 /// The most bytes one message on a page's stream carries.
 pub const MAX_PAGE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 /// What a page's address names: the workspace (its id), the app (the last
-/// part of its id, `notes` for `so.tilo.notes`) and what it shows first.
+/// part of its id, `notes` for `so.tilo.notes`) and what it shows first. An
+/// address naming no app is the workspace's front page, which lists them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageAddress {
     pub workspace: String,
@@ -35,7 +37,7 @@ impl PageAddress {
         let rest = path.strip_prefix(PAGE_PREFIX)?;
         let mut parts = rest.splitn(3, '/');
         let workspace = parts.next().filter(|part| !part.is_empty())?;
-        let app = parts.next().filter(|part| !part.is_empty())?;
+        let app = parts.next().filter(|part| !part.is_empty()).unwrap_or("");
         let show = match parts.next().filter(|part| !part.is_empty()) {
             Some(part) => Some(decode_part(part)?),
             None => None,
@@ -49,6 +51,13 @@ impl PageAddress {
             app: app.to_owned(),
             show,
         })
+    }
+
+    /// Whether this address names the workspace itself rather than one of its
+    /// apps.
+    #[must_use]
+    pub fn is_home(&self) -> bool {
+        self.app.is_empty()
     }
 }
 
@@ -184,7 +193,25 @@ mod tests {
                 show: None,
             })
         );
-        assert_eq!(PageAddress::parse("/w/ws"), None);
+        // The workspace itself: the page that lists its apps.
+        assert_eq!(
+            PageAddress::parse("/w/ws"),
+            Some(PageAddress {
+                workspace: "ws".into(),
+                app: String::new(),
+                show: None,
+            })
+        );
+        assert!(PageAddress::parse("/w/ws").unwrap().is_home());
+        assert_eq!(
+            PageAddress::parse("/w/ws/"),
+            Some(PageAddress {
+                workspace: "ws".into(),
+                app: String::new(),
+                show: None,
+            })
+        );
+        assert_eq!(PageAddress::parse("/w/"), None);
         assert_eq!(PageAddress::parse("/w/../notes"), None);
         assert_eq!(PageAddress::parse("/w/a b/notes"), None);
         assert_eq!(PageAddress::parse("/x/ws/notes"), None);

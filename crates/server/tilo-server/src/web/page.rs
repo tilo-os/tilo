@@ -151,7 +151,14 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                 match pages.act(workspace_id, page, None).await {
                     Some(Ok(patches)) if patches.is_empty() => continue,
                     Some(Ok(patches)) => PageAnswer::Changed(patches),
-                    answered => patched(answered),
+                    // A pass the page did not ask for answers nothing: the
+                    // page's own asks keep their order, and the next pass
+                    // answers what changed. A page that left hears it on its
+                    // own next ask.
+                    answered => {
+                        tracing::debug!(?answered, "a page's pass was not answered");
+                        continue;
+                    }
                 }
             }
         };
@@ -265,7 +272,12 @@ pub(super) fn document(
 }
 
 /// The app's name as a title before its page says its own: `notes` → `Notes`.
+/// An address naming no app is the workspace's front page, which the product
+/// names.
 fn ui_title(app: &str) -> String {
+    if app.is_empty() {
+        return "Tilo".to_owned();
+    }
     let mut chars = app.chars();
     chars.next().map_or_else(String::new, |first| {
         first.to_uppercase().chain(chars).collect()
