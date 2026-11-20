@@ -116,6 +116,10 @@ try {
       console.log(`the server's page: ${shown.slice(0, 1500)}`);
       writeFileSync(join(out, 'evidence', 'nextcloud-page.txt'), `${shown}\n`);
     }
+    // Nextcloud says the window can be closed, and Ada goes back to her
+    // Tilo tab: a tab behind another draws no frames, so it would show
+    // nothing new until she looks.
+    await ada.tab.send('Page.bringToFront').catch(() => {});
     const host = new URL(server).hostname;
     await waitUntil(ada.tab, found(host), `the Nextcloud account listed as ${host}`, 60_000);
     await shotOf(ada.tab, '01-connected');
