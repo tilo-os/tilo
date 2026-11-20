@@ -454,8 +454,13 @@ fn content_in(doc: &AutoCommit, obj: &ObjId, named: &mut BTreeSet<String>) {
                 .filter_map(|item| {
                     // An app may key content by its address (a map of chunks).
                     whole_address(&item.key, named);
+                    // An author names the person or device a change is by, never bytes. A
+                    // device key is 64 hex like an address, so a node's author would be kept
+                    // as content nobody holds.
+                    let names_an_author = item.key == fs_protocol::tree::AUTHOR_KEY;
                     match item.value {
                         ValueRef::Object(_) => Some(item.id()),
+                        ValueRef::Scalar(_) if names_an_author => None,
                         ValueRef::Scalar(scalar) => {
                             scalar_content(scalar, named);
                             None
@@ -674,6 +679,23 @@ mod tests {
             doc.put(&node, fs_protocol::tree::PARENT_KEY, fs_protocol::tree::TRASH_ID).unwrap();
             doc.put(&node, fs_protocol::tree::HASH_KEY, hash.as_str()).unwrap();
             assert!(content_of(&doc.save()).unwrap().is_empty());
+        }
+
+        phase a_files_node_names_its_content_and_not_the_device_that_wrote_it;
+        {
+            let hash = "39".repeat(32);
+            let device = "4a".repeat(32);
+            let mut doc = AutoCommit::new();
+            let nodes = doc.put_object(ROOT, fs_protocol::tree::NODES_KEY, ObjType::Map).unwrap();
+            let node = doc.put_object(&nodes, "device/1", ObjType::Map).unwrap();
+            doc.put(&node, fs_protocol::tree::PARENT_KEY, fs_protocol::tree::ROOT_ID).unwrap();
+            doc.put(&node, fs_protocol::tree::HASH_KEY, hash.as_str()).unwrap();
+            doc.put(&node, fs_protocol::tree::AUTHOR_KEY, device.as_str()).unwrap();
+            assert_eq!(
+                content_of(&doc.save()).unwrap(),
+                [hash],
+                "a device key is 64 hex like an address, and names no bytes"
+            );
         }
 
         phase a_record_that_does_not_load_names_nothing;
