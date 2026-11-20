@@ -695,13 +695,24 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
     if (!codes[kind].made) void prepare(kind);
   };
   // The page offered no codes in time: its runtime did not load, or it
-  // failed in a way it did not say. Said instead of waiting on.
-  const offerTimer = later(() => {
-    for (const kind of Object.keys(codes)) {
-      const at = codes[kind];
-      if (!at.make && !at.error) { at.error = gone ?? {code: 'not-loaded'}; show(kind); }
-    }
-  }, OFFER_MS);
+  // failed in a way it did not say. Said instead of waiting on, but only
+  // once the screen is on the page: one still held for the entry's answer is
+  // not waiting on a load the person cannot see, and the page usually has
+  // its codes by the time the entry lets them in.
+  let offerTimer = null;
+  const watchOffers = () => {
+    if (offerTimer !== null || closed) return;
+    offerTimer = later(() => {
+      offerTimer = null;
+      for (const kind of Object.keys(codes)) {
+        const at = codes[kind];
+        if (!at.make && !at.error) { at.error = gone ?? {code: 'not-loaded'}; show(kind); }
+      }
+    }, OFFER_MS);
+  };
+  // The page offers its codes: it did load, so a wait that said it did not
+  // no longer holds.
+  const loaded = at => { if (at.error?.code === 'not-loaded') at.error = null; };
   // Follow `made` (`{code, expiresAt, follow()}`): count its time down
   // until a computer resolves it, then show each step it reports. `known`
   // is what was heard of it before this page (kept with the setup);
@@ -1062,6 +1073,8 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
       codes.setup.make = make;
       codes.setup.resume = resume;
       ahead = madeAhead;
+      loaded(codes.setup);
+      watchOffers();
       if (!adoptOffer()) {
         if (ahead || asked) void prepare('setup');
         else show('setup');
@@ -1073,6 +1086,8 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
     offerAgentSignIn(make, resume = null) {
       codes.signIn.make = make;
       codes.signIn.resume = resume;
+      loaded(codes.signIn);
+      watchOffers();
       // Signing in from the wait list, the prompt is what the screen is
       // for: shown as soon as its code is in, to copy or select.
       void prepare('signIn').then(() => {
@@ -1122,12 +1137,16 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
     reveal() {
       if (closed || !heldBack) return;
       heldBack = false;
+      watchOffers();
       toStart(true);
     },
     close,
     get closed() { return closed; },
   };
   apply(state);
+  // A screen that is on the page now is waiting on its codes: one held for
+  // the entry's answer starts that wait when it is shown (`reveal`).
+  if (!heldBack) watchOffers();
   return controller;
 }
 
@@ -1424,7 +1443,7 @@ function wireFirstScreenScreen(document, storage, {held = false, signInOnly = fa
   on('first-screen-copy-commands', () => screen.again(text('first-screen-commands'), 'commands'));
   on('first-screen-manual-toggle', () => screen.manual());
   on('first-screen-back', () => screen.back());
-  for (const id of ['first-screen-skip', 'first-screen-skip-wait']) on(id, () => screen.skip());
+  on('first-screen-skip', () => screen.skip());
   on('first-screen-passkey', () => screen.passkey());
   // A prompt selected and copied by hand is copied all the same.
   document.addEventListener('copy', () => {

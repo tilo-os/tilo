@@ -310,6 +310,41 @@ test('a host that refuses, or a page that never offers codes, is said, not waite
   assert.equal(setupFailure({code: 'not-let-in'}), 'This tab isn’t let in yet. Try again in a moment.');
 });
 
+test('a load that finishes late is not said to have failed: the offered codes take the sentence back', async () => {
+  // The wait says a page did not load only when its codes are missing: a
+  // screen still held for the entry's answer is not shown yet, so the wait
+  // has nothing to say of it, and a screen whose page does offer its codes
+  // (after a slow load) stops saying it did not.
+  const held = fixture({held: true});
+  await held.fire(OFFER_MS);
+  assert.deepEqual(held.last('offer'), ['offer', 'setup', {asking: false}],
+    'a screen still held for the entry is not said to have failed to load');
+  held.screen.reveal();
+  await settle();
+  assert.equal(held.last('offer')[2].problem, undefined, 'shown, it says nothing of a failure');
+  held.screen.offerSetup(maker(fakeCode()).make, null, {ahead: false});
+  await settle();
+  assert.deepEqual(held.last('offer'), ['offer', 'setup', {asking: false}],
+    'the loaded page offers its setup, never a load failure');
+
+  const late = fixture();
+  await late.fire(OFFER_MS);
+  const offered = kind => late.said.findLast(([name, of]) => name === 'offer' && of === kind);
+  assert.deepEqual(offered('setup'), ['offer', 'setup', {problem: setupFailure({code: 'not-loaded'}), reload: true}],
+    'a page that really offered nothing says so');
+  late.screen.offerSetup(maker(fakeCode()).make);
+  await settle();
+  assert.deepEqual(offered('setup'), ['offer', 'setup', {text: setupPrompt(CODE), code: CODE}],
+    'the code that arrives takes the failure back');
+  assert.equal(late.screen.held, false);
+});
+
+test('the screen offers one Skip for now, whichever step it is at', () => {
+  const html = readFileSync(here('index.html'), 'utf8');
+  assert.equal(html.match(/>Skip for now</g)?.length, 1, 'one button named Skip for now');
+  assert.equal(html.match(/id="first-screen-skip"/g)?.length, 1);
+});
+
 test('a server that refuses the code says the code could not be made, never that the workspace could not be opened', async () => {
   // What a page that came by its server's second name got from it: the workspace is there, the code is refused.
   const {screen, last} = fixture({site: 'https://tilo.wifi.example:24520'});

@@ -568,6 +568,9 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #first-screen .fr-primary svg { flex: none; }
     .fr-caption { margin: 10px 0 0; font-size: 13px; color: var(--fr-faint); }
     .fr-links { display: flex; flex-wrap: wrap; gap: 4px; margin: 14px 0 0 -12px; }
+    /* One row of links: Skip sits in it on the start and while a code is
+       followed; the prompt and its steps take the room above it. */
+    html:is([data-first-screen=waiting], [data-first-screen=expired], [data-first-screen=failed]) #first-screen .fr-links { margin-top: 28px; }
     #first-screen .fr-quiet { min-height: 44px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--fr-muted); font-size: 15px; }
     #first-screen .fr-quiet:hover, #first-screen .fr-quiet[aria-expanded=true] { background: var(--fr-quiet-hover); color: var(--fr-ink); }
     #first-screen .fr-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; width: 100%; min-height: 44px; padding: 0 16px; border: 1px solid var(--fr-edge); border-radius: 10px; background: var(--fr-well); font-weight: 500; }
@@ -699,7 +702,6 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     [data-first-screen=failed] #first-screen-problem { margin: 0; font-size: 17px; line-height: 1.5; color: var(--fr-ink); max-width: 520px; }
     .fr-expired { display: none; margin: 12px 0 0; font-size: 14px; color: var(--fr-muted); }
     [data-first-screen=expired] .fr-expired { display: block; }
-    .fr-links.fr-for-wait { margin-top: 28px; }
     #first-screen-steps { margin-top: 20px; }
     /* Done: the agent is in, or this tab is signed in. */
     .fr-done { display: none; flex-direction: column; align-items: flex-start; }
@@ -743,8 +745,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
         <p id="first-screen-net" class="fr-for-wait"></p>
         <p class="fr-expired">That prompt ran out before an agent used it. Here is a fresh one.</p>
         <button id="first-screen-retry" class="fr-primary" type="button"><span class="fr-for-expired">Copy a new prompt</span><span class="fr-for-failed">Try again</span></button>
-        <div class="fr-links fr-for-start"><button id="first-screen-manual-toggle" class="fr-quiet" type="button" aria-expanded="false" aria-controls="first-screen-manual">Set up manually</button><button id="first-screen-skip" class="fr-quiet" type="button">Skip for now</button></div>
-        <div class="fr-links fr-for-wait"><button id="first-screen-back" class="fr-quiet" type="button">Back</button><button id="first-screen-skip-wait" class="fr-quiet fr-for-setup" type="button">Skip for now</button></div>
+        <div class="fr-links"><button id="first-screen-manual-toggle" class="fr-quiet fr-for-start" type="button" aria-expanded="false" aria-controls="first-screen-manual">Set up manually</button><button id="first-screen-back" class="fr-quiet fr-for-wait" type="button">Back</button><button id="first-screen-skip" class="fr-quiet" type="button">Skip for now</button></div>
         <div id="first-screen-manual" class="fr-manual fr-for-start">
           <p class="fr-label">Tilo’s MCP server, for any agent</p>
           <div class="fr-field"><code id="first-screen-mcp">https://mcp.tilo.sh</code><button id="first-screen-copy-mcp" class="fr-copy" type="button">Copy</button></div>
