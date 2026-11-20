@@ -150,18 +150,20 @@ class Console:
         # again, and a login prompt prints itself again.
         self.send("")
         # A shell prompt at line start only (a login prompt follows the machine's
-        # name on its line): boot messages and prompts carry '# ' and '$ '
-        # mid-line, and taking one for a shell sends the command into
-        # whatever is drawing it — at a disk-unlock prompt that then waits for
-        # the command's whole deadline instead of letting the caller answer.
-        _, prompt = self.read_until(r"login: |(?m:^[#$] )")
+        # name on its line), in either form bash prints: a bare '# ' or '$ ', or
+        # the account and machine name in brackets in front of it. Boot messages and prompts
+        # carry '# ' and '$ ' mid-line, and taking one for a shell sends the
+        # command into whatever is drawing it — at a disk-unlock prompt that then
+        # waits for the command's whole deadline instead of letting the caller
+        # answer.
+        _, prompt = self.read_until(r"login: |(?m:^(?:\[[^\]\r\n]*\])?[#$] )")
         if not prompt.group(0).startswith(b"login"):
             return
         user, _, password = userpass.partition(":")
         self.send(user)
         self.read_until(r"[Pp]assword:")
         self.send(password)
-        self.read_until(r"[#$] ")
+        self.read_until(r"(?m:^(?:\[[^\]\r\n]*\])?[#$] )")
 
     def run(self, command):
         """Run one shell line in the signed-in session; its output and status.

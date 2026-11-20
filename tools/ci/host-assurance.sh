@@ -904,11 +904,14 @@ unattended_unlock() {
   local tries=${1:-120} recent
   for _ in $(seq 1 "$tries"); do
     recent=$(tail -c 20000 "$TILO_CONSOLE_LOG" 2>/dev/null || true)
-    # Only what this boot printed: a login prompt from an earlier boot says
-    # nothing about the volume this one opened.
-    case "${recent##*Linux version}" in
-      *login:*) console 'true' >/dev/null 2>&1 && return 0 ;;
-    esac
+    # Only what this boot printed: a prompt from an earlier boot says nothing
+    # about the volume this one opened. Either a login prompt or a session
+    # already signed in counts, as bash prints it with or without the
+    # account-and-host bracket.
+    if printf '%s' "${recent##*Linux version}" \
+         | grep -Eq 'login: |(^\[[^]]*\])?[#$] '; then
+      console 'true' >/dev/null 2>&1 && return 0
+    fi
     sleep 3
   done
   return 1
