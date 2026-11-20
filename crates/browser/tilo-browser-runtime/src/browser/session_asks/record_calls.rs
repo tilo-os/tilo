@@ -1,10 +1,13 @@
-//! Actions a window asks of a record of the workspace, on a page whose workspace has a host.
+//! Actions a window asks of the workspace's server, on a page whose workspace has one: those of
+//! a resource of the workspace, and what that server keeps for the workspace's
+//! people (its accounts, model providers, vault and what it tells them).
 //!
 //! Chat asks a shared note for its link; any window may ask a record another app keeps for one of
 //! its actions (provider `record:<app>:<record>`). On a native desktop the broker hands that to
 //! whatever serves the record. A page reaches the workspace's host, which runs a record's actions
 //! whoever has it open and decides each by the asking person's own access: the page grants
-//! nothing itself. The desktop's session carries such an action here
+//! nothing itself. No device of the person's is asked. The desktop's session carries such an
+//! action here
 //! ([`tilo_desktop_surface::session::DesktopSession::serve_workspace_api`]).
 
 use std::sync::Arc;
@@ -19,12 +22,12 @@ use tilo_session_actions::SessionActions;
 
 /// The workspace's host as this page reaches it now. The page's session with its host comes and
 /// goes, so the host's action API is looked up for every request.
-pub(in crate::browser) struct KeepingDevice {
+pub(in crate::browser) struct WorkspaceServer {
     peer: u32,
     workspace: WorkspaceId,
 }
 
-impl KeepingDevice {
+impl WorkspaceServer {
     /// The host of the workspace `config`'s page shows; `None` for a page with no workspace host.
     pub(in crate::browser) fn of(config: &super::super::Config) -> Option<Arc<Self>> {
         Some(Arc::new(Self {
@@ -42,7 +45,7 @@ impl KeepingDevice {
     }
 }
 
-impl ActionProvider for KeepingDevice {
+impl ActionProvider for WorkspaceServer {
     fn query(
         &self,
         caller: &Caller,

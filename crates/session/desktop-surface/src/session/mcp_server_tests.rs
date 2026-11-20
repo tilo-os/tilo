@@ -132,9 +132,9 @@ fn the_persons_asks_reach_the_api_the_host_hands_the_session() {
     assert!(session.observe(&person, &InvocationId::new()).is_none());
 }
 
-/// What a protected field in a window hands the person's vault reaches the
-/// API the host hands the session, asked by the person and by nobody acting
-/// for them: not an agent they run, not an app.
+/// What a protected field in a window hands the vault reaches the
+/// workspace's server, asked by the person and by nobody acting for them: not
+/// an agent of theirs, not an app. No device of theirs is asked.
 #[test]
 fn the_persons_vault_is_asked_by_the_person_alone() {
     use tilo_actions::remote::person_vault;
@@ -148,11 +148,11 @@ fn the_persons_vault_is_asked_by_the_person_alone() {
     let early = answer(session.invoke(&person, adding()));
     assert!(
         matches!(early, Err(ActionCallError::Unavailable { .. })),
-        "without an API nothing keeps it: {early:?}"
+        "a desktop in no workspace on a server keeps nothing: {early:?}"
     );
 
     let api = Arc::new(Host::default());
-    session.serve_person_api(person_vault::PROVIDER, api.clone());
+    session.serve_workspace_api(api.clone());
     assert!(answer(session.invoke(&person, adding())).is_ok());
     assert_eq!(api.admitted.lock().unwrap().len(), 1);
 
@@ -167,9 +167,9 @@ fn the_persons_vault_is_asked_by_the_person_alone() {
     assert_eq!(api.admitted.lock().unwrap().len(), 1);
 }
 
-/// What a person was told, and what they call important, is asked of their
-/// host by the person alone, as their vault is: an agent and an app on the
-/// device reach neither through the session.
+/// What a person was told, and what they call important, is asked of the
+/// workspace's server by the person alone, as the vault is: an agent and an
+/// app on the device reach neither through the session.
 #[test]
 fn what_a_person_was_told_is_asked_by_the_person_alone() {
     use tilo_actions::remote::person_telling;
@@ -183,11 +183,11 @@ fn what_a_person_was_told_is_asked_by_the_person_alone() {
     let early = answer(session.invoke(&person, listing()));
     assert!(
         matches!(early, Err(ActionCallError::Unavailable { .. })),
-        "without an API nothing answers it: {early:?}"
+        "a desktop in no workspace on a server answers nothing: {early:?}"
     );
 
     let api = Arc::new(Host::default());
-    session.serve_person_api(person_telling::PROVIDER, api.clone());
+    session.serve_workspace_api(api.clone());
     assert!(answer(session.invoke(&person, listing())).is_ok());
     assert_eq!(api.admitted.lock().unwrap().len(), 1);
 
@@ -263,6 +263,38 @@ fn a_window_asks_the_shell_for_the_persons_connect_setup_or_pairing_link() {
             handle.take_host_choices(),
             [chosen.to_owned()],
             "{shown}: the choice the person's own card or search makes"
+        );
+    }
+}
+
+/// Model providers, mail accounts and the person's account with the server
+/// are the workspace server's to keep: a window managing them reaches that
+/// server alone, and the person's own
+/// devices serving nothing changes nothing.
+#[test]
+fn workspace_accounts_and_models_reach_the_workspace_host_with_no_device() {
+    use tilo_actions::remote::{person_accounts, person_models, server_account};
+
+    let (session, _openings) = super::serve("workspace", Arc::default());
+    let person = Caller::local_person("ada").in_workspace("workspace");
+    let server = Arc::new(Host::default());
+    session.serve_workspace_api(server.clone());
+    for target in [
+        person_models::target(person_models::LIST),
+        person_models::target(person_models::ADD_PRESET),
+        person_accounts::target(person_accounts::WATCH),
+        server_account::target(server_account::ACCOUNT),
+    ] {
+        let request = InvokeRequest {
+            target,
+            ..ask(mcp_server::STOP)
+        };
+        let id = request.invocation;
+        assert!(answer(session.invoke(&person, request)).is_ok());
+        assert!(server.admitted(&id), "the server admitted it");
+        assert!(
+            session.observe(&person, &id).is_some(),
+            "and answers for it"
         );
     }
 }

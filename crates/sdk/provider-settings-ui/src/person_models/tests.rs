@@ -614,7 +614,7 @@ fn where_no_host_is_in_reach_the_piece_says_so() {
     en();
     let provider = Arc::new(TestProvider::new().answering(|_, _| {
         Pending::ready(Err(ActionCallError::Unavailable {
-            reason: "Your devices can't be reached from here".into(),
+            reason: "The workspace's server can't be reached from here right now".into(),
         }))
     }));
     let mut models = PersonModels::new(remote(&provider));

@@ -170,6 +170,9 @@ discord = { path = "../../../apps/discord" }
 
 [dev-dependencies]
 tilo-session-actions = { path = "../../session/session-actions" }
+# The session a page's desktop serves its windows, which carries what the workspace's server
+# keeps to that server.
+tilo-desktop-surface = { path = "../../session/desktop-surface" }
 # What a test puts in the workspace in pieces, as a page sends it.
 base64.workspace = true
 # The meeting times a test writes into a calendar.

@@ -145,9 +145,10 @@ pub(super) fn serve_session(
     let (session, openings) =
         tilo_desktop_surface::session::serve(config.workspace.clone(), Arc::clone(&shared.woken));
     surface.serve_activity(openings.activity());
-    // What a window asks of a record of the workspace is the workspace's host's to run.
-    if let Some(host) = super::session_asks::record_calls::KeepingDevice::of(config) {
-        session.serve_workspace_api(host);
+    // What a window asks of a resource of the workspace, and what the workspace's server keeps
+    // for its people, is that server's to answer.
+    if let Some(server) = super::session_asks::record_calls::WorkspaceServer::of(config) {
+        session.serve_workspace_api(server);
     }
     let revoked = config.mcp_server(&session, &shared.woken);
     surface.set_notifications(persistence.notifications.clone());

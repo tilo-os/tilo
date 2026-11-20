@@ -173,6 +173,9 @@ mod hosted_mail_turn;
 #[path = "workspace_actions/hosted_secret_use.rs"]
 mod hosted_secret_use;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_settings_from_page.rs"]
+mod hosted_settings_from_page;
+#[cfg(test)]
 #[path = "workspace_actions/hosted_web_call.rs"]
 mod hosted_web_call;
 #[cfg(test)]

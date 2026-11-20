@@ -290,10 +290,6 @@ mod peer;
 // The person's MCP server, as the page carries it to their host.
 #[cfg(target_arch = "wasm32")]
 mod mcp_server;
-// The person's mail accounts and model providers, asked of their host: a
-// page has no mail connection and no vault of its own.
-#[cfg(target_arch = "wasm32")]
-mod person_settings;
 // The person's devices, as the page administers them on their host: its tests
 // run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]

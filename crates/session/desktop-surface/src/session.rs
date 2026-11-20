@@ -26,6 +26,8 @@
 //! a record of the workspace (provider `record:<app>:<record>`, as a link to it is) is run by the
 //! workspace's host where the desktop reaches one ([`DesktopSession::serve_workspace_api`]), whoever
 //! has the record open, and else by the window that shows it; no window is opened for it.
+//! What the workspace's server keeps for its people, its accounts, model providers, vault and
+//! what it tells them ([`WORKSPACE_SERVER_PROVIDERS`]), is asked of it the same way.
 
 mod activity;
 #[cfg(test)]
@@ -48,7 +50,7 @@ use tilo_actions::remote::{
     InvokeRequest, NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, Pending, ReceiptStatus,
     SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, application_provider, application_provider_resource,
     identity_admin, mcp_server, pending, person_accounts, person_models, person_telling,
-    person_vault, provider_workspace, session_actions, workspace_activity as wire,
+    person_vault, provider_workspace, server_account, session_actions, workspace_activity as wire,
 };
 
 use tilo_lock::MutexRecover as _;
@@ -209,20 +211,22 @@ fn node_action(request: &InvokeRequest) -> Result<NodeAction, ActionCallError> {
 
 /// The providers only the person reaches, each served by an action API the
 /// desktop's host hands the session ([`DesktopSession::serve_person_api`]).
-pub const PERSON_PROVIDERS: [&str; 6] = [
-    mcp_server::PROVIDER,
-    identity_admin::PROVIDER,
-    // The person's mail accounts and model providers, which the host that
-    // runs their workspace keeps: a page has no mail connection and no vault
-    // of its own.
+pub const PERSON_PROVIDERS: [&str; 2] = [mcp_server::PROVIDER, identity_admin::PROVIDER];
+
+/// What the workspace's server keeps for the people in it, asked of that
+/// server the way an action of a resource is ([`DesktopSession::serve_workspace_api`]):
+/// the workspace's mail and calendar accounts and model providers, the vault
+/// they sign in with (a protected field in a window hands what was typed
+/// there), and what its people call important and were told (the server tells
+/// while no device is on), and the person's own account with that server (its
+/// plan and what they used). The server stores and serves all of it, so a
+/// page manages it with none of the person's own devices online.
+pub const WORKSPACE_SERVER_PROVIDERS: [&str; 5] = [
     person_accounts::PROVIDER,
     person_models::PROVIDER,
-    // What the person keeps to sign in with, in the same vault on that host:
-    // a protected field in a window hands what was typed there.
     person_vault::PROVIDER,
-    // What the person calls important and what they were told, which that
-    // host keeps too: it is the host that tells while no device is on.
     person_telling::PROVIDER,
+    server_account::PROVIDER,
 ];
 
 /// The session handed to the windows a desktop hosts in process, for the workspace `workspace` . It
@@ -471,6 +475,28 @@ impl DesktopSession {
         receipt
     }
 
+    /// Ask the workspace's server for `request`, one of what it keeps for the people in the
+    /// workspace ([`WORKSPACE_SERVER_PROVIDERS`]), for `caller`: the person themselves, never an
+    /// agent or an app acting for them. The server decides it by the person's own access.
+    fn ask_workspace_server(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if !(caller.acting().is_person() && caller.acting().app().is_none()) {
+            return Pending::ready(Err(ActionCallError::UnknownAction));
+        }
+        let Some(server) = self.workspace_api.lock_recover().clone() else {
+            return Pending::ready(Err(ActionCallError::Unavailable {
+                reason: "This desktop isn't in a workspace on a server".into(),
+            }));
+        };
+        self.api_invocations
+            .lock_recover()
+            .insert(request.invocation, Arc::clone(&server));
+        server.invoke(caller, request)
+    }
+
     /// The person's action API that admitted `id`, when one did.
     fn api_of(&self, id: &InvocationId) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
         self.api_invocations.lock_recover().get(id).cloned()
@@ -496,7 +522,7 @@ impl DesktopSession {
                 reason: if request.target.provider == mcp_server::PROVIDER {
                     "No MCP server answers here".into()
                 } else {
-                    "Your devices can't be reached from here".into()
+                    "This page isn't signed in as one of your devices".into()
                 },
             }));
         };
@@ -629,6 +655,9 @@ impl ActionProvider for DesktopSession {
         }
         if PERSON_PROVIDERS.contains(&request.target.provider.as_str()) {
             return self.ask_person_api(caller, request);
+        }
+        if WORKSPACE_SERVER_PROVIDERS.contains(&request.target.provider.as_str()) {
+            return self.ask_workspace_server(caller, request);
         }
         for (shown, host_action) in [
             (
