@@ -1652,5 +1652,30 @@ final class TiloSourceTests: XCTestCase {
         let stopped = try await page("return JSON.stringify(window.stopped)")
         XCTAssertEqual(stopped, #"{"agent":"coder"}"#)
     }
+
+    /// The page shows Chat alone and holds no roster of its own: the workspace's agents are
+    /// Assistant's, and her server is where the sub-agents and the day are read from. The
+    /// page's mount is asked nothing of them.
+    func testTheSubAgentsAndTheDayAreHerServersRosterThoughThePageHoldsChatAlone() async throws {
+        try await start(.assistant)
+        var listed: [SubAgent] = []
+        var seen = Supervision()
+        let agents = Task { for await now in self.source.subAgents() { listed = now } }
+        let supervision = Task { for await now in self.source.supervision() { seen = now } }
+        defer { agents.cancel(); supervision.cancel() }
+        try await enter(device: true, """
+            window.byKind = true;
+            window.agents = [kept('assistant', {name: 'Assistant', spend_limit_micros: 5000000,
+                spent: {day: '\(AssistantDay().today)', cost_micros: 1250000}}),
+              kept('coder', {name: 'Usage drop', sub: {role: 'Coder', stands: {$variant: 'working'}}})]
+            """)
+        try await until("the sub-agent is listed") { listed.count == 1 }
+        try await until("the day is counted") { seen.usage.spentTodayMicros == 1_250_000 }
+        XCTAssertEqual(listed.map(\.title), ["Usage drop"])
+        XCTAssertEqual(seen.usage.dailyLimitMicros, 5_000_000)
+        // Nothing of the roster is read of the page: it holds Chat, which keeps none.
+        let ofPage = try await page("return String(window.heard.filter(call => String(call.resource).includes('tilo.workspace.agent')).length)")
+        XCTAssertEqual(ofPage, "0")
+    }
 }
 #endif
