@@ -107,6 +107,7 @@ pub(super) fn host_actions() -> [tilo_desktop_surface::HostAction; 2] {
         |id: &str, title: &str, subtitle: &str, icon: &str| tilo_desktop_surface::HostAction {
             id: id.to_owned(),
             title: title.to_owned(),
+            label: None,
             subtitle: Some(subtitle.to_owned()),
             icon: Some(icon.to_owned()),
             destructive: false,
@@ -136,6 +137,7 @@ fn workspace_settings() -> tilo_desktop_surface::HostAction {
     tilo_desktop_surface::HostAction {
         id: tilo_desktop::desktop_host::WORKSPACE_SETTINGS.to_owned(),
         title: t("session-host-workspace-settings"),
+        label: None,
         subtitle: Some(t("session-host-workspace-settings-description")),
         icon: Some("settings".to_owned()),
         destructive: false,

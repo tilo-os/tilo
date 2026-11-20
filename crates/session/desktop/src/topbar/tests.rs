@@ -1287,7 +1287,8 @@ tilo_test_env::scenario! {
             Some("Kim Lee (you): your profile")
         );
         assert!(
-            named(TopBarChrome::CONTROL_WORKSPACE_SETTINGS).is_some_and(|name| name.starts_with("A:"))
+            named(TopBarChrome::CONTROL_WORKSPACE_SETTINGS)
+                .is_some_and(|name| name.starts_with("Switch workspace, now in A"))
         );
 
         for at in [menu.center(), own.center()] {
@@ -2874,7 +2875,7 @@ fn a_german_bar_names_what_nobody_named_in_german() {
     };
     assert_eq!(
         named(TopBarChrome::CONTROL_WORKSPACE_SETTINGS).as_deref(),
-        Some("Arbeitsbereich: Arbeitsbereiche, Übersicht und Leisten")
+        Some("Arbeitsbereich wechseln, jetzt in Arbeitsbereich")
     );
     assert_eq!(
         named(TopBarChrome::CONTROL_STRIP_NAME),

@@ -441,7 +441,7 @@ fn menu_over_bare_shell(mut kept: Kept) {
     let (mut frame, page) = page();
     kept.step(&mut frame, &page, "the first frame");
     kept.step(&mut frame, &page, "a frame at rest");
-    let name = control(&frame, "Workspace: workspaces");
+    let name = control(&frame, "Switch workspace");
     frame.click_at(name.x, name.y);
     for step in 0..30 {
         kept.step(
@@ -455,7 +455,7 @@ fn menu_over_bare_shell(mut kept: Kept) {
         frame
             .a11y_nodes()
             .into_iter()
-            .any(|(_, node)| node.label() == Some("Rename workspace")),
+            .any(|(_, node)| node.label() == Some("New workspace")),
         "the workspace's name at {name:?} opened its menu: {:?}",
         frame
             .a11y_nodes()

@@ -1385,9 +1385,6 @@ impl Widget for TopBarChrome {
             }
             _ => {}
         }
-        if self.handle_workspace_rename_event(event, ctx) {
-            return;
-        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Some(ctx.logical(position));
         }
@@ -1494,7 +1491,6 @@ impl Widget for TopBarChrome {
             ("topbar_center_clock".to_string(), self.center_rect),
             ("topbar_arrival".to_string(), self.arrival_rect),
         ];
-        rects.extend(self.workspace_rename_test_rects());
         rects.extend(app_tray);
         rects
     }
@@ -1588,7 +1584,6 @@ impl Widget for TopBarChrome {
                     .with_bounds(self.center_rect),
             );
         }
-        children.extend(self.workspace_rename_accessibility());
         children.extend(self.arrival_accessibility());
         Some(
             AccessNode::new(Role::Toolbar)
@@ -1673,9 +1668,6 @@ impl Widget for TopBarChrome {
     }
 
     fn set_focus(&mut self, focused: bool) {
-        if !focused {
-            self.cancel_workspace_rename();
-        }
         self.focused = focused;
         if !focused {
             self.focus_origin = FocusOrigin::Placed;

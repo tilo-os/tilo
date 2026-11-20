@@ -76,6 +76,7 @@ pub fn publish(
             HostAction {
                 id: id.to_owned(),
                 title: t(title),
+                label: None,
                 subtitle: description.map(t),
                 icon: Some(icon.name().to_owned()),
                 destructive: false,

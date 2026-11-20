@@ -1897,7 +1897,7 @@ tilo_test_env::scenario! {
         session.step(Duration::from_millis(1)).unwrap();
         let bar = session.accessible_labels().join("\n");
         assert!(
-            bar.contains("Garden: workspaces, overview and strips"),
+            bar.contains("Switch workspace, now in Garden"),
             "the bar shows the name the workspace has now: {bar}"
         );
     }

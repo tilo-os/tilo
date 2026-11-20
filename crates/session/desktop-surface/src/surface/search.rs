@@ -253,6 +253,10 @@ pub struct HostAction {
     /// What the action is called: its name, as the menus and search list it ("Leave workspace"),
     /// never the sentence describing it, which is `subtitle` .
     pub title: String,
+    /// What a list of its kind names it by, where that is not its title: the workspace an
+    /// `Open …` action goes to, as the workspace switcher lists it.
+    #[serde(default)]
+    pub label: Option<String>,
     #[serde(default)]
     pub subtitle: Option<String>,
     /// The action's own picture, by its Lucide name ([`ui::icons::Icon::name`]): every list of it

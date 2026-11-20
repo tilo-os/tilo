@@ -1,6 +1,6 @@
 //! The Tilo mark and the workspace pill: the brand's own shapes, the name the pill shows and the
-//! budget it has for it, the chevron that opens the workspace menu, and the rects a press on either
-//! addresses.
+//! budget it has for it, the chevron that opens the workspace switcher, and the rects a press on
+//! either addresses.
 
 use super::*;
 
@@ -37,9 +37,8 @@ impl TopBarChrome {
         }
     }
 
-    /// Where the workspace name was last drawn, for anchoring its menu
-    /// ([`ChromeIntent::ToggleWorkspaceMenu`]: the workspaces, where it is hosted, joining and
-    /// leaving, renaming, the overview, a new shell).
+    /// Where the workspace name was last drawn, for anchoring the workspace switcher
+    /// ([`ChromeIntent::ToggleWorkspaceMenu`]).
     pub fn workspace_menu_rect(&self) -> Rect {
         self.control_rect(Self::CONTROL_WORKSPACE_SETTINGS)
     }
@@ -105,7 +104,7 @@ impl TopBarChrome {
         ws_text_style: &TextStyle,
         label_budget: f32,
     ) -> String {
-        // The name alone: the workspace menu lists the others, so no position count.
+        // The name alone: the workspace switcher lists the others, so no position count.
         text_renderer.elide_to_width_style(
             &self.workspace_name,
             label_budget.max(0.0),
@@ -151,9 +150,8 @@ impl TopBarChrome {
             .hovered(hovered)
     }
 
-    /// Where the workspace-name pill (click toggles the workspace menu) and its trailing chevron
-    /// stand, starting at `x`, and the name it shows; while the workspace is renamed, where its
-    /// field stands instead.
+    /// Where the workspace-name pill (click toggles the workspace switcher) and its trailing
+    /// chevron stand, starting at `x`, and the name it shows.
     pub(super) fn place_workspace_pill(
         &mut self,
         theme: &Theme,
@@ -207,22 +205,6 @@ impl TopBarChrome {
             center_y + pill_h / 2.0,
         );
         self.placed.workspace_label = ws_label;
-        if self.renaming_workspace() {
-            // The new name is typed where the name stands, so it reads as renaming the workspace,
-            // not the strip named after it.
-            let field_h = ui::widget::FieldFace::height(ui::widget::ControlSize::Regular, theme);
-            let room = (center_left - breathing - ws_pill_outer.x0).max(BAR_CONTROL_PX);
-            let field = Rect::new(
-                ws_pill_outer.x0,
-                center_y - field_h / 2.0,
-                ws_pill_outer.x0 + pill_w.max(strips::FIELD_MAX_PX).min(room),
-                center_y + field_h / 2.0,
-            );
-            self.ws_pill_rect = field;
-            self.ws_chevron_rect = Rect::ZERO;
-            self.place_workspace_name_field(theme, field);
-            return;
-        }
         self.ws_pill_rect = ws_pill_outer;
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.settings_anchor(ws_pill_outer);
@@ -236,19 +218,14 @@ impl TopBarChrome {
         );
     }
 
-    /// Paint the workspace's name, or the field it is renamed in, where
-    /// [`Self::place_workspace_pill`] stood it.
+    /// Paint the workspace's name where [`Self::place_workspace_pill`] stood it.
     pub(super) fn paint_workspace_pill(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
     ) {
-        if self.renaming_workspace() {
-            self.paint_workspace_name_field(scene, transform, theme, text_renderer);
-            return;
-        }
         let name = self.control_name(Self::CONTROL_WORKSPACE_SETTINGS);
         let label = self.placed.workspace_label.clone();
         let face = self.workspace_face(&name, &label);

@@ -69,6 +69,7 @@ fn keep_identity() -> HostAction {
     HostAction {
         id: "keep-identity".to_owned(),
         title: "Keep with passkey".to_owned(),
+        label: None,
         subtitle: None,
         icon: None,
         destructive: false,

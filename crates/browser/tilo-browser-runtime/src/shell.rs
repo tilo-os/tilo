@@ -2457,7 +2457,7 @@ mod tests {
     }
 
     #[test]
-    fn the_workspace_menu_offers_rename_and_new_strip_only_to_who_governs() {
+    fn renaming_and_new_strips_are_offered_only_to_who_governs() {
         let (tree, authors) = lounge();
         let offers = |person, role| offered_edits(&requester(person, role), &authors, &tree);
         let none = OfferedEdits {

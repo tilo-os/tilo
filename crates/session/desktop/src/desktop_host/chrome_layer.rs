@@ -6,7 +6,7 @@ use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{Layout, Strip, StripId, TabId, Workspace, WorkspaceId};
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, Destination, LayoutEffect};
-use tilo_desktop_surface::{DesktopHandle, HostActionSource, NotificationLayer, names};
+use tilo_desktop_surface::{DesktopHandle, HostAction, HostActionSource, NotificationLayer, names};
 use tilo_resource::Effect;
 use ui::presence::PresenceCtx;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
@@ -28,7 +28,9 @@ use crate::chrome::{ChromeIntent, TopBarPresence};
 use crate::control_hints::{ControlHints, HintFrame, HintsFeed};
 use crate::display_identify::DisplayIdentify;
 use crate::emoji::EmojiLink;
-use crate::host_contract::{DesktopAsk, DesktopRules, JOIN_WORKSPACE, WORKSPACE_SETTINGS};
+use crate::host_contract::{
+    DesktopAsk, DesktopRules, JOIN_WORKSPACE, NEW_WORKSPACE, WORKSPACE_SETTINGS,
+};
 use crate::overlays::{Overlays, Part};
 use crate::overview::workspace_cards;
 use crate::overview_panel::{OverviewCards, OverviewPanel, OverviewPick};
@@ -42,7 +44,8 @@ use crate::verbs::chrome_resource;
 use crate::window_flight::WindowFlight;
 use crate::window_switcher::{Switcher, SwitcherAsk};
 use crate::workspace_menu::{
-    MenuPlace, WorkspaceAction, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
+    MenuPlace, WorkspaceAction, WorkspaceEntry, WorkspaceMenu, WorkspaceMenuChoice,
+    WorkspaceMenuModel,
 };
 
 /// Where a page host is shown: in a browser tab, or installed as an app window.
@@ -474,13 +477,9 @@ impl DesktopChrome {
             .stands(Part::WorkspaceMenu, self.workspace_menu.panel_rect());
         let centre = self.notices.as_ref().and_then(NotificationLayer::panel);
         self.overlays.stands(Part::Centre, centre);
-        self.overlays
-            .stands(Part::WorkspaceName, self.bar.workspace_name_rect());
         for (part, open) in [
             (Part::Emoji, self.emoji.is_open()),
             (Part::WorkspaceMenu, self.workspace_menu.is_open()),
-            // The name typed in the bar holds the keyboard until Enter or Escape ends it.
-            (Part::WorkspaceName, self.bar.renaming_workspace()),
             (Part::Overview, self.overview.is_open()),
             (Part::Strips, self.navigator.takes_keys()),
             (Part::Search, self.search.is_open()),
@@ -524,10 +523,6 @@ impl DesktopChrome {
         if self.workspace_menu.is_open() && !self.overlays.is_open(Part::WorkspaceMenu) {
             self.workspace_menu.close();
             self.overlays.close(Part::WorkspaceMenu);
-        }
-        if self.bar.renaming_workspace() && !self.overlays.is_open(Part::WorkspaceName) {
-            self.bar.cancel_workspace_rename();
-            self.overlays.close(Part::WorkspaceName);
         }
         if self.navigator.takes_keys() && !self.overlays.is_open(Part::Strips) {
             self.navigator.close();
@@ -962,84 +957,120 @@ impl DesktopChrome {
             .any(|action| action.id == JOIN_WORKSPACE)
     }
 
-    /// What the workspace menu offers now: this desktop's workspaces and the person's others the
-    /// host knows, where it is hosted, the host's own workspace commands, and what this person may
-    /// change. Opened on the shell (`shell`), it holds the shell's own commands as well: the welcome
-    /// verbs its launchpad declares, which the same host actions run from the cards, search and an
-    /// agent.
+    /// What the workspace menu offers now. Behind the bar's name it is the switcher: every
+    /// workspace of this desktop, the one shown marked, then the person's others the host knows,
+    /// then making or joining one. Opened on the shell (`shell`), it holds the shell's own
+    /// commands instead: the welcome verbs its launchpad declares, which the same host actions run
+    /// from the cards, search and an agent, and a new strip.
     fn workspace_menu_model(&self, shell: bool) -> WorkspaceMenuModel {
         let actions = self.handle.host_actions();
-        let mut shell_actions = Vec::new();
+        let row = |action: &HostAction| WorkspaceAction {
+            id: action.id.clone(),
+            title: action.title.clone(),
+            icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
+            destructive: action.destructive,
+        };
         if shell {
-            shell_actions.extend(actions.iter().filter(|action| action.source.is_none()).map(
-                |action| WorkspaceAction {
-                    id: action.id.clone(),
-                    title: action.title.clone(),
-                    icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
-                    destructive: action.destructive,
-                },
-            ));
+            return WorkspaceMenuModel {
+                place: MenuPlace::Shell,
+                shell: actions
+                    .iter()
+                    .filter(|action| action.source.is_none())
+                    .map(row)
+                    .collect(),
+                can_add_strip: self.may_add_strip(),
+                ..WorkspaceMenuModel::default()
+            };
         }
-        WorkspaceMenuModel {
-            place: if shell {
-                MenuPlace::Shell
-            } else {
-                MenuPlace::Bar
-            },
-            shell: shell_actions,
-            host: self.rules.workspace_host(),
-            actions: actions
+        let mut workspaces: Vec<WorkspaceEntry> = self.handle.read(|tree| {
+            tree.workspaces
                 .iter()
-                // The workspaces to go to, then the workspace's own commands: one switcher, in the
-                // order the host offers them.
-                .filter(|action| {
-                    matches!(
-                        action.source,
-                        Some(HostActionSource::Workspaces | HostActionSource::Workspace)
-                    )
+                .map(|workspace| WorkspaceEntry {
+                    name: names::workspace(&workspace.name),
+                    current: workspace.id() == tree.active,
+                    choice: WorkspaceMenuChoice::Switch(workspace.id().to_string()),
                 })
-                .map(|action| WorkspaceAction {
-                    id: action.id.clone(),
-                    title: action.title.clone(),
-                    icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
-                    destructive: action.destructive,
-                })
+                .collect()
+        });
+        // The person's workspaces this desktop does not hold: going to one is the host's.
+        workspaces.extend(
+            actions
+                .iter()
+                .filter(|action| action.source == Some(HostActionSource::Workspaces))
+                .map(|action| WorkspaceEntry {
+                    name: action.label.clone().unwrap_or_else(|| action.title.clone()),
+                    current: false,
+                    choice: WorkspaceMenuChoice::Action(action.id.clone()),
+                }),
+        );
+        WorkspaceMenuModel {
+            place: MenuPlace::Bar,
+            workspaces,
+            // Only the ways to another workspace: what is about this one is in its settings.
+            actions: self
+                .new_workspace_row(&actions)
+                .into_iter()
+                .chain(
+                    actions
+                        .iter()
+                        .find(|action| action.id == JOIN_WORKSPACE)
+                        .map(|action| WorkspaceAction {
+                            icon: Some(ui::icons::Icon::Link),
+                            ..row(action)
+                        }),
+                )
                 .collect(),
-            can_rename: self.may_add_or_rename(false),
-            can_add_strip: self.may_add_or_rename(true),
-            can_delete: self
-                .handle
-                .read(|tree| {
-                    tree.active_workspace()
-                        .map(tilo_desktop_model::Workspace::id)
-                })
-                .is_some_and(|workspace| self.rules.may_delete_workspace(workspace).is_ok()),
+            ..WorkspaceMenuModel::default()
         }
     }
 
-    /// Whether the person may add a shell (`add`) or rename the workspace.
-    fn may_add_or_rename(&self, add: bool) -> bool {
-        let command = if add {
-            DesktopCommand::CreateStrip {
+    /// The switcher's New workspace: the host's own, where it makes workspaces itself, else the
+    /// shell's, where the person may make one here.
+    fn new_workspace_row(&self, actions: &[HostAction]) -> Option<WorkspaceAction> {
+        if let Some(action) = actions.iter().find(|action| action.id == NEW_WORKSPACE) {
+            return Some(WorkspaceAction {
+                id: action.id.clone(),
+                title: action.title.clone(),
+                icon: Some(ui::icons::Icon::Plus),
+                destructive: false,
+            });
+        }
+        self.rules
+            .may_create_workspace()
+            .is_ok()
+            .then(|| WorkspaceAction {
+                id: NEW_WORKSPACE.to_owned(),
+                title: crate::i18n::t("overview-new-workspace"),
+                icon: Some(ui::icons::Icon::Plus),
+                destructive: false,
+            })
+    }
+
+    /// Whether the person may add a strip to the workspace shown.
+    fn may_add_strip(&self) -> bool {
+        self.rules
+            .may(&DesktopCommand::CreateStrip {
                 name: String::new(),
-            }
-        } else {
-            DesktopCommand::RenameWorkspace {
-                name: String::new(),
-            }
-        };
-        self.rules.may(&command).is_ok()
+            })
+            .is_ok()
     }
 
     fn apply_workspace_choice(&mut self, choice: WorkspaceMenuChoice) {
         match choice {
+            WorkspaceMenuChoice::Switch(workspace) => {
+                self.dispatch(ChromeEffect::SwitchWorkspace {
+                    workspace: Some(workspace),
+                    delta: None,
+                });
+            }
+            // A host that makes no workspaces itself leaves making one to the shell.
+            WorkspaceMenuChoice::Action(id)
+                if id == NEW_WORKSPACE && !self.handle.offers_host_action(NEW_WORKSPACE) =>
+            {
+                self.new_workspace(None, None, false);
+            }
             WorkspaceMenuChoice::Action(id) => {
                 self.ask(DesktopAsk::HostAction(id));
-            }
-            WorkspaceMenuChoice::Overview => {
-                if !self.overview.is_open() {
-                    self.toggle_overview();
-                }
             }
             // Made in the strip switcher, the one place strips are.
             WorkspaceMenuChoice::NewStrip => {
@@ -1050,7 +1081,6 @@ impl DesktopChrome {
                     self.apply_navigation(navigation);
                 }
             }
-            WorkspaceMenuChoice::Rename => self.bar.begin_workspace_rename(),
         }
     }
 
@@ -1660,7 +1690,7 @@ impl DesktopChrome {
                 own_id: &author,
                 may_rename: &may_rename,
                 // Offered as the workspace menu's is: to whom the rules let add one.
-                may_add: self.may_add_or_rename(true),
+                may_add: self.may_add_strip(),
             },
         ));
         self.navigator_frame = StripFrame::of_tree(&tree, area, (&shown, scroll), covered);

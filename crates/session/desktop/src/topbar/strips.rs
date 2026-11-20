@@ -3,46 +3,18 @@
 //! the strip switcher on the right edge, the one place strips are picked,
 //! made, named and removed. The bar never lists the strips or counts who is
 //! on them: who is where shows as faces on the switcher's strips.
-//!
-//! The workspace's new name, asked for in the workspace menu, is typed in
-//! place of its name here.
-use super::{
-    Affine, BAR_CONTROL_PX, ChromeIntent, Rect, Scene, TextRenderer, TextRole, Theme, TopBarChrome,
-    t,
-};
-use ui::widget::DrawChild;
+use super::{Affine, BAR_CONTROL_PX, Rect, Scene, TextRenderer, TextRole, Theme, TopBarChrome};
 /// The strip's separator: the chevron that opens the strip switcher.
 static STRIP_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::ChevronRight];
 
-use crate::text_entry::{self, Edit, Mods};
 use tilo_desktop_model::{Layout, StripId};
-use tilo_desktop_surface::names;
 use ui::text_render::TextStyle;
-use ui::text_selection::Selection;
-use ui::widget::{FieldFace, TextInput, Widget};
-use winit::event::WindowEvent;
-
-/// Longest workspace name the bar accepts, in characters.
-const NAME_MAX_CHARS: usize = 48;
-
-/// Widest the naming field grows, before the room the bar has.
-pub(super) const FIELD_MAX_PX: f64 = 200.0;
 
 #[derive(Default)]
 pub(super) struct BarStrips {
     /// The active workspace's strips, in order.
     strips: Vec<(StripId, String)>,
     active: Option<StripId>,
-    field_rect: Rect,
-    /// The workspace's new name, while it is typed.
-    naming: Option<Naming>,
-}
-
-/// The workspace name being typed.
-struct Naming {
-    text: String,
-    selection: Selection,
-    input: Option<TextInput>,
 }
 
 /// The drawn chevron between the workspace and the strip's name.
@@ -52,21 +24,9 @@ const STRIP_CHEVRON_PX: f64 = 12.0;
 #[derive(Clone, Default, PartialEq, Eq)]
 pub(super) struct StripsKey {
     shown: Option<String>,
-    naming: Option<(String, usize, usize)>,
 }
 
 impl TopBarChrome {
-    /// Whether the workspace's new name is being typed, in place of its name in the bar.
-    pub(crate) fn renaming_workspace(&self) -> bool {
-        self.strips.naming.is_some()
-    }
-
-    /// Where the workspace's name field stands while it is typed, once the bar has drawn it.
-    pub(crate) fn workspace_name_rect(&self) -> Option<Rect> {
-        (self.renaming_workspace() && self.strips.field_rect.area() > 0.0)
-            .then_some(self.strips.field_rect)
-    }
-
     pub(super) fn sync_strips(&mut self, tree: &Layout) {
         let workspace = tree.workspaces.iter().find(|w| w.id() == tree.active);
         self.strips.strips = workspace
@@ -203,255 +163,17 @@ impl TopBarChrome {
     pub(super) fn strips_key(&self) -> StripsKey {
         StripsKey {
             shown: self.strip_name().map(str::to_owned),
-            naming: self
-                .strips
-                .naming
-                .as_ref()
-                .map(|n| (n.text.clone(), n.selection.anchor, n.selection.cursor)),
         }
     }
 
     fn strip_text_style(theme: &Theme) -> TextStyle {
         theme.tokens.typography.style(TextRole::Label)
     }
-
-    /// Stand the field the workspace's new name is typed in at `field`, where its name stands.
-    pub(super) fn place_workspace_name_field(&mut self, theme: &Theme, field: Rect) {
-        self.strips.field_rect = field;
-        let Some(naming) = self.strips.naming.as_mut() else {
-            return;
-        };
-        let face = FieldFace::new(field, &naming.text).text_role(TextRole::Caption);
-        let text_rect = face.text_rect(theme);
-        let input = naming.input.get_or_insert_with(|| {
-            TextInput::new(Vec::new())
-                .with_plain_chrome()
-                .with_spellcheck(false)
-                .with_autocorrect(false)
-                .with_text_role(TextRole::Caption)
-        });
-        input.set_text(&naming.text);
-        input.set_selection(naming.selection.anchor, naming.selection.cursor);
-        input.set_focus(true);
-        input.apply_layout_external(text_rect);
-    }
-
-    /// Paint the field the workspace's new name is typed in where
-    /// [`Self::place_workspace_name_field`] stood it.
-    pub(super) fn paint_workspace_name_field(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-    ) {
-        let field = self.strips.field_rect;
-        let Some(naming) = self.strips.naming.as_mut() else {
-            return;
-        };
-        let placeholder = t("topbar-workspace-name-placeholder");
-        let face = FieldFace::new(field, &naming.text)
-            .placeholder(&placeholder)
-            .text_role(TextRole::Caption)
-            .focused(true);
-        if naming.text.is_empty() {
-            face.paint(scene, transform, text_renderer, theme);
-        } else {
-            face.paint_chrome(scene, transform, theme);
-        }
-        let Some(input) = naming.input.as_mut() else {
-            return;
-        };
-        let input_theme = theme
-            .clone()
-            .with_text_scale(theme.text_scale * theme.ui_scale);
-        input.draw_child(
-            scene,
-            transform,
-            text_renderer,
-            &input_theme,
-            &ui::presence::PresenceCtx::default(),
-        );
-    }
-
-    /// Let the painted name field take a pointer event, and copy its selection back into the name
-    /// the bar owns.
-    pub(super) fn field_pointer(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-    ) -> bool {
-        let Some(naming) = self.strips.naming.as_mut() else {
-            return false;
-        };
-        let Some(input) = naming.input.as_mut() else {
-            return false;
-        };
-        let took = input.handle_chrome_pointer(event, scale_factor, modifiers);
-        if took {
-            let (anchor, cursor) = input.selection_anchor_focus_or_caret();
-            naming.selection = ui::text_selection::Selection { anchor, cursor };
-        }
-        took
-    }
-
-    /// Start renaming the workspace in place, from its current name, as the workspace menu's Rename
-    /// asks.
-    pub fn begin_workspace_rename(&mut self) {
-        // The field starts from the name the workspace holds: a workspace nobody named has none, so
-        // typing a name does not first erase the shell's word for it.
-        let text = if self.workspace_name == names::workspace("") {
-            String::new()
-        } else {
-            self.workspace_name.clone()
-        };
-        let end = text.len();
-        self.strips.naming = Some(Naming {
-            text,
-            selection: Selection {
-                anchor: 0,
-                cursor: end,
-            },
-            input: None,
-        });
-        self.cache_fp = super::CacheFingerprint::default();
-    }
-
-    pub(crate) fn cancel_workspace_rename(&mut self) -> bool {
-        let cancelled = self.strips.naming.take().is_some();
-        if cancelled {
-            self.strips.field_rect = Rect::ZERO;
-        }
-        cancelled
-    }
-
-    fn commit_workspace_rename(&mut self) {
-        let Some(naming) = self.strips.naming.take() else {
-            return;
-        };
-        self.strips.field_rect = Rect::ZERO;
-        let name: String = naming.text.trim().chars().take(NAME_MAX_CHARS).collect();
-        if name.is_empty() {
-            return;
-        }
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.intent(ChromeIntent::RenameWorkspace { name });
-        }
-    }
-
-    /// Keys while the name is typed. Every key is the field's; returns whether the event was one.
-    fn workspace_rename_key(
-        &mut self,
-        event: &WindowEvent,
-        modifiers: winit::event::Modifiers,
-    ) -> bool {
-        let Some(naming) = self.strips.naming.as_mut() else {
-            return false;
-        };
-        let WindowEvent::KeyboardInput { event: key, .. } = event else {
-            return false;
-        };
-        if key.state != winit::event::ElementState::Pressed {
-            return true;
-        }
-        let mods = Mods::from_state(modifiers.state());
-        match text_entry::apply(
-            &key.logical_key,
-            mods,
-            &mut naming.text,
-            &mut naming.selection,
-        ) {
-            Edit::Submit => self.commit_workspace_rename(),
-            Edit::Cancel => {
-                self.cancel_workspace_rename();
-            }
-            Edit::Changed => {
-                if naming.text.chars().count() > NAME_MAX_CHARS {
-                    naming.text = naming.text.chars().take(NAME_MAX_CHARS).collect();
-                    let end = naming.text.len();
-                    naming.selection = Selection::collapsed(end);
-                }
-            }
-            Edit::Ignored | Edit::ConsumedQuiet => {}
-        }
-        true
-    }
-
-    pub(super) fn workspace_rename_test_rects(&self) -> Vec<(String, Rect)> {
-        vec![("topbar_workspace_name_field".into(), self.strips.field_rect)]
-    }
-
-    /// The name field for assistive technology, while it is typed.
-    pub(super) fn workspace_rename_accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
-        let naming = self.strips.naming.as_ref()?;
-        Some(
-            AccessNode::new(Role::TextInput)
-                .with_hashed_key("topbar-workspace-name")
-                .with_name(t("topbar-workspace-name-placeholder"))
-                .with_value(naming.text.clone())
-                .with_bounds(self.strips.field_rect)
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: true,
-                    ..Default::default()
-                }),
-        )
-    }
-
-    /// While the workspace's name is typed, the field owns the keyboard and a press anywhere else
-    /// ends it. Returns whether the event was consumed.
-    pub(super) fn handle_workspace_rename_event(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        if self.strips.naming.is_none() {
-            return false;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Some(ctx.logical(position));
-                // The name field is painted by the toolkit's TextInput but lives outside the
-                // retained tree; its pointer path is forwarded here so caret placement, drag
-                // selection and the context menu reach the same editor that paints it.
-                self.field_pointer(event, ctx.scale_factor, *ctx.modifiers);
-                false
-            }
-            WindowEvent::KeyboardInput { .. } => {
-                let consumed = self.workspace_rename_key(event, *ctx.modifiers);
-                *ctx.handled |= consumed;
-                consumed
-            }
-            WindowEvent::MouseInput {
-                state: winit::event::ElementState::Pressed,
-                ..
-            } => {
-                let inside = self
-                    .last_cursor
-                    .is_some_and(|point| self.strips.field_rect.contains(point));
-                if inside {
-                    self.field_pointer(event, ctx.scale_factor, *ctx.modifiers);
-                    *ctx.handled = true;
-                    return true;
-                }
-                self.field_pointer(event, ctx.scale_factor, *ctx.modifiers);
-                self.cancel_workspace_rename();
-                false
-            }
-            WindowEvent::MouseInput { .. } => {
-                // A release ends a drag that may have left the field.
-                self.field_pointer(event, ctx.scale_factor, *ctx.modifiers);
-                false
-            }
-            _ => false,
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::ChromeIntent;
     use super::*;
     use crate::chrome::{DesktopChromeSnapshot, DesktopChromeSource};
     use std::cell::RefCell;
@@ -459,6 +181,7 @@ mod tests {
     use tilo_desktop_model::{Member, Strip, Tab, TileContent, WindowGroup, WindowWidth};
     use tilo_desktop_model::{Workspace, WorkspaceId};
     use ui::headless::Framed;
+    use ui::widget::Widget;
 
     struct Host {
         tree: RefCell<Layout>,
@@ -621,78 +344,6 @@ mod tests {
             .on_display(0);
         other.sync_from_tree(&tree);
         assert_eq!(other.strip_name(), Some("Games"), "its own display's strip");
-    }
-
-    /// Renaming the workspace types over the workspace's name, not over the strip's name after it,
-    /// which stays where the person sees it.
-    #[test]
-    fn the_workspace_is_renamed_where_its_name_stands() {
-        let mut one = tree();
-        one.workspaces[0].strips.truncate(1);
-        let (mut frame, chrome) = bar(&one, 1440);
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        let pill = frame.ws_pill_rect;
-        let strip_name = frame.ws_strip_rect;
-        assert!(!pill.is_zero_area() && !strip_name.is_zero_area());
-
-        frame.begin_workspace_rename();
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        let field = frame.strips.field_rect;
-        assert!(!field.is_zero_area());
-        assert!(
-            (field.x0 - pill.x0).abs() < 0.5,
-            "the field starts where the workspace's name did: {field:?} vs {pill:?}"
-        );
-        assert!(
-            field.x1 <= frame.ws_strip_rect.x0 + 0.5,
-            "and the strip's name still follows it: {field:?} then {:?}",
-            frame.ws_strip_rect
-        );
-        assert!(
-            !frame.ws_strip_rect.is_zero_area(),
-            "the strip keeps its name in the bar"
-        );
-
-        Framed::harness_mut(&mut frame).key("Escape");
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        assert_eq!(frame.ws_pill_rect, pill, "the name is back as it was");
-        assert!(frame.strips.field_rect.is_zero_area());
-
-        // The current name is selected: typing replaces it, with no press needed to reach the
-        // field.
-        frame.begin_workspace_rename();
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        Framed::harness_mut(&mut frame).type_text("Lounge");
-        Framed::harness_mut(&mut frame).key("Enter");
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        assert_eq!(
-            chrome.intents.borrow().last(),
-            Some(&ChromeIntent::RenameWorkspace {
-                name: "Lounge".into()
-            })
-        );
-
-        // A press in the field is the field's, not the bar's: it puts one caret where the person
-        // pointed, so the selected name is no longer selected and typing there edits in place.
-        frame.begin_workspace_rename();
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        let field = frame.strips.field_rect.center();
-        Framed::harness_mut(&mut frame).click_at(field.x, field.y);
-        let naming = frame.strips.naming.as_ref().expect("still naming");
-        assert_eq!(
-            (naming.selection.anchor, naming.selection.cursor),
-            (4, 4),
-            "the press left one caret where the person pointed, past the short name"
-        );
-        Framed::harness_mut(&mut frame).key("Enter");
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        assert_eq!(
-            chrome.intents.borrow().last(),
-            Some(&ChromeIntent::RenameWorkspace {
-                name: "Home".into()
-            }),
-            "an unchanged name commits as it was"
-        );
     }
 
     #[test]

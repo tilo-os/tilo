@@ -390,6 +390,7 @@ fn action(id: &str, title: &str, source: HostActionSource) -> HostAction {
     HostAction {
         id: id.into(),
         title: title.into(),
+        label: None,
         subtitle: None,
         icon: None,
         destructive: false,

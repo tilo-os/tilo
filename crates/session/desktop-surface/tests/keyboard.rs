@@ -1196,6 +1196,7 @@ fn a_host_verbs_row_hands_its_id_back_and_closes_the_search() {
     shell.handle.set_host_actions(vec![HostAction {
         id: "invite-people".into(),
         title: "Invite people".into(),
+        label: None,
         subtitle: Some("Bring someone into this workspace".into()),
         icon: None,
         destructive: false,
@@ -1240,6 +1241,7 @@ fn an_action_that_cannot_run_now_takes_no_row_and_the_runnable_one_is_first() {
     shell.handle.set_host_actions(vec![HostAction {
         id: "invite-people".into(),
         title: "Invite people".into(),
+        label: None,
         subtitle: Some("Bring someone into this workspace".into()),
         icon: None,
         destructive: false,

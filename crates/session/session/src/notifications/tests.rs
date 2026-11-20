@@ -432,6 +432,7 @@ tilo_test_env::scenario! {
         let action = tilo_desktop_surface::HostAction {
             id: "keep-identity".into(),
             title: "Keep with passkey".into(),
+            label: None,
             subtitle: None,
             icon: None,
             destructive: false,

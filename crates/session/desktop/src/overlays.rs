@@ -137,8 +137,6 @@ pub enum Part {
     WindowMenu,
     /// The menu of the workspace in front, opened from its name on the bar.
     WorkspaceMenu,
-    /// The workspace's name on the bar, being typed: its menu's Rename turns the name into a field.
-    WorkspaceName,
     /// The notification centre, under the bar's trailing end.
     Centre,
     /// The workspace overview.
@@ -152,13 +150,12 @@ pub enum Part {
 
 impl Part {
     /// Every part, topmost first.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 9] = [
         Self::Search,
         Self::About,
         Self::Emoji,
         Self::WindowMenu,
         Self::WorkspaceMenu,
-        Self::WorkspaceName,
         Self::Centre,
         Self::Overview,
         Self::Strips,
@@ -174,7 +171,6 @@ impl Part {
             Self::Emoji => "emoji",
             Self::WindowMenu => "window-menu",
             Self::WorkspaceMenu => "workspace-menu",
-            Self::WorkspaceName => "workspace-name",
             Self::Centre => "centre",
             Self::Overview => "overview",
             Self::Strips => "strips",
@@ -194,11 +190,9 @@ impl Part {
         match self {
             Self::Search | Self::About => Role::Dialog,
             Self::Emoji | Self::Overview | Self::Strips => Role::Overlay,
-            Self::WindowMenu
-            | Self::WorkspaceMenu
-            | Self::WorkspaceName
-            | Self::Centre
-            | Self::QuickSettings => Role::Popup,
+            Self::WindowMenu | Self::WorkspaceMenu | Self::Centre | Self::QuickSettings => {
+                Role::Popup
+            }
         }
     }
 
@@ -217,7 +211,7 @@ impl Part {
             Self::Overview | Self::Strips => Anchor::Fill,
             Self::Search | Self::About | Self::Emoji => Anchor::Center,
             Self::WindowMenu => Anchor::At(Point::ZERO),
-            Self::WorkspaceMenu | Self::WorkspaceName => Anchor::TopLeading(0.0),
+            Self::WorkspaceMenu => Anchor::TopLeading(0.0),
             Self::Centre | Self::QuickSettings => Anchor::TopTrailing(POPOVER_MARGIN),
         }
     }

@@ -418,9 +418,9 @@ fn the_about_sheets_updates_link_opens_settings() {
     assert!(!chrome.about.is_about_open());
 }
 
-/// The menu behind the bar's workspace name is the switcher: it offers going
-/// to the person's other workspaces, which the host publishes as `Workspaces`
-/// actions, beside the workspace's own commands and the host's own.
+/// The menu behind the bar's workspace name is the switcher: every workspace of the desktop, the
+/// one shown marked, then the person's others the host publishes as `Workspaces` actions by their
+/// name, then the ways to another one. Nothing about the person or what the host offers besides.
 #[test]
 fn the_workspace_menu_offers_the_persons_other_workspaces() {
     en();
@@ -428,6 +428,7 @@ fn the_workspace_menu_offers_the_persons_other_workspaces() {
     let action = |id: &str, title: &str, source: HostActionSource| HostAction {
         id: id.into(),
         title: title.into(),
+        label: None,
         subtitle: None,
         icon: None,
         destructive: false,
@@ -435,11 +436,14 @@ fn the_workspace_menu_offers_the_persons_other_workspaces() {
         source: Some(source),
     };
     handle.set_host_actions(vec![
-        action(
-            "open-workspace:https://tilo.sh/abc",
-            "Open Tilo",
-            HostActionSource::Workspaces,
-        ),
+        HostAction {
+            label: Some("Tilo".into()),
+            ..action(
+                "open-workspace:https://tilo.sh/abc",
+                "Open Tilo",
+                HostActionSource::Workspaces,
+            )
+        },
         action(
             "new-workspace",
             "New workspace",
@@ -459,17 +463,31 @@ fn the_workspace_menu_offers_the_persons_other_workspaces() {
         .collect();
     assert_eq!(
         ids,
-        ["open-workspace:https://tilo.sh/abc", "new-workspace"],
-        "another workspace is a row of the switcher, beside the workspace's own commands"
+        ["new-workspace"],
+        "the switcher offers the ways to another workspace, and only those"
     );
-    // Choosing it is the host's action, as joining or leaving is.
     let mut menu = crate::workspace_menu::WorkspaceMenu::new();
-    menu.open_at(
+    menu.toggle(
         &model,
-        ui::kurbo::Point::new(0.0, 0.0),
+        ui::kurbo::Rect::new(0.0, 0.0, 80.0, 24.0),
         ui::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0),
     );
-    assert!(menu.choose("Open Tilo"));
+    let labels: Vec<String> = menu.labels().into_iter().flatten().collect();
+    let shown = handle.read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| tilo_desktop_surface::names::workspace(&workspace.name))
+    });
+    assert_eq!(menu.marked(), shown, "the workspace shown is marked");
+    assert!(
+        labels.iter().any(|label| label == "Tilo"),
+        "another workspace is listed by its name: {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|label| label.contains("recovery")),
+        "nothing about the person: {labels:?}"
+    );
+    // Choosing it is the host's action, as joining is.
+    assert!(menu.choose("Tilo"));
     assert_eq!(
         menu.take_choice(),
         Some(crate::workspace_menu::WorkspaceMenuChoice::Action(

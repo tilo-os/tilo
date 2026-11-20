@@ -1693,6 +1693,7 @@ fn host_actions_no_longer_offered_are_reported_for_withdrawal() {
     let action = |id: &str| HostAction {
         id: id.into(),
         title: id.into(),
+        label: None,
         subtitle: None,
         icon: None,
         destructive: false,

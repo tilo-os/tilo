@@ -408,12 +408,12 @@ mod tests {
 
     #[test]
     fn german_desktops_resolve_german_copy() {
-        let english = t("workspace-menu-rename");
+        let english = t("workspace-menu-new-strip");
         ui::i18n::I18nManager::set_locale("de-DE");
-        let german = t("workspace-menu-rename");
+        let german = t("workspace-menu-new-strip");
         ui::i18n::I18nManager::set_locale("en-US");
-        assert_eq!(english, "Rename workspace");
-        assert_eq!(german, "Arbeitsbereich umbenennen");
+        assert_eq!(english, "New strip");
+        assert_eq!(german, "Neue Leiste");
     }
 }
 

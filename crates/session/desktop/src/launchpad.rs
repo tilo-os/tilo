@@ -233,6 +233,7 @@ impl LaunchpadAction {
         HostAction {
             id: self.host_id(),
             title: self.label(),
+            label: None,
             subtitle: Some(self.detail(scope)),
             icon: Some(self.icon().name().to_owned()),
             destructive: false,

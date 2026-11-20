@@ -67,11 +67,9 @@ impl TopBarChrome {
                 self.ws_pill_rect,
                 Some(Self::CONTROL_WORKSPACE_SETTINGS),
             );
-            if !self.renaming_workspace() {
-                let name = self.control_name(Self::CONTROL_WORKSPACE_SETTINGS);
-                let face = self.workspace_face(&name, &self.placed.workspace_label);
-                face_of(cx, ui::composition::bar_control_face(&face, &theme, ground));
-            }
+            let name = self.control_name(Self::CONTROL_WORKSPACE_SETTINGS);
+            let face = self.workspace_face(&name, &self.placed.workspace_label);
+            face_of(cx, ui::composition::bar_control_face(&face, &theme, ground));
         }
         if let Some((name, label_width)) = self.placed.strip.as_ref() {
             part(

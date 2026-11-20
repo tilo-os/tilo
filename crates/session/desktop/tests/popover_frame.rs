@@ -11,7 +11,9 @@
 use std::time::{Duration, Instant};
 
 use tilo_desktop::profile_card::{ProfileCard, ProfileModel};
-use tilo_desktop::workspace_menu::{WorkspaceAction, WorkspaceMenu, WorkspaceMenuModel};
+use tilo_desktop::workspace_menu::{
+    WorkspaceAction, WorkspaceEntry, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
+};
 use ui::headless::{FrameHarness, Framed};
 use ui::state::State;
 use ui::theme::Theme;
@@ -187,15 +189,17 @@ fn drawn_with_its_backdrop(
 
 fn menu_model() -> WorkspaceMenuModel {
     WorkspaceMenuModel {
-        host: Some("tilo.sh".into()),
+        workspaces: vec![WorkspaceEntry {
+            name: "Studio".into(),
+            current: true,
+            choice: WorkspaceMenuChoice::Switch("studio".into()),
+        }],
         actions: vec![WorkspaceAction {
             id: "join-workspace".into(),
             title: "Join a workspace".into(),
             icon: None,
             destructive: false,
         }],
-        can_rename: true,
-        can_add_strip: true,
         ..WorkspaceMenuModel::default()
     }
 }

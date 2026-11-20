@@ -321,12 +321,12 @@ for (const deadline = Date.now() + 240_000; ;) {
 await settles('and focus follows to the last window', label, order[2]);
 console.log(JSON.stringify({step: 'wheel', ok: true}));
 
-// The workspace's name in the top bar opens its menu: the workspaces to go
-// to, the overview and a new strip.
+// The workspace's name in the top bar opens the switcher: the workspaces,
+// and a new one.
 async function openWorkspaceMenu() {
   const s = await snapshot();
   const shown = s.workspaces.find(w => w.id === s.activeWorkspace).label;
-  await click(...await named(`${shown}: workspaces, overview and strips`));
+  await click(...await named(`Switch workspace, now in ${shown}`));
   await sleep(500);
 }
 // Goes to the workspace at `index` through that menu.
@@ -335,14 +335,11 @@ async function chooseWorkspace(index) {
   await openWorkspaceMenu();
   await click(...await named(name));
 }
-// A second workspace, through the overview the menu opens; then the menu
-// to go between them.
+// A second workspace, from the switcher; then the switcher to go between
+// them.
 await openWorkspaceMenu();
-await click(...await named('Overview'));
-await sleep(1500);
 await click(...await named('New workspace'));
 await settles('a new workspace opens', s => [s.workspaces.length, workspace(s)], [2, 1]);
-await key('Escape');
 await sleep(1000);
 await chooseWorkspace(0);
 await settles('the workspace menu goes to the first workspace', workspace, 0);
