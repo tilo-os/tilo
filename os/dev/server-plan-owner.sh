@@ -31,9 +31,10 @@ profile_env() {
   export XDG_STATE_HOME="$root/state"
   export XDG_CACHE_HOME="$root/cache"
   export TILO_STATE_PATH="$root/state.json"
-  export TILO_IDENTITY_ROOT="$root/identity"
-  # The CLI reads its device identity where the session keeps its keys.
-  export TILO_IDENTITY_DIR="$root/identity"
+  # The session keeps its identity under $XDG_CONFIG_HOME/tilo/identity, and
+  # the CLI reads its device there: one identity for the profile, not two.
+  export TILO_IDENTITY_DIR="$root/config/tilo/identity"
+  export TILO_IDENTITY_ROOT="$root/config/tilo/identity"
   export TILO_WORKSPACE_ROOTS=""
   export TILO_TEST_CONTROL="$root/runtime/control.sock"
   export RUST_LOG="${RUST_LOG:-warn}"
@@ -45,7 +46,7 @@ profile_env() {
 
 prepare() {
   local dir
-  for dir in runtime config data state cache identity home logs; do
+  for dir in runtime config data state cache home logs; do
     mkdir -p "$root/$dir"
   done
   chmod 700 "$root/runtime"
@@ -91,7 +92,7 @@ start_bus() {
 # The throwaway identity a development profile starts with: minted by a
 # preparatory session, then read by the session the cycle drives.
 mint_identity() {
-  [ -f "$root/identity/throwaway-test-identity" ] && return 0
+  [ -f "$TILO_IDENTITY_DIR/throwaway-test-identity" ] && return 0
   rm -f "$root/runtime/control.sock"
   "$session_bin" --backend headless --size 1280x800 \
     > "$root/logs/identity.log" 2>&1 &
