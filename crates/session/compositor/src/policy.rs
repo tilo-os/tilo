@@ -160,6 +160,12 @@ pub trait WindowPolicy {
         false
     }
 
+    /// Whether `window` floats as a dialog in front of the windows: one the policy judged a dialog
+    /// though it names no parent (a fixed size, for one). One naming its parent always is.
+    fn dialog(&self, _window: &WindowInfo) -> bool {
+        false
+    }
+
     /// Whether a window takes keyboard focus when it first shows.
     fn focus_on_map(&mut self, _window: &WindowInfo) -> bool {
         true

@@ -589,6 +589,39 @@ fn a_fixed_size_window_floats_on_the_display_with_focus() {
     assert!(window_tabs(&session).is_empty(), "no tab for a dialog");
 }
 
+/// A program whose first window has a fixed size (an X11 program's settings dialog, through the
+/// X11 server's toplevel) names no parent: it floats on the display, and a tab the person opens
+/// or focuses afterwards never covers it.
+#[test]
+fn a_fixed_size_window_stays_in_front_of_the_tabs() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = docked();
+    let mut client = client(&mut session);
+    tab(&mut session, &mut client, "org.example.Manager");
+    map(
+        &mut session,
+        &mut client,
+        "org.example.Prompt",
+        (400, 240),
+        |toplevel| {
+            toplevel.set_min_size(400, 240);
+            toplevel.set_max_size(400, 240);
+        },
+    );
+    tab(&mut session, &mut client, "org.example.Later");
+    let stack: Vec<Option<String>> = session
+        .compositor()
+        .windows()
+        .into_iter()
+        .map(|(info, _)| info.app_id)
+        .collect();
+    assert_eq!(
+        stack.last().cloned().flatten().as_deref(),
+        Some("org.example.Prompt"),
+        "the dialog stands in front of every tab, bottom first: {stack:?}"
+    );
+}
+
 #[test]
 fn a_question_opens_on_the_display_of_the_window_in_focus() {
     let _settled = ui::motion::testing::settled();

@@ -1131,6 +1131,11 @@ impl WindowPolicy for StripPolicy {
         self.desktop.borrow().policy.draws_card(window.id)
     }
 
+    fn dialog(&self, window: &WindowInfo) -> bool {
+        let desktop = self.desktop.borrow();
+        desktop.policy.is_floating(window.id) && !desktop.policy.draws_card(window.id)
+    }
+
     /// A card's window takes no focus: the person works in the workspace it
     /// floats over, and the card is a view of the activity, not a place to
     /// type.

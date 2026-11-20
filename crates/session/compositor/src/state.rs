@@ -1809,23 +1809,24 @@ impl State {
             })
             .cloned()
             .collect();
-        if !floats.is_empty() {
-            for window in floats {
-                self.space.raise_element(&window, false);
-            }
-            let dialogs: Vec<_> = self
-                .space
-                .elements()
-                .filter(|window| {
-                    window
-                        .toplevel()
-                        .is_some_and(|toplevel| toplevel.parent().is_some())
-                })
-                .cloned()
-                .collect();
-            for window in dialogs {
-                self.space.raise_element(&window, false);
-            }
+        for window in floats {
+            self.space.raise_element(&window, false);
+        }
+        // A dialog naming no parent floats over every window, so a tab focused after it shows
+        // never covers it.
+        let dialogs: Vec<_> = self
+            .space
+            .elements()
+            .filter(|window| {
+                window
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.parent().is_some())
+                    || describe(self, window).is_some_and(|info| self.policy.dialog(&info))
+            })
+            .cloned()
+            .collect();
+        for window in dialogs {
+            self.space.raise_element(&window, false);
         }
         let cards: Vec<_> = self
             .space
