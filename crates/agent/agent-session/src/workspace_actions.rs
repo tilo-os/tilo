@@ -72,7 +72,7 @@ mod index;
 mod invocation_log;
 mod invocations;
 mod job;
-mod jobs;
+pub mod jobs;
 mod keys;
 mod layout_window;
 mod link;

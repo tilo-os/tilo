@@ -28,6 +28,9 @@ pub struct Work {
     /// Runs of values the op set's columns took in: a splice of like ops,
     /// such as the letters of a text written at once, gives each column one.
     pub column_runs: u64,
+    /// Splices into the op set: each costs every column a seek to its place, however few ops it
+    /// carries.
+    pub op_set_splices: u64,
 }
 
 thread_local! {
@@ -40,6 +43,7 @@ thread_local! {
             object_ops: 0,
             rebuilt_changes: 0,
             column_runs: 0,
+            op_set_splices: 0,
         })
     };
 }
@@ -92,4 +96,9 @@ pub(crate) fn rebuilt_changes(changes: usize) {
 #[inline]
 pub(crate) fn wrote_column_run() {
     count(|work| work.column_runs = work.column_runs.saturating_add(1));
+}
+
+#[inline]
+pub(crate) fn spliced_op_set() {
+    count(|work| work.op_set_splices = work.op_set_splices.saturating_add(1));
 }

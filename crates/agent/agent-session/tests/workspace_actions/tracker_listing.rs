@@ -484,3 +484,138 @@ async fn another_apps_listing_waits_for_no_tracker_taking_in_its_parts_after_a_r
         "the notes listed in {beside:?} beside the tracker's first listing ({tracker:?}), alone in {alone:?}"
     );
 }
+
+/// A new workspace through the API, as `agent`: its API base.
+async fn workspace_named(agent: &V1<'_>, name: &str) -> String {
+    let body = json!({ "name": name }).to_string();
+    let (status, workspace) = agent
+        .send(hyper::Method::POST, "/v1/workspaces", body.as_bytes())
+        .await;
+    assert_eq!(status, 201, "{workspace}");
+    format!("/v1/workspaces/{}", workspace["id"].as_str().unwrap())
+}
+
+/// The service thread that serves the workspace at `path`.
+fn thread_of(path: &str) -> usize {
+    let id = path.rsplit('/').next().unwrap();
+    tilo_agent_session::workspace_actions::jobs::thread_of(
+        tilo_server_protocol::WorkspaceId::parse(id).unwrap(),
+    )
+}
+
+/// Where the time goes, as the service logs it, when `RUST_LOG` asks.
+fn trace_service() {
+    if std::env::var_os("RUST_LOG").is_some() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_timer(tracing_subscriber::fmt::time::uptime())
+            .try_init();
+    }
+}
+
+/// A tracker kept in many parts, listed first after its server restarts, answers that listing,
+/// and a request of another workspace the same thread serves, asked while it is listed, answers
+/// at once: one workspace's listing never holds the others' requests.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_trackers_listing_holds_no_other_request() {
+    const SIZE: usize = 1_000;
+    /// How long another workspace's request may wait while the tracker is listed, beyond
+    /// a multiple of what it takes alone on this machine.
+    const OTHER: Duration = Duration::from_secs(3);
+    trace_service();
+    let on_server = api_on_server(super::api::ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let browser = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let token = approved_key(&on_server, &ada, &browser, "Mover").await;
+    let (base, other) = {
+        let agent = V1 {
+            api: &on_server.api,
+            token: token.clone(),
+        };
+        let base = workspace_named(&agent, "Company").await;
+        agent.act(&base, "tasks", "open", &json!({})).await;
+        let began = Instant::now();
+        fill(&agent, &base, SIZE).await;
+        eprintln!("{SIZE} issues made in {:?}", began.elapsed());
+        // Another workspace the same thread serves: one served by another thread never
+        // waited for it.
+        let other = loop {
+            let other = workspace_named(&agent, "Elsewhere").await;
+            if thread_of(&other) == thread_of(&base) {
+                break other;
+            }
+        };
+        agent.act(&other, "tasks", "open", &json!({})).await;
+        (base, other)
+    };
+    let on_server = on_server.restart(false).await;
+    let api = Arc::clone(&on_server.api);
+    let agent = V1 {
+        api: &api,
+        token: token.clone(),
+    };
+    // The other workspace is joined again first: what its own join costs is not a wait. A
+    // restarted server's device is not named as online yet, and its answer says to try again
+    // shortly, so the join is asked for until it lands.
+    let began = Instant::now();
+    let (status, elsewhere) = loop {
+        let (status, elsewhere) = agent
+            .get(&format!("{other}/resources?path=tasks&limit=40"))
+            .await;
+        if status == 200 || began.elapsed() > Duration::from_secs(30) {
+            break (status, elsewhere);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(status, 200, "{elsewhere}");
+    // What the other workspace's request takes on its own here, so a busy machine does not
+    // read as a wait.
+    let mut alone = Vec::new();
+    for _ in 0..3 {
+        let began = Instant::now();
+        let (status, page) = agent
+            .get(&format!("{other}/resources?path=tasks&limit=40"))
+            .await;
+        assert_eq!(status, 200, "{page}");
+        alone.push(began.elapsed());
+    }
+    let alone = quantile(&alone, 0.5);
+    let listing = {
+        let (api, token, base) = (Arc::clone(&api), token.clone(), base.clone());
+        tokio::spawn(async move {
+            let agent = V1 { api: &api, token };
+            let began = Instant::now();
+            let (status, page) = agent
+                .get(&format!("{base}/resources?path=tasks/Issues&limit=40"))
+                .await;
+            (status, page, began.elapsed())
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let began = Instant::now();
+    let (status, elsewhere) = agent
+        .get(&format!("{other}/resources?path=tasks&limit=40"))
+        .await;
+    let other_took = began.elapsed();
+    let (first_status, first, first_took) = listing.await.unwrap();
+    eprintln!(
+        "after the restart: the tracker's first page in {first_took:?}, another workspace's in \
+         {other_took:?}, alone in {alone:?}"
+    );
+    assert_eq!(status, 200, "{elsewhere}");
+    assert_eq!(first_status, 200, "{first}");
+    assert!(
+        other_took <= alone * 8 + OTHER,
+        "another workspace's request waited {other_took:?} for the tracker's listing, \
+         alone {alone:?}"
+    );
+    assert!(
+        first_took < LISTING_CEILING,
+        "the first listing after the restart took {first_took:?}"
+    );
+    assert_eq!(
+        first["rows"].as_array().map_or(0, Vec::len),
+        40,
+        "the first page lists its issues: {first}"
+    );
+}

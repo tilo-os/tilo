@@ -442,45 +442,62 @@ fn write_as_ops(
         written.partial |= !after.is_empty();
     }
     let mut written_objs: HashMap<(ObjId, String), ObjId> = HashMap::new();
-    for block in blocks {
-        let key = (block.container.clone(), block.id.clone());
-        let marks = made.remove(&key).unwrap_or_default();
-        // What reading the block back gives, while its parts are at hand.
-        let read = written
+    // Blocks side by side in one container are made at once: their ops go
+    // into the document together.
+    let mut blocks = blocks.into_iter().peekable();
+    while let Some(first) = blocks.next() {
+        let container = first.container.clone();
+        let mut group = vec![first];
+        while let Some(next) = blocks.next_if(|block| block.container == container) {
+            group.push(next);
+        }
+        let body = written
             .as_ref()
-            .filter(|(_, body)| *body == &block.container)
-            .map(|_| read_back(&block, &marks));
+            .is_some_and(|(_, body)| *body == &container);
+        let mut ids = Vec::with_capacity(group.len());
+        let mut reads = Vec::with_capacity(group.len());
+        let mut values = Vec::with_capacity(group.len());
+        for block in group {
+            let marks = made
+                .remove(&(container.clone(), block.id.clone()))
+                .unwrap_or_default();
+            // What reading the block back gives, while its parts are at hand.
+            reads.push(body.then(|| read_back(&block, &marks)));
+            ids.push(block.id.clone());
+            values.push(block.into_value(encoding, marks));
+        }
+        let pairs: Vec<(&str, &hydrate::Value)> =
+            ids.iter().map(String::as_str).zip(&values).collect();
         let before = doc.pending_ops();
-        let obj = doc
-            .batch_create_object(
-                &key.0,
-                key.1.as_str(),
-                &block.into_value(encoding, marks),
-                false,
-            )
+        let objs = doc
+            .batch_create_objects(&container, &pairs)
             .expect("staged block container resolves");
         if let Some((written, _)) = &mut written {
             written.ops = written
                 .ops
                 .saturating_add(doc.pending_ops().saturating_sub(before));
-            match read {
-                Some((entry, view)) => {
-                    let fields = super::block_fields(doc, &obj);
-                    written.blocks.push(BodyBlock {
-                        entry,
-                        objects: BlockObjects {
-                            block: obj.clone(),
-                            text: fields.text,
-                            attrs: fields.attrs,
-                        },
-                        view: Some(view),
-                    });
-                }
-                None => written.partial = true,
-            }
         }
-        if marked.contains(&(&key.0, key.1.as_str())) {
-            written_objs.insert(key, obj);
+        for ((id, obj), read) in ids.into_iter().zip(objs).zip(reads) {
+            if let Some((written, _)) = &mut written {
+                match read {
+                    Some((entry, view)) => {
+                        let fields = super::block_fields(doc, &obj);
+                        written.blocks.push(BodyBlock {
+                            entry,
+                            objects: BlockObjects {
+                                block: obj.clone(),
+                                text: fields.text,
+                                attrs: fields.attrs,
+                            },
+                            view: Some(view),
+                        });
+                    }
+                    None => written.partial = true,
+                }
+            }
+            if marked.contains(&(&container, id.as_str())) {
+                written_objs.insert((container.clone(), id), obj);
+            }
         }
     }
     let mut texts: HashMap<(ObjId, String), Option<ObjId>> = HashMap::new();

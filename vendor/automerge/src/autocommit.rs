@@ -106,6 +106,20 @@ impl Default for AutoCommit {
 }
 
 impl AutoCommit {
+    /// TILO(batch-siblings): objects made at once under keys of the map
+    /// `obj`, each as [`Transactable::batch_create_object`] makes it, their
+    /// ops going into the op set together: their ids, in the order of
+    /// `values`.
+    pub fn batch_create_objects<O: AsRef<ExId>>(
+        &mut self,
+        obj: O,
+        values: &[(&str, &crate::hydrate::Value)],
+    ) -> Result<Vec<ExId>, AutomergeError> {
+        self.ensure_transaction_open();
+        let (patch_log, tx) = self.transaction.as_mut().unwrap();
+        tx.batch_create_objects(&mut self.doc, patch_log, obj.as_ref(), values)
+    }
+
     pub fn new() -> AutoCommit {
         AutoCommit::default()
     }

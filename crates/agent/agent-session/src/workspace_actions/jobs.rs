@@ -93,6 +93,13 @@ impl Jobs {
     }
 }
 
+/// Which of the service's threads serves `workspace_id`: one of
+/// [`crate::worker::pool_size`], the same for every request of it.
+#[must_use]
+pub fn thread_of(workspace_id: WorkspaceId) -> usize {
+    shard_of(workspace_id, crate::worker::pool_size())
+}
+
 /// Which of `count` threads serves `workspace_id`.
 pub(super) fn shard_of(workspace_id: WorkspaceId, count: usize) -> usize {
     use std::hash::{Hash as _, Hasher as _};
