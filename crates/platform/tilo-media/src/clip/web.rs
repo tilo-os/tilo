@@ -64,6 +64,11 @@ impl Clip {
         let sink = Rc::clone(&muxer);
         let on_chunk = Closure::<dyn FnMut(f64, bool, Vec<u8>)>::new(
             move |timestamp_us: f64, key: bool, data: Vec<u8>| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "microseconds of a clip, checked finite and positive"
+                )]
                 let timestamp_us = if timestamp_us.is_finite() && timestamp_us > 0.0 {
                     timestamp_us as u64
                 } else {
