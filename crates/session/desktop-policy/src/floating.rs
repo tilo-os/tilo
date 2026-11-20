@@ -2,8 +2,7 @@
 //!
 //! A dialog is part of the window it belongs to, not a window of its own:
 //! it never takes a place in the strip and floats centred over its parent
-//! while that is shown, hidden with it otherwise. A dialog naming no parent
-//! floats centred on the display the person works on. Whether a window is
+//! while that is shown, hidden with it otherwise. Whether a window is
 //! a dialog is judged from what the client says about it, never from its
 //! name or its size: a parent (`xdg_toplevel.set_parent`, an X11 window's
 //! `WM_TRANSIENT_FOR`). A program's own top-level window takes a tab
