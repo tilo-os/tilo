@@ -353,12 +353,7 @@ fn set_aside(dir: &Path, chunk: TreeChunk) -> io::Result<()> {
 /// Add `changes` to `chunk`'s journal as one frame, through the file kept open for it. A write
 /// that fails drops that file, so the next append opens the journal again rather than adding to
 /// one whose frame may be cut off.
-fn append_frame(
-    dir: &Path,
-    kept: &mut Heads,
-    chunk: TreeChunk,
-    changes: &[u8],
-) -> io::Result<()> {
+fn append_frame(dir: &Path, kept: &mut Heads, chunk: TreeChunk, changes: &[u8]) -> io::Result<()> {
     let length = u32::try_from(changes.len())
         .map_err(|_| io::Error::other("changes too long for one frame"))?;
     let mut frame = Vec::with_capacity(changes.len().saturating_add(4));
