@@ -171,8 +171,10 @@ discord = { path = "../../../apps/discord" }
 [dev-dependencies]
 tilo-session-actions = { path = "../../session/session-actions" }
 # The session a page's desktop serves its windows, which carries what the workspace's server
-# keeps to that server.
-tilo-desktop-surface = { path = "../../session/desktop-surface" }
+# keeps to that server. The peer view is off: a server drives apps and decodes no other device's
+# window, and its media stack would be compiled into every test and into the api-on-server
+# example the SDKs run.
+tilo-desktop-surface = { path = "../../session/desktop-surface", default-features = false }
 # What a test puts in the workspace in pieces, as a page sends it.
 base64.workspace = true
 # The meeting times a test writes into a calendar.
