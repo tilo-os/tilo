@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createWorkspaceActions, invitedLine, INVITE_LINK, JOIN_WORKSPACE, NEW_WORKSPACE, WAITING} from './workspace-actions.mjs';
+import {createWorkspaceActions, invitedLine, INVITE_LINK, JOIN_WORKSPACE, NEW_WORKSPACE, UNANSWERED_CREATE, WAITING} from './workspace-actions.mjs';
 
 test('an invited wait-list entry says how long ago it was invited', () => {
   const now = Date.UTC(2026, 9, 24, 12);
@@ -227,11 +227,13 @@ test('a create the server did not answer for is asked again under the same invoc
   const actions = createWorkspaceActions({peer: lounge, machines: () => [],
     open: async where => { opened.push(where); },
     ui: {askWorkspaceName: async save => {
-      await save('Studio').catch(() => {});
+      said = await save('Studio').then(() => null, error => error.message);
       return save('Studio');
     }, fail: async text => assert.fail(text)}});
+  let said = null;
   await actions.attach(mount);
   await actions.perform(NEW_WORKSPACE.id);
+  assert.equal(said, UNANSWERED_CREATE, 'the dialog says in plain words what happened and what to do');
   assert.equal(asked.length, 2);
   assert.match(asked[0][1], /^[0-9a-f-]{36}$/, 'the page keeps an invocation of its own for the make');
   assert.equal(asked[0][1], asked[1][1], 'the second press asks the same make');

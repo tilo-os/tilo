@@ -30,6 +30,10 @@
  */
 import {freeName} from './workspaces.mjs';
 
+/** What the new-workspace dialog says when the server did not answer in time. */
+export const UNANSWERED_CREATE =
+  'The server has not answered yet, so the workspace may still be on its way. Press Create again to open it.';
+
 export const NEW_WORKSPACE = Object.freeze({id: 'new-workspace', title: 'New workspace',
   subtitle: 'Create a workspace on a machine you set up', source: 'workspace'});
 /** What a new workspace is where the site this page is on makes it, as one
@@ -131,7 +135,18 @@ export function createWorkspaceActions({
       }
       return asked.get(typed);
     };
-    const created = await ui.askWorkspaceName(async typed => {
+    const created = await ui.askWorkspaceName(typed => make(typed).catch(error => {
+      // No answer is not a refusal: the workspace may be made all the same, and
+      // pressing Create again opens that one. Said so in the dialog, in place of
+      // the transport's words.
+      if (error?.code === 'unanswered') {
+        throw Object.assign(new Error(UNANSWERED_CREATE), {cause: error});
+      }
+      throw error;
+    }));
+    if (created) await open({origin, workspace: created.workspace, name: created.name, hostDevice: created.hostDevice});
+
+    async function make(typed) {
       const {name, invocation, workspace: id} = making(typed);
       if (kept) {
         const made = await peer.enterOwnWorkspace({name, invocation});
@@ -148,8 +163,7 @@ export function createWorkspaceActions({
       } finally {
         if (!own) await server.dispose?.();
       }
-    });
-    if (created) await open({origin, workspace: created.workspace, name: created.name, hostDevice: created.hostDevice});
+    }
   };
 
   /** Hand over a link in one press: made now, copied when the browser takes
