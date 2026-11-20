@@ -137,7 +137,7 @@ impl Connects for ServiceLinks {
 /// The shell-ui socket this session serves: what an app asks about its own tabs arrives here, and
 /// the session's loop answers it.
 pub struct AppTabs {
-    requests: mpsc::Receiver<Request>,
+    requests: mpsc::Receiver<FromConnection>,
     /// The connections that asked for their app's windows to be withheld from captures, and the app
     /// each speaks for: the mark lasts while one of them is open.
     withheld: BTreeMap<u64, String>,
@@ -231,6 +231,17 @@ struct Request {
     /// Writing to that connection.
     reply: Arc<Mutex<UnixStream>>,
     ask: Ask,
+}
+
+/// What the thread serving a connection tells the session's loop, which is woken for either, so a
+/// connection the session took off its socket never leaves the loop's wait running.
+enum FromConnection {
+    /// An ask of a window this session started, answered on the loop.
+    Ask(Box<Request>),
+    /// The connection ended without naming a window of an app this session started, so nothing was
+    /// answered on it. The loop is told it was taken and is over all the same: the connection was
+    /// the session's from the moment it came off its socket.
+    Unadmitted { connection: u64 },
 }
 
 impl AppTabs {
@@ -364,8 +375,17 @@ impl AppTabs {
                 pages: &shared.pages,
                 redials: &mut redials,
             };
-            for request in self.requests.try_iter() {
-                answered.answer(&mut self.host_shell, request);
+            for arrived in self.requests.try_iter() {
+                match arrived {
+                    FromConnection::Ask(request) => {
+                        answered.answer(&mut self.host_shell, *request);
+                    }
+                    // A connection this session took ended without a window on it: nothing of it
+                    // is left to answer, and the pass that hears it is the one it woke.
+                    FromConnection::Unadmitted { connection } => {
+                        tracing::debug!(connection, "a shell-ui connection ended unadmitted");
+                    }
+                }
             }
             // What the person did in the windows' bars goes back to the app whose connection
             // declared the parts there.
@@ -1546,7 +1566,7 @@ struct Socket {
     /// The launches a connection is checked against, the channel its asks arrive on, and the wake
     /// that brings the session to answer them.
     launches: Arc<Launches>,
-    requests: mpsc::Sender<Request>,
+    requests: mpsc::Sender<FromConnection>,
     wake: tilo_service::Wake,
 }
 
@@ -1555,7 +1575,7 @@ impl Socket {
         listener: UnixListener,
         path: PathBuf,
         launches: Arc<Launches>,
-        requests: mpsc::Sender<Request>,
+        requests: mpsc::Sender<FromConnection>,
         wake: tilo_service::Wake,
     ) -> Result<Self, String> {
         listener
@@ -1663,49 +1683,71 @@ fn serve_connection(
     connection: u64,
     stream: UnixStream,
     launches: &Launches,
-    requests: &mpsc::Sender<Request>,
+    requests: &mpsc::Sender<FromConnection>,
     wake: &tilo_service::Wake,
 ) {
+    if admit(connection, stream, launches, requests, wake) {
+        return;
+    }
+    // The session took this connection off its socket and answered nothing on it: its end is still
+    // the session's to hear, so its loop is woken rather than sleeping on a connection it took.
+    tracing::debug!(
+        connection,
+        "a shell-ui connection named no window this session serves"
+    );
+    let _ = requests.send(FromConnection::Unadmitted { connection });
+    wake();
+}
+
+/// Serve `stream` as the window of a launch this session started, answering whether it named one:
+/// what it does not admit is dropped here, having said nothing the session answers.
+fn admit(
+    connection: u64,
+    stream: UnixStream,
+    launches: &Launches,
+    requests: &mpsc::Sender<FromConnection>,
+    wake: &tilo_service::Wake,
+) -> bool {
     // The process at the other end, as the socket says it: a window the app opened, or the
     // session's own connection for one it opened in the app.
     let peer = peer_pid(&stream);
     let Ok(mut writer) = stream.try_clone() else {
-        return;
+        return false;
     };
     let mut reader = BufReader::new(stream);
     let Some(handshake_frame) = wire_frame::read_line(&mut reader, MAX_FRAME_BYTES)
         .ok()
         .flatten()
     else {
-        return;
+        return false;
     };
     // A client that does not speak this protocol is dropped.
     let Ok(handshake) = tilo_failure::ignored!(
         "a handshake that does not read back is not one of ours",
         serde_json::from_slice::<LauncherHandshake>(&handshake_frame)
     ) else {
-        return;
+        return false;
     };
     if handshake.protocol != SHELL_UI_LAUNCH_PROTOCOL
         || handshake.app_id.trim().is_empty()
         || handshake.app_id.len() > 255
     {
-        return;
+        return false;
     }
     // The app's first frame says the version it speaks; nothing else is read from an app at another
     // one.
     let Ok(Some(hello)) = wire_frame::read_line(&mut reader, MAX_FRAME_BYTES) else {
-        return;
+        return false;
     };
     let app_version = hello_version(&hello);
     if app_version != Some(FLOATING_SURFACE_PROTOCOL_VERSION) {
         refuse_version(&mut writer, &handshake.app_id, app_version);
-        return;
+        return false;
     }
     let app = handshake.app_id;
     let Some((workspace, pid, instance)) = launched(launches, peer, &app) else {
         tracing::info!(%app, "a shell-ui connection names no app this session started");
-        return;
+        return false;
     };
     // The launch the window belongs to: an app runs one process per window tree, and a window that
     // connects from below it names that tree.
@@ -1724,6 +1766,7 @@ fn serve_connection(
         requests,
         wake,
     );
+    true
 }
 
 /// A window whose connection this session admitted: the app the launcher vouched for, the
@@ -1748,7 +1791,7 @@ fn serve_window(
     window: Window,
     mut reader: BufReader<UnixStream>,
     writer: UnixStream,
-    requests: &mpsc::Sender<Request>,
+    requests: &mpsc::Sender<FromConnection>,
     wake: &tilo_service::Wake,
 ) {
     let Window {
@@ -1763,7 +1806,7 @@ fn serve_window(
     // From here the window is told the appearance of the shell it stands on,
     // and it is told once more whenever that changes.
     if requests
-        .send(Request {
+        .send(FromConnection::Ask(Box::new(Request {
             app: app.clone(),
             workspace: workspace.clone(),
             launch,
@@ -1771,7 +1814,7 @@ fn serve_window(
             connection,
             reply: Arc::clone(&reply),
             ask: Ask::Connected { network_allowed },
-        })
+        })))
         .is_err()
     {
         return;
@@ -1794,7 +1837,7 @@ fn serve_window(
         // and what it cannot is told to the app
         // ([`FloatingSurfaceHostMessage::Unanswered`]), never left waiting.
         if requests
-            .send(Request {
+            .send(FromConnection::Ask(Box::new(Request {
                 app: app.clone(),
                 workspace: workspace.clone(),
                 launch,
@@ -1802,7 +1845,7 @@ fn serve_window(
                 connection,
                 reply: Arc::clone(&reply),
                 ask: Ask::Message(Box::new(message)),
-            })
+            })))
             .is_err()
         {
             break;
@@ -1810,7 +1853,7 @@ fn serve_window(
         wake();
     }
     // What this connection asked of what a capture may show goes with it.
-    let _ = requests.send(Request {
+    let _ = requests.send(FromConnection::Ask(Box::new(Request {
         app: app.clone(),
         workspace,
         launch,
@@ -1818,7 +1861,7 @@ fn serve_window(
         connection,
         reply,
         ask: Ask::Closed,
-    });
+    })));
     wake();
     tracing::debug!(connection, %app, "shell-ui connection closed");
 }
@@ -1911,14 +1954,22 @@ mod tests {
 
     /// A socket on a path of the test's own, with the channel its asks land on and a wake that does
     /// nothing.
-    fn socket_at(path: &std::path::Path) -> (Socket, mpsc::Receiver<Request>) {
+    fn socket_at(path: &std::path::Path) -> (Socket, mpsc::Receiver<FromConnection>) {
+        socket_waking(path, Arc::new(|| {}))
+    }
+
+    /// [`socket_at`] with `wake` told of each connection that ends, as the session's loop is.
+    fn socket_waking(
+        path: &std::path::Path,
+        wake: tilo_service::Wake,
+    ) -> (Socket, mpsc::Receiver<FromConnection>) {
         let (requests, answers) = mpsc::channel();
         let socket = Socket::serve(
             tilo_files::native::socket::bind(path).unwrap(),
             path.to_path_buf(),
             Arc::new(Launches::default()),
             requests,
-            Arc::new(|| {}),
+            wake,
         )
         .unwrap();
         (socket, answers)
@@ -1970,10 +2021,67 @@ mod tests {
         let mut rest = Vec::new();
         client.read_to_end(&mut rest).unwrap();
         assert!(rest.is_empty(), "nothing is written to that connection");
+        // What the loop hears of it is that it is over, never an ask of an app this session never
+        // started.
+        let arrived = answers
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the loop is told the connection it took is over");
         assert!(
-            answers.try_recv().is_err(),
-            "no ask of an app this session never started"
+            matches!(arrived, FromConnection::Unadmitted { .. }),
+            "no ask stands on a connection this session started nothing of"
         );
+    }
+
+    /// A connection the session takes off its socket and admits nothing on ends as one it serves
+    /// does: the loop is told it is over and woken for it, so the wait it took the connection in
+    /// never goes on for a connection the session is done with.
+    #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the guard is handed to the variable's wait, which is how it is released while waiting"
+    )]
+    fn a_connection_no_launch_names_ends_for_the_woken_loop() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shell-ui.sock");
+        let woken = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let ringing = Arc::clone(&woken);
+        let (socket, answers) = socket_waking(
+            &path,
+            Arc::new(move || {
+                let (woken, ready) = &*ringing;
+                *woken.lock().unwrap() = true;
+                ready.notify_all();
+            }),
+        );
+        let mut client = tilo_files::native::socket::connect(&path).unwrap();
+        socket.take();
+        let mut frames = handshake("so.tilo.notes");
+        let mut hello = serde_json::to_vec(&FloatingSurfaceClientMessage::Hello {
+            version: FLOATING_SURFACE_PROTOCOL_VERSION,
+        })
+        .unwrap();
+        hello.push(b'\n');
+        frames.extend_from_slice(&hello);
+        client.write_all(&frames).unwrap();
+        let arrived = answers
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the loop is told the connection it took is over");
+        assert!(
+            matches!(arrived, FromConnection::Unadmitted { .. }),
+            "a connection that named no launch is over and asks nothing"
+        );
+        let (woken, ready) = &*woken;
+        let held = woken.lock().unwrap();
+        let (held, waited) = ready
+            .wait_timeout_while(held, std::time::Duration::from_secs(10), |woken| !*woken)
+            .unwrap();
+        assert!(
+            !waited.timed_out(),
+            "the loop is woken for the connection it took"
+        );
+        assert!(*held, "the loop is woken for the connection it took");
     }
 
     /// What the session cannot do of an ask is written back on the app's own connection, naming the
