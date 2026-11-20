@@ -236,7 +236,7 @@ fn a_link_to_a_message_in_a_part_not_held_opens_parts_until_it_is_found() {
     join(&mut ada, &mut bo);
     // The link is opened as a search hit or an agent's `open` is.
     let link = crate::testing::item("messages", &wanted);
-    bo.with_chat(|surface| surface.opener()(&link));
+    bo.with_chat(|surface| surface.opens.ask(&link));
     bo.harness().relayout();
     for part in [1, 0] {
         bo.harness().relayout();

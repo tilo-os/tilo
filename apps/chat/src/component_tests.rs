@@ -1285,10 +1285,10 @@ fn an_opened_message_shows_once_the_window_has_taken_its_part_in() {
         &ui::tilo_resource::Id::from_raw(message.as_str()),
     );
     // The person chooses the message's notice before its part has reached this window.
-    app.opened.borrow_mut().push(anchor.clone());
+    app.opens.ask(&anchor);
     app.open_requested(&workspace.chat);
     assert_eq!(
-        *app.opened.borrow(),
+        app.opens.waiting(),
         vec![anchor],
         "a message the window does not hold yet is asked for again"
     );
@@ -1299,7 +1299,7 @@ fn an_opened_message_shows_once_the_window_has_taken_its_part_in() {
     // Its next sync takes the part in, and the message it was asked for shows.
     app.sync(&workspace.chat, &ROOT);
     assert!(
-        app.opened.borrow().is_empty(),
+        app.opens.waiting().is_empty(),
         "the message was shown once it arrived"
     );
     assert_eq!(

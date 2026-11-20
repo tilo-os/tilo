@@ -721,52 +721,36 @@ impl ChatApp {
 }
 
 impl ChatApp {
-    /// What runs when a search hit or an agent's `open` names an item of
-    /// the chat: it is shown on the next sync, once the resource is read.
-    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
-        let opened = std::rc::Rc::clone(&self.opened);
-        move |anchor| opened.borrow_mut().push(anchor.to_owned())
-    }
-
-    /// Show the items asked for since the last sync, on the chat `doc` holds: the conversation
-    /// with an agent is read from it, as the `open-agent` action reads it.
+    /// Show what was asked to be opened, on the chat `doc` holds: the conversation with an agent
+    /// is read from it, as the `open-agent` action reads it.
     ///
-    /// An item the chat does not hold yet is asked for again at the next sync, as an item a
-    /// launch names is: a notice of a message is read from what the workspace holds, which is no
-    /// promise that this window has taken that part in, and an item dropped here would never show.
+    /// The framework keeps an item the chat does not hold yet and asks again at the next sync, as
+    /// it does for an item a launch names: a notice of a message is read from what the workspace
+    /// holds, which is no promise that this window has taken that part in, and an item dropped
+    /// here would never show.
     pub(crate) fn open_requested(&mut self, doc: &automerge::AutoCommit) {
-        let asked = std::mem::take(&mut *self.opened.borrow_mut());
-        let mut waiting = Vec::new();
-        for anchor in asked {
-            if !self.show_opened(&anchor, doc) {
-                waiting.push(anchor);
-            }
-        }
-        if waiting.is_empty() {
-            return;
-        }
-        // What was asked for meanwhile stands after them: items show in the order they were asked
-        // for, however many syncs the first needs.
-        let mut opened = self.opened.borrow_mut();
-        waiting.append(&mut opened);
-        *opened = waiting;
-    }
-
-    /// Show the item `anchor` names, answering whether the window has it: `false` while the chat
-    /// does not hold it yet — a message whose part has not arrived, a conversation it has not
-    /// listed — and it is to be asked for again.
-    fn show_opened(&mut self, anchor: &str, doc: &automerge::AutoCommit) -> bool {
-        match opening(anchor) {
+        use ui::framework::OpenOutcome;
+        let opens = self.opens.clone();
+        opens.show(|anchor| match opening(anchor) {
             Some(ChatEffect::OpenAgent { agent }) => {
                 if let Ok(chat) = <crate::chat::Chat as tilo_resource::Resource>::read(doc) {
                     self.open_agent(&agent, &chat);
                 }
-                true
+                OpenOutcome::Shown
             }
-            Some(effect) => self.answer_effect(effect).is_ok(),
+            Some(effect @ ChatEffect::RevealMessage { .. }) => match self.answer_effect(effect) {
+                Ok(_) => OpenOutcome::Shown,
+                // A message no held part has may still arrive in one: kept, as the framework
+                // does for an item a launch names.
+                Err(_) => OpenOutcome::NotYet,
+            },
+            Some(effect) => match self.answer_effect(effect) {
+                Ok(_) => OpenOutcome::Shown,
+                Err(reason) => OpenOutcome::Gone(reason),
+            },
             // An item no view of the chat shows.
-            None => true,
-        }
+            None => OpenOutcome::Gone(format!("Chat opens no `{anchor}`")),
+        });
     }
 }
 

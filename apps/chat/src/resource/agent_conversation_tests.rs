@@ -140,8 +140,7 @@ fn a_window_opened_at_an_agent_shows_the_conversation_with_it() {
         "agents",
         &ui::tilo_resource::Id::from_raw("assistant"),
     );
-    let mut open = window.chat().opener();
-    open(&at);
+    window.chat().opens.ask(&at);
     window.settle();
     let conversation = window.chat().active_channel.clone();
     let members =
@@ -203,8 +202,7 @@ fn a_persons_own_agent_is_listed_before_its_first_message() {
     );
 
     // Opened, it is listed once.
-    let mut open = window.chat().opener();
-    open(
+    window.chat().opens.ask(
         &ui::tilo_resource::items::item_resource_id::<WorkspaceAgents>(
             "agents",
             &ui::tilo_resource::Id::from_raw("assistant"),

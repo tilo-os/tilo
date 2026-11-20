@@ -159,9 +159,9 @@ pub struct ChatApp {
     /// The recordings filed reports carry, by the report's message: each
     /// replays in the app it recorded.
     pub(crate) report_recordings: HashMap<Id, ui::feedback::RecordingRef>,
-    /// The items a search hit or an agent's `open` asked to show, by their
-    /// published ids, shown on the next sync.
-    pub(crate) opened: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    /// The anchors a search hit or an agent's `open` asked to show, kept
+    /// until the next sync shows them ([`ui::framework::Opens`]).
+    pub(crate) opens: ui::framework::Opens,
     /// Voice membership per channel of the workspace (cached from the
     /// CRDT each reload so the sidebar can show presence without re-reading).
     pub(crate) voice_members: HashMap<Id, Vec<crate::model::VoiceMember>>,
@@ -685,7 +685,7 @@ impl ChatApp {
             search_users: Vec::new(),
             reports: Vec::new(),
             report_recordings: HashMap::new(),
-            opened: std::rc::Rc::default(),
+            opens: ui::framework::Opens::default(),
             voice_members: HashMap::new(),
             draft_main: String::new(),
             draft_thread: String::new(),

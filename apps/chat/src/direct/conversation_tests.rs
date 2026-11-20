@@ -480,7 +480,7 @@ fn the_conversation_a_send_answers_opens_in_a_window() {
     };
 
     // The window opens the item as one launched to reveal it does.
-    bob_window.with_chat(|chat| chat.opener()(&anchor));
+    bob_window.with_chat(|chat| chat.opens.ask(&anchor));
     bob_window.harness().relayout();
     bob_window.with_chat(|chat| {
         assert_eq!(chat.active_channel, conversation.to_string());

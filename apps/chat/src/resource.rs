@@ -137,7 +137,7 @@ impl ResourceApp for ChatShell {
         };
         let drafts =
             cx.shared_resource::<crate::drafts::ChatDrafts>(Self::ID, crate::drafts::DOCUMENT);
-        let app = ChatApp::new(identity, runtime, content)
+        let mut app = ChatApp::new(identity, runtime, content)
             .with_models(models)
             .with_model_choices(live)
             .with_drafts(drafts)
@@ -147,8 +147,9 @@ impl ResourceApp for ChatShell {
             // The window's actions: its composer's send button is where Chat's
             // `send` lands, the action an agent's send runs too.
             .with_send_action(&cx.actions());
-        // A search hit, or an agent's `open`, shows the item it names.
-        cx.on_open(app.opener());
+        // A search hit, or an agent's `open`, shows the item it names: the
+        // window keeps each anchor until a sync has taken its part in.
+        app.opens = cx.opens();
         // The shell keeps the workspace's channels as its sidebar, their width,
         // their drawer in a narrow window and their keys; the conversation
         // is the window's point, a reading column beside them.
