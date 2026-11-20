@@ -1131,6 +1131,143 @@ fn mib(bytes: u64) -> f64 {
     bytes as f64 / (1024.0 * 1024.0)
 }
 
+/// A person copies a folder of many small files into the mounted workspace with
+/// `cp -r`, reads back what the copy wrote, then restarts the daemon: every file
+/// is there, with its bytes, before and after the restart.
+///
+/// Tunables: `TILO_FS_COPY_FILES` (default 10000), `TILO_FS_COPY_BYTES`
+/// (default 2048), and the same selection and backend as the ladder
+/// (`TILO_FS_SYNC_BENCH=1`, `TILO_FS_BENCH_BACKEND`).
+#[test]
+fn copying_a_folder_in_and_restarting() {
+    let scenario = "copy";
+    if !ladder_selected(scenario) {
+        return;
+    }
+    let files = env_u64("TILO_FS_COPY_FILES", 10_000);
+    let bytes = env_u64("TILO_FS_COPY_BYTES", 2_048);
+    let folder = |i: u64| format!("d{:03}", i / 1_000);
+    let name = |i: u64| format!("f{i:07}");
+    let (store_a, store_b) = match backend() {
+        Backend::Native => {
+            let (a, b) = stores(scenario).expect("the native copy needs two store volumes");
+            (Some(a), Some(b))
+        }
+        Backend::Fuse => (None, None),
+    };
+    let mut pair = start_pair_joining(store_a.as_deref(), store_b.as_deref(), 0x77, false, false);
+    let source = pair.dir.join("source");
+    let mut buf = vec![0_u8; usize::try_from(bytes).unwrap_or(2048)];
+    for i in 0..files {
+        let dir = source.join(folder(i));
+        std::fs::create_dir_all(&dir).unwrap();
+        fill(i, 0, &mut buf);
+        std::fs::write(dir.join(name(i)), &buf).unwrap();
+    }
+    mark("the source folder is written");
+
+    let into = pair.host.mount.join("in");
+    let started = Instant::now();
+    let copied = Command::new("cp")
+        .arg("-r")
+        .arg(&source)
+        .arg(&into)
+        .status_locked()
+        .expect("run cp");
+    let copy = started.elapsed();
+    assert!(copied.success(), "cp -r into the mount failed: {copied:?}");
+
+    let check = |root: &Path| -> (u64, u64) {
+        let (mut missing, mut wrong) = (0_u64, 0_u64);
+        for i in 0..files {
+            let path = root.join("in").join(folder(i)).join(name(i));
+            match std::fs::read(&path) {
+                Ok(read) => {
+                    fill(i, 0, &mut buf);
+                    if read != buf {
+                        wrong = wrong.saturating_add(1);
+                    }
+                }
+                Err(_) => missing = missing.saturating_add(1),
+            }
+        }
+        (missing, wrong)
+    };
+    let (missing, wrong) = check(&pair.host.mount);
+    if missing + wrong > 0 {
+        eprintln!(
+            "copy: {} missing and {} wrong after the copy; writer's log:\n{}",
+            missing,
+            wrong,
+            pair.host.dump()
+        );
+    }
+    report(
+        &rung_name(scenario, files),
+        "copy_s",
+        copy.as_secs_f64(),
+        "s",
+    );
+    report(
+        &rung_name(scenario, files),
+        "files_per_s",
+        files as f64 / copy.as_secs_f64(),
+        "files/s",
+    );
+    report(
+        &rung_name(scenario, files),
+        "missing",
+        missing as f64,
+        "files",
+    );
+    report(&rung_name(scenario, files), "wrong", wrong as f64, "files");
+    eprintln!(
+        "copy: {files} files at {bytes} B took {copy:?} ({:.1} files/s); {missing} missing, \
+         {wrong} with wrong bytes",
+        files as f64 / copy.as_secs_f64()
+    );
+
+    let stopped = pair.stop_host();
+    let restarted = pair.restart_host();
+    let (missing_after, wrong_after) = check(&pair.host.mount);
+    report(
+        &rung_name(scenario, files),
+        "restart_s",
+        (stopped + restarted).as_secs_f64(),
+        "s",
+    );
+    report(
+        &rung_name(scenario, files),
+        "missing_after_restart",
+        missing_after as f64,
+        "files",
+    );
+    report(
+        &rung_name(scenario, files),
+        "wrong_after_restart",
+        wrong_after as f64,
+        "files",
+    );
+    eprintln!(
+        "copy: after restarting the writer ({stopped:?} to stop, {restarted:?} to serve), \
+         {missing_after} missing, {wrong_after} with wrong bytes"
+    );
+    assert_eq!(
+        (missing, wrong),
+        (0, 0),
+        "every file the copy wrote is in the workspace"
+    );
+    assert_eq!(
+        (missing_after, wrong_after),
+        (0, 0),
+        "every file the copy wrote is still there after a restart"
+    );
+}
+
+fn rung_name(scenario: &str, files: u64) -> String {
+    format!("{scenario}/{files}")
+}
+
 /// A workspace holding a ladder's worth of files: many small ones and a few
 /// huge ones. Everything here grows with the workspace's total size, so a
 /// cost that grows with it instead of with what a request touches shows up as
