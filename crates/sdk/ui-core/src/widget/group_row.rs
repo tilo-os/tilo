@@ -176,6 +176,8 @@ pub struct GroupRow {
     external_navigation: bool,
     close_reports: Vec<crate::application::ComponentCloseReport>,
     pub groups: Vec<WindowGroup>,
+    /// The window that had the keyboard when the frame last asked ([`Widget::take_app_activation`]).
+    keyboard_window: Option<u64>,
     handles: Vec<ResizeHandle>,
     handle_nodes: Vec<Option<(NodeId, Style)>>,
     node: Option<NodeId>,
@@ -914,6 +916,7 @@ impl GroupRow {
     pub fn new(groups: Vec<WindowGroup>) -> Self {
         Self {
             groups,
+            keyboard_window: None,
             close_reports: vec![],
             external_navigation: false,
             handles: Vec::new(),
@@ -4709,6 +4712,20 @@ impl Widget for GroupRow {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// The shell gave the keyboard to another window of the row since the frame last asked: a search
+    /// chose it, it opened, the one in front closed, or the person clicked it. Its app is the shell's
+    /// to name ([`crate::application::AppActivation::Ready`]); the row reports the move.
+    fn take_app_activation(&mut self, _ready: bool) -> Option<crate::application::AppActivation> {
+        let now = self
+            .groups
+            .iter()
+            .find(|group| group.focused())
+            .map(|group| group.id);
+        let before = std::mem::replace(&mut self.keyboard_window, now);
+        (before.is_some() && now.is_some() && now != before)
+            .then_some(crate::application::AppActivation::Moved)
     }
 
     fn wants_pointer_capture(&self) -> bool {

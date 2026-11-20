@@ -229,3 +229,51 @@ fn keys_typed_into_a_field_right_of_chat_stay_in_the_field() {
 fn keys_typed_into_a_field_left_of_chat_stay_in_the_field() {
     typing_follows_the_clicked_field(false);
 }
+
+/// Chat has the keyboard and has been typed into; then the shell gives the keyboard to the window
+/// beside it with no click there (a search chose it, it just opened, or the window in front
+/// closed). What the person types next, Enter included, never reaches Chat, though the window
+/// they went to has no control holding the keyboard yet (its app is still on its way).
+fn typing_after_the_keyboard_moves_away_from_chat(chat_first: bool) {
+    let (mut harness, chat_keys) = chat_and_a_field(chat_first);
+    let (chat, field) = if chat_first { (0, 1) } else { (1, 0) };
+    let chat_at = if chat_first { 300.0 } else { 1300.0 };
+    harness.click_at(chat_at, 400.0);
+    harness.relayout();
+    harness.type_text("hi");
+    assert_eq!(
+        chat_keys.get(),
+        2,
+        "Chat reads what is typed while it has the keyboard"
+    );
+    chat_keys.set(0);
+
+    {
+        let mut row = harness.root_mut::<GroupRow>();
+        let _ = row.groups[chat].set_focused(false);
+        let _ = row.groups[field].set_focused(true);
+    }
+    harness.relayout();
+    harness.type_text("Files");
+    harness.key("Enter");
+    assert_eq!(
+        chat_keys.get(),
+        0,
+        "no key typed after the keyboard moved, Enter included, reaches the window it left"
+    );
+    assert_eq!(
+        harness.inspection().keyboard_focus_owner,
+        None,
+        "no control of the window left keeps the keyboard"
+    );
+}
+
+#[test]
+fn keys_after_the_keyboard_moves_right_of_chat_stay_out_of_chat() {
+    typing_after_the_keyboard_moves_away_from_chat(true);
+}
+
+#[test]
+fn keys_after_the_keyboard_moves_left_of_chat_stay_out_of_chat() {
+    typing_after_the_keyboard_moves_away_from_chat(false);
+}

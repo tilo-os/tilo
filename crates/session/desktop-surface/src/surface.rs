@@ -2077,6 +2077,25 @@ impl DesktopSurface {
 }
 
 impl DesktopSurface {
+    /// The app of the tab brought forward (`activation`) once its tab is built as an app,
+    /// taking the activation; a tab no longer in front drops it.
+    fn ready_activation(&mut self) -> Option<ui::application::InstanceId> {
+        let (strip, tab) = self.activation?;
+        if self.keyboard_tab != Some(tab) {
+            self.activation = None;
+            return None;
+        }
+        let instance = self
+            .rows
+            .get_mut(&strip)?
+            .groups
+            .iter_mut()
+            .find_map(|group| group.host_for_tab_mut(tab))?
+            .keyboard_input_scope()?;
+        self.activation = None;
+        Some(instance)
+    }
+
     /// Open `app` as a tab of window `group` in strip `strip` , focused. Returns whether it opened.
     fn open_tab_in_group(&mut self, strip: StripId, group: GroupId, app: &str) -> bool {
         let mut shared = self.shared.borrow_mut();
@@ -2558,23 +2577,21 @@ impl Widget for DesktopSurface {
             && self.pans_strip(*delta, ui::time::now())
     }
 
-    /// The app of the window brought forward, once its tab is built as an app: the host then gives
-    /// it keyboard focus.
-    fn take_app_activation(&mut self) -> Option<ui::application::InstanceId> {
-        let (strip, tab) = self.activation?;
-        if self.keyboard_tab != Some(tab) {
-            self.activation = None;
-            return None;
+    /// The app of the window brought forward, once its tab is built as an app and the frame may
+    /// hand it the keyboard: the frame then gives it keyboard focus. Before that, the move its row saw.
+    fn take_app_activation(&mut self, ready: bool) -> Option<ui::application::AppActivation> {
+        let mut moved = None;
+        for row in self.rows.values_mut() {
+            moved = (row as &mut dyn Widget)
+                .take_app_activation(false)
+                .or(moved);
         }
-        let instance = self
-            .rows
-            .get_mut(&strip)?
-            .groups
-            .iter_mut()
-            .find_map(|group| group.host_for_tab_mut(tab))?
-            .keyboard_input_scope()?;
-        self.activation = None;
-        Some(instance)
+        if !ready {
+            return moved;
+        }
+        self.ready_activation()
+            .map(ui::application::AppActivation::Ready)
+            .or(moved)
     }
 
     fn wants_pointer_capture(&self) -> bool {

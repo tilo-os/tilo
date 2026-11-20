@@ -1715,6 +1715,110 @@ fn typing_reaches_the_focused_window_even_when_a_window_before_it_claims_keys() 
     );
 }
 
+/// A window with a field holding the keyboard, and the person typing into it: as a chat's composer
+/// takes what is typed and sends it on Enter.
+fn typing_in_the_first_window() -> (Shell, String) {
+    let mut shell = Shell::new(1, 450);
+    let field = format!("field-{}-1", shell.tabs[0]);
+    let rect = shell.rect(&field);
+    shell.driver.click_at(rect.center().x, rect.center().y);
+    shell.settle();
+    shell.driver.type_text("hi");
+    assert_eq!(shell.typed(&field), "hi", "the field has the keyboard");
+    (shell, field)
+}
+
+/// The window the person opened from search has the keyboard from then on, though its app has not
+/// arrived (here it never does): what they type next never reaches the field of the window they
+/// left, and neither does the focus closing the search would hand back.
+#[test]
+fn keys_after_search_opens_a_window_never_reach_the_window_left() {
+    let (mut shell, field) = typing_in_the_first_window();
+    shell.handle.open_search(Scope::Workspace, None);
+    shell.settle();
+    shell.type_search("Notes");
+    shell.key_search(NamedKey::Enter);
+    shell.settle();
+    let notes = shell
+        .handle
+        .shown_tabs()
+        .into_iter()
+        .map(|(tab, _)| tab)
+        .find(|tab| *tab != shell.tabs[0])
+        .expect("Notes opened beside the first window");
+    assert_eq!(
+        shell.handle.input_owner().as_deref(),
+        Some(NOTES),
+        "Notes has the keyboard ({notes})"
+    );
+    shell.driver.type_text("Files");
+    shell.driver.key("Enter");
+    assert_eq!(
+        shell.typed(&field),
+        "hi",
+        "nothing typed after reached the window left"
+    );
+    assert!(
+        shell
+            .focus_path()
+            .is_none_or(|path| !path.contains("WindowGroup[0]")),
+        "no control of the window left keeps the keyboard: {:?}",
+        shell.focus_path()
+    );
+}
+
+/// The same for a window opened by a command rather than search.
+#[test]
+fn keys_after_a_window_opens_never_reach_the_window_left() {
+    let (mut shell, field) = typing_in_the_first_window();
+    shell
+        .handle
+        .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
+            app: NOTES.into(),
+            beside: None,
+            background: None,
+            float: None,
+        })
+        .unwrap();
+    shell.settle();
+    assert_eq!(shell.handle.input_owner().as_deref(), Some(NOTES));
+    shell.driver.type_text("ls");
+    shell.driver.key("Enter");
+    assert_eq!(
+        shell.typed(&field),
+        "hi",
+        "nothing typed after reached the window left"
+    );
+}
+
+/// Coming back to the window left gives its field the keyboard again, as the person left it.
+#[test]
+fn the_window_left_has_its_field_back_on_return() {
+    let (mut shell, field) = typing_in_the_first_window();
+    shell
+        .handle
+        .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
+            app: NOTES.into(),
+            beside: None,
+            background: None,
+            float: None,
+        })
+        .unwrap();
+    shell.settle();
+    shell.handle.open_search(Scope::Workspace, None);
+    shell.settle();
+    shell.type_search("Keyboard");
+    shell.key_search(NamedKey::Enter);
+    shell.settle();
+    assert_eq!(shell.handle.input_owner().as_deref(), Some(APP));
+    shell.driver.type_text("!");
+    assert_eq!(
+        shell.typed(&field),
+        "hi!",
+        "the field the person left has the keyboard again"
+    );
+}
+
 #[test]
 fn one_click_in_an_inactive_window_gives_the_control_under_it_the_keyboard() {
     for coalesce in [false, true] {

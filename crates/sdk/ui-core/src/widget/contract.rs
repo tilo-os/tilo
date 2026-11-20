@@ -519,11 +519,13 @@ pub trait Widget {
         false
     }
 
-    /// One-shot (reading MUST clear it): the app instance the person just brought forward (a window
-    /// they opened, clicked or switched to), whose keyboard focus the host restores, or puts on its
-    /// default control, so what they type next reaches it.
-    fn take_app_activation(&mut self) -> Option<crate::application::InstanceId> {
-        defaults::take_app_activation(self.children_mut())
+    /// One-shot (reading MUST clear it): the person brought another window forward (they opened,
+    /// clicked or switched to it). [`crate::application::AppActivation::Ready`] names its app
+    /// instance, whose keyboard focus the frame restores, or puts on its default control, so what
+    /// they type next reaches it; only when `ready` (the frame may hand the keyboard over now) is it
+    /// taken, and until then the move alone is reported.
+    fn take_app_activation(&mut self, ready: bool) -> Option<crate::application::AppActivation> {
+        defaults::take_app_activation(self.children_mut(), ready)
     }
 
     /// One-shot (reading MUST clear it): the test id of the control this subtree asks to take the

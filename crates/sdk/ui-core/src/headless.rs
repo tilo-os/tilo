@@ -3202,12 +3202,15 @@ impl FrameHarness {
     /// terminal), is focused. Never a button merely for being first: Enter
     /// would press it. An app with none keeps no stale focus elsewhere, and
     /// still sees what is typed into its window.
-    /// Waits while a dialog or command has the keyboard.
+    /// Waits while a dialog or command has the keyboard; the window the person left gives it up at
+    /// once all the same ([`Self::release_keyboard_left`]).
     fn activate_requested_app(&mut self) {
-        if self.pending_app_activation.is_some() || self.check_app_activation().is_err() {
+        let ready = self.pending_app_activation.is_none() && self.check_app_activation().is_ok();
+        let Some(activation) = self.root.take_app_activation(ready) else {
             return;
-        }
-        let Some(instance) = self.root.take_app_activation() else {
+        };
+        self.release_keyboard_left();
+        let crate::application::AppActivation::Ready(instance) = activation else {
             return;
         };
         let owner = |frame: &Self, node: NodeId| {

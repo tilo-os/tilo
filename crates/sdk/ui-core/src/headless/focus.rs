@@ -88,6 +88,22 @@ impl FrameHarness {
         })
     }
 
+    /// The person gave the keyboard to another window ([`crate::widget::Widget::take_app_activation`]):
+    /// a control left focused outside it gives the keyboard up now, rather than once the app of the
+    /// window they chose is in, and a trap open meanwhile (the search they chose the window from)
+    /// hands nothing back when it closes. Whatever they type next is then the chosen
+    /// window's, never the one they left, even one whose app reads every key it is handed.
+    pub(super) fn release_keyboard_left(&mut self) {
+        if self.focus_trap_active {
+            self.focus_before_trap = None;
+        } else if self
+            .focused
+            .is_some_and(|node| self.tree().within_keyboard_scope(vec![node]).is_empty())
+        {
+            self.set_focused(None);
+        }
+    }
+
     pub(super) fn update_focus_trap(
         &mut self,
         before_layout: Option<crate::widget::layout::CompositionFocus>,

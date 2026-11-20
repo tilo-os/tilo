@@ -659,7 +659,7 @@ decorator_trait! {
         ) -> bool;
         fn take_focus_reset() -> bool;
         fn take_accessibility_request() -> Option<crate::a11y::AccessibilityRequest>;
-        fn take_app_activation() -> Option<crate::application::InstanceId>;
+        fn take_app_activation(ready: bool) -> Option<crate::application::AppActivation>;
         fn take_focus_request() -> Option<String>;
         fn restore_dev_route(route: &crate::widget::router::RouteSnapshot) -> bool;
         fn set_motion_reduced(reduced: bool);

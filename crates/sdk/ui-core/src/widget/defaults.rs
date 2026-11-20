@@ -285,10 +285,11 @@ pub(super) fn take_accessibility_request(
 
 pub(super) fn take_app_activation(
     children: ChildrenMut<'_>,
-) -> Option<crate::application::InstanceId> {
+    ready: bool,
+) -> Option<crate::application::AppActivation> {
     children
         .into_iter()
-        .find_map(|child| child.take_app_activation())
+        .find_map(|child| child.take_app_activation(ready))
 }
 
 pub(super) fn take_focus_request(children: ChildrenMut<'_>) -> Option<String> {
