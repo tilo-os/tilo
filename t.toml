@@ -5257,8 +5257,11 @@ default = false
 
 [[check]]
 name = "os-builder-x86_64"
-# What it reaches is not known yet: the open network until a filtered run names it.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: it installs only from the RPM snapshot image-rpms-x86_64 leaves (loaded from its
+# archive, under the digest the snapshot names) and the assets os-assets checked against their
+# hashes, over the base os-base-x86_64 copied by digest. Never served, its key would be every file
+# of the tree, and every layer and compile built with it would build again on any commit.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh image builder x86_64 /target/os/x86_64/builder"
 needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
@@ -5537,8 +5540,11 @@ default = false
 
 [[check]]
 name = "os-builder-aarch64"
-# What it reaches is not known yet: the open network until a filtered run names it.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: it installs only from the RPM snapshot image-rpms-aarch64 leaves (loaded from its
+# archive, under the digest the snapshot names) and the assets os-assets checked against their
+# hashes, over the base os-base-aarch64 copied by digest. Never served, its key would be every file
+# of the tree, and every layer and compile built with it would build again on any commit.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh image builder aarch64 /target/os/aarch64/builder"
 needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
