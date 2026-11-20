@@ -447,6 +447,7 @@ pub async fn start_server_lending(
             .await
             .context("start the server serving its workspaces' records")?;
         let roster = tilo_server::agents::RosterServices {
+            sessions: None,
             actions,
             events,
             initiative,
@@ -505,6 +506,7 @@ fn start_roster(
         )
         // A coding agent among them is worked by its harness in its workspace's
         // machine, where the shells are.
+        .with_roster_sessions(server, roster.sessions)
         .with_coding(shells)
         .with_events(roster.events)
         .with_initiative(roster.initiative)

@@ -1837,3 +1837,9 @@ paths = ["crates/server/tilo-workspace-service/src/workspaces/agent_members.rs"]
 reason = "The frame harness's own name for an event the browser host hands the frame, which the desktop's tests drive as a page does."
 words = ["host"]
 identifiers = ["send_host_event"]
+
+[[allow]]
+reason = "The existing HostAgents type names the production roster runner the integration test starts."
+words = ["host"]
+identifiers = ["HostAgents"]
+paths = ["crates/agent/agent-session/tests/workspace_actions/governed_agent.rs"]

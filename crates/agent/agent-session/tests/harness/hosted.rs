@@ -36,6 +36,7 @@ pub struct Hosted {
     pub server: Server,
     pub web: WebHandle,
     pub agents: AgentHost,
+    pub roster: Option<tilo_server::agents::RosterServices>,
     /// The host's own device key, whose records the workspace holds too.
     pub device: [u8; 32],
 }
@@ -123,18 +124,19 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
         shell: options.shell,
         browsers: options.browsers,
     };
-    let (server, agents) = if options.roster {
+    let (server, agents, roster) = if options.roster {
         let (server, agents, roster) =
             tilo_server::agents::start_with_roster(cfg, identity, agents)
                 .await
                 .unwrap();
         assert!(roster.events.is_some());
         assert!(roster.initiative.is_some());
-        (server, agents)
+        (server, agents, Some(roster))
     } else {
-        tilo_server::agents::start(cfg, identity, agents)
+        let (server, agents) = tilo_server::agents::start(cfg, identity, agents)
             .await
-            .unwrap()
+            .unwrap();
+        (server, agents, None)
     };
     let web = server
         .serve_web(WebConfig {
@@ -157,6 +159,7 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
         server,
         web,
         agents,
+        roster,
         device: host.cert.device_public_key,
     }
 }

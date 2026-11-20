@@ -33,6 +33,10 @@ impl RosterProvisioning {
         }
     }
 
+    pub(super) fn sessions(&self) -> AgentSessions {
+        self.sessions.clone()
+    }
+
     pub(super) fn start(&self, link: &Arc<ServerAgentLink>) {
         let _ = self.link.set(Arc::downgrade(link));
     }

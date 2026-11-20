@@ -10,6 +10,7 @@
 //! arrives at Bob, another member, sealed, signed by the agent's own key and
 //! named on the roster as Ada's agent. Withdrawing the grant takes it off.
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
@@ -552,8 +553,11 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner() {
-    use super::hosted_agent_turns::make_agent;
+    use super::hosted_agent_turns::{
+        TASKS, answered_to, does_then_answers, file_issue, make_agent,
+    };
     use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+    use tilo_server::workspace_agents::HostAgents;
     use tilo_session_client::Outbox as _;
     use ui::tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents, workspace_agents::RetireAgent};
 
@@ -608,7 +612,7 @@ async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner
             json(&serde_json::json!({
                 "agentId": agent,
                 "workspaces": [workspace.workspace],
-                "apps": [SHEETS],
+                "apps": [SHEETS, TASKS],
                 "expiresInSecs": 3600,
             })),
         )
@@ -800,6 +804,74 @@ async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
+    let roster = hosted.roster.as_ref().unwrap();
+    let workbook = page.create(SHEETS);
+    let notebook = page.create("so.tilo.notes");
+    file_issue(
+        &roster.actions,
+        &workspaces,
+        &workspace.workspace,
+        &owner,
+        (&node, &page_device),
+    )
+    .await;
+    let read = |route: &DocumentRoute| {
+        let workspaces = workspaces.clone();
+        let route = route.clone();
+        async move {
+            workspaces
+                .resource_document(&route.cluster_id, &route.app_id, &route.document)
+                .await
+                .unwrap()
+        }
+    };
+    let deadline = tilo_test_env::hang_deadline();
+    let (workbook_before, notebook_before) = loop {
+        if let (Some(sheets), Some(notes)) = (read(&workbook).await, read(&notebook).await) {
+            break (sheets, notes);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the turn's documents were not kept"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let model = does_then_answers(
+        vec![
+            serde_json::json!({"path": "sheets#new-sheet", "args": {"name": "Roster signed"}}),
+            serde_json::json!({"path": "notes#create-page", "args": {"title": "Outside the grant"}}),
+        ],
+        "I worked on the sheet.",
+        Arc::clone(&requests),
+    );
+    let runner = HostAgents::new(workspaces.clone(), roster.actions.clone(), Some(model))
+        .with_roster_sessions(&hosted.server, roster.sessions.clone());
+    let turns = runner.turns(&workspace.workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    let ended = runner.answer(&workspace.workspace, &turns[0]).await;
+    {
+        let requests = requests.lock().unwrap();
+        let final_request = requests
+            .last()
+            .unwrap_or_else(|| panic!("no model call: {ended:?}"));
+        let success = answered_to(final_request, "call-1");
+        let refused = answered_to(final_request, "call-2");
+        assert!(!success.1, "{success:?}");
+        assert!(
+            refused.1 && refused.0.contains("not_permitted"),
+            "{refused:?}"
+        );
+    }
+    ended.unwrap();
+    assert_ne!(read(&workbook).await.unwrap(), workbook_before);
+    assert_eq!(read(&notebook).await.unwrap(), notebook_before);
+    let signed = roster_write(&hosted, workspace.workspace_id, &workbook, device).await;
+    assert_eq!(signed.len(), 1, "{signed:?}");
+    let (count, _) = retained_sealed(&hosted, workspace.workspace_id, &notebook, device).await;
+    assert_eq!(count, 0);
+    drop(runner);
+
     // The same roster id can exist in another workspace. An answer for that
     // occurrence cannot borrow the first device or outlive its own roster row.
     make_agent(
@@ -935,8 +1007,98 @@ async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner
         page.peer.close();
     }
     drop(approver);
+    drop(server);
+    drop(workspaces);
     hosted.agents.shutdown();
+    drop(hosted.roster);
     drop(hosted.web);
     hosted.server.shutdown().await;
+    let reopened = crate::harness::hosted::start(&owner, &node, state.path(), options()).await;
+    let restored = roster_write(&reopened, workspace.workspace_id, &workbook, device).await;
+    assert_eq!(
+        restored, signed,
+        "the same signed action is kept after reopening"
+    );
+    assert_eq!(
+        reopened
+            .server
+            .workspaces()
+            .unwrap()
+            .resource_document(&workspace.workspace, &notebook.app_id, &notebook.document)
+            .await
+            .unwrap()
+            .unwrap(),
+        notebook_before,
+        "the denied action left no persisted document change",
+    );
+    let book = reopened
+        .server
+        .workspaces()
+        .unwrap()
+        .resource_document(&workspace.workspace, SHEETS, &workbook.document)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut book = automerge::AutoCommit::load(&book).unwrap();
+    let contexts: Vec<_> = book
+        .get_changes(&[])
+        .iter()
+        .filter_map(|change| tilo_actions::ActionContext::from_change_message(change.message()?))
+        .filter(|context| {
+            context.invoker.as_ref().is_some_and(|invoker| {
+                invoker.acting.agent_id() == Some(agent)
+                    && invoker
+                        .device
+                        .as_ref()
+                        .is_some_and(|from| from.id == hex::encode(device))
+            })
+        })
+        .collect();
+    assert_eq!(contexts.len(), 1, "{contexts:?}");
+    assert!(contexts[0].source_invocation.is_some());
+    reopened.agents.shutdown();
+    drop(reopened.web);
+    reopened.server.shutdown().await;
     endpoint.close().await;
+}
+
+async fn roster_write(
+    hosted: &super::Hosted,
+    workspace: WorkspaceId,
+    route: &DocumentRoute,
+    device: [u8; 32],
+) -> Vec<collab_types::SignedOp> {
+    hosted
+        .server
+        .workspace_documents()
+        .retained(workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|body| body.author == device)
+        .filter_map(|body| {
+            let neighbour_wire::NeighbourMsg::AppDocument {
+                app_id,
+                document_id,
+                envelope,
+                ..
+            } = postcard::from_bytes(&body.body).ok()?
+            else {
+                return None;
+            };
+            (app_id == route.app_id && document_id == route.document).then_some(*envelope)
+        })
+        .inspect(|op| {
+            assert_eq!(op.author.as_bytes(), &device);
+            assert!(op.encryption.is_some());
+            collab_types::verify_op(op).unwrap();
+            assert!(op.claims.iter().any(|claim| {
+                claim
+                    .invoker
+                    .as_ref()
+                    .and_then(tilo_actions::Acting::agent_id)
+                    == Some(super::hosted_agent_turns::SCOUT)
+            }));
+        })
+        .collect()
 }

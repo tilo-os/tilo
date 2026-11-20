@@ -1308,7 +1308,7 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
 
 /// A model that takes each of `calls` in turn through `tilo_do`, the tool its turn has for an
 /// action, and then says `said`.
-fn does_then_answers(
+pub(super) fn does_then_answers(
     calls: Vec<serde_json::Value>,
     said: &'static str,
     asked: Arc<Mutex<Vec<ModelRequest>>>,
@@ -1344,7 +1344,7 @@ fn does_then_answers(
 
 /// What the turn's tools answered the model's call `call`, as the request after it carries it:
 /// the words, and whether they were told as a failure.
-fn answered_to(request: &ModelRequest, call: &str) -> (String, bool) {
+pub(super) fn answered_to(request: &ModelRequest, call: &str) -> (String, bool) {
     request
         .messages
         .iter()

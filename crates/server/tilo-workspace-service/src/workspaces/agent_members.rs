@@ -25,7 +25,10 @@
 //! on. Its delegation's expiry needs no governor at all: members check it on
 //! every change.
 
+use tilo_actions::remote::Caller;
+use tilo_agent_session::workspace_actions::ViewReadPolicy;
 use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::delegation::Delegation;
 use tilo_user_identity::DeviceCert;
 
 use super::{GovernedWorkspace, Workspaces, system_time};
@@ -191,7 +194,17 @@ impl Workspaces {
     ) -> Option<[u8; 32]> {
         let governed = self.workspace(&workspace.to_string()).await.ok()?;
         let governed = governed.lock().await;
-        let peer = governed.peer();
+        self.approved_agent(&governed.peer(), workspace, agent, keeper)
+            .map(|(cert, _)| cert.device_public_key)
+    }
+
+    fn approved_agent(
+        &self,
+        peer: &super::StatePeer,
+        workspace: WorkspaceId,
+        agent: &str,
+        keeper: &[u8; 32],
+    ) -> Option<(DeviceCert, Delegation)> {
         let now_ns = tilo_clock::unix_now_ns();
         let trust = self.trust();
         let mut matching = peer
@@ -214,13 +227,62 @@ impl Workspaces {
                 };
                 (trust.cert(&peer, now_ns).is_ok()
                     && trust.delegation(&device, workspace, now_ns).as_ref() == Some(&delegation))
-                .then_some(device)
+                .then_some((peer.cert, delegation))
             });
-        let device = matching.next().filter(|_| matching.next().is_none());
-        drop(matching);
+        matching.next().filter(|_| matching.next().is_none())
+    }
+
+    /// Current authority of the exact roster device serving this turn. The
+    /// live session supplies its certificate and root-signed delegation.
+    pub async fn roster_action_policy(
+        &self,
+        workspace: WorkspaceId,
+        caller: &Caller,
+        session: (&DeviceCert, &Delegation),
+        inside: Option<(&str, &str)>,
+    ) -> Option<ViewReadPolicy> {
+        let agent = caller.acting().agent_id()?;
+        let keeper = caller.user_public_key()?;
+        let created_at = caller.roster_created_at()?;
+        let entry = self
+            .hosted_roster_agent(workspace, agent, keeper, None)
+            .await?;
+        if entry.created_at != created_at {
+            return None;
+        }
+        let governed = self.workspace(&workspace.to_string()).await.ok()?;
+        let governed = governed.lock().await;
+        let peer = governed.peer();
+        let (cert, delegation) = self.approved_agent(&peer, workspace, agent, keeper)?;
+        if caller.device_public_key() != Some(&cert.device_public_key)
+            || session != (&cert, &delegation)
+        {
+            return None;
+        }
+        let now = tilo_clock::wall();
+        if let Some((app, document)) = inside {
+            if !delegation.permits_app(app) {
+                return None;
+            }
+            peer.check_document_read(cert.device_public_key, app, document, now)
+                .ok()?;
+        }
+        let access = peer.permissions(cert.device_public_key, now).ok()?;
+        let sandbox = peer.governance().governed_sandbox().ok()?;
         drop(peer);
+        let workspace = governed.workspace().to_owned();
         drop(governed);
-        device
+        let agent_bound = entry.turn_rules(&workspace);
+        Some(ViewReadPolicy {
+            workspace,
+            access,
+            sandbox,
+            unix_time: now
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .ok()?
+                .as_secs(),
+            agent_bound,
+        })
     }
 
     /// Bring agent `device`'s place in every workspace this server governs in line

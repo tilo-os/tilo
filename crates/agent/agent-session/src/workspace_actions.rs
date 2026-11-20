@@ -125,7 +125,7 @@ use jobs::Jobs;
 use keys::{Keys, catalogue_keys};
 use naming::{is_part, named, named_document};
 use outcome::{
-    commit_failed, confirms, exact_view_query, log_outcome, opens_as_its_own, rejected, settles,
+    commit_failed, confirms, exact_view_query, opens_as_its_own, rejected, settles,
     speaks_for_a_member,
 };
 use part_wait::Invoked;
@@ -369,6 +369,9 @@ impl WorkspaceActions {
     /// their own current access, and refuses what it does not allow.
     fn admits(&self, caller: &Caller, request: &InvokeRequest) -> bool {
         let on_resource = resource_of(&request.target.provider, "").is_some();
+        if caller.roster_created_at().is_some() {
+            return on_resource;
+        }
         let link_request =
             request.target.address.action == ui::tilo_resource::share::SHARE_LINK && on_resource;
         let on_workspace = provider_workspace(&request.target.provider).is_some();
@@ -1301,7 +1304,7 @@ struct Worker {
     /// first, by workspace: the thread answers others meanwhile.
     joining: HashMap<WorkspaceId, VecDeque<Waiting>>,
     /// The caller's device whose request it serves now ([`publish::Worker::writer`](publish)).
-    writing_as: Option<[u8; 32]>,
+    writing_as: Option<Caller>,
     clock: u64,
     /// What the apps call the records the host changes, read in a confined
     /// worker kept for the next ([`publish`]).
@@ -2267,58 +2270,6 @@ impl Worker {
         ))
     }
 
-    fn invoke(&mut self, workspace_id: WorkspaceId, invocation: InvocationId) -> InvocationReceipt {
-        let (caller, request) = match self.claim(invocation) {
-            Ok(claimed) => claimed,
-            Err(receipt) => return receipt,
-        };
-        // A question to the person changes nothing, so it applies nothing where
-        // the agent is seen working: it waits on the person's devices.
-        if let Some(receipt) = self.ask_in_words(workspace_id, &caller, &request) {
-            return receipt;
-        }
-        self.voice(
-            workspace_id,
-            &caller,
-            &request,
-            (&InteractionPhase::Applying, None),
-        );
-        if let Some(receipt) = self.terminal(workspace_id, &caller, &request) {
-            return receipt;
-        }
-        let everything = timing_start();
-        self.wrote.clear();
-        self.writing_as = caller.device_public_key().copied();
-        let ran = self.invoke_or_ask(workspace_id, &caller, &request);
-        self.writing_as = None;
-        let (outcome, unsaved) = match ran {
-            Ok(ran) => ran,
-            Err(receipt) => {
-                self.log().running.remove(&invocation);
-                return receipt;
-            }
-        };
-        timing_done("action.total", everything);
-        log_outcome(&request.target, &outcome);
-        if outcome.is_ok() {
-            let link = self.changed_link(workspace_id, &caller, &request);
-            if let Some(entry) = self.log().entries.get_mut(&invocation) {
-                entry.link = link;
-            }
-        }
-        let left = outcome
-            .as_ref()
-            .ok()
-            .and_then(|(_, left_at)| left_at.as_ref());
-        self.voice(
-            workspace_id,
-            &caller,
-            &request,
-            (&session_voice::ended_phase(&outcome), left),
-        );
-        self.settle(invocation, outcome, unsaved)
-    }
-
     /// Mark `invocation` running, naming its caller and what it asked: a
     /// receipt instead when it is unknown or already finished.
     #[allow(
@@ -2531,6 +2482,9 @@ impl Worker {
         // with a row of it ([`direct`]).
         let withheld = self.kept_from_caller(caller, &route, &state);
         if let Some(package) = packaged {
+            if caller.roster_created_at().is_some() {
+                return Err(Outcome::Rejected(ActionCallError::NotPermitted));
+            }
             if state.stale(request.revision.as_deref()) {
                 return Err(Outcome::Rejected(ActionCallError::StaleRevision));
             }
@@ -2921,7 +2875,7 @@ impl Worker {
                 {
                     return Err(Outcome::Rejected(ActionCallError::NotPermitted));
                 }
-                let actor = bounded::member_actor(&policy, who, &self.own_device)
+                let actor = bounded::member_actor(&policy, who, &self.own_device, None)
                     .map_err(Outcome::Rejected)?;
                 (who.person.clone(), actor, Some(permissions))
             }

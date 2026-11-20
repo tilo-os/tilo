@@ -737,6 +737,46 @@ impl AgentSessions {
             })
     }
 
+    /// The live, joined signing session and its exact approved delegation for
+    /// a caller bound by the hosted roster runner.
+    #[must_use]
+    pub fn live_roster(
+        &self,
+        workspace: WorkspaceId,
+        caller: &tilo_actions::remote::Caller,
+    ) -> Option<(tilo_session_client::Link, Delegation)> {
+        let device = caller.device_public_key()?;
+        let sessions = self.links.lock_recover();
+        let session = sessions.get(device)?;
+        let (created_at, delegation) = session.roster.as_ref()?;
+        if caller.roster_created_at() != Some(*created_at)
+            || caller.workspace().and_then(WorkspaceId::parse) != Some(workspace)
+            || delegation.scope.workspaces.as_slice() != [workspace]
+            || delegation.delegate.agent_id() != caller.acting().agent_id()
+            || caller.acting().app().is_some()
+            || caller
+                .acting_for_person()
+                .and_then(|person| tilo_actions::PersonId::parse(person).ok())
+                .and_then(|person| person.root())
+                != Some(delegation.user_public_key)
+            || Some(&delegation.user_public_key) != caller.user_public_key()
+            || &delegation.device_public_key != device
+            || tilo_clock::unix_now_ns() >= delegation.expires_at_ns
+        {
+            return None;
+        }
+        let link = session.link.clone();
+        let delegation = delegation.clone();
+        drop(sessions);
+        let status = link.status();
+        (status.authenticated
+            && status.phase == tilo_session_client::TransportPhase::Connected
+            && &status.device == device
+            && status.workspaces.get(&workspace) == Some(&true)
+            && status.serving.contains(&workspace))
+        .then_some((link, delegation))
+    }
+
     /// `link` now serves agent `device`'s changes.
     pub(crate) fn joined(
         &self,
