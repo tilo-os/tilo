@@ -170,7 +170,7 @@ impl Worker {
     /// more the more it holds. `None` when the record is not held here as
     /// itself (a part of a chain, opened with the record it is beside).
     pub(super) fn mounted_views(
-        &self,
+        &mut self,
         workspace: WorkspaceId,
         caller: &Caller,
         route: &DocumentRoute,
@@ -181,18 +181,28 @@ impl Worker {
         }
         let mounted = self.mounted.get(route)?;
         let refuse = || ActionCallError::UnknownAction;
-        let link = self.shared.link.get()?;
+        let link = std::sync::Arc::clone(self.shared.link.get()?);
         let Some(policy) = link.view_read_policy(workspace, caller, &route.app_id, &route.document)
         else {
             return Some(Err(refuse()));
         };
-        let views = match mounted.app.resource_views(wanted, &policy) {
-            Ok(views) => views,
-            Err(error) => {
+        // Its worker reads the views: off this thread once the call outlasts one.
+        let app = std::sync::Arc::clone(&mounted.app);
+        let (wanted, wanted_policy) = (wanted.clone(), policy.clone());
+        let views = match self
+            .hand(workspace, route, move || {
+                app.resource_views(&wanted, &wanted_policy)
+            })
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: "the app's worker is still answering".into(),
+            }) {
+            Ok(Ok(views)) => views,
+            Ok(Err(error)) => {
                 return Some(Err(ActionCallError::Unavailable {
                     reason: error.to_string(),
                 }));
             }
+            Err(held) => return Some(Err(held)),
         };
         Some(Ok((
             views,

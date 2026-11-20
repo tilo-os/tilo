@@ -1003,11 +1003,22 @@ impl Worker {
         window: (usize, usize),
     ) -> Result<(usize, Vec<tilo_actions::remote::CatalogueRow>), ActionCallError> {
         let key = self.bounded_replica(workspace_id, who, route, state)?;
-        Ok(self
+        let Some(app) = self
             .bounded
             .get(&key)
-            .map(|held| held.held.app.survey_page(query, window))
-            .unwrap_or_default())
+            .map(|held| std::sync::Arc::clone(&held.held.app))
+        else {
+            return Ok((0, Vec::new()));
+        };
+        // Its worker reads the page: off this thread once it outlasts a call.
+        let holder = self.holder_of(route);
+        let query = query.clone();
+        self.hand(workspace_id, &holder, move || {
+            app.survey_page(&query, window)
+        })
+        .ok_or_else(|| ActionCallError::Unavailable {
+            reason: "the app's worker is still answering".into(),
+        })
     }
 
     /// The action at `address` as `who` is offered it on the record at

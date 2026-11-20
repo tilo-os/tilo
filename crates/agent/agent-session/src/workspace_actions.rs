@@ -1788,6 +1788,7 @@ impl Worker {
             queued,
             matches!(job, Job::Invoke { .. } | Job::Catalogue { .. }),
         );
+        self.call_waits.begin();
         self.take(queued, job);
         // What it ended, it ended now, as a listing of runs says.
         self.log().stamp_ended();
@@ -1856,9 +1857,21 @@ impl Worker {
                     } else {
                         self.catalogue_page(workspace_id, &caller, &query)
                     };
-                    // Parts of the chains it lists on their way: it waits off this thread for
-                    // them, and every other request of the workspace is served meanwhile.
-                    if self.hold_for_chains() || self.part_waits.held() {
+                    // Its app's worker answers it off this thread, or the parts of the chains
+                    // it lists are on their way: it waits for either there, and every other
+                    // request of the workspace is served meanwhile.
+                    if self.call_waits.held() {
+                        self.await_call(
+                            workspace_id,
+                            queued,
+                            Job::Catalogue {
+                                workspace_id,
+                                query,
+                                caller,
+                                done,
+                            },
+                        );
+                    } else if self.hold_for_chains() || self.part_waits.held() {
                         self.await_part(
                             workspace_id,
                             Job::Catalogue {
@@ -2109,13 +2122,15 @@ impl Worker {
         if self.catalogue.get(&route.app_id).is_none() {
             return self.packaged_descriptors(workspace_id, bounded, route);
         }
-        match bounded {
-            Some(who) => self
-                .bounded_actions(workspace_id, who, route, state)
-                .map_err(|error| error.to_string()),
-            None => self
-                .mount(route, state)
-                .map(|mounted| live_actions(&mounted.app)),
+        if let Some(who) = bounded {
+            self.bounded_actions(workspace_id, who, route, state)
+                .map_err(|error| error.to_string())
+        } else {
+            // Its app's worker answers it: read off this thread once it outlasts a call.
+            let app = Arc::clone(&self.mount(route, state)?.app);
+            let holder = self.holder_of(route);
+            self.hand(workspace_id, &holder, move || live_actions(&app))
+                .ok_or_else(|| "the app's worker is still answering".to_owned())
         }
     }
 
@@ -2247,7 +2262,7 @@ impl Worker {
     }
 
     fn view_catalogue_page(
-        &self,
+        &mut self,
         workspace: WorkspaceId,
         caller: &Caller,
         query: &CatalogueQuery,
@@ -2269,10 +2284,29 @@ impl Worker {
             .ok_or_else(refuse)?
             .app_id();
         // The document is decoded and the app's resource published in a
-        // confined worker, never here.
-        let mut views = ConfinedViews::load(app_id, source.bytes)
-            .map_err(|reason| ActionCallError::Unavailable { reason })?;
-        let descriptors = views.views(wanted, &first).map_err(|_| refuse())?;
+        // confined worker, never here. Reading it outlasts a slow call: it goes on off this
+        // thread, and this request takes its answer when it is applied again.
+        let revision = source.revision;
+        let read = {
+            let (wanted, first, route) = (wanted.clone(), first.clone(), route.clone());
+            move || -> Result<(Vec<_>, Vec<_>), ActionCallError> {
+                #[cfg(feature = "test-support")]
+                crate::workspace_actions::slowed::wait(&route.cluster_id, &route.app_id);
+                let mut views = ConfinedViews::load(app_id, source.bytes)
+                    .map_err(|reason| ActionCallError::Unavailable { reason })?;
+                let descriptors = views.views(&wanted, &first).map_err(|_| refuse())?;
+                let current = views.views(&wanted, &first).map_err(|_| refuse())?;
+                Ok((descriptors, current))
+            }
+        };
+        let Some(read) = self.hand(workspace, &route, read) else {
+            return Err(ActionCallError::Unavailable {
+                reason: "the app's worker is still answering".into(),
+            });
+        };
+        let (descriptors, current) = read?;
+        // The policy the worker read under stands as it was: one that moved while the worker
+        // answered is refused, as one the worker was told of would be.
         let fresh = link
             .view_read_policy(workspace, caller, &route.app_id, &route.document)
             .ok_or_else(refuse)?;
@@ -2282,7 +2316,6 @@ impl Worker {
         {
             return Err(refuse());
         }
-        let current = views.views(wanted, &fresh).map_err(|_| refuse())?;
         let rows = descriptors
             .into_iter()
             .filter(|descriptor| current.contains(descriptor))
@@ -2290,7 +2323,7 @@ impl Worker {
                 CatalogueRow::for_action(provider.to_owned(), route.app_id.clone(), descriptor)
             })
             .collect();
-        let mut page = CataloguePage::from_rows(source.revision, rows, query);
+        let mut page = CataloguePage::from_rows(revision, rows, query);
         // Where the record opens is the caller's to know once they may read
         // it, views or not: a record's root links to the record alone.
         page.locator = link.view_locator(&fresh.workspace, provider);
@@ -2309,7 +2342,7 @@ impl Worker {
     }
 
     fn registered_read_catalogue(
-        &self,
+        &mut self,
         workspace: WorkspaceId,
         caller: &Caller,
         provider: &str,
@@ -2328,20 +2361,39 @@ impl Worker {
             .workspace;
         // Document rows retain their existing workspace revision and invocation
         // path. Only an exact registered-read target uses this source revision.
-        let mut read = reads::CanonicalRead::prepare(
-            &self.catalogue,
-            link.as_ref(),
-            workspace,
-            caller,
-            &route,
-        )
-        .ok()?;
-        let descriptors = read.operations();
+        // The read is mounted in a worker, off this thread once the call outlasts one.
+        let prepared = {
+            let (catalogue, link, caller, asked) = (
+                self.catalogue.clone(),
+                link.clone(),
+                caller.clone(),
+                route.clone(),
+            );
+            let mut hand =
+                call_wait::Handing::of(&mut self.call_waits, &mut self.part_waits, &self.shared);
+            hand.hand(workspace, &route, move || {
+                let Ok(mut read) = reads::CanonicalRead::prepare(
+                    &catalogue,
+                    link.as_ref(),
+                    workspace,
+                    &caller,
+                    &asked,
+                ) else {
+                    return Ok::<_, String>(None);
+                };
+                let descriptors = read.operations();
+                read.recheck(link.as_ref(), workspace, &caller, &asked)?;
+                Ok(Some((read, descriptors)))
+            })
+        };
+        // `None` for a worker still answering: the request waits off this thread for it.
+        let prepared = prepared?;
+        let Ok(Some((read, descriptors))) = prepared else {
+            return None;
+        };
         if !descriptors.iter().any(|entry| &entry.address == target) {
             return None;
         }
-        read.recheck(link.as_ref(), workspace, caller, &route)
-            .ok()?;
         let rows = descriptors
             .into_iter()
             .map(|descriptor| CatalogueRow::for_action(provider, route.app_id.clone(), descriptor))

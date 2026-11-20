@@ -499,42 +499,81 @@ impl Worker {
                 .map(Some)
                 .map_err(|error| Box::new(api_outcome(&error)));
         }
-        let Ok(mut read) = reads::CanonicalRead::prepare(
-            &self.catalogue,
-            link.as_ref(),
-            workspace,
-            caller,
-            &route,
-        ) else {
-            // A missing canonical read source must not replace or grant the
-            // ordinary document API. Unregistered effects stay refused there.
+        self.registered_read(workspace, caller, &route, request, revision, arguments)
+    }
+
+    /// The registered read `request` asks of the record at `route` in `workspace`, mounted in
+    /// a worker this request has not prepared it in: what it answered, or `None` for a record
+    /// that offers no such read. The mount is a worker process replaying the record's retained
+    /// history, so the call goes on off this thread once it outlasts one, and this request
+    /// takes its answer when it is applied again.
+    fn registered_read(
+        &mut self,
+        workspace: WorkspaceId,
+        caller: &Caller,
+        route: &DocumentRoute,
+        request: &InvokeRequest,
+        revision: Option<String>,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Option<ActionOutput>, Box<Outcome>> {
+        let Some(link) = self.shared.link.get().cloned() else {
             return Ok(None);
         };
-        if !read
-            .operations()
-            .iter()
-            .any(|entry| entry.address == request.target.address)
-        {
-            return Ok(None);
-        }
-        if revision
-            .as_deref()
-            .is_some_and(|revision| revision != read.revision())
-        {
-            return Err(Box::new(Outcome::Rejected(ActionCallError::Refused {
-                reason: "the committed source changed".into(),
+        let address = request.target.address.clone();
+        let asked = {
+            let (catalogue, link, asked_caller, asked) =
+                (self.catalogue.clone(), link, caller.clone(), route.clone());
+            let mut hand =
+                call_wait::Handing::of(&mut self.call_waits, &mut self.part_waits, &self.shared);
+            hand.hand(
+                workspace,
+                route,
+                move || -> Result<Option<ActionOutput>, Box<Outcome>> {
+                    let Ok(mut read) = reads::CanonicalRead::prepare(
+                        &catalogue,
+                        link.as_ref(),
+                        workspace,
+                        &asked_caller,
+                        &asked,
+                    ) else {
+                        // A missing canonical read source must not replace or grant the
+                        // ordinary document API. Unregistered effects stay refused there.
+                        return Ok(None);
+                    };
+                    if !read
+                        .operations()
+                        .iter()
+                        .any(|entry| entry.address == address)
+                    {
+                        return Ok(None);
+                    }
+                    if revision
+                        .as_deref()
+                        .is_some_and(|revision| revision != read.revision())
+                    {
+                        return Err(Box::new(Outcome::Rejected(ActionCallError::Refused {
+                            reason: "the committed source changed".into(),
+                        })));
+                    }
+                    read.invoke(
+                        link.as_ref(),
+                        workspace,
+                        &asked_caller,
+                        &asked,
+                        &address,
+                        &arguments,
+                    )
+                    .map(Some)
+                    .map_err(|error| Box::new(api_outcome(&error)))
+                },
+            )
+        };
+        let Some(asked) = asked else {
+            return Err(Box::new(Outcome::Rejected(ActionCallError::Unavailable {
+                reason: "the app's worker is still answering".into(),
             })));
-        }
-        read.invoke(
-            link.as_ref(),
-            workspace,
-            caller,
-            &route,
-            &request.target.address,
-            &arguments,
-        )
-        .map(Some)
-        .map_err(|error| Box::new(api_outcome(&error)))
+        };
+        asked
     }
 
     /// A new record of `app` in `workspace`, created by the host's own person

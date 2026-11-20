@@ -65,7 +65,9 @@ impl Worker {
                 .is_some_and(|most| resource_count(rows) > most)
         };
         for route in routes {
-            if rows_weight(&rows) >= wanted || resources_full(&rows) {
+            // A record's worker reads its rows off this thread: the page waits for it there
+            // and is assembled when this request is applied again.
+            if self.call_waits.held() || rows_weight(&rows) >= wanted || resources_full(&rows) {
                 break;
             }
             let provider = record_provider(route);
@@ -89,6 +91,9 @@ impl Worker {
                     rows.extend(listed.into_iter().map(kept));
                 }
                 Err(error) => {
+                    if self.call_waits.held() {
+                        break;
+                    }
                     self.did_not_mount(route, error.clone());
                     failed.get_or_insert_with(|| (route.clone(), error));
                 }
@@ -100,13 +105,21 @@ impl Worker {
                 .get(&self.holder_of(route))
                 .and_then(|mounted| mounted.merged.clone());
             if let Some(link) = self.shared.link.get().cloned()
-                && let Ok(operations) = self.canonical.operations(
-                    &self.catalogue,
-                    link.as_ref(),
-                    (workspace_id, caller),
-                    route,
-                    heads.as_deref(),
-                )
+                && let Ok(operations) = {
+                    let mut hand = super::call_wait::Handing::of(
+                        &mut self.call_waits,
+                        &mut self.part_waits,
+                        &self.shared,
+                    );
+                    self.canonical.operations(
+                        &self.catalogue,
+                        &link,
+                        (workspace_id, caller),
+                        route,
+                        heads.as_deref(),
+                        &mut hand,
+                    )
+                }
             {
                 take(
                     &mut rows,
@@ -188,13 +201,17 @@ impl Worker {
             }
             return Ok((total, page));
         }
-        match bounded {
-            Some(who) => self
-                .bounded_page(workspace_id, who, (route, state), query, window)
-                .map_err(|error| error.to_string()),
-            None => self
-                .mount(route, state)
-                .map(|mounted| mounted.app.survey_page(query, window)),
+        if let Some(who) = bounded {
+            self.bounded_page(workspace_id, who, (route, state), query, window)
+                .map_err(|error| error.to_string())
+        } else {
+            let app = std::sync::Arc::clone(&self.mount(route, state)?.app);
+            let holder = self.holder_of(route);
+            let query = query.clone();
+            self.hand(workspace_id, &holder, move || {
+                app.survey_page(&query, window)
+            })
+            .ok_or_else(|| "the app's worker is still answering".to_owned())
         }
     }
 

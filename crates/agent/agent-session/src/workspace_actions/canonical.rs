@@ -11,13 +11,14 @@
 //! where they were, checked against the caller's current policy each time.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use tilo_actions::ActionDescriptor;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::Caller;
 use tilo_server_protocol::WorkspaceId;
 
-use super::{AppCatalogue, DocumentRoute, WorkspaceDocumentsLink, reads};
+use super::{AppCatalogue, DocumentRoute, WorkspaceDocumentsLink, call_wait, reads};
 
 /// Prepared reads kept at most: each is a worker process.
 const KEPT: usize = 8;
@@ -53,10 +54,11 @@ impl CanonicalReads {
     pub(super) fn operations(
         &mut self,
         catalogue: &AppCatalogue,
-        link: &dyn WorkspaceDocumentsLink,
+        link: &Arc<dyn WorkspaceDocumentsLink>,
         (workspace, caller): (WorkspaceId, &Caller),
         route: &DocumentRoute,
         heads: Option<&[[u8; 32]]>,
+        hand: &mut call_wait::Handing<'_>,
     ) -> Result<Vec<ActionDescriptor>, String> {
         if self.none.contains(&route.app_id) {
             return Ok(Vec::new());
@@ -67,17 +69,47 @@ impl CanonicalReads {
             && kept.heads == heads
         {
             kept.used = self.clock;
-            if kept.read.recheck(link, workspace, caller, route).is_ok() {
+            if kept
+                .read
+                .recheck(link.as_ref(), workspace, caller, route)
+                .is_ok()
+            {
                 return Ok(kept.read.operations());
             }
         }
         self.kept.remove(route);
-        let mut read = reads::CanonicalRead::prepare(catalogue, link, workspace, caller, route)?;
-        if !read.registers()? {
+        // A read the host has not prepared yet is mounted in a worker, the record's whole
+        // retained history replayed into it: it goes on off this thread once the call outlasts
+        // one, and this request takes its answer when it is applied again.
+        let prepared = {
+            let (catalogue, link, caller, asked) = (
+                catalogue.clone(),
+                Arc::clone(link),
+                caller.clone(),
+                route.clone(),
+            );
+            hand.hand(workspace, route, move || {
+                let mut read = reads::CanonicalRead::prepare(
+                    &catalogue,
+                    link.as_ref(),
+                    workspace,
+                    &caller,
+                    &asked,
+                )?;
+                if !read.registers()? {
+                    return Ok::<_, String>(None);
+                }
+                let operations = read.operations();
+                Ok(Some((read, operations)))
+            })
+        };
+        let Some(prepared) = prepared else {
+            return Err("the app's worker is still answering".to_owned());
+        };
+        let Some((read, operations)) = prepared? else {
             self.none.insert(route.app_id.clone());
             return Ok(Vec::new());
-        }
-        let operations = read.operations();
+        };
         if let Some(heads) = heads {
             while self.kept.len() >= KEPT {
                 let Some(oldest) = self
