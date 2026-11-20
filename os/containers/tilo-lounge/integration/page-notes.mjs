@@ -1,9 +1,10 @@
-// A person on a workspace's Notes as a web page: the page the server renders,
-// in headless Chromium beside the Lounge, walked as a person walks it — the
-// site's entry makes the browser a device, the page opens, a note is opened and
-// typed in, the browser goes Back and Forward, the page is reloaded at the
-// note's address, looked at at a phone's width, and opened again from a second
-// browser profile. What each step saw is kept, with a picture of it.
+// A person on a workspace as a web page: the page the server renders, in
+// headless Chromium beside the Lounge, walked as a person walks it — the
+// site's entry makes the browser a device, the page opens, a note is opened
+// and typed in, the browser goes Back and Forward, the page is reloaded at the
+// note's address, looked at at a phone's width, opened again from a second
+// browser profile, and then the workspace's own page and each app a person
+// opens in their first hour. What each step saw is kept, with a picture of it.
 //
 // usage: node page-notes.mjs SITE_URL SERVER_ORIGIN WORKSPACE OUT_DIR
 //
@@ -26,6 +27,12 @@ const serverCertificate = await servedCertificate(server);
 const browser = await launch({args: [pinnedCertificates([siteCertificate, serverCertificate])]});
 let tab = null;
 const problems = [];
+
+// A person's window, in the two shapes the page lays itself out for: a
+// desktop's, where the columns stand beside each other, and a phone's.
+const WIDE = {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false};
+const PHONE = {width: 390, height: 844, deviceScaleFactor: 2, mobile: true};
+const sized = async size => tab.send('Emulation.setDeviceMetricsOverride', size);
 
 const step = (name, data) => { report.steps.push({name, ...data}); console.log(name, JSON.stringify(data)); };
 const shot = async name => { const png = await tab.screenshot().catch(() => null); if (png) writeFileSync(join(out, `${name}.png`), png); };
@@ -52,12 +59,16 @@ try {
   });
   const resetWire = () => { wire.doc = 0; wire.script = 0; wire.requests = []; wire.track = new Map(); };
 
+  // The entry offers the way in on its card, pressed as a person presses it.
   const arrive = async ({context, label}) => {
     tab = await browser.tab({context});
     await tab.send('Network.enable', {}).catch(() => {});
+    // The browser's own window is small, and a page narrower than its widest
+    // column shows one column at a time, as a narrow window does: a person at
+    // a desktop sees every column beside the others.
+    await sized(WIDE);
     tab.log.length = 0;
     await tab.navigate(site);
-    // The entry offers the way in on its card: pressed as a person presses it.
     for (let i = 0; i < 240; i++) {
       const state = await tab.evaluate(`(() => {
         if (['done', 'stopped'].includes(document.documentElement.dataset.arrival)) return document.documentElement.dataset.arrival;
@@ -91,6 +102,9 @@ try {
           titleField: page?.querySelector('textarea')?.value ?? null,
           fields: [...(page?.querySelectorAll('textarea, input[type=text], [contenteditable]') ?? [])].map(e => (e.value ?? e.innerText ?? '').slice(0, 40)),
           headings: [...(page?.querySelectorAll('h1, h2') ?? [])].map(e => e.innerText.trim().slice(0, 40)),
+          // What the page holds, for a reviewer of a step that did not do what
+          // a person would expect: the elements it shows, in order.
+          html: (page?.innerHTML ?? '').slice(0, 4000),
         });
       })()`));
     } catch (error) {
@@ -101,9 +115,11 @@ try {
     return seen;
   };
 
-  const openPage = async label => {
+  // A page of the workspace, by the app's name: no name is the workspace's
+  // own front page.
+  const openPage = async (label, app = 'notes') => {
     resetWire();
-    await tab.navigate(`${site}/w/${workspace}/notes`);
+    await tab.navigate(`${site}/w/${workspace}${app ? `/${app}` : ''}`);
     const shown = await until('document.querySelector("#tilo-page [data-p]")', 60_000);
     step(`${label}: page shown`, {
       ms: shown,
@@ -114,6 +130,7 @@ try {
       requests: wire.requests.slice(0, 8),
     });
     if (shown === null) problems.push(`${label}: the page never showed`);
+    return shown;
   };
 
   const type = async text => {
@@ -136,11 +153,19 @@ try {
       const on = document.elementFromPoint(x, y);
       return JSON.stringify({x, y, on: on === el || el.contains(on) ? 'the thing' : (on?.outerHTML ?? '').slice(0, 120)});
     })()`);
-    if (!at) return '';
+    if (!at) return 'nothing to press';
     const {x, y, on} = JSON.parse(at);
     for (const type of ['mousePressed', 'mouseReleased']) {
       await tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'left', clickCount: 1});
     }
+    return on;
+  };
+  // A press the walk needs to have landed: a person who finds nothing there,
+  // or finds something covering it, has a page that does not work.
+  const press = async (expression, what) => {
+    const on = await click(expression);
+    if (on === 'nothing to press') problems.push(`there was no ${what} to press`);
+    else if (on !== 'the thing') problems.push(`pressing ${what} landed on ${on}`);
     return on;
   };
 
@@ -151,21 +176,21 @@ try {
   await openPage('first open');
   await look('01-notes-wide');
 
-  await click(`document.querySelector('#tilo-page [data-a=activate][aria-label="New note"]')`);
+  await press(`document.querySelector('#tilo-page [data-a=activate][aria-label="New note"]')`, 'New note');
   if (await until(`document.activeElement === ${title}`, 15_000) === null) problems.push('a new note did not put the caret in its title');
   await type('Garden plan for the spring');
   if (await until(`${title}?.value === 'Garden plan for the spring'`, 15_000) === null) problems.push('typing a title did not show in the field');
   await sleep(800);
   await look('02-typed');
 
-  await click(`document.querySelector('#tilo-page [data-a=activate][aria-label="New note"]')`);
-  await until(`document.activeElement === ${title}`, 15_000);
+  await press(`document.querySelector('#tilo-page [data-a=activate][aria-label="New note"]')`, 'New note');
+  if (await until(`document.activeElement === ${title}`, 15_000) === null) problems.push('a second new note did not put the caret in its title');
   await type('Groceries for the week');
-  await until(`${title}?.value === 'Groceries for the week'`, 15_000);
+  if (await until(`${title}?.value === 'Groceries for the week'`, 15_000) === null) problems.push('typing the second title did not show in the field');
   await sleep(800);
   await look('03-second-note');
 
-  await click(`${rows}.find(r => (r.innerText || '').includes('Garden')) ?? null`);
+  await press(`${rows}.find(r => (r.innerText || '').includes('Garden')) ?? null`, 'the Garden note in the list');
   if (await until(`${title}?.value === 'Garden plan for the spring'`, 15_000) === null) problems.push('a row click did not open that note');
   await sleep(500);
   await look('04-other-note');
@@ -193,19 +218,39 @@ try {
   const afterReload = await look('07-reloaded');
   if (afterReload.titleField !== 'Garden plan for the spring') problems.push(`a reload did not show the note its address names (it showed ${JSON.stringify(afterReload.titleField)})`);
 
-  await tab.send('Emulation.setDeviceMetricsOverride', {width: 390, height: 844, deviceScaleFactor: 2, mobile: true});
+  await sized(PHONE);
   await sleep(800);
   await look('08-phone');
-  const pressed = await click(`[...document.querySelectorAll('#tilo-page [data-a=back]')].find(e => e.offsetParent) ?? null`);
+  const pressed = await press(`[...document.querySelectorAll('#tilo-page [data-a=back]')].find(e => e.offsetParent) ?? null`, 'the phone back');
   await sleep(900);
   step('phone back', {pressed, visibleRows: await tab.evaluate(`${rows}.filter(r => r.offsetParent).length`)});
   await look('09-phone-back');
-  await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false});
+  await sized(WIDE);
 
   const context = await browser.context();
   await arrive({context, label: 'second'});
   await openPage('second profile');
   await look('10-second-profile');
+
+  // The workspace itself, which lists its apps, and each app a person opens
+  // in their first hour: every one of them is the page the server renders.
+  await openPage('home', '');
+  const home = await look('11-home');
+  if (home.refused) problems.push(`the workspace's own page was refused (${home.refused})`);
+  const links = await tab.evaluate(`[...document.querySelectorAll('#tilo-page a[href^="/w/"]')].map(a => a.getAttribute('href'))`);
+  step('home apps', {links});
+  if (links.length < 5) problems.push(`the workspace's page offers ${links.length} apps`);
+  await press(`document.querySelector('#tilo-page a[href$="/notes"]')`, 'Notes on the workspace page');
+  if (await until(`location.pathname.endsWith('/notes') && document.querySelector('#tilo-page [data-p]')`, 30_000) === null) {
+    problems.push('an app on the workspace page did not open');
+  }
+  await look('12-home-to-notes');
+  for (const app of ['file-explorer', 'tasks', 'chat', 'mail', 'settings']) {
+    await openPage(app, app);
+    const seen = await look(`13-${app}`);
+    if (seen.refused) problems.push(`${app}: refused (${seen.refused})`);
+    else if (!seen.elements) problems.push(`${app}: shows nothing`);
+  }
 } catch (error) {
   report.error = String(error?.stack ?? error).slice(0, 4000);
   problems.push(report.error);

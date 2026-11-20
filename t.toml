@@ -6450,11 +6450,12 @@ outputs = ["/target/page-tour/tour/**", "/target/page-tour/*.log"]
 timeout_secs = 1800
 default = false
 
-# A workspace's Notes as a web page, walked by a person in a headless browser against the Lounge's
-# server (integration/page-notes.mjs): the site's entry makes the browser a device, the page opens,
-# a note is opened and typed in, Back and Forward are given, a reload lands on the note its address
-# names, a phone's width shows one column, and a second browser profile opens the same page. The
-# pictures and what each step saw are kept for a reviewer.
+# A person on a workspace as a web page, walked in a headless browser against the Lounge's server
+# (integration/page-notes.mjs): the site's entry makes the browser a device, the page opens, a note
+# is opened and typed in, Back and Forward are given, a reload lands on the note its address names,
+# a phone's width shows one column, a second browser profile opens the same page, and then the
+# workspace's own page and each app a person opens in their first hour. The pictures and what each
+# step saw are kept for a reviewer.
 [[check]]
 name = "page-notes"
 # No egress: as page-tour, the walk meets its Lounge on loopback (direct-lounge.sh) and its
