@@ -358,7 +358,7 @@ impl Conversations {
             }
             let id = personal_learned::record_id(workspace);
             let previous = Self::previous_learned(opened, person);
-            return personal_learned::change(personal, &id, agent, previous, invoke)
+            return personal_learned::change(personal, &id, agent, previous.as_deref(), invoke)
                 .map_err(tilo_actions::ApiError::Failed);
         }
         Err(unknown())

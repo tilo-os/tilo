@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn a_chunk_the_listing_does_not_name_yet_lists_it_again() {
         let mut index = FilesIndex::default();
-        assert_eq!(index.read(0, &index_of(&[]), None), 0);
+        assert_eq!(index.read(0, &index_of(&[]), None, None), 0);
         assert!(index.settled(), "the tree names no chunk yet");
         // A write to a chunk the listing read before it existed names it in the index.
         index.landed(&tree::chunk_document_id(1));
@@ -268,7 +268,7 @@ mod tests {
             Some(0),
             "the tree's own document is read to list the chunk"
         );
-        assert_eq!(index.read(0, &index_of(&[1]), None), 0);
+        assert_eq!(index.read(0, &index_of(&[1]), None, None), 0);
         assert_eq!(index.next(), Some(1), "the chunk it names is read next");
     }
 
@@ -286,14 +286,14 @@ mod tests {
             "a find looks for a tree it never read"
         );
         // The tree read before its chunks were listed is read again too.
-        assert_eq!(index.read(0, &index_of(&[]), None), 0);
+        assert_eq!(index.read(0, &index_of(&[]), None, None), 0);
         index.look_for_the_tree();
         assert_eq!(
             index.next(),
             Some(0),
             "a find looks again at a tree that lists no chunk"
         );
-        assert_eq!(index.read(0, &index_of(&[1]), None), 0);
+        assert_eq!(index.read(0, &index_of(&[1]), None, None), 0);
         index.pending(1);
         index.look_for_the_tree();
         assert_eq!(
@@ -301,7 +301,7 @@ mod tests {
             Some(1),
             "a find looks again at a chunk it never read"
         );
-        assert_eq!(index.read(1, &chunk_of("a.txt"), None), 1);
+        assert_eq!(index.read(1, &chunk_of("a.txt"), None, None), 1);
         index.look_for_the_tree();
         assert!(
             index.settled(),

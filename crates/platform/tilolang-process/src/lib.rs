@@ -768,7 +768,9 @@ impl TilolangProcess {
         collab_types::app_surface::register_package(&bundle.meta.app, &surface);
         // The documents the route names: the app's own, or those of the id it had before, kept
         // where that app kept them. The changes made there name the app's surface too.
-        let route = manager.primary_route().map(|joined| joined.route());
+        let route = manager
+            .primary_route()
+            .map(collaboration::AcceptedRoute::route);
         if route.is_some_and(|route| !reads_protected_route(route, spec.access.as_ref())) {
             return Err(AdmitError::Join(
                 "the workspace role does not grant read access to this record".into(),
@@ -842,6 +844,24 @@ impl TilolangProcess {
         if let Some(anchor) = opening.reveal.take() {
             hosted.reveal(anchor);
         }
+        self.attach_origin(opening, &mut hosted)?;
+        opening.reached("opened");
+        let stages: Vec<String> = opening
+            .reached
+            .iter()
+            .map(|(stage, after)| format!("{stage}={}", after.as_micros()))
+            .collect();
+        tracing::info!(
+            target: tilo_startup_metrics::LAUNCH_LATENCY_TARGET,
+            app = opening.app,
+            instance = opening.instance,
+            stages_us = stages.join(","),
+            "tilolang instance opened"
+        );
+        Ok(Step::Open(Box::new(hosted), watched))
+    }
+
+    fn attach_origin(&self, opening: &mut Opening, hosted: &mut Hosted) -> Result<(), AdmitError> {
         // Its types with a mail server as origin are kept in step through the app's connector,
         // which holds the network and the credentials this process has none of.
         if let Some(origin) = opening.origin.take() {
@@ -859,20 +879,7 @@ impl TilolangProcess {
                 );
             }
         }
-        opening.reached("opened");
-        let stages: Vec<String> = opening
-            .reached
-            .iter()
-            .map(|(stage, after)| format!("{stage}={}", after.as_micros()))
-            .collect();
-        tracing::info!(
-            target: tilo_startup_metrics::LAUNCH_LATENCY_TARGET,
-            app = opening.app,
-            instance = opening.instance,
-            stages_us = stages.join(","),
-            "tilolang instance opened"
-        );
-        Ok(Step::Open(Box::new(hosted), watched))
+        Ok(())
     }
 
     /// Take the openings a step further: those done run, those that failed end, and those whose

@@ -634,11 +634,16 @@ mod tests {
         )?;
         store.save_channels(&encoded)?;
         let reopened = StoredKeys::load(&store);
-        assert_eq!(
-            tilo_workspace_keys::KeyStorage::peers(&reopened).read(workspace)?,
-            Some(b"old sealed keys".to_vec()),
-        );
-        assert!(tilo_workspace_keys::KeyStorage::scopes(&reopened).is_empty());
+        if tilo_workspace_keys::KeyStorage::peers(&reopened)
+            .read(workspace)?
+            .as_deref()
+            != Some(b"old sealed keys")
+        {
+            return Err("the earlier keys changed on reopen".into());
+        }
+        if !tilo_workspace_keys::KeyStorage::scopes(&reopened).is_empty() {
+            return Err("the earlier keys unexpectedly have document scopes".into());
+        }
         Ok(())
     }
 
@@ -678,10 +683,9 @@ mod tests {
         if tilo_workspace_keys::KeyStorage::held(&reopened) != vec![scope.group()] {
             return Err("the reopened state does not list its channel".into());
         }
-        assert_eq!(
-            tilo_workspace_keys::KeyStorage::scopes(&reopened),
-            vec![scope]
-        );
+        if tilo_workspace_keys::KeyStorage::scopes(&reopened) != vec![scope] {
+            return Err("the document scope changed on reopen".into());
+        }
         Ok(())
     }
 }

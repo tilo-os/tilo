@@ -1445,7 +1445,7 @@ impl Hosted {
         let Some(access) = &*access else {
             return;
         };
-        let app = TreePath::workspace(&route.cluster_id.to_string()).app(&route.app_id);
+        let app = TreePath::workspace(route.cluster_id.to_string()).app(&route.app_id);
         let context = Context::at_time(tilo_clock::wall());
         for descriptor in descriptors {
             let need = descriptor.contract.need();
@@ -2048,21 +2048,29 @@ impl Hosted {
             return Ok(output);
         }
         if encoded.type_id == <OpenEffect as tilo_resource::Effect>::OPERATION {
-            // A search hit, or an agent's `open`: the window shows what it names.
-            let open = <OpenEffect as tilo_resource::Effect>::from_payload(&encoded.payload)
-                .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
-            self.instance.open_requests().borrow_mut().push(open);
-            // A person who chose it comes to see it: the window showing it comes forward. An
-            // agent's `open` leaves the person where they are.
-            if by_person {
-                self.instance.activate_window();
-            }
-            return Ok(tilo_actions::ActionOutput::default());
+            return self.open_from_action(&encoded.payload, by_person);
         }
         Err(Refused::new(
             "action_unknown",
             format!("the tilolang host does not run `{}`", encoded.type_id),
         ))
+    }
+
+    fn open_from_action(
+        &mut self,
+        payload: &[u8],
+        by_person: bool,
+    ) -> Result<tilo_actions::ActionOutput, Refused> {
+        // A search hit, or an agent's `open`: the window shows what it names.
+        let open = <OpenEffect as tilo_resource::Effect>::from_payload(payload)
+            .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
+        self.instance.open_requests().borrow_mut().push(open);
+        // A person who chose it comes to see it: the window showing it comes forward. An
+        // agent's `open` leaves the person where they are.
+        if by_person {
+            self.instance.activate_window();
+        }
+        Ok(tilo_actions::ActionOutput::default())
     }
 
     /// Answer `read` (`tilo_resource::read`): what the document holds, through the runtime, now or

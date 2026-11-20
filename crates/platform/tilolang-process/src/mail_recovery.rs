@@ -95,16 +95,16 @@ pub(crate) fn arguments(
             {
                 continue;
             }
-            let mut row = vec![key];
-            for field in DRAFT_FIELDS {
-                row.push(text(&archive, &draft, field)?);
-            }
+            let fields = DRAFT_FIELDS
+                .into_iter()
+                .map(|field| text(&archive, &draft, field))
+                .collect::<Result<Vec<_>, _>>()?;
             let sent = archive
                 .runtime()
                 .read(&draft, "sent")
                 .map_err(|error| error.to_string())?;
-            if matches!(sent, Value::Bool(false)) || known_unsent(&chunks, &draft, &row[1..]) {
-                drafts.push(row);
+            if matches!(sent, Value::Bool(false)) || known_unsent(&chunks, &draft, &fields) {
+                drafts.push(std::iter::once(key).chain(fields).collect::<Vec<_>>());
             }
             if drafts.len() == BATCH {
                 break;

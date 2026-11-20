@@ -2452,6 +2452,7 @@ mod listing_stream_tests {
             for i in 0..3_u64 {
                 ns.create_file(flat, format!("f{i}"), None, 0, i).unwrap();
             }
+            drop(ns);
             flat
         };
         let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);

@@ -1249,6 +1249,7 @@ params = [{ name = "edit", required = true, schema = { type = "object" } }]
     let mut envelope = peer
         .draft_write(
             (STORE_FIXTURE, &route.document),
+            None,
             &frame,
             Some(&mut |plaintext| {
                 keys.seal_content(

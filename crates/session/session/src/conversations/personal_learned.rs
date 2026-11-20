@@ -52,16 +52,16 @@ pub(super) fn change(
     personal: &PersonalSync,
     id: &DocumentId,
     agent: &str,
-    earlier: Option<Vec<u8>>,
+    earlier: Option<&[u8]>,
     invoke: Invoke<Learned>,
 ) -> Result<(), String> {
     personal
         .publish(|store, key, now| {
             let held = store.document(CHAT_OWNER, id.as_str());
             let mut record = held
-                .as_ref()
-                .or(earlier.as_ref())
-                .map_or_else(|| Ok(Replica::new()), |bytes| open(bytes))?
+                .as_deref()
+                .or(earlier)
+                .map_or_else(|| Ok(Replica::new()), open)?
                 .as_acting(tilo_actions::Acting::agent(agent).handed())
                 .in_app(CHAT_OWNER, "Chat");
             let now_ms = now
