@@ -2560,6 +2560,7 @@ fn publish_own(
     own: Own<'_>,
     offered_bound: &dyn Fn(&Declaration) -> bool,
 ) -> tilo_actions::ResourceSpec {
+    let _phase = crate::profiling::Phase::start("resource.published");
     // The name the person reads, in their language: the kind's catalogue
     // entry while the publisher kept the name the declaration gave it.
     let label = crate::label::published(
@@ -2580,26 +2581,26 @@ fn publish_own(
     // *type's* (`vocabulary.label`), never the record's own title: a channel
     // called "MKBHD" is a `channel`, not an `m k b h d`.
     resource = resource.with_type(crate::words::type_words(vocabulary.kind, vocabulary.label));
-    for decl in vocabulary.declarations().iter() {
+    let kept = own_specs(vocabulary);
+    for (decl, declared) in vocabulary.declarations().iter().zip(kept.declared.iter()) {
         let _phase = crate::profiling::Phase::start("resource.declaration_spec");
-        let mut spec = spec_of_declaration(decl);
-        if let Some(availability) = own.availability {
-            spec.type_mut().contract.availability = availability(decl.id);
-        }
-        // An item verb stays published here for a caller that names the
-        // item, saying it needs one: a listing holding no item leaves it to
-        // the items, which offer it bound. Another declaration a child offers
-        // with some of its arguments bound
-        // ([`items::bound`](crate::items::bound)) needs nothing in hand, and
-        // stays here for scripts, out of the palette's way.
-        resource = resource.with_action(if let Some(item) = decl.item {
-            spec.type_mut().contract.item = Some(item.to_owned());
-            spec
-        } else if offered_bound(decl) {
-            spec.for_audience(tilo_actions::Audience::Agents)
+        // Another declaration a child offers with some of its arguments
+        // bound ([`items::bound`](crate::items::bound)) needs nothing in
+        // hand, and stays here for scripts, out of the palette's way.
+        let mut spec = if decl.item.is_none() && offered_bound(decl) {
+            declared.for_agents.clone()
         } else {
-            spec
-        });
+            declared.offered.clone()
+        };
+        // Whether it can be taken now is the resource's own: its type is
+        // copied only where that differs from what the kept one says.
+        if let Some(availability) = own.availability {
+            let now = availability(decl.id);
+            if spec.contract.availability != now {
+                spec.type_mut().contract.availability = now;
+            }
+        }
+        resource = resource.with_action(spec);
     }
     for view in own.views {
         resource = resource.with_view(view);
@@ -2612,12 +2613,64 @@ fn publish_own(
         resource = resource.with_action(spec);
     }
     resource = resource
-        .with_action(apply_spec(vocabulary))
-        .with_action(group_spec(vocabulary));
+        .with_action(kept.apply.clone())
+        .with_action(kept.group.clone());
     if vocabulary.edits {
         resource = resource.with_action(field_edit_spec(vocabulary, own.now));
     }
     resource
+}
+
+/// The actions every resource of a vocabulary offers as its own, the same
+/// on each: its declarations, its typed edit and its group.
+struct OwnSpecs {
+    /// Each declaration's spec, in [`Vocabulary::declarations`]' order.
+    declared: Box<[DeclaredSpec]>,
+    apply: ActionSpec,
+    group: ActionSpec,
+}
+
+/// One declaration's spec as a resource offers it, and as it offers it to
+/// agents alone where a child offers the declaration bound.
+struct DeclaredSpec {
+    offered: ActionSpec,
+    for_agents: ActionSpec,
+}
+
+/// [`OwnSpecs`] of `vocabulary`, kept like every type the items of a kind
+/// share ([`crate::kept`]): building a declaration's spec builds its
+/// parameters and schema, and publishing each of a tracker's thousands of
+/// issues built every one of them again for each issue.
+fn own_specs(vocabulary: &'static Vocabulary) -> std::rc::Rc<OwnSpecs> {
+    thread_local! {
+        static KEPT: std::cell::RefCell<crate::kept::KeptTypes<TypeId, std::rc::Rc<OwnSpecs>>> =
+            std::cell::RefCell::default();
+    }
+    crate::kept::kept_type(&KEPT, (vocabulary.type_id)(), || {
+        let declared = vocabulary
+            .declarations()
+            .iter()
+            .map(|decl| {
+                let mut offered = spec_of_declaration(decl);
+                // An item verb stays published here for a caller that names
+                // the item, saying it needs one: a listing holding no item
+                // leaves it to the items, which offer it bound.
+                if let Some(item) = decl.item {
+                    offered.type_mut().contract.item = Some(item.to_owned());
+                }
+                let for_agents = offered.clone().for_audience(tilo_actions::Audience::Agents);
+                DeclaredSpec {
+                    offered,
+                    for_agents,
+                }
+            })
+            .collect();
+        std::rc::Rc::new(OwnSpecs {
+            declared,
+            apply: apply_spec(vocabulary),
+            group: group_spec(vocabulary),
+        })
+    })
 }
 
 /// Build the action a declaration produces for JSON arguments, validating them
