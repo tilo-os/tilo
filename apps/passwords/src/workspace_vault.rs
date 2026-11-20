@@ -90,10 +90,11 @@ impl WorkspaceVault {
     /// stale.
     fn poll(&self) {
         let mut state = self.state.borrow_mut();
-        let mut changed = false;
+        // What the window shows before the answers are taken: only a change of it is news to
+        // the window, so a password it shows stays shown while the server answers the same.
+        let (shown, troubled) = (state.entries.clone(), state.trouble.clone());
         if let Some(settled) = state.listing.as_ref().and_then(settled) {
             state.listing = None;
-            changed = true;
             match settled {
                 Settled::Entries(entries) => {
                     // An edit still on its way shows until the server answers it.
@@ -111,12 +112,10 @@ impl WorkspaceVault {
             match settled(&call) {
                 None => waiting.push(call),
                 Some(Settled::Entries(entries)) => {
-                    changed = true;
                     state.trouble = None;
                     answered = Some(entries);
                 }
                 Some(Settled::Refused(reason)) => {
-                    changed = true;
                     state.trouble = Some(reason);
                     // Show what the server keeps, not the edit it refused.
                     state.asked_at = None;
@@ -136,7 +135,7 @@ impl WorkspaceVault {
         if state.listing.is_none() && state.writes.is_empty() && grown_old {
             self.ask_entries(&mut state);
         }
-        if changed {
+        if !same_entries(shown.as_deref(), state.entries.as_deref()) || troubled != state.trouble {
             state.revision = state.revision.wrapping_add(1);
         }
     }
@@ -223,6 +222,20 @@ impl WorkspaceVault {
     }
 }
 
+/// Whether `a` and `b` are the same entries, in whatever order the server listed them.
+fn same_entries(a: Option<&[SecretItem]>, b: Option<&[SecretItem]>) -> bool {
+    fn by_id(entries: &[SecretItem]) -> Vec<&SecretItem> {
+        let mut sorted: Vec<&SecretItem> = entries.iter().collect();
+        sorted.sort_by(|x, y| x.id.cmp(&y.id));
+        sorted
+    }
+    match (a, b) {
+        (Some(a), Some(b)) => a.len() == b.len() && by_id(a) == by_id(b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 /// What `call` was answered, or `None` while it is still on its way.
 fn settled(call: &ui::InvocationCall) -> Option<Settled> {
     let refused = |reason: String| Some(Settled::Refused(reason));
@@ -252,5 +265,41 @@ fn settled(call: &ui::InvocationCall) -> Option<Settled> {
         ) => refused(reason),
         ui::Arrival::Failed(error) => refused(error.to_string()),
         ui::Arrival::Ready(_) | ui::Arrival::Pending { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use accounts::SecretItem;
+
+    use super::WorkspaceVault;
+
+    /// The server answering again with what the window shows is no change of it, so a
+    /// password the window shows stays shown; what another device changed is one.
+    #[test]
+    fn only_a_change_of_the_entries_is_news_to_the_window() {
+        let served = crate::served_vault::served();
+        let vault = WorkspaceVault::new(ui::RemoteActions::current());
+        let mut item = SecretItem::login("Bakery", "ada", "crumb-Loaf-42");
+        vault.put(&mut item).unwrap();
+        assert_eq!(vault.flush(), Ok(true));
+        let shown = vault.revision();
+
+        vault.state.borrow_mut().asked_at = None;
+        assert_eq!(vault.revision(), shown, "the same entries read again");
+        assert_eq!(vault.revision(), shown);
+
+        let mut other = SecretItem::login("Library", "ada", "shelf-7");
+        other.updated_unix = 1;
+        served
+            .kept
+            .lock()
+            .unwrap()
+            .insert(other.id.0.clone(), serde_json::to_value(&other).unwrap());
+        vault.state.borrow_mut().asked_at = None;
+        // One look asks the server again, the next takes its answer.
+        vault.revision();
+        assert_ne!(vault.revision(), shown, "an entry another device added");
+        assert_eq!(vault.list().len(), 2);
     }
 }

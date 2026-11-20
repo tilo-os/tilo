@@ -617,3 +617,53 @@ mod window_bar_tests {
         .unwrap_or_else(|error| panic!("{error}"));
     }
 }
+
+#[cfg(test)]
+mod reveal_tests {
+    use accounts::SecretItem;
+    use ui::prelude::TestApp;
+
+    use crate::window::PasswordsWindow;
+
+    /// A person who presses the eye of a password and confirms sees the password, in the
+    /// window they pressed it in.
+    #[test]
+    fn a_confirmed_reveal_shows_the_password() {
+        let _vault = crate::served_vault::served();
+        let mut model = crate::PasswordsModel::open();
+        let mut item = SecretItem::login("Bakery", "ada", "crumb-Loaf-42");
+        let id = model.save_item(&mut item).unwrap();
+        let mut app = TestApp::<super::PasswordsShell>::new().unwrap();
+        app.settle();
+        assert!(
+            app.surface_mut::<PasswordsWindow>().core_mut().open(&id),
+            "the saved login is listed"
+        );
+        app.settle();
+        press(&mut app, "Show password Password");
+        press(&mut app, "Reveal secret");
+        assert_eq!(
+            app.surface_mut::<PasswordsWindow>()
+                .core()
+                .revealed
+                .as_ref()
+                .map(|(_, value, _)| value.to_string()),
+            Some("crumb-Loaf-42".to_owned()),
+            "the confirmed reveal shows the password"
+        );
+    }
+
+    /// Click the middle of the control a person hears as `name`, as a pointer does.
+    fn press(app: &mut TestApp<super::PasswordsShell>, name: &str) {
+        let bounds = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.label() == Some(name) && !node.is_hidden())
+            .and_then(|(_, node)| node.bounds())
+            .unwrap_or_else(|| panic!("no control reads out as {name:?}"));
+        app.harness()
+            .click_at(bounds.x0.midpoint(bounds.x1), bounds.y0.midpoint(bounds.y1));
+        app.settle();
+    }
+}
