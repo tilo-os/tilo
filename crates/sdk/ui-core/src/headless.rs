@@ -300,6 +300,7 @@ pub struct FrameOutput<'a> {
     pub ime: Option<crate::ime::ImeWindowState>,
 }
 
+mod admission;
 mod caller_palette;
 mod capture;
 mod composition;
@@ -510,6 +511,8 @@ pub struct FrameHarness {
     /// The draw commands the frames drawn since construction encoded: how much a frame composed, in the
     /// drawing itself.
     drawn_commands: u64,
+    /// Whether frames paint, and whether what was painted last is still the frame.
+    admission: admission::Admission,
     /// Frames whose layout failed, skipped ([`Self::skip_frame`]).
     skipped_frames: crate::widget::SkippedFrames,
     /// The report of a frame this harness skipped on its, until a host
@@ -1489,6 +1492,7 @@ impl FrameHarness {
             replayed_draws: false,
             replayed_window_draws: 0,
             drawn_commands: 0,
+            admission: admission::Admission::default(),
             skipped_frames: crate::widget::SkippedFrames::default(),
             skip_report: None,
             suppress_pan_replay: false,
@@ -2564,6 +2568,7 @@ impl FrameHarness {
         self.drain_component_wakes();
         let queued_work = self.layout_requested
             || self.input_frame_pending
+            || self.admission.stale()
             || self.owner_service_layout_retired
             || self
                 .owner_wake_queue
@@ -2799,6 +2804,7 @@ impl FrameHarness {
         if self.scene_drawn != drawn {
             self.invalidate_local();
             self.scene_drawn = drawn;
+            self.admission.painting(drawn);
         }
     }
 
@@ -3923,8 +3929,9 @@ impl FrameHarness {
         let draw_phase = tilo_resource::profiling::Phase::start("ui.draw");
         let _grid = crate::widget::layout::enter_device_scale(self.input_scale);
         let transform = self.capture_draw_transform();
-        // A frame shown as its composition paints nothing; its bookings do.
-        let paint = self.scene_drawn;
+        // A frame shown as its composition paints nothing; its bookings do, as
+        // does a frame that only admits a replaced composition.
+        let paint = self.admission.paints(self.scene_drawn);
         let replay_now = crate::time::now();
         let only_moved = quiet
             && !stats.measured
@@ -4028,6 +4035,7 @@ impl FrameHarness {
         self.drawn_input = crate::input_generation::generation();
         self.drawn_outside = crate::outside_paint::on_screen();
         crate::outside_paint::forget_on_screen();
+        self.admission.ended(paint, self.scene_drawn);
         if let Some(history) = &mut self.history {
             if paint {
                 history.draw_overlay(
@@ -6547,38 +6555,6 @@ impl FrameHarness {
                 ?error,
                 "headless: a woken component's model was refused; retry remains pending"
             );
-        }
-    }
-
-    /// When the composition was replaced since it was admitted, retire its
-    /// raw nodes and admit the new one, keeping a surviving live focus.
-    ///
-    /// The frame this runs lays the new composition out and admits it, and
-    /// syncs nothing of it (see [`FrameHarness::sync_frame`]), so a
-    /// model that reports a structure change from every frame is laid out by
-    /// it once instead of asking for readmission after readmission.
-    fn readmit_replaced_composition(&mut self) {
-        if !self.take_composition_dirty() {
-            return;
-        }
-        let focus = crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref());
-        self.discard_layout_tree();
-        struct Unreadmitting;
-        impl Drop for Unreadmitting {
-            fn drop(&mut self) {
-                READMITTING.set(false);
-            }
-        }
-        let _unreadmitting = Unreadmitting;
-        READMITTING.set(true);
-        self.relayout();
-        if let Some(focus) = focus
-            && (self.focused.is_none() || self.focus_by_name)
-        {
-            self.focus_by_name = false;
-            // SAFETY: the relayout admitted this fresh, exclusively owned tree.
-            self.focused =
-                unsafe { focus.restore(&self.node_map, &self.bindings, None) }.or(self.focused);
         }
     }
 

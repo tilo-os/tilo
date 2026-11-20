@@ -19,6 +19,13 @@ impl FrameHarness {
         self.drawn_commands
     }
 
+    /// Frames that painted their scene since construction: each is one frame a page could present,
+    /// whether or not the tree painted a command in it.
+    #[must_use]
+    pub fn painted_frames(&self) -> u64 {
+        self.admission.painted_frames()
+    }
+
     /// Stop per-pass timing; subsequent frames pay nothing again.
     pub fn end_profiling(&mut self) {
         self.invalidate_local();

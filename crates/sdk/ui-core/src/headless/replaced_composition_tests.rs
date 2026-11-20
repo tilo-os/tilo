@@ -26,6 +26,45 @@ fn an_event_that_replaces_the_focused_control_is_followed_by_the_new_tree() {
     assert_eq!(frame.focus_order().len(), 1, "the new control is laid out");
 }
 
+/// Admitting the composition a widget replaced under its parent lays the new tree out and paints
+/// nothing: the frame that shows it paints the tree, once. A page presents what its frames paint, so
+/// a paint in the admitting pass is a whole window painted for a frame the next one painted again.
+#[test]
+fn admitting_a_replaced_composition_paints_nothing_and_the_frame_paints_it_once() {
+    let (mut frame, armed) = harness(ReplaceAt::Sync);
+    // As a page lays out on its own clock: the input leaves its frame to the next one.
+    frame.set_coalesce_input_frames(true);
+    armed.set(true);
+    frame.root.sync(&frame.state.doc, &frame.state.root);
+    assert!(!armed.get(), "the sync replaced the control");
+    let before = frame.painted_frames();
+    frame.send_host_event(&crate::synthetic_input::cursor_moved(100.0, 50.0));
+    assert_eq!(
+        frame.painted_frames(),
+        before,
+        "admitting the replacement paints nothing"
+    );
+    assert!(
+        frame.frame_schedule().needs_redraw,
+        "the frame that shows it is still due"
+    );
+    frame.poll_frame().expect("the frame lays out");
+    assert_eq!(
+        frame.painted_frames(),
+        before.saturating_add(1),
+        "the frame paints the tree once"
+    );
+    assert!(
+        !frame.poll_frame().expect("the next frame lays out"),
+        "nothing else is due"
+    );
+    assert_eq!(
+        frame.painted_frames(),
+        before.saturating_add(1),
+        "and nothing paints again"
+    );
+}
+
 #[test]
 fn remembering_focus_after_a_replacement_reads_the_live_tree() {
     let (mut frame, armed) = harness(ReplaceAt::Sync);
