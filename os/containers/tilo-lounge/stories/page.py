@@ -61,7 +61,10 @@ def verdict_of(story: dict | None, judged: dict | None, entry: dict) -> tuple[st
     if judged and judged.get("applicable") is False:
         return "green", "Completed, every step and cost within its budget. Nothing on screen to watch: this story is measured, not seen."
     if not judged or not judged.get("judged"):
-        return "red", (judged or {}).get("summary") or "Not judged."
+        # No model looked: the steps passed, and only a person watching the
+        # recording says more. Never green, never red for that alone.
+        return "unjudged", "Every step and cost within its budget. Not judged: " + (
+            (judged or {}).get("summary") or "no model looked at the recording.").removeprefix("Not judged: ") + " Watch the recording."
     if not judged.get("accept"):
         return "red", "The judge rejected it: " + judged.get("summary", "")
     return "green", "Completed within budget, and the model found nothing to reject. Watch the recording: a person’s look is the real test."
@@ -72,6 +75,7 @@ LABELS = {
     "red": "Red",
     "pending": "Not yet automated",
     "credentials": "Needs credentials",
+    "unjudged": "Passed, not judged",
     "missing": "No result",
 }
 
@@ -221,15 +225,16 @@ a { color: var(--accent); }
 .story { background: var(--sheet); border: 1px solid var(--line); border-radius: 10px; padding: 20px; display: grid; gap: 14px; min-width: 0; }
 .story[data-state="red"] { border-left: 4px solid var(--red); }
 .story[data-state="green"] { border-left: 4px solid var(--green); }
+.story[data-state="unjudged"] { border-left: 4px solid var(--amber); }
 .story-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .pill { font: 600 .72rem/1 var(--font-body); letter-spacing: .06em; text-transform: uppercase; padding: 5px 9px; border-radius: 999px; }
 .pill-green { background: var(--green-bg); color: var(--green); }
 .pill-red { background: var(--red-bg); color: var(--red); }
-.pill-credentials { background: var(--amber-bg); color: var(--amber); }
+.pill-credentials, .pill-unjudged { background: var(--amber-bg); color: var(--amber); }
 .pill-pending, .pill-missing { background: var(--grey-bg); color: var(--muted); }
 .intent { margin: 0; max-width: 75ch; }
 .reason { margin: 0; font-weight: 600; }
-.reason-red { color: var(--red); } .reason-green { color: var(--green); } .reason-credentials { color: var(--amber); }
+.reason-red { color: var(--red); } .reason-green { color: var(--green); } .reason-credentials, .reason-unjudged { color: var(--amber); }
 .reason-pending, .reason-missing { color: var(--muted); font-weight: 500; }
 .planned { margin: 0; padding-left: 1.4em; color: var(--muted); }
 .needs { margin: 0; color: var(--muted); }
@@ -283,11 +288,11 @@ def build(run_dir: pathlib.Path, extra: list[pathlib.Path]) -> str:
         states.append((state, entry))
         sections.append(section)
     # Red first, then green, then what is not automated yet.
-    rank = {"red": 0, "missing": 1, "green": 2, "credentials": 3, "pending": 4}
+    rank = {"red": 0, "missing": 1, "unjudged": 2, "green": 3, "credentials": 4, "pending": 5}
     ordered = [section for _, section in sorted(zip([rank[s] for s, _ in states], sections), key=lambda pair: pair[0])]
     counts = {state: sum(1 for s, _ in states if s == state) for state in rank}
     tally = "".join(f'<span class="pill pill-{state}">{counts[state]} {LABELS[state].lower()}</span>'
-                    for state in ["green", "red", "missing", "credentials", "pending"] if counts[state])
+                    for state in ["green", "unjudged", "red", "missing", "credentials", "pending"] if counts[state])
     when = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     revision = os.environ.get("T_COMMIT") or os.environ.get("SOURCE_REVISION") or ""
     return f"""<meta charset="utf-8">

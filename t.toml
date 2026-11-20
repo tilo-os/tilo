@@ -6336,7 +6336,9 @@ needs = ["lounge-check-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-
 # Its setup is not pinned: dnf installs the newest builds Fedora's updates repository holds, and pip
 # the newest Anthropic SDK, from hosts no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx python3-pip openssl ffmpeg-free && dnf clean all && python3 -m pip install --no-cache-dir anthropic", egress = { to = ["0.0.0.0/0", "::/0"] } }
-secrets = ["ANTHROPIC_API_KEY"]
+# The judge reads ANTHROPIC_API_KEY: declare it here as `secrets = ["ANTHROPIC_API_KEY"]` once t holds
+# that secret (a check with a secret then runs only on its schedule and by `t dispatch`). Until then
+# each story whose steps pass is "passed, not judged".
 env = { TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_VM_HOST = "0" }
 requires = ["arch=x86_64"]
 isolation = "nested"

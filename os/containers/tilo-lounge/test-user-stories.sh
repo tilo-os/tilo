@@ -17,8 +17,8 @@
 # Needs node, chromium, curl, bwrap, ffmpeg (the videos), the stack's
 # environment (TILO_SH_PROGRAMS, TILO_SH_LOUNGE, TILO_SH_SITE, TILO_SH_CADDY
 # naming what t built), TILO_CLI_BIN, and ANTHROPIC_API_KEY and the anthropic
-# Python package for the judge (without them each story is "not judged", which
-# is never green). A story marked `"stack": false` needs none of the stack's,
+# Python package for the judge (without them a story whose steps pass is
+# "passed, not judged": never green, and not red for that alone). A story marked `"stack": false` needs none of the stack's,
 # only what its driver says it does. Exits non-zero when any story walked is red.
 set -euo pipefail
 usage='usage: test-user-stories.sh WORK [STORY…]'
@@ -92,9 +92,13 @@ for story in "${asked[@]}"; do
     rm -rf "$TILO_SH_STATE"
   fi
   python3 -I "$stories/judge.py" "$out" || echo "FAIL: $story: the judge did not answer"
-  accepted=$(python3 -I -c 'import json, sys; print(int(json.load(open(sys.argv[1])).get("accept", False)))' "$out/judge.json" 2>/dev/null || echo 0)
-  if ((status == 0 && accepted == 1)); then
+  # The model's verdict: 1 accepted (or nothing on screen to judge), 0 rejected, 2 no model
+  # looked. Only a rejection makes a story whose steps passed red.
+  verdict=$(python3 -I -c 'import json, sys; j = json.load(open(sys.argv[1])); print(1 if j.get("accept") and j.get("judged", True) is not False or j.get("applicable") is False else 2 if not j.get("judged") else 0)' "$out/judge.json" 2>/dev/null || echo 2)
+  if ((status == 0 && verdict == 1)); then
     echo "GREEN $story"
+  elif ((status == 0 && verdict == 2)); then
+    echo "PASSED, NOT JUDGED $story"
   else
     echo "RED $story"
     red+=("$story")
