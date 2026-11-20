@@ -308,11 +308,6 @@ final class TiloSourceTests: XCTestCase {
               touch();
               return said(null);
             }
-            // What a page that opens the workspace's agents publishes of them, where it does.
-            if (window.pageAgents && resource === 'tilo.workspace.agent' && action === 'read')
-              return said({kind: 'tilo.workspace.agent', agents: window.pageAgents.map(one => ({item: 'tilo.workspace.agent/agents/' + one.id, name: one.name}))});
-            if (window.pageAgents && resource.startsWith('tilo.workspace.agent/agents/') && action === 'read')
-              return said(window.pageAgents.find(one => one.id === resource.split('/')[2]) ?? null);
             return refuse(resource, action);
           },
         };
@@ -708,8 +703,8 @@ final class TiloSourceTests: XCTestCase {
     func testTheHostIsAskedWhenTheDeviceGetsInAndNotOnEveryChange() async throws {
         try await start()
         try await enter(device: true)
-        try await until("the host was asked on the way in") {
-            (try? await self.page("return String(window.hostAsked.length)")) == "11"
+        try await until("the device's entry was asked on the way in") {
+            (try? await self.page("return String(window.asks.filter(what => what !== 'agents read').length)")) == "11"
         }
         // Ten changes of Chat's records: the conversation follows, and the host is asked nothing.
         for n in 0..<10 {
@@ -717,12 +712,16 @@ final class TiloSourceTests: XCTestCase {
         }
         try await until("the conversation followed") { self.held.count == 10 }
         try await Task.sleep(for: .milliseconds(300))
-        let asked = try await page("return JSON.stringify(window.hostAsked)")
+        let asked = try await page("return JSON.stringify(window.asks.filter(what => what !== 'agents read'))")
         // The first is what she was told so far: its log whole, read before her conversation is said,
         // so that nothing old is told again. The last four are what came while she was away, then the
         // ask her server is to hold until the log moves. This one answers it at once with nothing,
         // three times in a row, and is asked no more.
         XCTAssertEqual(asked, #"["tilo.telling list","tilo.models list","tilo.vault list","tilo.learned list","tilo.telling read","tilo.events list","tilo.connections list","tilo.telling since-you-left","tilo.telling list","tilo.telling list","tilo.telling list"]"#)
+        // The workspace's agents are Assistant's: her server is asked for them on the way in and
+        // nothing of them per change, however many changes follow.
+        let roster = try await page("return String(window.asks.filter(what => what === 'agents read').length)")
+        XCTAssertEqual(roster, "1", "the workspace's agents are read once on the way in")
     }
 
     func testWhatItLearnedAndWhatIsImportantAreThePersonsOwnOnTheirHost() async throws {
@@ -1347,24 +1346,34 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(kept, #"[["reed",false]]"#)
     }
 
-    func testAPageThatReachesNoServerFindsTheAssistantInWhatItHoldsAndMakesNone() async throws {
+    /// The page shows Chat alone, which keeps no roster, and a page that hands an app no way
+    /// to its server offers none anywhere: the main chat says so, nothing is listed, and none
+    /// is made on what no page holds.
+    func testAPageThatReachesNoServerOffersNoAssistantAndMakesNone() async throws {
         try await start(.assistant)
-        try await enter(device: false, "window.byKind = true; window.pageAgents = [kept('reed', {name: 'Reed'})]")
-        try await source.send(Draft(text: "Hello"), to: .main)
-        let sent = try await sentTo()
-        XCTAssertEqual(sent, [["kind": "agent", "id": "reed", "name": "Reed"]])
-        let made = try await page("return String(window.heard.filter(h => h.action === 'create-agent').length)")
-        XCTAssertEqual(made, "0")
-    }
-
-    func testWhereNothingOffersTheWorkspacesAgentsTheMainChatSaysSoAndFindsThemWhenThePageHoldsThem() async throws {
-        try await start(.assistant)
-        try await run("window.byKind = true; location.hash = '#/w/ws-1/so.tilo.chat'; enter(false)")
+        var listed: [SubAgent] = []
+        let listening = Task { for await agents in self.source.subAgents() { listed = agents } }
+        defer { listening.cancel() }
+        try await enter(device: false, "window.byKind = true")
         try await until("the main chat says so") {
             self.setups.last == .noAssistant("This Tilo does not let an app find or make your assistant yet")
         }
-        // An agent the page holds a moment later is found at the page's next word. None is made.
-        try await run("window.pageAgents = [kept('reed', {name: 'Reed'})]; touch()")
+        let made = try await page("return String(window.heard.filter(h => h.action === 'create-agent').length)")
+        XCTAssertEqual(made, "0")
+        XCTAssertTrue(listed.isEmpty, "nothing is listed")
+    }
+
+    /// Where nothing offers the workspace's agents the main chat says so. Where her device's
+    /// entry comes in a moment later, her press finds her assistant in her server's word.
+    func testWhereNothingOffersTheWorkspacesAgentsTheMainChatSaysSoAndFindsThemWhenTheDeviceGetsIn() async throws {
+        try await start(.assistant)
+        try await run("window.byKind = true; window.agents = [kept('reed', {name: 'Reed'})]; location.hash = '#/w/ws-1/so.tilo.chat'; enter(false)")
+        try await until("the main chat says so") {
+            self.setups.last == .noAssistant("This Tilo does not let an app find or make your assistant yet")
+        }
+        // The page hands her device's entry over: what her server says is found when she presses.
+        try await run("enter(true)")
+        try await source.makeAssistant()
         try await until("the assistant is found") { if case .noAssistant = self.setups.last { false } else { true } }
         try await source.send(Draft(text: "Hello"), to: .main)
         let sent = try await sentTo()
@@ -1615,9 +1624,9 @@ final class TiloSourceTests: XCTestCase {
         var listed: [SubAgent] = []
         let listening = Task { for await agents in self.source.subAgents() { listed = agents } }
         defer { listening.cancel() }
-        try await enter(device: false, """
+        try await enter(device: true, """
             window.byKind = true;
-            window.pageAgents = [kept('reed', {name: 'Reed'}),
+            window.agents = [kept('reed', {name: 'Reed'}),
               kept('coder', {name: 'Usage drop', created_at: 1794900002000,
                 sub: {role: 'Coder', stands: {$variant: 'working'}, coding: {harness: 'claude-code', harness_name: 'Claude Code'}}}),
               kept('early', {name: 'Sign-in change', created_at: 1794900001000,
@@ -1642,7 +1651,7 @@ final class TiloSourceTests: XCTestCase {
         defer { listening.cancel() }
         try await enter(device: true, """
             window.byKind = true;
-            window.pageAgents = [kept('reed', {name: 'Reed'}),
+            window.agents = [kept('reed', {name: 'Reed'}),
               kept('coder', {name: 'Usage drop', sub: {role: 'Coder', stands: {$variant: 'working'}}})]
             """)
         try await until("the sub-agent is listed") { listed.count == 1 }
@@ -1651,6 +1660,31 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(JSON(text: asked)?.array?.count, 1)
         let stopped = try await page("return JSON.stringify(window.stopped)")
         XCTAssertEqual(stopped, #"{"agent":"coder"}"#)
+    }
+
+    /// The page shows Chat alone and holds no roster of its own: the workspace's agents are
+    /// Assistant's, and her server is where the sub-agents and the day are read from. The
+    /// page's mount is asked nothing of them.
+    func testTheSubAgentsAndTheDayAreHerServersRosterThoughThePageHoldsChatAlone() async throws {
+        try await start(.assistant)
+        var listed: [SubAgent] = []
+        var seen = Supervision()
+        let agents = Task { for await now in self.source.subAgents() { listed = now } }
+        let supervision = Task { for await now in self.source.supervision() { seen = now } }
+        defer { agents.cancel(); supervision.cancel() }
+        try await enter(device: true, """
+            window.byKind = true;
+            window.agents = [kept('assistant', {name: 'Assistant', spend_limit_micros: 5000000,
+                spent: {day: '\(AssistantDay().today)', cost_micros: 1250000}}),
+              kept('coder', {name: 'Usage drop', sub: {role: 'Coder', stands: {$variant: 'working'}}})]
+            """)
+        try await until("the sub-agent is listed") { listed.count == 1 }
+        try await until("the day is counted") { seen.usage.spentTodayMicros == 1_250_000 }
+        XCTAssertEqual(listed.map(\.title), ["Usage drop"])
+        XCTAssertEqual(seen.usage.dailyLimitMicros, 5_000_000)
+        // Nothing of the roster is read of the page: it holds Chat, which keeps none.
+        let ofPage = try await page("return String(window.heard.filter(call => String(call.resource).includes('tilo.workspace.agent')).length)")
+        XCTAssertEqual(ofPage, "0")
     }
 }
 #endif

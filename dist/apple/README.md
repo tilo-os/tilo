@@ -286,8 +286,11 @@ What keeps it the app's alone:
 **The assistant's source** (`TiloSource`, `Sources/AssistantTilo`) is `AssistantSource` on all
 of this: the app as a device of its person. The conversation, a question that waits and what
 was learned are what Chat keeps, read through the page's mount at the
-page's word of a change; the sub-agents are the workspace's agents, which Assistant keeps
-(`tilo.workspace.agent`). A page whose read of Chat's messages names a conversation and the
+page's word of a change. The sub-agents are the workspace's agents, which Assistant keeps
+(`tilo.workspace.agent`), and the page shows Chat alone: they, the assistant's day and the
+places it works come from her server through the device's entry, read when the device gets
+in and again when the workspace says Assistant changed what it keeps. A page whose read of
+Chat's messages names a conversation and the
 fields it wants answers each conversation whole in one read; an older page is read message by
 message. Chat names who wrote a message by their kind (`{"person": …}`, `{"agent": …}`) and
 spells the conversation of a person and an agent from the two (`ChatMember`,
@@ -327,9 +330,10 @@ active agent the person keeps that no outside client connects as and that is nob
 sub-agent, the earliest made. Where the server answers that the person keeps none, the app
 makes one through that same resource, with its own `create-agent` and then the action
 that has the server answer for it, as Tilo's own Assistant window does. Only the server's
-word makes one: a page that just got in may not hold the workspace's agents yet. On a page
-that hands an app no way to its server, the assistant is found in what the page publishes of
-the workspace's agents, and nothing is made. No setting names an agent. What is in the way is
+word makes one: a page that just got in may not have handed its device's entry over yet. On
+a page that hands an app no way to its server, nothing says which agents the workspace keeps
+and the page publishes none of them: the main chat says so, and nothing is made. No setting
+names an agent. What is in the way is
 said in the main chat (`AssistantSource.setup()`): that the assistant is being set up, or
 the server's own sentence where it refused, with Try again.
 
