@@ -1549,8 +1549,9 @@ impl Device {
         let mut line = String::new();
         if let Err(error) = BufReader::new(stream).read_line(&mut line) {
             panic!(
-                "{} did not answer {request}: {error}; its session last said:\n{}",
+                "{} did not answer {request}: {error}; its threads:\n{}\nits session last said:\n{}",
                 self.label,
+                threads_of(&self.control),
                 self.read_line_of_log(),
             );
         }
@@ -2531,4 +2532,34 @@ fn copy_dir(from: &Path, to: &Path) {
             std::fs::set_permissions(&target, permissions).expect("a mode");
         }
     }
+}
+
+/// What each thread of the session whose control socket is `control` is in, as its liveness socket
+/// beside it answers: a session that stopped answering says where it waits.
+fn threads_of(control: &Path) -> String {
+    let asked = UnixStream::connect(tilo_liveness::socket_path(control)).and_then(|mut stream| {
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        stream.write_all(b"{\"op\":\"threads\"}\n")?;
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line)?;
+        Ok(line)
+    });
+    let answer = match asked.map(|line| serde_json::from_str::<tilo_liveness::Answer>(&line)) {
+        Ok(Ok(answer)) => answer,
+        Ok(Err(error)) => return format!("its liveness socket answered no report: {error}"),
+        Err(error) => return format!("its liveness socket did not answer: {error}"),
+    };
+    let tilo_liveness::Answer::Threads(threads) = answer else {
+        return format!("{answer:?}");
+    };
+    threads
+        .iter()
+        .map(|thread| {
+            format!(
+                "thread {} {} {} {}:\n{}",
+                thread.tid, thread.name, thread.state, thread.wait, thread.backtrace
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
