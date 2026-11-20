@@ -377,11 +377,18 @@ impl PersonModels {
         }
     }
 
-    /// The providers linked by name, then any other, with its form once it
-    /// is asked for.
+    /// The providers linked by name the person has not linked yet, then any
+    /// other, with its form once it is asked for. One the person linked is
+    /// listed once, among theirs, with its key and whatever it needs.
     fn ready_made_rows<B: ModelBindings>(&self, bind: &B) -> Vec<Item> {
         let mut items: Vec<Item> = READY_MADE
             .iter()
+            .filter(|preset| {
+                !self
+                    .providers()
+                    .iter()
+                    .any(|provider| provider.endpoint == preset.endpoint())
+            })
             .map(|preset| {
                 let link =
                     Button::new(&format!("models.link.{}", preset.slug()), &t("models-link"))

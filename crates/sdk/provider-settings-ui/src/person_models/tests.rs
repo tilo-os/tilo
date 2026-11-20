@@ -444,6 +444,16 @@ fn a_key_the_provider_refuses_is_asked_for_again() {
     assert_eq!(models.key.provider, None);
     let waiting = said(models.first_model_sections(&Unbound));
     assert!(waiting.contains("Choose a model"), "{waiting}");
+    // One Anthropic, among the person's providers: never offered again to link.
+    assert!(
+        !waiting.contains(Preset::ANTHROPIC.description()),
+        "the linked provider is not offered again: {waiting}"
+    );
+    assert_eq!(
+        waiting.matches("Gemini models from").count(),
+        1,
+        "{waiting}"
+    );
 
     type_key(&models, "anthropic", GOOD_KEY);
     settle(&mut models);
