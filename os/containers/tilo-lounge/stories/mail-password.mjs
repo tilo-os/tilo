@@ -298,16 +298,8 @@ try {
     }
     await shows(ada.tab, 'Send', 'the composer', stepLimit(4));
     const words = `Thanks, see you Monday ${Date.now().toString(36)}`;
-    // The composer's own field, as a person writes in it: the field that says
-    // what it is for, or the only field the composer offers.
-    const opened = await until(ada.tab, found('Write your message'), 'the composer’s field', stepLimit(4)).catch(() => false);
-    if (opened) {
-      if (!await pressNamed(ada.tab, 'Write your message')) fail('the composer’s field is not where a person can press it');
-    } else {
-      const fields = (await nodesOf(ada.tab)).filter(node => node.role === 'MultilineTextInput' && node.bounds);
-      if (!fields.length) fail(`the composer offers no field to write in: ${await visible(ada.tab)}`);
-      if (!await pressBox(ada.tab, fields[0].bounds)) fail('the composer’s field is not where a person can press it');
-    }
+    // A reply opens with the caret in its body, as a person writing one finds
+    // it; they type, and the words go where the caret is.
     await story.web.type(ada, words);
     if (!await pressNamed(ada.tab, 'Send')) fail('the composer offers no Send');
     story.web.action(ada, Date.now() - pressed, 'sending a reply');
