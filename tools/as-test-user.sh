@@ -93,14 +93,28 @@ tilo_test_user_own_tree() {
             exec {lock}>>"$path/.handover-$tilo_test_user.lock"
             flock "$lock"
             if [ ! -e "$mark" ]; then
-                chown -R -h -- "$tilo_test_user:" "$path" && : >"$mark"
+                tilo_test_user_give "$path" "$mark"
             fi
             exec {lock}>&-
         else
-            chown -R -h -- "$tilo_test_user:" "$path" && : >"$mark"
+            tilo_test_user_give "$path" "$mark"
         fi
     done
     return 0
+}
+
+# The tree `path` and its mark, where this root may give the tree away. A root that cannot (a
+# sandbox that may not change owners of what it inherited) hands nothing over: its tests keep its
+# user, as they do where the switch is impossible, instead of a test user owning part of a tree
+# and failing to write the rest.
+tilo_test_user_give() {
+    local path=$1 mark=$2
+    if ! chown -R -h -- "$tilo_test_user:" "$path" 2>/dev/null; then
+        echo "as-test-user: $path is not this root's to give: tests keep this job's user" >&2
+        tilo_test_user=
+        return 0
+    fi
+    : >"$mark"
 }
 
 # The home of whoever tests run as: the test user's, else this shell's own.
@@ -113,9 +127,14 @@ tilo_test_user_home() {
 }
 
 # COMMAND [ARG ...]: this shell becomes COMMAND, running as the test user.
+#
+# The change of user clears every capability set on its own, so nothing here asks setpriv to edit
+# one: `--inh-caps` needs CAP_SETPCAP, and a job sandbox holding only the capabilities the tree's
+# chown and the switch need fails there with "setpriv: keep process capabilities failed", before
+# the first test starts.
 tilo_test_user_exec() {
     [ -n "$tilo_test_user" ] || exec "$@"
-    exec setpriv --reuid="$tilo_test_user" --regid="$tilo_test_user" --init-groups --inh-caps=-all -- "$@"
+    exec setpriv --reuid="$tilo_test_user" --regid="$tilo_test_user" --init-groups -- "$@"
 }
 
 # Read into another script's shell, this file is the functions above.
