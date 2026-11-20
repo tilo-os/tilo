@@ -10,6 +10,10 @@ use super::{
     cannot_be_read_now, level_of, restart_pause,
 };
 
+/// How often [`McpServer::level_from`] reads on from where it stood at the revision a
+/// directory moved on to, while writes beside it keep moving it on.
+const RESUMES: u32 = 16;
+
 /// The rows a [`Level`] was read from, where each of its pages after the
 /// first started, and, when the read stopped at its bound before the last
 /// page, where the directory goes on: a listing paging past what was read
@@ -47,6 +51,17 @@ impl Level {
             Some((_, whole)) if self.unread() => whole,
             _ => &self.children,
         }
+    }
+
+    /// Whether the provider's cursors the level was read by are row offsets ([`row_offset`]),
+    /// as far as a cursor it handed out says.
+    fn pages_by_offset(&self) -> bool {
+        self.pages
+            .rest
+            .iter()
+            .chain(&self.pages.marks)
+            .next()
+            .is_some_and(|mark| mark.cursor.len() == size_of::<u64>())
     }
 
     /// Whether the level was read on past the pages its first read is bound to
@@ -94,16 +109,24 @@ impl Level {
                 mark.revision.clone(),
             ));
         };
-        let mark = self.pages.marks.iter().rev().find(|mark| mark.row <= at)?;
         // The marks a level leaves are pages of it, each with the provider's
-        // row cursor it started at: the rows since move that on by one each.
-        let offset = row_offset(&mark.cursor).saturating_add(at.saturating_sub(mark.row));
+        // row cursor it started at: the rows since move that on by one each. A row of the
+        // first page, which leaves no mark, is that many rows from the directory's start, at
+        // the revision the level was read at, where the provider's cursors are row offsets.
+        let (offset, revision) = match self.pages.marks.iter().rev().find(|mark| mark.row <= at) {
+            Some(mark) => (
+                row_offset(&mark.cursor).saturating_add(at.saturating_sub(mark.row)),
+                &mark.revision,
+            ),
+            None if !self.revision.is_empty() && self.pages_by_offset() => (at, &self.revision),
+            None => return None,
+        };
         Some((
             u64::try_from(offset)
                 .unwrap_or(u64::MAX)
                 .to_le_bytes()
                 .to_vec(),
-            mark.revision.clone(),
+            revision.clone(),
         ))
     }
 }
@@ -148,8 +171,8 @@ fn row_offset(cursor: &[u8]) -> usize {
 
 /// Why a read of a level's pages gave no level.
 enum Unread {
-    /// The app's directory moved on between pages.
-    MovedOn,
+    /// The app's directory moved on between pages, to the revision named.
+    MovedOn(String),
     /// The app cannot read its directory right now ([`cannot_be_read_now`]).
     CannotNow,
     /// The app the query named could not be listed, and why: what it keeps did
@@ -161,11 +184,15 @@ enum Unread {
 /// for a resource's listing, the directory page the next one starts in and
 /// how many resources that page holds before it, so the next page reads
 /// from there instead of every page before it. Written
-/// `<offset>` or `<offset>.<skip>.<revision hex>.<cursor hex>`.
+/// `<offset>` or `<offset>.<skip>.<revision hex>.<cursor hex>[.<after hex>]`.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct LsCursor {
     pub(super) offset: usize,
     pub(super) resume: Option<(PageMark, usize)>,
+    /// The resource the page before ended at, where the next page resumes in a directory:
+    /// read on from the same row once the directory moved on, a page that finds it again
+    /// starts after it, so what writes put before it never lists a resource twice.
+    pub(super) after: Option<String>,
 }
 
 impl LsCursor {
@@ -176,11 +203,16 @@ impl LsCursor {
             return Some(Self {
                 offset,
                 resume: None,
+                after: None,
             });
         };
         let skip = skip.parse().ok()?;
         let revision = String::from_utf8(hex::decode(parts.next()?).ok()?).ok()?;
         let cursor = hex::decode(parts.next()?).ok()?;
+        let after = match parts.next() {
+            Some(after) => Some(String::from_utf8(hex::decode(after).ok()?).ok()?),
+            None => None,
+        };
         if parts.next().is_some() || cursor.is_empty() {
             return None;
         }
@@ -194,18 +226,26 @@ impl LsCursor {
                 },
                 skip,
             )),
+            after,
         })
     }
 
     pub(super) fn write(&self) -> String {
         match &self.resume {
             None => self.offset.to_string(),
-            Some((mark, skip)) => format!(
-                "{}.{skip}.{}.{}",
-                self.offset,
-                hex::encode(mark.revision.as_bytes()),
-                hex::encode(&mark.cursor)
-            ),
+            Some((mark, skip)) => {
+                let mut written = format!(
+                    "{}.{skip}.{}.{}",
+                    self.offset,
+                    hex::encode(mark.revision.as_bytes()),
+                    hex::encode(&mark.cursor)
+                );
+                if let Some(after) = &self.after {
+                    written.push('.');
+                    written.push_str(&hex::encode(after.as_bytes()));
+                }
+                written
+            }
         }
     }
 }
@@ -263,8 +303,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     /// The directory under `parent` from the page `mark` names on, until it
-    /// holds more than `children` resources or ends; `None` when the
-    /// directory moved on since `mark` was read.
+    /// holds more than `children` resources or ends.
+    ///
+    /// A directory that moved on since `mark` was read is read on from the same row at the
+    /// revision it stands at now, as often as it moves on meanwhile ([`RESUMES`]): writes
+    /// beside a listing (an import's) move a directory on between every two pages of it, and
+    /// read again from its first page, a listing of thousands never got back to where it
+    /// stood before the next write, and answered pages of nothing while its cursor went on.
+    /// A provider whose cursor does not carry over to another revision refuses it again, and
+    /// the read is `None` as the directory moved on.
     pub(super) async fn level_from(
         &self,
         provider: &str,
@@ -279,14 +326,28 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             }),
             ..Level::default()
         };
+        let mut resumed = 0_u32;
         while level.children.len() <= children && level.unread() {
-            let Some(read) = self
-                .read_level_once(provider, parent, level, children.saturating_add(1))
+            let before = level.clone();
+            match self
+                .read_pages(provider, parent, level, children.saturating_add(1))
                 .await?
-            else {
-                return Ok(None);
-            };
-            level = read;
+            {
+                Ok(read) => level = read,
+                Err(Unread::MovedOn(now)) if resumed < RESUMES && !now.is_empty() => {
+                    resumed = resumed.saturating_add(1);
+                    let mut pages = std::sync::Arc::unwrap_or_clone(before.pages);
+                    let Some(rest) = pages.rest.as_mut().filter(|rest| rest.revision != now) else {
+                        return Ok(None);
+                    };
+                    rest.revision = now;
+                    level = Level {
+                        pages: std::sync::Arc::new(pages),
+                        ..before
+                    };
+                }
+                Err(_) => return Ok(None),
+            }
         }
         Ok(Some(level))
     }
@@ -335,7 +396,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             };
             if deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
                 return match unread {
-                    Unread::MovedOn => Ok(None),
+                    Unread::MovedOn(_) => Ok(None),
                     Unread::CannotNow => {
                         Err("the app cannot list what it has right now; try again".into())
                     }
@@ -346,21 +407,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
     }
 
-    /// [`Self::read_level`] without starting again: `None` when the
-    /// directory moved on between pages, or cannot be read right now.
-    pub(super) async fn read_level_once(
-        &self,
-        provider: &str,
-        parent: &str,
-        from: Level,
-        reach: usize,
-    ) -> Result<Option<Level>, String> {
-        Ok(self.read_pages(provider, parent, from, reach).await?.ok())
-    }
-
-    /// The pages [`Self::read_level_once`] reads, saying why they gave no
-    /// level when they gave none, and stopping once the directory holds more
-    /// than `reach` resources.
+    /// Up to [`LEVEL_PAGES`] pages of the directory under `parent` on from where `from` stopped,
+    /// without starting again, saying why they gave no level when they gave none, and stopping
+    /// once the directory holds more than `reach` resources.
     async fn read_pages(
         &self,
         provider: &str,
@@ -416,7 +465,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     rest = marks.pop();
                     break;
                 }
-                return Ok(Err(Unread::MovedOn));
+                return Ok(Err(Unread::MovedOn(asked.revision)));
             }
             // What the caller named could not be listed: said in place of a
             // level with nothing in it, and looked for again while the wait

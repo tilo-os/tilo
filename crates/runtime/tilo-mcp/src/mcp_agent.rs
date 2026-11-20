@@ -1692,6 +1692,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             None | Some("") => LsCursor {
                 offset: 0,
                 resume: None,
+                after: None,
             },
             Some(cursor) => LsCursor::parse(cursor)
                 .ok_or_else(|| "cursor is not one tilo_ls issued".to_owned())?,
@@ -1784,8 +1785,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                         skip.saturating_add(limit),
                     )
                     .await?
-                    .filter(|level| level.children.len() >= *skip)
-                    .map(|level| (level, *skip)),
+                    .map(|level| {
+                        // Where writes put resources before the row it reads on from, the
+                        // resource the page before ended at is found again: this page starts
+                        // after it.
+                        let past = cursor.after.as_deref().and_then(|after| {
+                            level.children.iter().position(|child| child.id == after)
+                        });
+                        let skip = past.map_or(*skip, |at| at.saturating_add(1).max(*skip));
+                        (level, skip)
+                    })
+                    .filter(|(level, skip)| level.children.len() >= *skip),
                 _ => None,
             };
             if resumed.is_none() && cached && cursor.resume.is_some() {
@@ -1960,8 +1970,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                         )
                     })
             });
+            // The resource this page ends at, when it ends in the directory read.
+            let after = read.as_ref().and_then(|(level, first)| {
+                let last = end.checked_sub(first.saturating_add(1))?;
+                Some(level.children.get(last)?.id.clone())
+            });
             LsCursor {
                 offset: end,
+                after: resume.as_ref().and(after),
                 resume,
             }
         });
