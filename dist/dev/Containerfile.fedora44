@@ -91,11 +91,16 @@ RUN case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) exit 1
 # The web build's toolchain, as CI's builder image has it
 # (os/Containerfile.builder): wasm-opt, wasm-ld, Node.js with npm (the bundle's
 # MoQ library is installed with `npm ci`; CI's image gets npm as a weak
-# dependency of nodejs), brotli, ar, and the wasm-bindgen CLI Cargo.lock pins,
-# from the checksum-pinned upstream release.
+# dependency of nodejs), brotli, ar, and the wasm-bindgen CLI the browser
+# runtime's crate pins, from the checksum-pinned upstream release. The asset
+# list names the version, as it does for every pinned asset; a stack's build
+# binds with this CLI, since its build container has no network to install one.
 RUN dnf install -y --setopt=install_weak_deps=False binaryen lld nodejs npm brotli binutils \
  && dnf clean all && rm -rf /var/cache/dnf \
- && name="wasm-bindgen-0.2.108-$(uname -m)-unknown-linux-musl.tar.gz" \
+ && name=$(awk -F '\t' -v suffix="-$(uname -m)-unknown-linux-musl.tar.gz" \
+      '$1 !~ /^#/ && $2 ~ /^wasm-bindgen-/ && index($2, suffix) == length($2) - length(suffix) + 1 {print $2}' \
+      /tmp/tilo-cosign/github-assets.tsv) \
+ && test -n "$name" \
  && sha=$(awk -F '\t' -v name="$name" '$1 !~ /^#/ && $2 == name {print $1}' /tmp/tilo-cosign/github-assets.tsv) \
  && url=$(awk -F '\t' -v name="$name" '$1 !~ /^#/ && $2 == name {print $3}' /tmp/tilo-cosign/github-assets.tsv) \
  && test -n "$sha" && test -n "$url" \

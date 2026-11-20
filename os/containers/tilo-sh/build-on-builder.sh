@@ -76,37 +76,38 @@ build_programs() {
   fi
 }
 
-# The wasm-bindgen the bundle binds with: the crate's pinned version, built
-# once into the build directory for this machine's C library. The release
-# binary the build image carries is statically linked against musl, whose
-# allocator spent minutes contending for memory on the module (203 s on this
-# build server against 32 s for the same output), more the more threads.
+# The wasm-bindgen the bundle binds with, at the crate's pinned version. The build image carries
+# it (os/Containerfile.builder takes it from this crate's manifest; dist/dev/Containerfile.fedora44
+# carries the same version), so a build container, which has no network, never installs one. A
+# build whose container does have a network may build the native tool into the build directory
+# once: the release binary the image carries is statically linked against musl, whose allocator
+# spent minutes contending for memory on the module (203 s on this build server against 32 s for
+# the same output), more the more threads.
 bindgen_tool() {
-  local pinned tool
+  local pinned tool carried
   pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' "$repo/crates/browser/tilo-browser-runtime/Cargo.toml")
-  # The build image carries the pinned CLI (dist/dev/Containerfile.fedora44); a build without
-  # network cannot install one.
-  if [[ "$(wasm-bindgen --version 2>/dev/null)" == "wasm-bindgen $pinned" ]]; then
-    command -v wasm-bindgen
+  # A tool an earlier build made here is this tree's own, and native where the image's is musl.
+  tool=$CARGO_TARGET_DIR/tools/wasm-bindgen-$pinned
+  if [[ -x $tool/bin/wasm-bindgen ]]; then
+    printf '%s\n' "$tool/bin/wasm-bindgen"
     return
   fi
-  tool=$CARGO_TARGET_DIR/tools/wasm-bindgen-$pinned
-  if [[ ! -x $tool/bin/wasm-bindgen ]]; then
-    if ! cargo install --quiet --locked wasm-bindgen-cli --version "=$pinned" --root "$tool.next" \
-      --target-dir "$CARGO_TARGET_DIR/tools/build" >&2; then
-      # A build directory whose cargo is offline cannot fetch the tool's
-      # sources: the image's own binary of the same version binds the same
-      # module, only slower.
-      local carried
-      carried=$(command -v wasm-bindgen) &&
-        [[ $("$carried" --version) == "wasm-bindgen $pinned" ]] || return 1
-      echo "wasm-bindgen $pinned could not be built here; binding with the image's, which is slower" >&2
-      printf '%s\n' "$carried"
-      return 0
-    fi
-    rm -rf "$tool"
-    mv "$tool.next" "$tool"
+  if carried=$(command -v wasm-bindgen 2>/dev/null) &&
+    [[ $("$carried" --version 2>/dev/null) == "wasm-bindgen $pinned" ]]; then
+    printf '%s\n' "$carried"
+    return
   fi
+  if ! cargo install --quiet --locked wasm-bindgen-cli --version "=$pinned" --root "$tool.next" \
+    --target-dir "$CARGO_TARGET_DIR/tools/build" >&2; then
+    # Refused rather than bound with another version: the CLI must be the crate's own.
+    echo "wasm-bindgen $pinned is not in this build container and cannot be installed without a network:" \
+      "the image carries ${carried:+$("$carried" --version 2>/dev/null)}${carried:-none}." \
+      "Build the image from this commit (os/Containerfile.builder, dist/dev/Containerfile.fedora44)," \
+      "which pins the crate's version, or build with a network once." >&2
+    return 1
+  fi
+  rm -rf "$tool"
+  mv "$tool.next" "$tool"
   printf '%s\n' "$tool/bin/wasm-bindgen"
 }
 

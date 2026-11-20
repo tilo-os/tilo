@@ -32,6 +32,7 @@ on:
       - "tools/font-catalog.py"
       - "crates/sdk/ui-core/assets/fonts/manifest.toml"
       - "crates/sdk/ui-core/assets/fonts/artifacts.json"
+      - "crates/browser/tilo-browser-runtime/Cargo.toml"
   workflow_dispatch:
 
 concurrency:

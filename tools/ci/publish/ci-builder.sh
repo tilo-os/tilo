@@ -18,6 +18,7 @@ cd "$repo_root"
 # buildah bind-mounts single files only from a writable context, so the build gets a copy of
 # exactly the files the Containerfile uses.
 context_files=(dist/ci/install-build-deps.sh os/external-assets/github-assets.tsv
+  crates/browser/tilo-browser-runtime/Cargo.toml
   tools/ci/check-build-env.sh tools/ci/install-android-ndk.sh tools/ci/install-pdfium.sh
   tools/ci/native-mold-linker.sh tools/ci/verify-native-mold.sh tools/ci/windows/wine-prefix.sh
   tools/ci/install-wine.sh os/external-assets/wine/*.patch
@@ -25,6 +26,14 @@ context_files=(dist/ci/install-build-deps.sh os/external-assets/github-assets.ts
   tools/ci/shstk-mark.py os/scripts/verify-elf-hardening.sh
   tools/font-catalog.py crates/sdk/ui-core/assets/fonts/manifest.toml
   crates/sdk/ui-core/assets/fonts/artifacts.json)
+
+# The wasm-bindgen CLI the image carries: the version the browser runtime's crate pins, which is
+# also the version a stack's build binds with. One file names it, so the image and the build
+# cannot disagree.
+wasm_bindgen_version() {
+  sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' crates/browser/tilo-browser-runtime/Cargo.toml \
+    | head -n 1
+}
 
 assets() {
   local arch=$1 pdfium extra=()
@@ -34,8 +43,10 @@ assets() {
     aarch64) pdfium=pdfium-8057-linux-arm64.tgz ;;
     *) die "unknown architecture $arch" ;;
   esac
+  local wasm_bindgen
+  wasm_bindgen=$(wasm_bindgen_version)
   printf '%s\n' "sccache-v0.17.0-$arch-unknown-linux-musl.tar.gz" \
-    "wasm-bindgen-0.2.108-$arch-unknown-linux-musl.tar.gz" \
+    "wasm-bindgen-$wasm_bindgen-$arch-unknown-linux-musl.tar.gz" \
     "cargo-xwin-v0.23.1.$arch-unknown-linux-musl.tar.gz" \
     "mold-2.40.4-$arch-linux.tar.gz" "$pdfium" \
     "$(bash tools/ci/install-cargo.sh --asset-name)" "${extra[@]}"

@@ -140,14 +140,18 @@ RUN rustup target add --toolchain "${RUST_CHANNEL}" wasm32-unknown-unknown
 RUN rustup target add --toolchain "${RUST_CHANNEL}" "$(uname -m)-unknown-linux-musl"
 # The web build's toolchain (`tilo-app build --platform web`, the web core's
 # scripts): binaryen's wasm-opt, lld's wasm-ld, Node.js, brotli, binutils' ar,
-# and wasm-bindgen's CLI at exactly the version Cargo.lock pins the crate at,
-# from its checksum-pinned upstream release.
-ARG WASM_BINDGEN_VERSION=0.2.108
+# and wasm-bindgen's CLI at exactly the version the browser runtime's crate pins
+# (crates/browser/tilo-browser-runtime/Cargo.toml, which `ci-builder.sh inputs`
+# dates this image by), from its checksum-pinned upstream release. A stack's
+# build binds with this CLI: its build container has no network to install one.
 RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     --mount=type=bind,source=os/external-assets/github-assets.tsv,target=/tmp/tilo-assets.tsv,ro \
+    --mount=type=bind,source=crates/browser/tilo-browser-runtime/Cargo.toml,target=/tmp/tilo-wasm-bindgen-crate.toml,ro \
     dnf install -y --setopt=install_weak_deps=False binaryen lld nodejs brotli binutils \
     && dnf clean all && rm -rf /var/cache/dnf \
-    && archive="wasm-bindgen-${WASM_BINDGEN_VERSION}-$(uname -m)-unknown-linux-musl.tar.gz" \
+    && version=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' /tmp/tilo-wasm-bindgen-crate.toml | head -n 1) \
+    && test -n "$version" \
+    && archive="wasm-bindgen-${version}-$(uname -m)-unknown-linux-musl.tar.gz" \
     && sha=$(awk -F '\t' -v name="$archive" '$1 !~ /^#/ && $2 == name {print $1}' /tmp/tilo-assets.tsv) \
     && test -n "$sha" \
     && echo "${sha}  /tilo-assets/${archive}" | sha256sum --check --strict \
