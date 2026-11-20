@@ -24,14 +24,19 @@
 //! program writes with the person's own access, through it; an agent with the
 //! delegation the person handed it.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 
 /// How many ancestors are looked through for an agent's process.
 const MAX_ANCESTORS: usize = 64;
 /// How many resolved processes are remembered.
 const REMEMBERED: usize = 4096;
+/// How long a request waits for a file of a process to be read.
+const PROC_WAIT: Duration = Duration::from_millis(100);
 
 /// Which agent harness a session is of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -155,6 +160,7 @@ pub struct WriterResolver {
     /// Where desktop entries are looked up, most specific first.
     applications: Vec<PathBuf>,
     remembered: Mutex<HashMap<(u32, u64), Writer>>,
+    procs: ProcReader,
 }
 
 impl Default for WriterResolver {
@@ -172,14 +178,16 @@ impl WriterResolver {
             proc_root,
             applications,
             remembered: Mutex::new(HashMap::new()),
+            procs: ProcReader::default(),
         }
     }
 
     /// Who the thread or process `pid` writes for (FUSE names the calling
     /// thread). A process that is gone is the person.
     pub fn resolve(&self, pid: u32) -> Writer {
-        let pid = self.process_of(pid);
-        let Some(stat) = self.stat(pid) else {
+        let unread = Cell::new(false);
+        let pid = self.process_of(pid, &unread);
+        let Some(stat) = self.stat(pid, &unread) else {
             return Writer::Person;
         };
         let key = (pid, stat.start);
@@ -191,7 +199,12 @@ impl WriterResolver {
         {
             return known.clone();
         }
-        let writer = self.find(pid, &stat);
+        let writer = self.find(pid, &stat, &unread);
+        if unread.get() {
+            // A process that could not be read now may be an agent's: asked again on its next
+            // request rather than remembered as what it is not.
+            return writer;
+        }
         let mut remembered = self
             .remembered
             .lock()
@@ -203,12 +216,11 @@ impl WriterResolver {
         writer
     }
 
-    fn find(&self, pid: u32, stat: &Stat) -> Writer {
-        if let Some(agent) = self.agent(pid, stat) {
+    fn find(&self, pid: u32, stat: &Stat, unread: &Cell<bool>) -> Writer {
+        if let Some(agent) = self.agent(pid, stat, unread) {
             return agent;
         }
-        let cgroup = std::fs::read_to_string(self.proc_root.join(pid.to_string()).join("cgroup"))
-            .unwrap_or_default();
+        let cgroup = self.read_proc(pid, "cgroup", unread).unwrap_or_default();
         let scope = scope_of(&cgroup);
         if let Some(Scope::Tilo(id)) = &scope {
             return Writer::App { id: id.clone() };
@@ -224,14 +236,14 @@ impl WriterResolver {
     }
 
     /// The agent session `pid` acts in, if any.
-    fn agent(&self, pid: u32, stat: &Stat) -> Option<Writer> {
-        let own = self.environ(pid);
+    fn agent(&self, pid: u32, stat: &Stat, unread: &Cell<bool>) -> Option<Writer> {
+        let own = self.environ(pid, unread);
         // The nearest Claude Code process, the writer itself included.
         let mut at = pid;
         let mut at_stat = stat.clone();
         let mut claude = None;
         for _ in 0..MAX_ANCESTORS {
-            if let Some(session) = self.claude_session(at, &at_stat) {
+            if let Some(session) = self.claude_session(at, &at_stat, unread) {
                 claude = Some((at, session));
                 break;
             }
@@ -239,7 +251,9 @@ impl WriterResolver {
                 break;
             }
             at = at_stat.parent;
-            let Some(next) = self.stat(at) else { break };
+            let Some(next) = self.stat(at, unread) else {
+                break;
+            };
             at_stat = next;
         }
         let set = |name: &str| own.get(name).filter(|value| !value.is_empty()).cloned();
@@ -248,7 +262,7 @@ impl WriterResolver {
         if let Some((claude_pid, (session, title))) = claude {
             // An agent started from the Claude Code session's commands sets an
             // id of its own that the Claude Code process does not have.
-            let theirs = self.environ(claude_pid);
+            let theirs = self.environ(claude_pid, unread);
             let started_inside = |name: &str, value: &Option<String>| {
                 value
                     .as_ref()
@@ -271,8 +285,13 @@ impl WriterResolver {
     /// title: `sessions/<pid>.json` in its directory (`$CLAUDE_CONFIG_DIR`,
     /// else `~/.claude`). A file a process of the same pid left before this
     /// one started is not this process's.
-    fn claude_session(&self, pid: u32, stat: &Stat) -> Option<(String, Option<String>)> {
-        let environ = self.environ(pid);
+    fn claude_session(
+        &self,
+        pid: u32,
+        stat: &Stat,
+        unread: &Cell<bool>,
+    ) -> Option<(String, Option<String>)> {
+        let environ = self.environ(pid, unread);
         let dir = match environ
             .get("CLAUDE_CONFIG_DIR")
             .filter(|dir| !dir.is_empty())
@@ -304,9 +323,8 @@ impl WriterResolver {
     }
 
     /// The process thread `tid` is of: its thread group's leader.
-    fn process_of(&self, tid: u32) -> u32 {
-        std::fs::read_to_string(self.proc_root.join(tid.to_string()).join("status"))
-            .ok()
+    fn process_of(&self, tid: u32, unread: &Cell<bool>) -> u32 {
+        self.read_proc(tid, "status", unread)
             .and_then(|status| {
                 status
                     .lines()
@@ -316,16 +334,40 @@ impl WriterResolver {
             .unwrap_or(tid)
     }
 
-    fn stat(&self, pid: u32) -> Option<Stat> {
-        let text =
-            std::fs::read_to_string(self.proc_root.join(pid.to_string()).join("stat")).ok()?;
-        parse_stat(&text)
+    fn stat(&self, pid: u32, unread: &Cell<bool>) -> Option<Stat> {
+        parse_stat(&self.read_proc(pid, "stat", unread)?)
     }
 
-    fn environ(&self, pid: u32) -> HashMap<String, String> {
-        std::fs::read(self.proc_root.join(pid.to_string()).join("environ"))
-            .map(|bytes| parse_environ(&bytes))
-            .unwrap_or_default()
+    /// The file `name` of process `pid`, as text: `None` when there is none, or, with
+    /// `unread` set, when it could not be read in time ([`ProcReader`]).
+    fn read_proc(&self, pid: u32, name: &str, unread: &Cell<bool>) -> Option<String> {
+        match self
+            .procs
+            .read(self.proc_root.join(pid.to_string()).join(name))
+        {
+            Proc::Read(bytes) => Some(String::from_utf8_lossy(&bytes).into_owned()),
+            Proc::Missing => None,
+            Proc::Late => {
+                unread.set(true);
+                None
+            }
+        }
+    }
+
+    /// The environment of process `pid`; empty when it has none or, with `unread` set, when
+    /// it could not be read in time ([`ProcReader`]).
+    fn environ(&self, pid: u32, unread: &Cell<bool>) -> HashMap<String, String> {
+        match self
+            .procs
+            .read(self.proc_root.join(pid.to_string()).join("environ"))
+        {
+            Proc::Read(bytes) => parse_environ(&bytes),
+            Proc::Missing => HashMap::new(),
+            Proc::Late => {
+                unread.set(true);
+                HashMap::new()
+            }
+        }
     }
 
     /// When the computer started, in Unix milliseconds.
@@ -393,6 +435,76 @@ fn parse_stat(text: &str) -> Option<Stat> {
         tty: fields.get(4)?.parse().ok()?,
         start: fields.get(19)?.parse().ok()?,
     })
+}
+
+/// Reads the files of processes on a thread of its own, for at most [`PROC_WAIT`].
+///
+/// Reading what a process is (its `stat`, its environment) waits for its memory map. A process
+/// faulting in a page of a file mapped from the mount holds that map while the mount serves the
+/// fault, and another of its threads may be queued to change it meanwhile: a read of its files
+/// then waits for the mount, and a mount that waited for that read would never serve the
+/// fault. Git's `index-pack` is such a process. So the mount's request never waits on the read
+/// for long, and while one read is still waiting, no other is started.
+#[derive(Debug, Default)]
+struct ProcReader {
+    requests: Mutex<Option<mpsc::SyncSender<ProcRequest>>>,
+    waiting: Arc<AtomicBool>,
+}
+
+type ProcRequest = (PathBuf, mpsc::SyncSender<Option<Vec<u8>>>);
+
+/// What reading a file of a process found.
+enum Proc {
+    Read(Vec<u8>),
+    /// There is no such file: the process is gone.
+    Missing,
+    /// It was not read within [`PROC_WAIT`], or an earlier read still waits.
+    Late,
+}
+
+impl ProcReader {
+    fn read(&self, path: PathBuf) -> Proc {
+        if self.waiting.swap(true, Ordering::AcqRel) {
+            return Proc::Late;
+        }
+        let (answer, answered) = mpsc::sync_channel(1);
+        let sent = self
+            .sender()
+            .is_some_and(|requests| requests.send((path, answer)).is_ok());
+        if !sent {
+            self.waiting.store(false, Ordering::Release);
+            return Proc::Late;
+        }
+        match answered.recv_timeout(PROC_WAIT) {
+            Ok(Some(bytes)) => Proc::Read(bytes),
+            Ok(None) => Proc::Missing,
+            Err(_) => Proc::Late,
+        }
+    }
+
+    fn sender(&self) -> Option<mpsc::SyncSender<ProcRequest>> {
+        let mut requests = self
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if requests.is_none() {
+            // One read waits at a time, so the queue never holds more than one.
+            let (sender, received) = mpsc::sync_channel::<ProcRequest>(1);
+            let waiting = Arc::clone(&self.waiting);
+            std::thread::Builder::new()
+                .name("writer-procs".into())
+                .spawn(move || {
+                    for (path, answer) in received {
+                        let bytes = std::fs::read(&path).ok();
+                        waiting.store(false, Ordering::Release);
+                        let _ = answer.send(bytes);
+                    }
+                })
+                .ok()?;
+            *requests = Some(sender);
+        }
+        requests.clone()
+    }
 }
 
 fn parse_environ(bytes: &[u8]) -> HashMap<String, String> {

@@ -210,3 +210,59 @@ tilo_test_env::scenario! {
         assert!(!name.contains('\u{7}'));
     }
 }
+
+/// A process whose environment cannot be read (it waits for the mount, as a process faulting in
+/// a page of a file mapped from it does) is answered for at once, as the person, and is not
+/// remembered: once its environment reads, its next request finds the agent it acts for.
+#[test]
+fn an_environment_that_does_not_read_never_holds_up_a_request() {
+    let procs = Procs::new();
+    procs.spawn(700, 1, 7, false, &[], TERMINAL);
+    let environ = procs.root().join("700/environ");
+    std::fs::remove_file(&environ).unwrap();
+    let made = std::process::Command::new("mkfifo")
+        .arg(&environ)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let resolver = procs.resolver();
+
+    let started = std::time::Instant::now();
+    assert_eq!(resolver.resolve(700), Writer::Person);
+    assert_eq!(
+        resolver.resolve(700),
+        Writer::Person,
+        "a read still waiting starts no other"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the requests waited {:?}",
+        started.elapsed()
+    );
+
+    // The environment reads now: the waiting read ends, and the next request reads it again.
+    let mut fifo = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&environ)
+        .unwrap();
+    std::io::Write::write_all(&mut fifo, b"CLAUDE_CODE_SESSION_ID=s7\0").unwrap();
+    drop(fifo);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while resolver.procs.waiting.load(Ordering::Acquire) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the waiting read never ended"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::fs::remove_file(&environ).unwrap();
+    std::fs::write(&environ, b"CLAUDE_CODE_SESSION_ID=s7\0").unwrap();
+    assert_eq!(
+        resolver.resolve(700),
+        Writer::Agent {
+            harness: Harness::ClaudeCode,
+            session: "s7".into(),
+            title: None
+        }
+    );
+}
