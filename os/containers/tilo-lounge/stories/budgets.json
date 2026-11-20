@@ -74,6 +74,7 @@
     },
     "agent-mcp": {
       "Ada opens Tilo": 15000,
+      "Ada opens Files to watch her agent work": 20000,
       "Ada connects their agent to the workspace": 90000,
       "The agent writes a file": 45000,
       "The agent adds a Tasks issue": 45000,

@@ -12,8 +12,8 @@
 // Writes OUT_DIR/story.json (stories/recorder.mjs) and exits non-zero when a
 // step failed or ran over its budget.
 import {sleep} from '../../../../tools/web/chrome.mjs';
-import {SHELL, stepLimit} from '../integration/waits.mjs';
-import {found, key, pressNamed, searcher, settled, showsText as shows, TREE_TEXT, waitUntil}
+import {stepLimit} from '../integration/waits.mjs';
+import {found, pressNamed, searcher, settled, showsText as shows, TREE_TEXT, waitUntil}
   from '../integration/shell.mjs';
 import {computerAt} from './computer.mjs';
 import {recorder, StoryStopped} from './recorder.mjs';
@@ -83,6 +83,13 @@ try {
     story.web.scriptSize(ada);
   });
 
+  await story.step('Ada opens Files to watch her agent work', async () => {
+    const files = `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === 'so.tilo.file-explorer')`;
+    await search(ada.tab, adaKeys, 'files', 'Files', 'so.tilo.file-explorer');
+    await until(ada.tab, files, 'Files on Ada’s screen', stepLimit(4));
+    await shows(ada.tab, 'New folder', 'the folder Files opened on', stepLimit(6));
+  });
+
   await story.step('Ada connects their agent to the workspace', async () => {
     await settled(ada.tab);
     await search(ada.tab, adaKeys, 'connect an agent or computer', 'Connect an agent or computer');
@@ -121,10 +128,7 @@ try {
   });
 
   await story.step('The agent writes a file', async () => {
-    // Files is open on the workspace's folder, where Ada watches her agent work.
-    const files = `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === 'so.tilo.file-explorer')`;
-    await search(ada.tab, adaKeys, 'files', 'Files', 'so.tilo.file-explorer');
-    await until(ada.tab, files, 'Files on Ada’s screen', stepLimit(4));
+    // The folder Files opened, where Ada watches her agent work.
     const bytes = Buffer.from('# Notes from your agent\n\nThe spring budget is filed.\n', 'utf8');
     const stored = await agent.call('tilo_put_many', {files: [bytes.toString('base64')]});
     const content = stored.match(/tilo\.content:[0-9a-f]{64}/)?.[0];
@@ -145,8 +149,12 @@ try {
   });
 
   await story.step('The agent posts in Chat', async () => {
+    // The conversation it posts in is the workspace's own: the agent reads
+    // Chat's record for its channels, as an agent lists what it may write in.
     await act(['chat.workspace#begin-chat', 'chat#begin-chat'], {});
-    await act(['chat.messages#post', 'chat#post'], {channel: 'c_chat', text: CHAT});
+    const read = await agent.call('tilo_read', {path: 'chat.workspace'}).catch(() => '');
+    const channels = [...new Set((read.match(/\bc_[a-z0-9_-]+\b/g) ?? []))].filter(id => id !== 'c_voice');
+    await act(['chat.messages#post', 'chat#post'], {channel: channels[0] ?? 'c_chat', text: CHAT});
     await openApp(ada.tab, adaKeys, 'Chat', 'so.tilo.chat', CHAT, 'the message in Chat', stepLimit(10));
   });
 

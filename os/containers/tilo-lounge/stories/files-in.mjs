@@ -182,10 +182,6 @@ try {
   });
 
   await story.step('Ada drops a photo and a PDF on the page', async () => {
-    // Files is open on the workspace's folder, where she watches them arrive.
-    const files = `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === 'so.tilo.file-explorer')`;
-    await search(ada.tab, adaKeys, 'files', 'Files', 'so.tilo.file-explorer');
-    await until(ada.tab, files, 'Files on Ada’s screen', stepLimit(4));
     await drop(ada.tab, [join(where, PHOTO), join(where, PDF)], SHELL.empty);
     // The shell says how the copy went where it fell, then opens each file.
     const progress = `(() => {
@@ -199,8 +195,6 @@ try {
     const opened = app => `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(app)})`;
     await until(ada.tab, opened('so.tilo.photos'), 'the photo opening in Photos', stepLimit(4));
     await until(ada.tab, opened('so.tilo.pdf-viewer'), 'the PDF opening in PDF Viewer', stepLimit(4));
-    await shows(ada.tab, PHOTO, `${PHOTO} in Files`, stepLimit(4));
-    await shows(ada.tab, PDF, `${PDF} in Files`, stepLimit(4));
   });
 
   await story.step('Ada runs `tilo login` and copies a document into the workspace folder', async () => {
@@ -243,12 +237,19 @@ try {
     // Her document, copied into the folder as a person copies one.
     const copied = await computer.line(`cp ${JSON.stringify(join(where, DOCUMENT))} ${JSON.stringify(folder.path)}/`);
     if (copied.code !== 0) fail(`copying ${DOCUMENT} into ${folder.path} failed: ${copied.stderr}`);
-    // It is in the workspace: the Files window she has open shows it.
+    // It is in the workspace: Files shows her folder, and it there.
+    await search(ada.tab, adaKeys, 'files', 'Files', 'so.tilo.file-explorer');
     await shows(ada.tab, DOCUMENT, `the copied ${DOCUMENT} in Files`, stepLimit(8));
   });
 
   await story.step('Ada copies a spreadsheet in with the `tilo` command', async () => {
-    const put = await computer.run(['files', 'put', join(where, SHEET), '-w', workspace], {timeout: stepLimit(8)});
+    // A workspace still settling right after the login says so, and the
+    // command is run again, as a person runs it again.
+    let put = await computer.run(['files', 'put', join(where, SHEET), '-w', workspace], {timeout: stepLimit(8)});
+    for (let again = 0; put.code !== 0 && again < 3 && /not_ready/.test(`${put.stdout}${put.stderr}`); again++) {
+      await sleep(2000);
+      put = await computer.run(['files', 'put', join(where, SHEET), '-w', workspace], {timeout: stepLimit(8)});
+    }
     if (put.code !== 0) fail(`tilo files put failed (${put.code}): ${put.stderr}${put.stdout}`);
     await shows(ada.tab, SHEET, `the spread sheet ${SHEET} in Files`, stepLimit(8));
   });

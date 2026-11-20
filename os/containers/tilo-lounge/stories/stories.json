@@ -82,6 +82,7 @@
       "driver": "agent-mcp.mjs",
       "steps": [
         "Ada opens Tilo",
+        "Ada opens Files to watch her agent work",
         "Ada connects their agent to the workspace",
         "The agent writes a file",
         "The agent adds a Tasks issue",
