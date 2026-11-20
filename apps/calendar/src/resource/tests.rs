@@ -119,6 +119,22 @@ fn state_of(app: &TestApp<CalendarShell>) -> Calendar {
     app.read_document(read_doc)
 }
 
+/// The resource `id` anywhere in the published forest: the root's rows (its
+/// calendars' collections) hang below it, as a reader of the surface finds
+/// them.
+fn find_resource<'a>(
+    resources: &'a [ui::tilo_actions::ResourceSpec],
+    id: &str,
+) -> Option<&'a ui::tilo_actions::ResourceSpec> {
+    resources.iter().find_map(|resource| {
+        if resource.id.as_str() == id {
+            Some(resource)
+        } else {
+            find_resource(&resource.children, id)
+        }
+    })
+}
+
 fn new_event(title: &str, start: &str, end: &str) -> Invoke<Calendar> {
     Calendar::NEW_EVENT.with(calendar::NewEvent {
         event: EventData {
@@ -1221,9 +1237,7 @@ mod tasks_screen {
             let mut app = TestApp::<CalendarShell>::new().expect("test app");
             let resources = app.harness().resources();
             for offer in &manifest.offers {
-                let action = resources
-                    .iter()
-                    .find(|resource| resource.id.as_str() == offer.resource)
+                let action = find_resource(&resources, &offer.resource)
                     .and_then(|resource| resource.actions.iter().find(|a| a.id == offer.action))
                     .unwrap_or_else(|| panic!("{}#{} is published", offer.resource, offer.action));
                 assert_eq!(action.label, offer.label);
@@ -1245,11 +1259,18 @@ mod tasks_screen {
                     "{}",
                     offer.action
                 );
-                assert!(
-                    action.params().is_empty(),
-                    "{} takes no parameters",
-                    offer.action
-                );
+                match offer.asks.as_deref() {
+                    Some(asked) => assert!(
+                        action.params().iter().any(|param| param.name == asked),
+                        "{} takes the typed line the manifest asks for ({asked})",
+                        offer.action
+                    ),
+                    None => assert!(
+                        action.params().is_empty(),
+                        "{} takes no parameters",
+                        offer.action
+                    ),
+                }
             }
         }
 
