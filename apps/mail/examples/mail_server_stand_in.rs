@@ -8,10 +8,11 @@
 //!
 //! It writes the certificate both servers present (for `localhost`) to `CERTIFICATE_FILE` as
 //! PEM, for the stack it rehearses with to trust and nothing else, and `<imap port> <smtp
-//! port>` to `PORTS_FILE`, then serves until it is ended. The IMAP server is TLS from the first
-//! byte and the SMTP server upgrades with `STARTTLS`. Mail takes an account's SMTP server with
-//! `STARTTLS` on the submission port (587) alone, as Thunderbird's settings name it: with
-//! `SUBMISSION_PORT`, the SMTP server answers there too, and that is the port it writes. It holds made-up mail only, takes any
+//! port>` to `PORTS_FILE`, then serves until it is ended, saying the subject of each message its
+//! SMTP server takes. The IMAP server is TLS from the first byte and the SMTP server upgrades
+//! with `STARTTLS`. Mail takes an account's SMTP server with `STARTTLS` on the submission port
+//! (587) alone, as Thunderbird's settings name it: with `SUBMISSION_PORT`, the SMTP server
+//! answers there too, and that is the port it writes. It holds made-up mail only, takes any
 //! sign-in, and sends nothing anywhere.
 
 use std::io::Write as _;
@@ -85,7 +86,21 @@ fn main() {
             imap.port,
             smtp_port
         );
-        std::future::pending::<()>().await;
+        // Each message the SMTP server takes, said by its subject line as it arrives.
+        let mut said = 0;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let sent = smtp.sent();
+            for message in sent.iter().skip(said) {
+                let text = String::from_utf8_lossy(message);
+                let subject = text
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Subject: "))
+                    .unwrap_or("(no subject)");
+                let _ = writeln!(std::io::stderr(), "sent: {subject}");
+            }
+            said = sent.len();
+        }
     });
 }
 
