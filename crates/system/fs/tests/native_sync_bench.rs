@@ -478,6 +478,10 @@ impl Daemon {
 
     /// Stop the daemon as a service manager would and wait for it to exit.
     fn stop(&mut self, timeout: Duration) -> Duration {
+        let timeout = std::env::var("TILO_FS_BENCH_STOP_SECS")
+            .ok()
+            .and_then(|secs| secs.parse::<u64>().ok())
+            .map_or(timeout, Duration::from_secs);
         let started = Instant::now();
         self.signal(libc::SIGTERM);
         let deadline = Instant::now() + timeout;

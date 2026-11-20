@@ -2075,9 +2075,14 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             Ok(())
         }
     };
-    content.set_sync_writes(false);
-    let _content_flusher = tokio::spawn(content_flusher(Arc::clone(&content), kept.clone()));
-    fs.set_durability_hook(Arc::new(barrier));
+    // A mount whose store syncs on a window: one barrier every few milliseconds instead of one
+    // per file. `TILO_FS_CONTENT_WINDOW=0` keeps the per-write sync, for isolating a problem.
+    let windowed = std::env::var("TILO_FS_CONTENT_WINDOW").as_deref() != Ok("0");
+    if windowed {
+        content.set_sync_writes(false);
+        let _content_flusher = tokio::spawn(content_flusher(Arc::clone(&content), kept.clone()));
+        fs.set_durability_hook(Arc::new(barrier));
+    }
     #[cfg(target_os = "linux")]
     if let Some((args, device)) = backend.as_ref()
         && let Some(cfg) = native_config(
