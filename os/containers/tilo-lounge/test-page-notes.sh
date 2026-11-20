@@ -18,6 +18,9 @@ mkdir -p "$work"
 # shellcheck source=direct-lounge.sh
 . "$here/direct-lounge.sh"
 trap stop_lounge EXIT
+# Why the server did or did not act on what the page asked: a page that shows
+# what a person typed but keeps none of it says why nowhere else.
+export LOUNGE_LOG=tilo_agent_session=debug,tilo_server=info,warn
 start_lounge "$bundle" "$work"
 # What the site beside this page loads first, for the page's own numbers to be
 # read against: the page fetches none of it.
@@ -33,6 +36,13 @@ keep_pictures() {
   echo
   echo '--- end'
 }
-trap 'keep_pictures; stop_lounge' EXIT
+# What the server said of the page's asks: a page that shows what a person
+# typed but keeps none of it says why nowhere else.
+keep_page_lines() {
+  [[ -s ${log:-} ]] || return 0
+  echo '--- the server on the page:'
+  grep -i 'page' "$log" | tail -60
+}
+trap 'keep_pictures; keep_page_lines; stop_lounge' EXIT
 node "$here/integration/page-notes.mjs" "$site_origin" "$server_origin" "$workspace" "$work/page" \
   || lounge_fail 'the page walk did not finish'

@@ -74,7 +74,7 @@ try {
     // the web build's own size, as a first visit pays it.
     resetWire();
     await tab.navigate(site);
-    for (let i = 0; i < 240; i++) {
+    for (let i = 0; i < 960; i++) {
       const state = await tab.evaluate(`(() => {
         if (['done', 'stopped'].includes(document.documentElement.dataset.arrival)) return document.documentElement.dataset.arrival;
         const join = [...document.querySelectorAll('button')].find(b => /^(Join|Join Tilo|Continue|Accept|Open)$/i.test(b.textContent.trim()));
@@ -112,7 +112,7 @@ try {
           headings: [...(page?.querySelectorAll('h1, h2') ?? [])].map(e => e.innerText.trim().slice(0, 40)),
           // What the page holds, for a reviewer of a step that did not do what
           // a person would expect: the elements it shows, in order.
-          html: (page?.innerHTML ?? '').slice(0, 4000),
+          html: (page?.innerHTML ?? '').slice(0, 16000),
         });
       })()`));
     } catch (error) {
@@ -237,11 +237,6 @@ try {
   await look('09-phone-back');
   await sized(WIDE);
 
-  const context = await browser.context();
-  await arrive({context, label: 'second'});
-  await openPage('second profile');
-  await look('10-second-profile');
-
   // The workspace itself, which lists its apps, and each app a person opens
   // in their first hour: every one of them is the page the server renders.
   await openPage('home', '');
@@ -261,6 +256,11 @@ try {
     if (seen.refused) problems.push(`${app}: refused (${seen.refused})`);
     else if (!seen.elements) problems.push(`${app}: shows nothing`);
   }
+
+  const context = await browser.context();
+  await arrive({context, label: 'second'});
+  await openPage('second profile');
+  await look('10-second-profile');
 } catch (error) {
   report.error = String(error?.stack ?? error).slice(0, 4000);
   problems.push(report.error);
