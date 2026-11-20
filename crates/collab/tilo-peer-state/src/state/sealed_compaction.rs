@@ -116,6 +116,30 @@ impl<'peer> PeerPublication<'peer> {
             .unwrap_or_default()
     }
 
+    /// The epochs the sealed history this replica holds of `resource` of `app` was sealed under,
+    /// ascending: the keys a reader opens it with must hold each of them.
+    #[must_use]
+    pub fn sealed_epochs(self, app: &str, resource: &str) -> Vec<u64> {
+        let epochs: std::collections::BTreeSet<u64> = self
+            .document((app, resource))
+            .map(|document| {
+                document
+                    .sealed
+                    .iter()
+                    .filter_map(|write| write.encryption)
+                    .filter(|sealed| {
+                        matches!(
+                            sealed.scheme,
+                            collab_types::EncryptionScheme::ContentKey { .. }
+                        )
+                    })
+                    .map(|sealed| sealed.epoch)
+                    .collect()
+            })
+            .unwrap_or_default();
+        epochs.into_iter().collect()
+    }
+
     /// Whether the sealed history of `record` of `app` holds `write` as itself.
     #[must_use]
     pub fn holds_sealed(self, app: &str, record: &str, write: &SignedOp) -> bool {

@@ -46,25 +46,34 @@ impl Workspaces {
             .own_reader(workspace)
             .await
             .ok_or("this service acts as no device here")?;
-        let keys = content_keys(&peer, device.as_ref(), workspace, (app, resource))
+        let keys = match content_keys(&peer, device.as_ref(), workspace, (app, resource))
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+        {
+            Sealing::Due => return Ok(DocumentRead::Pending),
+            Sealing::Clear => None,
+            Sealing::Sealed(keys) => Some(keys),
+        };
         let mut opened = keys
             .as_ref()
             .map(super::sealed_documents::DocumentKeys::open);
         let mut kept = KeptDocument::default();
-        let document = peer
-            .open_document(
-                reader,
-                (app, resource),
-                tilo_clock::wall(),
-                maximum,
-                opened.as_mut().map(|open| {
-                    open as &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>
-                }),
-                &mut kept,
-            )
-            .map_err(|error| error.to_string())?;
+        let document = peer.open_document(
+            reader,
+            (app, resource),
+            tilo_clock::wall(),
+            maximum,
+            opened.as_mut().map(|open| {
+                open as &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>
+            }),
+            &mut kept,
+        );
+        let document = match document {
+            Ok(document) => document,
+            // A write this copy knows of has not reached it yet: the next pass reads it.
+            Err(PeerDocumentReadError::Incomplete) => return Ok(DocumentRead::Pending),
+            Err(refused) => return Err(refused.to_string()),
+        };
         let heads: Vec<[u8; 32]> = document.get_heads().iter().map(|head| head.0).collect();
         let revision = committed_document_revision(&document.get_heads());
         // A reader's heads this device does not hold are answered with the whole document: the
@@ -254,19 +263,21 @@ impl Workspaces {
     }
 
     /// `app`'s `resource` of `workspace` as the device `reader` reads it now: at most `maximum`
-    /// bytes of it, its sealed writes opened with the service's content keys.
+    /// bytes of it, its sealed writes opened with the service's content keys. `None` while it is
+    /// on its way: sealed under keys this device is due and has not taken yet, or missing a write
+    /// this device knows of. It reads once those arrive.
     ///
     /// # Errors
     ///
-    /// The reader may not read it, the service holds no copy, it is sealed and this device holds
-    /// no keys of it, its history does not open, or it exceeds `maximum`.
+    /// The reader may not read it, the service holds no copy, it is sealed for a group this device
+    /// takes no part in, its history does not open, or it exceeds `maximum`.
     pub(crate) async fn capture_resource(
         &self,
         workspace: &str,
         (app, resource): (&str, &str),
         reader: [u8; 32],
         maximum: usize,
-    ) -> Result<PeerDocumentCapture, PeerDocumentReadError> {
+    ) -> Result<Option<PeerDocumentCapture>, PeerDocumentReadError> {
         let (peer, device) = self
             .replica(workspace)
             .await
@@ -342,27 +353,52 @@ fn part_of(resource: &str) -> Option<&str> {
     }
 }
 
-/// The content keys `app`'s `resource` of `workspace` is sealed with, when it is sealed and this
-/// device holds them.
+/// How `app`'s `resource` of a workspace is opened on this device.
+enum Sealing {
+    /// It is held in the clear.
+    Clear,
+    /// It is sealed, and opens with these keys.
+    Sealed(super::sealed_documents::DocumentKeys),
+    /// It is sealed for a group this device takes part in, under keys it does not hold yet: the
+    /// welcome or commit that brings them is on its way, and it reads once that arrived.
+    Due,
+}
+
+/// How `app`'s `resource` of `workspace` opens on this device: in the clear, with the keys of the
+/// group it is sealed for, or once the keys this device is due arrive. Nothing waits here: a read
+/// answered [`Sealing::Due`] says the resource is on its way, and its reader reads it again when
+/// the device's keys change, as an app's held read and the session's next pass do.
 async fn content_keys(
     peer: &StatePeer,
     device: Option<&DeviceKeys>,
     workspace: &str,
     (app, resource): (&str, &str),
-) -> Result<Option<super::sealed_documents::DocumentKeys>, PeerDocumentReadError> {
+) -> Result<Sealing, PeerDocumentReadError> {
     if !peer.publication().is_sealed_document(app, resource) {
-        return Ok(None);
+        return Ok(Sealing::Clear);
     }
     let Some(device) = device else {
         return Err(PeerDocumentReadError::Encrypted);
     };
+    let epochs = peer.publication().sealed_epochs(app, resource);
     match device
         .group_keys(workspace, collab_types::EVERY_MEMBER, false)
         .await
     {
         None => Err(PeerDocumentReadError::Encrypted),
-        Some(Err(error)) => Err(PeerDocumentReadError::Opening(error)),
-        Some(Ok(keys)) => Ok(Some(super::sealed_documents::DocumentKeys::of(
+        // Taking part in the group and holding none of its keys yet, or not yet an epoch a write
+        // was sealed under, is a member's state between its admission and the welcome or commit
+        // its group sends it.
+        Some(Err(error)) => {
+            tracing::debug!(%workspace, %app, %resource, %error, "a sealed resource waits for its keys");
+            Ok(Sealing::Due)
+        }
+        Some(Ok(keys)) if !epochs.iter().all(|epoch| keys.holds_epoch(*epoch)) => {
+            tracing::debug!(%workspace, %app, %resource, held = keys.epoch(), ?epochs,
+                "a sealed resource waits for the keys of an epoch it was written under");
+            Ok(Sealing::Due)
+        }
+        Some(Ok(keys)) => Ok(Sealing::Sealed(super::sealed_documents::DocumentKeys::of(
             keys,
             workspace,
             collab_types::EVERY_MEMBER,
@@ -381,12 +417,16 @@ async fn capture_resource(
     reader: [u8; 32],
     now: SystemTime,
     maximum: usize,
-) -> Result<PeerDocumentCapture, PeerDocumentReadError> {
-    let keys = content_keys(peer, device, workspace, (app, resource)).await?;
+) -> Result<Option<PeerDocumentCapture>, PeerDocumentReadError> {
+    let keys = match content_keys(peer, device, workspace, (app, resource)).await? {
+        Sealing::Due => return Ok(None),
+        Sealing::Clear => None,
+        Sealing::Sealed(keys) => Some(keys),
+    };
     let mut opened = keys
         .as_ref()
         .map(super::sealed_documents::DocumentKeys::open);
-    peer.capture_document(
+    match peer.capture_document(
         reader,
         (app, resource),
         now,
@@ -394,7 +434,13 @@ async fn capture_resource(
         opened
             .as_mut()
             .map(|open| open as &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>),
-    )
+    ) {
+        Ok(capture) => Ok(Some(capture)),
+        // A write this copy knows of has not reached it yet: it is on its way, and its landing
+        // wakes the reader.
+        Err(PeerDocumentReadError::Incomplete) => Ok(None),
+        Err(refused) => Err(refused),
+    }
 }
 
 /// [`Workspaces::resource_revision`] as this service answers it.
@@ -410,25 +456,34 @@ async fn resource_revision(
     if peer.checkpoint_pending(app, resource) {
         return Ok(None);
     }
-    let keys = content_keys(peer, device, workspace, (app, resource))
+    let keys = match content_keys(peer, device, workspace, (app, resource))
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())?
+    {
+        Sealing::Due => return Ok(None),
+        Sealing::Clear => None,
+        Sealing::Sealed(keys) => Some(keys),
+    };
     let mut opened = keys
         .as_ref()
         .map(super::sealed_documents::DocumentKeys::open);
     let mut kept = tilo_peer_state::KeptDocument::default();
-    let document = peer
-        .open_document(
-            reader,
-            (app, resource),
-            now,
-            usize::MAX,
-            opened.as_mut().map(|open| {
-                open as &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>
-            }),
-            &mut kept,
-        )
-        .map_err(|error| error.to_string())?;
+    let document = peer.open_document(
+        reader,
+        (app, resource),
+        now,
+        usize::MAX,
+        opened
+            .as_mut()
+            .map(|open| open as &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>),
+        &mut kept,
+    );
+    let document = match document {
+        Ok(document) => document,
+        // Missing a write it knows of: undecided until that lands, as the capture answers.
+        Err(PeerDocumentReadError::Incomplete) => return Ok(None),
+        Err(refused) => return Err(refused.to_string()),
+    };
     Ok(Some(tilo_peer_state::committed_document_revision(
         &document.get_heads(),
     )))

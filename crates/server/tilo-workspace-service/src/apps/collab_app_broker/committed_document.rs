@@ -89,7 +89,8 @@ pub struct HeldRevision {
 pub enum NativeDocumentRead {
     Unchanged([u8; 32]),
     /// The owner holds no complete capture right now: the record's governed
-    /// checkpoint is still arriving. Not readable yet, and no failure:
+    /// checkpoint is still arriving, or the keys it is sealed under are on
+    /// their way to this device. Not readable yet, and no failure:
     /// answered as [`Reply::Unavailable`], the reader withholds readiness
     /// and asks again.
     Pending,
@@ -1203,6 +1204,28 @@ impl super::AppBrokerState {
         waits.retain(|channel, held| {
             let delivers = route.delivers_to(&CrdtRoute::from_channel_key(channel));
             held.retain(|wake| wake.landed(delivers));
+            !held.is_empty()
+        });
+    }
+
+    /// This device's group keys changed: wake every resource reader waiting
+    /// for a resource's next write. A resource sealed under keys the device
+    /// had not taken yet answered as still arriving, and opens now with
+    /// nothing written to it; a reader whose resource did not change reads it
+    /// again and waits once more. A held committed read follows the keys
+    /// itself.
+    pub(super) fn wake_resource_readers(&self) {
+        let Ok(mut waits) = self.committed_waits.lock() else {
+            return;
+        };
+        waits.retain(|_, held| {
+            held.retain(|wake| match wake {
+                LandedWake::Held(_) => true,
+                LandedWake::Once(wake) => {
+                    wake.wake();
+                    false
+                }
+            });
             !held.is_empty()
         });
     }

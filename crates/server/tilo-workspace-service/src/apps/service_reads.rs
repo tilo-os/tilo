@@ -268,10 +268,15 @@ impl NativeDocumentReads for ServiceReads {
             if workspaces.resource_arriving(workspace, app, resource).await {
                 return Ok(NativeDocumentRead::Pending);
             }
-            let capture = workspaces
+            // On its way (sealed under keys this device has not taken yet, or missing a write
+            // it knows of): it reads once that arrives, which wakes the reader.
+            let Some(capture) = workspaces
                 .capture_resource(workspace, (app, resource), reader, maximum)
                 .await
-                .map_err(refusal)?;
+                .map_err(refusal)?
+            else {
+                return Ok(NativeDocumentRead::Pending);
+            };
             Ok(NativeDocumentRead::Captured {
                 revision: capture.revision(),
                 heads: capture.heads().iter().map(|head| head.0).collect(),
