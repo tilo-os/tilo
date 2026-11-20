@@ -34,6 +34,9 @@ const SAVED: &str = "automerge";
 const JOURNAL: &str = "changes";
 /// A document's journal set aside while the save that covers it is written.
 const SET_ASIDE: &str = "changes.kept";
+/// Where each document stood at the workspace when this device last merged it: the record's
+/// heads. Beside the documents, so a restart asks each record only what changed since.
+const RECORDS: &str = "records";
 
 /// Documents of the tree as read from disk: each chunk's number and its document.
 pub type Documents = Vec<(TreeChunk, Vec<u8>)>;
@@ -127,6 +130,57 @@ impl KeptDocuments {
         Ok(documents)
     }
 
+    /// Where each document of the tree stood at the workspace when this device last merged it:
+    /// its record's heads, as [`Self::keep_records`] wrote them. A restarted process asks each
+    /// record only what changed since those heads, instead of reading what the workspace holds
+    /// of it whole again.
+    ///
+    /// # Errors
+    /// The file cannot be read, or a line in it is not what [`Self::keep_records`] writes.
+    pub fn records(&self) -> io::Result<BTreeMap<TreeChunk, Vec<[u8; 32]>>> {
+        let mut records = BTreeMap::new();
+        let Ok(text) = std::fs::read_to_string(self.dir.join(RECORDS)) else {
+            return Ok(records);
+        };
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let mut words = line.split_whitespace();
+            let chunk = words
+                .next()
+                .and_then(|chunk| chunk.parse::<TreeChunk>().ok())
+                .ok_or_else(|| io::Error::other(format!("not a record line: {line}")))?;
+            let mut heads = Vec::new();
+            for word in words {
+                let head = hex::decode(word)
+                    .ok()
+                    .and_then(|head| <[u8; 32]>::try_from(head).ok())
+                    .ok_or_else(|| io::Error::other(format!("not a head: {word}")))?;
+                heads.push(head);
+            }
+            records.insert(chunk, heads);
+        }
+        Ok(records)
+    }
+
+    /// Keep where each document stood at the workspace, as [`Self::records`] reads it back.
+    ///
+    /// Written after the documents are on disk, so a record's heads never say this device merged
+    /// a change its own disk lost.
+    ///
+    /// # Errors
+    /// The file cannot be written.
+    pub fn keep_records(&self, records: &BTreeMap<TreeChunk, Vec<[u8; 32]>>) -> io::Result<()> {
+        let mut text = String::new();
+        for (chunk, heads) in records {
+            text.push_str(&chunk.to_string());
+            for head in heads {
+                text.push(' ');
+                text.push_str(&hex::encode(head));
+            }
+            text.push('\n');
+        }
+        tilo_files::native::atomic::write_with_mode(&self.dir.join(RECORDS), text.as_bytes(), 0o600)
+    }
+
     /// `namespace` was opened from what [`Self::open`] answered, which held each document at
     /// `read` ([`Namespace::from_documents_read`]; none for a namespace made new): what opening
     /// changed since is journaled now.
@@ -211,36 +265,37 @@ impl KeptDocuments {
         for (chunk, journal) in &held {
             journal
                 .sync_all()
-                .map_err(|error| naming(&file(&self.dir, *chunk, JOURNAL), error))?;
+                .map_err(|error| naming(&file(&self.dir, *chunk, JOURNAL), &error))?;
         }
         let held: Vec<TreeChunk> = held.into_iter().map(|(chunk, _)| chunk).collect();
-        for entry in std::fs::read_dir(&self.dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension() != Some(std::ffi::OsStr::new(JOURNAL)) {
-                continue;
-            }
-            let chunk = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|name| name.strip_suffix(JOURNAL))
-                .and_then(|number| number.strip_suffix('.'))
-                .and_then(|number| number.parse::<TreeChunk>().ok());
+        self.sync_listed(journals(&self.dir)?, &held)?;
+        std::fs::File::open(&self.dir)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|error| naming(&self.dir, &error))
+    }
+
+    /// Sync the journals the directory listed, save for those in `held` (synced through the
+    /// files this process keeps open for them).
+    ///
+    /// A save running beside this sync sets a journal aside between the listing and here (every
+    /// start saves what an earlier process journaled): its frames are synced where they went,
+    /// and nothing is left to sync once that save let go of them too.
+    fn sync_listed(
+        &self,
+        listed: Vec<(Option<TreeChunk>, PathBuf)>,
+        held: &[TreeChunk],
+    ) -> io::Result<()> {
+        for (chunk, path) in listed {
             if chunk.is_some_and(|chunk| held.contains(&chunk)) {
                 continue;
             }
-            // A save running beside this sync sets a journal aside between the listing and here
-            // (every start saves what an earlier process journaled): its frames are synced where
-            // they went, and nothing is left to sync once that save let go of them too.
             let aside = chunk.map(|chunk| file(&self.dir, chunk, SET_ASIDE));
             sync_if_present(&path).and_then(|synced| match (synced, aside) {
                 (false, Some(aside)) => sync_if_present(&aside).map(drop),
                 _ => Ok(()),
             })?;
         }
-        std::fs::File::open(&self.dir)
-            .and_then(|dir| dir.sync_all())
-            .map_err(|error| naming(&self.dir, error))
+        Ok(())
     }
 
     /// Save each document of `namespace` that changed since its last save, whole, and let go of
@@ -341,14 +396,34 @@ fn sync_if_present(path: &Path) -> io::Result<bool> {
         Ok(file) => file
             .sync_all()
             .map(|()| true)
-            .map_err(|error| naming(path, error)),
+            .map_err(|error| naming(path, &error)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(naming(path, error)),
+        Err(error) => Err(naming(path, &error)),
     }
 }
 
+/// The journals in `dir` as the directory lists them, each with its chunk when its name names
+/// one: what [`KeptDocuments::sync_listed`] syncs.
+fn journals(dir: &Path) -> io::Result<Vec<(Option<TreeChunk>, PathBuf)>> {
+    let mut listed = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension() != Some(std::ffi::OsStr::new(JOURNAL)) {
+            continue;
+        }
+        let chunk = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(JOURNAL))
+            .and_then(|number| number.strip_suffix('.'))
+            .and_then(|number| number.parse::<TreeChunk>().ok());
+        listed.push((chunk, path));
+    }
+    Ok(listed)
+}
+
 /// `error`, saying the file it happened to.
-fn naming(path: &Path, error: io::Error) -> io::Error {
+fn naming(path: &Path, error: &io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{}: {error}", path.display()))
 }
 
@@ -436,6 +511,40 @@ mod tests {
 
     fn holds(namespace: &mut Namespace, name: &str) -> bool {
         namespace.lookup(ROOT_INO, name).is_some()
+    }
+
+    /// A save that sets a journal aside between the sync listing it and opening it costs the
+    /// sync nothing: the listed file is gone, and its frames went where the save put them. It
+    /// failed with "No such file or directory" a few times every time a folder's sync started,
+    /// which saves what it merged at once.
+    #[test]
+    fn a_journal_a_save_set_aside_between_the_listing_and_the_sync_is_not_missed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (kept, mut namespace) = open(dir.path());
+        namespace
+            .create_file(ROOT_INO, "written.txt", None, 1, 1)
+            .unwrap();
+        kept.journal(&mut namespace).unwrap();
+        // What the sync lists, and then what a save running beside it leaves of it.
+        let listed = journals(dir.path()).unwrap();
+        assert!(!listed.is_empty(), "a journal to sync");
+        let mut set_aside_count = 0;
+        for chunk in namespace.document_heads().into_keys() {
+            if !file(dir.path(), chunk, JOURNAL).exists() {
+                continue;
+            }
+            set_aside(dir.path(), chunk).unwrap();
+            assert!(
+                file(dir.path(), chunk, SET_ASIDE).exists(),
+                "chunk {chunk} is set aside"
+            );
+            set_aside_count += 1;
+        }
+        assert!(set_aside_count > 0, "a journal set aside");
+        kept.sync_listed(listed, &[]).expect(
+            "a sync whose journals a save set aside names no missing file: the frames are in the \
+             set-aside copy",
+        );
     }
 
     /// Syncing while saves set journals aside never fails: a save renames a journal between
@@ -604,6 +713,38 @@ mod tests {
             again.readdir(folder).map(|entries| entries.len()),
             Some(302)
         );
+    }
+
+    /// Where each record stood at the workspace is kept beside the documents and reads back as
+    /// it was written: what a restarted holder asks each record's changes since, instead of
+    /// reading everything the workspace holds of it again.
+    #[test]
+    fn where_a_record_stood_reads_back_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let (kept, mut namespace) = open(dir.path());
+        namespace
+            .create_file(ROOT_INO, "kept.txt", None, 1, 1)
+            .unwrap();
+        kept.journal(&mut namespace).unwrap();
+        let stood: BTreeMap<TreeChunk, Vec<[u8; 32]>> = namespace
+            .document_heads()
+            .into_iter()
+            .map(|(chunk, heads)| {
+                (
+                    chunk,
+                    heads.into_iter().map(|head| head.0).collect(),
+                )
+            })
+            .collect();
+        assert!(stood.values().any(|heads| !heads.is_empty()), "{stood:?}");
+        kept.keep_records(&stood).unwrap();
+        drop(kept);
+
+        let (again, _) = KeptDocuments::open(dir.path()).unwrap();
+        assert_eq!(again.records().unwrap(), stood);
+        // And what is not a record line is no place at all rather than a start refused.
+        std::fs::write(dir.path().join(RECORDS), "not a number\n").unwrap();
+        assert!(again.records().is_err());
     }
 
     /// A frame cut off as the process was killed while adding it costs that frame alone.

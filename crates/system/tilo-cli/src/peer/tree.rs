@@ -276,11 +276,18 @@ impl TreeReplica {
         // a runtime worker it would hold that worker — and the holder's clients, and the agents
         // it serves, wait for one — for as long as a repository's tree takes, so it goes to a
         // thread of the blocking pool instead.
-        let (kept, namespace) = tokio::task::spawn_blocking(move || {
+        let (kept, namespace, records) = tokio::task::spawn_blocking(move || {
             let (kept, documents) = KeptDocuments::open(&kept_at)?;
             let (mut namespace, read) = open_namespace(&mount, &kept, documents)?;
             kept.opened(&mut namespace, read)?;
-            Ok::<_, std::io::Error>((Arc::new(kept), namespace))
+            // Where each record stood at the workspace when this device last merged it. A
+            // record file that does not read is no record: the pass reads the record whole
+            // again, which is what every start did before it was kept.
+            let records = kept.records().unwrap_or_else(|error| {
+                tracing::warn!(%error, "where the tree's records stood does not read; each is read whole again");
+                BTreeMap::new()
+            });
+            Ok::<_, std::io::Error>((Arc::new(kept), namespace, records))
         })
         .await
         .map_err(std::io::Error::other)??;
@@ -296,7 +303,22 @@ impl TreeReplica {
             link,
             workspace,
             namespace: Arc::clone(&namespace),
-            documents: BTreeMap::new(),
+            // Each record as the workspace held it when this device last merged it: the pass
+            // asks only what changed since, and writes out only what the workspace lacks.
+            // Heads the workspace does not know bring what it holds, never less.
+            documents: records
+                .into_iter()
+                .map(|(chunk, heads)| {
+                    let held = Held {
+                        sent: heads.iter().copied().map(automerge::ChangeHash).collect(),
+                        merged: Some(heads),
+                        founded: true,
+                        ..Held::default()
+                    };
+                    (chunk, held)
+                })
+                .collect(),
+            records_changed: false,
             unread: BTreeSet::new(),
             unreadable: BTreeSet::new(),
             again: BTreeMap::new(),
@@ -503,6 +525,8 @@ struct Sync {
     dirty_since: Option<Instant>,
     /// Where each document is kept on disk, with its changes since.
     kept: Arc<KeptDocuments>,
+    /// A record stood somewhere new at the workspace since its place was last kept on disk.
+    records_changed: bool,
     /// The documents whose wait for another to reach the workspace was said, once each.
     ordered: BTreeSet<TreeChunk>,
     /// How often the tree may be kept, since it costs what the tree costs.
@@ -597,6 +621,7 @@ impl Sync {
                 _ = keep.tick() => if self.pacing.due(Instant::now()) {
                     let started = Instant::now();
                     self.keep().await;
+                    self.keep_records();
                     self.pacing.ran(started, Instant::now());
                 },
                 () = tokio::time::sleep(wait) => session_moved = self.dirty_since.is_none(),
@@ -605,6 +630,28 @@ impl Sync {
         // What changed here is on disk before this task ends: the holder is going, and the
         // module that made it goes with the process.
         self.keep().await;
+        self.keep_records();
+    }
+
+    /// Keep where each record of the tree stood at the workspace when this device last merged
+    /// it, beside the documents: a restarted holder asks each record only what changed since,
+    /// rather than reading everything the workspace holds of it again.
+    fn keep_records(&mut self) {
+        if !self.records_changed {
+            return;
+        }
+        let records: BTreeMap<TreeChunk, Vec<[u8; 32]>> = self
+            .documents
+            .iter()
+            .filter_map(|(chunk, held)| held.merged.as_ref().map(|heads| (*chunk, heads.clone())))
+            .collect();
+        match self.kept.keep_records(&records) {
+            Ok(()) => self.records_changed = false,
+            Err(error) => tracing::warn!(
+                %error,
+                "where the tree's records stand is not kept on disk; a restart reads them whole"
+            ),
+        }
     }
 
     /// Ask the workspace again for each document of the tree that does not read here and whose
@@ -845,7 +892,10 @@ impl Sync {
                     held.sent.push(hash);
                 }
             }
-            held.merged = Some(heads);
+            if held.merged.as_ref() != Some(&heads) {
+                held.merged = Some(heads);
+                self.records_changed = true;
+            }
             held.founded = true;
             held.read_at = digest;
         }
