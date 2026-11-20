@@ -241,7 +241,15 @@ impl ContentSurfaces {
         if blake3::hash(&bytes).as_bytes() != hash {
             return None;
         }
-        let file = Arc::new(SurfaceFile::from_json(std::str::from_utf8(&bytes).ok()?).ok()?);
+        // Kept since surfaces are addressed by their JSON form, or by an
+        // earlier build, which kept and addressed each as its `surface.toml`:
+        // the changes that build wrote name those bytes, and stay readable.
+        let text = std::str::from_utf8(&bytes).ok()?;
+        let file = Arc::new(
+            SurfaceFile::from_json(text)
+                .or_else(|_| SurfaceFile::parse(&bytes))
+                .ok()?,
+        );
         self.parsed.lock_recover().insert(*hash, Arc::clone(&file));
         Some(file)
     }
@@ -449,6 +457,30 @@ writes = ["document", "comments.*"]
 
             let forged = ContentSurfaces::new(|_, _| Some(b"[[resources]]".to_vec()));
             assert!(forged.surface(&document, None, Some(&hash)).is_none());
+        }
+
+        phase a_surface_an_earlier_build_kept_as_its_file_decides_claims;
+        // An earlier build kept and named each surface as its `surface.toml`,
+        // by the hash of those bytes: the changes it wrote stay decided.
+        {
+            let hash = *blake3::hash(FILE.as_bytes()).as_bytes();
+            let hex = hex::encode(hash);
+            let source = ContentSurfaces::new(move |_, wanted| {
+                (wanted == hex).then(|| FILE.as_bytes().to_vec())
+            });
+            let document = WrittenDocument {
+                workspace: "r",
+                app: "notes",
+                document: "p1",
+            };
+            let surface = source
+                .surface(&document, Some("notes.page"), Some(&hash))
+                .expect("the file an earlier build kept is its surface");
+            assert_eq!(surface.kind(), "notes.page");
+            assert_eq!(
+                surface.verb("comment"),
+                Some((ActionKind::Undoable, Some("comments".into())))
+            );
         }
 
         phase every_committed_surface_parses_and_its_generated_form_reads_as_it_does;

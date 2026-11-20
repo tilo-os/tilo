@@ -159,9 +159,11 @@ const BUILT_SURFACES: &str = "/usr/local/share/tilo/surfaces";
 
 /// Publish the surfaces this build carries into the content store `dir`, in
 /// the form they are kept by
-/// ([`collab_types::surface::canonical`]): a change naming one of them is
-/// decided here even when no member still has that version. Files already in
-/// the content store are left as they are, so a start publishes once.
+/// ([`collab_types::surface::canonical`]), and as the `surface.toml` they
+/// were built from, the form and address earlier builds named in the changes
+/// they wrote: a change naming one of them is decided here even when no
+/// member still has that version. Files already in the content store are
+/// left as they are, so a start publishes once.
 fn publish_built(dir: &Path) {
     let built = std::env::var_os("TILO_SURFACES")
         .map_or_else(|| PathBuf::from(BUILT_SURFACES), PathBuf::from);
@@ -185,15 +187,17 @@ fn publish_from(built: &Path, dir: &Path) {
             );
             continue;
         };
-        let hash = hex::encode(blake3::hash(surface.as_bytes()).as_bytes());
-        if dir.join(&hash).exists() {
-            already = already.saturating_add(1);
-            continue;
-        }
-        match write(dir, &hash, surface.as_bytes()) {
-            Ok(()) => published = published.saturating_add(1),
-            Err(error) => {
-                tracing::warn!(%error, %hash, "a surface this build carries was not published");
+        for form in [surface.as_bytes(), bytes.as_slice()] {
+            let hash = hex::encode(blake3::hash(form).as_bytes());
+            if dir.join(&hash).exists() {
+                already = already.saturating_add(1);
+                continue;
+            }
+            match write(dir, &hash, form) {
+                Ok(()) => published = published.saturating_add(1),
+                Err(error) => {
+                    tracing::warn!(%error, %hash, "a surface this build carries was not published");
+                }
             }
         }
     }
@@ -438,11 +442,17 @@ mod tests {
                 surface.as_bytes(),
                 "{version} is in the content store, by its hash, in the form it is kept by"
             );
+            let built_hash = hex::encode(blake3::hash(bytes).as_bytes());
+            assert_eq!(
+                std::fs::read(content_store.join(&built_hash)).unwrap(),
+                bytes,
+                "{version} is in the content store as built too, by the hash earlier builds' changes name"
+            );
         }
         assert_eq!(
             std::fs::read_dir(&content_store).unwrap().count(),
-            2,
-            "one file per version, not one per file"
+            4,
+            "two forms per version, not per file"
         );
 
         // A start after this one publishes nothing new.
@@ -450,7 +460,7 @@ mod tests {
         let path = content_store.join(hex::encode(blake3::hash(surface.as_bytes()).as_bytes()));
         let kept = std::fs::metadata(&path).unwrap().modified().unwrap();
         publish_from(&built, &content_store);
-        assert_eq!(std::fs::read_dir(&content_store).unwrap().count(), 2);
+        assert_eq!(std::fs::read_dir(&content_store).unwrap().count(), 4);
         assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), kept);
     }
 }

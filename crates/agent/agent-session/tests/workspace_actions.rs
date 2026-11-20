@@ -239,6 +239,9 @@ mod throughput;
 #[path = "workspace_actions/tracker_listing.rs"]
 mod tracker_listing;
 #[cfg(test)]
+#[path = "workspace_actions/update_reads_older_writes.rs"]
+mod update_reads_older_writes;
+#[cfg(test)]
 #[path = "workspace_actions/workspace_find.rs"]
 mod workspace_find;
 
