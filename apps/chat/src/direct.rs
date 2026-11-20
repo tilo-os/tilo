@@ -273,6 +273,35 @@ impl ChatApp {
             .collect()
     }
 
+    /// The conversations with this person's own agents that hold nothing yet, by the agent's
+    /// name and who it is: an agent a person keeps is someone they talk to from the start, so it
+    /// is listed before its first message, where a conversation with anyone else is listed once
+    /// it holds one.
+    pub(crate) fn own_agents_unlisted(&self) -> Vec<(Id, String, MemberId)> {
+        let Some(mine) = self.me.id.person_id() else {
+            return Vec::new();
+        };
+        let Some(agents) = self.agents.as_ref().and_then(|opener| {
+            opener.open(&ui::resource::workspace::document_id(
+                ui::tilo_workspace_agent::KIND,
+            ))
+        }) else {
+            return Vec::new();
+        };
+        let listed = self.direct_contacts();
+        agents
+            .get()
+            .made_by_people()
+            .filter(|agent| agent.keeper == mine)
+            .filter_map(|agent| {
+                let member = MemberId::agent(agent.id.0.clone());
+                let id = Chat::direct_id([self.me.id.clone(), member.clone()]);
+                (!listed.iter().any(|held| held.id == id.as_str()))
+                    .then(|| (id, agent.name.trim().to_owned(), member))
+            })
+            .collect()
+    }
+
     /// The rows this app offers for its conversations with the workspace's
     /// people, so a caller finds them by the operation it wants rather than
     /// by a written address. Every person has one, not only those the

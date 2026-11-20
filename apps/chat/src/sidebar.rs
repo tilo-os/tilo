@@ -131,7 +131,7 @@ impl ChatApp {
     }
 
     /// The direct conversations this person has, each once, by the name they
-    /// go by: those holding messages and the one open now. Everyone else in
+    /// go by: those holding messages, the one open now, and those with their own agents. Everyone else in
     /// the workspace is reached from the people overlay (or their card), not
     /// listed here: a workspace full of visitors must not push its channels
     /// out of sight.
@@ -154,6 +154,16 @@ impl ChatApp {
                 }
                 item
             })
+            .chain(
+                self.own_agents_unlisted()
+                    .into_iter()
+                    .map(|(id, name, agent)| {
+                        NavItem::new(channel_place(id.as_str()), &name)
+                            .icon(Icon::Users)
+                            .person(agent.clone(), Some(self.identity_colour(&agent)), false)
+                            .person_face(&name, None)
+                    }),
+            )
             .collect()
     }
 

@@ -728,13 +728,22 @@ impl ChatApp {
         move |anchor| opened.borrow_mut().push(anchor.to_owned())
     }
 
-    /// Show the items asked for since the last sync.
-    pub(crate) fn open_requested(&mut self) {
+    /// Show the items asked for since the last sync, on the chat `doc` holds: the conversation
+    /// with an agent is read from it, as the `open-agent` action reads it.
+    pub(crate) fn open_requested(&mut self, doc: &automerge::AutoCommit) {
         let anchors = std::mem::take(&mut *self.opened.borrow_mut());
         for anchor in anchors {
-            // An item gone since it was found shows nothing.
-            if let Some(effect) = opening(&anchor) {
-                let _ = self.answer_effect(effect);
+            match opening(&anchor) {
+                Some(ChatEffect::OpenAgent { agent }) => {
+                    if let Ok(chat) = <crate::chat::Chat as tilo_resource::Resource>::read(doc) {
+                        self.open_agent(&agent, &chat);
+                    }
+                }
+                // An item gone since it was found shows nothing.
+                Some(effect) => {
+                    let _ = self.answer_effect(effect);
+                }
+                None => {}
             }
         }
     }

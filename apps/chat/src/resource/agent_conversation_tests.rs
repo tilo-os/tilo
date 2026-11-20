@@ -112,3 +112,105 @@ fn a_conversation_with_an_agent_is_named_by_the_workspaces_own_list() {
         .expect("the open conversation is listed");
     assert_eq!(row.name, "Assistant", "the direct messages list names it");
 }
+
+/// A window opened at an agent of the workspace, as the Assistant window opens Chat beside it,
+/// shows the conversation with that agent: never the first channel, where what the person types
+/// would go to everyone.
+#[test]
+fn a_window_opened_at_an_agent_shows_the_conversation_with_it() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut window = TestApp::<ChatShell>::in_workspace(WORKSPACE).expect("a window");
+    window.frame();
+    let agents = window
+        .shared_workspace::<WorkspaceAgents>(workspace_agent::OWNER)
+        .expect("the workspace's agents");
+    agents
+        .invoke(
+            &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                name: NonBlank::parse("Assistant").expect("a name"),
+                keeper: None,
+                id: Some("assistant".to_owned()),
+                model: None,
+                mcp_client: None,
+            }),
+        )
+        .expect("the agent is made");
+    window.frame();
+    let at = ui::tilo_resource::items::item_resource_id::<WorkspaceAgents>(
+        "agents",
+        &ui::tilo_resource::Id::from_raw("assistant"),
+    );
+    let mut open = window.chat().opener();
+    open(&at);
+    window.settle();
+    let conversation = window.chat().active_channel.clone();
+    let members =
+        crate::chat::Chat::direct_members(&ui::tilo_resource::Id::from_raw(conversation.clone()))
+            .unwrap_or_else(|| panic!("a direct conversation is open, not {conversation}"));
+    assert!(
+        members.contains(&ui::tilo_resource::MemberId::agent("assistant".to_owned())),
+        "the conversation is the one with the agent: {members:?}"
+    );
+    assert!(window.chat().takes_messages(), "it takes the first message");
+}
+
+/// A person's own agent is listed among their direct messages before anything was said to it,
+/// at the conversation with it: the place a person talks to their assistant from, in Chat itself.
+#[test]
+fn a_persons_own_agent_is_listed_before_its_first_message() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut window = TestApp::<ChatShell>::in_workspace(WORKSPACE).expect("a window");
+    window.frame();
+    let agents = window
+        .shared_workspace::<WorkspaceAgents>(workspace_agent::OWNER)
+        .expect("the workspace's agents");
+    agents
+        .invoke(
+            &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                name: NonBlank::parse("Assistant").expect("a name"),
+                keeper: None,
+                id: Some("assistant".to_owned()),
+                model: None,
+                mcp_client: None,
+            }),
+        )
+        .expect("the agent is made");
+    window.settle();
+    let listed = |window: &mut TestApp<ChatShell>| -> Vec<(String, String)> {
+        window
+            .chat()
+            .sidebar_sections()
+            .last()
+            .map(|section| {
+                section
+                    .items
+                    .iter()
+                    .map(|item| (item.label.clone(), item.id.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let me = window.chat().me.id.clone();
+    let with = crate::chat::Chat::direct_id([
+        me,
+        ui::tilo_resource::MemberId::agent("assistant".to_owned()),
+    ]);
+    let place = crate::sidebar::channel_place(with.as_str());
+    assert_eq!(
+        listed(&mut window),
+        [("Assistant".to_owned(), place.clone())],
+        "the direct messages list the agent, at the conversation with it"
+    );
+
+    // Opened, it is listed once.
+    let mut open = window.chat().opener();
+    open(
+        &ui::tilo_resource::items::item_resource_id::<WorkspaceAgents>(
+            "agents",
+            &ui::tilo_resource::Id::from_raw("assistant"),
+        ),
+    );
+    window.settle();
+    assert_eq!(window.chat().active_channel, with.as_str());
+    assert_eq!(listed(&mut window), [("Assistant".to_owned(), place)]);
+}

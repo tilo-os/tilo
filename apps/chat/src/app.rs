@@ -1894,7 +1894,7 @@ impl Widget for ChatApp {
             self.reload(doc);
         }
         self.join_pending_call();
-        self.open_requested();
+        self.open_requested(doc);
         self.reveal_sought();
         // The channel in view is read: advance its watermark (no-op when
         // nothing new arrived) so its unread badge stays cleared. Only a
