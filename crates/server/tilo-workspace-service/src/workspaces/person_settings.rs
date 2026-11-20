@@ -799,6 +799,7 @@ fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
             .map(ToString::to_string)
             .unwrap_or_default(),
         signing_in: Vec::new(),
+        signs_in_with: Vec::new(),
     })
 }
 

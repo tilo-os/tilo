@@ -279,6 +279,11 @@ pub struct MailAccounts {
     /// The sign-ins begun on a provider's page that made no account yet.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signing_in: Vec<SigningIn>,
+    /// The providers this server can sign in with now, in the order its
+    /// page offers them: Google or Microsoft once a web client is
+    /// configured for it, Nextcloud always. Only these are worth a button.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signs_in_with: Vec<Provider>,
 }
 
 /// An address whose servers to find ([`FIND_SERVERS`]).

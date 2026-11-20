@@ -998,6 +998,7 @@ mod tests {
                 accounts: accounts.clone(),
                 active: active.unwrap_or_default(),
                 signing_in: Vec::new(),
+                signs_in_with: Vec::new(),
             })
             .unwrap()
         }
