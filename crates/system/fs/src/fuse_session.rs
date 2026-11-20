@@ -93,24 +93,36 @@ pub fn mountable(dev_fuse: &Path, path: Option<&std::ffi::OsStr>) -> bool {
 /// A mount a crashed daemon left behind answers `ENOTCONN`; unmount it so
 /// its path can be mounted again.
 ///
+/// The mount is found in `/proc/self/mounts`, never by touching it: a stat of a mount whose
+/// daemon has just died can wait for an answer that will not come.
+///
 /// # Errors
-/// [`FUSERMOUNT`] could not remove it.
+/// [`FUSERMOUNT`] could not remove it, and it is still there.
 pub fn clear_stale_mount(at: &Path) -> io::Result<()> {
-    match std::fs::metadata(at) {
-        Err(error) if error.raw_os_error() == Some(libc::ENOTCONN) => {
-            let status = std::process::Command::new(FUSERMOUNT)
-                .args(["-u", "-z"])
-                .arg(at)
-                .status()?;
-            if status.success() {
-                Ok(())
-            } else {
-                Err(io::Error::other(format!(
-                    "{FUSERMOUNT} could not remove the stale mount at {}",
-                    at.display()
-                )))
-            }
-        }
-        _ => Ok(()),
+    let Ok(mounts) = std::fs::read_to_string("/proc/self/mounts") else {
+        return Ok(());
+    };
+    let escaped = at.to_string_lossy().replace(' ', "\\040");
+    let listed = mounts.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        let _source = fields.next();
+        let point = fields.next();
+        let kind = fields.next();
+        point == Some(escaped.as_str()) && kind.is_some_and(|kind| kind.starts_with("fuse"))
+    });
+    if !listed {
+        return Ok(());
+    }
+    let status = std::process::Command::new(FUSERMOUNT)
+        .args(["-u", "-z"])
+        .arg(at)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{FUSERMOUNT} could not remove the stale mount at {}",
+            at.display()
+        )))
     }
 }
