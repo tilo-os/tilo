@@ -95,13 +95,13 @@ look once and the mode only turns it over:
 | Look | Temperature (dark / light) | Its own accent | Character |
 |---|---|---|---|
 | Tilo | slate 255 / 0.016; light takes the workspace's hue at 0.008 | the person's colour | the default: cool, calm, yours |
-| Paper | warm 70 / 0.014, 80 / 0.011 on a cream page | ink blue (255) | reading and writing |
-| Moss | green-grey 160 / 0.020, 150 / 0.013 | ochre (85) | quiet, outdoors |
-| Dusk | violet 285 / 0.030, 295 / 0.018 | rose (355) | evening, the most colour |
+| Paper | warm 70 / 0.014, 80 / 0.011 on a cream page | orange (55), a pencil mark | reading and writing |
+| Moss | olive 125 / 0.016, sage 115 / 0.009 | ochre (85) | quiet, outdoors |
+| Dusk | violet 285 / 0.030, 295 / 0.018 | magenta (325) | evening, the most colour |
 | Mono | none | inverted: ink is the fill | colourless, for those who want none |
 
 A person can give any look another accent; the swatches show each hue as it
-will look on the chosen look.
+will look on the chosen look, the look's own first and no colour twice.
 
 **Accent fills.** Every hue gets its own fill lightness rather than one for
 all. Blue, violet, pink and red fill at the lightest step where a white

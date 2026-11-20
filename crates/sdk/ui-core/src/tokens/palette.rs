@@ -246,16 +246,17 @@ impl Palette {
         }
     }
 
-    /// Moss, dark: the green-black of a forest at night.
+    /// Moss, dark: olive-black, the bark under moss. Yellow-green rather than green, so
+    /// its ochre accent and the ochre selection on it are of one earthy family.
     #[must_use]
     pub const fn moss_dark() -> Self {
-        Self::dark_at(160.0, 0.020, 0.165)
+        Self::dark_at(125.0, 0.016, 0.165)
     }
 
-    /// Moss, light: pale sage.
+    /// Moss, light: sage paper, an off-white that leans olive and never mint.
     #[must_use]
     pub const fn moss_light() -> Self {
-        Self::light_at(150.0, 0.013, 0.92, 0.988)
+        Self::light_at(115.0, 0.009, 0.92, 0.988)
     }
 
     /// Dusk, dark: deep indigo.

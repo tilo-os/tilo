@@ -435,15 +435,16 @@ fn theme_card(cx: &ViewCx<AppearancePrefs>) -> Element {
             AppearancePrefs::PICK_THEME,
         ))
     });
-    let accent = cx.value(|prefs: &AppearancePrefs| prefs.accent.clone());
-    let swatches = cx.switch(&accent, |cx, accent| -> Element {
-        let mut picker = accent_swatches(accent.as_deref());
+    let accent = cx.value(|prefs: &AppearancePrefs| (prefs.look(), prefs.accent.clone()));
+    let swatches = cx.switch(&accent, |cx, (look, accent)| -> Element {
+        let hues = accent_hues(*look);
+        let mut picker = accent_swatches(&hues, accent.as_deref());
         if let Some(binding) = cx.actions().set_binding(
             AppearancePrefs::paths().accent,
-            |index: usize| -> Result<Option<String>, String> {
+            move |index: usize| -> Result<Option<String>, String> {
                 match index.checked_sub(1) {
                     None => Ok(None),
-                    Some(hue) => ui::tokens::PresenceHue::ALL
+                    Some(hue) => hues
                         .get(hue)
                         .map(|hue| Some(hue.id().to_owned()))
                         .ok_or_else(|| format!("no accent {index}")),
@@ -485,13 +486,27 @@ fn theme_card(cx: &ViewCx<AppearancePrefs>) -> Element {
     .into_element()
 }
 
-/// Swatches a line: the look's own and six hues, then six more, so the two lines fit a
-/// phone at a touch target's size.
-const ACCENT_COLUMNS: usize = 7;
+/// Swatches a line at most: the look's own and every hue on one line where the column is
+/// wide enough, fewer a line on a phone.
+const ACCENT_COLUMNS: usize = 13;
 
-/// The accent swatches: the look's own first, then the twelve hues, each painted as the
-/// primary button the shown theme would fill with it.
-fn accent_swatches(chosen: Option<&str>) -> ui::widget::ColorSwatchPicker {
+/// The hues the person can pick besides the look's own: all twelve, less the one the look
+/// already wears, so no colour shows twice.
+fn accent_hues(look: Option<ui::theme::Look>) -> Vec<ui::tokens::PresenceHue> {
+    use ui::tokens::{Emphasis, PresenceHue};
+    let own = look.map(ui::theme::Look::emphasis);
+    PresenceHue::ALL
+        .into_iter()
+        .filter(|hue| !matches!(own, Some(Emphasis::Tinted { hue: degrees }) if (degrees - hue.degrees()).abs() < 0.5))
+        .collect()
+}
+
+/// The accent swatches: the look's own first, then `hues`, each painted as the primary
+/// button the shown theme would fill with it.
+fn accent_swatches(
+    hues: &[ui::tokens::PresenceHue],
+    chosen: Option<&str>,
+) -> ui::widget::ColorSwatchPicker {
     use ui::tokens::{Colors, Emphasis, PresenceHue};
     // Each swatch takes its colour from the theme it is drawn in, so it shows the accent as
     // the chosen look will draw it.
@@ -501,20 +516,18 @@ fn accent_swatches(chosen: Option<&str>) -> ui::widget::ColorSwatchPicker {
         t("settings-appearance-accent-theme"),
     )];
     swatches.extend(
-        PresenceHue::ALL
-            .iter()
+        hues.iter()
             .map(|hue| ui::widget::ColorSwatch::named(unpainted, hue.label().to_owned())),
     );
     let selected = chosen
         .and_then(PresenceHue::from_id)
-        .and_then(|hue| PresenceHue::ALL.iter().position(|each| *each == hue))
+        .and_then(|hue| hues.iter().position(|each| *each == hue))
         .map_or(0, |index| index + 1);
+    let degrees: Vec<f32> = hues.iter().map(|hue| hue.degrees()).collect();
     ui::widget::ColorSwatchPicker::new(swatches, ACCENT_COLUMNS)
         .with_selected(selected)
         .with_accessible_name(t("settings-appearance-accent"))
-        // The look's own accent: following the look is a choice of its own, not one more colour.
-        .with_mark(0, "•")
-        .with_theme_colours(|theme| {
+        .with_theme_colours(move |theme| {
             let document = &theme.document;
             let you = theme.tokens.colors.you;
             let own = ui::theme::Preset::find(&document.id)
@@ -527,9 +540,9 @@ fn accent_swatches(chosen: Option<&str>) -> ui::widget::ColorSwatchPicker {
             };
             std::iter::once(fill(own))
                 .chain(
-                    PresenceHue::ALL
+                    degrees
                         .iter()
-                        .map(|hue| fill(Emphasis::Tinted { hue: hue.degrees() })),
+                        .map(|hue| fill(Emphasis::Tinted { hue: *hue })),
                 )
                 .collect()
         })

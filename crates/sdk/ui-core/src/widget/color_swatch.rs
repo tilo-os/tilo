@@ -287,7 +287,11 @@ const CHANGE_SWATCH: &str = "tilo.ui.swatch.change";
 
 pub struct ColorSwatchPicker {
     swatches: Vec<ColorSwatch>,
+    /// The most swatches a row takes.
     columns: usize,
+    /// The swatches a row takes in the width it was laid out in: `columns`, or fewer where
+    /// that many do not fit.
+    fit: usize,
     selected: Option<usize>,
     choice: Option<usize>,
     rect: Rect,
@@ -312,8 +316,6 @@ pub struct ColorSwatchPicker {
     theme_colours: Option<Box<ThemeColours>>,
     /// The theme `theme_colours` last worked the colours out for.
     coloured_for: Option<(crate::theme::ThemeDocument, crate::tokens::PresenceHue)>,
-    /// The swatch that carries a mark of its own, and the mark.
-    marked: Option<(usize, String)>,
     /// What the palette is called ("Accent"), said before the swatch a reader is on.
     name: Option<String>,
     /// The chosen ring's place: it slides from the swatch chosen before to the one chosen now.
@@ -332,6 +334,7 @@ impl ColorSwatchPicker {
             dirty: true,
             swatches: swatches.into_iter().collect(),
             columns: columns.max(1),
+            fit: columns.max(1),
             selected: None,
             choice: None,
             rect: Rect::ZERO,
@@ -350,7 +353,6 @@ impl ColorSwatchPicker {
             painter: None,
             theme_colours: None,
             coloured_for: None,
-            marked: None,
             name: None,
             ring: crate::motion::MotionValue::new(Rect::ZERO),
             ring_for: None,
@@ -475,14 +477,6 @@ impl ColorSwatchPicker {
         self
     }
 
-    /// Mark swatch `index` with `mark`, drawn in its middle in an ink that reads on it: a
-    /// swatch that stands for a choice of its own rather than one more colour.
-    #[must_use]
-    pub fn with_mark(mut self, index: usize, mark: impl Into<String>) -> Self {
-        self.marked = Some((index, mark.into()));
-        self
-    }
-
     fn colour_for(&mut self, theme: &Theme) {
         let Some(colours) = self.theme_colours.as_mut() else {
             return;
@@ -526,7 +520,17 @@ impl ColorSwatchPicker {
     }
 
     fn rows(&self) -> usize {
-        self.swatches.len().div_ceil(self.columns)
+        self.swatches.len().div_ceil(self.fit)
+    }
+
+    /// The swatches a row of `width` takes: as many whole cells as fit, at most `columns`.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a row holds a handful of on-screen cells"
+    )]
+    fn fit_in(&self, width: f64) -> usize {
+        (((width + self.pad) / self.cell).floor().max(1.0) as usize).min(self.columns)
     }
 
     #[allow(
@@ -541,8 +545,8 @@ impl ColorSwatchPicker {
         let gap = self.pad;
         let row = self.row_height();
         for i in 0..self.swatches.len() {
-            let r = i.checked_div(self.columns).unwrap_or(0) as f64;
-            let c = i.checked_rem(self.columns).unwrap_or(0) as f64;
+            let r = i.checked_div(self.fit).unwrap_or(0) as f64;
+            let c = i.checked_rem(self.fit).unwrap_or(0) as f64;
             let x = self.rect.x0 + c * self.cell;
             let y = self.rect.y0 + r * row;
             self.swatch_rects
@@ -559,7 +563,7 @@ impl ColorSwatchPicker {
                   far below f32's exact-integer range"
     )]
     fn grid_size(&self) -> (f32, f32) {
-        let w = (self.columns as f64 * self.cell - self.pad).max(0.0);
+        let w = (self.fit as f64 * self.cell - self.pad).max(0.0);
         let h = (self.rows() as f64 * self.row_height() - self.pad).max(0.0);
         (w as f32, h as f32)
     }
@@ -719,10 +723,23 @@ impl Widget for ColorSwatchPicker {
             .cell_width
             .unwrap_or_else(|| f64::from(theme.tokens.metrics.min_pointer_target));
         self.pad = f64::from(theme.tokens.spacing.s1);
-        let (w, h) = self.grid_size();
+        // As wide as every column, narrowing a whole cell at a time where the row is
+        // narrower: the swatches wrap onto more lines rather than overflow.
+        self.fit = self.columns;
+        let (widest, _) = self.grid_size();
         let style = Style {
-            flex_shrink: 0.0,
-            size: taffy::Size::from_lengths(w, h),
+            flex_shrink: 1.0,
+            // Its own size across the row too: stretched, its bounds would take in height it does
+            // not draw in.
+            align_self: Some(taffy::AlignSelf::FlexStart),
+            min_size: taffy::Size {
+                width: taffy::Dimension::length(crate::num::f32_of_f64(self.cell - self.pad)),
+                height: taffy::Dimension::auto(),
+            },
+            max_size: taffy::Size {
+                width: taffy::Dimension::length(widest),
+                height: taffy::Dimension::auto(),
+            },
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -730,16 +747,23 @@ impl Widget for ColorSwatchPicker {
 
     fn measure(
         &mut self,
-        _k: taffy::Size<Option<f32>>,
-        _a: taffy::Size<taffy::AvailableSpace>,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
         _tr: &mut TextRenderer,
     ) -> taffy::Size<f32> {
+        let width = known.width.map(f64::from).unwrap_or(match available.width {
+            taffy::AvailableSpace::Definite(width) => f64::from(width),
+            taffy::AvailableSpace::MinContent => 0.0,
+            taffy::AvailableSpace::MaxContent => f64::INFINITY,
+        });
+        self.fit = self.fit_in(width);
         let (width, height) = self.grid_size();
         taffy::Size { width, height }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.fit = self.fit_in(self.rect.width());
         self.recompute_swatches();
     }
 
@@ -754,13 +778,10 @@ impl Widget for ColorSwatchPicker {
         self.colour_for(theme);
         let sliding = self.follow_ring(theme.motion());
         for (i, (swatch, rect)) in self.swatches.iter().zip(&self.swatch_rects).enumerate() {
-            let mut face = ColorSwatchFace::of(*rect, swatch)
+            let face = ColorSwatchFace::of(*rect, swatch)
                 .selected(self.selected == Some(i) && sliding.is_none())
                 .focused(self.focused && self.focus_index == i)
                 .hovered(self.hovered == Some(i));
-            if let Some((_, mark)) = self.marked.as_ref().filter(|(index, _)| *index == i) {
-                face = face.marker(mark.clone());
-            }
             match self.painter.as_mut() {
                 Some(painter) => {
                     painter(scene, transform, *rect, i, theme, text_renderer);
@@ -824,9 +845,9 @@ impl Widget for ColorSwatchPicker {
                     Key::Named(NamedKey::ArrowRight) => {
                         self.focus_index.saturating_add(1).min(last)
                     }
-                    Key::Named(NamedKey::ArrowUp) => self.focus_index.saturating_sub(self.columns),
+                    Key::Named(NamedKey::ArrowUp) => self.focus_index.saturating_sub(self.fit),
                     Key::Named(NamedKey::ArrowDown) => {
-                        self.focus_index.saturating_add(self.columns).min(last)
+                        self.focus_index.saturating_add(self.fit).min(last)
                     }
                     Key::Named(NamedKey::Home) => 0,
                     Key::Named(NamedKey::End) => last,
@@ -984,19 +1005,13 @@ mod tests {
 
     fn lay_out(w: &mut dyn Widget) {
         let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = w.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(300.0),
-                    height: taffy::AvailableSpace::Definite(300.0),
-                },
-            )
-            .unwrap();
-        w.apply_layout(&taffy, node, Point::ZERO);
+        crate::widget::layout::lay_out_detached(
+            w,
+            vello::kurbo::Rect::new(0.0, 0.0, 300.0, 300.0),
+            &theme,
+            &mut TextRenderer::new(),
+        )
+        .unwrap();
     }
 
     use crate::synthetic_input::named_key;
@@ -1200,6 +1215,34 @@ mod tests {
             let pitch = picker.swatch_rects[1].x0 - picker.swatch_rects[0].x0;
             assert_eq!(pitch, target, "each swatch owns a full pointer-target cell");
             assert!(picker.swatch_rects[2].y0 > picker.swatch_rects[0].y0);
+        }
+
+        phase a_row_too_narrow_for_every_column_wraps_onto_more_lines;
+        {
+            let theme = Theme::dark();
+            let cell = f64::from(theme.tokens.metrics.min_pointer_target);
+            let swatches = (0..9).map(|_| ColorSwatch::new(Color::from_rgb8(90, 90, 90)));
+            let mut picker = ColorSwatchPicker::new(swatches, 9);
+            crate::widget::layout::lay_out_detached(
+                &mut picker,
+                vello::kurbo::Rect::new(0.0, 0.0, cell * 4.5, 400.0),
+                &theme,
+                &mut TextRenderer::new(),
+            )
+            .unwrap();
+            let rows = |picker: &ColorSwatchPicker| {
+                let mut tops: Vec<i64> = picker
+                    .swatch_rects
+                    .iter()
+                    .map(|rect| rect.y0.round() as i64)
+                    .collect();
+                tops.dedup();
+                tops.len()
+            };
+            assert_eq!(rows(&picker), 3, "four a line, so nine take three lines");
+            assert!(picker.rect.width() <= cell * 4.5, "the grid stays in its row");
+            lay_out(&mut picker);
+            assert_eq!(rows(&picker), 1, "wide enough, every swatch stands on one line");
         }
 
         phase the_first_swatch_sits_on_the_content_edge;

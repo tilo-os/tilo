@@ -241,7 +241,7 @@ fn paint_sidebar(
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.intent.selection_tint,
+                colors.intent.selection,
                 None,
                 &RoundedRect::new(
                     sidebar.x0 + unit * 0.4,

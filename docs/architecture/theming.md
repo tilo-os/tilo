@@ -197,9 +197,9 @@ on both sides, plus the two high-contrast palettes:
 | Look | Dark: hue / chroma, base | Light: hue / chroma, base / content | Emphasis |
 |---|---|---|---|
 | Tilo (default) | 255 / 0.016, 0.175 | – / 0.008 (the workspace's hue), 0.935 / 0.995 | `You` |
-| Paper | 70 / 0.014, 0.17 | 80 / 0.011, 0.915 / 0.988 | `Tinted { hue: 255 }` |
-| Moss | 160 / 0.020, 0.165 | 150 / 0.013, 0.92 / 0.988 | `Tinted { hue: 85 }` |
-| Dusk | 285 / 0.030, 0.16 | 295 / 0.018, 0.92 / 0.99 | `Tinted { hue: 355 }` |
+| Paper | 70 / 0.014, 0.17 | 80 / 0.011, 0.915 / 0.988 | `Tinted { hue: 55 }` |
+| Moss | 125 / 0.016, 0.165 | 115 / 0.009, 0.92 / 0.988 | `Tinted { hue: 85 }` |
+| Dusk | 285 / 0.030, 0.16 | 295 / 0.018, 0.92 / 0.99 | `Tinted { hue: 325 }` |
 | Mono | – / 0, 0.13 | – / 0, 0.94 / 1.0 | `Inverted` |
 | High contrast | – / 0, black, ink 1.0 / 0.94 / 0.88, AAA | – / 0, white, ink 0 / 0.30 / 0.40, AAA | `Inverted` |
 

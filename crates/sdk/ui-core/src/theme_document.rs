@@ -571,9 +571,9 @@ impl Look {
     pub const fn emphasis(self) -> Emphasis {
         match self {
             Self::Tilo => Emphasis::You,
-            Self::Paper => Emphasis::Tinted { hue: 255.0 },
+            Self::Paper => Emphasis::Tinted { hue: 55.0 },
             Self::Moss => Emphasis::Tinted { hue: 85.0 },
-            Self::Dusk => Emphasis::Tinted { hue: 355.0 },
+            Self::Dusk => Emphasis::Tinted { hue: 325.0 },
             Self::Mono => Emphasis::Inverted,
         }
     }
