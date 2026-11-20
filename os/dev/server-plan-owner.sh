@@ -22,6 +22,7 @@ shift 2
 guest_bin() { command -v "$1" 2>/dev/null || printf '/usr/libexec/tilo/%s\n' "$1"; }
 session_bin="$(guest_bin tilo-session)"
 control_bin="$(guest_bin tilo-control)"
+tilo_bin="$(guest_bin tilo)"
 
 profile_env() {
   export HOME="$root/home"
@@ -89,34 +90,15 @@ start_bus() {
   return 0
 }
 
-# The throwaway identity a development profile starts with: minted by a
-# preparatory session, then read by the session the cycle drives.
+# The identity a disposable profile has: one the CLI made, so its keys and
+# its files sit in the tree the CLI and the session both read.
 mint_identity() {
-  [ -f "$TILO_IDENTITY_DIR/throwaway-test-identity" ] && return 0
-  rm -f "$root/runtime/control.sock"
-  "$session_bin" --backend headless --size 1280x800 \
-    > "$root/logs/identity.log" 2>&1 &
-  local pid=$!
-  local attempt
-  for attempt in $(seq 1 1200); do
-    [ -S "$root/runtime/control.sock" ] && break
-    kill -0 "$pid" 2>/dev/null || break
-    sleep 0.1
-  done
-  [ -S "$root/runtime/control.sock" ] || {
+  [ -f "$TILO_IDENTITY_DIR/device-private/keypair.bin" ] && return 0
+  # A session is not up yet, and `tilo login` needs none to make a person of
+  # this profile.
+  "$tilo_bin" login --new-identity --name "plan cycle owner" \
+    > "$root/logs/identity.log" 2>&1 || {
     tail -n 40 "$root/logs/identity.log" >&2 || true
-    kill "$pid" 2>/dev/null || true
-    return 1
-  }
-  local answer
-  answer="$("$control_bin" --socket "$root/runtime/control.sock" \
-    raw '{"op":"provision_test_identity"}')" || true
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-  rm -f "$root/runtime/control.sock"
-  printf '%s\n' "$answer" | grep -q '"throwaway": *true' \
-    || printf '%s\n' "$answer" | grep -q '"code": *"identity_exists"' || {
-    printf 'the owner profile minted no identity: %s\n' "$answer" >&2
     return 1
   }
 }
