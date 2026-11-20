@@ -1964,8 +1964,10 @@ run_native() {
   stop_native "$name"
   local envs=()
   mapfile -t envs < "$runs/$name.env"
+  # bwrap as the caller's PATH finds it (the preflight's check), since the service's own
+  # environment, which env -i starts it with, need not name where it is.
   setsid env -i "${envs[@]}" \
-    bwrap --dev-bind / / --ro-bind "$state/trust-bundle.pem" "$ca_path" --chdir "$dir" -- "$@" \
+    "$(command -v bwrap)" --dev-bind / / --ro-bind "$state/trust-bundle.pem" "$ca_path" --chdir "$dir" -- "$@" \
     >> "$state/logs/$name.log" 2>&1 < /dev/null 9>&- &
   echo $! > "$runs/$name.pid"
 }
@@ -2052,7 +2054,7 @@ page_host() {
   else
     local server=${lounge:-${TILO_SH_LOUNGE:-$native/lounge}}/bin/tilo-server
     env -i PATH=/usr/bin:/bin "HOME=$runs" \
-      bwrap --dev-bind / / --ro-bind "$state/trust-bundle.pem" "$ca_path" -- \
+      "$(command -v bwrap)" --dev-bind / / --ro-bind "$state/trust-bundle.pem" "$ca_path" -- \
       "$server" page-host "$server_origin"
   fi
 }
