@@ -1960,3 +1960,18 @@ reason = "The Flatpak transfer `Runner`'s method that reads a Flatpak installati
 words = ["run"]
 identifiers = ["run"]
 paths = ["crates/platform/imager-backend/src/setup/flatpak_transfer/native_absent.rs"]
+
+[[allow]]
+reason = "Chat's channels where the server puts the question about a use of its person's vault, and the record of the chat's messages a part is."
+words = ["channel"]
+identifiers = ["channel", "channels"]
+paths = [
+    "crates/server/tilo-server/src/workspace_agents/asks.rs",
+    "crates/server/tilo-server/src/workspace_agents/vault_uses.rs",
+]
+
+[[allow]]
+reason = "The server's own agents (`HostAgents`) carrying out a turn's use of its person's vault."
+words = ["host"]
+identifiers = ["HostAgents"]
+paths = ["crates/server/tilo-server/src/workspace_agents/vault_uses.rs"]
