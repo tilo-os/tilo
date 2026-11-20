@@ -71,7 +71,7 @@ fi
 printf 'TILO_ARM_CAPSULE_MAX_USER_NAMESPACES='
 cat /proc/sys/user/max_user_namespaces
 /inputs/compat-tests --list > /tmp/capsule-tests.list
-cases=(wine64 wine32 proton)
+cases=(wine64 wine32)
 policy=landlock
 if [[ $mode == namespace-diagnostic ]]; then
     cases=(wine64)
@@ -84,7 +84,6 @@ for kind in "${cases[@]}"; do
     case $kind in
         wine64) executable=/usr/lib/tilo/windows-runners/x86/usr/lib64/wine-wow64/wine/x86_64-windows/cmd.exe ;;
         wine32) executable=/usr/lib/tilo/windows-runners/x86/usr/lib/wine-wow64/wine/i386-windows/cmd.exe ;;
-        proton) executable=/usr/lib/tilo/windows-runners/proton/UMU-Proton-10.0-4/files/lib/wine/x86_64-windows/cmd.exe ;;
     esac
     setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all \
         --inh-caps=-all --ambient-caps=-all \

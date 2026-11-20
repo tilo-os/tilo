@@ -44,15 +44,8 @@ pub fn test_lease_root_at(root: PathBuf) -> PathBuf {
 const PINNED_PROTON: &str = "UMU-Proton-10.0-4";
 const PROTON_HOST: &str = "/usr/lib/tilo/windows-runners/proton/UMU-Proton-10.0-4";
 const PROTON_MOUNT: &str = "/opt/tilo/proton";
-const STEAM_RUNTIME_HOST: &str =
-    "/usr/lib/tilo/windows-runners/steam-runtime/SteamLinuxRuntime_sniper";
-const UMU_FOLDERS_MOUNT: &str = "/tmp/tilo-runtime";
-const STEAM_RUNTIME_MOUNT: &str = "/tmp/tilo-runtime/umu/steamrt3";
-const STEAM_PLATFORM: &str = "sniper_platform_3.0.20260805.254768";
 const X86_ROOTFS_HOST: &str = "/usr/lib/tilo/windows-runners/x86";
 const TRANSLATED_HELPER: &str = "/usr/libexec/tilo-windows-runtime";
-const EMULATOR_MANIFEST: &str = "/usr/share/tilo/windows/fex-emulator.json";
-const GRAPHICS_MANIFEST: &str = "/usr/share/tilo/windows/fex-graphics-provider.json";
 /// Build record of the Windows provider the image assembled (os/Containerfile).
 const PROVIDER_MANIFEST: &str = "/usr/share/tilo/windows/provider.json";
 
@@ -72,8 +65,6 @@ pub struct RuntimeImage {
     /// beside them.
     reads: Vec<PathBuf>,
     environment: Vec<(&'static str, String)>,
-    needs_nested_runtime: bool,
-    runtime_lock_mount: Option<PathBuf>,
     translated: bool,
 }
 
@@ -83,35 +74,31 @@ impl RuntimeImage {
     /// Windows programs generate code of their own (.NET, scripting engines). Under the
     /// write-xor-execute baseline Wine's `mprotect` to executable was refused and setup ended
     /// before showing anything, so a Wine capsule takes the profile for programs that make code.
-    fn seccomp_profile(&self) -> Option<SeccompProfile> {
-        if self.needs_nested_runtime {
-            None
-        } else {
-            Some(SeccompProfile::TiloJit)
-        }
+    const fn seccomp_profile() -> SeccompProfile {
+        SeccompProfile::TiloJit
     }
 
     /// Wine starts a 32-bit Windows program (every NSIS installer) inside its 64-bit process
     /// and gives each of its threads a 32-bit segment with the one 32-bit system call that
     /// sets one; without it such a program is killed before it starts.
-    fn seccomp_grants(&self) -> SyscallGrants {
+    fn seccomp_grants() -> SyscallGrants {
         SyscallGrants {
-            wow64_thread_area: self.seccomp_profile().is_some(),
+            wow64_thread_area: true,
             ..SyscallGrants::default()
         }
     }
 
-    fn translate_for_arm(&mut self, layer: Layer) {
+    /// Wine's own loaders and its locale tables, fonts and `wine.inf` come from the x86 guest
+    /// tree, which FEX reads as its root filesystem.
+    fn translate_for_arm(&mut self) {
         self.translated = true;
         self.sandbox_entrypoint = PathBuf::from(TRANSLATED_HELPER);
-        if layer == Layer::Wine {
-            self.binds.clear();
-            for resource in ["usr/lib64/wine", "usr/lib/wine", "usr/share/wine"] {
-                self.binds.push(RuntimeBind {
-                    host: Path::new(X86_ROOTFS_HOST).join(resource),
-                    sandbox: Path::new("/").join(resource),
-                });
-            }
+        self.binds.clear();
+        for resource in ["usr/lib64/wine", "usr/lib/wine", "usr/share/wine"] {
+            self.binds.push(RuntimeBind {
+                host: Path::new(X86_ROOTFS_HOST).join(resource),
+                sandbox: Path::new("/").join(resource),
+            });
         }
         self.binds.extend([
             runtime_bind(TRANSLATED_HELPER, TRANSLATED_HELPER),
@@ -121,35 +108,6 @@ impl RuntimeImage {
             runtime_bind("/usr/share/fex-emu", "/usr/share/fex-emu"),
             runtime_bind(X86_ROOTFS_HOST, crate::translated::ROOTFS),
         ]);
-        if layer == Layer::Proton {
-            self.binds.extend([
-                runtime_bind(EMULATOR_MANIFEST, EMULATOR_MANIFEST),
-                runtime_bind(GRAPHICS_MANIFEST, GRAPHICS_MANIFEST),
-            ]);
-            self.environment.extend([
-                ("STEAM_COMPAT_EMULATOR", EMULATOR_MANIFEST.to_string()),
-                (
-                    "STEAM_COMPAT_GRAPHICS_PROVIDER",
-                    GRAPHICS_MANIFEST.to_string(),
-                ),
-                (
-                    "STEAM_COMPAT_MACHINE_ARCHITECTURE",
-                    "aarch64-linux-gnu".to_string(),
-                ),
-                (
-                    "PRESSURE_VESSEL_GRAPHICS_PROVIDER_aarch64_linux_gnu",
-                    "/".to_string(),
-                ),
-                (
-                    "PRESSURE_VESSEL_GRAPHICS_PROVIDER_x86_64_linux_gnu",
-                    crate::translated::ROOTFS.to_string(),
-                ),
-                (
-                    "PRESSURE_VESSEL_GRAPHICS_PROVIDER_i386_linux_gnu",
-                    crate::translated::ROOTFS.to_string(),
-                ),
-            ]);
-        }
     }
 
     pub fn host_paths(&self) -> impl Iterator<Item = &Path> {
@@ -280,8 +238,6 @@ impl SystemRuntimeRegistry {
                 entry_arguments: Vec::new(),
                 reads: Vec::new(),
                 environment: Vec::new(),
-                needs_nested_runtime: false,
-                runtime_lock_mount: None,
                 translated: false,
             }),
             Layer::Wine => Err(PlanError::RunnerNotInstalled(format!(
@@ -289,11 +245,15 @@ impl SystemRuntimeRegistry {
                 runner.version
             ))),
             Layer::Proton if matches!(runner.version.as_str(), PINNED_PROTON | "10.0-4") => {
-                Ok(if host == "aarch64" {
-                    proton_through_steam_runtime()
-                } else {
-                    proton_on_the_system()
-                })
+                // Proton is offered on x86 computers only. An ARM computer translates Windows
+                // programs through FEX, and Proton's own program files are x86: the one wiring
+                // that gives them the translator is the Steam Runtime's container, which starts
+                // a sandbox of its own inside the capsule's, and a capsule's Landlock refuses
+                // that. Wine stays available there.
+                if host == "aarch64" {
+                    return Err(PlanError::ProtonUnavailableOnArm);
+                }
+                Ok(proton_on_the_system())
             }
             Layer::Proton => Err(PlanError::RunnerNotInstalled(format!(
                 "{} {}",
@@ -303,7 +263,7 @@ impl SystemRuntimeRegistry {
         }?;
         match host {
             "x86_64" => {}
-            "aarch64" => image.translate_for_arm(layer),
+            "aarch64" => image.translate_for_arm(),
             _ => return Err(PlanError::UnsupportedHostArchitecture(host.to_string())),
         }
         Ok(image)
@@ -348,69 +308,8 @@ fn proton_on_the_system() -> RuntimeImage {
                 format!("{PREFIX_MOUNT}/shadercache"),
             ),
         ],
-        needs_nested_runtime: false,
-        runtime_lock_mount: None,
         translated: false,
     }
-}
-
-/// Proton through UMU in the Steam runtime, which the ARM route translates into x86.
-fn proton_through_steam_runtime() -> RuntimeImage {
-    let mut image = RuntimeImage {
-        binds: vec![
-            runtime_bind("/usr/libexec/tilo-umu-run", "/usr/libexec/tilo-umu-run"),
-            runtime_bind("/usr/libexec/umu_run.py", "/usr/libexec/umu_run.py"),
-            // The pinned zipapp's shebang is `/usr/bin/env python3`.
-            runtime_bind("/usr/bin/env", "/usr/bin/env"),
-            runtime_bind("/usr/bin/python3", "/usr/bin/python3"),
-            runtime_bind("/bin/sh", "/bin/sh"),
-            runtime_bind("/usr/bin/readlink", "/usr/bin/readlink"),
-            runtime_bind("/usr/bin/getopt", "/usr/bin/getopt"),
-            runtime_bind("/usr/bin/true", "/usr/bin/true"),
-            runtime_bind("/usr/bin/bwrap", "/usr/bin/bwrap"),
-            runtime_bind(PROTON_HOST, PROTON_MOUNT),
-        ],
-        sandbox_entrypoint: PathBuf::from("/usr/libexec/tilo-umu-run"),
-        environment: vec![
-            ("PROTONPATH", PROTON_MOUNT.to_string()),
-            ("UMU_FOLDERS_PATH", UMU_FOLDERS_MOUNT.to_string()),
-            ("UMU_RUNTIME_UPDATE", "0".to_string()),
-            ("PRESSURE_VESSEL_COPY_RUNTIME", "1".to_string()),
-            (
-                "PRESSURE_VESSEL_VARIABLE_DIR",
-                "/tmp/tilo-runtime/var".to_string(),
-            ),
-            ("PROTON_USE_NTSYNC", "1".to_string()),
-        ],
-        entry_arguments: Vec::new(),
-        reads: Vec::new(),
-        needs_nested_runtime: true,
-        translated: false,
-        runtime_lock_mount: Some(
-            Path::new(STEAM_RUNTIME_MOUNT)
-                .join(STEAM_PLATFORM)
-                .join("files/.ref"),
-        ),
-    };
-    // Keep the parent writable for UMU's atomic install marker,
-    // but mount every executable and shared runtime tree read-only.
-    for entry in [
-        "_v2-entry-point",
-        "run",
-        "run-in-sniper",
-        "VERSIONS.txt",
-        "toolmanifest.vdf",
-        "mtree.txt.gz",
-        "pressure-vessel",
-        "pressure-vessel-arm64",
-        STEAM_PLATFORM,
-    ] {
-        image.binds.push(RuntimeBind {
-            host: Path::new(STEAM_RUNTIME_HOST).join(entry),
-            sandbox: Path::new(STEAM_RUNTIME_MOUNT).join(entry),
-        });
-    }
-    image
 }
 
 fn runtime_bind(host: &str, sandbox: &str) -> RuntimeBind {
@@ -701,7 +600,6 @@ pub struct CapsuleCommandPlan {
     // Open directory descriptors backing the prefix/home bind sources. Kept
     // private so a plan cannot be copied after its authority-bearing handles.
     launch_paths: LaunchPaths,
-    pub(crate) runtime_lock_required: bool,
     /// Proton opens the prefix as its data directory: the prefix is laid out for it first.
     pub(crate) prefix_for_proton: bool,
     pub(crate) identity_uid: u32,
@@ -842,16 +740,6 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         for binding in &runtime.binds {
             bind(&mut argv, "--ro-bind", &binding.host, &binding.sandbox);
         }
-        if let Some(lock) = &runtime.runtime_lock_mount {
-            argv.extend([
-                "--symlink".to_string(),
-                "_v2-entry-point".to_string(),
-                format!("{STEAM_RUNTIME_MOUNT}/umu"),
-                "--bind-data".to_string(),
-                crate::execute::RUNTIME_LOCK_CHILD_FD.to_string(),
-                lock.display().to_string(),
-            ]);
-        }
         for (fd, destination) in [
             (crate::execute::PREFIX_CHILD_FD, PREFIX_MOUNT),
             (crate::execute::HOME_CHILD_FD, HOME_MOUNT),
@@ -940,9 +828,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             );
         }
         launcher::sandbox::push_workspace_id(&mut argv, workspace_id);
-        if runtime.seccomp_profile().is_some() {
-            argv.extend(["--seccomp".to_string(), crate::SECCOMP_CHILD_FD.to_string()]);
-        }
+        argv.extend(["--seccomp".to_string(), crate::SECCOMP_CHILD_FD.to_string()]);
         argv.extend([
             "--ro-bind".to_string(),
             TILO_LAUNCHER.to_string(),
@@ -976,11 +862,10 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         argv.push(runtime.sandbox_entrypoint().display().to_string());
         argv.extend(runtime.entry_arguments.iter().cloned());
         if runtime.translated {
-            let mode = match (capsule.layer, capsule.settings.architecture) {
-                (Layer::Wine, Architecture::Win32) => "wine32",
-                (Layer::Wine, Architecture::Win64) => "wine64",
-                (Layer::Proton, _) => "proton",
-                (Layer::Vm, _) => return Err(PlanError::VmIsNotCapsule),
+            // A translated runtime is Wine's: Proton is offered on x86 computers only.
+            let mode = match capsule.settings.architecture {
+                Architecture::Win32 => "wine32",
+                Architecture::Win64 => "wine64",
             };
             argv.push(mode.to_string());
         }
@@ -994,8 +879,8 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
 
         Ok(CapsuleCommandPlan {
             bwrap_argv: argv,
-            seccomp_profile: runtime.seccomp_profile(),
-            seccomp_grants: runtime.seccomp_grants(),
+            seccomp_profile: Some(RuntimeImage::seccomp_profile()),
+            seccomp_grants: RuntimeImage::seccomp_grants(),
             capsule_id: capsule.id.clone(),
             runner_label: format!("{} {}", capsule.runner.family, capsule.runner.version),
             network,
@@ -1011,8 +896,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             x11: shows_through_x11(route.runtime.layer),
             network_proxy,
             launch_paths,
-            runtime_lock_required: runtime.runtime_lock_mount.is_some(),
-            prefix_for_proton: route.runtime.layer == Layer::Proton && !runtime.translated,
+            prefix_for_proton: route.runtime.layer == Layer::Proton,
             identity_uid: self.display.uid,
         })
     }
@@ -1342,6 +1226,12 @@ pub enum PlanError {
     UnexpectedEgressProxy,
     #[error("Proton route has no UMU recipe")]
     MissingProtonRecipe,
+    #[error(
+        "Proton cannot start on this ARM computer: it needs the Steam Runtime's own container \
+         nested inside the Windows capsule, and a capsule's sandbox refuses that. Wine opens \
+         Windows programs here: choose Wine for this program. Nothing was started."
+    )]
+    ProtonUnavailableOnArm,
     #[error("catalogue environment variable {0:?} is not allow-listed")]
     ForbiddenEnvironment(String),
     #[error("catalogue graphics setting {0:?} is not allow-listed")]
@@ -1497,7 +1387,7 @@ mod tests {
                     .any(|path| path == Path::new(PROTON_HOST))
             );
             assert!(!proton.host_paths().any(|path| {
-                path.starts_with(STEAM_RUNTIME_HOST)
+                path.starts_with("/usr/lib/tilo/windows-runners/steam-runtime")
                     || path.ends_with("tilo-umu-run")
                     || path == Path::new("/usr/bin/bwrap")
             }));
@@ -1518,9 +1408,7 @@ mod tests {
                     .iter()
                     .any(|(key, _)| key.starts_with("UMU_"))
             );
-            assert!(!proton.needs_nested_runtime);
-            assert_eq!(proton.runtime_lock_mount, None);
-            assert_eq!(proton.seccomp_profile(), Some(SeccompProfile::TiloJit));
+            assert_eq!(RuntimeImage::seccomp_profile(), SeccompProfile::TiloJit);
             assert_eq!(
                 proton.reads,
                 [
@@ -1529,33 +1417,26 @@ mod tests {
                 ]
             );
 
-            // ARM translates x86 Proton through UMU and the Steam runtime.
-            let translated = SystemRuntimeRegistry::resolve_for_host(
+            // ARM translates Wine through FEX. Proton is offered there by neither route.
+            let error = SystemRuntimeRegistry::resolve_for_host(
                 Layer::Proton,
                 &Runner::new("umu-proton", "UMU-Proton-10.0-4").unwrap(),
                 "aarch64",
             )
+            .unwrap_err();
+            assert!(matches!(error, PlanError::ProtonUnavailableOnArm));
+            let wine = SystemRuntimeRegistry::resolve_for_host(
+                Layer::Wine,
+                &Runner::new("wine", "system").unwrap(),
+                "aarch64",
+            )
             .unwrap();
-            assert!(translated.translated);
+            assert!(wine.translated);
+            assert_eq!(wine.sandbox_entrypoint(), Path::new(TRANSLATED_HELPER));
             assert!(
-                translated
-                    .host_paths()
-                    .any(|path| path == Path::new("/usr/libexec/tilo-umu-run"))
+                wine.host_paths()
+                    .any(|path| path == Path::new(X86_ROOTFS_HOST))
             );
-            assert!(
-                translated
-                    .environment
-                    .contains(&("PROTONPATH", PROTON_MOUNT.to_string()))
-            );
-            assert_eq!(
-                translated.runtime_lock_mount,
-                Some(
-                    Path::new(STEAM_RUNTIME_MOUNT)
-                        .join(STEAM_PLATFORM)
-                        .join("files/.ref")
-                )
-            );
-            assert!(translated.needs_nested_runtime);
         }
         {
             for host in ["x86_64", "aarch64"] {
@@ -1567,6 +1448,20 @@ mod tests {
                         let session = session();
                         let registry = TestHostRegistry(host);
                         let planner = SandboxPlanner::new(&store, &registry, &session).unwrap();
+                        if host == "aarch64" && layer == Layer::Proton {
+                            let error = planner
+                                .plan(
+                                    &route,
+                                    &state,
+                                    &program,
+                                    &CapabilityPlan::empty(),
+                                    "workspace",
+                                    &LaunchLease::deny_all("lease"),
+                                )
+                                .unwrap_err();
+                            assert!(matches!(error, PlanError::ProtonUnavailableOnArm));
+                            continue;
+                        }
                         let command = planner
                             .plan(
                                 &route,
@@ -1577,16 +1472,9 @@ mod tests {
                                 &LaunchLease::deny_all("lease"),
                             )
                             .unwrap();
-                        // Only the Steam runtime ARM translates Proton through starts a sandbox
-                        // of its own, which the filter would refuse.
-                        let expected_filter = match (host, layer) {
-                            ("aarch64", Layer::Proton) => None,
-                            _ => Some(SeccompProfile::TiloJit),
-                        };
-                        assert_eq!(command.seccomp_profile, expected_filter);
-                        assert_eq!(
+                        assert_eq!(command.seccomp_profile, Some(SeccompProfile::TiloJit));
+                        assert!(
                             command.seccomp_grants.wow64_thread_area,
-                            expected_filter.is_some(),
                             "a Wine capsule may set its 32-bit thread area"
                         );
                         assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
@@ -1597,10 +1485,9 @@ mod tests {
                                 .any(|arg| arg == "--net-restricted")
                         );
                         if host == "aarch64" {
-                            let mode = match (layer, architecture) {
-                                (Layer::Proton, _) => "proton",
-                                (_, Architecture::Win32) => "wine32",
-                                (_, Architecture::Win64) => "wine64",
+                            let mode = match architecture {
+                                Architecture::Win32 => "wine32",
+                                Architecture::Win64 => "wine64",
                             };
                             assert!(
                                 command
@@ -1611,24 +1498,22 @@ mod tests {
                             assert!(command.bwrap_argv.windows(3).any(|args| {
                                 args == ["--ro-bind", X86_ROOTFS_HOST, crate::translated::ROOTFS]
                             }));
-                            if layer == Layer::Wine {
+                            assert!(!command.bwrap_argv.iter().any(|arg| arg == "/usr/bin/wine"));
+                            for resource in ["usr/lib/wine", "usr/lib64/wine"] {
+                                let source = format!("{X86_ROOTFS_HOST}/{resource}");
+                                let destination = format!("/{resource}");
                                 assert!(
-                                    !command.bwrap_argv.iter().any(|arg| arg == "/usr/bin/wine")
-                                );
-                                for resource in ["usr/lib/wine", "usr/lib64/wine"] {
-                                    let source = format!("{X86_ROOTFS_HOST}/{resource}");
-                                    let destination = format!("/{resource}");
-                                    assert!(command.bwrap_argv.windows(3).any(|args| {
+                                    command.bwrap_argv.windows(3).any(|args| {
                                         args == ["--ro-bind", &source, &destination]
-                                    }));
-                                }
-                                assert!(
-                                    !command
-                                        .bwrap_argv
-                                        .iter()
-                                        .any(|arg| arg.contains("wine-wow64"))
+                                    })
                                 );
                             }
+                            assert!(
+                                !command
+                                    .bwrap_argv
+                                    .iter()
+                                    .any(|arg| arg.contains("wine-wow64"))
+                            );
                         } else {
                             assert!(
                                 !command
@@ -1647,53 +1532,55 @@ mod tests {
             }
         }
         {
-            for host in ["x86_64", "aarch64"] {
-                for layer in [Layer::Wine, Layer::Proton] {
-                    let route = route(layer);
-                    let (_directory, store, state, program) = setup(&route);
-                    let session = session();
-                    let registry = TestHostRegistry(host);
-                    let command = SandboxPlanner::new(&store, &registry, &session)
-                        .unwrap()
-                        .plan(
-                            &route,
-                            &state,
-                            &program,
-                            &CapabilityPlan::empty(),
-                            "workspace",
-                            &LaunchLease::deny_all("lease"),
-                        )
-                        .unwrap();
-                    let shim_position = command
-                        .bwrap_argv
-                        .iter()
-                        .position(|argument| {
-                            argument == launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND
-                        })
-                        .unwrap();
-                    let shim = launcher::landlock_shim::ShimArgs::parse(
-                        &command.bwrap_argv[shim_position + 1..],
+            for (host, layer) in [
+                ("x86_64", Layer::Wine),
+                ("x86_64", Layer::Proton),
+                ("aarch64", Layer::Wine),
+            ] {
+                let route = route(layer);
+                let (_directory, store, state, program) = setup(&route);
+                let session = session();
+                let registry = TestHostRegistry(host);
+                let command = SandboxPlanner::new(&store, &registry, &session)
+                    .unwrap()
+                    .plan(
+                        &route,
+                        &state,
+                        &program,
+                        &CapabilityPlan::empty(),
+                        "workspace",
+                        &LaunchLease::deny_all("lease"),
                     )
                     .unwrap();
-                    assert_eq!(shim.ro.contains(&PathBuf::from("/proc")), host == "aarch64");
-                    assert!(!shim.rw.iter().any(|path| path.starts_with("/proc")));
-                    assert!(!shim.no_landlock);
-                    let namespace = &command.bwrap_argv[..shim_position];
-                    assert!(namespace.iter().any(|argument| argument == "--unshare-all"));
-                    assert!(
-                        namespace
-                            .windows(2)
-                            .any(|arguments| arguments == ["--proc", "/proc"])
-                    );
-                    assert!(!namespace.iter().any(|argument| argument == "--share-pid"));
-                    assert!(
-                        !namespace
-                            .windows(3)
-                            .any(|arguments| arguments[0].contains("bind")
-                                && (Path::new(&arguments[1]).starts_with("/proc")
-                                    || Path::new(&arguments[2]).starts_with("/proc")))
-                    );
-                }
+                let shim_position = command
+                    .bwrap_argv
+                    .iter()
+                    .position(|argument| {
+                        argument == launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND
+                    })
+                    .unwrap();
+                let shim = launcher::landlock_shim::ShimArgs::parse(
+                    &command.bwrap_argv[shim_position + 1..],
+                )
+                .unwrap();
+                assert_eq!(shim.ro.contains(&PathBuf::from("/proc")), host == "aarch64");
+                assert!(!shim.rw.iter().any(|path| path.starts_with("/proc")));
+                assert!(!shim.no_landlock);
+                let namespace = &command.bwrap_argv[..shim_position];
+                assert!(namespace.iter().any(|argument| argument == "--unshare-all"));
+                assert!(
+                    namespace
+                        .windows(2)
+                        .any(|arguments| arguments == ["--proc", "/proc"])
+                );
+                assert!(!namespace.iter().any(|argument| argument == "--share-pid"));
+                assert!(
+                    !namespace
+                        .windows(3)
+                        .any(|arguments| arguments[0].contains("bind")
+                            && (Path::new(&arguments[1]).starts_with("/proc")
+                                || Path::new(&arguments[2]).starts_with("/proc")))
+                );
             }
         }
         {
@@ -1757,6 +1644,60 @@ mod tests {
         fn resolve(&self, layer: Layer, runner: &Runner) -> Result<RuntimeImage, PlanError> {
             SystemRuntimeRegistry::resolve_for_host(layer, runner, self.0)
         }
+    }
+
+    /// An ARM computer offers no Proton: Proton's own program files are x86, and Tilo can give
+    /// them the translator only inside the Steam Runtime's container, which starts a sandbox of
+    /// its own that a capsule's sandbox refuses. The person is told that plainly, and Wine stays.
+    #[test]
+    fn an_arm_computer_refuses_proton_with_the_reason_and_keeps_wine() {
+        let refusal = SystemRuntimeRegistry::resolve_for_host(
+            Layer::Proton,
+            &Runner::new("umu-proton", PINNED_PROTON).unwrap(),
+            "aarch64",
+        )
+        .unwrap_err();
+        assert!(matches!(refusal, PlanError::ProtonUnavailableOnArm));
+        let said = refusal.to_string();
+        assert!(said.contains("Steam Runtime's own container"), "{said}");
+        assert!(said.contains("capsule's sandbox refuses"), "{said}");
+        assert!(
+            said.contains("Wine"),
+            "the message names what works here: {said}"
+        );
+        assert!(said.contains("Nothing was started"), "{said}");
+
+        let route = route(Layer::Proton);
+        let (_directory, store, state, program) = setup(&route);
+        let error = SandboxPlanner::new(&store, &TestHostRegistry("aarch64"), &session())
+            .unwrap()
+            .plan(
+                &route,
+                &state,
+                &program,
+                &CapabilityPlan::empty(),
+                "workspace",
+                &LaunchLease::deny_all("lease"),
+            )
+            .unwrap_err();
+        assert_eq!(error.to_string(), said, "a launch is refused the same way");
+
+        // The x86 Proton start and the ARM Wine start are unchanged by the refusal.
+        let x86 = SystemRuntimeRegistry::resolve_for_host(
+            Layer::Proton,
+            &Runner::new("umu-proton", PINNED_PROTON).unwrap(),
+            "x86_64",
+        )
+        .unwrap();
+        assert_eq!(x86.sandbox_entrypoint(), Path::new("/usr/bin/python3"));
+        let wine = SystemRuntimeRegistry::resolve_for_host(
+            Layer::Wine,
+            &Runner::new("wine", "system").unwrap(),
+            "aarch64",
+        )
+        .unwrap();
+        assert!(wine.translated);
+        assert_eq!(wine.sandbox_entrypoint(), Path::new(TRANSLATED_HELPER));
     }
 
     #[test]
@@ -1897,7 +1838,7 @@ mod tests {
         use crate::SandboxExecutor;
 
         let route = route(Layer::Wine);
-        let (directory, store, state, program) = setup(&route);
+        let (_directory, store, state, program) = setup(&route);
         let session = session();
         let planner = SandboxPlanner::new(&store, &TEST_REGISTRY, &session).unwrap();
         let mut command = planner
@@ -1928,36 +1869,20 @@ mod tests {
             "/bin/sh", "-ec",
             "test \"$(cat /prefix/value)\" = original-prefix; test \"$(cat /home/value)\" = original-home",
         ].map(str::to_owned).to_vec();
-        let immutable_lock = directory.path().join("runtime.ref");
-        std::fs::write(&immutable_lock, "immutable").unwrap();
-        command.runtime_lock_required = true;
         // This fixture runs as the invoking user, independently of the fixed
         // session UID used by planner-only unit tests.
         command.identity_uid = rustix::process::geteuid().as_raw();
         command.bwrap_argv.splice(
             0..0,
             [
-                "--dir".to_string(),
-                "/runtime".to_string(),
-                "--ro-bind".to_string(),
-                immutable_lock.display().to_string(),
-                "/runtime/.ref".to_string(),
                 "--ro-bind-data".to_string(),
                 crate::execute::PASSWD_CHILD_FD.to_string(),
                 "/etc/passwd".to_string(),
                 "--ro-bind-data".to_string(),
                 crate::execute::GROUP_CHILD_FD.to_string(),
                 "/etc/group".to_string(),
-                "--bind-data".to_string(),
-                crate::execute::RUNTIME_LOCK_CHILD_FD.to_string(),
-                "/runtime/.ref".to_string(),
             ],
         );
-        command
-            .bwrap_argv
-            .last_mut()
-            .unwrap()
-            .push_str("; test ! -s /runtime/.ref; printf private > /runtime/.ref");
         command.bwrap_argv.last_mut().unwrap().push_str(
             "; test \"$(getent passwd $(id -u))\" = \"tilo:x:$(id -u):$(id -g):Tilo capsule:/run/tilo/capsule/home:/usr/bin/nologin\"; test \"$(getent group $(id -g))\" = \"tilo:x:$(id -g):\"; test \"$(wc -l < /etc/passwd)\" = 1; test \"$(wc -l < /etc/group)\" = 1; if (printf bad >> /etc/passwd) 2>/dev/null; then exit 1; fi; if (printf bad >> /etc/group) 2>/dev/null; then exit 1; fi; test ! -e /etc/shadow",
         );
@@ -1974,16 +1899,12 @@ mod tests {
                 .and_then(|program| program.wait())
                 .unwrap();
             assert!(outcome.success, "{profile:?}: {outcome:?}");
-            assert_eq!(
-                std::fs::read_to_string(&immutable_lock).unwrap(),
-                "immutable"
-            );
         }
     }
 
     // Run these explicitly in a disposable native ARM container, with the
     // production artifacts mounted at their fixed host paths. Provide a real
-    // architecture-matching Wine/Proton cmd.exe via TILO_ARM_CAPSULE_CMD_EXE,
+    // architecture-matching Wine cmd.exe via TILO_ARM_CAPSULE_CMD_EXE,
     // writable /run/user/<uid>, and a dummy /dev/dri/renderD128. A Unix listener
     // below supplies the mandatory Wayland bind; it is closed before execution
     // so clients fail promptly instead of waiting for a fake display server.
@@ -1998,44 +1919,32 @@ mod tests {
     #[test]
     #[ignore = "requires disposable native ARM runtime container; namespace-only acceptance"]
     fn generated_arm_wine32_namespace_executes_windows_console() {
-        generated_arm_namespace_console(Layer::Wine, Architecture::Win32, false);
+        generated_arm_namespace_console(Architecture::Win32, false);
     }
 
     #[test]
     #[ignore = "requires disposable native ARM runtime container; namespace-only acceptance"]
     fn generated_arm_wine64_namespace_executes_windows_console() {
-        generated_arm_namespace_console(Layer::Wine, Architecture::Win64, false);
-    }
-
-    #[test]
-    #[ignore = "requires disposable native ARM runtime container; namespace-only acceptance"]
-    fn generated_arm_proton_namespace_executes_windows_console() {
-        generated_arm_namespace_console(Layer::Proton, Architecture::Win64, false);
+        generated_arm_namespace_console(Architecture::Win64, false);
     }
 
     #[test]
     #[ignore = "requires disposable native ARM VM with Landlock ABI >= 5 and runtime artifacts"]
     fn generated_arm_wine32_landlock_executes_windows_console() {
-        generated_arm_namespace_console(Layer::Wine, Architecture::Win32, true);
+        generated_arm_namespace_console(Architecture::Win32, true);
     }
 
     #[test]
     #[ignore = "requires disposable native ARM VM with Landlock ABI >= 5 and runtime artifacts"]
     fn generated_arm_wine64_landlock_executes_windows_console() {
-        generated_arm_namespace_console(Layer::Wine, Architecture::Win64, true);
-    }
-
-    #[test]
-    #[ignore = "requires disposable native ARM VM with Landlock ABI >= 5 and runtime artifacts"]
-    fn generated_arm_proton_landlock_executes_windows_console() {
-        generated_arm_namespace_console(Layer::Proton, Architecture::Win64, true);
+        generated_arm_namespace_console(Architecture::Win64, true);
     }
 
     #[allow(
         clippy::too_many_lines,
         reason = "keep the namespace fixture and its exact production-plan adjustment auditable together"
     )]
-    fn generated_arm_namespace_console(layer: Layer, architecture: Architecture, landlock: bool) {
+    fn generated_arm_namespace_console(architecture: Architecture, landlock: bool) {
         use crate::SandboxExecutor;
         use std::os::unix::net::UnixListener;
 
@@ -2056,15 +1965,12 @@ mod tests {
             );
             println!("TILO_ARM_CAPSULE_LANDLOCK_ABI={abi}");
         }
-        let mut route = route(layer);
+        let mut route = route(Layer::Wine);
         route.settings.architecture = architecture;
         route.settings.environment.insert(
             "WINEDEBUG".into(),
             std::env::var("TILO_ARM_CAPSULE_WINEDEBUG").unwrap_or_else(|_| "-all".into()),
         );
-        if layer == Layer::Proton {
-            route.proton_recipe = Some("umu-0".into());
-        }
         let (_directory, store, state, mut program) = setup(&route);
         let marker = "TILO_GENERATED_ARM_CAPSULE_PASS";
         program.prefix_relative_executable = PathBuf::from("drive_c/tilo-console.exe");
@@ -2107,14 +2013,7 @@ mod tests {
         assert_eq!(command.network, NetworkShape::Offline);
         assert!(command.bwrap_argv.iter().any(|arg| arg == "--unshare-all"));
         assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
-        assert_eq!(
-            command.seccomp_profile,
-            if layer == Layer::Wine {
-                Some(SeccompProfile::TiloJit)
-            } else {
-                None
-            }
-        );
+        assert_eq!(command.seccomp_profile, Some(SeccompProfile::TiloJit));
         // Namespace-only cases remove exactly the executable shim and its
         // arguments. Full cases preserve the entire production command.
         let shim = command
@@ -2187,7 +2086,7 @@ mod tests {
         let route = route(Layer::Proton);
         let (_directory, store, state, program) = setup(&route);
         let host = session();
-        let planned = SandboxPlanner::new(&store, &TEST_REGISTRY, &host)
+        let planned = SandboxPlanner::new(&store, &TestHostRegistry("x86_64"), &host)
             .unwrap()
             .plan(
                 &route,
@@ -2261,7 +2160,7 @@ mod tests {
             let route = route(Layer::Proton);
             let (_directory, store, state, program) = setup(&route);
             let host = session();
-            let planner = SandboxPlanner::new(&store, &TEST_REGISTRY, &host).unwrap();
+            let planner = SandboxPlanner::new(&store, &TestHostRegistry("x86_64"), &host).unwrap();
             let command = planner
                 .plan(
                     &route,
@@ -2308,14 +2207,10 @@ mod tests {
                 ]
             );
             assert!(command.prefix_for_proton);
-            assert!(!command.runtime_lock_required);
-            assert!(
-                !command
-                    .bwrap_argv
-                    .iter()
-                    .any(|arg| arg.starts_with(STEAM_RUNTIME_HOST)
-                        || (arg.starts_with("UMU_") && arg != "UMU_ID"))
-            );
+            assert!(!command.bwrap_argv.iter().any(|arg| {
+                arg.starts_with("/usr/lib/tilo/windows-runners/steam-runtime")
+                    || (arg.starts_with("UMU_") && arg != "UMU_ID")
+            }));
             assert_eq!(steam_app_id("umu-1091500"), "1091500");
             assert_eq!(steam_app_id("umu-"), "0");
             assert_eq!(steam_app_id("none"), "0");
@@ -2325,7 +2220,12 @@ mod tests {
             for layer in [Layer::Wine, Layer::Proton] {
                 let route = route(layer);
                 let (_directory, store, state, program) = setup(&route);
-                let registry = SystemRuntimeRegistry::assuming_provider();
+                // Proton is planned on an x86 computer; Wine is planned on ARM, translated.
+                let registry = TestHostRegistry(if layer == Layer::Proton {
+                    "x86_64"
+                } else {
+                    "aarch64"
+                });
                 let host = session();
                 let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
                 let command = planner
@@ -2495,7 +2395,7 @@ mod tests {
         {
             let route = route(Layer::Proton);
             let (_directory, store, state, program) = setup(&route);
-            let registry = SystemRuntimeRegistry::assuming_provider();
+            let registry = TestHostRegistry("x86_64");
             let host = session();
             let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
             let command = planner
@@ -2553,11 +2453,11 @@ mod tests {
 mod payload_tests {
     use super::*;
 
-    fn proton(host: &str) -> RuntimeImage {
+    fn proton() -> RuntimeImage {
         SystemRuntimeRegistry::resolve_for_host(
             Layer::Proton,
             &Runner::new("umu-proton", PINNED_PROTON).unwrap(),
-            host,
+            "x86_64",
         )
         .unwrap()
     }
@@ -2567,32 +2467,26 @@ mod payload_tests {
 
         phase a_device_without_windows_support_gets_an_install_instruction_not_a_failed_bind;
         {
-            for host in ["x86_64", "aarch64"] {
-                let error = require_payload(&proton(host), |_| false).unwrap_err();
-                assert!(
-                    matches!(error, PlanError::WindowsSupportNotInstalled),
-                    "{host}"
-                );
-                let message = error.to_string();
-                assert!(message.contains("not installed"), "{message}");
-                assert!(
-                    message.contains("Windows apps in Settings"),
-                    "the message names where to turn it on: {message}"
-                );
-                assert!(message.contains("Nothing was started"), "{message}");
-            }
+            let error = require_payload(&proton(), |_| false).unwrap_err();
+            assert!(matches!(error, PlanError::WindowsSupportNotInstalled));
+            let message = error.to_string();
+            assert!(message.contains("not installed"), "{message}");
+            assert!(
+                message.contains("Windows apps in Settings"),
+                "the message names where to turn it on: {message}"
+            );
+            assert!(message.contains("Nothing was started"), "{message}");
         }
 
         phase a_merged_payload_plans_normally;
         {
-            assert!(require_payload(&proton("x86_64"), |_| true).is_ok());
-            assert!(require_payload(&proton("aarch64"), |_| true).is_ok());
+            assert!(require_payload(&proton(), |_| true).is_ok());
         }
 
         phase only_payload_paths_are_probed_not_the_base_the_image_always_has;
         {
             let probed = std::cell::RefCell::new(Vec::new());
-            let _ = require_payload(&proton("aarch64"), |path| {
+            let _ = require_payload(&proton(), |path| {
                 probed.borrow_mut().push(path.to_path_buf());
                 true
             });
@@ -2623,7 +2517,7 @@ mod payload_tests {
             ] {
                 assert!(containerfile.contains(packed), "{packed}");
             }
-            for host in [PROTON_HOST, STEAM_RUNTIME_HOST, X86_ROOTFS_HOST] {
+            for host in [PROTON_HOST, X86_ROOTFS_HOST] {
                 assert!(
                     PAYLOAD_PATHS.iter().any(|prefix| host.starts_with(prefix)),
                     "{host}"

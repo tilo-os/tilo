@@ -110,8 +110,8 @@ loading; they do not replace the full capsule/Landlock runtime acceptance.
 ## Native translated-runtime supervisor
 
 `tilo-windows-runtime` is a native helper intended to run after entering the
-capsule. Its allow-listed modes are `wine32`, `wine64`, and `proton`; they
-select fixed guest entry points rather than a catalogue-supplied interpreter.
+capsule. Its allow-listed modes are `wine32` and `wine64`; they select fixed
+guest entry points rather than a catalogue-supplied interpreter.
 The guest root is fixed at `/opt/tilo/x86`. The helper does not create or relax
 the sandbox and must not replace the outer namespace or Landlock setup.
 
@@ -148,44 +148,31 @@ The OS recipe builds and installs the helper at
 
 ## Trusted host architecture selection
 
-The runtime registry selects native Wine on x86-64 and the managed FEX helper
-on AArch64. ARM Wine uses the JIT syscall profile; native Wine retains the
-default profile. Proton retains its existing nested-runtime policy. Unknown
-host architectures fail closed. The Windows application's declared bitness
-selects only the fixed Wine mode, not the host interpreter or sandbox policy.
-
-ARM plans mount the guest filesystem read-only at `/opt/tilo/x86`, bind native
-FEX executables, and expose Wine's guest resources at their expected paths.
-Proton uses the shipped emulator and graphics-provider manifests to hand off
-to native ARM pressure-vessel. The manifests preserve the host/guest library
-separation and clear FEX_ROOTFS inside the nested runtime.
+The runtime registry selects native Wine on x86-64, the managed FEX helper for
+Wine on AArch64, and Proton on x86-64 alone. ARM Wine uses the JIT syscall
+profile; native Wine retains the default profile. An AArch64 computer refuses a
+Proton route when it is planned, naming why (docs/windows-compatibility.md,
+"Opening a program with Proton"): Proton's x86 program files reach the
+translator only inside the Steam Runtime's container, whose nested sandbox a
+capsule refuses. Unknown host architectures fail closed. The Windows
+application's declared bitness selects only the fixed Wine mode or the x86
+Proton prefix, not the host interpreter or sandbox policy.
 
 On 2026-09-16, all 58 service tests and strict Clippy passed with Rust 1.97.1.
-The architecture matrix covers both Windows bitnesses, both compatibility
-layers, and both supported host architectures, including retained network
-restrictions. The managed Proton integration test additionally ran the real
-Tilo supervisor and shipped manifests with networking disabled and all
-capabilities dropped. UMU verified the pinned runtime offline, skipped updates,
-and Proton wrote the expected Windows console marker into a fresh prefix.
-
-Reproduce with `os/tests/managed-fex-proton-smoke.py` in the disposable container
-layout documented in that test:
-
-```sh
-python3 /test.py --helper /helper --runtime /runtime --proton /proton \
-  --output-dir /results
-```
+The architecture matrix covers both Windows bitnesses, Proton on x86-64, Wine
+on both supported host architectures, and retained network restrictions.
 
 FEX/guest production packaging, complete native helper bindings, and the full
 outer capsule/Landlock launch remain acceptance requirements. The standalone
-container test does not establish those checks or graphical application support.
+container tests do not establish those checks or graphical application support.
 
 ## Private capsule identity and generated namespace probes
 
-The generated ARM Proton namespace exposed a failure hidden by the earlier
-whole-container test: UMU calls `getpwuid()` while preparing the prefix, but
-the capsule had no account database. UMU printed a traceback yet exited zero;
-the new fixture correctly rejected the run because Windows wrote no marker.
+The generated ARM Proton namespace probe (withdrawn since with the ARM Proton
+route) exposed a failure hidden by the earlier whole-container test: the
+runtime's script calls `getpwuid()` while preparing the prefix, but the capsule
+had no account database. It printed a traceback yet exited zero; the fixture
+correctly rejected the run because Windows wrote no marker.
 
 The executor now creates private, read-only passwd and group files from its
 effective UID/GID. Both use the fixed name `tilo` and the capsule's private home.
@@ -199,8 +186,8 @@ descriptor regression passed with both its tested filter configurations:
 `getent` resolved the synthetic UID/GID, writes to either file failed, and no
 shadow database was visible.
 
-Three ignored `generated_arm_*_namespace_executes_windows_console` tests now
-exercise the Wine32, Wine64, and Proton namespace plans. They require
+Two ignored `generated_arm_*_namespace_executes_windows_console` tests now
+exercise the Wine32 and Wine64 namespace plans. They require
 the fixed production artifact paths, a matching PE `cmd.exe` supplied through
 `TILO_ARM_CAPSULE_CMD_EXE`, writable `/run/user/<uid>`, Wine resource mountpoint
 directories, and a dummy render node inside a disposable container. They create
@@ -215,19 +202,10 @@ Their results must never substitute for full Tilo-kernel capsule acceptance.
 The initial Wine64 run timed out during prefix initialization. The managed
 C-drive fix described below resolves that specific failure.
 
-The generated Proton namespace passed on 2026-09-16 after adding three exact
-native helper bindings: `readlink`, `getopt`, and `true`. The ARM handoff failed
-without `readlink`; pressure-vessel's nested Bubblewrap probe failed without
-`true`. `getopt` is required by the pinned entrypoint on native x86 hosts.
-Each helper is read-only and automatically included in the plan's Landlock
-read paths. No whole executable directory was exposed.
-
-The successful test verified the immutable Steam runtime offline, initialized
-a fresh Proton prefix, and required Windows to create the expected marker.
-It retained the generated private runtime lock, identity files, descriptor
-handoff and network namespace. Missing locale-generation inputs, session-bus
-IPC fallback, and the diagnostic container's machine-id warning remain visible
-in the log; this console result does not establish those acceptance checks.
+A generated Proton namespace probe passed on 2026-09-16 while ARM still had a
+Proton plan; that plan was withdrawn because it needed the Steam Runtime's own
+container nested in the capsule, which the capsule's sandbox refuses. The probe
+and its fixture case are gone with it.
 
 ## Managed C-drive initialization
 
@@ -245,13 +223,14 @@ The private `C:` and grant-only `Q:` mappings remain separate from the removed
 default `Z:` mapping.
 
 After removing the temporary diagnostic mapping hook and rebuilding, the
-generated Wine32, Wine64 and Proton ARM namespaces all passed on 2026-09-16
-(18.45, 27.01 and 29.29 seconds respectively). Each required a Windows
-file marker; Wine retained the production JIT filter. The service suite passed
-63 tests and strict Clippy. Logs are `capsule-wine32-c-drive-fixed.log`,
-`capsule-wine64-c-drive-fixed.log`, and `capsule-proton-c-drive-fixed.log` in
-the preparation tree. The test-only `TILO_ARM_CAPSULE_WINEDEBUG` override can
-enable diagnostic channels without changing production defaults.
+generated Wine32, Wine64 and (then still planned) Proton ARM namespaces all
+passed on 2026-09-16 (18.45, 27.01 and 29.29 seconds respectively). Each
+required a Windows file marker; Wine retained the production JIT filter. The
+service suite passed 63 tests and strict Clippy. Logs are
+`capsule-wine32-c-drive-fixed.log`, `capsule-wine64-c-drive-fixed.log`, and
+`capsule-proton-c-drive-fixed.log` in the preparation tree. The test-only
+`TILO_ARM_CAPSULE_WINEDEBUG` override can enable diagnostic channels without
+changing production defaults.
 
 These remain namespace-only console checks. Full Landlock, graphics, audio,
 IPC and final-image acceptance requirements above are unchanged.

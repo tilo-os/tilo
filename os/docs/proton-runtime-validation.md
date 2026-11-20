@@ -164,36 +164,19 @@ that identity.
   new mounts a capsule's Landlock refuses, so Proton never started in a
   capsule. x86 capsules now start Proton's own script directly on the
   system's libraries (`docs/windows-compatibility.md`, "Opening a program with
-  Proton"); the runtime below serves the ARM route alone, which still awaits
-  this check.
+  Proton"). The same refusal withdraws the ARM route rather than awaiting this
+  check: Proton's x86 program files reach the translator only through this
+  runtime's container, so an ARM computer refuses a Proton route when it is
+  planned and keeps Wine. The runtime and its manifests still ship as payload
+  and are exercised by the disposable-container checks above.
 
-## Production runtime mount preparation
+## Withdrawn capsule mount
 
-The Proton registry now names the pinned runtime's individual top-level
-files and directories as read-only binds under
-`/tmp/tilo-runtime/umu/steamrt3`. That parent lives in the capsule's private
-tmpfs, allowing UMU to create its atomic install marker without modifying
-image content. The namespace plan creates the upstream `umu` entry-point
-symlink and fixes `UMU_FOLDERS_PATH`, disables UMU runtime updates, and places
-pressure-vessel's runtime copies under `/tmp/tilo-runtime/var`.
-
-The image includes an empty platform `files/.ref` mount point. Each executor
-invocation supplies a new empty memfd through Bubblewrap's `--bind-data`
-interface, overlaying only that lock file. There is no application-controlled
-host lock pathname and no shared writable runtime tree. The executor
-duplicates all source descriptors above its reserved child slots before
-mapping the directory, seccomp, and runtime-lock descriptors.
-
-On 2026-09-16, all 49 compatibility-service tests passed. The separately run
-Bubblewrap regression checked that the private lock is initially empty,
-accepts a write, and leaves its read-only source unchanged, both with and
-without the production seccomp filter. Plan tests also verify read-only
-platform mounts, lock overlay ordering, fixed offline provisioning variables,
-and retained network isolation.
-
-This supplies the production mount/state contract. The ARM registry now selects
-the managed FEX helper and shipped emulator/graphics-provider manifests. The
-managed offline Proton test validates this helper and manifest combination;
-see `compat-sandbox-validation.md`. Production guest/FEX packaging, complete
-native helper bindings, and full capsule execution remain acceptance
-requirements. These mount tests do not establish final-image readiness.
+An earlier ARM plan mounted the pinned runtime's top-level files and
+directories read-only under `/tmp/tilo-runtime/umu/steamrt3`, created the
+upstream `umu` entry-point symlink, fixed `UMU_FOLDERS_PATH`, and handed the
+executor a private memfd over the platform's `files/.ref` lock. Nothing of
+that reaches a capsule plan now: the nested container those mounts prepared
+for is what a capsule refuses, so an ARM computer plans no Proton route and
+the executor carries no runtime lock descriptor. The runtime and its manifests
+stay in the extension as payload for the disposable-container checks above.

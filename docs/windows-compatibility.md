@@ -18,9 +18,9 @@ Tilo owns the policy and presentation around existing engines:
 
 - Wine owns Win32 compatibility and prefixes.
 - Proton's own script owns bringing a prefix up to its version and applying
-  protonfixes, keyed by the UMU database's game identifiers. On x86 a capsule
-  starts that script directly on the system's libraries; only ARM, which
-  translates Proton, goes through UMU and the Steam Runtime.
+  protonfixes, keyed by the UMU database's game identifiers. A capsule starts
+  that script directly on the system's libraries; Proton is offered on x86
+  computers alone (see "Opening a program with Proton").
 - Steam owns Proton selection for games installed through Steam.
 - libvirt and QEMU/KVM own the appliance lifecycle.
 - FreeRDP RemoteApp is the appliance's normal presentation path.
@@ -141,6 +141,14 @@ is refused for a 32-bit one and the program keeps opening with Wine. Other progr
 they did, but never at the same time as one on the other runner: Wine and
 Proton cannot share a live prefix, so a start is refused with the reason while
 a program of the setup is open on the other one.
+
+Proton opens only on x86 computers. An ARM computer translates Windows programs
+with FEX; Proton's own program files are x86, and the one wiring that gives
+them the translator is the Steam Runtime's own container nested inside the
+capsule, which a capsule's sandbox refuses. Windows Apps therefore refuses a
+Proton start on an ARM computer and says why, naming that the program opens
+with Wine here. Choosing Proton on such a computer is kept, and the refusal
+comes when the program is started; Wine on ARM is unaffected.
 
 In a capsule Proton uses Wine's own synchronization: its esync and fsync keep
 shared memory in `/dev/shm`, which a capsule cannot write, and this Proton's

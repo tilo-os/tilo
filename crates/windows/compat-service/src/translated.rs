@@ -54,13 +54,6 @@ pub fn run_translated_command(arguments: &[OsString]) -> io::Result<i32> {
                 server: "/usr/bin/wineserver64",
             }),
         ),
-        Some("proton") => (
-            vec![
-                OsString::from("/usr/bin/python3"),
-                OsString::from("/usr/libexec/umu_run.py"),
-            ],
-            None,
-        ),
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

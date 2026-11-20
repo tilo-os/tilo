@@ -11,7 +11,6 @@ use crate::CapsuleCommandPlan;
 pub const SECCOMP_CHILD_FD: i32 = 32;
 pub(crate) const PREFIX_CHILD_FD: i32 = 33;
 pub(crate) const HOME_CHILD_FD: i32 = 34;
-pub(crate) const RUNTIME_LOCK_CHILD_FD: i32 = 35;
 pub(crate) const PASSWD_CHILD_FD: i32 = 36;
 pub(crate) const GROUP_CHILD_FD: i32 = 37;
 /// Where a Windows appliance presentation reads the RDP password from.
@@ -198,13 +197,6 @@ impl SandboxExecutor for BwrapExecutor {
             file.write_all(contents.as_bytes())?;
             file.rewind()?;
             inherited.push((duplicate_above_handed_numbers(file.as_fd())?, target));
-        }
-        if plan.runtime_lock_required {
-            let lock = create_memfd("tilo-runtime-lock")?;
-            inherited.push((
-                duplicate_above_handed_numbers(lock.as_fd())?,
-                RUNTIME_LOCK_CHILD_FD,
-            ));
         }
         let (program, args) = sandbox_program(
             plan.network_proxy.as_ref(),

@@ -2022,10 +2022,6 @@ suite = "os/tests/luks_enrolment.sh"
 reason = "needs a built image (tilo-disk-encrypt, cryptsetup)"
 
 [[unrequired]]
-suite = "os/tests/managed-fex-proton-smoke.py"
-reason = "needs a FEX runtime container on ARM"
-
-[[unrequired]]
 suite = "os/tests/managed-fex-wine-smoke.py"
 reason = "needs a FEX runtime container"
 

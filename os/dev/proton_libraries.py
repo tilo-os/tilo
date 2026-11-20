@@ -1,18 +1,19 @@
 #!/usr/bin/python3
 """Check that every library the pinned Proton loads on x86 is there.
 
-A capsule starts Proton's own script on the system's libraries, the way Wine
-is started, never in the Steam runtime's container (that container starts a sandbox
-of its own, which the capsule's sandbox refuses). So whatever Proton's Wine
-links or loads by name must come from the base image, the Windows
-compatibility extension or Proton itself. The extension's build calls this with
-the base image as `/` and the extension's payload as TREE, and fails naming
-each library nothing provides.
+A capsule on an x86 computer starts Proton's own script on the system's
+libraries, the way Wine is started, never in the Steam Runtime's container
+(that container starts a sandbox of its own, which the capsule's sandbox
+refuses). So whatever Proton's Wine links or loads by name must come from the
+base image, the Windows compatibility extension or Proton itself. The
+extension's build calls this with the base image as `/` and the extension's
+payload as TREE, and fails naming each library nothing provides.
 
     proton_libraries.py PROTON --tree TREE
 
-ARM translates Proton through the Steam runtime, which brings its own
-libraries: there is nothing to check.
+An ARM computer plans no Proton route, for the same reason: Proton's own
+program files are x86, and the one wiring that gives them the translator is
+that container. There are no x86 libraries to check there.
 """
 
 import argparse
@@ -135,7 +136,7 @@ def main():
     parser.add_argument("--arch", default=platform.machine())
     args = parser.parse_args()
     if args.arch != "x86_64":
-        print(f"proton libraries: {args.arch} translates Proton through the Steam runtime")
+        print(f"proton libraries: {args.arch} plans no Proton route; nothing to check")
         return 0
     if not proton_elves(args.proton):
         print(f"proton libraries: no Proton at {args.proton}", file=sys.stderr)

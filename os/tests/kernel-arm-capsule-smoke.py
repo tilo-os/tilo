@@ -154,7 +154,7 @@ def main():
         accepted = result.returncode == 0 and "\nTILO_ARM_CAPSULE_VM_PASS\n" in log
         expected = ["TILO_ARM_CAPSULE_TRANSPORT_PASS"]
         if args.mode == "console":
-            expected += [f"TILO_ARM_CAPSULE_CASE_PASS={kind}" for kind in ("wine64", "wine32", "proton")]
+            expected += [f"TILO_ARM_CAPSULE_CASE_PASS={kind}" for kind in ("wine64", "wine32")]
         elif args.mode == "namespace-diagnostic":
             expected += ["TILO_ARM_CAPSULE_CASE_PASS=wine64"]
         elif args.mode == "fex-diagnostic":
