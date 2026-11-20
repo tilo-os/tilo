@@ -169,6 +169,7 @@ pub(crate) mod tests;
 mod unattended;
 mod unbuildable_windows;
 pub use unattended::{Answer as PersonAnswer, AsksPeople};
+mod readings;
 #[cfg(feature = "agents")]
 mod views;
 mod voice;
@@ -944,7 +945,7 @@ struct WorkspacesInner {
     workspaces: Arc<device_actions::WorkspacesMap>,
     /// What each governed workspace is read through without its lock
     /// ([`Workspaces::reading`]).
-    readings: views::Readings,
+    readings: readings::Readings,
     /// The action service the workspaces answer their members' devices on, as this
     /// host's own device ([`device_actions`]).
     action_service: tilo_peer_state::actions::ActionService,
@@ -1232,7 +1233,7 @@ impl Workspaces {
                 action_service,
                 jobs,
                 workspaces,
-                readings: views::Readings::default(),
+                readings: readings::Readings::default(),
                 calls: Arc::default(),
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
