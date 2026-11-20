@@ -813,7 +813,7 @@ impl Worker {
             self.bounded.insert(key.clone(), held);
         }
         // Its parts taken in off this thread: nothing else asks its worker meanwhile.
-        if self.parts_taken_in(&key) {
+        if self.parts_taken_in(&super::Writer::Bounded(key.clone())) {
             return Err(ActionCallError::NotReady);
         }
         self.clock = self.clock.wrapping_add(1);
@@ -947,7 +947,7 @@ impl Worker {
         super::catch_up::tell_kept(&mut held.held, state, wanted);
         super::timing_done("replica.catch_up", catching);
         // A replica holding none of many parts takes them in off this thread.
-        if self.load_parts_apart(&key, state) {
+        if self.load_parts_apart(&super::Writer::Bounded(key.clone()), &holder, state) {
             return Err(ActionCallError::NotReady);
         }
         // The parts of its chains the workspace has still to send, waited on: off this

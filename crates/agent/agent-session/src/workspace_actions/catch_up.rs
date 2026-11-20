@@ -512,8 +512,17 @@ impl Worker {
         if let Some(behind) = mounted.behind.take() {
             catch_up(holder, mounted, state, Some(&behind));
         }
-        // The parts of its chains, those the workspace still has to send among them.
-        self.hold_chains(&Writer::Mounted(holder.clone()), holder, state);
+        // The parts of its chains, those the workspace still has to send among them: taken in
+        // off this thread when it holds none of many, as a caller's replica takes them, and
+        // the request waits for them there.
+        let at = Writer::Mounted(holder.clone());
+        if self.parts_taken_in(&at) || self.load_parts_apart(&at, holder, state) {
+            // Its caller's look at whether it waits for its chains ([`Self::hold_for_chains`])
+            // finds that it does.
+            let _ = self.part_waits.chain_wait(super::part_wait::PART_WAIT);
+            return;
+        }
+        self.hold_chains(&at, holder, state);
         let Some(mounted) = self.mounted.get_mut(holder) else {
             return;
         };
@@ -644,7 +653,7 @@ pub(super) fn chains_untold(
 
 impl Worker {
     /// The replica `at` holds, mutably.
-    fn held_mut(&mut self, at: &Writer) -> Option<&mut Mounted> {
+    pub(super) fn held_mut(&mut self, at: &Writer) -> Option<&mut Mounted> {
         match at {
             Writer::Mounted(holder) => self.mounted.get_mut(holder),
             Writer::Bounded(key) => self.bounded.get_mut(key).map(|replica| &mut replica.held),

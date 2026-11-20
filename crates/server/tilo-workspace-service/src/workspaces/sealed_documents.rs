@@ -113,6 +113,27 @@ impl DocumentKeys {
         }
     }
 
+    /// `plaintext`, what this device opened of the record, sealed to be stored on this device
+    /// under the keys of the record's channel, as its writes are: [`Self::open_stored`] opens it
+    /// while this device holds the keys of the epoch it was sealed under.
+    pub(super) fn seal_stored(&self, plaintext: &[u8]) -> Result<Vec<u8>, String> {
+        let (metadata, sealed) = self
+            .keys
+            .seal_content(self.artifact, ContentRetention::Checkpoint, plaintext)
+            .map_err(|error| error.to_string())?;
+        postcard::to_allocvec(&(metadata, sealed)).map_err(|error| error.to_string())
+    }
+
+    /// What [`Self::seal_stored`] sealed.
+    pub(super) fn open_stored(&self, stored: &[u8]) -> Result<Vec<u8>, String> {
+        let (metadata, sealed): (collab_types::EncryptionMetadata, Vec<u8>) =
+            postcard::from_bytes(stored).map_err(|error| error.to_string())?;
+        self.keys
+            .open_content(self.artifact, &metadata, &sealed)
+            .map(|plaintext| plaintext.to_vec())
+            .map_err(|error| error.to_string())
+    }
+
     /// Seal content of the record under the channel's current epoch.
     fn seal(
         &self,
@@ -1296,5 +1317,7 @@ mod chain_head_tests;
 pub mod fixtures;
 #[cfg(all(test, feature = "agents"))]
 mod folded_tests;
+#[cfg(all(test, feature = "agents"))]
+mod restart_read_tests;
 #[cfg(all(test, feature = "agents"))]
 pub(crate) mod tests;

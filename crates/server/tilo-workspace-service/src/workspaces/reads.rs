@@ -12,8 +12,8 @@ use collab_types::OwnResource;
 #[cfg(feature = "apps")]
 use tilo_peer_state::PeerDocumentCapture;
 use tilo_peer_state::{
-    KeptDocument, PeerDocumentReadError, StatePeer, changes_since, committed_document_revision,
-    saved_whole,
+    KeptDocument, PeerDocumentReadError, StatePeer, StoredOpening, changes_since,
+    committed_document_revision, saved_whole,
 };
 #[cfg(feature = "apps")]
 use tilo_user_identity::DeviceCert;
@@ -74,9 +74,18 @@ impl Workspaces {
         );
         let opening = self.inner.own_opened.of(workspace, app, resource);
         let mut held = opening.lock_recover();
+        // Nothing opened here since the service started: what it stored of the resource before
+        // is read on, so a start opens the writes sealed since and not the whole history.
         let mut kept = match held.take() {
             Some((opened_with, kept)) if opened_with == used => kept,
-            _ => KeptDocument::default(),
+            _ => keys
+                .as_ref()
+                .and_then(|keys| {
+                    self.inner
+                        .own_opened
+                        .stored(&peer, (workspace, app, resource), keys)
+                })
+                .unwrap_or_default(),
         };
         let read = match peer.open_document(
             reader,
@@ -107,6 +116,11 @@ impl Workspaces {
             Err(error) => Err(error),
         };
         if kept.is_open() {
+            if let Some(keys) = &keys {
+                self.inner
+                    .own_opened
+                    .store((workspace, app, resource), keys, &mut kept);
+            }
             *held = Some((used, kept));
         }
         read
@@ -480,23 +494,108 @@ type OpenedWith = ([u8; 32], Option<u64>);
 /// One resource as this service's own device last opened it; `None` until a read opened it.
 type OwnKept = std::sync::Arc<std::sync::Mutex<Option<(OpenedWith, KeptDocument)>>>;
 
+/// The extension of the folder beside a workspace's record that holds what this device opened
+/// of its sealed resources ([`OwnOpened`]).
+const OPENED: &str = "opened";
+
 /// How many resources [`OwnOpened`] keeps opened at most.
 const OWN_OPENED: usize = 64;
 
 /// Sealed resources as this service's own device last opened them, by workspace, app and
 /// resource, so the next read opens only what was sealed since: a resource its session follows
 /// is opened once per write, not whole per read. What it holds is plaintext this device's keys
-/// opened, kept in its memory alone.
+/// opened, kept in its memory.
+///
+/// What was opened is stored too, sealed under the resource's own content keys
+/// ([`StoredOpening`]), and a read after the service starts again, or after the resource was let
+/// go of here, takes it up and opens only the writes sealed since. Opening a sealed history
+/// merges each of its writes in an isolated worker and again here: seconds for each part of a
+/// tracker of thousands of issues, and a restarted service opened every part a listing reads
+/// so before the listing answered.
 #[derive(Default)]
-pub(super) struct OwnOpened(
-    std::sync::Mutex<std::collections::BTreeMap<(String, String, String), OwnKept>>,
-);
+pub(super) struct OwnOpened {
+    kept: std::sync::Mutex<std::collections::BTreeMap<(String, String, String), OwnKept>>,
+    /// The folder of the workspaces' records, beside which what was opened is stored; `None`
+    /// keeps it in memory alone.
+    stored: Option<std::path::PathBuf>,
+}
+
+/// A resource of a workspace, by its app: `(workspace, app, resource)`.
+type OpenedResource<'a> = (&'a str, &'a str, &'a str);
 
 impl OwnOpened {
+    /// What was opened, stored beside the workspaces' records in `folder` as well as kept in
+    /// memory.
+    pub(super) fn stored_in(folder: std::path::PathBuf) -> Self {
+        Self {
+            kept: std::sync::Mutex::default(),
+            stored: Some(folder),
+        }
+    }
+
+    /// Where what was opened of `resource` is stored.
+    fn path(&self, (workspace, app, resource): OpenedResource<'_>) -> Option<std::path::PathBuf> {
+        let mut named = blake3::Hasher::new_derive_key("tilo own opened resource v1");
+        named.update(app.as_bytes());
+        named.update(&[0]);
+        named.update(resource.as_bytes());
+        // Beside the workspace's record, so it goes when the workspace's files do.
+        Some(
+            self.stored
+                .as_ref()?
+                .join(format!("{workspace}.{OPENED}"))
+                .join(named.finalize().to_hex().as_str()),
+        )
+    }
+
+    /// What was stored of `resource`, kept again when `peer`'s history of it still continues
+    /// it ([`StatePeer::kept_again`]); `None` when nothing was, or it no longer opens.
+    fn stored(
+        &self,
+        peer: &StatePeer,
+        resource: OpenedResource<'_>,
+        keys: &super::sealed_documents::DocumentKeys,
+    ) -> Option<KeptDocument> {
+        let path = self.path(resource)?;
+        let sealed = std::fs::read(&path).ok()?;
+        let opened = keys.open_stored(&sealed).and_then(|plaintext| {
+            postcard::from_bytes::<StoredOpening>(&plaintext).map_err(|error| error.to_string())
+        });
+        match opened {
+            Ok(stored) => peer.kept_again((resource.1, resource.2), stored),
+            Err(error) => {
+                tracing::debug!(%error, path = %path.display(), "a resource's stored opening does not open");
+                None
+            }
+        }
+    }
+
+    /// Store what `kept` opened of `resource` that was not stored yet, sealed under `keys`.
+    fn store(
+        &self,
+        resource: OpenedResource<'_>,
+        keys: &super::sealed_documents::DocumentKeys,
+        kept: &mut KeptDocument,
+    ) {
+        let Some(path) = self.path(resource) else {
+            return;
+        };
+        let Some(unstored) = kept.unstored() else {
+            return;
+        };
+        let written = postcard::to_allocvec(&unstored)
+            .map_err(|error| error.to_string())
+            .and_then(|plaintext| keys.seal_stored(&plaintext))
+            .and_then(|sealed| write_whole(&path, &sealed).map_err(|error| error.to_string()));
+        if let Err(error) = written {
+            tracing::debug!(%error, path = %path.display(), "a resource's opening was not stored");
+        }
+    }
+
     /// What is kept of `app`'s `resource` of `workspace`, held while it is read.
     fn of(&self, workspace: &str, app: &str, resource: &str) -> OwnKept {
         let key = (workspace.to_owned(), app.to_owned(), resource.to_owned());
-        let mut kept = self.0.lock_recover();
+        let mut kept = self.kept.lock_recover();
         if !kept.contains_key(&key) && kept.len() >= OWN_OPENED {
             kept.pop_first();
         }
@@ -640,4 +739,17 @@ async fn resource_revision(
     Ok(Some(tilo_peer_state::committed_document_revision(
         &document.get_heads(),
     )))
+}
+
+/// Write `bytes` to `path` whole: to a file beside it first, then moved over it, so a reader
+/// never finds half of them.
+fn write_whole(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let folder = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("a stored opening needs a folder"))?;
+    std::fs::create_dir_all(folder)?;
+    let mut writing = path.as_os_str().to_owned();
+    writing.push(".writing");
+    std::fs::write(&writing, bytes)?;
+    std::fs::rename(&writing, path)
 }

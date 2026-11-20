@@ -1676,22 +1676,35 @@ impl ConfinedReplica {
                 admit_beside_incoming(&mut candidate, bytes)?;
                 Some(candidate)
             }
-            None if snapshot => {
-                let mut candidate = Deferred::default();
-                admit_beside_incoming(&mut candidate, bytes)?;
-                Some(candidate)
-            }
+            // A part taken whole the first time is loaded below, beside the worker taking it.
+            None if snapshot => None,
             None => return Ok(()),
         };
+        let first = snapshot && candidate.is_none();
         inner.others.insert(document.clone());
-        let reply = self.call(
-            &mut inner,
-            &Request::ApplyDocument {
-                record: document.as_str().to_owned(),
-                snapshot,
-                bytes: bytes.clone(),
-            },
-        );
+        let request = Request::ApplyDocument {
+            record: document.as_str().to_owned(),
+            snapshot,
+            bytes: bytes.clone(),
+        };
+        // A part taken whole the first time is one the workspace's service read out of what it
+        // admitted and saved itself (`WorkspaceState::document`): it loads here as the document
+        // this process saved, on a thread of its own while the worker loads it too. Admitting it
+        // through an isolated worker before the worker was asked loaded it twice more, in turn:
+        // a second and more for each part of a large tracker as a replica took them in after a
+        // start.
+        let (reply, candidate) = std::thread::scope(|scope| {
+            let loading = first.then(|| scope.spawn(|| tilo_automerge::shared::load(bytes)));
+            let reply = self.call(&mut inner, &request);
+            let candidate = match loading.map(std::thread::ScopedJoinHandle::join) {
+                None => Ok(candidate),
+                Some(Ok(Ok(loaded))) => Ok(Some(Deferred::from(loaded))),
+                Some(Ok(Err(error))) => Err(AppError::Merge(error.to_string())),
+                Some(Err(_)) => Err(AppError::Merge("a part did not load".into())),
+            };
+            (reply, candidate)
+        });
+        let candidate = candidate?;
         let result = match reply {
             Ok(Reply::Done) => {
                 if let Some(candidate) = candidate {
