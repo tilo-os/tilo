@@ -822,6 +822,9 @@ tilo_test_env::scenario! {
                 Ok(DocumentRead::Unchanged(_) | DocumentRead::Changes(_)) => {
                     panic!("no revision was offered")
                 }
+                Ok(DocumentRead::Arriving) => {
+                    panic!("a document outside any key group waits for no write it knows of")
+                }
                 Err(error) => panic!("a read between checkpoint frames was refused: {error}"),
             }
         }

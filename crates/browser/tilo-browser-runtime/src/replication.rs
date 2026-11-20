@@ -188,6 +188,10 @@ pub(crate) struct Joined {
     /// (`crate::record_verify`), and how many verifications had finished
     /// then: once more have, they are read again.
     verifying: (BTreeSet<DocumentRoute>, u64),
+    /// Documents whose last read found them still arriving: writes they build on, or the keys their
+    /// writes are sealed under, are on their way. Each is read again whenever anything reaches the
+    /// workspace's replica, since what completes one need not land on it.
+    arriving: BTreeSet<DocumentRoute>,
     /// Changes this page made to the workspace: to its records, sent, and to its
     /// desktop's windows (opened, closed, moved), not the desktop it joined.
     authored: u64,
@@ -282,6 +286,7 @@ pub(crate) fn open(
         read_wanted: HashSet::new(),
         read_answers: HashMap::new(),
         verifying: (BTreeSet::new(), 0),
+        arriving: BTreeSet::new(),
         authored: 0,
         moderates: Arc::default(),
         invitable: Arc::default(),
@@ -1169,7 +1174,9 @@ impl Joined {
         let mut refusals = Vec::new();
         let mut opened: Vec<(DocumentRoute, WorkspaceAnswer)> = Vec::new();
         let mut content_arrived = false;
+        let mut arrived = false;
         for event in self.events.drain() {
+            arrived = true;
             match event {
                 Event::HostReady {
                     ws: workspace_id,
@@ -1249,6 +1256,9 @@ impl Joined {
         if self.verifying.1 != tilo_automerge_isolate::away::verified() {
             landed.append(&mut self.verifying.0);
         }
+        if arrived {
+            landed.append(&mut self.arriving);
+        }
         for route in read_order(landed) {
             // A record kept for whoever opens it is read as what changed since the store took
             // it last: a record that lands a write at a time (a sealed chat's history, written
@@ -1292,8 +1302,12 @@ impl Joined {
                     self.hold_open(&route);
                     Ok(())
                 }
-                // Still arriving (its keys, or the checkpoint it builds on): it lands again.
-                Ok(ResourceReading::Pending) => Ok(()),
+                // Still arriving (its keys, or the writes or checkpoint it builds on): it is read
+                // again once anything more reaches the replica.
+                Ok(ResourceReading::Pending) => {
+                    self.arriving.insert(route.clone());
+                    Ok(())
+                }
                 Err(error) => Err(error),
             };
             if let Err(error) = applied {

@@ -5,15 +5,17 @@
 //! reader, after rechecking the reader's current membership and document
 //! Read permission. The plaintext API refuses encrypted documents; history
 //! reads require an opener for already-held channel keys. Both refuse
-//! causally incomplete documents or captures larger than the caller can
-//! hold. A reader that already holds the admitted revision is answered from
+//! captures larger than the caller can hold, and answer a causally incomplete
+//! document as still arriving. A reader that already holds the admitted revision is answered from
 //! those heads, without capturing the document again.
 //!
 //! A canonical checkpoint reaches a receiving owner as several signed frames.
 //! Between the frame that moves the workspace's coverage and the frame carrying the
 //! covered snapshot, the record's admitted checkpoint is older than its
 //! coverage. That is a state the owner leaves by itself, not a refusal: the
-//! read reports [`DocumentRead::CheckpointPending`] and hands out nothing.
+//! read reports [`DocumentRead::CheckpointPending`] and hands out nothing. A document whose
+//! writes this owner knows of but does not all hold yet reads as
+//! [`DocumentRead::Arriving`]: they are on their way, as the checkpoint's last frame is.
 //!
 //! A reader that holds an earlier revision this owner handed it (by its
 //! heads, [`Holding`]) is answered with only the changes since, from the
@@ -78,6 +80,9 @@ pub enum DocumentRead {
     /// a snapshot that has not arrived yet. Nothing was read; the reader may
     /// ask again once the rest of the checkpoint is admitted.
     CheckpointPending,
+    /// The document builds on writes this replica knows of and does not hold yet: they are on
+    /// their way, and nothing was read. It reads once they are here.
+    Arriving,
 }
 
 /// What a reader holds of a record it reads again.
@@ -181,7 +186,7 @@ impl NativeCommittedView {
     }
 
     /// The revision `app`'s `record` stands at for the device `reader`, decided as a read decides
-    /// it but handing out nothing: `None` while a checkpoint is pending.
+    /// it but handing out nothing: `None` while a checkpoint is pending or its writes are arriving.
     ///
     /// # Errors
     /// As a read's.
@@ -197,10 +202,14 @@ impl NativeCommittedView {
             return Ok(None);
         }
         let History { open, kept } = history;
-        let document = self
-            .peer
-            .open_document(reader, (app, record), now, usize::MAX, Some(open), kept)
-            .map_err(|error| refusal(app, record, error))?;
+        let document =
+            match self
+                .peer
+                .open_document(reader, (app, record), now, usize::MAX, Some(open), kept)
+            {
+                Err(PeerDocumentReadError::Incomplete) => return Ok(None),
+                document => document.map_err(|error| refusal(app, record, error))?,
+            };
         Ok(Some(revision_of(&document.get_heads())))
     }
 
@@ -237,10 +246,13 @@ impl NativeCommittedView {
             Some(History { open, kept }) => (Some(open), kept),
             None => (None, &mut unkept),
         };
-        let document = self
+        let document = match self
             .peer
             .open_document(reader, route, now, maximum, open, kept)
-            .map_err(|error| refusal(app, record, error))?;
+        {
+            Err(PeerDocumentReadError::Incomplete) => return Ok(DocumentRead::Arriving),
+            document => document.map_err(|error| refusal(app, record, error))?,
+        };
         let heads = sorted(&document.get_heads());
         let revision = revision_of_sorted(&heads);
         if holding.revision == Some(revision) {
@@ -258,21 +270,22 @@ impl NativeCommittedView {
         // A record kept opened extends what its last capture made; any other is captured whole.
         let bytes = match kept.capture(maximum) {
             Some(bytes) => bytes,
-            None => crate::state::saved_whole(
-                self.peer
-                    .open_document(
-                        reader,
-                        route,
-                        now,
-                        maximum,
-                        None,
-                        &mut KeptDocument::default(),
-                    )
-                    .map_err(|error| refusal(app, record, error))?,
-                maximum,
-            ),
-        }
-        .map_err(|error| refusal(app, record, error))?;
+            None => self
+                .peer
+                .open_document(
+                    reader,
+                    route,
+                    now,
+                    maximum,
+                    None,
+                    &mut KeptDocument::default(),
+                )
+                .and_then(|document| crate::state::saved_whole(document, maximum)),
+        };
+        let bytes = match bytes {
+            Err(PeerDocumentReadError::Incomplete) => return Ok(DocumentRead::Arriving),
+            bytes => bytes.map_err(|error| refusal(app, record, error))?,
+        };
         Ok(DocumentRead::Captured(CommittedDocument {
             revision,
             heads,

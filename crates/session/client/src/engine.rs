@@ -1051,7 +1051,9 @@ impl Engine {
                     bytes: changes.bytes,
                 },
                 DocumentRead::Unchanged(revision) => ResourceReading::Unchanged(revision),
-                DocumentRead::CheckpointPending => ResourceReading::Pending,
+                DocumentRead::CheckpointPending | DocumentRead::Arriving => {
+                    ResourceReading::Pending
+                }
             })
     }
 
