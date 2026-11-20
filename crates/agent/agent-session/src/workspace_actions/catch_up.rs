@@ -277,7 +277,9 @@ pub(super) fn read_parts(
     state: &WorkspaceState,
 ) -> Vec<(DocumentRoute, Result<super::Saved, String>)> {
     let read = |route: DocumentRoute| {
+        let t = std::time::Instant::now();
         let saved = state.document(&route);
+        eprintln!("DIAG read_part {} {}ms", route.document, t.elapsed().as_millis());
         (route, saved)
     };
     if routes.len() < 2 {
@@ -323,6 +325,9 @@ pub(super) fn hold(
     let Ok((bytes, heads)) = saved else {
         return;
     };
+    let diag_t = std::time::Instant::now();
+    let diag_len = bytes.len();
+    let _diag = DiagHold(diag_t, route.document.clone(), diag_len);
     match mounted
         .app
         .apply_document(&record, &collab_types::DocumentMutation::Snapshot(bytes))
@@ -930,5 +935,12 @@ impl Worker {
                 .get_or_insert_with(HashSet::new)
                 .extend(wrote.iter().cloned());
         }
+    }
+}
+
+struct DiagHold(std::time::Instant, String, usize);
+impl Drop for DiagHold {
+    fn drop(&mut self) {
+        eprintln!("DIAG hold {} bytes={} {}ms", self.1, self.2, self.0.elapsed().as_millis());
     }
 }

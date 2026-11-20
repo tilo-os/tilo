@@ -217,7 +217,7 @@ impl KeptDocument {
                 }
                 bytes
             }
-            _ => match saved_whole(document, usize::MAX) {
+            _ => match { let t = std::time::Instant::now(); let r = saved_whole(document, usize::MAX); eprintln!("DIAG save {}ms", t.elapsed().as_millis()); r } {
                 Ok(bytes) => bytes,
                 Err(error) => return Some(Err(error)),
             },
@@ -478,6 +478,9 @@ fn open_history<'a>(
     if base > maximum {
         return Err(PeerDocumentReadError::Capacity);
     }
+    let diag_t0 = std::time::Instant::now();
+    let mut diag_open = std::time::Duration::ZERO;
+    let mut diag_merge = std::time::Duration::ZERO;
     let mut opened = match kept.0.take().filter(|opened| opened.continues(document)) {
         Some(opened) => opened,
         None => Opened {
@@ -532,8 +535,13 @@ fn open_history<'a>(
         .peekable();
     // A write too large for one frame was written as segments, each a sealed write of its own:
     // it is read once all of them are held.
+    let diag_decoded = diag_t0.elapsed();
+    let diag_from = opened.count;
     while let Some((index, op)) = ops.next() {
-        let plaintext = match open(op) {
+        let diag_t = std::time::Instant::now();
+        let plaintext = open(op);
+        diag_open += diag_t.elapsed();
+        let plaintext = match plaintext {
             Ok(plaintext) => plaintext,
             // A write whose key has not reached this reader yet is read without, with every write
             // after it, until the key is here: what opened before it still reads, as the reader
@@ -557,11 +565,13 @@ fn open_history<'a>(
         opened.last = Some(op.signature);
         if in_turns && fresh >= WRITES_PER_LOOK && ops.peek().is_some() {
             fresh = 0;
+            let diag_t = std::time::Instant::now();
             let (merged, waiting) = merge_some(
                 std::mem::take(&mut opened.document),
                 std::mem::take(&mut writes),
                 &signers,
             )?;
+            diag_merge += diag_t.elapsed();
             opened.document = merged;
             writes = waiting;
             if crate::opening::due() {
@@ -572,7 +582,12 @@ fn open_history<'a>(
             }
         }
     }
+    let diag_t = std::time::Instant::now();
     opened.merge_last(writes, &signers)?;
+    diag_merge += diag_t.elapsed();
+    if diag_t0.elapsed().as_millis() >= 50 {
+        eprintln!("DIAG open_history ops={}..{} bytes={} snapshot={}ms decrypt={}ms merge={}ms total={}ms", diag_from, opened.count, opened.size, diag_decoded.as_millis(), diag_open.as_millis(), diag_merge.as_millis(), diag_t0.elapsed().as_millis());
+    }
     Ok(kept.0.insert(opened).read())
 }
 

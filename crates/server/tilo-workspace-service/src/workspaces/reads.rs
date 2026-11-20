@@ -78,6 +78,8 @@ impl Workspaces {
             Some((opened_with, kept)) if opened_with == used => kept,
             _ => KeptDocument::default(),
         };
+        let diag_t0 = std::time::Instant::now();
+        let diag_fresh = !kept.is_open();
         let read = match peer.open_document(
             reader,
             (app, resource),
@@ -93,6 +95,7 @@ impl Workspaces {
             Err(PeerDocumentReadError::Incomplete) => Ok(Answer::Read(DocumentRead::Pending)),
             Err(refused) => Err(refused.to_string()),
         };
+        let diag_open = diag_t0.elapsed();
         let read = match read {
             Ok(Answer::Whole { revision, heads }) => {
                 whole(&peer, &mut kept, reader, (app, resource), maximum).map(|bytes| {
@@ -106,6 +109,9 @@ impl Workspaces {
             Ok(Answer::Read(read)) => Ok(read),
             Err(error) => Err(error),
         };
+        if diag_t0.elapsed().as_millis() >= 50 {
+            eprintln!("DIAG own_read {app}/{resource} fresh={diag_fresh} open={}ms total={}ms thread={:?}", diag_open.as_millis(), diag_t0.elapsed().as_millis(), std::thread::current().name());
+        }
         if kept.is_open() {
             *held = Some((used, kept));
         }

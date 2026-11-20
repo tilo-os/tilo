@@ -484,3 +484,80 @@ async fn another_apps_listing_waits_for_no_tracker_taking_in_its_parts_after_a_r
         "the notes listed in {beside:?} beside the tracker's first listing ({tracker:?}), alone in {alone:?}"
     );
 }
+
+/// The first listing of a tracker after its server restarts answers within a few times what a
+/// listing of it costs once the server is warm, and at a tracker several times the size it
+/// costs about what it does at a small one. The restarted server read every part of the
+/// tracker from its sealed writes and loaded each into the caller's copy before the first page
+/// answered: seconds a part, so the first listing grew with the issues, past a minute at
+/// thousands of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trackers_first_listing_after_a_restart_costs_a_few_warm_ones_at_any_size() {
+    const RESTART_SIZES: [usize; 2] = [200, 1_000];
+    let mut firsts = Vec::new();
+    for size in RESTART_SIZES {
+        let on_server = api_on_server(super::api::ISSUER).await;
+        let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+        let browser = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+        let token = approved_key(&on_server, &ada, &browser, "Mover").await;
+        let base = {
+            let agent = V1 {
+                api: &on_server.api,
+                token: token.clone(),
+            };
+            let (status, workspace) = agent
+                .send(
+                    hyper::Method::POST,
+                    "/v1/workspaces",
+                    json!({"name": "Company"}).to_string().as_bytes(),
+                )
+                .await;
+            assert_eq!(status, 201, "{workspace}");
+            let base = format!("/v1/workspaces/{}", workspace["id"].as_str().unwrap());
+            agent.act(&base, "tasks", "open", &json!({})).await;
+            fill(&agent, &base, size).await;
+            base
+        };
+        let on_server = on_server.restart(false).await;
+        let agent = V1 {
+            api: &on_server.api,
+            token,
+        };
+        // The first call after the restart joins the workspace, whatever it lists.
+        let (status, page) = agent
+            .get(&format!("{base}/resources?path=notes&limit=40"))
+            .await;
+        assert_eq!(status, 200, "{page}");
+        let issues = format!("{base}/resources?path=tasks/Issues&limit=40");
+        let list = || async {
+            let began = Instant::now();
+            let (status, page) = agent.get(&issues).await;
+            assert_eq!(status, 200, "{page}");
+            assert_eq!(
+                page["rows"].as_array().map(Vec::len),
+                Some(40),
+                "a full first page: {page}"
+            );
+            began.elapsed()
+        };
+        let first = list().await;
+        let mut warm = Vec::new();
+        for _ in 0..5 {
+            warm.push(list().await);
+        }
+        let warm = quantile(&warm, 0.5);
+        eprintln!("{size} issues: the first listing after a restart took {first:?}, a warm one {warm:?}");
+        assert!(
+            first <= warm * 6 + Duration::from_secs(3),
+            "{size} issues: the first listing after a restart took {first:?}, a warm one {warm:?}"
+        );
+        firsts.push(first);
+    }
+    let (small, large) = (firsts[0], firsts[1]);
+    assert!(
+        large <= small * 2 + Duration::from_secs(2),
+        "the first listing after a restart took {large:?} at {} issues, {small:?} at {}",
+        RESTART_SIZES[1],
+        RESTART_SIZES[0]
+    );
+}

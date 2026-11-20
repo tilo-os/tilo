@@ -1540,6 +1540,7 @@ impl AttachedView {
                     self.definition.app_id()
                 )
             })?;
+        let diag_t0 = std::time::Instant::now();
         let opened = !self.records.is_ready(document);
         // Opened here from the peer's whole document: what the part holds is that document.
         let mut opened_from_mutation = false;
@@ -1577,6 +1578,7 @@ impl AttachedView {
             .records
             .with(document, ui_core::automerge::AutoCommit::get_heads)
             .unwrap_or_default();
+        let diag_open = diag_t0.elapsed();
         let delivered_now = !self.beside.contains_key(document);
         let sync = self
             .beside
@@ -1614,6 +1616,9 @@ impl AttachedView {
             self.unsettle_merged();
         } else if changed {
             self.unsettle();
+        }
+        if diag_t0.elapsed().as_millis() >= 50 {
+            eprintln!("DIAG merge_resource {} opened={opened} from_mutation={opened_from_mutation} open={}ms total={}ms", document.as_str(), diag_open.as_millis(), diag_t0.elapsed().as_millis());
         }
         Ok(changed)
     }

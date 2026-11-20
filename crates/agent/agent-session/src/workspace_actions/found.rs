@@ -537,11 +537,15 @@ impl Worker {
         // The index keeps what each document's app publishes, read as it landed
         // ([`Worker::warm_entries`]): a query answers from it without opening the document,
         // and opens only one that arrived since its last warm pass.
+        let diag_t = std::time::Instant::now();
         let (entries, opened) = if kept.indexed(route) {
             (kept.kept_entries(route), false)
         } else {
             kept.entries(route, read)
         };
+        if diag_t.elapsed().as_millis() >= 50 {
+            eprintln!("DIAG entries_of {} {}ms", route.document, diag_t.elapsed().as_millis());
+        }
         if opened {
             counted
                 .opened
