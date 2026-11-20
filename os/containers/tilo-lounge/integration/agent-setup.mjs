@@ -548,6 +548,12 @@ if (!signedUp.workspace || after.workspace !== signedUp.workspace) {
 if (/lounge/i.test(after.title) || after.title !== signedUp.title) {
   await fail(`after a reload the tab is titled "${after.title}", not "${signedUp.title}"`);
 }
+// The reloaded tab opens its layout from the copy its profile kept of the workspace's, and shows
+// that workspace with the Notes window still on it.
+const reopened = await first.waitFor(openedWindow('so.tilo.notes'), {timeout: stepLimit(3)}).catch(() => '')
+  || await fail(`after a reload the Notes window is gone: ${await briefly(first, windowsHeld, '(the page did not answer)')}; the tab says: ${(await pageText(first)).slice(0, 600)}`);
+if (reopened.startsWith('could not open')) await fail(`after a reload the Notes window ${reopened}`);
+mark('the reloaded tab still shows the Notes window');
 
 // 2. Back on a browser that keeps nothing: signed in through the agent.
 const second = await visit('returning');

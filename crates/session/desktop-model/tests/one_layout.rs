@@ -259,6 +259,39 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_page_reloaded_in_a_workspace_still_shows_that_workspace;
+    // A page in a workspace keeps the workspace's layout as its profile's copy, and a reload
+    // opens the page from that copy. The workspace's layout names no workspace in front — that is
+    // how each person shows it — so the reloaded page shows the one workspace it holds, the one
+    // it showed before the reload.
+    {
+        let mut tree = layout();
+        tree.active = identity();
+        let held = shared(tree);
+        let mut workspace = AutoCommit::new();
+        desktop_doc::seed(&mut workspace, &held.tree);
+        workspace.commit();
+        shared_resource::write(&mut workspace, &held).expect("the workspace keeps its layout");
+        workspace.commit();
+        assert!(
+            workspace.get(automerge::ROOT, "active").ok().flatten().is_none(),
+            "the workspace's layout names no workspace in front"
+        );
+
+        // The reload: the profile's bytes, read as the page's mount reads them.
+        let reloaded = AutoCommit::load(&workspace.save()).expect("the profile's copy loads");
+        let mut shown = shared_resource::read(&reloaded, None)
+            .expect("the reloaded page holds the workspace's layout")
+            .tree;
+        desktop_doc::rebuild_view(&reloaded, &mut shown);
+        assert_eq!(
+            shown.active_workspace().map(Workspace::id),
+            Some(identity()),
+            "the reloaded page shows the workspace it showed"
+        );
+        assert_eq!(windows(&shown), windows(&held.tree), "with its windows");
+    }
+
     phase two_peers_each_change_the_shell_and_keep_both_changes;
     // Two peers each change the layout and merge: the layout holds both changes,
     // by both of them, and each peer reads the same layout.

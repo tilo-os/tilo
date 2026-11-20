@@ -656,7 +656,9 @@ fn tile_from_blob(blob: &[u8], title: &str) -> TileContent {
 /// `active_strip`, `active_group`, presence and how each group is shown stay as the
 /// tree had them ([`rebuild_view`] reads that). Each workspace keeps its existing
 /// strips by id, then the document's topology and tabs are folded in, and a group
-/// seen for the first time gets local defaults.
+/// seen for the first time gets local defaults. A document that names no workspace in
+/// front of those it holds — a workspace's own layout ([`write_shared`]) names none — shows
+/// its first one.
 pub fn rebuild(doc: &AutoCommit, desktop: &mut Layout) {
     if let Some(active) = doc
         .str_at(&ROOT, ACTIVE_KEY)
@@ -713,6 +715,11 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut Layout) {
         // build that left them behind reads back without them, so the first window opened on it is
         // not pushed past a hole.
         ws.forget_gone_places();
+    }
+    if desktop.active_workspace().is_none()
+        && let Some(first) = desktop.workspaces.first()
+    {
+        desktop.active = first.id();
     }
 }
 
