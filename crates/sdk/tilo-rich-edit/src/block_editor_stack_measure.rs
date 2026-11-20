@@ -5,6 +5,7 @@
 use taffy::Size;
 
 use super::BlockEditor;
+use crate::rich_text_line::ASSUMED_LINE_WIDTH;
 use ui::text_render::TextRenderer;
 
 impl BlockEditor {
@@ -22,21 +23,34 @@ impl BlockEditor {
             taffy::AvailableSpace::Definite(width) => Some(width),
             _ => None,
         });
-        // 400 is the width a measured line assumes without a definite one.
         let width = match (definite, self.stack.width) {
             (Some(width), _) if width > 0.0 => width,
             // A width nothing fits in is a min-content contribution, not a
-            // layout: answer it, but leave the blocks stacked at the width
-            // they are laid out at, or the host's apply without a text
-            // renderer has no heights left to paint them with.
-            (Some(width), _) => return self.probe_stack(width, text_renderer),
+            // layout: answer it from the stack already measured, if there is
+            // one, or at the width a line assumes, but leave the blocks
+            // stacked at the width they are laid out at, or the host's apply
+            // without a text renderer has no heights left to paint them with.
+            (Some(width), _) => {
+                return if self.stack.tops.len() == self.blocks.len() {
+                    Size {
+                        width: if self.stack.measured { width } else { 0.0 },
+                        height: self.stack.total,
+                    }
+                } else {
+                    self.probe_stack(width, text_renderer)
+                };
+            }
             (None, Some(_)) if self.stack.tops.len() == self.blocks.len() => {
                 return Size {
-                    width: if self.stack.measured { 400.0 } else { 0.0 },
+                    width: if self.stack.measured {
+                        ASSUMED_LINE_WIDTH
+                    } else {
+                        0.0
+                    },
                     height: self.stack.total,
                 };
             }
-            (None, _) => 400.0,
+            (None, _) => ASSUMED_LINE_WIDTH,
         };
         self.stack_blocks(width, Some(text_renderer));
         Size {
@@ -65,11 +79,11 @@ impl BlockEditor {
         self.stack_blocks(width, (!measured).then_some(text_renderer));
     }
 
-    /// The size the blocks take at `width`, measured and then dropped, so a
+    /// The size the blocks take at the width a line assumes, measured and then dropped, so a
     /// query that reaches no layout of its own leaves the recorded stack be.
     fn probe_stack(&mut self, width: f32, text_renderer: &mut TextRenderer) -> Size<f32> {
         let recorded = std::mem::take(&mut self.stack);
-        self.stack_blocks(width, Some(text_renderer));
+        self.stack_blocks(width.max(ASSUMED_LINE_WIDTH), Some(text_renderer));
         let size = Size {
             width: if self.stack.measured { width } else { 0.0 },
             height: self.stack.total,

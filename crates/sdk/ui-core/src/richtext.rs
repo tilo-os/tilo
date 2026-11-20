@@ -17,6 +17,22 @@ mod paragraphs;
 #[cfg(test)]
 pub(crate) use paragraphs::take_prepared_paragraphs;
 
+/// Note a wrapped layout for the profiler: which text, at which width, onto how many rows.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn note_text_layout(buffer: &Buffer, width: f32, bytes: usize) {
+    let rows = buffer
+        .lines
+        .iter()
+        .map(|line| line.layout_opt().map_or(0, |rows| rows.len()))
+        .sum();
+    crate::profiling::text_layouts::note(width, bytes, rows);
+}
+
+/// Note a wrapped layout for the profiler: which text, at which width, onto how many rows.
+#[cfg(not(any(test, feature = "test-support")))]
+#[inline(always)]
+pub(crate) fn note_text_layout(_buffer: &Buffer, _width: f32, _bytes: usize) {}
+
 /// A generic font family the toolkit can resolve from system fonts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub enum FontFamily {
@@ -595,6 +611,7 @@ impl RichTextLayout {
         {
             crate::text_render::balance_buffer(&mut buffer, fs, layout_width);
         }
+        note_text_layout(&buffer, max_width.unwrap_or(f32::INFINITY), text.len());
         let (line_starts, line_lens) = Self::line_map(&shaping_text);
         Self {
             prepared: None,
@@ -862,6 +879,7 @@ impl RichTextLayout {
         {
             crate::text_render::balance_buffer(&mut buffer, fs, layout_width);
         }
+        note_text_layout(&buffer, max_width.unwrap_or(f32::INFINITY), full_text.len());
 
         Self {
             prepared: (!matches!(

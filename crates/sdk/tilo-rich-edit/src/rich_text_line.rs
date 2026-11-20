@@ -140,6 +140,12 @@ pub(super) struct StackMeasure {
 /// probes for an intrinsic size.
 const STACKED_WIDTHS: usize = 4;
 
+/// The width a wrapped line is measured at when no definite one is given. A line measured
+/// narrower than one glyph fits wraps each character onto a row of its own, which for prose is
+/// thousands of rows laid out and dropped for a width nothing is ever shown at; the width a line
+/// assumes is where such a query is answered instead.
+pub(super) const ASSUMED_LINE_WIDTH: f32 = 400.0;
+
 fn default_measurement_theme() -> Arc<Theme> {
     static DEFAULT: LazyLock<Arc<Theme>> = LazyLock::new(|| Arc::new(Theme::dark()));
     Arc::clone(&DEFAULT)
@@ -1335,7 +1341,7 @@ impl RichTextLine {
                 .width
                 .unwrap_or(match available.width {
                     taffy::AvailableSpace::Definite(width) => width,
-                    _ => 400.0,
+                    _ => ASSUMED_LINE_WIDTH,
                 })
                 .max(1.0);
             self.table_source_height = if visual {
@@ -1371,7 +1377,7 @@ impl RichTextLine {
                 .width
                 .unwrap_or(match available.width {
                     taffy::AvailableSpace::Definite(width) => width,
-                    _ => 400.0,
+                    _ => ASSUMED_LINE_WIDTH,
                 })
                 .max(1.0);
             let source_height = if editing {
@@ -1423,7 +1429,7 @@ impl RichTextLine {
         }
         let width = known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(width) => width,
-            _ => 400.0,
+            _ => ASSUMED_LINE_WIDTH,
         });
         let height = self.inner.measure_wrapped_content(
             (width - self.layout_inset).max(1.0),

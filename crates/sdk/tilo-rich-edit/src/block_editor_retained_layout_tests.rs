@@ -1513,9 +1513,14 @@ tilo_test_env::scenario! {
             },
             &mut fixture.text,
         );
+        // A width nothing fits in measures the stack at the width a line assumes: laying it out
+        // where one glyph takes a row of its own would answer thousands of rows for prose, and
+        // cost laying every character out.
+        let row = f64::from(fixture.editor.blocks[0].line.row_height(1.0));
         assert!(
-            f64::from(probe.height) > measured,
-            "one word per row is taller than the wrapped paragraph: {probe:?} against {measured}"
+            f64::from(probe.height) < 4.0 * row,
+            "a probe at no width answers at the width a line assumes, not one word per row: \
+             {probe:?}, a row being {row}"
         );
         fixture
             .editor

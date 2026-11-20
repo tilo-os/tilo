@@ -269,6 +269,7 @@ impl RichTextLayout {
             hang_wrapped_rows(fs, &cx, &mut buffer, &mut offset_map, text, lines);
         }
         let (line_starts, line_lens) = Self::line_map_of(&buffer);
+        super::note_text_layout(&buffer, width, text.len());
         Some(Self {
             prepared: Some(RichPreparation {
                 spans: vec![RichSpan::new(text)],
@@ -387,6 +388,11 @@ impl RichTextLayout {
             if hang_wrapped_rows(fs, &cx, &mut self.buffer, &mut self.offset_map, text, lines) {
                 (self.line_starts, self.line_lens) = Self::line_map_of(&self.buffer);
             }
+        }
+        // A width this layout did not have wraps every paragraph again: a layout at a new width,
+        // which the profiler counts as one.
+        if rewrapped {
+            super::note_text_layout(&self.buffer, width, text.len());
         }
         let mut prepared = prepared;
         if let Some(span) = prepared.spans.first_mut()
