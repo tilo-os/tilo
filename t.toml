@@ -6837,6 +6837,10 @@ name = "dev-session-test"
 # Pulls the pinned Ubuntu from Docker Hub, at hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash dist/ci/run-dev-session-test.sh"
+# Its setup is not pinned: dnf installs the newest podman Fedora's updates repository holds, from
+# mirrors no fixed list names.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False podman && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+env = { DOCKER = "podman" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 on = ["dispatch"]
