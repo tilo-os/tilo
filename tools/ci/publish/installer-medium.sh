@@ -76,24 +76,9 @@ modprobe fuse 2>/dev/null || true
 modprobe loop 2>/dev/null || true
 
 phase load-image
-# The disk step installs from a scratch registry (os/dev/disk-image.sh: the composefs backend
-# cannot read container storage) and pushes the installer image there, which compresses every
-# layer again unless podman knows the registry holds it. So the image goes into that registry
-# first with its blobs as they are, under the repository the installer image is pushed to, and
-# is loaded from there: the push then sends only the layers the installer adds. disk-image.sh
-# finds the registry by its container's name and reuses it.
-registry_port=${TILO_DISK_REG_PORT:-5000}
-podman rm -f tilo-disk-registry >/dev/null 2>&1 || true
-podman run -d --name tilo-disk-registry -p "$registry_port:5000" docker.io/library/registry:2 >/dev/null \
-  || die "could not start the scratch registry on :$registry_port"
-for _ in $(seq 1 30); do
-  curl --connect-timeout 2 --max-time 4 -sf "http://127.0.0.1:$registry_port/v2/" >/dev/null && break
-  sleep 1
-done
-staged="localhost:$registry_port/tilo-installer:base"
-skopeo copy -q --preserve-digests --dest-tls-verify=false "oci:$in/oci" "docker://$staged" \
-  || die "could not copy $in/oci into the scratch registry"
-id=$(podman pull -q --tls-verify=false "$staged") || die "could not load $staged"
+# Loaded through the disk step's scratch registry, under the repository the installer image is
+# pushed to, so that push sends only the installer's own layers.
+id=$(load_for_disk "$in/oci" tilo-installer)
 actual_digest=$(podman image inspect --format '{{.Digest}}' "$id")
 [[ $actual_digest == "$expected_digest" ]] || die "$in/oci is not the image its digest names"
 [[ $(podman image inspect --format '{{.Architecture}}' "$id") == "$oci_arch" ]] \

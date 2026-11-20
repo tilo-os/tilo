@@ -312,6 +312,28 @@ load_archive() {
   rm -rf "$layout"
 }
 
+# The image in the layout LAYOUT, loaded for a disk install of podman's image named
+# localhost/REPO:<tag>; prints its podman ID. The disk step (os/dev/disk-image.sh) installs from
+# a scratch registry, since the composefs backend cannot read container storage, and pushing
+# the image there compresses every layer again unless podman knows the registry holds it. So
+# the layout goes into that registry first with its blobs as they are, under REPO, and is loaded
+# from there: the push then sends only layers the image gained since. disk-image.sh finds the
+# registry by its container's name and reuses it.
+load_for_disk() {
+  local layout=$1 repo=$2 port=${TILO_DISK_REG_PORT:-5000} staged
+  staged=localhost:$port/$repo:base
+  podman rm -f tilo-disk-registry >/dev/null 2>&1 || true
+  podman run -d --name tilo-disk-registry -p "$port:5000" docker.io/library/registry:2 >/dev/null \
+    || die "could not start the scratch registry on :$port"
+  for _ in $(seq 1 30); do
+    curl --connect-timeout 2 --max-time 4 -sf "http://127.0.0.1:$port/v2/" >/dev/null && break
+    sleep 1
+  done
+  skopeo copy -q --preserve-digests --dest-tls-verify=false "oci:$layout" "docker://$staged" >&2 \
+    || die "could not copy $layout into the scratch registry"
+  podman pull -q --tls-verify=false "$staged" || die "could not load $staged"
+}
+
 # podman's NAME into OUT/image.oci.tar, with OUT/digest and OUT/generation.
 save_archive() {
   local name=$1 out=$2
