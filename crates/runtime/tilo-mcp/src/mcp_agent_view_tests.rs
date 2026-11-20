@@ -54,13 +54,63 @@ pub(super) fn outline_answer(
     }
 }
 
+impl Notes {
+    /// What the window answers a read: a loading view while `loading_outline` lasts, its
+    /// lines after.
+    pub(super) fn view_read(
+        &self,
+        id: &tilo_actions::InvocationId,
+        arguments: &serde_json::Map<String, Value>,
+    ) -> InvocationUpdate {
+        if self.loading_outline.load(Ordering::Relaxed) > 0 {
+            self.loading_outline.fetch_sub(1, Ordering::Relaxed);
+            loading_answer(*id)
+        } else {
+            outline_answer(*id, arguments)
+        }
+    }
+}
+
+/// What the app answers while its window is still loading what it shows: a busy state and
+/// nothing of what arrived later.
+pub(super) fn loading_answer(invocation: tilo_actions::InvocationId) -> InvocationUpdate {
+    InvocationUpdate::Succeeded {
+        invocation,
+        output: tilo_actions::ActionOutput {
+            value: Some(json!({
+                "outline": "document\n  group \"Files activity\" [busy]\n",
+                "tree": [
+                    {"role": "group", "name": "Files activity", "value": "Loading the folder", "state": ["busy"], "rect": [0.0, 0.0, 40.0, 20.0]},
+                ],
+                "nodes": 1,
+                "omitted": 0,
+                "viewport": [1280.0, 760.0],
+                "window_origin": [0.0, 40.0],
+                "theme": "Dark",
+                "revision": "000000000000",
+            })),
+            resources: Vec::new(),
+        },
+    }
+}
+
+/// A phase's async body on a runtime of its own: the same runtime the other test modules
+/// build, under a name the glossary keeps clear.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime")
+        .block_on(future)
+}
+
 tilo_test_env::scenario! {
     fn tilo_view_reads_what_the_window_shows;
 
     phase the_lines_are_the_views_own_semantic_tree_of_the_item_named;
     {
         let host = Notes::new(true).live();
-        run(async {
+        block_on(async {
             let (text, failed) =
                 tool(&agent(&host), "tilo_view", json!({"path": "notes/Todo"})).await;
             assert!(!failed, "{text}");
@@ -88,7 +138,7 @@ tilo_test_env::scenario! {
     phase a_picture_is_asked_for_by_name;
     {
         let host = Notes::new(true).live();
-        run(async {
+        block_on(async {
             let (typed, failed) = answer(
                 &agent(&host),
                 "tilo_view",
@@ -118,7 +168,7 @@ tilo_test_env::scenario! {
     {
         use base64::Engine as _;
         let host = Notes::new(true).live();
-        run(async {
+        block_on(async {
             let server = agent(&host).with_media(Some(std::sync::Arc::new(
                 crate::test_hosts::StoredByTestApp,
             )));
@@ -156,7 +206,7 @@ tilo_test_env::scenario! {
     phase an_app_that_does_not_run_is_started_without_a_window;
     {
         let host = Notes::new(false).live();
-        run(async {
+        block_on(async {
             let (text, failed) =
                 tool(&agent(&host), "tilo_view", json!({"path": "notes/Todo"})).await;
             assert!(!failed, "{text}");
@@ -171,6 +221,81 @@ tilo_test_env::scenario! {
             assert!(
                 asked.iter().any(|(_, action, _)| action == "outline"),
                 "then its view read: {asked:?}"
+            );
+        });
+    }
+
+    phase a_window_still_loading_is_read_again_until_what_it_shows_arrives;
+    {
+        // The first two reads answer the window with its folder still opening, as a window
+        // read before its resources arrived does.
+        let notes = Notes::new(true).live().loading_reads(2);
+        block_on(async {
+            let (typed, failed) =
+                answer(&agent(&notes), "tilo_view", json!({"path": "notes"})).await;
+            assert!(!failed, "{typed}");
+            assert_eq!(typed["loading"], json!(false), "{typed}");
+            assert!(
+                typed["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("button \"Rename\"")),
+                "the settled view, not the busy one: {typed}"
+            );
+            let reads = notes
+                .invoked()
+                .iter()
+                .filter(|(_, action, _)| action == "outline")
+                .count();
+            assert_eq!(reads, 3, "the busy reads and the one that settled");
+        });
+    }
+
+    phase a_window_that_never_settles_answers_what_it_has_and_says_it_is_loading;
+    {
+        let notes = Notes::new(true).live().loading_reads(u32::MAX);
+        block_on(async {
+            let (text, failed) =
+                tool(&agent(&notes), "tilo_view", json!({"path": "notes"})).await;
+            assert!(!failed, "{text}");
+            assert!(text.contains("[busy"), "what it shows now: {text}");
+            assert!(
+                text.ends_with("(still loading: the window has not finished showing what it holds)"),
+                "the answer says it is still loading: {text}"
+            );
+            let reads = notes
+                .invoked()
+                .iter()
+                .filter(|(_, action, _)| action == "outline")
+                .count();
+            assert!(
+                reads > 1 && reads <= 100,
+                "read again, bounded: {reads} reads"
+            );
+        });
+    }
+
+    phase a_picture_of_a_loading_window_is_taken_once_the_view_settled;
+    {
+        let notes = Notes::new(true).live().loading_reads(1);
+        block_on(async {
+            let (typed, failed) = answer(
+                &agent(&notes),
+                "tilo_view",
+                json!({"path": "notes", "picture": true}),
+            )
+            .await;
+            assert!(!failed, "{typed}");
+            assert_eq!(typed["picture"], json!("tilo.content:look"), "{typed}");
+            let asked = notes.invoked();
+            let pictured: Vec<bool> = asked
+                .iter()
+                .filter(|(_, action, _)| action == "outline")
+                .map(|(_, _, arguments)| arguments.get("picture") == Some(&json!(true)))
+                .collect();
+            assert_eq!(
+                pictured,
+                vec![true, false, true],
+                "the loading picture is dropped, and the settled view pictured: {asked:?}"
             );
         });
     }

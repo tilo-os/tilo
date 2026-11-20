@@ -3,6 +3,7 @@
 //! bound id that only the app's own key reads (`notes.notebook/page/<id>/body`).
 use super::render::skip_answered;
 use super::*;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
     ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueResource,
@@ -122,6 +123,8 @@ pub(super) struct Notes {
     /// An action its person is asked about in the conversation, by its name, and whether the
     /// question was put: the app ends its call there, as a workspace's service does.
     asked_there: Arc<Mutex<Option<(&'static str, bool)>>>,
+    /// How many more reads answer a loading view first; `u32::MAX` never settles.
+    loading_outline: Arc<AtomicU32>,
 }
 
 /// Where the test app says a person is asked, as a workspace's service says it.
@@ -195,7 +198,14 @@ impl Notes {
             late: Arc::default(),
             person_asked: Arc::default(),
             asked_there: Arc::default(),
+            loading_outline: Arc::default(),
         }
+    }
+
+    /// The same app, its window answering a loading view `reads` times first.
+    fn loading_reads(self, reads: u32) -> Self {
+        self.loading_outline.store(reads, Ordering::Relaxed);
+        self
     }
 
     /// The same Notes, its action `action` refused to the agent as `availability` says.
@@ -1174,7 +1184,7 @@ impl ActionProvider for Notes {
                 },
             },
             "append-paragraph" => succeeded(Some(json!({"block": "b9", "note": null}))),
-            "outline" => viewing::outline_answer(*id, &arguments),
+            "outline" => self.view_read(id, &arguments),
             "history" => succeeded(Some(json!({
                 "history": self.history.lock().unwrap().clone(),
             }))),

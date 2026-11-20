@@ -31,6 +31,13 @@ const OUTLINE: &str = "outline";
 /// there before it answers, which takes about a second; the rest is for a server that is
 /// still starting the app.
 const VIEW_WAIT_MS: u64 = 15_000;
+/// How long a view read may take altogether while what it shows is still arriving: the app
+/// opened, and a window that answers while the resources it shows catch up (a folder being
+/// opened) read again until it settles. An agent given a loading line would report the window
+/// empty or broken.
+const VIEW_SETTLE_MS: u64 = 20_000;
+/// How often a view still loading is read again while it settles.
+const VIEW_SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `tilo_view {path}`: the lines of the view `path` names, or of the app window that
@@ -84,6 +91,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             arguments.insert("scale".into(), json!(scale));
         }
         let path = format!("{}#{OUTLINE}", parsed.app);
+        // The whole read's bound, app start included: a view still loading past it is
+        // answered with what it has.
+        let settle_by = tokio::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(VIEW_SETTLE_MS));
         let mut refused_anchor: Option<String> = None;
         let mut value =
             match Box::pin(self.do_one_value(&path, arguments.clone(), None, Some(VIEW_WAIT_MS)))
@@ -113,24 +124,26 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // An app that ran the read and refused what it was shown is in the
         // same place as one that could not start on it: its window is the view
         // it does show, and the refusal says how it read the address.
-        let shown = |value: &Value| {
-            value.pointer("/update/state").and_then(Value::as_str) == Some("succeeded")
-                && value
-                    .pointer("/update/output/value/outline")
-                    .and_then(Value::as_str)
-                    .is_some()
-        };
-        if !shown(&value) && anchor.is_some() {
+        if !shows_a_view(&value) && anchor.is_some() {
             if refused_anchor.is_none() {
                 refused_anchor = Some(outcome(&value).text.trim().to_owned());
             }
             arguments.remove("anchor");
             value = answer_value(
-                Box::pin(self.do_one_value(&path, arguments, None, Some(VIEW_WAIT_MS))).await?,
+                Box::pin(self.do_one_value(&path, arguments.clone(), None, Some(VIEW_WAIT_MS)))
+                    .await?,
             );
         }
-        if !shown(&value) {
+        if !shows_a_view(&value) {
             return Ok(outcome(&value));
+        }
+        // A window still loading what it shows answers a busy line and little else: read
+        // again until it settles, bounded. Past the bound the answer is what it has, and
+        // says it is still loading rather than leaving the agent to guess.
+        if still_loading(&value) {
+            value = self
+                .settled_view(&path, &mut arguments, value, settle_by, args.picture)
+                .await;
         }
         Ok(Self::view_answer(
             &resolved,
@@ -139,6 +152,58 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             value,
             structured,
         ))
+    }
+
+    /// A view still loading what it shows, read again until it settles: `value` replaced by
+    /// the last view read before `settle_by`. A picture asked for is taken of the view as it
+    /// stands when the reading ends, never of a loading one.
+    async fn settled_view(
+        &self,
+        path: &str,
+        arguments: &mut serde_json::Map<String, Value>,
+        mut value: Value,
+        settle_by: Option<tokio::time::Instant>,
+        wanted_picture: bool,
+    ) -> Value {
+        let wanted_picture = wanted_picture && arguments.remove("picture").is_some();
+        while let Some(left) = settle_by
+            .and_then(|settle_by| settle_by.checked_duration_since(tokio::time::Instant::now()))
+        {
+            tokio::time::sleep(VIEW_SETTLE_POLL.min(left)).await;
+            let wait_ms = settle_by
+                .and_then(|settle_by| settle_by.checked_duration_since(tokio::time::Instant::now()))
+                .map_or(0, |left| {
+                    u64::try_from(left.as_millis()).unwrap_or(u64::MAX)
+                });
+            if wait_ms == 0 {
+                break;
+            }
+            let Ok(again) =
+                Box::pin(self.do_one_value(path, arguments.clone(), None, Some(wait_ms))).await
+            else {
+                break;
+            };
+            let again = answer_value(again);
+            if !shows_a_view(&again) {
+                break;
+            }
+            value = again;
+            if !still_loading(&value) {
+                break;
+            }
+        }
+        if wanted_picture {
+            arguments.insert("picture".into(), json!(true));
+            if let Ok(again) =
+                Box::pin(self.do_one_value(path, arguments.clone(), None, Some(VIEW_WAIT_MS))).await
+            {
+                let again = answer_value(again);
+                if shows_a_view(&again) {
+                    value = again;
+                }
+            }
+        }
+        value
     }
 
     /// The answer for a view read: `value`'s lines as text, its picture as image content
@@ -159,6 +224,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
+        let loading = still_loading(&value);
         // A picture the answer carries travels as image content; one this session already
         // showed is named instead, as the host's own bookkeeping decided.
         let images = pictures(&mut value);
@@ -187,6 +253,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if let Some(unchanged) = value.get("unchanged").and_then(Value::as_str) {
             let _ = write!(text, "\n{unchanged}");
         }
+        if loading {
+            let _ = write!(
+                text,
+                "\n(still loading: the window has not finished showing what it holds)"
+            );
+        }
         if text.trim().is_empty() {
             text.push_str("(the view shows nothing)");
         }
@@ -204,6 +276,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 "window_origin": output.get("window_origin"),
                 "revision": output.get("revision"),
                 "tree": output.get("tree"),
+                "loading": loading,
             });
             if let (Some(fields), Some(picture)) = (answer.as_object_mut(), output.get("content")) {
                 fields.insert("picture".into(), picture.clone());
@@ -213,6 +286,40 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         reply.images = images;
         reply
     }
+}
+
+/// Whether `value` is a view read that answered: the invocation succeeded, with lines.
+fn shows_a_view(value: &Value) -> bool {
+    value.pointer("/update/state").and_then(Value::as_str) == Some("succeeded")
+        && value
+            .pointer("/update/output/value/outline")
+            .and_then(Value::as_str)
+            .is_some()
+}
+
+/// Whether the view `value` shows a window that has not finished what it shows: a control
+/// whose state says it is busy (a folder opening, the resources it lists still arriving). An
+/// answer that states no per-node state is read by its lines.
+fn still_loading(value: &Value) -> bool {
+    fn busy(node: &Value) -> bool {
+        node.get("state")
+            .and_then(Value::as_array)
+            .is_some_and(|states| states.iter().any(|state| state == "busy"))
+            || node
+                .get("children")
+                .and_then(Value::as_array)
+                .is_some_and(|children| children.iter().any(busy))
+    }
+    let output = value.pointer("/update/output/value");
+    let busy_node = output
+        .and_then(|output| output.get("tree"))
+        .and_then(Value::as_array)
+        .is_some_and(|tree| tree.iter().any(busy));
+    busy_node
+        || output
+            .and_then(|output| output.get("outline"))
+            .and_then(Value::as_str)
+            .is_some_and(|lines| lines.contains("[busy"))
 }
 
 /// Whether `why` says the app offers no action that reads its window: no window of it answers
