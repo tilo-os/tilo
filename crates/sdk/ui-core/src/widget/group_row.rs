@@ -1347,30 +1347,44 @@ impl GroupRow {
     }
 
     /// The sections this strip is partitioned into; empty for one continuous row.
-    pub fn sections(&self) -> Vec<StripSection> {
-        self.sections.iter().map(|section| section.spec).collect()
+    /// Whether the window at `idx` is drawn under `p`: its laid-out rect holds the point, and, on
+    /// a strip spread across displays, the point stands on the display the window is laid out on.
+    /// A window whose rect reaches past its display's edge is clipped there, so a point on the
+    /// next display is empty canvas, not that window.
+    pub(super) fn shown_under(&self, idx: usize, p: Point) -> bool {
+        let Some(group) = self.groups.get(idx) else {
+            return false;
+        };
+        group.get_rect().contains(p)
+            && (self.sections.is_empty()
+                || self.canvas.is_some()
+                || self.is_floating(group.id)
+                || self.section_at(p) == Some(self.section_index_of(idx)))
     }
 
-    /// Whether the strip is partitioned across displays.
-    pub fn is_partitioned(&self) -> bool {
-        !self.sections.is_empty()
+    /// The index of the shown window drawn under `p`, other than `except`: the last laid out
+    /// there, and never one closing or hidden behind a maximized sibling.
+    pub(super) fn window_under(&self, p: Point, except: Option<u64>) -> Option<usize> {
+        self.groups
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(i, group)| {
+                Some(group.id) != except
+                    && !group.is_closing()
+                    && !self.layout_hides_group(*i)
+                    && self.shown_under(*i, p)
+            })
+            .map(|(i, _)| i)
     }
 
     /// The shown group a left press at the remembered cursor lands in; mouse buttons carry
     /// no position of their own.
     pub fn group_under_cursor(&self) -> Option<u64> {
-        if let Some(group) = self.float_group_at(self.last_cursor) {
-            return Some(group);
-        }
-        self.groups
-            .iter()
-            .enumerate()
-            .find(|(i, group)| {
-                !self.layout_hides_group(*i)
-                    && !group.is_closing()
-                    && group.get_rect().contains(self.last_cursor)
-            })
-            .map(|(_, group)| group.id)
+        self.float_group_at(self.last_cursor).or_else(|| {
+            self.window_under(self.last_cursor, None)
+                .map(|i| self.groups[i].id)
+        })
     }
 
     /// Whether logical point `p` is over this strip: inside one of its sections when it is
@@ -2526,8 +2540,8 @@ impl GroupRow {
         if self.groups.is_empty() {
             return Some(0);
         }
-        for g in &self.groups {
-            if g.get_rect().contains(release_point) {
+        for i in 0..self.groups.len() {
+            if self.shown_under(i, release_point) {
                 return None;
             }
         }
@@ -2779,6 +2793,7 @@ impl GroupRow {
                     && !group.is_closing()
                     && !group.drag_in_flight()
                     && Some(group.id) != moving
+                    && self.shown_under(i, p)
             })
             .find_map(|(_, group)| {
                 let index = group.tab_rects().iter().position(|r| r.contains(p))?;
@@ -2861,7 +2876,7 @@ impl GroupRow {
     pub fn tab_drop_target_at(&self, p: Point) -> Option<TabDropTarget> {
         for (group_idx, group) in self.groups.iter().enumerate() {
             let rect = group.get_rect();
-            if !rect.contains(p) || self.layout_hides_group(group_idx) {
+            if !self.shown_under(group_idx, p) || self.layout_hides_group(group_idx) {
                 continue;
             }
             if group.is_closing() {
@@ -3037,7 +3052,10 @@ impl GroupRow {
         }
         let at = self.last_cursor;
         let anywhere = std::mem::take(&mut self.carry_press);
-        if let Some(idx) = self.groups.iter().position(|g| {
+        if let Some(idx) = self.groups.iter().enumerate().position(|(i, g)| {
+            if !self.shown_under(i, at) {
+                return false;
+            }
             if anywhere {
                 return g.get_rect().contains(at);
             }
@@ -3115,7 +3133,7 @@ impl GroupRow {
         match self.let_the_window_go(drag.group_id, commit && drag.from_tab) {
             LetGo::Here => {}
             LetGo::CarriedAway => return claimed,
-            LetGo::Joined => {
+            LetGo::Joined(into) => {
                 // The place the window shows becomes a tab of the window it is let go over, in
                 // front there: the row moves it as a tab drag does, and the window it left goes
                 // with its last tab.
@@ -3124,9 +3142,7 @@ impl GroupRow {
                         crate::control_hints::performed::Performed::MovedWindow,
                     );
                 }
-                if let Some(into) = self.groups.iter().position(|group| {
-                    group.id != drag.group_id && group.get_rect().contains(self.last_cursor)
-                }) && let Some(tab) = self
+                if let Some(tab) = self
                     .groups
                     .get(drag.src_idx)
                     .map(WindowGroup::active_tab_id)
@@ -3298,11 +3314,7 @@ impl GroupRow {
     fn over_background(&self, p: Point) -> bool {
         self.rect.contains(p)
             && self.edge_grab_at(p).is_none()
-            && !self
-                .groups
-                .iter()
-                .enumerate()
-                .any(|(i, g)| !self.layout_hides_group(i) && g.get_rect().contains(p))
+            && self.window_under(p, None).is_none()
     }
 
     /// Pan the strip with a mouse dragged across empty canvas. The press

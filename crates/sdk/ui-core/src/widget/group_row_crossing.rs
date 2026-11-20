@@ -16,8 +16,8 @@ pub(super) enum LetGo {
     /// The flight left with the pointer for another of the person's devices: nothing here moves.
     CarriedAway,
     /// Let go over another window of this strip after a press on a tab or a lone window's title:
-    /// its place joins that window as a tab, and the strip does not also rearrange the window.
-    Joined,
+    /// its place joins window `.0` as a tab, and the strip does not also rearrange the window.
+    Joined(usize),
 }
 
 /// What a bar drag carries, and what it took from the bus.
@@ -73,15 +73,14 @@ impl GroupRow {
         }
         // A window stands where it is let go: on the canvas a place keeps its point, and a float
         // keeps its own drag, so only a window among the strip's own joins one beside it, and only
-        // one carried from a tab or a lone window's title: the empty bar rearranges.
-        let onto = land
-            && self.canvas.is_none()
-            && self.float_drag_from.is_none()
-            && self
-                .groups
-                .iter()
-                .any(|group| group.id != id && group.get_rect().contains(self.last_cursor));
-        if onto { LetGo::Joined } else { LetGo::Here }
+        // one carried from a tab or a lone window's title: the empty bar rearranges. Let go on
+        // another display, the strip moves the window there instead: no window of its own stands
+        // under the pointer, since what its strip laid out there is clipped at the display's edge.
+        let joins = land && self.canvas.is_none() && self.float_drag_from.is_none();
+        if joins && let Some(into) = self.window_under(self.last_cursor, Some(id)) {
+            return LetGo::Joined(into);
+        }
+        LetGo::Here
     }
 
     /// A window carried here by another of the person's devices was let go: the window of this row
@@ -103,15 +102,13 @@ impl GroupRow {
         let Ok(resource) = String::from_utf8(blob) else {
             return;
         };
-        let Some(group) = self
-            .groups
-            .iter()
-            .rev()
-            .find(|group| group.get_rect().contains(landed.pointer))
+        let Some(into) = self
+            .window_under(landed.pointer, None)
+            .map(|i| self.groups[i].id)
         else {
             return;
         };
-        self.carried.landed = Some((group.id, resource));
+        self.carried.landed = Some((into, resource));
     }
 
     /// The window another of the person's devices carried here and let go over one of this row's
