@@ -412,7 +412,11 @@ function start() {
     unanswered = Math.max(0, unanswered - 1);
     if (answer.shown) show(answer.shown);
     else if (answer.patched) patch(answer.patched);
-    else if (answer.refused) say('refused', 'This page is not available here.');
+    else if (answer.refused) {
+      say('refused', 'This page is not available here.');
+      // Why, for whoever looks into it: the reason is the server's word.
+      page.dataset.refused = JSON.stringify(answer.refused);
+    }
   };
 
   // What the person does.

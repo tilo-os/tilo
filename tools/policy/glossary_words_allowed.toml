@@ -1843,3 +1843,9 @@ reason = "The existing HostAgents type names the production roster runner the in
 words = ["host"]
 identifiers = ["HostAgents"]
 paths = ["crates/agent/agent-session/tests/workspace_actions/governed_agent.rs"]
+
+[[allow]]
+reason = "What a page waits for names its document through the waiting keys' existing `Record` variant and its `record` field."
+words = ["record"]
+identifiers = ["record", "Record"]
+paths = ["crates/agent/agent-session/src/workspace_actions/pages.rs"]

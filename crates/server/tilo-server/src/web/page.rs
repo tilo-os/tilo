@@ -130,7 +130,10 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                         }
                         match opened {
                             Ok((_, _, answer)) => answer,
-                            Err(refusal) => PageAnswer::Refused(refusal),
+                            Err(refusal) => {
+                                tracing::debug!(?refusal, "a page was refused");
+                                PageAnswer::Refused(refusal)
+                            }
                         }
                     }
                     PageAsk::Act { id, target, action } => match open {

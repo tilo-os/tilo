@@ -151,6 +151,29 @@ impl Worker {
         }
     }
 
+    /// What a page job waits for: the document its page shows, which the
+    /// workspace is asked for first, and whose keys it is handed.
+    pub(super) fn page_keys(&self, job: &PageJob) -> super::keys::Keys {
+        let document = |app_id: &str, document: &str| super::keys::Keys::Record {
+            app_id: app_id.to_owned(),
+            record: document.to_owned(),
+            act: true,
+        };
+        match job {
+            PageJob::Open { address, .. } => self
+                .page_app(&address.app)
+                .map_or(super::keys::Keys::Joined, |app| document(app.app_id(), "")),
+            PageJob::Act { page, .. } => self
+                .pages
+                .held
+                .get(page)
+                .map_or(super::keys::Keys::Joined, |held| {
+                    document(&held.route.app_id, &held.route.document)
+                }),
+            PageJob::Close { .. } => super::keys::Keys::Joined,
+        }
+    }
+
     /// The app of this catalogue `name` names: its id, or the last part of it
     /// (`notes` for `so.tilo.notes`).
     fn page_app(&self, name: &str) -> Option<&'static ui::application::ApplicationDefinition> {
@@ -179,15 +202,11 @@ impl Worker {
         if !app.keeps_workspace_resource() {
             return Err(PageRefusal::NoSuchApp);
         }
-        let state = self
+        let cluster_id = self
             .refresh(workspace_id, Needs::Workspace)
-            .map_err(refused)?;
-        let cluster_id = state.workspace.clone().ok_or(PageRefusal::Elsewhere)?;
-        let route = DocumentRoute {
-            app_id: app.app_id().to_owned(),
-            cluster_id,
-            document: String::new(),
-        };
+            .map_err(refused)?
+            .workspace
+            .ok_or(PageRefusal::Elsewhere)?;
         let mut who = self.bounded(caller).unwrap_or_else(|| bounded::Bounded {
             caller: caller.clone(),
             person_caller: caller.clone(),
@@ -196,6 +215,21 @@ impl Worker {
             agent_name: None,
             page: None,
         });
+        // The app's document of the workspace, founded by the person as a window
+        // of it would be when the workspace holds none yet.
+        self.open_new(workspace_id, &cluster_id, app.app_id(), Some(&who))
+            .map_err(|outcome| match outcome {
+                crate::member::actions::Outcome::Rejected(error) => refused(error),
+                crate::member::actions::Outcome::Failed(failure) => unavailable(failure.message),
+            })?;
+        let state = self
+            .refresh(workspace_id, Needs::Workspace)
+            .map_err(refused)?;
+        let route = DocumentRoute {
+            app_id: app.app_id().to_owned(),
+            cluster_id,
+            document: String::new(),
+        };
         self.pages.next = self.pages.next.wrapping_add(1);
         let page = self.pages.next;
         who.page = Some(page);

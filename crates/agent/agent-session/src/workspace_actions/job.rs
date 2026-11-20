@@ -218,8 +218,7 @@ impl Job {
             | Self::Changes { .. }
             | Self::Invocations { .. }
             | Self::ReadDocument { .. }
-            | Self::Changed { .. }
-            | Self::Page(_) => Keys::Workspace,
+            | Self::Changed { .. } => Keys::Workspace,
             Self::Feedback { .. }
             | Self::Invoke { .. }
             | Self::Ran(_)
@@ -229,6 +228,7 @@ impl Job {
             | Self::Arrived { .. }
             | Self::Joined(_)
             | Self::Forget(_)
+            | Self::Page(_)
             | Self::Rename(..) => Keys::Joined,
         }
     }

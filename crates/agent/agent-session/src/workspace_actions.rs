@@ -1514,6 +1514,7 @@ impl Worker {
                 .entries
                 .get(invocation)
                 .map_or(Keys::Joined, |entry| self.invoke_keys(&entry.request)),
+            Job::Page(page) => self.page_keys(page),
             other => other.keys(),
         }
     }
