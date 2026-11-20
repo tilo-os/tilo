@@ -578,9 +578,10 @@ async fn skills_are_kept_for_one_person_in_one_workspace() {
     assert_eq!(names(&BO, &here), ["Morning brief"]);
 
     // A change that refuses keeps the resource as it was, and so does a verb the list has not.
-    let refused: Result<(), String> =
-        workspaces.change_skills(&ADA, &here, Some(SCOUT), |_| Err("refused".to_owned()));
-    assert_eq!(refused, Err("refused".to_owned()));
+    let refusal = NotChanged::Refused("refused".to_owned());
+    let refused: Result<(), NotChanged> =
+        workspaces.change_skills(&ADA, &here, Some(SCOUT), |_| Err(refusal.clone()));
+    assert_eq!(refused, Err(refusal));
     assert!(matches!(
         write(&ADA, &here, "two\nlines"),
         Err(NotChanged::Refused(_))

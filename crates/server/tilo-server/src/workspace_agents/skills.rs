@@ -594,21 +594,6 @@ impl TurnSkills {
         let agent = self.agent.clone();
         // The list is a file of the keeper's store: read and written off the runtime's workers.
         let done = tokio::task::spawn_blocking(move || {
-            // What its keeper bounds the agent to is decided before the list is asked for
-            // anything but which skill the call is about: the one it names, and for a write
-            // the one of that name, which the list would write again.
-            let key = if action == person_skills::WRITE {
-                "name"
-            } else {
-                "skill"
-            };
-            let on = given.get(key).and_then(Value::as_str).and_then(|named| {
-                let kept = workspaces.skills_of(&keeper, &workspace)?;
-                kept.named(named).map(|(id, _)| id.to_string())
-            });
-            if !lets(&agent, &workspace, &action, on.as_deref()) {
-                return Err(NotTaken::NotPermitted);
-            }
             carried_out(
                 &workspaces,
                 (&keeper, &workspace, &agent),
@@ -648,33 +633,45 @@ fn carried_out(
     (keeper, workspace, agent): (&[u8; 32], &str, &Agent),
     (action, given): (&str, &Map<String, Value>),
 ) -> Result<Result<Value, String>, NotTaken> {
-    let whose = (keeper, workspace, agent);
     if action == person_skills::READ {
-        return Ok(read(workspaces, whose, given));
+        return read(workspaces, (keeper, workspace, agent), given);
     }
     let by = Some(agent.id.0.as_str());
-    match workspaces.skills_action(keeper, workspace, by, (action, given)) {
-        Ok(Some(id)) => Ok(read(
-            workspaces,
-            whose,
-            &Map::from_iter([("skill".to_owned(), Value::String(id))]),
-        )),
+    let permits = |id: Option<&tilo_resource::Id>| {
+        lets(agent, workspace, action, id.map(tilo_resource::Id::as_str))
+    };
+    match workspaces.skills_action_with_access(keeper, workspace, by, (action, given), permits) {
+        Ok(Some(id)) => {
+            if !lets(agent, workspace, person_skills::READ, Some(id.as_str())) {
+                return Ok(Ok(json!({"changed": id})));
+            }
+            let skill = workspaces
+                .skills_of(keeper, workspace)
+                .and_then(|kept| kept.skills.get(&id).map(|skill| SkillView::of(&id, skill)));
+            Ok(Ok(skill.map_or_else(
+                || json!({"changed": id}),
+                |skill| json!({"skill": skill}),
+            )))
+        }
         Ok(None) => Ok(Ok(json!({"forgotten": true}))),
         Err(NotChanged::Unknown) => Err(NotTaken::UnknownAction),
         Err(NotChanged::Unreadable(reason)) => Err(NotTaken::InvalidRequest { reason }),
+        Err(NotChanged::Denied) => Err(NotTaken::NotPermitted),
         Err(NotChanged::Refused(why)) => Ok(Err(why)),
     }
 }
 
 /// What a turn of `agent` reads of the skills this server keeps for `keeper` in `workspace`:
 /// the one `given` names by `skill` in full, or all of them by name, the one changed last
-/// first. A skill its keeper bounds the agent off reading ([`lets`]) is not among them, and of
-/// one it changed and may not read it is told the id alone.
+/// first. A bound on an individual skill also applies to an explicit read.
 fn read(
     workspaces: &Workspaces,
     (keeper, workspace, agent): (&[u8; 32], &str, &Agent),
     given: &Map<String, Value>,
-) -> Result<Value, String> {
+) -> Result<Result<Value, String>, NotTaken> {
+    if !lets(agent, workspace, person_skills::READ, None) {
+        return Err(NotTaken::NotPermitted);
+    }
     let kept = workspaces.skills_of(keeper, workspace).unwrap_or_default();
     let reads = |skill: &str| lets(agent, workspace, person_skills::READ, Some(skill));
     let named = given
@@ -683,21 +680,16 @@ fn read(
         .map(str::trim)
         .filter(|named| !named.is_empty());
     if let Some(named) = named {
-        return kept
-            .named(named)
-            .map(|(id, skill)| {
-                if reads(id.as_str()) {
-                    json!({"skill": SkillView::of(&id, skill)})
-                } else {
-                    json!({"changed": id.to_string()})
-                }
-            })
-            .ok_or_else(|| {
-                format!(
-                    "no skill is kept under the id or the name {named:?}: read `skills/list` \
-                     without `skill` for the skills there are"
-                )
-            });
+        let Some((id, skill)) = kept.named(named) else {
+            return Ok(Err(format!(
+                "no skill is kept under the id or the name {named:?}: read `skills/list` \
+                 without `skill` for the skills there are"
+            )));
+        };
+        if !reads(id.as_str()) {
+            return Err(NotTaken::NotPermitted);
+        }
+        return Ok(Ok(json!({"skill": SkillView::of(&id, skill)})));
     }
     let mut skills: Vec<_> = kept
         .skills
@@ -717,7 +709,7 @@ fn read(
             })
         })
         .collect();
-    Ok(json!({"skills": skills}))
+    Ok(Ok(json!({"skills": skills})))
 }
 
 impl TurnProvider for TurnSkills {

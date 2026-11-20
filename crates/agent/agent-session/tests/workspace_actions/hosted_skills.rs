@@ -1092,6 +1092,80 @@ fn keeps_review(workspaces: &Workspaces, keeper: &[u8; 32], workspace: &str) -> 
     id.to_string()
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hosted_skill_write_checks_the_item_named_by_the_write() {
+    team!(root, browser, actions, workspaces, workspace, page, person);
+    let keeper = root.verifying_key().to_bytes();
+    let routed = Arc::new(Routed::default());
+    workspaces.answer_models_with(routed.clone());
+    link(&workspaces, &keeper);
+    let servers = Arc::new(Mutex::new(Vec::new()));
+    let agents = worked(&workspaces, &actions, plays(&servers, |_| says("Told.")));
+
+    let draft = |name: &str, how: &str| serde_json::json!({"name": name, "work": "Prepare an internal memo.", "how": how});
+    let write_as_owner = |name: &str, how: &str| {
+        workspaces
+            .skills_action(
+                &keeper,
+                &workspace,
+                None,
+                (person_skills::WRITE, &given(draft(name, how))),
+            )
+            .unwrap()
+            .unwrap()
+    };
+    let first = write_as_owner("Memo", FIRST);
+    let protected = write_as_owner(&first, OTHER);
+    assert_ne!(first, protected);
+    let before = workspaces.skills_listed(&keeper, &workspace);
+
+    let rule = tilo_action_policy::Rule::new(
+        tilo_action_policy::TreePath::workspace(workspace.as_str())
+            .app(CHAT)
+            .kind("chat.skills.skills")
+            .resource(format!("chat.skills/skills/{protected}")),
+        tilo_action_policy::KindSet::UNDOABLE,
+        tilo_action_policy::Answer::Deny,
+    );
+    on_roster(
+        &workspaces,
+        &workspace,
+        (None, person.as_str()),
+        WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
+            agent: Id::from_raw(SCOUT),
+            bound: vec![Bound::of(&rule)],
+        }),
+    )
+    .await
+    .unwrap();
+
+    let ask = format!("do {WRITE} {}", draft(&first, CORRECTED));
+    let hers = (&root, &browser);
+    asked!(agents, actions, workspaces, workspace, hers, &ask);
+    let calls = calls_of(&routed.seen(), &ask);
+    assert_eq!(calls.len(), 2, "the write and its answer");
+    assert!(matches!(
+        tool_answers(&calls[1].request).as_slice(),
+        [(_, true)]
+    ));
+    assert_eq!(workspaces.skills_listed(&keeper, &workspace), before);
+
+    assert_eq!(write_as_owner(&first, CORRECTED), protected);
+    let after = workspaces.skills_listed(&keeper, &workspace);
+    assert!(
+        after
+            .skills
+            .iter()
+            .any(|skill| skill.id == protected && skill.how == CORRECTED)
+    );
+    assert!(
+        after
+            .skills
+            .iter()
+            .any(|skill| skill.id == first && skill.how == FIRST)
+    );
+}
+
 /// What the workspace shares, once the device of Bo, another member, holds `in_list` in the
 /// list of the workspace's agents and `in_messages` in its messages: the list and the
 /// messages as the server keeps them and as his device holds them, each with what it is.

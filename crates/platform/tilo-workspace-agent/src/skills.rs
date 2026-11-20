@@ -182,11 +182,17 @@ impl Skills {
         self.skills
             .iter()
             .find(|(id, _)| id.as_str() == named)
-            .or_else(|| {
-                self.skills
-                    .iter()
-                    .find(|(_, skill)| same_name(&skill.name, named))
-            })
+            .map(|(id, skill)| (id.clone(), skill))
+            .or_else(|| self.named_by_name(named))
+    }
+
+    /// The skill with this name, even when it spells the id of another skill.
+    /// An action that writes by name uses this to find the item it will update.
+    #[must_use]
+    pub fn named_by_name(&self, name: &str) -> Option<(Id, &Skill)> {
+        self.skills
+            .iter()
+            .find(|(_, skill)| same_name(&skill.name, name))
             .map(|(id, skill)| (id.clone(), skill))
     }
 
@@ -289,11 +295,7 @@ impl Skills {
             Some(form) => clean_text(form, MAX_FORM, "the form of a skill's result")?,
         };
         let model = crate::chosen_model(model)?;
-        let known = self
-            .skills
-            .iter()
-            .find(|(_, skill)| same_name(&skill.name, &name))
-            .map(|(id, _)| id.clone());
+        let known = self.named_by_name(&name).map(|(id, _)| id);
         let id = if let Some(id) = known {
             id
         } else {

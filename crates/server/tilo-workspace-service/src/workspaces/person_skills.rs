@@ -218,8 +218,16 @@ pub enum NotChanged {
     Unknown,
     /// What the verb was given does not read as what it takes.
     Unreadable(String),
+    /// The caller is not permitted to act on the resolved target.
+    Denied,
     /// The list refused, in its own words.
     Refused(String),
+}
+
+impl From<String> for NotChanged {
+    fn from(reason: String) -> Self {
+        Self::Refused(reason)
+    }
 }
 
 #[derive(Deserialize)]
@@ -330,13 +338,13 @@ impl Workspaces {
     /// # Errors
     /// `workspace` is no workspace id, the resource cannot be read or written, it would outgrow
     /// what one resource holds, or `change` refused.
-    pub fn change_skills<R>(
+    pub(super) fn change_skills<R>(
         &self,
         person: &[u8; 32],
         workspace: &str,
         by: Option<&str>,
-        change: impl FnOnce(&mut Replica<Skills>) -> Result<R, String>,
-    ) -> Result<R, String> {
+        change: impl FnOnce(&mut Replica<Skills>) -> Result<R, NotChanged>,
+    ) -> Result<R, NotChanged> {
         let path = self.skills_at(person, workspace)?;
         let keeper = hex::encode(person);
         let one_at_a_time = CHANGING.lock_recover();
@@ -350,7 +358,7 @@ impl Workspaces {
         let answer = change(&mut resource)?;
         let bytes = resource.save();
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_BYTES {
-            return Err("the list of skills is full".to_owned());
+            return Err(NotChanged::Refused("the list of skills is full".to_owned()));
         }
         tilo_files::native::atomic::write_creating_parent_with_mode(&path, &bytes, 0o600)
             .map_err(|error| error.to_string())?;
@@ -389,9 +397,29 @@ impl Workspaces {
         person: &[u8; 32],
         workspace: &str,
         by: Option<&str>,
-        (action, given): (&str, &Map<String, Value>),
+        action: (&str, &Map<String, Value>),
     ) -> Result<Option<String>, NotChanged> {
-        let changed = match action {
+        self.skills_action_with_access(person, workspace, by, action, |_| true)
+            .map(|id| id.map(|id| id.to_string()))
+    }
+
+    /// Apply a verb after checking the collection and the exact item it will affect.
+    /// The item is resolved and checked under the same lock as the change.
+    ///
+    /// # Errors
+    /// As in [`Self::skills_action`], or the caller is denied by `permits`.
+    pub fn skills_action_with_access(
+        &self,
+        person: &[u8; 32],
+        workspace: &str,
+        by: Option<&str>,
+        (action, given): (&str, &Map<String, Value>),
+        permits: impl Fn(Option<&Id>) -> bool,
+    ) -> Result<Option<Id>, NotChanged> {
+        if !permits(None) {
+            return Err(NotChanged::Denied);
+        }
+        match action {
             WRITE => {
                 let Write {
                     name,
@@ -409,8 +437,12 @@ impl Workspaces {
                     model,
                 };
                 self.change_skills(person, workspace, by, |resource| {
+                    let existing = state(resource)?.named_by_name(&name).map(|(id, _)| id);
+                    if existing.as_ref().is_some_and(|id| !permits(Some(id))) {
+                        return Err(NotChanged::Denied);
+                    }
                     applied(resource.apply(Skills::WRITE_SKILL.with(write)))?;
-                    Ok(state(resource)?.named(&name).map(|(id, _)| id.to_string()))
+                    Ok(state(resource)?.named_by_name(&name).map(|(id, _)| id))
                 })
             }
             CORRECT => {
@@ -424,7 +456,7 @@ impl Workspaces {
                 } = read_as(given)?;
                 self.names_linked_model(person, model.as_deref())?;
                 self.change_skills(person, workspace, by, |resource| {
-                    let id = named_skill(&state(resource)?, &skill)?;
+                    let id = permitted_skill(resource, &skill, &permits)?;
                     let correct = skills::CorrectSkill {
                         skill: id.clone(),
                         name,
@@ -434,7 +466,7 @@ impl Workspaces {
                         model,
                     };
                     applied(resource.apply(Skills::CORRECT_SKILL.with(correct)))?;
-                    Ok(Some(id.to_string()))
+                    Ok(Some(id))
                 })
             }
             KEEP_EXAMPLE => {
@@ -445,7 +477,7 @@ impl Workspaces {
                     note,
                 } = read_as(given)?;
                 self.change_skills(person, workspace, by, |resource| {
-                    let id = named_skill(&state(resource)?, &skill)?;
+                    let id = permitted_skill(resource, &skill, &permits)?;
                     let keep = skills::KeepExample {
                         skill: id.clone(),
                         text,
@@ -453,25 +485,25 @@ impl Workspaces {
                         note,
                     };
                     applied(resource.apply(Skills::KEEP_EXAMPLE.with(keep)))?;
-                    Ok(Some(id.to_string()))
+                    Ok(Some(id))
                 })
             }
             DROP_EXAMPLE => {
                 let DropExample { skill, example } = read_as(given)?;
                 self.change_skills(person, workspace, by, |resource| {
-                    let id = named_skill(&state(resource)?, &skill)?;
+                    let id = permitted_skill(resource, &skill, &permits)?;
                     let dropped = skills::DropExample {
                         skill: id.clone(),
                         example,
                     };
                     applied(resource.apply(Skills::DROP_EXAMPLE.with(dropped)))?;
-                    Ok(Some(id.to_string()))
+                    Ok(Some(id))
                 })
             }
             FORGET => {
                 let Forget { skill } = read_as(given)?;
                 self.change_skills(person, workspace, by, |resource| {
-                    let id = named_skill(&state(resource)?, &skill)?;
+                    let id = permitted_skill(resource, &skill, &permits)?;
                     applied(
                         resource
                             .apply(Skills::FORGET_SKILL.with(skills::ForgetSkill { skill: id })),
@@ -479,9 +511,8 @@ impl Workspaces {
                     Ok(None)
                 })
             }
-            _ => return Err(NotChanged::Unknown),
-        };
-        changed.map_err(NotChanged::Refused)
+            _ => Err(NotChanged::Unknown),
+        }
     }
 
     /// Where it is kept which skill each of `person`'s sub-agents in `workspace` was handed:
@@ -604,7 +635,7 @@ impl Workspaces {
             };
             self.skills_action(&person, &workspace, None, (action, given))
                 .map_err(|not| match not {
-                    NotChanged::Unknown => UnknownAction,
+                    NotChanged::Unknown | NotChanged::Denied => UnknownAction,
                     NotChanged::Unreadable(reason) => ActionCallError::InvalidRequest { reason },
                     NotChanged::Refused(reason) => ActionCallError::Refused { reason },
                 })?;
@@ -648,6 +679,15 @@ fn read_as<T: serde::de::DeserializeOwned>(given: &Map<String, Value>) -> Result
 /// `words` as a verb takes them, or `why` they are none.
 fn said(words: &str, why: &str) -> Result<NonBlank, NotChanged> {
     NonBlank::parse(words).ok_or_else(|| NotChanged::Refused(why.to_owned()))
+}
+
+fn permitted_skill(
+    resource: &Replica<Skills>,
+    named: &str,
+    permits: &impl Fn(Option<&Id>) -> bool,
+) -> Result<Id, NotChanged> {
+    let id = named_skill(&state(resource)?, named)?;
+    permits(Some(&id)).then_some(id).ok_or(NotChanged::Denied)
 }
 
 /// The skill `named` names in `kept`: by its id, or by what it is called.
