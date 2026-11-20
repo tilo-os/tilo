@@ -1604,15 +1604,29 @@ impl BrowserShell {
         });
         let rgb = Some(self.chrome.own_chip().rgb);
         // The name in the field is the person's own, without the number
-        // others are shown beside it.
-        let name =
-            ui::presence::person_label(self.chrome.here.borrow().own_label().unwrap_or_default());
+        // others are shown beside it, and blank while the words said for a
+        // person without one stand in for it: the field asks for the name they
+        // give, rather than holding words to type over.
+        let own = self
+            .chrome
+            .here
+            .borrow()
+            .own_label()
+            .unwrap_or_default()
+            .to_owned();
+        let given_name = if ui::presence::is_unnamed_person(&own) {
+            String::new()
+        } else {
+            own.trim().to_owned()
+        };
+        let name = ui::presence::person_label(&own);
         ProfileModel {
             identity: ui::collaboration::local_user_id()
                 .person_id()
                 .unwrap_or_default()
                 .to_owned(),
             name,
+            given_name: Some(given_name),
             colour: rgb.map(|(r, g, b)| ui::vello::peniko::Color::from_rgb8(r, g, b)),
             can_rename: self.handle.offers_host_action(RENAME_ACTION),
             ask_name: false,

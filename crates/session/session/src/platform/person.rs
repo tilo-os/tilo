@@ -20,6 +20,14 @@ pub fn person_name(chosen: Option<String>, person: &str) -> String {
     })
 }
 
+/// The name `chosen` is one the person gave themselves, where it is one: `None` while they gave
+/// none, so a field for their name asks rather than holding the words that stand in for one. What
+/// [`person_name`] falls back to is the name this device knows them by, theirs to show others,
+/// never theirs to edit.
+pub fn given_name(chosen: Option<String>) -> Option<String> {
+    chosen_name(chosen)
+}
+
 /// The display name `chosen` is, where it is one they gave: not blank, not the placeholder an
 /// unnamed identity carries, and one a workspace may take.
 fn chosen_name(chosen: Option<String>) -> Option<String> {

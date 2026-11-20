@@ -22,6 +22,9 @@ use super::{Mount, error, with_mount_quietly};
 pub(crate) struct Presence {
     /// How many times the board's contents had changed when it was last read.
     pub(crate) revision: u64,
+    /// This page's own name as the board last carried it: the person's own word, which they can
+    /// change without anyone else here moving.
+    pub(crate) own: String,
     /// Who was here, by publisher.
     pub(crate) seen: Vec<MemberId>,
     /// Who a caret is drawn for, by publisher: a member who stops selecting has theirs taken away.
@@ -276,8 +279,13 @@ impl Mount {
             .as_ref()
             .is_some_and(|desktop| desktop.here.borrow().own_label().is_none())
             && !view.own.label.trim().is_empty();
-        if view.revision != self.presence.revision || unnamed {
+        // The person's own name is theirs to change, and only theirs: nobody
+        // else moving leaves the board at its revision, so the name the frame
+        // draws is read again on its own, never left at the one they had.
+        let own = view.own.label.trim().to_owned();
+        if view.revision != self.presence.revision || unnamed || own != self.presence.own {
             self.presence.revision = view.revision;
+            own.clone_into(&mut self.presence.own);
             self.here_from(&view);
             self.names_from(&view);
         }

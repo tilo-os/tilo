@@ -36,6 +36,12 @@ pub trait LocalIdentitySource: Send + Sync {
     fn public_photo(&self) -> Option<([u8; 32], tilo_identity_client::ProfilePhoto)> {
         None
     }
+
+    /// Read the person's identity again now, for this process having just written it: a writer
+    /// must not go on reading the name it replaced while it waits for the watch that would have
+    /// said so. Nothing where reading fresh costs nothing, as it does for a source that carries
+    /// the identity.
+    fn refresh(&self) {}
 }
 
 /// Resolve a photo only for the exact canonical root public key. Account names
@@ -104,6 +110,15 @@ pub fn load() -> Option<LocalIdentity> {
     match installed {
         Some(source) => source.load(),
         None => default_load(),
+    }
+}
+
+/// Read the person's identity again now, where this process has just written it: the installed
+/// source is told, so the name it hands out next is the one kept, not the one it replaced.
+pub fn refresh() {
+    let installed = SOURCE.read_recover().clone();
+    if let Some(source) = installed {
+        source.refresh();
     }
 }
 

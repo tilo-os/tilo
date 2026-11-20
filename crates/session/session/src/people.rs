@@ -886,6 +886,12 @@ impl Panel {
             .as_ref()
             .map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
         let (name, identity) = own_face(&own, &self.device_person);
+        // The field is theirs to fill: what their identity carries until they name themselves is
+        // nobody's yet, so it asks rather than holding words to type over.
+        let given_name = crate::platform::person::given_name(
+            ui::local_identity::load().map(|identity| identity.display_name),
+        )
+        .unwrap_or_default();
         let devices = self.sync.as_ref().map_or_else(Vec::new, |sync| {
             let here = sync.here();
             let here = here.borrow();
@@ -897,6 +903,7 @@ impl Panel {
         let (red, green, blue) = own_live_rgb(self.sync.as_deref(), &identity);
         ProfileModel {
             name,
+            given_name: Some(given_name),
             identity,
             colour: Some(Color::from_rgb8(red, green, blue)),
             colour_id: settings_store::identity::COLOUR.get(),

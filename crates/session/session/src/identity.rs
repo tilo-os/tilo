@@ -48,6 +48,10 @@ impl LocalIdentitySource for WatchedLocalIdentity {
     fn public_photo(&self) -> Option<([u8; 32], tilo_identity_client::ProfilePhoto)> {
         self.0.get().photo.clone()
     }
+
+    fn refresh(&self) {
+        self.0.refresh();
+    }
 }
 
 /// The directory the person's identity record lives in.
@@ -172,7 +176,11 @@ pub(crate) fn person_in(workspace: &str, person: &str) -> String {
 /// and the people they work with see it from now on. Says what stopped it when it could not.
 pub(crate) fn rename_to(name: &str) -> Result<(), String> {
     let dir = tilo_identity::store::identity_dir_from_env().map_err(|error| error.to_string())?;
-    tilo_identity::store::rename_active_identity(&dir, name).map_err(|error| error.to_string())
+    tilo_identity::store::rename_active_identity(&dir, name).map_err(|error| error.to_string())?;
+    // This process wrote the identity: it reads it now, rather than going on with the name it
+    // replaced until the watch over the directory says so.
+    ui::local_identity::refresh();
+    Ok(())
 }
 
 /// Put a host offer to the person: one about who they are ([`HostAction::is_personal`], their name
