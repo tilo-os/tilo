@@ -70,6 +70,9 @@ fn subject(root: &Path) {
     }
     tree(&vm, "vm-only");
     tree(&app, "app-only");
+    // A system extension the host merged, mounted on its own: below every layer.
+    let extension = root.join("extension");
+    tree(&extension, "extension-only");
     // A signed/imported hierarchy may be group-writable in its readonly
     // presentation without making the protected backing mountpoint mutable.
     fs::set_permissions(app.join("opt"), fs::Permissions::from_mode(0o775)).unwrap();
@@ -110,13 +113,13 @@ fn subject(root: &Path) {
         "a third nested overlay must reproduce the kernel limit"
     );
     let views = root.join("views");
-    let layers = vec![vm.clone(), app.clone()];
+    let layers = vec![extension, vm.clone(), app.clone()];
     let view = prepare_from(&views, "proof", &layers, &boot).unwrap();
     assert_eq!(
         fs::read_to_string(view.join("usr/winner")).unwrap(),
         "app-only"
     );
-    for marker in ["base-only", "vm-only", "app-only"] {
+    for marker in ["base-only", "extension-only", "vm-only", "app-only"] {
         assert!(view.join("usr").join(marker).is_file());
     }
     protected(&view.join("usr"));
@@ -286,5 +289,31 @@ fn session_views_flatten_vm_and_account_layers_in_real_mount_namespace() {
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn the_view_carries_the_extensions_the_host_merged() {
+    let status = r#"[{"hierarchy":"/opt","extensions":"none","since":null},{"hierarchy":"/usr","extensions":["tilo-windows-compat"],"since":1}]"#;
+    let list = r#"[{"name":"tilo-windows-compat","type":"raw","path":"/var/lib/extensions/tilo-windows-compat.raw","time":1},{"name":"unmerged","type":"raw","path":"/var/lib/extensions/unmerged.raw","time":1}]"#;
+    assert_eq!(
+        merged(status, list).unwrap(),
+        [Extension {
+            name: "tilo-windows-compat".into(),
+            kind: ExtensionKind::Image,
+            path: PathBuf::from("/var/lib/extensions/tilo-windows-compat.raw"),
+        }]
+    );
+    let nothing = r#"[{"hierarchy":"/usr","extensions":"none","since":null}]"#;
+    assert!(merged(nothing, list).unwrap().is_empty());
+    let unlisted = r#"[{"hierarchy":"/usr","extensions":["gone"],"since":1}]"#;
+    assert!(merged(unlisted, list).is_err());
+    let escaping = r#"[{"hierarchy":"/usr","extensions":["../x"],"since":1}]"#;
+    assert!(
+        merged(
+            escaping,
+            r#"[{"name":"../x","type":"raw","path":"/x","time":1}]"#
+        )
+        .is_err()
     );
 }

@@ -1,7 +1,8 @@
 //! One readonly overlay per stand-in session, independent of the host sysext. A
 //! nonrecursive bind of the boot root retains its underlying `/usr` rather than the
 //! overmount `systemd-sysext` installs, so account services bind the combined view and
-//! never stack a third overlay over the host's `/usr`.
+//! never stack a third overlay over the host's `/usr`. The system extensions the host
+//! merged are mounted on their own and stacked under the account's layers instead.
 
 use std::ffi::CString;
 use std::fs;
@@ -261,7 +262,190 @@ pub(crate) fn prepare(
             "account views must be prepared in the service manager mount namespace".into(),
         ));
     }
-    prepare_from(root, account, layers, Path::new("/"))
+    let mut stacked = merged_extensions(root)?;
+    stacked.extend_from_slice(layers);
+    prepare_from(root, account, &stacked, Path::new("/"))
+}
+
+fn command(step: &str, program: &str, args: &[&std::ffi::OsStr]) -> Result<String, DaemonError> {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| DaemonError::Apply {
+            step: step.to_owned(),
+            detail: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(DaemonError::Apply {
+            step: step.to_owned(),
+            detail: format!(
+                "{}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The system extensions `systemd-sysext` merged into the host, each a tree of its own under
+/// `root`, lowest first. The view stacks on the boot root rather than on the merged `/usr` (a
+/// third overlay the kernel refuses), so without these an account would not see an extension the
+/// computer has installed, such as Windows support.
+fn merged_extensions(root: &Path) -> Result<Vec<PathBuf>, DaemonError> {
+    // Without systemd-sysext nothing can have merged.
+    if std::process::Command::new("systemd-sysext")
+        .arg("--version")
+        .output()
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    {
+        return Ok(Vec::new());
+    }
+    let status = command(
+        "read the merged system extensions",
+        "systemd-sysext",
+        &["status".as_ref(), "--json=short".as_ref()],
+    )?;
+    let list = command(
+        "read the merged system extensions",
+        "systemd-sysext",
+        &["list".as_ref(), "--json=short".as_ref()],
+    )?;
+    let extensions = merged(&status, &list)?;
+    let mut trees = Vec::with_capacity(extensions.len());
+    let mut kept = Vec::with_capacity(extensions.len());
+    for extension in extensions {
+        let tree = match extension.kind {
+            ExtensionKind::Directory => extension.path,
+            ExtensionKind::Image => {
+                let identity = fs::metadata(&extension.path).map_err(io)?;
+                let tree = root.join(format!(
+                    "extension-{}-{:x}-{:x}",
+                    extension.name,
+                    identity.ino(),
+                    identity.mtime()
+                ));
+                if !mounted(&tree)? {
+                    directory(&tree)?;
+                    command(
+                        "mount a system extension for the account view",
+                        "systemd-dissect",
+                        &[
+                            "--mount".as_ref(),
+                            "--read-only".as_ref(),
+                            extension.path.as_os_str(),
+                            tree.as_os_str(),
+                        ],
+                    )?;
+                }
+                kept.push(tree.clone());
+                tree
+            }
+        };
+        trees.push(tree);
+    }
+    release_replaced_extensions(root, &kept)?;
+    Ok(trees)
+}
+
+/// An extension image replaced since an earlier view was mounted is let go once nothing holds it:
+/// a running session keeps the tree it bound until it restarts.
+fn release_replaced_extensions(root: &Path, kept: &[PathBuf]) -> Result<(), DaemonError> {
+    for entry in fs::read_dir(root).map_err(io)? {
+        let path = entry.map_err(io)?.path();
+        let replaced = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("extension-"))
+            && !kept.contains(&path);
+        if replaced && mounted(&path)? {
+            let target = text(&path)?;
+            // SAFETY: The validated NUL-terminated path remains alive through umount.
+            if unsafe { libc::umount2(target.as_ptr(), libc::MNT_DETACH) } != 0 {
+                return Err(io(std::io::Error::last_os_error()));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ExtensionKind {
+    Image,
+    Directory,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Extension {
+    name: String,
+    kind: ExtensionKind,
+    path: PathBuf,
+}
+
+/// The extensions `systemd-sysext status` names as merged into any hierarchy, with the paths
+/// `systemd-sysext list` reads them from, in the order the status names them.
+fn merged(status: &str, list: &str) -> Result<Vec<Extension>, DaemonError> {
+    #[derive(serde::Deserialize)]
+    struct Hierarchy {
+        extensions: serde_json::Value,
+    }
+    #[derive(serde::Deserialize)]
+    struct Listed {
+        name: String,
+        #[serde(rename = "type")]
+        kind: String,
+        path: PathBuf,
+    }
+    let invalid = |detail: String| DaemonError::Apply {
+        step: "read the merged system extensions".into(),
+        detail,
+    };
+    let hierarchies: Vec<Hierarchy> =
+        serde_json::from_str(status).map_err(|error| invalid(error.to_string()))?;
+    let listed: Vec<Listed> =
+        serde_json::from_str(list).map_err(|error| invalid(error.to_string()))?;
+    let mut names = Vec::new();
+    for hierarchy in hierarchies {
+        // A hierarchy without extensions says so with the string "none".
+        let serde_json::Value::Array(merged) = hierarchy.extensions else {
+            continue;
+        };
+        for name in merged {
+            let name = name
+                .as_str()
+                .ok_or_else(|| invalid("an extension name is not text".into()))?;
+            if !names.iter().any(|known| known == name) {
+                names.push(name.to_owned());
+            }
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| {
+            if name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+                || name.starts_with('.')
+            {
+                return Err(invalid(format!("unsafe extension name {name:?}")));
+            }
+            let found = listed
+                .iter()
+                .find(|listed| listed.name == name)
+                .ok_or_else(|| invalid(format!("merged extension {name} is not listed")))?;
+            let kind = match found.kind.as_str() {
+                "raw" => ExtensionKind::Image,
+                "directory" | "subvolume" => ExtensionKind::Directory,
+                other => return Err(invalid(format!("extension {name} is a {other}"))),
+            };
+            Ok(Extension {
+                name,
+                kind,
+                path: found.path.clone(),
+            })
+        })
+        .collect()
 }
 
 fn prepare_from(
