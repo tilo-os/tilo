@@ -386,6 +386,7 @@ impl Presenter {
                 entry_id: &entry_id,
                 workspace_id: shown.workspace_id,
                 x11,
+                setup: false,
             })
             .transpose()
             .map_err(|error| failed(None, error))?;

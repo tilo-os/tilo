@@ -447,6 +447,9 @@ pub struct KeptProgram<'a> {
     pub workspace_id: &'a str,
     /// It shows its windows through X11: the keeper serves it an X11 display of its own as well.
     pub x11: bool,
+    /// It is a capsule's setup or uninstaller: it is done once it ends, and no later desktop
+    /// opens it again.
+    pub setup: bool,
 }
 
 /// The display a kept program shows on, and what starts the program behind it.

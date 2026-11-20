@@ -813,6 +813,7 @@ where
                 entry_id: started.entry_id,
                 workspace_id: started.workspace_id,
                 x11: crate::plan::shows_through_x11(route.runtime.layer),
+                setup: [INSTALLER_CONTROL, VENDOR_UNINSTALLER].contains(&program.id.as_str()),
             })
             .transpose()
             .map_err(PlanError::NoDisplay)?;

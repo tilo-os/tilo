@@ -102,6 +102,8 @@ enum Start {
     App(Launch),
     /// The entry the compatibility service opens, as the session saw its window here.
     Windows(String),
+    /// The entry of a capsule's setup or uninstaller: it ran once, and nothing opens it again.
+    Setup(String),
 }
 
 /// A window the person left open, and the app that opens it again.
@@ -549,11 +551,12 @@ impl Restore {
     /// what its windows announce themselves as, or, for a Windows program, by the entry it was
     /// asked as.
     fn kept_by(&self, saved: &Saved) -> bool {
-        if let Some(Start::Windows(entry)) = &saved.start {
-            let asked = format!("{}{entry}", crate::windows_compat::ASKED_PREFIX);
-            if self.kept_apps.contains(&asked) {
-                return true;
-            }
+        if let Some(Start::Windows(entry) | Start::Setup(entry)) = &saved.start
+            && self.kept_apps.iter().any(|kept| {
+                crate::windows_compat::asked_entry(kept).is_some_and(|(asked, _)| asked == entry)
+            })
+        {
+            return true;
         }
         let app = saved.app.as_str();
         self.kept_apps.iter().any(|kept| {
@@ -592,6 +595,9 @@ impl Restore {
     /// Ask for `saved` 's window into its own tab. True when an app was asked and its window may
     /// still come.
     fn open(&mut self, desktop: &ShellDesktop, apps: &Apps, saved: Saved) -> bool {
+        if ran_once(desktop, &saved) {
+            return false;
+        }
         let Some(start) = saved.start.clone() else {
             let note = not_installed(&saved.name);
             desktop.with_policy(|policy| policy.note_in_tab(saved.tab, &note));
@@ -649,6 +655,8 @@ impl Restore {
             // The service opens it on the same route a manager's launch takes: planned against
             // the workspace's sandbox and kept behind its own display. A refusal reaches the tab
             // on a later pass ([`Self::follow`]).
+            // Left by [`ran_once`]: nothing opens a setup again.
+            Start::Setup(_) => return false,
             Start::Windows(entry) => {
                 let started = apps.start_saved_windows_program(
                     entry,
@@ -684,6 +692,17 @@ impl Restore {
             }
         }
     }
+}
+
+/// Close `saved` when it is the tab of a capsule's setup or uninstaller that ended with the
+/// desktop before: such a program is done once it ends, so there is nothing to open in it again,
+/// and a tab saying it is not installed would be wrong. True when it was one.
+fn ran_once(desktop: &ShellDesktop, saved: &Saved) -> bool {
+    if !matches!(saved.start, Some(Start::Setup(_))) {
+        return false;
+    }
+    desktop.with_policy(|policy| policy.release_tab(saved.tab));
+    true
 }
 
 /// Whether every tab the keeper of `kept` named for its windows is laid out, waiting for a window.
@@ -788,7 +807,13 @@ fn waiting_in(tree: &Layout, wanted: impl Fn(WorkspaceId) -> bool) -> Vec<(Works
                     } else {
                         apps::launch_of(app_id).map(Start::App).or_else(|| {
                             crate::windows_compat::saved_entry(&workspace.id().to_string(), app_id)
-                                .map(Start::Windows)
+                                .map(|saved| {
+                                    if saved.setup {
+                                        Start::Setup(saved.entry)
+                                    } else {
+                                        Start::Windows(saved.entry)
+                                    }
+                                })
                         })
                     },
                     shows: tab.view.clone(),
@@ -803,11 +828,12 @@ fn waiting_in(tree: &Layout, wanted: impl Fn(WorkspaceId) -> bool) -> Vec<(Works
 /// windows announce themselves as, or, for a Windows program, by the entry it was asked as.
 #[cfg(target_os = "linux")]
 fn launch_by(launch: &tilo_app_launch::kept::KeptLaunch, saved: &Saved) -> bool {
-    if let Some(Start::Windows(entry)) = &saved.start
+    if let Some(Start::Windows(entry) | Start::Setup(entry)) = &saved.start
         && launch
             .asked
             .as_deref()
-            .is_some_and(|asked| asked == format!("{}{entry}", crate::windows_compat::ASKED_PREFIX))
+            .and_then(crate::windows_compat::asked_entry)
+            .is_some_and(|(asked, _)| asked == entry)
     {
         return true;
     }
@@ -846,10 +872,11 @@ fn did_not_open(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use tilo_desktop_model::{
-        Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+        Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
+        WorkspaceId,
     };
 
-    use super::Restore;
+    use super::{Restore, Saved, Start};
 
     /// A layout of one workspace whose one window group holds `tabs`.
     fn layout(tabs: Vec<Tab>) -> Layout {
@@ -1297,5 +1324,44 @@ mod tests {
         alone.kept = vec![kept(&[("w1", Some("41"))])];
         alone.kept_since = Some(std::time::Instant::now());
         assert_eq!(alone.claim_kept(&desktop), [50], "nothing to wait for");
+    }
+
+    /// A capsule's setup that ended with the desktop before leaves a saved tab its window stood
+    /// in: it ran once, so its tab closes rather than saying the setup is not installed. A
+    /// program's tab still waits to be opened again.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_setups_saved_tab_closes_and_a_programs_tab_stays() {
+        let windows = |app: &str| TileContent::LocalApp {
+            app_id: app.into(),
+            label: app.into(),
+            note: String::new(),
+        };
+        let tree = layout(vec![
+            window(41, windows("putty-setup.exe")),
+            window(42, windows("putty.exe")),
+        ]);
+        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
+        desktop.with_policy(|policy| policy.handle().replace_tree(tree));
+        let saved = |tab: TabId, app: &str, start: Start| Saved {
+            tab,
+            app: app.into(),
+            name: app.into(),
+            start: Some(start),
+            shows: String::new(),
+        };
+        assert!(super::ran_once(
+            &desktop,
+            &saved(41, "putty-setup.exe", Start::Setup("windows-1".into()))
+        ));
+        assert!(!super::ran_once(
+            &desktop,
+            &saved(42, "putty.exe", Start::Windows("windows-2".into()))
+        ));
+        assert_eq!(
+            tabs(&desktop),
+            [42],
+            "the setup's tab goes, the program's stays"
+        );
     }
 }

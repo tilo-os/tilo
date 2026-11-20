@@ -48,7 +48,7 @@ pub struct Display {
     reopenings: Mutex<Option<Reopenings>>,
     /// The window class of each Windows program's window, by workspace: what a saved tab of it
     /// reopens with. Read once, written through as programs show their windows.
-    identities: Mutex<Option<BTreeMap<(String, String), String>>>,
+    identities: Mutex<Option<BTreeMap<(String, String), SavedEntry>>>,
     /// A saved tab's program the service would not open, for the restore to say why in the tab.
     refused: Mutex<Vec<Refused>>,
     /// What each kept program's network proxy was last told to allow, by its control socket, so
@@ -86,6 +86,17 @@ struct SeenWindow {
     workspace: String,
     window: String,
     entry: String,
+    /// The program was a setup or an uninstaller: it ran once, and its tab opens nothing again.
+    #[serde(default)]
+    setup: bool,
+}
+
+/// The entry a saved tab of a Windows program's window opens, and whether that program was a
+/// setup, which no later desktop opens again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SavedEntry {
+    pub(crate) entry: String,
+    pub(crate) setup: bool,
 }
 
 /// Where the windows seen by class are kept: the login's data directory, beside the capsules.
@@ -95,13 +106,13 @@ fn identities_path() -> Option<PathBuf> {
 
 /// The entry a tab of the window class `app` in `workspace` reopens: the program whose window
 /// the person saw there, as this computer last knew it.
-pub(crate) fn saved_entry(workspace: &str, app: &str) -> Option<String> {
+pub(crate) fn saved_entry(workspace: &str, app: &str) -> Option<SavedEntry> {
     read_identities()?
         .get(&(workspace.to_owned(), app.to_owned()))
         .cloned()
 }
 
-fn read_identities() -> Option<BTreeMap<(String, String), String>> {
+fn read_identities() -> Option<BTreeMap<(String, String), SavedEntry>> {
     let path = identities_path()?;
     let text = std::fs::read_to_string(path).ok()?;
     let seen: Vec<SeenWindow> = serde_json::from_str(&text)
@@ -109,12 +120,18 @@ fn read_identities() -> Option<BTreeMap<(String, String), String>> {
         .ok()?;
     Some(
         seen.into_iter()
-            .map(|seen| ((seen.workspace, seen.window), seen.entry))
+            .map(|seen| {
+                let entry = SavedEntry {
+                    entry: seen.entry,
+                    setup: seen.setup,
+                };
+                ((seen.workspace, seen.window), entry)
+            })
             .collect(),
     )
 }
 
-fn write_identities(identities: &BTreeMap<(String, String), String>) {
+fn write_identities(identities: &BTreeMap<(String, String), SavedEntry>) {
     let Some(path) = identities_path() else {
         return;
     };
@@ -123,7 +140,8 @@ fn write_identities(identities: &BTreeMap<(String, String), String>) {
         .map(|((workspace, window), entry)| SeenWindow {
             workspace: workspace.clone(),
             window: window.clone(),
-            entry: entry.clone(),
+            entry: entry.entry.clone(),
+            setup: entry.setup,
         })
         .collect();
     let Ok(text) = serde_json::to_string(&seen) else {
@@ -249,21 +267,25 @@ impl Display {
     }
 
     /// The window class `app` a Windows program's window showed in `workspace` is its entry
-    /// `entry`: what a tab of that class there reopens. Written through, so a start after a
-    /// reboot finds it.
+    /// `entry`, a setup's when `setup` says so: what a tab of that class there reopens. Written
+    /// through, so a start after a reboot finds it.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the map is read and written under one hold, and the file written after it goes"
     )]
-    pub(crate) fn seen_window(&self, workspace: &str, app: &str, entry: &str) {
+    pub(crate) fn seen_window(&self, workspace: &str, app: &str, entry: &str, setup: bool) {
         let written = {
             let mut seen = self.identities.lock_recover();
             let seen = seen.get_or_insert_with(|| read_identities().unwrap_or_default());
             let key = (workspace.to_owned(), app.to_owned());
-            if seen.get(&key).is_some_and(|held| held.as_str() == entry) {
+            let entry = SavedEntry {
+                entry: entry.to_owned(),
+                setup,
+            };
+            if seen.get(&key) == Some(&entry) {
                 return;
             }
-            seen.insert(key, entry.to_owned());
+            seen.insert(key, entry);
             seen.clone()
         };
         // Written outside the lock: the file is not a pass's to wait for.
@@ -350,11 +372,7 @@ impl Display {
         launch: &tilo_app_launch::kept::KeptLaunch,
         end: Option<&tilo_app_launch::Event>,
     ) {
-        let Some(entry_id) = launch
-            .asked
-            .as_deref()
-            .and_then(|asked| asked.strip_prefix(ASKED_PREFIX))
-        else {
+        let Some((entry_id, _)) = launch.asked.as_deref().and_then(asked_entry) else {
             return;
         };
         let ending = Arc::new(Ending::default());
@@ -378,6 +396,19 @@ impl Display {
 /// What a launch of a Windows program is asked as: the prefix, then its entry in the manager's
 /// list. A later desktop reads the entry back from it.
 pub(crate) const ASKED_PREFIX: &str = "windows:";
+
+/// What a launch of a capsule's setup or uninstaller is asked as, in place of [`ASKED_PREFIX`]:
+/// it is done once it ends, so a tab its window stood in opens nothing again.
+pub(crate) const SETUP_PREFIX: &str = "windows-setup:";
+
+/// The entry a launch of a Windows program was asked as, and whether it is a setup: `None` for
+/// a launch of anything else.
+pub(crate) fn asked_entry(asked: &str) -> Option<(&str, bool)> {
+    asked
+        .strip_prefix(SETUP_PREFIX)
+        .map(|entry| (entry, true))
+        .or_else(|| asked.strip_prefix(ASKED_PREFIX).map(|entry| (entry, false)))
+}
 
 /// How the service reads an app's end: a program that failed carries the last of what it, or its
 /// sandbox, wrote on its error stream, which reached the keeper's log rather than the service.
@@ -447,7 +478,15 @@ impl LaunchDisplays for Display {
                 app_id: program.app_id.to_owned(),
                 title: program.display_name.to_owned(),
                 workspace: program.workspace_id.to_owned(),
-                asked: format!("{ASKED_PREFIX}{}", program.entry_id),
+                asked: format!(
+                    "{}{}",
+                    if program.setup {
+                        SETUP_PREFIX
+                    } else {
+                        ASKED_PREFIX
+                    },
+                    program.entry_id
+                ),
                 x11: program.x11,
             },
             kept: Arc::clone(&self.kept),
@@ -515,7 +554,7 @@ pub(crate) struct Launch {
     pub(crate) app_id: String,
     pub(crate) title: String,
     pub(crate) workspace: String,
-    /// What it is asked as ([`ASKED_PREFIX`]).
+    /// What it is asked as ([`ASKED_PREFIX`], or [`SETUP_PREFIX`] for a setup).
     pub(crate) asked: String,
     /// It shows its windows through X11, on a display its keeper serves.
     pub(crate) x11: bool,
@@ -780,4 +819,18 @@ pub(crate) fn serve(serving: Serving, layout: Arc<LayoutAuthority>) -> Result<Se
         })
         .map_err(|error| error.to_string())?;
     Ok(Served { _service: service })
+}
+
+#[cfg(test)]
+mod tests {
+    /// A setup's launch is asked as one, and both a setup's and a program's launch give back the
+    /// entry they were asked for; a launch of anything else names no entry.
+    #[test]
+    fn a_launch_says_its_entry_and_whether_it_is_a_setup() {
+        let setup = format!("{}windows-1", super::SETUP_PREFIX);
+        let program = format!("{}windows-2", super::ASKED_PREFIX);
+        assert_eq!(super::asked_entry(&setup), Some(("windows-1", true)));
+        assert_eq!(super::asked_entry(&program), Some(("windows-2", false)));
+        assert_eq!(super::asked_entry("so.tilo.notes"), None);
+    }
 }

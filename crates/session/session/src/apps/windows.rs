@@ -5,7 +5,7 @@
 use tilo_app_launch::{Kind, Planned};
 
 use super::Apps;
-use crate::windows_compat::{ASKED_PREFIX, Ask, Launch, Reopen};
+use crate::windows_compat::{Ask, Launch, Reopen, asked_entry};
 
 /// A saved tab's Windows program the service was asked for, and has not answered yet.
 pub(super) struct Waiting {
@@ -168,13 +168,13 @@ impl Apps {
         state
             .launched
             .values()
-            .any(|launch| launch.pid.is_some() && launch.asked.strip_prefix(ASKED_PREFIX).is_some())
+            .any(|launch| launch.pid.is_some() && asked_entry(&launch.asked).is_some())
     }
 
     /// Note the window class each Windows program's window showed under, so a saved tab of it
     /// reopens the same program after a reboot.
     pub(crate) fn note_windows_identities(&self, windows: &[(u32, String)]) {
-        let seen: Vec<(String, String, String)> = {
+        let seen: Vec<(String, String, String, bool)> = {
             let state = self.state.borrow();
             let Some(launches) = &state.launches else {
                 return;
@@ -192,10 +192,15 @@ impl Apps {
                 else {
                     continue;
                 };
-                let Some(entry) = launch.asked.strip_prefix(ASKED_PREFIX) else {
+                let Some((entry, setup)) = asked_entry(&launch.asked) else {
                     continue;
                 };
-                seen.push((launch.workspace.clone(), app.clone(), entry.to_owned()));
+                seen.push((
+                    launch.workspace.clone(),
+                    app.clone(),
+                    entry.to_owned(),
+                    setup,
+                ));
             }
             seen
         };
@@ -203,8 +208,8 @@ impl Apps {
             return;
         }
         let display = self.windows_display();
-        for (workspace, app, entry) in seen {
-            display.seen_window(&workspace, &app, &entry);
+        for (workspace, app, entry, setup) in seen {
+            display.seen_window(&workspace, &app, &entry, setup);
         }
     }
 

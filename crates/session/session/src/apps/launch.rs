@@ -218,7 +218,7 @@ impl Apps {
                 .map_or_else(|| event.app.clone(), |launch| launch.asked.clone());
             // A Windows program is asked by its entry in the manager's list, an identifier no
             // person reads; one that never showed a window never had a place on the shell.
-            let windows_program = asked.starts_with(crate::windows_compat::ASKED_PREFIX);
+            let windows_program = crate::windows_compat::asked_entry(&asked).is_some();
             if launch.is_none() {
                 tracing::warn!(app = %event.app, "a stopped app this session did not start");
             }
