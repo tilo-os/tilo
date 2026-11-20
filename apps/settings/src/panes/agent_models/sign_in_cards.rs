@@ -552,4 +552,120 @@ mod tests {
             Err(t("agent-preset-unknown"))
         );
     }
+
+    /// A card's sign-in offers: each effect id and the parameters it asks.
+    type CardOffers = Vec<(&'static str, Vec<&'static str>)>;
+
+    /// The sign-in each provider's card offers, by effect id with the
+    /// parameters the card asks.
+    fn card_offers() -> [(&'static str, CardOffers); 4] {
+        use ui::tilo_resource::Effect as _;
+
+        let id = |effect| SettingsEffect::from(effect).id();
+        let google = id(AgentModelsEffect::SignInWithGoogle { provider: None });
+        let chatgpt = id(AgentModelsEffect::SignInToProvider {
+            service: agent_sign_in::Service::ChatGpt.slug().into(),
+            provider: None,
+        });
+        let gemini = id(AgentModelsEffect::SetGeminiProvider {
+            provider: None,
+            project: String::new(),
+        });
+        let vertex = id(AgentModelsEffect::SetVertexProvider {
+            provider: None,
+            project: String::new(),
+            location: None,
+            model: None,
+        });
+        [
+            ("chatgpt", vec![(chatgpt, Vec::new())]),
+            (
+                "gemini",
+                vec![(google, Vec::new()), (gemini, vec!["project"])],
+            ),
+            (
+                "vertex",
+                vec![
+                    (google, Vec::new()),
+                    (vertex, vec!["project", "location", "model"]),
+                ],
+            ),
+            ("keyed", Vec::new()),
+        ]
+    }
+
+    /// A signed-in provider's row carries the sign-in its card shows: the
+    /// effect's declared label, bound to that provider, and asking only what
+    /// its card asks. A provider with a key offers no sign-in.
+    #[test]
+    fn each_signed_in_providers_row_offers_its_cards_sign_in() {
+        use agent_provider_config::ProviderConfig;
+
+        let mut model = model_over(mock(snapshot(None)));
+        let mut config = ProviderConfig::default();
+        config.upsert(agent_sign_in::new_profile(
+            agent_sign_in::Service::ChatGpt,
+            "chatgpt",
+        ));
+        config.upsert(ProviderProfile {
+            id: "gemini".into(),
+            ..ProviderProfile::google_gemini("gemini-project")
+        });
+        config.upsert(ProviderProfile {
+            id: "vertex".into(),
+            ..ProviderProfile::google_vertex("vertex-project", "us-central1", "gemini-2.5-pro")
+        });
+        config.upsert(ProviderProfile {
+            id: "keyed".into(),
+            ..agent_provider_config::presets::Preset::OPENAI.profile()
+        });
+        model.panel.offline_config = config;
+
+        let rows = model.panel.rows_with(sign_in_bindings);
+        for (provider, offered) in card_offers() {
+            let id = format!("settings.agent-provider:{provider}");
+            let row = rows
+                .iter()
+                .find(|row| row.id() == id)
+                .unwrap_or_else(|| panic!("{id} is a row"));
+            let sign_in: Vec<_> = row
+                .operations()
+                .iter()
+                .filter(|spec| {
+                    offered
+                        .iter()
+                        .any(|(effect, _)| *effect == spec.id.as_str())
+                })
+                .collect();
+            assert_eq!(
+                sign_in
+                    .iter()
+                    .map(|spec| spec.id.as_str())
+                    .collect::<Vec<_>>(),
+                offered
+                    .iter()
+                    .map(|(effect, _)| *effect)
+                    .collect::<Vec<_>>(),
+                "{provider}'s card's sign-in"
+            );
+            for (spec, (effect, asked)) in sign_in.iter().zip(&offered) {
+                let declared = SettingsEffect::spec(effect).expect("the sign-in is declared");
+                assert_eq!(spec.label, declared.label, "{effect}'s label");
+                assert_eq!(
+                    spec.params()
+                        .iter()
+                        .map(|param| &*param.name)
+                        .collect::<Vec<_>>(),
+                    asked.as_slice(),
+                    "{effect} asks what its card asks"
+                );
+                assert!(
+                    spec.bound().iter().any(|(name, value)| {
+                        name == "provider" && *value == serde_json::json!(provider)
+                    }),
+                    "{effect} is bound to {provider}"
+                );
+            }
+        }
+    }
 }
