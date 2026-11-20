@@ -8,7 +8,7 @@ use super::{
     invoke::{self, ENV},
     json, require, under,
 };
-use crate::account_admission::RECEIVING_DEPENDENCIES;
+use crate::account_admission::{RECEIVING_DEPENDENCIES, RECEIVING_SHELL};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -28,8 +28,6 @@ pub const RECEIVING_ENTRY: &str = "/usr/libexec/tilo-installer-receive-fixture/r
 pub const QUALIFICATION_SCRIPT: &str = "/usr/libexec/tilo-service-session-qualification.py";
 const BRIDGE: &str = "/usr/libexec/tilo-installer-receive-fixture/service_contract.py";
 const BRIDGE_OUTPUT_BOUND: usize = 16 * 1024;
-/// The one receiving Shell a canonical image carries, and the binary the receiving fixture drives.
-pub(crate) const SHELL: &str = "/usr/bin/tilo-session";
 /// Schema 1 candidate Browser/CEF proofs are never sufficient for service admission.
 pub const SERVICE_SCHEMA: i64 = 2;
 pub const ROUTE_KEYS: [&str; 7] = [
@@ -278,7 +276,7 @@ fn executable(path: &Path, limit: u64, message: &str) -> std::io::Result<()> {
 
 pub fn route_artifacts(root: &Path, shell_path: &str) -> std::io::Result<Map<String, Value>> {
     require(
-        shell_path == SHELL,
+        shell_path == RECEIVING_SHELL,
         "receiving Shell is not a canonical packaged receiver",
     )?;
     let shell = under(root, shell_path);
@@ -415,10 +413,10 @@ pub fn produce(run: Produce<'_, '_>) -> std::io::Result<Option<Value>> {
         return Ok(None);
     };
     require(
-        under(root, SHELL).exists(),
+        under(root, RECEIVING_SHELL).exists(),
         "expected the canonical receiving Shell",
     )?;
-    let proof = qualify_receiving_route(root, sdk, &candidate, SHELL, route_qualifier)?;
+    let proof = qualify_receiving_route(root, sdk, &candidate, RECEIVING_SHELL, route_qualifier)?;
     // Revalidate the signed Browser/CEF/SDK and the native qualifier after the real Shell ran.
     require(
         qualify_receivers(root, runner, sdk, false, Some(&candidate), qualifier)?.as_ref()
@@ -682,7 +680,7 @@ pub(super) fn qualify_receiving_route(
     qualifier: &mut RouteQualifier<'_>,
 ) -> std::io::Result<Value> {
     require(
-        shell_path == SHELL,
+        shell_path == RECEIVING_SHELL,
         "receiving Shell is not a canonical packaged receiver",
     )?;
     require(
@@ -769,7 +767,7 @@ pub fn check_trust(evidence: &Value) -> std::io::Result<()> {
         "unsafe installed service proof identity",
     )?;
     let shell = text("receiving_shell_path").unwrap_or_default();
-    require(shell == SHELL, "unsafe installed receiving Shell")?;
+    require(shell == RECEIVING_SHELL, "unsafe installed receiving Shell")?;
     account::image_owned(Path::new(shell))?;
     for relative in RECEIVING_DEPENDENCIES {
         account::image_owned(Path::new(relative))?;

@@ -298,7 +298,7 @@ tilo_test_env::scenario! {
         for key in service::ROUTE_KEYS {
             saved[key] = "ab".repeat(32).into();
         }
-        saved["receiving_shell_path"] = service::SHELL.into();
+        saved["receiving_shell_path"] = crate::account_admission::RECEIVING_SHELL.into();
         saved["receiving_dependencies"] = json!({});
         saved["receiving_python_path"] = "/usr/bin/python3".into();
         let error = service_produce(&runtime.root, Some(&saved), false).unwrap_err();
@@ -323,11 +323,10 @@ tilo_test_env::scenario! {
 pub(crate) fn route_contract_receipt() -> Vec<u8> {
     let temp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(temp.path()).unwrap();
-    for path in RECEIVING_DEPENDENCIES
-        .iter()
-        .copied()
-        .chain([service::SHELL, "/usr/bin/python3.13"])
-    {
+    for path in RECEIVING_DEPENDENCIES.iter().copied().chain([
+        crate::account_admission::RECEIVING_SHELL,
+        "/usr/bin/python3.13",
+    ]) {
         executable(
             &root.join(path.strip_prefix('/').unwrap()),
             format!("fixture: {path}").as_bytes(),
@@ -359,8 +358,14 @@ pub(crate) fn route_contract_receipt() -> Vec<u8> {
     // The default callback must never fabricate a successful receiving route.
     let mut native = service::native_route_qualify;
     assert!(
-        service::qualify_receiving_route(&root, &sdk, &candidate, service::SHELL, &mut native)
-            .is_err()
+        service::qualify_receiving_route(
+            &root,
+            &sdk,
+            &candidate,
+            crate::account_admission::RECEIVING_SHELL,
+            &mut native
+        )
+        .is_err()
     );
     let mut fixture = |command: &[OsString], env: &[(&str, OsString)], request: &[u8]| {
         assert_eq!(command[0], root.join("usr/bin/python3.13").into_os_string());
@@ -388,9 +393,14 @@ pub(crate) fn route_contract_receipt() -> Vec<u8> {
             "chat_destination_navigation_verified": true,
         })))
     };
-    receipt["service_sessions"] =
-        service::qualify_receiving_route(&root, &sdk, &candidate, service::SHELL, &mut fixture)
-            .unwrap();
+    receipt["service_sessions"] = service::qualify_receiving_route(
+        &root,
+        &sdk,
+        &candidate,
+        crate::account_admission::RECEIVING_SHELL,
+        &mut fixture,
+    )
+    .unwrap();
     let path = root.join("receipt.json");
     std::fs::write(&path, json::canonical_ascii(&receipt)).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();

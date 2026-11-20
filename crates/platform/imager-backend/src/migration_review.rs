@@ -762,6 +762,7 @@ fn held_file(
     )))
 }
 
+#[cfg(target_os = "linux")]
 impl InstallerOwnership {
     fn review(home: &Path) -> io::Result<Option<Arc<Self>>> {
         use cap_fs_ext::MetadataExt;

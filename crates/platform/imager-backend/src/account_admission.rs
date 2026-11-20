@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, io};
 
+/// The one receiving Shell a canonical image carries, and the binary the receiving fixture drives.
+pub const RECEIVING_SHELL: &str = "/usr/bin/tilo-session";
+
 /// The fixed measured Python receiving closure of an installed service receiver.
 pub const RECEIVING_DEPENDENCIES: &[&str] = &[
     "/usr/libexec/tilo-installer-receive-fixture/receive.py",
@@ -162,7 +165,7 @@ impl ServiceConsumerCapability {
                         })
                 })
             || self.receiving_route_qualification_sha256 != self.measured_closure_hash()?
-            || self.receiving_shell_path != crate::installed_consumers::SHELL
+            || self.receiving_shell_path != RECEIVING_SHELL
             || (self.protocol == 2 && self.origin_storage_qualification_sha256.is_none())
             || self
                 .origin_storage_qualification_sha256

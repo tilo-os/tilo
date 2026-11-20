@@ -25,6 +25,7 @@ pub mod flatpak_transfer;
 pub mod helper_arguments;
 #[cfg(target_os = "linux")]
 pub mod home_capture;
+#[cfg(target_os = "linux")]
 pub mod home_capture_helper;
 #[cfg(target_os = "linux")]
 pub mod installed_copy;
