@@ -282,3 +282,126 @@ async fn a_person_with_only_a_page_manages_models_mail_and_vault_on_the_host() {
     .await
     .expect("the server removes it");
 }
+
+/// The accounts a follow of `invocation` says the person has now: their addresses, or `None`
+/// while it has said nothing yet.
+fn followed_addresses(
+    session: &DesktopSession,
+    caller: &Caller,
+    invocation: &InvocationId,
+) -> Option<Vec<String>> {
+    let state = session.observe(caller, invocation)?;
+    let tilo_actions::InvocationUpdate::Item { value, .. } = state.update else {
+        return None;
+    };
+    let accounts = value["accounts"].as_array()?.clone();
+    Some(
+        accounts
+            .iter()
+            .filter_map(|account| account["address"].as_str().map(str::to_owned))
+            .collect(),
+    )
+}
+
+/// Wait on the page's follow of `invocation` until it says `want`, as a Settings window waits:
+/// each wait held by the server until the accounts move, never a poll.
+async fn follow_until(
+    session: &DesktopSession,
+    caller: &Caller,
+    invocation: &InvocationId,
+    want: &[&str],
+) {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        // A page reads only what the server last said while it follows: one that stopped
+        // following would read the same listing forever.
+        let change = session
+            .next_change(caller, invocation)
+            .unwrap_or_else(|| panic!("the page stopped following the accounts before {want:?}"));
+        let now = followed_addresses(session, caller, invocation);
+        if now.as_deref().is_some_and(|now| now == want) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "never said {want:?}: {now:?}");
+        tilo_test_env::within("the server says the accounts moved", change).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_following_the_accounts_hears_one_added_and_removed_elsewhere() {
+    let hosted = Hosted::start().await;
+    hosted
+        .workspaces
+        .sign_in_accounts_through(|_, _| Ok("signed in".into()));
+    let session = page_desktop(&hosted);
+    let person = hex::encode(hosted.root.verifying_key().to_bytes());
+    let me = Caller::local_person(person).in_workspace(hosted.workspace.clone());
+    let mail = |action| person_accounts::target(action);
+
+    // Settings > Accounts follows them, as its pane does.
+    let watch = InvocationId::new();
+    let receipt = tilo_test_env::within(
+        "the server admits the follow",
+        session.invoke(
+            &me,
+            InvokeRequest {
+                on_behalf_of: None,
+                invocation: watch,
+                target: mail(person_accounts::WATCH),
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: None,
+                appearance: None,
+            },
+        ),
+    )
+    .await
+    .expect("the session answers")
+    .expect("the server follows the accounts");
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Accepted),
+        "a follow stays open: {receipt:?}"
+    );
+    follow_until(&session, &me, &watch, &[]).await;
+
+    // The person takes a while to fill in the form (or to sign in in another tab): the server
+    // holds the follow's wait for longer than the page waits for any one answer.
+    let idle = session
+        .next_change(&me, &watch)
+        .expect("the page follows the accounts");
+    let unanswered = tilo_session_actions::REPLY_DEADLINE.saturating_add(Duration::from_secs(5));
+    tokio::time::timeout(unanswered, idle)
+        .await
+        .expect("an ask left unanswered past the deadline wakes its waiter");
+
+    // Another call adds one: the follow hears it without the page asking again.
+    let added = asks(
+        &session,
+        &me,
+        mail(person_accounts::ADD_MAIL),
+        serde_json::json!({
+            "address": "ada@example.test",
+            "displayName": "Ada",
+            "incomingHost": "imap.provider.test",
+            "outgoingHost": "smtp.provider.test",
+            "password": PASSWORD,
+        }),
+    )
+    .await
+    .expect("the server keeps the account");
+    follow_until(&session, &me, &watch, &["ada@example.test"]).await;
+
+    // And hears it go.
+    let id = added["id"].as_str().expect("its id").to_owned();
+    asks(
+        &session,
+        &me,
+        mail(person_accounts::REMOVE),
+        serde_json::json!({"account": id}),
+    )
+    .await
+    .expect("the server removes it");
+    follow_until(&session, &me, &watch, &[]).await;
+}

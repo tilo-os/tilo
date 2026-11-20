@@ -1707,6 +1707,7 @@ reason = "The network host names of a mail account's two servers, as Thunderbird
 words = ["host"]
 identifiers = ["host", "imap_host", "smtp_host", "incomingHost", "outgoingHost", "IMAP_HOST", "SMTP_HOST", "HOST", "ask_host"]
 paths = [
+    "crates/agent/agent-session/tests/workspace_actions/hosted_settings_from_page.rs",
     "crates/agent/agent-session/tests/workspace_actions/hosted_mail_account_migrate.rs",
     "crates/platform/migration-sources/examples/sample_thunderbird_profile.rs",
     "crates/platform/migration-sources/src/thunderbird/fixture.rs",

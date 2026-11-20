@@ -202,7 +202,9 @@ type Answered<T> = Result<T, ActionCallError>;
 struct Waiting {
     catalogues: HashMap<u64, Asked<Answered<CataloguePage>>>,
     receipts: HashMap<InvocationId, Vec<Asked<Answered<InvocationReceipt>>>>,
-    updates: HashMap<InvocationId, Vec<Asked<Option<InvocationState>>>>,
+    /// What the device said of an invocation (`None`: nothing this caller may see), or why it
+    /// said nothing.
+    updates: HashMap<InvocationId, Vec<Asked<Answered<Option<InvocationState>>>>>,
     cancels: HashMap<InvocationId, Vec<Asked<Answered<()>>>>,
     follows: HashMap<InvocationId, Followed>,
     /// The followed invocations, oldest first: the ones that ended give way once there are more
@@ -281,7 +283,7 @@ impl Waiting {
             give.push(giving(asked, Err(error.clone())));
         }
         for asked in self.updates.drain().flat_map(|(_, all)| all) {
-            give.push(giving(asked, None));
+            give.push(giving(asked, Err(error.clone())));
         }
         for asked in self.cancels.drain().flat_map(|(_, all)| all) {
             give.push(giving(asked, Err(error.clone())));
@@ -322,7 +324,7 @@ impl Waiting {
             give.push(giving(asked, Err(late())));
         }
         for asked in split(&mut self.updates, now) {
-            give.push(giving(asked, None));
+            give.push(giving(asked, Err(late())));
         }
         for asked in split(&mut self.cancels, now) {
             give.push(giving(asked, Err(late())));
@@ -553,7 +555,7 @@ impl Waiting {
             followed.state = state.clone();
         }
         for asked in self.updates.remove(&invocation).unwrap_or_default() {
-            give.push(giving(asked, state.cloned()));
+            give.push(giving(asked, Ok(state.cloned())));
         }
     }
 }
@@ -764,6 +766,35 @@ impl SessionActions {
         Self(inner)
     }
 
+    /// Ask the device how the followed invocation `id` stands, unless an ask for it is out
+    /// already: its answer becomes what is kept of it ([`Waiting::update`]).
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn ask_again(&self, id: &InvocationId) {
+        let (answer, _answered) = pending();
+        let message = RemoteActionMessage::Observe {
+            invocation: *id,
+            wait_ms: None,
+            seen: None,
+        };
+        {
+            let mut waiting = self.0.waiting.lock_recover();
+            if waiting.updates.contains_key(id) {
+                return;
+            }
+            waiting
+                .updates
+                .entry(*id)
+                .or_default()
+                .push(Asked::new(answer, message.clone()));
+        }
+        self.0.ask(message, |error| {
+            let asked = self.0.waiting.lock_recover().updates.remove(id);
+            for asked in asked.unwrap_or_default() {
+                asked.answer.complete(Err(error.clone()));
+            }
+        });
+    }
+
     /// The device's answer to observing `id`, waited for: callers off a page may block.
     #[cfg(not(target_arch = "wasm32"))]
     fn ask_state(&self, id: &InvocationId) -> Option<InvocationState> {
@@ -789,6 +820,7 @@ impl SessionActions {
             .wait_timeout(REPLY_DEADLINE)
             .ok()
             .flatten()
+            .and_then(Result::ok)
             .flatten()
     }
 }
@@ -963,8 +995,17 @@ impl Inner {
         }
     }
 
-    /// What the held ask for `id` was answered: keep it, and wake whoever waits.
-    fn followed(&self, id: InvocationId, seen: UpdateMark, state: Option<InvocationState>) {
+    /// What the held ask for `id` was answered: keep it, and wake whoever waits. An ask the
+    /// device left unanswered (its wait outlived the reply deadline, or the session dropped)
+    /// says nothing of whether it holds: the next wait asks it again. A follow that stopped
+    /// holding there is read from what the device last said on a page, so nothing would move
+    /// it again.
+    fn followed(
+        &self,
+        id: InvocationId,
+        seen: UpdateMark,
+        answer: Answered<Option<InvocationState>>,
+    ) {
         let mut waiting = self.waiting.lock_recover();
         let Some(followed) = waiting.follows.get_mut(&id) else {
             return;
@@ -975,15 +1016,16 @@ impl Inner {
             .asked
             .take()
             .is_some_and(|sent| sent.elapsed() < HELD);
-        match state {
-            Some(state) => {
+        match answer {
+            Ok(Some(state)) => {
                 if quick && UpdateMark::of(&state.update) == seen {
                     followed.holds = false;
                 }
                 followed.state = state;
             }
-            // Unreachable, or no longer the caller's: nothing to hold.
-            None => followed.holds = false,
+            // No longer the caller's: nothing to hold.
+            Ok(None) => followed.holds = false,
+            Err(_) => {}
         }
         let waiters = std::mem::take(&mut followed.waiters);
         drop(waiting);
@@ -1165,8 +1207,15 @@ impl ActionProvider for SessionActions {
             });
         match kept {
             Some((true, state)) => Some(state),
+            // A page cannot wait for the device's answer: it reads what the device last said, and
+            // asks it again so the next look reads what it answers.
             #[cfg(target_arch = "wasm32")]
-            kept => kept.map(|(_, state)| state),
+            kept => {
+                if kept.is_some() {
+                    self.ask_again(id);
+                }
+                kept.map(|(_, state)| state)
+            }
             #[cfg(not(target_arch = "wasm32"))]
             _ => self.ask_state(id),
         }
@@ -1204,13 +1253,17 @@ impl ActionProvider for SessionActions {
         let invocation = *id;
         answered.then(move |state| {
             if let Some(inner) = inner.upgrade() {
-                inner.followed(invocation, seen, state.flatten());
+                inner.followed(
+                    invocation,
+                    seen,
+                    state.unwrap_or(Err(ActionCallError::Unanswered)),
+                );
             }
         });
-        self.0.ask(message, |_| {
+        self.0.ask(message, |error| {
             let asked = self.0.waiting.lock_recover().updates.remove(&invocation);
             for asked in asked.unwrap_or_default() {
-                asked.answer.complete(None);
+                asked.answer.complete(Err(error.clone()));
             }
         });
         Some(change)
@@ -1775,6 +1828,105 @@ mod tests {
             1,
             "only the held ask went to the device"
         );
+    }
+
+    /// A held ask the device leaves unanswered past the reply deadline (a live read of something
+    /// nobody changed for a while) is asked again, and the follow keeps holding: what moves after
+    /// it still reaches the follower, which a page reads only from what the device said.
+    #[test]
+    fn a_held_ask_left_unanswered_past_the_deadline_is_asked_again() {
+        let invocation = InvocationId::new();
+        let device = Device::new(invocation, true);
+        let actions = SessionActions::new(
+            Arc::clone(&device) as Arc<dyn RemoteSession>,
+            WorkspaceId::from_u128(1),
+            DEVICE,
+        );
+        accepted(&actions, invocation);
+        let change = actions
+            .next_change(&caller(), &invocation)
+            .expect("an accepted invocation is followed");
+
+        // Nothing moved for longer than the device is waited for.
+        let mut give = Vec::new();
+        let past = tilo_clock::now()
+            .checked_add(REPLY_DEADLINE.saturating_add(Duration::from_secs(1)))
+            .expect("a later instant");
+        actions.0.waiting.lock_recover().expire(past, &mut give);
+        for give in give {
+            give();
+        }
+        assert_eq!(
+            change.wait_timeout(Duration::from_secs(5)).ok().flatten(),
+            Some(()),
+            "its waiter looks again"
+        );
+        let change = actions
+            .next_change(&caller(), &invocation)
+            .expect("the follow still holds");
+        assert_eq!(
+            *device.observed.lock_recover(),
+            2,
+            "the device is asked again"
+        );
+
+        // Then it moves: the follower hears it.
+        let moved = InvocationUpdate::Item {
+            invocation,
+            sequence: 2,
+            value: serde_json::json!({"accounts": ["ada@example.test"]}),
+        };
+        *device.state.lock_recover() = moved.clone();
+        device.say(RemoteActionMessage::Update {
+            invocation,
+            state: Some(InvocationState::new(invocation, moved.clone())),
+        });
+        assert_eq!(
+            change.wait_timeout(Duration::from_secs(5)).ok().flatten(),
+            Some(()),
+            "the move wakes the follower"
+        );
+        let state = actions.observe(&caller(), &invocation).expect("a state");
+        assert_eq!(state.update, moved);
+    }
+
+    /// A follow of a device that does not hold is read, on a page, from what the device last
+    /// said: each look asks it again, so what it said next is what the following look reads.
+    #[test]
+    fn a_follow_that_does_not_hold_keeps_what_the_device_says_next() {
+        let invocation = InvocationId::new();
+        let device = Device::new(invocation, false);
+        let actions = SessionActions::new(
+            Arc::clone(&device) as Arc<dyn RemoteSession>,
+            WorkspaceId::from_u128(1),
+            DEVICE,
+        );
+        accepted(&actions, invocation);
+        // Answered at once with nothing new: it does not hold.
+        let change = actions
+            .next_change(&caller(), &invocation)
+            .expect("an accepted invocation is followed");
+        assert_eq!(
+            change.wait_timeout(Duration::from_secs(5)).ok().flatten(),
+            Some(())
+        );
+        assert!(actions.next_change(&caller(), &invocation).is_none());
+
+        let moved = InvocationUpdate::Item {
+            invocation,
+            sequence: 1,
+            value: serde_json::json!({"accounts": []}),
+        };
+        *device.state.lock_recover() = moved.clone();
+        actions.ask_again(&invocation);
+        let kept = actions
+            .0
+            .waiting
+            .lock_recover()
+            .follows
+            .get(&invocation)
+            .map(|followed| followed.state.update.clone());
+        assert_eq!(kept, Some(moved), "what the device said is kept");
     }
 
     /// A caller that gave up on its answer leaves nothing behind: its ask is let go at the next
