@@ -43,20 +43,25 @@ done
 
 # The hosted guest is the tenant's own Linux, not Tilo's OS: its compilers come
 # with OpenSSL's headers (Fedora's openssl-devel, Debian's libssl-dev before)
-# so the crates and packages a tenant builds find them.
+# so the crates and packages a tenant builds find them. The bootc-builder stage
+# installs the frozen snapshot's OpenSSL headers to rebuild the base's own bootc
+# release, of which only the binary ships; Containerfile.builder builds the
+# development image a stack builds in, which no one installs as Tilo.
 manifest_hits="$(find "$repo/os" "$repo/.forgejo" -type f \
-    \( -name 'Containerfile*' -o -name '*.yml' -o -name '*.yaml' \) -print0 \
+    \( -name 'Containerfile*' -o -name '*.yml' -o -name '*.yaml' \) \
+    ! -name 'Containerfile.builder' -print0 \
   | xargs -0 -r rg -n -i '\b(openssl(-devel)?|sbsigntools)\b' \
   | grep -Ev '(^|:)[0-9]+:[[:space:]]*#|rpm -q|microdnf remove|dnf remove|libssl|libcrypto' \
   | grep -Ev '^.*/os/Containerfile\.hosted-guest:[0-9]+:[[:space:]]+openssl-devel \\$' \
   | grep -Ev '^.*/os/Containerfile:[0-9]+:RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/run/tilo-build-tools/openssl,ro \\$' \
+  | grep -Ev '^.*/os/Containerfile:[0-9]+:[[:space:]]+dnf install -y --setopt=reposdir=/repo ostree-devel libzstd-devel openssl-devel patch \\$' \
   | grep -Ev ': *&& (! )?printf '"'"'%s\\n'"'"' "\$installed" \| (awk '"'"'/\^\([[:alnum:]_|-]+\)\$/'"'"'|grep -Eq '"'"'\^\([[:alnum:]_|-]+\)\$'"'"') *\\?$' \
   || true)"
 if [ -n "$manifest_hits" ]; then
   printf '%s\n' "$manifest_hits" >&2
   bad 'a build manifest or workflow actively installs OpenSSL/sbsigntools'
 else
-  ok 'runtime manifests and workflows avoid OpenSSL/sbsigntools outside the isolated upstream bootc builder'
+  ok 'runtime manifests and workflows avoid OpenSSL/sbsigntools outside the isolated upstream bootc builder and the development builder image'
 fi
 
 trust_tool_bind="$(grep -Fxc \
@@ -304,11 +309,16 @@ for manifest in \
   "$repo/os/containers/tilo-server/Containerfile" \
   "$repo/dist/arch/PKGBUILD" \
   "$repo/dist/nix/package.nix"; do
+  # grep reads every line, unlike grep -q: under pipefail, a -q that finds a
+  # match leaves sed writing into a closed pipe, and the pipeline then reports
+  # the failure a match should raise. The bootc-builder stage's snapshot
+  # OpenSSL headers are deleted as in the scan above.
   if sed -e '/^[[:space:]]*#/d' \
          -e "/rpm -q --qf.*openssl sbsigntools efitools mokutil/d" \
          -e '/microdnf remove.*openssl-libs/d' \
-         -e '/name.*libssl.*libcrypto.*openssl/d' "$manifest" \
-      | grep -Eqi '(^|[[:space:]\\,])(openssl(-devel)?|sbsigntools)([[:space:]\\,]|$)'; then
+         -e '/name.*libssl.*libcrypto.*openssl/d' \
+         -e '/reposdir=\/repo ostree-devel libzstd-devel openssl-devel patch/d' "$manifest" \
+      | grep -Ei '(^|[[:space:]\\,])(openssl(-devel)?|sbsigntools)([[:space:]\\,]|$)' >/dev/null; then
     bad "runtime/package manifest still requests OpenSSL/sbsigntools: ${manifest#"$repo/"}"
   fi
 done
