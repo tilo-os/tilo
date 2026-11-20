@@ -70,9 +70,13 @@ class CatalogueOffersIt(unittest.TestCase):
 
 
     def test_planner_probes_exactly_the_paths_the_sysext_provides(self):
-        for host in ("PROTON_HOST", "STEAM_RUNTIME_HOST", "X86_ROOTFS_HOST"):
-            value = re.search(rf'{host}: &str =\s*"([^"]+)"', PLAN).group(1)
-            self.assertTrue(value.startswith("/usr/lib/tilo/windows-runners"), host)
+        # Every host path the planner names must live under the tree the
+        # sysext overlays. Proton runs on the system's libraries, so the Steam
+        # runtime is packed for the game path but no host constant names it.
+        hosts = dict(re.findall(r'(?m)^const ([A-Z0-9_]+_HOST): &str = "([^"]+)";', PLAN))
+        self.assertEqual(sorted(hosts), ["PROTON_HOST", "X86_ROOTFS_HOST"])
+        for name, value in hosts.items():
+            self.assertTrue(value.startswith("/usr/lib/tilo/windows-runners/"), f"{name} = {value}")
         self.assertIn("WindowsSupportNotInstalled", PLAN)
 
 
