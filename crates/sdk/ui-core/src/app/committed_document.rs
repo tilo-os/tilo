@@ -24,7 +24,10 @@ impl App {
         let pending = std::mem::take(&mut self.committed_documents);
         let mut deferred = false;
         for (route, read) in pending {
-            if !read.is_current() {
+            // A read delivered again after it was taken in brings nothing new: its whole
+            // document was let go once merged, so taking it again would refuse it and tell the
+            // window its history cannot be read here.
+            if !read.is_current() || read.was_applied() {
                 continue;
             }
             let _phase = tilo_resource::profiling::Phase::start("committed.take");

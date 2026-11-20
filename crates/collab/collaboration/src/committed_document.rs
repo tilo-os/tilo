@@ -682,7 +682,8 @@ impl CommittedDocument {
             refused: Arc::new(AtomicBool::new(false)),
         }
     }
-    #[cfg(any(test, feature = "test-support"))]
+    /// Whether the owner took this read in ([`Self::applied`]): the same
+    /// read delivered again brings nothing new.
     pub fn was_applied(&self) -> bool {
         self.merged.load(Ordering::Acquire)
     }
