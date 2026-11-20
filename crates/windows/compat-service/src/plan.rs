@@ -68,6 +68,9 @@ pub struct RuntimeImage {
     sandbox_entrypoint: PathBuf,
     /// What the entrypoint is given before the program: the script it starts and its verb.
     entry_arguments: Vec<String>,
+    /// Single files outside its binds the runtime reads, which Landlock lets it read and nothing
+    /// beside them.
+    reads: Vec<PathBuf>,
     environment: Vec<(&'static str, String)>,
     needs_nested_runtime: bool,
     runtime_lock_mount: Option<PathBuf>,
@@ -275,6 +278,7 @@ impl SystemRuntimeRegistry {
                 ],
                 sandbox_entrypoint: PathBuf::from("/usr/bin/wine"),
                 entry_arguments: Vec::new(),
+                reads: Vec::new(),
                 environment: Vec::new(),
                 needs_nested_runtime: false,
                 runtime_lock_mount: None,
@@ -324,8 +328,17 @@ fn proton_on_the_system() -> RuntimeImage {
             format!("{PROTON_MOUNT}/proton"),
             "waitforexitandrun".to_string(),
         ],
+        // The kernel limits Proton's script and its fixes check before a start, to warn when
+        // one is low: without them the check ends the start.
+        reads: vec![
+            PathBuf::from("/proc/sys/fs/file-max"),
+            PathBuf::from("/proc/sys/vm/max_map_count"),
+        ],
         environment: vec![
-            ("PROTON_USE_NTSYNC", "1".to_string()),
+            // Proton's esync and fsync keep their shared memory in /dev/shm, which the capsule
+            // does not let a program write: Wine's own server-side synchronization works there.
+            ("PROTON_NO_ESYNC", "1".to_string()),
+            ("PROTON_NO_FSYNC", "1".to_string()),
             // A 32-bit part of a program goes through Wine's own WoW64, which needs no 32-bit
             // system libraries: the image carries none.
             ("PROTON_USE_WOW64", "1".to_string()),
@@ -370,6 +383,7 @@ fn proton_through_steam_runtime() -> RuntimeImage {
             ("PROTON_USE_NTSYNC", "1".to_string()),
         ],
         entry_arguments: Vec::new(),
+        reads: Vec::new(),
         needs_nested_runtime: true,
         translated: false,
         runtime_lock_mount: Some(
@@ -857,6 +871,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             launcher::profile::landlock_ro_paths(network == NetworkShape::Unrestricted);
         let mut landlock_write = launcher::profile::landlock_rw_device_paths();
         landlock_read.extend(runtime.binds.iter().map(|binding| binding.sandbox.clone()));
+        landlock_read.extend(runtime.reads.iter().cloned());
         if runtime.translated {
             // FEXServer and its children enumerate their own descriptors.
             // /proc/self resolved by this launcher's shim would name only the
@@ -1486,7 +1501,11 @@ mod tests {
                     || path.ends_with("tilo-umu-run")
                     || path == Path::new("/usr/bin/bwrap")
             }));
-            for variable in [("PROTON_USE_NTSYNC", "1"), ("PROTON_USE_WOW64", "1")] {
+            for variable in [
+                ("PROTON_NO_ESYNC", "1"),
+                ("PROTON_NO_FSYNC", "1"),
+                ("PROTON_USE_WOW64", "1"),
+            ] {
                 assert!(
                     proton
                         .environment
@@ -1502,6 +1521,13 @@ mod tests {
             assert!(!proton.needs_nested_runtime);
             assert_eq!(proton.runtime_lock_mount, None);
             assert_eq!(proton.seccomp_profile(), Some(SeccompProfile::TiloJit));
+            assert_eq!(
+                proton.reads,
+                [
+                    PathBuf::from("/proc/sys/fs/file-max"),
+                    PathBuf::from("/proc/sys/vm/max_map_count")
+                ]
+            );
 
             // ARM translates x86 Proton through UMU and the Steam runtime.
             let translated = SystemRuntimeRegistry::resolve_for_host(
@@ -2492,7 +2518,23 @@ mod tests {
                 command
                     .bwrap_argv
                     .windows(3)
-                    .any(|args| { args == ["--setenv", "PROTON_USE_NTSYNC", "1"] })
+                    .any(|args| { args == ["--setenv", "PROTON_NO_FSYNC", "1"] })
+            );
+            // Proton's script reads two kernel limits; Landlock lets it read those files alone,
+            // never the rest of the capsule's /proc.
+            for read in ["/proc/sys/fs/file-max", "/proc/sys/vm/max_map_count"] {
+                assert!(
+                    command
+                        .bwrap_argv
+                        .windows(2)
+                        .any(|args| args == ["--ro", read])
+                );
+            }
+            assert!(
+                !command
+                    .bwrap_argv
+                    .windows(2)
+                    .any(|args| args == ["--ro", "/proc"])
             );
             // Proton's Wine is held to the same system calls as Wine's.
             assert_eq!(command.seccomp_profile, Some(SeccompProfile::TiloJit));
