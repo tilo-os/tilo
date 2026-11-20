@@ -277,6 +277,7 @@ identifiers = ["APP_HOST_SERVICE"]
 reason = "An email's subject line."
 words = ["subject", "principal"]
 paths = [
+    "crates/agent/agent-session/tests/workspace_actions/mail_delivery_rate.rs",
     "apps/mail/*",
     "apps/tl/mail/*",
     "crates/platform/mail-session/*",

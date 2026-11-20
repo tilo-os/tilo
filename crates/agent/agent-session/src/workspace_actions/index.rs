@@ -18,7 +18,7 @@
 //! requests and asks for the next. A workspace's folder is small enough to
 //! read here, in the short pass [`Worker::warm_files`] takes.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 
 use super::{Duration, Instant, Ordering, Worker, WorkspaceDocuments, WorkspaceId};
@@ -40,6 +40,13 @@ pub(super) const WARM_POLL: Duration = Duration::from_millis(15);
 /// served, and few enough that what it reads is taken soon after.
 const WARM_IN_FLIGHT: usize = 4;
 
+/// How many times as long as a document's last read the index waits before reading it again:
+/// a document written over and over (the part of a mailbox an import writes every message
+/// into) is read whole each time, and read after every write it kept the index's thread busy
+/// for nothing but reads a newer write made stale at once. Paced so, the index spends at most a
+/// fifth of its time on any one document, and still reads it again soon after it last moved.
+const READ_PACE: u32 = 4;
+
 /// One document to read for the index: its route, the app that publishes its entries, and
 /// which workspace it belongs to.
 struct WarmJob {
@@ -60,6 +67,8 @@ struct WarmRead {
     moved: u64,
     /// The entries its app publishes, or why none were read.
     entries: Option<Vec<IndexEntry>>,
+    /// How long reading it took.
+    took: Duration,
 }
 
 /// The thread that reads documents for the search index, off the serving thread.
@@ -68,6 +77,8 @@ pub(super) struct Warm {
     read: mpsc::Receiver<WarmRead>,
     /// The documents asked for and not yet read: each is asked for once.
     in_flight: HashSet<DocumentRoute>,
+    /// When each document read lately may be read again ([`READ_PACE`]).
+    paced: HashMap<DocumentRoute, Instant>,
 }
 
 impl Warm {
@@ -91,6 +102,7 @@ impl Warm {
             jobs,
             read: reading,
             in_flight: HashSet::new(),
+            paced: HashMap::new(),
         }
     }
 }
@@ -100,6 +112,7 @@ impl Warm {
 fn warm(jobs: mpsc::Receiver<WarmJob>, read: &mpsc::Sender<WarmRead>) {
     let mut worker: Option<crate::worker::Process> = None;
     for job in jobs {
+        let started = Instant::now();
         let entries = read_entries(&mut worker, &job);
         if read
             .send(WarmRead {
@@ -107,6 +120,7 @@ fn warm(jobs: mpsc::Receiver<WarmJob>, read: &mpsc::Sender<WarmRead>) {
                 route: job.route,
                 moved: job.moved,
                 entries,
+                took: started.elapsed(),
             })
             .is_err()
         {
@@ -178,6 +192,10 @@ impl Worker {
     pub(super) fn warm_entries(&mut self) -> bool {
         while let Ok(read) = self.warm.read.try_recv() {
             self.warm.in_flight.remove(&read.route);
+            let again = Instant::now().checked_add(read.took.saturating_mul(READ_PACE));
+            if let Some(again) = again {
+                self.warm.paced.insert(read.route.clone(), again);
+            }
             self.shared.search.reading.fetch_sub(1, Ordering::Relaxed);
             let Some(kept) = self
                 .workspaces
@@ -204,6 +222,8 @@ impl Worker {
     /// Ask the index's thread for the next documents search keeps no entries for, as many as
     /// it reads at once.
     fn ask_what_is_unread(&mut self) {
+        let now = Instant::now();
+        self.warm.paced.retain(|_, again| *again > now);
         let ids: Vec<WorkspaceId> = self.workspaces.keys().copied().collect();
         for id in ids {
             if self.warm.in_flight.len() >= WARM_IN_FLIGHT {
@@ -216,13 +236,13 @@ impl Worker {
             else {
                 continue;
             };
-            let waiting = kept.unindexed(16);
+            let (in_flight, paced) = (&self.warm.in_flight, &self.warm.paced);
+            let waiting = kept.unindexed(16, |route| {
+                in_flight.contains(route) || paced.contains_key(route)
+            });
             for route in waiting {
                 if self.warm.in_flight.len() >= WARM_IN_FLIGHT {
                     return;
-                }
-                if self.warm.in_flight.contains(&route) {
-                    continue;
                 }
                 let job = WarmJob {
                     workspace: id,

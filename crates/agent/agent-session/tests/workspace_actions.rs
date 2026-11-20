@@ -194,6 +194,9 @@ mod joining;
 #[path = "workspace_actions/key_writes.rs"]
 mod key_writes;
 #[cfg(test)]
+#[path = "workspace_actions/mail_delivery_rate.rs"]
+mod mail_delivery_rate;
+#[cfg(test)]
 #[path = "workspace_actions/mcp_issue_by_id.rs"]
 mod mcp_issue_by_id;
 #[cfg(test)]

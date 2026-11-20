@@ -213,9 +213,9 @@ pub use contract::{
     MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES, MEMBER_OWN_TAG, MIN_OFFLOAD_MEMORY_BYTES,
     OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, OUTSIDE_CAPABILITY_PREFIX, OWN_DEVICE_SCOPE,
     OWN_RESOURCE_SCOPE, Offload, PEOPLE_AUDIENCE_TAG, REQUIRES_HOST_PREFIX,
-    REQUIRES_NATIVE_PATHS_TAG, RESOURCE_READ_TAG, ResultSpec, RetryPolicy, RiskLevel,
-    SCREEN_PLACE_TAG, SCREEN_TAG, UNTRUSTED_CONTENT_TAG, action_node, phrase_is_meaningful,
-    resource_node,
+    REQUIRES_NATIVE_PATHS_TAG, RESOURCE_READ_TAG, ROUTED_CHANGE_TAG, ResultSpec, RetryPolicy,
+    RiskLevel, SCREEN_PLACE_TAG, SCREEN_TAG, UNTRUSTED_CONTENT_TAG, action_node,
+    phrase_is_meaningful, resource_node,
 };
 pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};
 pub use entry::{

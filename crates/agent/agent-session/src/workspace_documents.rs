@@ -286,11 +286,21 @@ impl WorkspaceDocuments {
             .map(|(_, entries)| Arc::clone(entries))
     }
 
-    /// Up to `limit` of the workspace's documents search keeps no entries for: the warm thread
-    /// reads them, so a query never has to.
-    pub(crate) fn unindexed(&mut self, limit: usize) -> Vec<DocumentRoute> {
+    /// Up to `limit` of the workspace's documents search keeps no entries for, but those
+    /// `later` keeps for later (being read now, or read again only after a while): the warm
+    /// thread reads them, so a query never has to.
+    pub(crate) fn unindexed(
+        &mut self,
+        limit: usize,
+        later: impl Fn(&DocumentRoute) -> bool,
+    ) -> Vec<DocumentRoute> {
         self.list_unindexed();
-        self.unindexed.iter().take(limit).cloned().collect()
+        self.unindexed
+            .iter()
+            .filter(|route| !later(route))
+            .take(limit)
+            .cloned()
+            .collect()
     }
 
     /// Whether any of the workspace's documents waits to be read for the index.

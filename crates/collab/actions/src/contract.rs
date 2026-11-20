@@ -277,6 +277,14 @@ fn edit_parts(
     Some((op, path))
 }
 
+/// [`ActionContract::tags`] entry of a document action carried out on another
+/// document than the one its resource is kept in ([`crate::ActionSpec::routed`]):
+/// published as an effect so that the app keeping that document applies it,
+/// it is still only a change of a document. It reads none of the content its
+/// resource refers to, so nothing hands it that content, as for any document
+/// change: finding that content reads every part the resource keeps.
+pub const ROUTED_CHANGE_TAG: &str = "routed:document-change";
+
 /// [`ActionContract::tags`] entry of the read-only action that answers, when
 /// invoked with no arguments, the first page of the document an app has
 /// open (a word processor's text, a sheet's used cells, a deck's outline).

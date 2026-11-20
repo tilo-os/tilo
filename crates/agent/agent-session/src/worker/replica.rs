@@ -1224,7 +1224,7 @@ impl ConfinedReplica {
     }
 
     /// Whether `address` names one of the record's effects or views now,
-    /// rather than a document operation.
+    /// rather than a change of a document ([`ActionDescriptor::changes_only_a_document`]).
     fn is_effect(&self, inner: &mut Inner, address: &ActionAddress) -> Result<bool, AppError> {
         let address_json =
             serde_json::to_string(address).map_err(|error| worker_error(error.to_string()))?;
@@ -1239,8 +1239,7 @@ impl ConfinedReplica {
                 let offered: Vec<ActionDescriptor> =
                     serde_json::from_str(&text).map_err(|error| worker_error(error.to_string()))?;
                 Ok(offered.iter().any(|descriptor| {
-                    descriptor.address == *address
-                        && descriptor.kind != tilo_actions::OperationKind::Document
+                    descriptor.address == *address && !descriptor.changes_only_a_document()
                 }))
             }
             Reply::Failed(reason) => Err(worker_error(reason)),

@@ -2535,8 +2535,9 @@ impl ActionSpec {
     /// section): published as an effect operation of `operation_type` whose
     /// value is `wrap` of the encoded action, which the host answering
     /// `operation_type` applies to that document. Parameters, kind,
-    /// permission, risk and confirmation stay this action's. An effect or
-    /// view operation is returned as it is.
+    /// permission, risk and confirmation stay this action's, and it is
+    /// tagged [`crate::ROUTED_CHANGE_TAG`]: a change of a document still. An
+    /// effect or view operation is returned as it is.
     #[must_use]
     pub fn routed(
         self,
@@ -2550,6 +2551,7 @@ impl ActionSpec {
         let ty = spec.type_mut();
         ty.kind = OperationKind::Effect;
         ty.operation_type = Some(operation_type.to_owned());
+        push_tag(&mut ty.contract, crate::ROUTED_CHANGE_TAG);
         spec
     }
 

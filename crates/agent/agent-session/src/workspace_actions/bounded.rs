@@ -42,9 +42,11 @@ use ui::permissions::policy::{self, ActionKind, Answer, TreePath};
 const UNHELD_ROUNDS: usize = 3;
 
 /// Put into the caller's replica the content its document refers to, before an effect reads
-/// it (a message's parts, an export's pictures). A document operation reads none of it.
+/// it (a message's parts, an export's pictures). A change of a document reads none of it, also
+/// one its app carries out on a part of a chain: finding that content reads every part, which
+/// made each message an import delivered cost more the more the mailbox held.
 fn put_what_it_reads(held: &BoundedReplica, descriptor: &tilo_actions::ActionDescriptor) {
-    if descriptor.kind == tilo_actions::OperationKind::Document {
+    if descriptor.changes_only_a_document() {
         return;
     }
     if let Err(error) = held.held.app.put_held_content() {
