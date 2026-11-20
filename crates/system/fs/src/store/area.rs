@@ -279,6 +279,10 @@ pub struct FileArea {
     /// before the next sync keeps them; `None` for an ephemeral area. Its lock is held across
     /// each commit, so the log's order is the database's.
     log: Mutex<Option<CommitLog>>,
+    /// Entries whose files were written since the last sync of a window, in the order they were
+    /// written: the data half of that barrier. Only a store syncing on a window adds to it;
+    /// [`Self::sync_written`] fsyncs them before the index that names them.
+    written: Mutex<Vec<AreaKey>>,
 }
 
 /// Makes `write` in `txn`, answering whether it removed anything ([`Write::RemoveInline`]): what a
@@ -465,6 +469,7 @@ impl FileArea {
             durable,
             sync_writes: AtomicBool::new(true),
             log: Mutex::new(log),
+            written: Mutex::new(Vec::new()),
         };
         area.load()?;
         Ok(area)
@@ -1193,6 +1198,7 @@ impl FileArea {
                 digest: None,
                 chunks,
             },
+            true,
         )
     }
 
@@ -1203,6 +1209,10 @@ impl FileArea {
         retention: Retention,
         chunks: &[([u8; 32], u64, u32)],
     ) -> io::Result<()> {
+        // A chunk file per version is what a copy of small files writes; syncing each one here
+        // made a photo pay four fsyncs, tens of milliseconds each on a common disk. A store
+        // syncing on a window leaves them to the barrier instead.
+        let windowed = self.durable && !self.sync_writes.load(Ordering::Relaxed);
         let staging = self.staging_path(key);
         let result = (|| {
             let target = OpenOptions::new()
@@ -1212,7 +1222,9 @@ impl FileArea {
                 .write(true)
                 .open(&staging)?;
             target.write_all_at(bytes, 0)?;
-            self.sync(&target)?;
+            if !windowed {
+                self.sync(&target)?;
+            }
             Ok::<_, io::Error>(target)
         })();
         let target = match result {
@@ -1233,7 +1245,66 @@ impl FileArea {
                 digest: None,
                 chunks,
             },
+            !windowed,
         )
+    }
+
+    /// Make the entry files written since the last sync durable: the data half of a window
+    /// barrier, run before the index that names them is made durable and before the mount
+    /// syncs the journals that name the tree, so a name a barrier makes durable never points
+    /// at bytes that are not. Costs the writes since the last barrier, not the store's size.
+    ///
+    /// A process killed before this still holds the bytes (the page cache outlives it), and
+    /// the commits that record them are in the log; only a power loss can lose the window.
+    ///
+    /// Answers whether it also made the index durable: it commits the index durably under the
+    /// lock persist takes, so no record committed after this drain can slip into that commit
+    /// without its bytes, and the caller need not sync the database again.
+    ///
+    /// # Errors
+    /// An entry's file could not be synced; its key stays queued for the next barrier, and no
+    /// record is made durable.
+    pub fn sync_written(&self) -> io::Result<bool> {
+        if !self.durable {
+            self.written.lock_recover().clear();
+            return Ok(false);
+        }
+        if self.written.lock_recover().is_empty() {
+            return Ok(false);
+        }
+        // Persists take this lock, so a record committed after the drain below is one the next
+        // barrier covers, never one this barrier makes durable without its bytes.
+        let _commit = self.commit.lock_recover();
+        let pending = std::mem::take(&mut *self.written.lock_recover());
+        let mut first = None;
+        let mut unsynced = Vec::new();
+        for key in pending {
+            // An entry removed or replaced since it was written has nothing left to sync; one
+            // replaced before this barrier queued its bytes again under the same key.
+            if self.entry(&key).is_none() {
+                continue;
+            }
+            match self.file(&key).and_then(|file| self.sync(&file)) {
+                Ok(()) => {}
+                Err(error) => {
+                    unsynced.push(key);
+                    first.get_or_insert(error);
+                }
+            }
+        }
+        if let Some(error) = first {
+            self.written.lock_recover().extend(unsynced);
+            return Err(error);
+        }
+        // The bytes are on the disk before any record naming them is made durable.
+        self.commit_at(&Write::Entries(Vec::new()), true)
+            .map(drop)?;
+        Ok(true)
+    }
+
+    /// Whether a written entry file waits for the next barrier ([`Self::sync_written`]).
+    pub fn has_unsynced_data(&self) -> bool {
+        !self.written.lock_recover().is_empty()
     }
 
     /// Makes `key` a complete entry by moving the file at `path` in (a copy when it lives on another
@@ -1279,6 +1350,7 @@ impl FileArea {
                 digest: Some(digest),
                 chunks: &[],
             },
+            true,
         )
     }
 
@@ -1354,6 +1426,7 @@ impl FileArea {
                 digest: Some(*key),
                 chunks: &[],
             },
+            true,
         )?;
         self.put_outboard(key, outboard)
     }
@@ -1371,6 +1444,7 @@ impl FileArea {
         len: u64,
         retention: Retention,
         shape: &Shape<'_>,
+        synced: bool,
     ) -> io::Result<()> {
         let (kind, digest, chunks) = (shape.kind, shape.digest, shape.chunks);
         let _create = self.create.lock_recover();
@@ -1378,6 +1452,12 @@ impl FileArea {
             self.remove(key)?;
         }
         std::fs::rename(staging, self.path_of(key))?;
+        if !synced {
+            // Queued before the record is written: a barrier that makes the record durable
+            // has the bytes it names synced, and one that runs between this and the record's
+            // commit leaves the record to the next barrier.
+            self.written.lock_recover().push(*key);
+        }
         {
             let mut state = self.lock();
             let now = state.tick();
@@ -1639,6 +1719,9 @@ impl FileArea {
     /// Syncs and records every entry's residency and last use, so progress and eviction order survive a
     /// restart.
     pub fn flush(&self) -> io::Result<()> {
+        // Bytes a window left to its barrier are made durable here too, so a store that stops
+        // before the next barrier still holds everything it accepted.
+        let _ = self.sync_written()?;
         let unsynced: Vec<AreaKey> = self
             .lock()
             .entries
@@ -1917,6 +2000,40 @@ mod tests {
         std::fs::remove_file(synced.join("area.log")).unwrap();
         let reopened = FileArea::open(&synced, u64::MAX).unwrap();
         assert_eq!(reopened.get_inline(&key(1)).unwrap(), b"a closed file");
+    }
+
+    /// A store syncing on a window leaves a written entry file to the barrier, and the record
+    /// names its bytes at once: a process killed before the barrier keeps them, a barrier makes
+    /// them durable before the index.
+    #[test]
+    fn a_window_leaves_entry_bytes_to_the_barrier() {
+        let dir = tempfile::tempdir().unwrap();
+        let area = FileArea::open(dir.path(), u64::MAX).unwrap();
+        area.set_sync_writes(false);
+        area.adopt_bytes(
+            &key(7),
+            &[5; 8192],
+            Retention::LocalOnly,
+            &[([9; 32], 0, 8192)],
+        )
+        .unwrap();
+        assert!(
+            area.has_unsynced_data(),
+            "the window leaves the file to the barrier"
+        );
+        assert!(
+            area.entry(&key(7)).is_some_and(|entry| entry.complete()),
+            "the record names the bytes the moment they are written"
+        );
+        assert_eq!(area.read_at(&key(7), 0, 4).unwrap(), [5; 4]);
+        assert!(
+            area.sync_written().unwrap(),
+            "the barrier syncs them and makes the index durable"
+        );
+        assert!(
+            !area.has_unsynced_data(),
+            "nothing waits for the next barrier"
+        );
     }
 
     #[test]

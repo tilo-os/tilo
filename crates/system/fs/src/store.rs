@@ -393,7 +393,8 @@ impl ContentStore {
     /// written since the last one; a mount that syncs on a short window calls this from its
     /// flusher and from `fsync`. Its writes are committed without waiting for the disk and kept in
     /// the area's log of such commits, so until this returns they survive the process being
-    /// killed but not a power loss.
+    /// killed but not a power loss. The entry files those writes created are fsynced first, so a
+    /// barrier that makes the index durable names only bytes that are.
     ///
     /// # Errors
     /// The database could not be synced; the next call tries again.
@@ -401,7 +402,23 @@ impl ContentStore {
         let pending = self
             .pending
             .swap(false, std::sync::atomic::Ordering::AcqRel);
-        if !pending && !self.files.has_unsynced() {
+        if !pending && !self.files.has_unsynced() && !self.files.has_unsynced_data() {
+            return Ok(());
+        }
+        // The bytes a window wrote, then the index that names them: a name this barrier makes
+        // durable never points at bytes that are not. `sync_written` makes the index durable
+        // itself when it had bytes to sync; otherwise the database still needs its sync.
+        let durable_index = match self.files.sync_written() {
+            Ok(durable) => durable,
+            Err(error) => {
+                self.pending
+                    .store(true, std::sync::atomic::Ordering::Release);
+                return Err(error);
+            }
+        };
+        if durable_index {
+            self.write_syncs
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Ok(());
         }
         match self.files.sync_db() {
@@ -469,7 +486,15 @@ impl ContentStore {
             self.write_syncs
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let files = Arc::clone(&self.files);
-            if let Err(error) = tokio::task::spawn_blocking(move || files.sync_db()).await? {
+            let synced = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+                // The group's content bytes, then the index that names them.
+                if !files.sync_written()? {
+                    files.sync_db()?;
+                }
+                Ok(())
+            })
+            .await?;
+            if let Err(error) = synced {
                 self.files.set_sync_writes(false);
                 self.deferred.lock_recover().1 = true;
                 return Err(error.into());
@@ -498,7 +523,7 @@ impl ContentStore {
     }
 
     /// Locally available bytes of blob `hash` (cache, inline storage, a whole blob's file, or a
-    /// file-backed chunk, which is checked against its hash), or `None`.
+    /// file-backed chunk, each entry file checked against its hash), or `None`.
     pub async fn local(&self, hash: Hash) -> Option<Bytes> {
         if let Some(b) = self.cache.get(&hash) {
             self.note_read(b.len());
@@ -518,6 +543,11 @@ impl ContentStore {
                     .complete()
                     .then(|| files.read_at(&key, 0, entry.size).ok())
                     .flatten()
+                    // A window's record names its bytes before the barrier syncs them, so a
+                    // power loss can leave a file short of its name. Answering only bytes that
+                    // hash to the name keeps that loss a miss to hydrate from a peer, never
+                    // content served as something it is not.
+                    .filter(|bytes| blake3::hash(bytes).as_bytes() == &key)
                     .map(|bytes| (Bytes::from(bytes), false));
             }
             None
