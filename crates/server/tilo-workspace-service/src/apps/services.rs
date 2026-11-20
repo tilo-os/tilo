@@ -854,7 +854,27 @@ pub trait ResourceServices: Send + Sync {
         context: &ResourceRequestContext,
         command: tilo_resource_store::wire::Command,
     ) -> ResourceAnswer;
+
+    /// Holds `query` open for the app `context` names: its first page, then each page a change
+    /// makes different, until the app lets go of the receiver.
+    fn open(
+        &self,
+        context: &ResourceRequestContext,
+        query: tilo_resource_store::Query,
+    ) -> ResourcePages;
 }
+
+/// The pages of a query an app holds open, once the store opened it.
+pub type ResourcePages = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<
+                    tokio::sync::mpsc::UnboundedReceiver<tilo_resource_store::Page>,
+                    String,
+                >,
+            >,
+    >,
+>;
 
 /// The native host's separately authorized display transaction service.
 pub trait DisplayControlServices: Send + Sync {

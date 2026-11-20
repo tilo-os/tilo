@@ -225,7 +225,7 @@ impl JoinedChannel {
     /// read may have changed, and an Open whose record is still being
     /// decided (the workspace's host's replay, or the host it was asked of)
     /// or created on another device is awaited, all on this `LocalSet`, so
-    /// every channel's calls keep flowing meanwhile.
+    /// every route's calls keep flowing meanwhile.
     pub(super) async fn committed_document_answer(
         self: Rc<Self>,
         request: runtime_collab::committed_document::Request,
@@ -243,7 +243,7 @@ impl JoinedChannel {
 /// A local effect's record on its way into workspace activity.
 pub(super) type Recording = std::pin::Pin<Box<dyn Future<Output = Result<(), BrokerError>>>>;
 
-/// What the host answers once its work is done.
+/// What the broker answers once its work is done.
 pub(super) type Answer<T> = std::pin::Pin<Box<dyn Future<Output = Result<T, BrokerError>>>>;
 
 type Answering = std::pin::Pin<Box<dyn Future<Output = Result<Vec<u8>, String>>>>;
@@ -418,7 +418,7 @@ impl JoinedChannel {
         Ok(())
     }
 
-    /// Every document change on this channel from now on, other endpoints'
+    /// Every document change on this route from now on, other endpoints'
     /// and peers'.
     pub(super) fn subscribe_ops(&self) -> Result<Feed<OpEnvelope>, BrokerError> {
         self.state
@@ -429,7 +429,7 @@ impl JoinedChannel {
         ))
     }
 
-    /// The host's record-content service, for a channel still admitted.
+    /// The device's record-content service, for a route still admitted.
     fn document_content(
         &self,
     ) -> Result<(CrdtRoute, Arc<crate::apps::document_content::RouteContent>), BrokerError> {
@@ -469,7 +469,7 @@ impl JoinedChannel {
         Ok(())
     }
 
-    /// The channel's context from now on, starting with its current
+    /// The route's context from now on, starting with its current
     /// roster. A native private window's context also follows the
     /// continuation it shows.
     pub(super) fn context_feed(&self) -> Result<Feed<ContextUpdate>, BrokerError> {
@@ -509,7 +509,7 @@ impl JoinedChannel {
         Ok(Feed::new(rx).with_native_guard(native_guard))
     }
 
-    /// Ask another endpoint holding this channel to publish the document's
+    /// Ask another endpoint holding this route to publish the document's
     /// current state.
     pub(super) fn ask_for_document(&self) -> Result<(), BrokerError> {
         self.state
@@ -520,7 +520,7 @@ impl JoinedChannel {
         Ok(())
     }
 
-    /// Take a report about this channel's own instance or record from the
+    /// Take a report about this route's own instance or record from the
     /// app `claimed_app`, which must be the route's: no app reports for
     /// another, and a channel held to read reports nothing.
     pub(super) fn report(&self, claimed_app: &str, report: Report) -> Result<(), BrokerError> {
@@ -1667,7 +1667,7 @@ pub(super) struct WireConnection {
     controls: RefCell<HashMap<u64, Rc<dyn crate::apps::services::WorkspaceControlSession>>>,
     /// What ends each invocation subscription once its app asks for no more.
     invocation_ends: RefCell<HashMap<u64, InvocationFeedEnd>>,
-    /// The host's asks of the endpoint waiting for its answer.
+    /// The broker's asks of the endpoint waiting for its answer.
     asks: RefCell<HashMap<u64, tokio::sync::oneshot::Sender<Result<Answered, String>>>>,
     next_ask: Cell<u64>,
     frames: mpsc::UnboundedSender<HostFrame>,
@@ -2196,6 +2196,36 @@ impl WireConnection {
                             },
                         ))
                     }
+                    Topic::Resources(query) => {
+                        let opening = session.resources_open(&query).map_err(failed)?;
+                        tokio::task::spawn_local(async move {
+                            let reason = match opening.await {
+                                Ok(mut pages) => loop {
+                                    let Some(page) = pages.recv().await else {
+                                        break "the store let go of the query".to_owned();
+                                    };
+                                    let Ok(page) = serde_json::to_vec(&page) else {
+                                        break "the store's page cannot be encoded".to_owned();
+                                    };
+                                    let event = Event::Resources(page);
+                                    if frames
+                                        .send(HostFrame::Event {
+                                            subscription: id,
+                                            event,
+                                        })
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                },
+                                Err(error) => error,
+                            };
+                            let _ = frames.send(HostFrame::Ended {
+                                subscription: id,
+                                reason,
+                            });
+                        })
+                    }
                 };
                 self.subscriptions
                     .borrow_mut()
@@ -2329,7 +2359,7 @@ async fn pump<T>(
     });
 }
 
-/// A stream the host pulls one item at a time.
+/// A stream the broker pulls one item at a time.
 trait Pulled {
     type Item;
     async fn pull(&self) -> Result<Self::Item, BrokerError>;

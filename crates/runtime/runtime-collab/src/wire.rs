@@ -413,6 +413,9 @@ pub enum Topic {
     /// A workspace control session with `target_device`, open while the
     /// subscription lives; input goes in [`Operation::ControlInput`].
     WorkspaceControl { target_device: [u8; 32] },
+    /// A query of the app's resources held open (`tilo_resource_store::Query`,
+    /// JSON): its first page, then each page a change makes different.
+    Resources(Vec<u8>),
 }
 
 /// The host's answer to a call that succeeded.
@@ -517,6 +520,9 @@ pub enum Event {
         revision: u64,
         reading: Option<Vec<u8>>,
     },
+    /// A page of a query held open ([`Topic::Resources`]), as
+    /// `tilo_resource_store::Page` JSON.
+    Resources(Vec<u8>),
 }
 
 /// One change of a channel's context.

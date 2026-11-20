@@ -921,6 +921,7 @@ impl App {
                 | CollabEvent::WorkspaceControl { .. }
                 | CollabEvent::RealtimeCommandResult { .. }
                 | CollabEvent::ResourceCommandResult { .. }
+                | CollabEvent::ResourcePage { .. }
                 | CollabEvent::Realtime(_)
         )
     }
@@ -1012,6 +1013,7 @@ impl App {
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::ResourceCommandResult { .. }
+            | CollabEvent::ResourcePage { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged

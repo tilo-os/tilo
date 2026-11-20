@@ -637,6 +637,17 @@ pub enum CollabRequest {
         request_id: u64,
         command: Vec<u8>,
     },
+    /// Hold `query` open in the device's one store, in the store's encoding
+    /// (`tilo_resource_store::Query`): its pages arrive as [`CollabEvent::ResourcePage`] under
+    /// `query_id` until [`Self::CloseResources`] names it.
+    OpenResources {
+        query_id: u64,
+        query: Vec<u8>,
+    },
+    /// Let go of the query `query_id` holds open.
+    CloseResources {
+        query_id: u64,
+    },
 }
 
 impl CollabRequest {

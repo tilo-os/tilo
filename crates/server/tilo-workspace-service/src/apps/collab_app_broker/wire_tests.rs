@@ -512,7 +512,11 @@ async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
 
 /// A store that keeps the app and workspace each command came from.
 #[derive(Default)]
-struct CountingStore(Mutex<Vec<(String, String)>>);
+struct CountingStore(
+    Mutex<Vec<(String, String)>>,
+    /// The open queries, held so their apps keep them.
+    Mutex<Vec<tokio::sync::mpsc::UnboundedSender<tilo_resource_store::Page>>>,
+);
 
 impl crate::apps::services::ResourceServices for CountingStore {
     fn command(
@@ -534,6 +538,67 @@ impl crate::apps::services::ResourceServices for CountingStore {
         drop(asked);
         Box::pin(std::future::ready(answer))
     }
+
+    fn open(
+        &self,
+        _: &crate::apps::services::ResourceRequestContext,
+        query: tilo_resource_store::Query,
+    ) -> crate::apps::services::ResourcePages {
+        // A first page of none, then whatever the test sends to the query's kind.
+        let (pages, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let _ = pages.send(tilo_resource_store::Page::default());
+        drop(query);
+        self.1.lock().unwrap().push(pages);
+        Box::pin(std::future::ready(Ok(receiver)))
+    }
+}
+
+/// An app holds a query open over its route: the store's first page and each later one reach
+/// it as events of the subscription.
+#[tokio::test(flavor = "current_thread")]
+async fn an_apps_open_query_sends_its_pages_over_its_route() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let store = Arc::new(CountingStore::default());
+            let served = Arc::clone(&store);
+            let workspace = Workspace::serving(&[9], move |services| ProcessServices {
+                resources: Some(served),
+                ..services
+            });
+            let mut app = workspace.endpoint(9);
+            let channel = app.channel;
+            let query =
+                serde_json::to_vec(&tilo_resource_store::Query::of("tasks.issue", 10)).unwrap();
+            let subscription = app
+                .send(Operation::Subscribe {
+                    channel,
+                    topic: Topic::Resources(query),
+                })
+                .await;
+            assert_eq!(
+                app.frame().await,
+                HostFrame::Reply {
+                    id: subscription,
+                    result: Ok(Reply::Subscribed),
+                }
+            );
+            for _ in 0..2 {
+                let HostFrame::Event {
+                    subscription: of,
+                    event: Event::Resources(page),
+                } = app.frame().await
+                else {
+                    panic!("a page of the query arrives");
+                };
+                assert_eq!(of, subscription);
+                let page: tilo_resource_store::Page = serde_json::from_slice(&page).unwrap();
+                assert!(page.resources.is_empty());
+                // The store's next page, as a change would send it.
+                let sent = store.1.lock().unwrap()[0].send(tilo_resource_store::Page::default());
+                sent.unwrap();
+            }
+        })
+        .await;
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -667,6 +667,22 @@ impl ChannelHandle {
         Ok(reply)
     }
 
+    /// Hold `query` open in the device's one store (`tilo_resource_store::Query`, in the store's
+    /// encoding): its first page, then each page a write here or a member's change makes
+    /// different, until the stream is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the device refuses the query or the connection fails.
+    pub async fn open_resources(&self, query: &[u8]) -> Result<ResourcePages, NotAvailable> {
+        if query.len() > MAX_RESOURCE_WIRE_BYTES {
+            return Err(refused("resource query exceeds wire bound"));
+        }
+        Ok(ResourcePages(
+            self.feed(Topic::Resources(query.to_vec())).await?,
+        ))
+    }
+
     /// Submit one bounded Nearby Send control command. File contents stay on
     /// the shell-owned resumable transport; this carries only
     /// picker/status/consent control data.
@@ -1429,6 +1445,19 @@ impl InvocationStream {
 /// Realtime continuity events for this app, as JSON.
 #[derive(Clone)]
 pub struct RealtimeStream(Feed);
+
+/// The pages of a query held open; dropping it lets the query go.
+pub struct ResourcePages(Feed);
+
+impl ResourcePages {
+    /// The next page, in the store's encoding (`tilo_resource_store::Page`).
+    pub async fn read(&self) -> Result<Vec<u8>, NotAvailable> {
+        match self.0.event().await? {
+            Event::Resources(page) => Ok(page),
+            other => Err(unexpected_event(&other)),
+        }
+    }
+}
 
 impl RealtimeStream {
     /// The next event.

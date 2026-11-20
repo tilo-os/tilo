@@ -252,6 +252,12 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
         request_id: u64,
         result: Result<Vec<u8>, String>,
     },
+    /// A page of the query `query_id` holds open, in the store's encoding
+    /// (`tilo_resource_store::Page`); an error ends the query.
+    ResourcePage {
+        query_id: u64,
+        page: Result<Vec<u8>, String>,
+    },
 }
 
 impl<C: EndpointOwnership> CollabEvent<C> {

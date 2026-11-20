@@ -4529,6 +4529,8 @@ struct SdkRoute {
     document: DocumentRoute,
     presence: Option<runtime_collab::PresenceHandle>,
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
+    /// The queries the app holds open in the device's store: each one's task carrying its pages.
+    resource_queries: std::collections::HashMap<u64, tokio::task::AbortHandle>,
     committed: bool,
 }
 
@@ -6996,6 +6998,43 @@ async fn dispatch_sdk_request(
                         runtime_collab::WorkspaceControlCloseReason::Denied(error.to_string()),
                     ),
                 });
+            }
+        }
+        CollabRequest::OpenResources { query_id, query } => {
+            match route.channel.open_resources(&query).await {
+                Ok(pages) => {
+                    let tx = inbound_tx.clone();
+                    let task = tokio::task::spawn_local(async move {
+                        loop {
+                            let page = pages.read().await.map_err(|error| error.to_string());
+                            let ended = page.is_err();
+                            if !tx
+                                .send_durable(CollabEvent::ResourcePage { query_id, page })
+                                .await
+                                || ended
+                            {
+                                break;
+                            }
+                        }
+                    });
+                    if let Some(earlier) =
+                        route.resource_queries.insert(query_id, task.abort_handle())
+                    {
+                        earlier.abort();
+                    }
+                }
+                Err(error) => {
+                    let _ = inbound_tx.send_reply(CollabEvent::ResourcePage {
+                        query_id,
+                        page: Err(error.to_string()),
+                    });
+                }
+            }
+        }
+        CollabRequest::CloseResources { query_id } => {
+            // Its task holds the query's stream; ending it lets the store's query go.
+            if let Some(task) = route.resource_queries.remove(&query_id) {
+                task.abort();
             }
         }
         CollabRequest::CloseWorkspaceControl { session_id } => {

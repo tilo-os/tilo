@@ -127,6 +127,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         CollabRequest::FetchScrollback { .. }
         | CollabRequest::OpenWorkspaceControl { .. }
         | CollabRequest::CloseWorkspaceControl { .. }
+        | CollabRequest::CloseResources { .. }
         | CollabRequest::ClearContinuation
         | CollabRequest::RequestDocumentSnapshot => {}
         CollabRequest::LaunchInstalledApplication {
@@ -162,6 +163,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             serialized_bytes(command, &mut meter);
         }
         CollabRequest::ResourceCommand { command, .. } => meter.bytes(command),
+        CollabRequest::OpenResources { query, .. } => meter.bytes(query),
         CollabRequest::ReportHandoff { message } => {
             meter.bytes(message);
         }
@@ -622,6 +624,13 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
                 Err(error) => meter.string_capacity(error),
             }
             "ResourceCommandResult"
+        }
+        CollabEvent::ResourcePage { page, .. } => {
+            match page {
+                Ok(page) => meter.bytes(page),
+                Err(error) => meter.string_capacity(error),
+            }
+            "ResourcePage"
         }
         CollabEvent::RealtimeCommandResult { result, .. } => {
             match result {

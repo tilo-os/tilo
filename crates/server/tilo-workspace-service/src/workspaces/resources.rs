@@ -71,6 +71,19 @@ pub(super) struct Resources {
     /// ([`collab_types::app_surface::registered`]).
     #[cfg(feature = "apps")]
     declared: u64,
+    /// The queries apps hold open, by the store's watch of their kind.
+    #[cfg(feature = "apps")]
+    opened: BTreeMap<u64, Opened>,
+}
+
+/// A query an app holds open: whenever a change makes what its page shows different, the page
+/// is sent again, as the person it is read for may read it.
+#[cfg(feature = "apps")]
+struct Opened {
+    query: tilo_resource_store::Query,
+    reader: String,
+    pages: tokio::sync::mpsc::UnboundedSender<tilo_resource_store::Page>,
+    shown: Vec<(String, tilo_resource_store::Indexed)>,
 }
 
 impl Resources {
@@ -128,6 +141,8 @@ impl Resources {
             unsnapshotted,
             #[cfg(feature = "apps")]
             declared: 0,
+            #[cfg(feature = "apps")]
+            opened: BTreeMap::new(),
         }
     }
 
@@ -221,7 +236,71 @@ impl Resources {
             }
         }
         self.evict_idle();
+        #[cfg(feature = "apps")]
+        self.tell_opened();
         Ok(())
+    }
+
+    /// Holds `query` open as `reader` may read it: its first page now, then each page a change
+    /// makes different, until the receiver is dropped.
+    #[cfg(feature = "apps")]
+    fn open_query(
+        &mut self,
+        query: tilo_resource_store::Query,
+        reader: String,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<tilo_resource_store::Page> {
+        let (pages, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let store = self.store_mut();
+        let watch = store.watch(&query.kind);
+        let page = store.query(&query, &may_read(reader.clone()));
+        let shown = page.resources.clone();
+        if pages.send(page).is_ok() {
+            self.opened.insert(
+                watch,
+                Opened {
+                    query,
+                    reader,
+                    pages,
+                    shown,
+                },
+            );
+        } else {
+            store.unwatch(watch);
+        }
+        receiver
+    }
+
+    /// Sends each open query whose kind a change touched its page again, when what it shows
+    /// changed, and lets go of every query whose app no longer holds it.
+    #[cfg(feature = "apps")]
+    fn tell_opened(&mut self) {
+        if self.opened.is_empty() {
+            return;
+        }
+        let store = self
+            .store
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let changed = store.changed();
+        self.opened.retain(|watch, open| {
+            if open.pages.is_closed() {
+                store.unwatch(*watch);
+                return false;
+            }
+            if !changed.contains(watch) {
+                return true;
+            }
+            let page = store.query(&open.query, &may_read(open.reader.clone()));
+            if page.resources == open.shown {
+                return true;
+            }
+            open.shown.clone_from(&page.resources);
+            let sent = open.pages.send(page).is_ok();
+            if !sent {
+                store.unwatch(*watch);
+            }
+            sent
+        });
     }
 
     /// Lets every document nobody wrote for [`IDLE`] go from memory, kept whole with its
@@ -691,6 +770,30 @@ impl Workspaces {
             self.commit_local_document(workspace, request).await?;
         }
         refused.map_or(Ok(Reply::Written), Err)
+    }
+}
+
+impl Workspaces {
+    /// Holds `query` open for the app `context` names, in its workspace: its first page, then
+    /// each page a write here or a member's change makes different, as this device's person
+    /// may read it.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or this service serves no device.
+    #[cfg(feature = "apps")]
+    pub(crate) async fn open_resources(
+        &self,
+        context: &crate::apps::services::ResourceRequestContext,
+        query: tilo_resource_store::Query,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<tilo_resource_store::Page>, String> {
+        let reader = hex::encode(self.member_identity()?.cert.user_public_key);
+        let state = self
+            .workspace(context.workspace_id())
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut governed = state.lock().await;
+        governed.store_with_surfaces();
+        Ok(governed.resources.open_query(query, reader))
     }
 }
 

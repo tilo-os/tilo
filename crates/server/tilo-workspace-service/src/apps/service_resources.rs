@@ -7,7 +7,7 @@
 
 use tilo_resource_store::wire::Command;
 
-use super::services::{ResourceAnswer, ResourceRequestContext, ResourceServices};
+use super::services::{ResourceAnswer, ResourcePages, ResourceRequestContext, ResourceServices};
 use crate::service::ServiceSlot;
 use crate::workspaces::Workspaces;
 
@@ -37,6 +37,20 @@ impl ResourceServices for ServiceResources {
             let workspaces =
                 workspaces.ok_or("this device's workspace service holds no workspaces")?;
             workspaces.resource_command(&context, command).await
+        })
+    }
+
+    fn open(
+        &self,
+        context: &ResourceRequestContext,
+        query: tilo_resource_store::Query,
+    ) -> ResourcePages {
+        let context = context.clone();
+        let workspaces = self.workspaces();
+        Box::pin(async move {
+            let workspaces =
+                workspaces.ok_or("this device's workspace service holds no workspaces")?;
+            workspaces.open_resources(&context, query).await
         })
     }
 }

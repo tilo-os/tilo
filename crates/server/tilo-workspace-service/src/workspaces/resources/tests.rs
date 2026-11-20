@@ -503,3 +503,92 @@ fn a_store_a_hard_stop_left_answers_from_its_index() {
         "the start took {opened:?}"
     );
 }
+
+/// A query an app holds open is sent its page again when a write changes what it shows, nothing
+/// when a write leaves that as it was, and is let go once the app drops it.
+#[tokio::test]
+async fn an_open_query_is_sent_each_page_a_write_makes_different() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(TestGroupKeys::default());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
+    let workspaces = server.workspaces().clone();
+    workspaces.set_member_device(Arc::new(super::super::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let workspace = workspaces.create("Tasks").await.unwrap().workspace;
+    let context = context(&workspace, &cert);
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: APP.into(),
+        cluster_id: workspace.clone(),
+        document: String::new(),
+    };
+    let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+    let put = |title: &str, invocation: &str| Command::Put {
+        kind: KIND.to_owned(),
+        id: "i-1".to_owned(),
+        resource: Resource {
+            readers: "*".into(),
+            parent: None,
+            order: None,
+            fields: BTreeMap::from([("title".to_owned(), Cell::One(Value::Text(title.into())))]),
+        },
+        stamp: Stamp {
+            verb: "add".to_owned(),
+            invocation: invocation.to_owned(),
+            ..Stamp::default()
+        },
+    };
+    let titles = |page: tilo_resource_store::Page| -> Vec<Value> {
+        page.resources
+            .iter()
+            .map(|(_, held)| held.scalar("title"))
+            .collect()
+    };
+
+    let mut pages = workspaces
+        .open_resources(&context, Query::of(KIND, 10))
+        .await
+        .unwrap();
+    assert!(titles(pages.try_recv().expect("the first page")).is_empty());
+    workspaces
+        .resource_command(&context, put("First", "i1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        titles(
+            pages
+                .try_recv()
+                .expect("a write sends the page it changed at once")
+        ),
+        [Value::Text("First".into())]
+    );
+    workspaces
+        .resource_command(&context, put("First", "i2"))
+        .await
+        .unwrap();
+    assert!(
+        pages.try_recv().is_err(),
+        "a write that changes nothing shown sends nothing"
+    );
+    workspaces
+        .resource_command(&context, put("Renamed", "i3"))
+        .await
+        .unwrap();
+    assert_eq!(
+        titles(pages.try_recv().expect("the next page")),
+        [Value::Text("Renamed".into())]
+    );
+
+    drop(pages);
+    workspaces
+        .resource_command(&context, put("Again", "i4"))
+        .await
+        .unwrap();
+    let governed = workspaces.workspace(&workspace).await.unwrap();
+    assert!(
+        governed.lock().await.resources.opened.is_empty(),
+        "a query its app let go of is no longer read"
+    );
+}
