@@ -27,11 +27,11 @@ fn a_retryable_failure_leaves_the_id_free_to_run_again() {
         retryable,
     };
     assert!(
-        !super::settles(&failure(true)),
+        !super::outcome::settles(&failure(true)),
         "asking again runs it again, over the session the workspace holds now"
     );
     assert!(
-        super::settles(&failure(false)),
+        super::outcome::settles(&failure(false)),
         "a failure of its own is its answer"
     );
     let invocation = tilo_actions::InvocationId::new();

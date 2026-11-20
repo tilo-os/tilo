@@ -1,11 +1,18 @@
 //! What an invocation's confirmation, caller and receipt read as, and which
 //! records an app's replica opens as its own: the rules the queue, the bounded
-//! calls and the tests all ask of the same request.
+//! calls and the tests all ask of the same request; and what an invocation's
+//! outcome is recorded and answered as.
 
 use tilo_actions::remote::{
-    ActionCallError, Caller, CatalogueQuery, Confirmation, InvocationReceipt, ReceiptStatus,
+    ActionCallError, Caller, CatalogueQuery, Confirmation, InvocationReceipt, InvocationState,
+    ReceiptStatus,
 };
-use tilo_actions::{ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId};
+use tilo_actions::{
+    ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate,
+};
+
+use super::Performed;
+use super::publish::Unsaved;
 
 use crate::member::actions::Outcome;
 
@@ -139,4 +146,78 @@ pub(super) fn commit_failed(message: String, retryable: bool) -> Outcome {
         details: None,
         retryable,
     })
+}
+
+impl super::Worker {
+    /// Record what `outcome` answered for `invocation` and answer it: done
+    /// once what it wrote is saved, or the failure or refusal it ended with.
+    pub(super) fn settle(
+        &self,
+        invocation: InvocationId,
+        outcome: Performed,
+        unsaved: Option<Unsaved>,
+    ) -> InvocationReceipt {
+        let outcome = match (outcome, unsaved) {
+            (Ok(done), Some(unsaved)) => return self.answer_pending(invocation, done, unsaved),
+            (outcome, _) => outcome,
+        };
+        let mut log = self.log();
+        log.running.remove(&invocation);
+        let (update, left_at) = match outcome {
+            Ok((output, left_at)) => (InvocationUpdate::Succeeded { invocation, output }, left_at),
+            Err(Outcome::Failed(error)) if !settles(&error) => {
+                // A failure the caller may ask again is not this
+                // invocation's answer: remembered as the failure it was, so
+                // whoever follows the invocation learns to ask again, and the
+                // same request under the same id makes it again rather than
+                // being handed the failure it already has.
+                let update = InvocationUpdate::Failed {
+                    invocation,
+                    error: error.clone(),
+                };
+                log.answered(invocation, &update, None);
+                return InvocationReceipt {
+                    invocation,
+                    status: ReceiptStatus::Failed { error },
+                };
+            }
+            Err(Outcome::Failed(error)) => (InvocationUpdate::Failed { invocation, error }, None),
+            // Answered accepted while the person was asked: it ends refused,
+            // and stays to say so.
+            Err(Outcome::Rejected(error))
+                if log
+                    .entries
+                    .get(&invocation)
+                    .is_some_and(|entry| entry.asked) =>
+            {
+                let error = ActionFailure {
+                    code: error.code().to_owned(),
+                    message: error.to_string(),
+                    details: None,
+                    retryable: false,
+                };
+                (InvocationUpdate::Failed { invocation, error }, None)
+            }
+            // A refusal the caller may ask again about (the document has not
+            // arrived from the workspace yet) is remembered as failed, so a
+            // caller following the invocation learns to ask again; the same
+            // request under the same id then makes it.
+            Err(Outcome::Rejected(error)) if error.ask_again() => {
+                let error = ActionFailure {
+                    code: error.code().to_owned(),
+                    message: error.to_string(),
+                    details: None,
+                    retryable: true,
+                };
+                (InvocationUpdate::Failed { invocation, error }, None)
+            }
+            Err(Outcome::Rejected(error)) => {
+                log.forget(&invocation);
+                return rejected(invocation, error);
+            }
+        };
+        log.answered(invocation, &update, left_at);
+        drop(log);
+        InvocationState::new(invocation, update).receipt()
+    }
 }

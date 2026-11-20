@@ -739,14 +739,16 @@ impl WorkspaceActions {
 }
 
 impl Worker {
+    /// Invocation `invocation`, answered: `None` while it waits off this thread for a part of
+    /// what it changes to arrive ([`super::part_wait`]), still running.
     pub(super) fn invoke(
         &mut self,
         workspace_id: WorkspaceId,
         invocation: InvocationId,
-    ) -> InvocationReceipt {
+    ) -> Option<InvocationReceipt> {
         let (caller, request) = match self.claim(invocation) {
             Ok(claimed) => claimed,
-            Err(receipt) => return receipt,
+            Err(receipt) => return Some(receipt),
         };
         if caller.roster_created_at().is_some()
             && !resource_of(&request.target.provider, "").is_some_and(|route| {
@@ -760,16 +762,16 @@ impl Worker {
                 })
             })
         {
-            return self.settle(
+            return Some(self.settle(
                 invocation,
                 Err(Outcome::Rejected(ActionCallError::NotPermitted)),
                 None,
-            );
+            ));
         }
         // A question to the person changes nothing, so it applies nothing where
         // the agent is seen working: it waits on the person's devices.
         if let Some(receipt) = self.ask_in_words(workspace_id, &caller, &request) {
-            return receipt;
+            return Some(receipt);
         }
         self.voice(
             workspace_id,
@@ -780,18 +782,21 @@ impl Worker {
         if caller.roster_created_at().is_none()
             && let Some(receipt) = self.terminal(workspace_id, &caller, &request)
         {
-            return receipt;
+            return Some(receipt);
         }
         let everything = timing_start();
         self.wrote.clear();
         self.writing_as = Some(caller.clone());
         let ran = self.invoke_or_ask(workspace_id, &caller, &request);
         self.writing_as = None;
+        if self.part_waits.held() {
+            return None;
+        }
         let (outcome, unsaved) = match ran {
             Ok(ran) => ran,
             Err(receipt) => {
                 self.log().running.remove(&invocation);
-                return receipt;
+                return Some(receipt);
             }
         };
         timing_done("action.total", everything);
@@ -812,7 +817,7 @@ impl Worker {
             &request,
             (&session_voice::ended_phase(&outcome), left),
         );
-        self.settle(invocation, outcome, unsaved)
+        Some(self.settle(invocation, outcome, unsaved))
     }
 
     /// Note that `request`'s call only reads: a read is no invocation of the

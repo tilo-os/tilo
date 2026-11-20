@@ -258,7 +258,12 @@ impl Worker {
             appearance: None,
             ..request.clone()
         };
-        let (output, left_at) = self.perform(workspace_id, caller, &import)?;
+        let performed = self.perform(workspace_id, caller, &import);
+        // What it imports into was made by this request: applied again, the request would make
+        // another, so the import does not wait off the thread for a part, and its refusal says
+        // to ask again.
+        self.part_waits.release();
+        let (output, left_at) = performed?;
         let mut value = opened.value.unwrap_or_else(|| json!({}));
         if let Some(fields) = value.as_object_mut() {
             fields.insert("action".into(), json!(landing.action));

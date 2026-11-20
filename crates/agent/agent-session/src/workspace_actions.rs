@@ -127,11 +127,9 @@ use jobs::Jobs;
 use keys::{Keys, catalogue_keys};
 use naming::{is_part, named, named_document};
 use outcome::{
-    commit_failed, confirms, exact_view_query, opens_as_its_own, rejected, settles,
-    speaks_for_a_member,
+    commit_failed, confirms, exact_view_query, opens_as_its_own, rejected, speaks_for_a_member,
 };
 use part_wait::Invoked;
-use publish::Unsaved;
 use run_context::{caller_context, said_invocation_title};
 use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
@@ -1258,6 +1256,9 @@ struct Worker {
     /// Requests waiting for their workspace to be ready for them, oldest
     /// first, by workspace: the thread answers others meanwhile.
     joining: HashMap<WorkspaceId, VecDeque<Waiting>>,
+    /// Writes waiting off the thread for the part they change to arrive
+    /// ([`part_wait`]).
+    part_waits: part_wait::PartWaits,
     /// The caller's device whose request it serves now ([`publish::Worker::writer`](publish)).
     writing_as: Option<Caller>,
     clock: u64,
@@ -1383,6 +1384,7 @@ impl Worker {
             titles: crate::worker::ConfinedTitles::default(),
             said_directly: HashMap::new(),
             joining: HashMap::new(),
+            part_waits: part_wait::PartWaits::default(),
             writing_as: None,
             pages: pages::Pages::default(),
             clock: 0,
@@ -1414,6 +1416,7 @@ impl Worker {
                 self.warming = !(entries && files);
             }
             queue.take_sent(jobs, &self.shared.log);
+            self.try_parts_again(None);
             if let Some((at, job)) = queue.next() {
                 self.expire_watchers();
                 self.admit(at, job);
@@ -1426,11 +1429,12 @@ impl Worker {
                 }
                 continue;
             }
-            if queue.closed() {
+            if queue.closed() && self.part_waits.is_empty() {
                 break;
             }
             let due = [
                 self.joining_until(),
+                self.part_waits.until(),
                 session_voice::next_due(&self.workspaces),
                 self.watchers_until(),
                 // An agent's request waits a moment for the person's next one.
@@ -1573,6 +1577,8 @@ impl Worker {
             self.timed(queued, job);
         }
         self.stop_waiting_if_idle(workspace_id);
+        // A write waiting for its part looks again: the change may be the part.
+        self.try_parts_again(Some(workspace_id));
     }
 
     /// Whether a request for `workspace_id` can run now: the workspace is
@@ -1653,13 +1659,16 @@ impl Worker {
     }
 
     /// Stop asking to be woken for `workspace_id` once nothing waits for it: no request held
-    /// for its join or its keys, and nobody waiting for a change of it.
+    /// for its join, its keys or a part it changes, and nobody waiting for a change of it.
     fn stop_waiting_if_idle(&self, workspace_id: WorkspaceId) {
         let watched = self
             .workspaces
             .get(&workspace_id)
             .is_some_and(|workspace| workspace.watchers.any());
-        if !self.joining.contains_key(&workspace_id) && !watched {
+        if !self.joining.contains_key(&workspace_id)
+            && !self.part_waits.any_in(workspace_id)
+            && !watched
+        {
             self.awaiting(workspace_id, false);
         }
     }
@@ -1719,6 +1728,7 @@ impl Worker {
             _ => (String::new(), String::new()),
         };
         let step = job.step_kind();
+        self.part_waits.begin(queued);
         self.take(job);
         // What it ended, it ended now, as a listing of runs says.
         self.log().stamp_ended();
@@ -1789,7 +1799,18 @@ impl Worker {
                     workspace_id,
                     invocation,
                     done,
-                } => done.complete(self.invoke(workspace_id, invocation)),
+                } => match self.invoke(workspace_id, invocation) {
+                    Some(receipt) => done.complete(receipt),
+                    // It waits for a part of what it changes, off this thread.
+                    None => self.await_part(
+                        workspace_id,
+                        Job::Invoke {
+                            workspace_id,
+                            invocation,
+                            done,
+                        },
+                    ),
+                },
                 Job::Ran(ended) => self.ran(&ended),
                 Job::Arrived {
                     workspace_id,
@@ -1885,6 +1906,7 @@ impl Worker {
         for Waiting { queued, job, .. } in self.joining.remove(&workspace_id).unwrap_or_default() {
             self.timed(queued, job);
         }
+        self.try_parts_again(Some(workspace_id));
     }
 
     /// The member's view of `workspace_id`, joining the workspace first and
@@ -2251,78 +2273,6 @@ impl Worker {
         claimed
     }
 
-    /// Record what `outcome` answered for `invocation` and answer it: done
-    /// once what it wrote is saved, or the failure or refusal it ended with.
-    fn settle(
-        &self,
-        invocation: InvocationId,
-        outcome: Performed,
-        unsaved: Option<Unsaved>,
-    ) -> InvocationReceipt {
-        let outcome = match (outcome, unsaved) {
-            (Ok(done), Some(unsaved)) => return self.answer_pending(invocation, done, unsaved),
-            (outcome, _) => outcome,
-        };
-        let mut log = self.log();
-        log.running.remove(&invocation);
-        let (update, left_at) = match outcome {
-            Ok((output, left_at)) => (InvocationUpdate::Succeeded { invocation, output }, left_at),
-            Err(Outcome::Failed(error)) if !settles(&error) => {
-                // A failure the caller may ask again is not this
-                // invocation's answer: remembered as the failure it was, so
-                // whoever follows the invocation learns to ask again, and the
-                // same request under the same id makes it again rather than
-                // being handed the failure it already has.
-                let update = InvocationUpdate::Failed {
-                    invocation,
-                    error: error.clone(),
-                };
-                log.answered(invocation, &update, None);
-                return InvocationReceipt {
-                    invocation,
-                    status: ReceiptStatus::Failed { error },
-                };
-            }
-            Err(Outcome::Failed(error)) => (InvocationUpdate::Failed { invocation, error }, None),
-            // Answered accepted while the person was asked: it ends refused,
-            // and stays to say so.
-            Err(Outcome::Rejected(error))
-                if log
-                    .entries
-                    .get(&invocation)
-                    .is_some_and(|entry| entry.asked) =>
-            {
-                let error = ActionFailure {
-                    code: error.code().to_owned(),
-                    message: error.to_string(),
-                    details: None,
-                    retryable: false,
-                };
-                (InvocationUpdate::Failed { invocation, error }, None)
-            }
-            // A refusal the caller may ask again about (the document has not
-            // arrived from the workspace yet) is remembered as failed, so a
-            // caller following the invocation learns to ask again; the same
-            // request under the same id then makes it.
-            Err(Outcome::Rejected(error)) if error.ask_again() => {
-                let error = ActionFailure {
-                    code: error.code().to_owned(),
-                    message: error.to_string(),
-                    details: None,
-                    retryable: true,
-                };
-                (InvocationUpdate::Failed { invocation, error }, None)
-            }
-            Err(Outcome::Rejected(error)) => {
-                log.forget(&invocation);
-                return rejected(invocation, error);
-            }
-        };
-        log.answered(invocation, &update, left_at);
-        drop(log);
-        InvocationState::new(invocation, update).receipt()
-    }
-
     /// The appearance `request` may show: only a bot whose installation
     /// allows it, and only on a record's own actions.
     fn admit_appearance(
@@ -2596,11 +2546,13 @@ impl Worker {
         descriptor: &tilo_actions::ActionDescriptor,
     ) -> bool {
         let binding = bounded::ApprovalBinding::of(workspace_id, caller, request);
-        confirms(
-            &descriptor.contract.confirmation,
-            request.confirmation.as_ref(),
-            |token| self.shared.approvals.take(token, &binding),
-        )
+        self.part_waits.confirmed_or(|| {
+            confirms(
+                &descriptor.contract.confirmation,
+                request.confirmation.as_ref(),
+                |token| self.shared.approvals.take(token, &binding),
+            )
+        })
     }
 
     /// Open an app on a new record of the workspace `named`, as its

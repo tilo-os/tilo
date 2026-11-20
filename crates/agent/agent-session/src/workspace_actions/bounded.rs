@@ -1099,14 +1099,23 @@ impl Worker {
     }
 
     /// What a bounded caller's action changes has not arrived from the workspace (a chain's
-    /// newest part, or the word that it has none): asked for and handed over, bounded, and the
-    /// action asked again, as the owner's replica does ([`Worker::invoke_on`]).
+    /// newest part, or the word that it has none): asked for, handed over, and the action
+    /// asked again; a part still on its way holds the request off this thread until it
+    /// arrives, as the owner's replica does ([`Worker::invoke_on`]), with the replica kept
+    /// for when it is applied again.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt answered"
+    )]
     fn ask_again_once_arrived(
         &mut self,
         workspace_id: WorkspaceId,
         key: &BoundedKey,
-        mut held: BoundedReplica,
-        mut tried: Result<tilo_actions::ActionOutput, tilo_actions::api::ApiError>,
+        held: BoundedReplica,
+        (tried, confirmed): (
+            Result<tilo_actions::ActionOutput, tilo_actions::api::ApiError>,
+            bool,
+        ),
         asked: impl Fn(
             &BoundedReplica,
         ) -> Result<tilo_actions::ActionOutput, tilo_actions::api::ApiError>,
@@ -1115,24 +1124,27 @@ impl Worker {
             BoundedReplica,
             Result<tilo_actions::ActionOutput, tilo_actions::api::ApiError>,
         ),
-        ActionCallError,
+        Outcome,
     > {
-        let until = std::time::Instant::now().checked_add(super::part_wait::PART_WAIT);
-        while matches!(&tried, Err(tilo_actions::api::ApiError::Unavailable { code, .. })
-                if code == tilo_actions::api::NOT_READY)
-            && until.is_some_and(|until| std::time::Instant::now() < until)
+        if !matches!(&tried, Err(error) if super::part_wait::arriving(error)) {
+            return Ok((held, tried));
+        }
+        self.bounded.insert(key.clone(), held);
+        let state = self
+            .refresh(workspace_id, super::Needs::Joined)
+            .map_err(Outcome::Rejected)?;
+        self.hold_chains(&super::Writer::Bounded(key.clone()), &key.0, &state);
+        let held = self
+            .bounded
+            .remove(key)
+            .ok_or(Outcome::Rejected(ActionCallError::UnknownAction))?;
+        let tried = asked(&held);
+        if let Err(error) = &tried
+            && super::part_wait::arriving(error)
+            && self.hold_for_part(confirmed)
         {
             self.bounded.insert(key.clone(), held);
-            let state = self.refresh(workspace_id, super::Needs::Joined)?;
-            self.hold_chains(&super::Writer::Bounded(key.clone()), &key.0, &state);
-            held = self
-                .bounded
-                .remove(key)
-                .ok_or(ActionCallError::UnknownAction)?;
-            tried = asked(&held);
-            if tried.is_err() {
-                std::thread::park_timeout(std::time::Duration::from_millis(20));
-            }
+            return Err(super::api_outcome(error));
         }
         Ok((held, tried))
     }
@@ -1241,7 +1253,9 @@ impl Worker {
             .map(Confirmation::Approved);
         let given = approval.as_ref().or(request.confirmation.as_ref());
         let binding = ApprovalBinding::of(workspace_id, caller, request);
-        let confirmed = approved(&self.shared.approvals, given, &binding);
+        let confirmed = self
+            .part_waits
+            .confirmed_or(|| approved(&self.shared.approvals, given, &binding));
         let context = super::caller_context(caller, request);
         let running = super::timing_start();
         let asked = |held: &BoundedReplica| {
@@ -1273,9 +1287,8 @@ impl Worker {
             super::catch_up::answer_unheld_parts(&key.0, &held.held, state);
             tried = asked(&held);
         }
-        let (mut held, tried) = self
-            .ask_again_once_arrived(workspace_id, &key, held, tried, asked)
-            .map_err(Outcome::Rejected)?;
+        let (mut held, tried) =
+            self.ask_again_once_arrived(workspace_id, &key, held, (tried, confirmed), asked)?;
         let output = match tried {
             Ok(output) => output,
             Err(tilo_actions::api::ApiError::ConfirmationRequired) if given.is_some() => {
