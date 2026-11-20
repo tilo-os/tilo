@@ -113,6 +113,13 @@ impl Workspaces {
     /// with its sign-in: kept where they are turned on, removed with what was
     /// kept of them where they are turned off. Its mail account stays
     /// whatever is said, and Mail hides it where its mail is off.
+    #[cfg_attr(
+        not(feature = "agents"),
+        allow(
+            clippy::unused_async,
+            reason = "it keeps the shape of the build that does keep calendars"
+        )
+    )]
     pub(super) async fn set_services(
         &self,
         root: &Path,
@@ -257,6 +264,10 @@ impl Workspaces {
     /// A build without the calendar module keeps no iCloud calendars: an
     /// added account feeds mail alone.
     #[cfg(not(feature = "agents"))]
+    #[allow(
+        clippy::unused_async,
+        reason = "it keeps the shape of the build that does keep calendars"
+    )]
     async fn keep_added_calendars(
         &self,
         _root: &Path,
@@ -653,6 +664,10 @@ pub(super) fn remove_calendar(root: &Path, calendar: &str) -> Result<(), String>
 }
 
 #[cfg(not(feature = "agents"))]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "it keeps the shape of the build that does remove a calendar account"
+)]
 pub(super) fn remove_calendar(_root: &Path, _calendar: &str) -> Result<(), String> {
     Ok(())
 }
