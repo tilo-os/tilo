@@ -1200,6 +1200,9 @@ window-menu-stop-sharing-with-workspace = Stop sharing with workspace
 window-menu-stop-sharing-watched = Stop sharing with workspace ({ $viewers } watching)
 window-menu-stop-sharing-waiting = Stop sharing with workspace ({ $viewers } waiting)
 window-menu-someone-elses = { $name }'s window
+# The same row for a window whose holder nobody named: the words that stand for an unnamed
+# person take no possessive.
+window-menu-someone-elses-unnamed = Someone else's window
 # A window another device shares, as the tab showing it says it: what the tab is called, whose
 # window it is, whether this device may type into it, and how its pictures stand.
 peer-window-name = { $window } on { $device }

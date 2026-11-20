@@ -319,10 +319,13 @@ pub fn rows(tree: &Layout, route: &RouteIds, facts: &Facts) -> Vec<Row> {
     };
     let own = facts.held.is_none();
     let held = || {
-        facts
-            .held
-            .clone()
-            .map(|name| t_args("window-menu-someone-elses", &[("name", name.into())]))
+        facts.held.clone().map(|name| {
+            if ui::presence::is_unnamed_person(&name) {
+                t("window-menu-someone-elses-unnamed")
+            } else {
+                t_args("window-menu-someone-elses", &[("name", name.into())])
+            }
+        })
     };
     let fullscreen = tree.fullscreen_group() == Some(group.id);
     let floating = floating(tree, group.id);

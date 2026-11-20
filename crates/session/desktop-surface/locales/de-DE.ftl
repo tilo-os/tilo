@@ -1238,6 +1238,7 @@ window-menu-stop-sharing-waiting = Teilen mit dem Arbeitsbereich beenden ({ $vie
        *[other] warten
     })
 window-menu-someone-elses = { $name }s Fenster
+window-menu-someone-elses-unnamed = Fenster von jemand anderem
 # Ein Fenster, das ein anderes Gerät teilt, wie der Tab es sagt, der es zeigt: wie der Tab heißt,
 # wessen Fenster es ist, ob dieses Gerät hineinschreiben darf und wie es um seine Bilder steht.
 peer-window-name = { $window } auf { $device }

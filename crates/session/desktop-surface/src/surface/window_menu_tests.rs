@@ -1190,6 +1190,27 @@ fn someone_elses_window_is_theirs_to_share_with_the_workspace() {
     assert!(handle.take_workspace_share_asks().is_empty());
 }
 
+/// A window held by someone nobody named says whose it is without hanging a possessive on the
+/// words that stand for their name.
+#[test]
+fn someone_unnamed_elses_window_says_someone_else() {
+    ui::i18n::I18nManager::init("en-US");
+    let (_surface, handle, tab) = shell_showing(7, mapped_notes());
+    let _shares = session_sharing_with(&handle);
+    assert!(handle.set_holders(HashMap::from([(
+        tab,
+        TabHolder {
+            name: ui::presence::unnamed_person_label(),
+            rgb: (200, 120, 40),
+            keeps: true,
+        },
+    )])));
+    let rows = handle.window_menu(tab);
+    let share = row(&rows, SHARE_WITH_WORKSPACE).expect("the row is shown");
+    assert!(!share.enabled);
+    assert_eq!(share.reason.as_deref(), Some("Someone else's window"));
+}
+
 /// A window the sharing app lists offers both shares, side by side in the sharing group, and each
 /// says which it is: the window's live picture to the workspace, or its record in a channel.
 #[test]
