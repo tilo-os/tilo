@@ -180,11 +180,10 @@ pub(crate) fn take_any(
     if delta.is_everything() {
         return None;
     }
-    let refreshed = match own_meta.filter(|_| alone) {
-        Some((meta, _)) => taking_stored(std::slice::from_ref(meta), || {
-            refresh(state.as_mut(), doc, &delta)
-        }),
-        None => refresh(state.as_mut(), doc, &delta),
+    let refreshed = if alone {
+        taking_stored(doc, || refresh(state.as_mut(), doc, &delta))
+    } else {
+        refresh(state.as_mut(), doc, &delta)
     };
     if !refreshed {
         return None;
@@ -346,18 +345,15 @@ pub(crate) fn seal_stored(doc: &Doc) {
     });
 }
 
-/// Call `follow`, a reader bringing its state up to date with the changes
-/// `metas`, taking the items a write on this thread stored when those changes
-/// are exactly that write's change: nothing else wrote beside it, so every
-/// item it stored is still as it was written.
-pub(crate) fn taking_stored<T>(
-    metas: &[automerge::ChangeMetadata<'_>],
-    follow: impl FnOnce() -> T,
-) -> T {
-    let Some(items) = (match metas {
-        [meta] => stored_by(meta),
-        _ => None,
-    }) else {
+/// Call `follow`, a reader bringing its state up to date with `doc`, taking
+/// the items a write on this thread stored when that write's change is the
+/// only head `doc` has: every other change is one it was made on, which
+/// cannot touch the entries it made, so every item it stored is still as it
+/// was written. However the reader reads: the changes since its last sync,
+/// or the whole document (a part read for the first time, a change too large
+/// to apply as a delta).
+pub(crate) fn taking_stored<T>(doc: &Doc, follow: impl FnOnce() -> T) -> T {
+    let Some(items) = stored_at_head(doc) else {
         return follow();
     };
     let before = TAKING.with(|taking| taking.borrow_mut().replace(items));
@@ -366,9 +362,22 @@ pub(crate) fn taking_stored<T>(
     followed
 }
 
+/// The items stored by the write on this thread whose change is `doc`'s only
+/// head, if one noted any.
+fn stored_at_head(doc: &Doc) -> Option<StoredItems> {
+    if doc.pending_ops() > 0 || STORED.with(|stored| stored.borrow().is_empty()) {
+        return None;
+    }
+    let heads = doc.committed_heads();
+    let [head] = heads.as_slice() else {
+        return None;
+    };
+    stored_by(&doc.committed_document().get_change_meta_by_hash(head)?)
+}
+
 /// The items the write on this thread whose change is `meta` stored, if one
 /// noted any.
-fn stored_by(meta: &automerge::ChangeMetadata<'_>) -> Option<StoredItems> {
+pub(crate) fn stored_by(meta: &automerge::ChangeMetadata<'_>) -> Option<StoredItems> {
     let ops = meta.max_op.saturating_add(1).saturating_sub(meta.start_op);
     let mut deps = meta.deps.clone();
     deps.compact_sort();

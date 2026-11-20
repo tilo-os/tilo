@@ -387,50 +387,46 @@ impl Tracker {
         doc: &Doc,
         locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
     ) -> Delta {
-        self.committed_delta_read(doc, locate).0
-    }
-
-    /// [`Self::committed_delta_located`], with the changes it was read from:
-    /// none when it was not read from changes.
-    pub(crate) fn committed_delta_read<'d>(
-        &mut self,
-        doc: &'d Doc,
-        locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
-    ) -> (Delta, Vec<automerge::ChangeMetadata<'d>>) {
         let heads = doc.committed_heads();
         // Unmoved, the usual answer for a document followed every frame: told
         // before its history is looked into.
         if self.heads.as_ref() == Some(&heads) {
-            return (Delta::nothing(), Vec::new());
+            return Delta::nothing();
         }
         let committed = doc.committed_document();
         // A version this document does not have: it was replaced wholesale.
         let moved_on = self.leads_to(doc);
         let Some(previous) = self.heads.replace(heads.clone()) else {
-            return (Delta::everything(), Vec::new());
+            return Delta::everything();
         };
         if previous == heads {
-            return (Delta::nothing(), Vec::new());
+            return Delta::nothing();
         }
         if !moved_on {
-            return (Delta::everything(), Vec::new());
+            return Delta::everything();
         }
         let metas = committed.get_changes_meta(&previous);
-        let ops: u64 = metas
-            .iter()
-            .map(|meta| meta.max_op.saturating_add(1).saturating_sub(meta.start_op))
-            .sum();
+        // A write on this thread that stored its items whole, alone since:
+        // the reader takes those items rather than reads them, so their size
+        // is no reason to read every other item again.
+        let ops: u64 = match metas.as_slice() {
+            [meta] if crate::apply_cache::stored_by(meta).is_some() => 0,
+            metas => metas
+                .iter()
+                .map(|meta| meta.max_op.saturating_add(1).saturating_sub(meta.start_op))
+                .sum(),
+        };
         if metas.len() > MAX_CHANGES || ops > MAX_OPS {
-            return (Delta::everything(), Vec::new());
+            return Delta::everything();
         }
         let mut changes = Vec::with_capacity(metas.len());
         for meta in &metas {
             match committed.get_change_by_hash(&meta.hash) {
                 Some(change) => changes.push(change),
-                None => return (Delta::everything(), Vec::new()),
+                None => return Delta::everything(),
             }
         }
-        (Delta::from_changes(doc, &changes, locate), metas)
+        Delta::from_changes(doc, &changes, locate)
     }
 }
 

@@ -2011,6 +2011,7 @@ fn fill_item(
     slot: Option<(&Value<'_>, &ObjId)>,
     into: &mut dyn Any,
 ) -> Result<bool, ModelError> {
+    let _read = crate::profiling::Phase::start("collection.read_item");
     let error = match crate::table::load_slot(item, doc, slot, into) {
         Ok(()) => return Ok(false),
         Err(error) if quarantines(&error) => error,
@@ -2049,6 +2050,14 @@ fn load_into(
 ) -> Result<(), ModelError> {
     let item = desc.item;
     load_entries(doc, value, id, &mut |stored| {
+        // Stored by the write the state is read after: taken as it was written.
+        if let Some(entry) = &stored.entry
+            && crate::apply_cache::take_stored(entry, &mut |taken| {
+                out.put_shared(None, (stored.id.clone(), stored.key.clone()), taken)
+            })
+        {
+            return Ok(());
+        }
         let slot = stored.value;
         let key = stored.id.clone();
         let mut merged = false;
