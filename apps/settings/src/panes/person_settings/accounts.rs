@@ -365,6 +365,9 @@ impl AccountsModel {
     /// Take what the server answered since the last pass. Whether the page
     /// changed.
     pub(super) fn poll(&mut self) -> bool {
+        // A server that answers a held ask at once is looked at again on the
+        // client's interval, which only its owner's pass drives.
+        self.remote.poll();
         let mut changed = self.read_watched();
         if let Some((asked, call)) = &self.asking
             && let Some(outcome) = settled(call)
@@ -1284,6 +1287,102 @@ mod tests {
                 })
                 .is_err()
         );
+    }
+
+    /// A server that follows the accounts without holding a held ask, so the
+    /// page looks at the reading again on its interval: it answers what it
+    /// keeps now, at once, every time.
+    struct Unheld {
+        listed: std::sync::Mutex<Vec<MailAccount>>,
+    }
+
+    impl ui::tilo_actions::remote::ActionProvider for Unheld {
+        fn query(
+            &self,
+            _: &Caller,
+            _: ui::tilo_actions::remote::CatalogueQuery,
+        ) -> ui::tilo_actions::remote::Pending<
+            Result<
+                ui::tilo_actions::remote::CataloguePage,
+                ui::tilo_actions::remote::ActionCallError,
+            >,
+        > {
+            ui::tilo_actions::remote::Pending::ready(Ok(
+                ui::tilo_actions::remote::CataloguePage::default(),
+            ))
+        }
+
+        fn invoke(
+            &self,
+            _: &Caller,
+            request: ui::tilo_actions::remote::InvokeRequest,
+        ) -> ui::tilo_actions::remote::Pending<
+            Result<
+                ui::tilo_actions::remote::InvocationReceipt,
+                ui::tilo_actions::remote::ActionCallError,
+            >,
+        > {
+            ui::tilo_actions::remote::Pending::ready(Ok(
+                ui::tilo_actions::remote::InvocationReceipt {
+                    invocation: request.invocation,
+                    status: ReceiptStatus::Accepted,
+                },
+            ))
+        }
+
+        fn observe(
+            &self,
+            _: &Caller,
+            id: &ui::tilo_actions::InvocationId,
+        ) -> Option<ui::tilo_actions::remote::InvocationState> {
+            let accounts = self.listed.lock().unwrap().clone();
+            Some(ui::tilo_actions::remote::InvocationState::new(
+                *id,
+                InvocationUpdate::Item {
+                    invocation: *id,
+                    sequence: accounts.len() as u64 + 1,
+                    value: serde_json::to_value(MailAccounts {
+                        accounts,
+                        ..MailAccounts::default()
+                    })
+                    .unwrap(),
+                },
+            ))
+        }
+
+        fn cancel(
+            &self,
+            _: &Caller,
+            _: &ui::tilo_actions::InvocationId,
+        ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionCallError>>
+        {
+            ui::tilo_actions::remote::Pending::ready(Ok(()))
+        }
+    }
+
+    /// An account kept by a sign-in that finished in another tab reaches the
+    /// list though the server does not hold the page's held ask: the page
+    /// looks again on its own.
+    #[test]
+    fn an_account_kept_elsewhere_shows_from_a_server_that_does_not_hold() {
+        en();
+        let clock = ui::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let server = Arc::new(Unheld {
+            listed: std::sync::Mutex::new(Vec::new()),
+        });
+        let api: Arc<dyn ui::tilo_actions::remote::ActionProvider + Send + Sync> = server.clone();
+        let mut accounts = AccountsModel::new(ui::RemoteActions::with_provider(
+            api,
+            Caller::local_person("owner"),
+        ));
+        accounts.poll();
+        assert!(accounts.listed.accounts.is_empty());
+
+        server.listed.lock().unwrap().push(account());
+        clock.advance(std::time::Duration::from_secs(1));
+        accounts.poll();
+        assert_eq!(accounts.listed.accounts, vec![account()]);
     }
 
     /// An account's switch sets what it feeds and keeps the rest.
