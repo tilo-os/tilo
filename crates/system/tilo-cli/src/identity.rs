@@ -18,7 +18,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde_json::Value;
 use tilo_device_identity::IdentityPaths;
-use tilo_device_identity::persist::{read_device_cert, read_public_key, read_signing_key};
+use tilo_device_identity::persist::{load_device_key, read_device_cert, read_public_key};
 use tilo_identity::certification_ceremony::PersonSigner;
 use tilo_server_client::https::{self, Origin};
 use tilo_session_client::device::{self, Entering, Held};
@@ -121,7 +121,9 @@ pub fn held() -> Result<Option<Person>> {
     }
     Ok(Some(Person {
         root,
-        device: read_signing_key(&paths.device_privkey)?,
+        // The device key is the machine's shared one, which its readers allow
+        // to be group-readable.
+        device: load_device_key(&paths).map_err(|error| anyhow!("{error}"))?,
         cert: read_device_cert(&paths.device_cert)?,
         name: std::fs::read_to_string(dir.join("name"))
             .map(|name| name.trim().to_owned())
@@ -141,11 +143,11 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
     // computer's account name or a made-up one.
     let name = name.map(str::trim).unwrap_or_default().to_owned();
     let root = SigningKey::from_bytes(&rand::random());
-    std::fs::write(dir.join("name"), format!("{name}\n"))?;
     let storage = tilo_identity::provisioning::IdentityStorage::for_session();
-    // Last: the identity is there once its root is.
+    // The identity is there once its root is; it makes the directory.
     tilo_identity::provisioning::import_single_device_root(&dir, &root, &name, storage)
         .with_context(|| format!("keep the root in {}", dir.display()))?;
+    std::fs::write(dir.join("name"), format!("{name}\n"))?;
     // The rest of the identity is the one setup a session reads: the device key, the
     // certificate the session's broker admits this computer's own actions by, and this
     // device's entry in the identity's fleet.
@@ -442,6 +444,39 @@ mod tests {
                 .unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_new_identity_is_one_the_session_reads_and_admits() {
+        let home = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path())
+            .set("XDG_CONFIG_HOME", home.path().join("config"))
+            .remove(DIR_ENV)
+            .remove("TILO_IDENTITY_ROOT");
+        let (person, made) = ensure(Some("Ada")).unwrap();
+        assert!(made, "a computer with no identity makes one");
+        assert!(holds_root());
+        let kept = held().unwrap().expect("the person just made");
+        assert_eq!(kept.public_key(), person.public_key());
+        // The registry the session reads names the person, and this device is
+        // enrolled in their fleet: the session's broker admits their own
+        // actions under the certificate.
+        let profile = tilo_identity::registry::identity_for_workspace("any")
+            .unwrap()
+            .expect("the registry names the person");
+        assert_eq!(profile.user_public_key, person.public_key());
+        let fleet = tilo_identity::device_fleet::DeviceFleetStore::from_env()
+            .unwrap()
+            .load(&profile.id)
+            .unwrap();
+        assert!(
+            fleet
+                .certificates
+                .iter()
+                .any(|known| known.device_public_key == kept.cert.device_public_key),
+            "this device is in the identity's fleet"
+        );
     }
 
     #[test]

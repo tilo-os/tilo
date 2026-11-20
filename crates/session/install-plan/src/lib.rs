@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use install_profile_model::plan::{self, DiskRule, Holding, Network, Plan, Token};
 use tilo_device_identity::IdentityPaths;
-use tilo_device_identity::persist::{read_device_cert, read_public_key, read_signing_key};
+use tilo_device_identity::persist::{load_device_key, read_device_cert, read_public_key};
 use tilo_user_identity::{
     DeviceCapabilities, Dial, encode_enrollment_token, enrollment_endpoint, mint_enrollment_token,
 };
@@ -135,7 +135,7 @@ pub fn new_id() -> String {
 pub fn mint(system: &IdentityPaths, home_peers: &Path) -> Result<(String, Token), String> {
     let user = read_public_key(&system.user_pubkey)
         .map_err(|_| "this computer holds no identity; start `tilo login` first".to_owned())?;
-    let device = read_signing_key(&system.device_privkey)
+    let device = load_device_key(system)
         .map_err(|_| "this computer holds no device key; start `tilo login` first".to_owned())?;
     let cert = read_device_cert(&system.device_cert_for_user(&user))
         .or_else(|_| read_device_cert(&system.device_cert))
@@ -184,7 +184,7 @@ pub fn mint(system: &IdentityPaths, home_peers: &Path) -> Result<(String, Token)
 #[must_use]
 pub fn dial_peers(system: &IdentityPaths, home_peers: &Path, user: [u8; 32]) -> Vec<Dial> {
     let mut dials = Vec::new();
-    if let Ok(device) = read_signing_key(&system.device_privkey) {
+    if let Ok(device) = load_device_key(system) {
         dials.push(Dial {
             endpoint: enrollment_endpoint(&device.verifying_key().to_bytes()),
             relay_url: own_relay(),
