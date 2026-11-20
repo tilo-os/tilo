@@ -191,7 +191,7 @@ impl WorkspaceDocumentsLink for Membership {
     fn workspace_content(&self, _workspace: WorkspaceId) -> Option<tilo_content::ContentStore> {
         Some(self.content.clone())
     }
-    fn host_keys(
+    fn serving_keys(
         &self,
         route: &DocumentRoute,
         create: bool,

@@ -237,9 +237,20 @@ impl Worker {
             )
         };
         let manifest = store.read(content).ok_or_else(missing)?;
-        fs_content::whole(manifest, MOST_TEXT_BYTES, |chunk| {
-            store.read(&hex::encode(chunk))
-        })
+        let sealing = if fs_content::Manifest::decode(&manifest)
+            .ok()
+            .is_some_and(|manifest| manifest.sealed().is_some())
+        {
+            self.file_sealing(workspace_id, false)?
+        } else {
+            None
+        };
+        fs_content::whole_with(
+            manifest,
+            MOST_TEXT_BYTES,
+            |chunk| store.read(&hex::encode(chunk)),
+            |cipher, bytes| sealing.as_ref()?.open(cipher, bytes),
+        )
         .ok_or_else(missing)
     }
 

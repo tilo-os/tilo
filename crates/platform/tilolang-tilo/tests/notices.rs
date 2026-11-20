@@ -634,28 +634,32 @@ fn a_notice_from_an_app_with_its_own_documents_opens_the_persons_own() {
     // app declaring `resources: .own`; a notice about what they keep there names that document, so
     // it opens on any device of theirs.
     let person = "ab".repeat(32);
-    let mut own = Replica::new(&person, AutoCommit::new(), &[OWN]).0;
-    own.host.root_of("so.tilo.test.own").unwrap();
+    let (mut own, packages) = Replica::new(&person, AutoCommit::new(), &[OWN]);
+    let item = own.host.root_of("so.tilo.test.own").unwrap();
     own.commit();
-
-    let Replica { host, .. } = own;
+    let note = tilolang_tilo::publish::resource_id("so.tilo.test.own", &item.id_string());
+    let Replica { host, .. } = own.fork(&person, &[OWN]);
     let mut service = ResourceService::new(host, &person);
     let recorder = Recorder::default();
     service.set_tell(recorder.clone());
     service.poll();
-    assert!(recorder.shown.borrow().is_empty(), "nothing yet");
 
-    // The app tells them about the note they keep: one change, written by its action as any
-    // other is, and the device that looked before it is shown it.
-    let note = service
-        .resources()
-        .into_iter()
-        .find(|resource| resource.kind == "tl.so.tilo.test.own.Note")
-        .expect("the note is published")
-        .id;
-    service
-        .invoke(note.as_str(), "tell", &Map::new())
-        .expect("the action runs");
+    invoke(
+        &mut own,
+        &packages[0].meta,
+        "tell",
+        vec![Value::resource(&item)],
+    );
+    service.take_in(&own.doc);
+    assert!(
+        service
+            .resources()
+            .iter()
+            .all(|resource| resource.id.as_str() != note)
+    );
+    assert!(service.read(&note).is_none());
+    assert!(service.invoke(&note, "tell", &Map::new()).is_err());
+
     let shown = recorder.shown.borrow().clone();
     assert_eq!(shown.len(), 1, "the person it names: {shown:#?}");
     let place = place(&shown[0]);
@@ -664,7 +668,7 @@ fn a_notice_from_an_app_with_its_own_documents_opens_the_persons_own() {
         tilolang_tilo::member_document_of("so.tilo.test.own", &person)
             .expect("their own document of the workspace")
     );
-    assert_eq!(place.resource, note.as_str());
+    assert_eq!(place.resource, note);
     assert_eq!(
         tilo_service::notice::Place::from_activation(&place.activation()),
         Some(place)

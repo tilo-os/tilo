@@ -16,7 +16,6 @@ use std::rc::Rc;
 
 use ui::application::{ApplicationDefinition, LaunchTarget, RestoreInput};
 use ui::application_view::InstanceViewStore;
-use ui::permissions::MemberId;
 use ui::resource::{
     DocumentCheckout, DocumentId, ResourceOpenError, ResourceOwners, ResourceStore,
 };
@@ -142,23 +141,14 @@ pub(crate) fn store(
     Ok(store)
 }
 
-/// What a page showing `definition` opens in `records`: `record` is the id its
-/// link names, else `author`'s own record of an app each member keeps their
-/// own of, the instance's default record or the app's own document of the
-/// workspace.
+/// What a page showing the app opens on a link or a default record.
 pub(crate) fn opening(
     definition: &ApplicationDefinition,
     records: &ResourceStore,
     record: Option<&str>,
     new_document: bool,
     instance: u64,
-    author: &MemberId,
 ) -> Result<Opening, Unopened> {
-    if record.is_none()
-        && let Some(own) = own_opening(definition, records, author)
-    {
-        return own;
-    }
     // The instance's default record, named by the host so a reload opens the
     // same document, as a native launch does.
     let default = DocumentCheckout::new(
@@ -195,29 +185,6 @@ pub(crate) fn opening(
             Err(error) => Err(Unopened::Records(error)),
         },
     }
-}
-
-/// `author`'s own record of `definition`, when the app keeps one per member
-/// ([`ApplicationDefinition::member_resource`]): theirs alone, which they start
-/// and change whatever their role in the workspace, so a window of it never
-/// waits for someone who writes there. It is still the workspace's to send
-/// when another device of theirs wrote it. `None` for an app whose records
-/// are the workspace's.
-pub(crate) fn own_opening(
-    definition: &ApplicationDefinition,
-    records: &ResourceStore,
-    author: &MemberId,
-) -> Option<Result<Opening, Unopened>> {
-    let own = definition.member_resource_of(author)?;
-    Some(match records.try_open_resource(&own) {
-        Ok(_) => Ok(Opening::Target(LaunchTarget::Record {
-            checkout: own,
-            reveal: None,
-        })),
-        Err(ResourceOpenError::MissingResource) => Ok(Opening::New(own.id)),
-        Err(ResourceOpenError::Arriving) => Ok(Opening::Arriving),
-        Err(error) => Err(Unopened::Records(error)),
-    })
 }
 
 /// What a page naming no record opens where the application decides: the

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.maps@00cfb4f3d45fad90";
+export const SURFACE = "so.tilo.maps@b3f04d0355bb4009";
 
 /** One of "landmark", "cafe", "restaurant", "bar", "museum", "park", "transit", "hotel", "shop", "hospital", "other". */
 export type Category = "landmark" | "cafe" | "restaurant" | "bar" | "museum" | "park" | "transit" | "hotel" | "shop" | "hospital" | "other";
@@ -91,16 +91,6 @@ export type TransitMode = "Walk" | "Bus" | "Tram" | "Subway" | "Rail" | "Ferry";
 /** One of "car", "transit", "bike", "foot". */
 export type TravelMode = "car" | "transit" | "bike" | "foot";
 
-export interface DownloadedRegion {
-  id: string;
-  name: string;
-  min: LatLon;
-  max: LatLon;
-  z0: number;
-  z1: number;
-  tiles: number;
-}
-
 /** The arguments of `accept-places`. */
 export interface AcceptPlacesArgs {
   places: Place[];
@@ -140,23 +130,6 @@ export interface AcceptTransitArgs {
 
 /** The arguments of `clear-transit`. */
 export interface ClearTransitArgs {
-}
-
-/** The arguments of `remember`. */
-export interface RememberArgs {
-  device: string;
-  region: DownloadedRegion;
-}
-
-/** The arguments of `forget`. */
-export interface ForgetArgs {
-  device: string;
-  area: string;
-}
-
-/** The arguments of `clear`. */
-export interface ClearArgs {
-  device: string;
 }
 
 /** Maps — `maps.workspace`. */
@@ -239,36 +212,5 @@ export const WORKSPACE_ACTIONS = ["acceptPlaces", "acceptPlacesMany", "commitSea
 /** The `maps.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {
   return resourceProxy(ws, path, SURFACE, WORKSPACE_ACTIONS) as unknown as Workspace;
-}
-
-/** Offline areas — `maps.offline-areas`. */
-export interface OfflineAreas extends tilo.Resource {
-  devices: Record<string, unknown>;
-  remember(args: {
-    device: string;
-    region: DownloadedRegion;
-  }): Promise<void>;
-  /** Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  rememberMany(items: RememberArgs[]): Promise<tilo.ActionAnswer[]>;
-  forget(args: {
-    device: string;
-    area: string;
-  }): Promise<void>;
-  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
-  clear(args: {
-    device: string;
-  }): Promise<void>;
-  /** Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  clearMany(items: ClearArgs[]): Promise<tilo.ActionAnswer[]>;
-}
-
-/** The actions `OfflineAreas` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const OFFLINEAREAS_ACTIONS = ["remember", "rememberMany", "forget", "forgetMany", "clear", "clearMany"] as const;
-
-/** The `maps.offline-areas` kind at `path`. */
-export function offlineAreas(ws: tilo.Workspace, path: string): OfflineAreas {
-  return resourceProxy(ws, path, SURFACE, OFFLINEAREAS_ACTIONS) as unknown as OfflineAreas;
 }
 

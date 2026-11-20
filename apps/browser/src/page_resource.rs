@@ -212,6 +212,8 @@ pub struct PageResource {
     /// The tabs that have actions here, by their id.
     #[model(readonly)]
     pub tabs: Map<Tab>,
+    #[model(readonly, default = false)]
+    pub(crate) restored_previous: bool,
 }
 
 /// A part of one tab's record: what a read of it answers with.
@@ -251,6 +253,22 @@ impl PageResource {
     read_content = PageResource::read_document
 )]
 impl PageResource {
+    /// Restore the earlier profile data.
+    #[action(by_app, housekeeping, writes = actions, writes = tabs, writes = restored_previous)]
+    pub fn restore_previous(&mut self, previous: serde_json::Value) -> Result<(), Refusal> {
+        if self != &Self::default() {
+            return Ok(());
+        }
+        let previous =
+            Self::from_json(&previous).map_err(|error| Refusal::new(error.to_string()))?;
+        previous.check()?;
+        *self = Self {
+            restored_previous: true,
+            ..previous
+        };
+        Ok(())
+    }
+
     /// Set down a page action.
     ///
     /// One action that operated a tab's page, as the tab's engine listed it

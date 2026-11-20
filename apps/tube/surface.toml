@@ -138,6 +138,8 @@ version = 1
 fields = [
   { path = "watched", type = { map = "int" } },
   { path = "positions", type = { map = "int" } },
+  { path = "forgotten", type = { map = "bool" }, readonly = true },
+  { path = "cleared", type = "bool", readonly = true },
 ]
 
 [[resources.verbs]]
@@ -167,6 +169,7 @@ params = [
 [[resources.verbs]]
 id = "forget"
 kind = "undoable"
+writes = ["record", "watched", "positions", "forgotten"]
 params = [
   { name = "video", type = "text", required = true, schema = { type = "string" } },
 ]
@@ -174,4 +177,13 @@ params = [
 [[resources.verbs]]
 id = "clear"
 kind = "undoable"
+writes = ["record", "watched", "positions", "cleared"]
+
+[[resources.verbs]]
+id = "import-previous"
+kind = "undoable"
+writes = ["record", "watched", "positions"]
+params = [
+  { name = "previous", type = { list = "any" }, required = true, schema = { type = "array", items = { type = "array", maxItems = 3, minItems = 3 } } },
+]
 

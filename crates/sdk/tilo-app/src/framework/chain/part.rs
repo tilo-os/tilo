@@ -6,7 +6,7 @@
 use std::any::Any;
 use std::rc::Rc;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use tilo_actions::{ActionError, ActionInvoker, ActionNeed, EncodedAction};
 use tilo_resource::{Reader, Refusal, Resource};
@@ -654,4 +654,22 @@ fn prepare_read<P: Chained>(
     parts: &dyn Any,
 ) -> Result<(), String> {
     P::prepare_read(filter, base_of::<P>(base)?, parts_of::<P>(parts))
+}
+
+/// The members of a group by the part each changes (`indices`, in the
+/// group's order), parts in order: one function for every part type.
+#[inline(never)]
+pub(super) fn by_part(indices: &[u64]) -> Vec<(u64, Vec<usize>)> {
+    let mut per_part: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    for (at, index) in indices.iter().enumerate() {
+        per_part.entry(*index).or_default().push(at);
+    }
+    per_part.into_iter().collect()
+}
+
+/// A history verb on a part, from its payload: decoded by one function for
+/// every part type.
+#[inline(never)]
+pub(super) fn part_edit(payload: &[u8]) -> Result<PartEdit, String> {
+    tilo_actions::decode_json(payload).map_err(|error| error.to_string())
 }

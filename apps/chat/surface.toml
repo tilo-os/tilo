@@ -654,6 +654,12 @@ fields = [
   { path = "messages.*.work.trace.*.label", type = "text", label = true },
   { path = "messages.*.work.trace.*.outcome", type = { option = { named = "AgentStepOutcome" } } },
   { path = "messages.*.work.failure_detail", type = { option = "text" } },
+  { path = "messages.*.work.answered", type = { option = { named = "Answered" } }, stored = "record" },
+  { path = "messages.*.work.answered.provider", type = "text" },
+  { path = "messages.*.work.answered.model", type = "text" },
+  { path = "messages.*.work.answered.label", type = "text" },
+  { path = "messages.*.work.answered.cost_micros", type = "int" },
+  { path = "messages.*.work.answered.tokens", type = "int" },
   { path = "messages.*.appearance", type = { option = { named = "ShownAs" } }, readonly = true, stored = "record" },
   { path = "messages.*.appearance.name", type = "text" },
   { path = "messages.*.appearance.avatar", type = { option = "text" } },
@@ -680,7 +686,7 @@ fields = [
   { path = "messages.*.question.person", type = "actor" },
   { path = "messages.*.question.answers", type = { list = { named = "Choice" } } },
   { path = "messages.*.question.detail", type = "text" },
-  { path = "messages.*.question.answered", type = { option = { named = "Answered" } }, stored = "record" },
+  { path = "messages.*.question.answered", type = { option = { named = "Answered2" } }, stored = "record" },
   { path = "messages.*.question.answered.answer", type = "text" },
   { path = "messages.*.question.answered.device", type = "text" },
   { path = "messages.*.question.answered.at", type = "int" },
@@ -857,7 +863,7 @@ id = "record-work"
 kind = "undoable"
 params = [
   { name = "message", type = "text", required = true, schema = { type = "string" } },
-  { name = "work", type = { named = "WorkUpdate" }, required = true, schema = { type = "object", additionalProperties = false, properties = { about = { type = ["string", "null"] }, app = { type = ["string", "null"] }, detail = { type = ["string", "null"] }, did = { type = ["string", "null"] }, state = { type = "string" }, trace = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, label = { type = "string" }, outcome = { type = "string" }, resource = { type = "string" }, sequence = { type = "integer", minimum = 0 }, why = { type = ["string", "null"] } }, required = ["id", "resource", "label", "outcome"] } } }, required = ["state"] } },
+  { name = "work", type = { named = "WorkUpdate" }, required = true, schema = { type = "object", additionalProperties = false, properties = { about = { type = ["string", "null"] }, answered = { type = ["object", "null"], additionalProperties = false, properties = { costMicros = { type = "integer", minimum = 0 }, label = { type = "string" }, model = { type = "string" }, provider = { type = "string" }, tokens = { type = "integer", minimum = 0 } }, required = ["provider", "model", "costMicros"] }, app = { type = ["string", "null"] }, detail = { type = ["string", "null"] }, did = { type = ["string", "null"] }, state = { type = "string" }, trace = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, label = { type = "string" }, outcome = { type = "string" }, resource = { type = "string" }, sequence = { type = "integer", minimum = 0 }, why = { type = ["string", "null"] } }, required = ["id", "resource", "label", "outcome"] } } }, required = ["state"] } },
   { name = "say", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
@@ -1007,6 +1013,16 @@ cases = [
 
 [[resources.types]]
 name = "Answered"
+fields = [
+  { name = "provider", type = "text" },
+  { name = "model", type = "text" },
+  { name = "label", type = "text" },
+  { name = "cost_micros", type = "int" },
+  { name = "tokens", type = "int" },
+]
+
+[[resources.types]]
+name = "Answered2"
 fields = [
   { name = "answer", type = "text" },
   { name = "device", type = "text" },
@@ -1177,7 +1193,7 @@ fields = [
   { name = "person", type = "actor" },
   { name = "answers", type = { list = { named = "Choice" } } },
   { name = "detail", type = "text" },
-  { name = "answered", type = { option = { named = "Answered" } } },
+  { name = "answered", type = { option = { named = "Answered2" } } },
   { name = "outcome", type = { option = { named = "Outcome" } } },
   { name = "withdrawn", type = { option = { named = "Withdrawn" } } },
 ]
@@ -1327,6 +1343,7 @@ fields = [
   { name = "state", type = { option = { named = "Transition" } } },
   { name = "trace", type = { collection = { named = "Step" } } },
   { name = "failure_detail", type = { option = "text" } },
+  { name = "answered", type = { option = { named = "Answered" } } },
 ]
 
 [[resources.types]]
@@ -1338,6 +1355,7 @@ fields = [
   { name = "about", type = { option = "text" } },
   { name = "trace", type = { list = { named = "StepUpdate" } } },
   { name = "detail", type = { option = "text" } },
+  { name = "answered", type = { option = { named = "Answered" } } },
 ]
 
 [[resources]]
@@ -1346,6 +1364,7 @@ label = "Chat drafts"
 version = 1
 fields = [
   { path = "drafts", type = { map = "rich_text" } },
+  { path = "imported", type = { set = "text" }, readonly = true },
 ]
 
 [[resources.verbs]]
@@ -1355,49 +1374,14 @@ params = [
   { name = "key", type = "text", required = true, schema = { type = "string" } },
 ]
 
-[[resources]]
-kind = "chat.learned"
-label = "What your agents learned"
-version = 1
-fields = [
-  { path = "facts", type = { collection = { named = "Fact" } }, readonly = true, stored = "collection" },
-  { path = "facts.*.text", type = "text", label = true },
-  { path = "facts.*.source", type = "text" },
-  { path = "facts.*.at", type = "int" },
-  { path = "facts.*.by", type = { option = "text" } },
-]
-
 [[resources.verbs]]
-id = "learn"
+id = "import-previous"
 kind = "undoable"
+writes = ["record", "drafts", "imported"]
 params = [
-  { name = "text", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-  { name = "source", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-]
-
-[[resources.verbs]]
-id = "correct"
-kind = "undoable"
-params = [
-  { name = "fact", type = "text", required = true, schema = { type = "string" } },
-  { name = "text", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-  { name = "source", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-]
-
-[[resources.verbs]]
-id = "forget"
-kind = "undoable"
-params = [
-  { name = "fact", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.types]]
-name = "Fact"
-fields = [
-  { name = "text", type = "text" },
-  { name = "source", type = "text" },
-  { name = "at", type = "int" },
-  { name = "by", type = { option = "text" } },
+  { name = "receipt", type = "text", required = true, schema = { type = "string" } },
+  { name = "key", type = "text", required = true, schema = { type = "string" } },
+  { name = "markdown", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources]]

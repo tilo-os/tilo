@@ -2,6 +2,8 @@
 //! replica keeps for it, the role and grants that decide its changes, and the
 //! governance each of those is checked against.
 
+use std::collections::BTreeSet;
+
 use super::{
     ActionKind, AutoCommit, DeviceCert, GovernedIdentity, MemberAccess, MembershipError, Role,
     Route, SignedOp, StatePeer, SystemTime, TreePath, WorkspacePolicy, backend, document_surface,
@@ -902,28 +904,194 @@ impl StatePeer {
         self.core.workspace_doc.as_deref()
     }
 
-    /// Read permission for an exact canonical record using the same governed
+    /// Read permission for an exact canonical document using the same governed
     /// actor/resource vocabulary as document mutation admission.
     pub fn check_document_read(
         &self,
         device: [u8; 32],
         app: &str,
-        record: &str,
+        document: &str,
         now: SystemTime,
     ) -> Result<(), String> {
         let member = self.membership(device, now)?;
-        let own = self.core.own_write(app, record, &device);
+        let own = self.document_owner(app, document, &member.policy);
+        self.check_read_as(&member, (app, document), own.as_ref(), now)
+    }
+
+    fn check_read_as(
+        &self,
+        member: &MemberAccess,
+        (app, document): (&str, &str),
+        own: Option<&collab_types::OwnResource>,
+        now: SystemTime,
+    ) -> Result<(), String> {
         if backend::access::document_read(
             &member.authority(),
             &self.core.workspace,
-            (app, record),
-            own.as_ref(),
+            (app, document),
+            own,
             now,
         ) {
             Ok(())
         } else {
-            Err(format!("record read forbidden: {app}/{record}"))
+            Err(format!("document read forbidden: {app}/{document}"))
         }
+    }
+
+    /// Resolve personal routes before the first write teaches the replica
+    /// their owner. A document group can be founded before any data exists.
+    fn document_owner(
+        &self,
+        app: &str,
+        document: &str,
+        policy: &WorkspacePolicy,
+    ) -> Option<collab_types::OwnResource> {
+        self.core.own_of(app, document).or_else(|| {
+            if collab_types::own_resource::own_kinds(app).is_empty() {
+                return None;
+            }
+            policy
+                .owner
+                .iter()
+                .chain(policy.members.keys())
+                .find_map(|person| {
+                    let mut owner = [0; 32];
+                    hex::decode_to_slice(person, &mut owner).ok()?;
+                    collab_types::OwnResource::recognise(app, document, owner)
+                })
+        })
+    }
+
+    /// Certified key holders whose current authority allows reading this
+    /// document. Store-only devices never receive content keys.
+    pub fn document_key_holders(
+        &self,
+        app: &str,
+        document: &str,
+        now: SystemTime,
+    ) -> Result<BTreeSet<[u8; 32]>, String> {
+        let policy = self
+            .core
+            .workspace_doc
+            .as_ref()
+            .ok_or("workspace governance missing")?
+            .workspace_policy(&self.core.workspace);
+        let own = self.document_owner(app, document, policy);
+        let devices: Vec<_> = self.governance().key_holders(now)?.into_iter().collect();
+        Ok(self
+            .governance()
+            .access_of(&devices, now)?
+            .into_iter()
+            .filter_map(|(device, member)| {
+                self.check_read_as(&member, (app, document), own.as_ref(), now)
+                    .is_ok()
+                    .then_some(device)
+            })
+            .collect())
+    }
+
+    /// Devices allowed by both workspace policy and the document's declared readers.
+    pub fn document_key_holders_read_by(
+        &self,
+        (app, document): (&str, &str),
+        named: Option<&str>,
+        now: SystemTime,
+    ) -> Result<BTreeSet<[u8; 32]>, String> {
+        let mut devices = self.document_key_holders(app, document, now)?;
+        if let Some(named) = named {
+            let Some(collab_types::Readers::People(people)) = collab_types::Readers::parse(named)
+            else {
+                return Err("invalid named readers".into());
+            };
+            let allowed = self.governance().reader_key_holders(&people, now)?;
+            devices.retain(|device| allowed.contains(device));
+        }
+        Ok(devices)
+    }
+
+    /// Whether sealing with the workspace key would give this document to a
+    /// device whose read access is restricted.
+    pub fn requires_document_keys(
+        &self,
+        app: &str,
+        document: &str,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        if collab_types::validator::requires_independent_document_keys(app, document)
+            || self.publication().has_document_keys(app, document)
+        {
+            return Ok(true);
+        }
+        let governance = self.governance();
+        let policy = self
+            .core
+            .workspace_doc
+            .as_ref()
+            .ok_or("workspace governance missing")?
+            .workspace_policy(&self.core.workspace);
+        let own = self.document_owner(app, document, policy);
+        let node = collab_types::document_node(&self.core.workspace, app, document);
+        let cx = tilo_action_policy::Context::at_time(now);
+        // A rule can exclude a person before they join on a device. Protect
+        // the history now, before that device receives the workspace key.
+        if own.is_some()
+            || policy.grants.iter().any(|grant| {
+                grant.kinds.contains(ActionKind::Read)
+                    && grant.answer != tilo_action_policy::Answer::Allow
+                    && grant.is_live(&cx)
+                    && cx.covers(&grant.node, &node)
+            })
+        {
+            return Ok(true);
+        }
+        let devices: Vec<_> = governance.key_holders(now)?.into_iter().collect();
+        let access = governance.access_of(&devices, now)?;
+        Ok(access.len() != devices.len()
+            || access.values().any(|member| {
+                self.check_read_as(member, (app, document), None, now)
+                    .is_err()
+            }))
+    }
+
+    /// Validate the group bound into the signed encryption metadata. A
+    /// historical write may still use the original workspace key.
+    pub(super) fn check_document_key_scope(
+        &self,
+        (app, document): (&str, &str),
+        readers: Option<&str>,
+        encryption: Option<collab_types::EncryptionMetadata>,
+        now: SystemTime,
+        historical: bool,
+    ) -> Result<(), String> {
+        if let Some(collab_types::EncryptionMetadata {
+            scheme: collab_types::EncryptionScheme::DocumentContentKey { group, .. },
+            ..
+        }) = encryption
+        {
+            let workspace = collab_types::WorkspaceId::parse(&self.core.workspace)
+                .ok_or("invalid workspace for a document key group")?;
+            let scope = neighbour_wire::KeyScope::document(workspace, app, document, readers)
+                .ok_or("readers do not match the document")?;
+            return (group == scope.group())
+                .then_some(())
+                .ok_or_else(|| "the encryption group belongs to another document".to_owned());
+        }
+        if neighbour_wire::KeyScope::has_named_readers(document) || readers.is_some() {
+            let workspace = collab_types::WorkspaceId::parse(&self.core.workspace)
+                .ok_or("invalid workspace for a reader set")?;
+            neighbour_wire::KeyScope::document(workspace, app, document, readers)
+                .ok_or("readers do not match the document")?;
+            if encryption.is_none() {
+                return Err("a named reader set requires encryption".into());
+            }
+        }
+        if !historical
+            && self.has_governance()
+            && self.requires_document_keys(app, document, now)?
+        {
+            return Err("this document requires its own encryption group".into());
+        }
+        Ok(())
     }
     pub fn has_governance(&self) -> bool {
         self.core.workspace_doc.is_some()

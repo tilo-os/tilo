@@ -15,7 +15,7 @@ use tilo_peer_state::join_log::{
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
-use super::{DOCUMENT_VERSION, Publication};
+use super::{DOCUMENT_VERSION, Publication, WorkspaceDocumentEntry};
 
 /// The record's layout.
 pub(super) const FORMAT: Format = Format {
@@ -46,6 +46,34 @@ pub(super) struct StoredResource {
     /// How many join receipts the receipts file holds, the first of the
     /// log's.
     pub(super) filed_receipts: u64,
+}
+
+impl WorkspaceDocumentEntry {
+    /// The record `stored` names: `published`, the publications file's, before
+    /// the publications it holds, and `receipted`, the receipts file's, before
+    /// the receipts its log holds.
+    pub(super) fn read(
+        stored: StoredResource,
+        mut published: Vec<Publication>,
+        mut receipted: Vec<JoinCompletionRecord>,
+    ) -> Self {
+        let mut outgoing = stored.outgoing;
+        published.append(&mut outgoing);
+        let mut collaboration = stored.collaboration;
+        receipted.append(&mut collaboration.join_completions);
+        collaboration.join_completions = receipted;
+        Self {
+            version: DOCUMENT_VERSION,
+            workspace: stored.workspace,
+            workspace_id: stored.workspace_id,
+            owner: stored.owner,
+            peer: stored.peer,
+            generation: stored.generation,
+            outgoing: published,
+            published: stored.published,
+            collaboration,
+        }
+    }
 }
 
 /// [`StoredResource`] borrowed from the record held, as it is written.

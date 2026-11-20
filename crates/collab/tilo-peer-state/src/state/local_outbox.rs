@@ -9,8 +9,12 @@ use crate::state::facades::{PeerOutbox, PeerOutboxMut};
 
 /// A channel key holder's renewal of a sealed write: the encryption and
 /// payload a renewal carries under the channel's current epoch, or a refusal.
-pub type Reseal<'a> =
-    dyn FnMut(&SignedOp) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> + 'a;
+pub type Reseal<'a> = dyn FnMut(
+        (&str, &str),
+        Option<&str>,
+        &SignedOp,
+    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String>
+    + 'a;
 
 struct LocalDocument {
     admission: DocumentAdmission,
@@ -234,10 +238,21 @@ impl PeerOutbox<'_> {
                 self.peer
                     .permissions(selected, now)
                     .map_err(|error| error.to_string())?;
-                let NeighbourMsg::AppDocument { envelope, .. } = original else {
+                let NeighbourMsg::AppDocument {
+                    envelope, readers, ..
+                } = original
+                else {
                     return Err("retained local publication requires AppDocument".into());
                 };
-                let (encryption, payload) = reseal(envelope)?;
+                let route = (local.route.app.as_str(), local.route.record.as_str());
+                let (encryption, payload) = reseal(route, readers.as_deref(), envelope)?;
+                self.peer.check_document_key_scope(
+                    route,
+                    readers.as_deref(),
+                    Some(encryption),
+                    now,
+                    false,
+                )?;
                 let floor = drafted.get(&local.route).copied().unwrap_or_else(|| {
                     self.peer
                         .core
@@ -286,9 +301,14 @@ impl PeerOutboxMut<'_> {
         let selected = *renewal.author.as_bytes();
         let local = self.peer.retained_document(original, selected)?;
         let mut candidate = self.peer.clone();
-        candidate.admit_new_local_document(
-            &local.route.app,
-            &local.route.record,
+        // The renewal is read by whoever read the write it renews.
+        let readers = match original {
+            NeighbourMsg::AppDocument { readers, .. } => readers.clone(),
+            _ => None,
+        };
+        candidate.admit_new_local_document_read_by(
+            (&local.route.app, &local.route.record),
+            readers.as_deref(),
             renewal.clone(),
             now,
         )?;
@@ -298,11 +318,6 @@ impl PeerOutboxMut<'_> {
         let own = candidate
             .core
             .own_write(&local.route.app, &local.route.record, &selected);
-        // The renewal is read by whoever read the write it renews.
-        let readers = match original {
-            NeighbourMsg::AppDocument { readers, .. } => readers.clone(),
-            _ => None,
-        };
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(&selected),
             app_id: local.route.app,

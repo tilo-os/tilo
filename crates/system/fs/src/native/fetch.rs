@@ -8,8 +8,9 @@
 use std::fs::File;
 use std::io;
 use std::ops::Range;
-use std::os::fd::BorrowedFd;
+use std::os::fd::{AsRawFd as _, BorrowedFd};
 use std::os::unix::fs::FileExt as _;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use fs_native::hydrate::Cancel;
@@ -23,6 +24,7 @@ pub struct ContentFetcher {
     content: Arc<Hydrator>,
     runtime: tokio::runtime::Handle,
     parallel: usize,
+    roots: Option<[PathBuf; 2]>,
 }
 
 impl ContentFetcher {
@@ -31,7 +33,33 @@ impl ContentFetcher {
             content,
             runtime,
             parallel: parallel.max(1),
+            roots: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_tree(mut self, live: PathBuf, mount: PathBuf) -> Self {
+        if self.content.has_scoped_file_keys() {
+            self.roots = Some([live, mount]);
+        }
+        self
+    }
+
+    fn workspace_of(&self, dest: BorrowedFd<'_>) -> io::Result<Option<collab_types::WorkspaceId>> {
+        let Some(roots) = &self.roots else {
+            return Ok(None);
+        };
+        let path = std::fs::read_link(format!("/proc/self/fd/{}", dest.as_raw_fd()))?;
+        let relative = roots
+            .iter()
+            .find_map(|root| path.strip_prefix(root).ok())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "the placeholder is outside the Files tree",
+                )
+            })?;
+        Ok(self.content.native_workspace(relative))
     }
 }
 
@@ -92,6 +120,10 @@ impl fs_native::hydrate::Fetcher for ContentFetcher {
                 "nobody waits for these bytes any more",
             ));
         }
+        let workspace = self.workspace_of(dest)?;
+        self.content
+            .authorize_scoped_read(workspace)
+            .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error))?;
         let hydrator = Arc::clone(&self.content);
         let hash = Hash::from(*content);
         let priority = if ahead {
@@ -110,7 +142,13 @@ impl fs_native::hydrate::Fetcher for ContentFetcher {
         if crate::content::is_file_backed(&manifest) {
             return self.content.store.files().copy_to(content, &range, &dest);
         }
-        let bytes = self.fetch(content, start, len)?;
+        let bytes = if workspace.is_some() {
+            self.runtime
+                .block_on(self.content.read_scoped(hash, start, len, workspace))
+                .map_err(|error| unavailable(&error))?
+        } else {
+            self.fetch(content, start, len)?
+        };
         if bytes.len() as u64 != len {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,

@@ -184,7 +184,7 @@ fn history_roundtrip(
     url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let history = app
-        .person::<browser::history::BrowsingHistory>()
+        .profile_resource::<browser::history::BrowsingHistory>()
         .ok_or("missing ordinary Browser history resource")?;
     let visits = |url: &str| {
         history.with(|state| state.visits.get(url).map_or(0, |visit| visit.count.get()))

@@ -21,7 +21,6 @@ aarch64 = "aarch64"
 optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "settings", "threads", "open-uri"]
 
 [resources]
-own = ["tilo.chain-unsent"]
 kinds = ["notes.notebook", "tilo.rich-text", "notes.pages", "tilo.chain-unsent"]
 
 [publisher]

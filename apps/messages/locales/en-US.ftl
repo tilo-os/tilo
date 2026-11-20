@@ -206,3 +206,7 @@ messages-app-title = Messages
 messages-drafts = Message drafts
 messages-drafts-keep-draft = Keep a draft
 messages-drafts-drop-draft = Drop a draft
+
+messages-import-previous-draft = Import previous draft
+messages-drafts-import-previous = Restore the previous draft for a conversation
+messages-drafts-sent = Remove the delivered draft

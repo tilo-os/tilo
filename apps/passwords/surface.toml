@@ -62,3 +62,40 @@ params = [
   { name = "filter", type = "text", required = true, schema = { type = "string" } },
 ]
 
+[[resources]]
+kind = "passwords.workspace-vault"
+label = "Workspace vault"
+version = 1
+fields = [
+  { path = "sealed", type = { collection = "text" }, readonly = true, stored = "collection" },
+  { path = "imported", type = { collection = "text" }, readonly = true, stored = "collection" },
+  { path = "removed", type = { set = "text" }, readonly = true },
+]
+
+[[resources.verbs]]
+id = "keep-sealed"
+kind = "undoable"
+writes = ["record", "sealed.*"]
+params = [
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+  { name = "ciphertext", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "import-sealed"
+kind = "undoable"
+writes = ["record", "imported.*"]
+params = [
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+  { name = "ciphertext", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-sealed"
+destructive = true
+kind = "undoable"
+writes = ["record", "sealed.*", "imported.*", "removed"]
+params = [
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+]
+

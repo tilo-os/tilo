@@ -269,8 +269,14 @@ async fn checkout_commit_split() {
     let started = Instant::now();
     for (n, ino) in inos.iter().enumerate() {
         let bytes = bytes_for(n);
-        fs.commit_version_at(*ino, VersionSource::Bytes(&bytes), 1, None)
-            .unwrap();
+        fs.commit_version_at(
+            *ino,
+            VersionSource::Bytes(&bytes),
+            1,
+            None,
+            fs.inode_workspace(*ino),
+        )
+        .unwrap();
     }
     println!(
         "one version's commit, no stage bookkeeping: {:.0} us/file",

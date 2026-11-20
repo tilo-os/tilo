@@ -124,28 +124,3 @@ fields = [
   { name = "text", type = "text" },
 ]
 
-[[resources]]
-kind = "video-player.recent"
-label = "Recent videos"
-version = 1
-fields = [
-  { path = "devices", type = { map = "any" } },
-]
-
-[[resources.verbs]]
-id = "keep"
-kind = "undoable"
-params = [
-  { name = "device", type = "text", required = true, schema = { type = "string" } },
-  { name = "rows", required = true, schema = {} },
-]
-
-[[resources.verbs]]
-id = "stood"
-kind = "undoable"
-params = [
-  { name = "device", type = "text", required = true, schema = { type = "string" } },
-  { name = "id", type = "text", required = true, schema = { type = "string" } },
-  { name = "position_ms", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
-]
-

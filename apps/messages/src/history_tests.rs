@@ -403,6 +403,63 @@ fn repeated_person_and_route_selection_preserves_private_drafts_and_history() {
 }
 
 #[test]
+fn a_previous_draft_is_imported_by_route_and_cannot_return_after_discard() {
+    use crate::drafts::{DOCUMENT, MessageDrafts};
+    use ui::automerge::transaction::Transactable as _;
+
+    let mut app = crate::tests::live_messages_with_history(None);
+    let route = choice();
+    let previous = app.person::<MessageDrafts>().unwrap();
+    previous
+        .invoke(&MessageDrafts::KEEP_DRAFT.with((route.clone(), "earlier draft".to_owned())))
+        .unwrap();
+    previous
+        .record()
+        .edit(false, |doc| {
+            doc.delete(ui::automerge::ROOT, "handled")
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+    previous.record().flush();
+    drop(previous);
+
+    app.effect(&MessagesEffect::SelectRoute {
+        choice: route.clone(),
+    })
+    .unwrap();
+    let current = app
+        .shared_resource::<MessageDrafts>(ui::apps::MESSAGES, DOCUMENT)
+        .unwrap();
+    assert!(current.get().drafts.is_empty());
+    app.effect_confirmed(&MessagesEffect::ImportPreviousDraft)
+        .unwrap();
+    assert_eq!(
+        current.get().drafts.get(&route).map(String::as_str),
+        Some("earlier draft")
+    );
+    current
+        .invoke(&MessageDrafts::DROP_DRAFT.with(route.as_str()))
+        .unwrap();
+    app.effect_confirmed(&MessagesEffect::ImportPreviousDraft)
+        .unwrap();
+    assert!(current.get().drafts.is_empty());
+    app.set_role(ui::permissions::Role::Viewer);
+    assert!(!current.may_read());
+    assert!(
+        !app.agent_surface()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["resource"] == "messages.drafts")
+    );
+    assert!(
+        current
+            .invoke(&MessageDrafts::KEEP_DRAFT.with((route, "denied".to_owned())))
+            .is_err()
+    );
+}
+
+#[test]
 fn forgotten_recipient_discards_draft_and_requires_explicit_route_selection() {
     const DRAFT: &str = "private draft for the forgotten recipient";
     let client = tilo_messaging::MessagingClient::new(

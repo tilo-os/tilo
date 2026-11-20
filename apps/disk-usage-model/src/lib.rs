@@ -1,10 +1,5 @@
-//! Disk Usage Analyzer's resources: the analyzer's own resource, which holds
-//! nothing, and the folders each device analyzed lately, as the app that draws
-//! them and an agent that reads them both see them.
-//!
-//! What is scanned is the device's own disk, so the scan stays in the app; only
-//! the remembered folders travel in the workspace, each device writing its own
-//! list.
+//! Disk Usage Analyzer's action resource and the previous record of local folders.
+//! Devices scan their own disks and keep the recent folders in device settings.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

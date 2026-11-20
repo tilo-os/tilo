@@ -1,5 +1,6 @@
 use super::*;
 use crate::model::{Stopwatch, WeekdayKey};
+use crate::schedule::ClockDeviceSettings;
 use std::time::Duration;
 use ui::prelude::{Replica, TestApp};
 use ui::tilo_resource::items::item_resource_id;
@@ -41,6 +42,36 @@ fn find(
             find(&resource.children, id)
         }
     })
+}
+
+#[test]
+fn clock_delivery_state_follows_the_device_through_upgrade() {
+    use crate::schedule::{ClocksOnDevices, OnThisDevice};
+
+    let person = "a3".repeat(32);
+    let mut app = TestApp::<ClocksShell>::for_person(&person).unwrap();
+    let previous = app.person::<ClocksOnDevices>().unwrap();
+    let expected = OnThisDevice {
+        floating_stopwatch: true,
+        ..OnThisDevice::default()
+    };
+    previous
+        .invoke(&ClocksOnDevices::KEEP.with((
+            "test-device".into(),
+            serde_json::to_value(&expected).unwrap(),
+        )))
+        .unwrap();
+    previous.record().flush();
+    drop(previous);
+
+    let app = app.reopen().unwrap();
+    assert_eq!(
+        app.settings::<ClockDeviceSettings>()
+            .get()
+            .clocks_on_this_device
+            .get(ui::framework::testing::TEST_WORKSPACE),
+        Some(&expected)
+    );
 }
 
 #[test]
@@ -116,9 +147,11 @@ fn one_published_tree_offers_every_clock_and_floats_timers_on_this_device_only()
     app.call_on(&timer, "float-timer", serde_json::json!({}))
         .unwrap();
     let device = app
-        .person::<ClocksOnDevices>()
-        .unwrap()
-        .with(|kept| kept.on("test-device"));
+        .settings::<ClockDeviceSettings>()
+        .get()
+        .clocks_on_this_device
+        .remove(ui::framework::testing::TEST_WORKSPACE)
+        .unwrap();
     assert_eq!(
         device.floating_timers.into_iter().collect::<Vec<_>>(),
         vec![timer.rsplit('/').next().unwrap().to_owned()]

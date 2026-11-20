@@ -96,7 +96,7 @@ fn recipients(message: &Message) -> String {
     out
 }
 
-fn message_entry(message: &Message) -> SearchEntry {
+pub(crate) fn message_entry(message: &Message) -> SearchEntry {
     let title = if message.subject.trim().is_empty() {
         untitled()
     } else {

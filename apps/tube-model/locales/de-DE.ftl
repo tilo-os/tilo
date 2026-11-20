@@ -9,3 +9,4 @@ tube-watch-history-clear = Verlauf löschen
 tube-library = Tube
 tube-library-reply-to-comment = Auf Kommentar antworten
 tube-library-retract = Antwort zurückziehen
+tube-watch-history-import-previous = Früheren Wiedergabeverlauf importieren

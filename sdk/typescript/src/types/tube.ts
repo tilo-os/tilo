@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tube@f20874dce7ecfdfb";
+export const SURFACE = "so.tilo.tube@c5af9d86c0ae3a24";
 
 export interface Reply {
   comment: string;
@@ -65,6 +65,11 @@ export interface ForgetArgs {
 
 /** The arguments of `clear`. */
 export interface ClearArgs {
+}
+
+/** The arguments of `import-previous`. */
+export interface ImportPreviousArgs {
+  previous: unknown[];
 }
 
 /** Tube — `tube.library`. */
@@ -138,6 +143,8 @@ export function library(ws: tilo.Workspace, path: string): Library {
 export interface WatchHistory extends tilo.Resource {
   watched: Record<string, number>;
   positions: Record<string, number>;
+  readonly forgotten: Record<string, boolean>;
+  readonly cleared: boolean;
   record(args: {
     video: string;
     at_ms: number;
@@ -164,11 +171,16 @@ export interface WatchHistory extends tilo.Resource {
   clear(): Promise<void>;
   /** Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   clearMany(items: ClearArgs[]): Promise<tilo.ActionAnswer[]>;
+  importPrevious(args: {
+    previous: unknown[];
+  }): Promise<void>;
+  /** Runs `import-previous` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  importPreviousMany(items: ImportPreviousArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `WatchHistory` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WATCHHISTORY_ACTIONS = ["record", "recordMany", "progress", "progressMany", "import", "importMany", "forget", "forgetMany", "clear", "clearMany"] as const;
+export const WATCHHISTORY_ACTIONS = ["record", "recordMany", "progress", "progressMany", "import", "importMany", "forget", "forgetMany", "clear", "clearMany", "importPrevious", "importPreviousMany"] as const;
 
 /** The `tube.watch-history` kind at `path`. */
 export function watchHistory(ws: tilo.Workspace, path: string): WatchHistory {

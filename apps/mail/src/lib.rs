@@ -66,11 +66,11 @@ pub mod html_mail;
 pub mod html_text;
 pub mod i18n;
 pub mod list;
+mod mailbox_migration;
 pub mod message_states;
 pub mod model;
 pub mod notice;
 pub mod oauth;
-pub mod own_mailbox;
 pub mod reader;
 pub mod resource;
 #[cfg(all(feature = "live", any(test, feature = "fake-servers")))]

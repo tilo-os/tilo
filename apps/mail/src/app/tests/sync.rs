@@ -419,7 +419,7 @@ tilo_test_env::scenario! {
                 ui::storage::SettingsDocument::Profile(profile.path().to_path_buf()),
             );
             assert_eq!(storage.config_root().as_deref(), Some(profile.path()));
-            let app = MailApp::for_window(&storage, Some(ContentStore::memory()));
+            let app = MailApp::for_window(&storage, None, Some(ContentStore::memory()));
             assert_eq!(
                 app.accounts_persist_root().as_deref(),
                 Some(profile.path()),
@@ -436,42 +436,29 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase trusted_senders_are_a_resource_both_ways;
+    phase previous_sender_trust_is_imported_into_the_workspace;
     {
-        use crate::trusted_senders::TrustedSenders;
+        use crate::trusted_senders::{DOCUMENT, TrustedSenders};
 
         let mut host = ui::framework::testing::TestApp::<crate::resource::MailShell>::new().unwrap();
-        let record = host.person::<TrustedSenders>().unwrap();
-        let mut mail = MailApp::new_first_run();
-        mail.follow_trusted_senders(record.clone());
-        let doc = TestMail::doc();
-
-        record
+        let legacy = host.person::<TrustedSenders>().unwrap();
+        let record = host.shared_resource::<TrustedSenders>(ui::apps::MAIL, DOCUMENT).unwrap();
+        legacy
             .invoke(&TrustedSenders::TRUST.with("lena@fischer.example".to_owned()))
             .unwrap();
-        mail.sync(&doc, &automerge::ROOT);
+        assert!(record.get().addresses().is_empty());
+        host.effect_confirmed(&crate::actions::MailEffect::ImportSenderTrust).unwrap();
         assert!(
-            mail.shared
-                .borrow()
-                .remote_senders
-                .contains("lena@fischer.example")
+            host.with_widget::<MailApp, _>(|mail| mail.shared.borrow().sender_trusted("lena@fischer.example")).unwrap()
         );
 
-        // This window trusts one and stops trusting the other: both are the
-        // person's edits of the resource.
-        {
-            let mut shared = mail.shared.borrow_mut();
-            shared.remote_senders.remove("lena@fischer.example");
-            shared
-                .remote_senders
-                .insert("hello@fieldnotes.example".to_owned());
-        }
-        mail.sync(&doc, &automerge::ROOT);
-        assert_eq!(
-            record.with(TrustedSenders::addresses),
-            std::collections::BTreeSet::from(["hello@fieldnotes.example".to_owned()])
-        );
-        assert!(record.undo(), "trusting is an undo step of the person's");
+        record.invoke(&TrustedSenders::DISTRUST.with("lena@fischer.example".to_owned())).unwrap();
+        host.effect_confirmed(&crate::actions::MailEffect::ImportSenderTrust).unwrap();
+        assert!(record.get().addresses().is_empty());
+        assert!(legacy.get().addresses().contains("lena@fischer.example"));
+        host.set_role(ui::permissions::Role::Viewer);
+        assert!(!record.may_read());
+        assert!(host.effect_confirmed(&crate::actions::MailEffect::ImportSenderTrust).is_err());
     }
 }
 #[cfg(feature = "live")]

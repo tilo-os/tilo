@@ -1,5 +1,5 @@
 //! Tube's effects: everything it does that changes no document. [`TubeEffect`] covers navigating,
-//! playing, sharing, the person's own watch history and playback preferences, and Grayjay device
+//! playing, sharing, the workspace's watch history and playback preferences, and Grayjay device
 //! sync.
 
 use ui::tilo_resource::{self, Effect, NonBlank};
@@ -86,8 +86,7 @@ pub enum TubeEffect {
     },
     /// Mark watched.
     ///
-    /// Adds the video to your own watch history, which follows you to your
-    /// other devices and never reaches members.
+    /// Adds the video to the workspace's watch history.
     #[effect(kind = "read", on = crate::model::Video)]
     MarkWatched {
         #[param("The video's id")]
@@ -102,6 +101,9 @@ pub enum TubeEffect {
     /// Clear watch history.
     #[effect(destructive, kind = "read", on = crate::rows::History)]
     ClearHistory,
+    /// Import the member's previous watch history.
+    #[effect(kind = "undoable", attended, privileged)]
+    ImportPreviousWatchHistory,
     /// Pair using invite.
     ///
     /// Pairs a Grayjay device, which then reads and writes your

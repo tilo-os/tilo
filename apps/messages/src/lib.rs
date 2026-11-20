@@ -28,6 +28,14 @@ pub use conversations::Messages;
 #[derive(Clone, Effect)]
 #[effect(operation = "tilo.messages.view")]
 pub enum MessagesEffect {
+    /// Import the earlier draft for the open conversation.
+    #[effect(
+        kind = "undoable",
+        attended,
+        privileged,
+        label = "messages-import-previous-draft"
+    )]
+    ImportPreviousDraft,
     #[effect(
         job,
         sensitive,

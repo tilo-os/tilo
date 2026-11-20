@@ -311,7 +311,15 @@ impl Worker {
             else {
                 continue;
             };
+            if self
+                .workspaces
+                .get(&id)
+                .is_none_or(|workspace| workspace.files.settled())
+            {
+                continue;
+            }
             let content = self.workspace_content(id);
+            let sealing = self.file_sealing(id, false).ok().flatten();
             let counted = &self.shared.search;
             let Some(workspace) = self.workspaces.get_mut(&id) else {
                 break 'workspaces;
@@ -324,7 +332,10 @@ impl Worker {
                 };
                 match reads.record(&route) {
                     Ok(Some(bytes)) => {
-                        let files = workspace.files.read(chunk, &bytes, content.as_ref());
+                        let files =
+                            workspace
+                                .files
+                                .read(chunk, &bytes, content.as_ref(), sealing.as_ref());
                         counted
                             .files_warmed
                             .fetch_add(files as u64, Ordering::Relaxed);

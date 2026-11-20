@@ -109,19 +109,19 @@ impl WorkspaceFiles {
         )?;
         let view = match projection {
             Projection::Folder => View::Folder {
-                _watch: files.sync_folder(folder)?.watch(INTERVAL)?,
+                _watch: files.sync_folder(folder, None)?.watch(INTERVAL)?,
             },
             #[cfg(target_os = "linux")]
             Projection::Mount => {
                 // Changes made in the folder while nothing was mounted over
                 // it enter the workspace before the mount hides them.
-                files.sync_folder(folder)?.reconcile()?;
+                files.sync_folder(folder, None)?.reconcile()?;
                 match mount::Mount::start(files.quick_fs(), folder, Arc::clone(&files.namespace)) {
                     Ok(mount) => View::Mount { _mount: mount },
                     Err(error) => {
                         tracing::warn!(%error, "the workspace cannot be mounted; syncing a folder instead");
                         View::Folder {
-                            _watch: files.sync_folder(folder)?.watch(INTERVAL)?,
+                            _watch: files.sync_folder(folder, None)?.watch(INTERVAL)?,
                         }
                     }
                 }
@@ -150,7 +150,10 @@ impl Files {
         store: Arc<tilo_fs::ContentStore>,
         endpoint: iroh::Endpoint,
         author: &Author,
-        source: Option<Arc<dyn tilo_fs::hydration::ContentSource>>,
+        source: Option<(
+            Arc<dyn tilo_fs::hydration::ContentSource>,
+            tilo_fs::hydration::FileKeys,
+        )>,
     ) -> io::Result<Self> {
         crate::unix::private_directory(state)?;
         let namespace = NamespaceFile::open(&state.join(NAMESPACE), hex::encode(author.device))?;
@@ -158,7 +161,7 @@ impl Files {
             let _entered = tilo_rt::app().handle().enter();
             let hydrator = Hydrator::new(endpoint, store);
             Arc::new(match source {
-                Some(source) => hydrator.with_source(source),
+                Some((source, keys)) => hydrator.with_source(source).with_file_keys(keys),
                 None => hydrator,
             })
         };
@@ -186,10 +189,19 @@ impl Files {
         .with_change_journal(Arc::new(move |namespace| kept.journal(namespace)))
     }
 
-    fn sync_folder(&self, folder: &Path) -> io::Result<SyncFolder> {
+    fn sync_folder(
+        &self,
+        folder: &Path,
+        admission: Option<Arc<tilo_fs::admission::FileAdmission>>,
+    ) -> io::Result<SyncFolder> {
         let namespace = Arc::clone(&self.namespace);
         let commit = Box::new(move || namespace.save_if_changed());
-        SyncFolder::open(Arc::new(self.quick_fs()), folder, &self.state, commit)
+        let fs = self.quick_fs();
+        let fs = match admission {
+            Some(admission) => fs.with_admission(admission),
+            None => fs,
+        };
+        SyncFolder::open(Arc::new(fs), folder, &self.state, commit)
     }
 }
 

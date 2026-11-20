@@ -49,6 +49,13 @@ pub struct Workspace {
     pub delegations: Vec<WorkspaceDelegation>,
 }
 
+/// The roles and assignments of a workspace, requested independently of the roster.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRoles {
+    pub custom_roles: std::collections::BTreeMap<String, String>,
+    pub assigned_roles: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+}
+
 /// A member's delegation of their own work to a server, as a page reads it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceDelegation {
@@ -462,6 +469,31 @@ pub enum WorkspacesRequest {
     Delete {
         workspace: String,
     },
+    /// Change a workspace-defined role or one member's assignment.
+    EditRoles {
+        workspace: String,
+        request_id: [u8; 32],
+        change: tilo_action_policy::Change,
+    },
+    /// Replace a role or member's rules on a workspace, app, or document.
+    SetDocumentAccess {
+        workspace: String,
+        request_id: [u8; 32],
+        /// The app with an exact document rule. Empty for a default rule.
+        app: String,
+        /// The exact document, an app id for its default, or empty for the workspace default.
+        document: String,
+        recipient: String,
+        access: String,
+    },
+    /// Read this workspace's role definitions and member assignments.
+    Roles {
+        workspace: String,
+    },
+    /// Read the document access settings and their current values.
+    DocumentAccess {
+        workspace: String,
+    },
 }
 
 /// The answer to a [`WorkspacesRequest`].
@@ -498,6 +530,16 @@ pub enum WorkspacesReply {
     Servers(Vec<ServerEntry>),
     /// The workspace was deleted ([`WorkspacesRequest::Delete`]).
     Deleted,
+    /// The current definition and assignments after an edit or query.
+    Roles(WorkspaceRoles),
+    DocumentAccess(DocumentAccess),
+}
+
+/// Documents and their access settings as an administrator sees them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentAccess {
+    pub documents: Vec<(String, String)>,
+    pub rules: Vec<collab_types::DocumentAccessRule>,
 }
 
 /// One server keeping a workspace, as a page lists it.

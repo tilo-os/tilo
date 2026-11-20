@@ -18,7 +18,7 @@ aarch64 = "aarch64"
 optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "secrets", "threads"]
 
 [resources]
-kinds = ["passwords.vault", "tilo.accounts"]
+kinds = ["passwords.vault", "passwords.workspace-vault", "tilo.accounts"]
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -104,6 +104,12 @@ label = "Import passwords"
 kind = "outside"
 [[offers]]
 resource = "passwords.vault"
+action = "import-device-vault"
+label = "Import this device’s vault into the workspace"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "passwords.vault"
 action = "export"
 label = "Export CSV…"
 kind = "outside"
@@ -113,3 +119,8 @@ action = "filter"
 label = "Filter vault"
 kind = "read"
 asks = "filter"
+[[offers]]
+resource = "passwords.workspace-vault"
+action = "remove-sealed"
+label = "Delete encrypted vault entry"
+asks = "id"

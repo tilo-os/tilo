@@ -16,7 +16,7 @@ use std::sync::mpsc::TryRecvError;
 use ui::tilo_resource::{AbsolutePath, Invoke};
 
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, Effected, Jobs, Live, PersonResource, ResourceEnv,
+    Dispatcher, EffectAnswer, EffectCx, Effected, Jobs, Live, ResourceEnv, Setting,
 };
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PickedContents, SaveDestination,
@@ -29,7 +29,7 @@ use ui::winit::event::WindowEvent;
 use ui::{PresenceCtx, TextRenderer, Theme};
 
 use crate::actions::{NewArtwork, OpenArtwork};
-use crate::document::{self, ArtworkFile, ArtworkRecents, EXTENSION, Recent, RecentArtworks};
+use crate::document::{self, ArtworkFile, DeviceArtworkRecents, EXTENSION, Recent, RecentArtworks};
 use crate::model::Artwork;
 use crate::panels::export::{self, Settings};
 use crate::tools::{FileRequest, Sheet, Tools, ViewRequest};
@@ -57,8 +57,8 @@ enum Drawing {
 pub struct FileChooser {
     content: Element,
     tools: Tools,
-    /// The recent artworks resource and this device's id, in a live window.
-    recents: Option<(PersonResource<ArtworkRecents>, String)>,
+    /// The device's recent artworks, in a live window.
+    recents: Option<Setting<DeviceArtworkRecents>>,
     live: Live<Artwork>,
     dispatch: Dispatcher<Artwork>,
     /// Where the window opens another of the workspace's artworks.
@@ -75,10 +75,10 @@ pub struct FileChooser {
 }
 
 impl FileChooser {
-    pub fn new(
+    pub(crate) fn new(
         content: Element,
         tools: Tools,
-        recents: Option<(PersonResource<ArtworkRecents>, String)>,
+        recents: Option<Setting<DeviceArtworkRecents>>,
         live: Live<Artwork>,
         env: ResourceEnv<Artwork>,
         jobs: Jobs<Artwork>,
@@ -408,10 +408,7 @@ impl FileChooser {
                 if !path.exists()
                     && let Ok(gone) = AbsolutePath::new(path)
                 {
-                    self.keep_recents(
-                        |device| ArtworkRecents::FORGET.with((device, gone.clone())),
-                        |recents| recents.forget(&gone.to_string_lossy()),
-                    );
+                    self.keep_recents(|recents| recents.forget(&gone.to_string_lossy()));
                 }
                 self.say("canvas-open-failed", &[("why", why.into())]);
             }
@@ -507,34 +504,21 @@ impl FileChooser {
             at_ms,
             thumbnail: None,
         };
-        self.keep_recents(
-            |device| ArtworkRecents::REMEMBER.with((device, recent.clone())),
-            |recents| recents.remember(recent.clone()),
-        );
+        self.keep_recents(|recents| recents.remember(recent));
     }
 
-    /// Change this device's recent artworks: in the resource through the
-    /// action `edit` makes for the device, or with `change` where there is
-    /// no resource. Best effort: a failed write leaves the list as it was.
-    fn keep_recents(
-        &self,
-        edit: impl FnOnce(String) -> Invoke<ArtworkRecents>,
-        change: impl FnOnce(&mut RecentArtworks),
-    ) {
-        if let Some((record, device)) = &self.recents {
-            if let Err(error) = record.invoke(&edit(device.clone())) {
-                tracing::warn!(%error, "could not remember the recent artworks");
+    /// Change this device's recent artworks.
+    fn keep_recents(&self, change: impl FnOnce(&mut RecentArtworks)) {
+        let workspace = self.tools.recent_workspace.to_string();
+        let edit = move |state: &mut DeviceArtworkRecents| {
+            change(state.by_workspace.entry(workspace).or_default());
+        };
+        if let Some(recents) = &self.recents {
+            if let Err(error) = recents.update(edit) {
+                tracing::warn!(%error, "could not remember recent artworks");
             }
         } else {
-            let device = self.tools.device.to_string();
-            self.tools.recents.update(|recents| {
-                change(
-                    std::rc::Rc::make_mut(recents)
-                        .devices
-                        .entry(device)
-                        .or_default(),
-                );
-            });
+            self.tools.recents.update(edit);
         }
     }
 }

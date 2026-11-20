@@ -147,6 +147,7 @@ passwords-effect-hide = Hide secret
 passwords-effect-delete = Delete item
 passwords-effect-favorite = Favorite
 passwords-effect-import = Import passwords
+passwords-import-device-vault = Import this device’s vault into the workspace
 passwords-effect-export = Export CSV…
 passwords-effect-filter = Filter vault
 passwords-effect-open = Open

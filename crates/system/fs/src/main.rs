@@ -284,6 +284,9 @@ enum Command {
         /// Seed the workspace from this directory's current contents.
         #[arg(short, long)]
         seed: Option<PathBuf>,
+        /// Use this login's identity service for workspace directory content keys.
+        #[arg(long, hide = true, requires = "acl", value_name = "SOCKET")]
+        workspace_key_socket: Option<PathBuf>,
         #[command(flatten)]
         sockets: SocketArgs,
         #[command(flatten)]
@@ -466,6 +469,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             mount_point,
             cache_dir,
             seed,
+            workspace_key_socket,
             sockets,
             acl,
             backend,
@@ -476,7 +480,16 @@ async fn run_command(cli: Cli) -> Result<()> {
                     .context("recovery requires --cache-dir")?;
                 workspace_startup::inspect(cache)?.require_existing()?;
             }
-            Box::pin(serve(mount_point, cache_dir, seed, sockets, acl, backend)).await
+            Box::pin(serve(
+                mount_point,
+                cache_dir,
+                seed,
+                workspace_key_socket,
+                sockets,
+                acl,
+                backend,
+            ))
+            .await
         }
         Command::Mount {
             mount_point,
@@ -1319,6 +1332,7 @@ async fn serve(
     mount_point: PathBuf,
     cache_dir: Option<PathBuf>,
     seed: Option<PathBuf>,
+    workspace_key_socket: Option<PathBuf>,
     sockets: SocketArgs,
     acl_args: AclArgs,
     backend: BackendArgs,
@@ -1362,10 +1376,27 @@ async fn serve(
     );
     let store = Arc::new(open_workspace_store(cache_dir.clone(), &backend, workspace_id).await?);
     let author = net.id().to_string();
-    let hydrator = Arc::new(
-        Hydrator::new(net.clone(), store.clone())
-            .with_identity(Arc::new(transport_identity.clone())),
-    );
+    let managed_service = managed_system_service();
+    let hydrator = Hydrator::new(net.clone(), store.clone())
+        .with_identity(Arc::new(transport_identity.clone()));
+    let hydrator = Arc::new(match workspace_key_socket {
+        Some(socket) => {
+            let (policy, reader) = acl.as_ref().context("workspace file keys require an ACL")?;
+            anyhow::ensure!(
+                backend.backend == BackendChoice::Fuse,
+                "workspace file keys require FUSE"
+            );
+            hydrator.with_scoped_file_keys(socket, policy.clone(), *reader)
+        }
+        None if managed_service
+            && session_link.is_some()
+            && mount_point == Path::new(tilo_paths::WORKSPACE_MOUNT) =>
+        {
+            let (policy, reader) = acl.as_ref().context("workspace file keys require an ACL")?;
+            hydrator.with_session_file_keys(policy.clone(), *reader)
+        }
+        None => hydrator,
+    });
     if let Some(cache_dir) = cache_dir.as_deref() {
         for peer in load_persisted_content_peers(cache_dir)? {
             hydrator.add_peer(peer.endpoint);
@@ -1442,7 +1473,6 @@ async fn serve(
         .map(|_| local_content_socket_path(workspace_id));
     // Only the managed system service may self-restart: an ad-hoc foreground `fs serve` stays
     // attached to its caller, and `register-content-peer` answers it explicitly instead.
-    let managed_service = managed_system_service();
     let (rebind_tx, rebind_rx) = tokio::sync::mpsc::unbounded_channel();
     let content_socket_task = match content_socket.as_ref() {
         Some(socket) => Some(serve_local_content_peer(
@@ -2714,14 +2744,12 @@ mod tests {
             );
             let identity: IdentityKey = [0x5A; 32];
             let local = vec![parse_member("person:local").unwrap()];
-            let default = os_file("os/usr/share/tilo/fs-capabilities.json");
             for seeded in &versions {
-                // As a machine that kept this list finds it after an update: the list an older
-                // image seeded gives way to the one the image ships, and every one loads.
+                // Every shipped list keeps its grants through an update.
                 let machine = tempfile::tempdir().unwrap();
                 let path = &machine.path().join("fs-capabilities.json");
                 std::fs::copy(seeded, path).unwrap();
-                let file = CapabilityFile::load_with_default(path, &default, identity, local.clone())
+                let file = CapabilityFile::load(path, identity, local.clone())
                     .unwrap_or_else(|error| {
                         panic!("{} must load on an upgraded machine: {error}", seeded.display())
                     });

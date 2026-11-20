@@ -1282,23 +1282,26 @@ fn joined_files(
         .governs()
         .then(|| files::folder_in(&home, &parts.own.name()));
     let held = Arc::downgrade(parts.workspaces);
-    let replicas = Arc::new(files::Replicas::new(files::ReplicaHost {
-        profile: parts.root.to_path_buf(),
-        home,
-        own_folder,
-        store: parts.media.store(),
-        endpoint: parts.workspaces.endpoint(),
-        author: parts.author,
-        credentials: Box::new(move |workspace| {
-            held.upgrade()
-                .ok_or_else(|| io::Error::other("the workspace service closed"))?
-                .files_credentials(workspace)
-        }),
-        collab: parts.root.join(COLLAB_SOCKET),
-        identity: parts.root.join(IDENTITY_SOCKET),
-        content,
-        apps: Arc::clone(parts.apps),
-    }));
+    let replicas = Arc::new(files::Replicas::new(
+        files::ReplicaHost {
+            profile: parts.root.to_path_buf(),
+            home,
+            own_folder,
+            store: parts.media.store(),
+            endpoint: parts.workspaces.endpoint(),
+            author: parts.author,
+            credentials: Box::new(move |workspace| {
+                held.upgrade()
+                    .ok_or_else(|| io::Error::other("the workspace service closed"))?
+                    .files_credentials(workspace)
+            }),
+            collab: parts.root.join(COLLAB_SOCKET),
+            identity: parts.root.join(IDENTITY_SOCKET),
+            content,
+            apps: Arc::clone(parts.apps),
+        },
+        Arc::downgrade(parts.workspaces),
+    ));
     let workspaces: Vec<WorkspaceId> = parts
         .workspaces
         .workspaces()

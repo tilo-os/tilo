@@ -346,6 +346,19 @@ impl<R: Resource> ResourceEnv<R> {
             .map(ui_core::resource::ResourceStore::home)
     }
 
+    /// Whether this window is on the current person's private desktop.
+    pub fn on_personal_desktop(&self) -> bool {
+        let Some(cluster) = self
+            .me()
+            .and_then(tilo_resource::MemberId::person_id)
+            .and_then(ui_core::resource::personal_cluster_of)
+        else {
+            return false;
+        };
+        self.workspace()
+            .is_some_and(|workspace| workspace == cluster.to_string())
+    }
+
     /// What the view is built for: a window someone uses, a past version in
     /// History, or a screenshot. Start work that reaches outside the process
     /// (an engine, a socket, a probe) only when it [is live](RunMode::is_live).
@@ -533,13 +546,16 @@ impl<R: Resource> ResourceEnv<R> {
         }
     }
 
-    /// The app's record of `P` ([`PersonResource`](super::PersonResource)):
-    /// one per kind, kept with the app's other records in the workspace it
-    /// is open in and synced with it. `None` where the host keeps no such
-    /// records (a view of a past version, a private window) or the record
-    /// cannot be opened.
+    /// The app's fixture record of `P` from the previous storage model.
+    #[cfg(feature = "test-support")]
     pub fn person<P: Resource>(&self) -> Option<super::PersonResource<P>> {
         self.storage.person::<P>()
+    }
+
+    /// The app's record of `P` in the person's profile. Its route is in the
+    /// person's own cluster, independent of which workspace opened the app.
+    pub fn profile_resource<P: Resource>(&self) -> Option<super::PersonResource<P>> {
+        self.storage.profile_resource::<P>()
     }
 
     /// The record `P` that `owner` keeps in the window's workspace and every app

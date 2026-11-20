@@ -65,12 +65,15 @@ struct CapBinding {
 }
 
 impl CapBinding {
-    fn now(&self) -> u64 {
+    fn now_ms(&self) -> u64 {
         #[cfg(test)]
         if let Some(moving) = &self.moving_now {
-            return moving.at();
+            return moving.at().saturating_mul(1_000);
         }
-        self.fixed_now.unwrap_or_else(crate::clock::unix_now_secs)
+        self.fixed_now
+            .map_or_else(crate::clock::unix_now_ms, |seconds| {
+                seconds.saturating_mul(1_000)
+            })
     }
 
     fn permits(&self, path: &str, access: Access) -> bool {
@@ -89,8 +92,7 @@ impl CapBinding {
             &ResourceRef::FsPath(path.to_string()),
             required,
             &self.caps,
-            // The mount's clock is in seconds; a lifetime ends in milliseconds.
-            Some(self.now().saturating_mul(1000)),
+            Some(self.now_ms()),
         ) == CapDecision::Allow
     }
 
@@ -105,7 +107,9 @@ impl CapBinding {
         self.caps
             .iter()
             .filter(move |c| {
-                c.effect == Effect::Grant && c.access.implies(CapAccess::Read) && c.reaches(acting)
+                matches!(c.effect, Effect::Grant | Effect::WorkspaceFileAccess)
+                    && c.access.implies(CapAccess::Read)
+                    && c.reaches(acting)
             })
             .filter_map(|c| match &c.scope {
                 Scope::FsPath(p) => Some(p.as_str()),
@@ -441,6 +445,38 @@ impl AclHandle {
             Ok(acl) => acl.reads_anything(peer),
             Err(_) => false,
         }
+    }
+
+    /// Whether the compiled workspace policy gives this identity access at the reserved root.
+    pub(crate) fn permits_workspace_tree(
+        &self,
+        identity: &IdentityKey,
+        path: &str,
+        access: Access,
+    ) -> bool {
+        self.acl.read().is_ok_and(|acl| {
+            acl.bindings
+                .iter()
+                .flat_map(|binding| &binding.caps)
+                .any(|cap| {
+                    cap.effect == Effect::WorkspaceFileBoundary
+                        && matches!(&cap.scope, Scope::FsPath(root) if root == path)
+                })
+                && acl.permits(identity, path, access)
+        })
+    }
+
+    /// Whether moving this path would move a governed file tree out of its scope.
+    pub(crate) fn protects_workspace_tree(&self, path: &str) -> bool {
+        self.acl.read().map_or(true, |acl| {
+            acl.bindings
+                .iter()
+                .flat_map(|binding| &binding.caps)
+                .any(|cap| {
+                    cap.effect == Effect::WorkspaceFileBoundary
+                        && matches!(&cap.scope, Scope::FsPath(root) if path_covers(path, root))
+                })
+        })
     }
 
     /// Whether `path` is part of `identity`'s view, per the ACL bound right now. Read through the

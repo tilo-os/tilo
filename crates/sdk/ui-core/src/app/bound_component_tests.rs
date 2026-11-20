@@ -690,7 +690,6 @@ fn bound_components_keep_child_binding() {
             optional: vec![],
             opens: &[],
             workspace_resource: false,
-            member_resource: false,
             opens_before_resource: false,
             create: factory,
         };
@@ -916,7 +915,6 @@ impl ActionFixture {
                 optional: vec![],
                 opens: &[],
                 workspace_resource: false,
-                member_resource: false,
                 opens_before_resource: false,
                 create,
             };
@@ -2717,7 +2715,6 @@ tilo_test_env::scenario! {
             icon: IconDescriptor::Glyph("P"),
             resource_type: crate::resource::ResourceType::new("probe"),
             workspace_resource: true,
-            member_resource: false,
             opens_before_resource: false,
             required: vec![],
             optional: vec![],

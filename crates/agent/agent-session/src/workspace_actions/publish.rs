@@ -514,7 +514,7 @@ impl Worker {
             _ if is_roster => None,
             // A record the service starts has a channel of its own: opened here
             // and sealed under from its first change.
-            Some(link) => match link.host_keys(route, founding) {
+            Some(link) => match link.serving_keys(route, founding) {
                 Some(Ok(keys)) => Some(keys),
                 Some(Err(reason)) => return Err(reason),
                 None => None,

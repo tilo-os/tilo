@@ -10049,6 +10049,7 @@ dependencies = [
  "maps",
  "maps-model",
  "runtime-dylib",
+ "serde",
  "serde_json",
  "taffy",
  "tilo-app",
@@ -12353,7 +12354,6 @@ dependencies = [
  "taffy",
  "tempfile",
  "tilo-app",
- "tilo-clock",
  "tilo-files",
  "tilo-messaging",
  "tilo-paths",
@@ -17991,7 +17991,6 @@ dependencies = [
 name = "tilo-app"
 version = "0.1.0"
 dependencies = [
- "app-fleet",
  "collab-types",
  "durable-store",
  "fs-protocol",

@@ -1486,7 +1486,7 @@ fn files_of_the_workspace(
     shared: &crate::desktop::Shared,
     content: &tilo_content::ContentStore,
 ) -> Option<Rc<crate::page_files::WorkspaceFiles>> {
-    config.peer?;
+    let peer = config.peer?;
     let records = shared.page_stores(&config.author())?;
     // The files' bytes are the tree record's content: read through that record's
     // media queue, so a file whose bytes are not here yet is asked of the workspace and
@@ -1513,6 +1513,8 @@ fn files_of_the_workspace(
         config.workspace_name.as_deref().unwrap_or_default(),
         records,
         content,
+        peer,
+        config.workspace.clone(),
     )))
 }
 

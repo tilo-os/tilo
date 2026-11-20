@@ -43,6 +43,7 @@ impl Worker {
             return Vec::new();
         };
         let content = self.workspace_content(workspace_id);
+        let sealing = self.file_sealing(workspace_id, false).ok().flatten();
         let counted = &self.shared.search;
         let Some(workspace) = self.workspaces.get_mut(&workspace_id) else {
             return Vec::new();
@@ -61,7 +62,9 @@ impl Worker {
                 break;
             };
             counted.files_chunks.fetch_add(1, Ordering::Relaxed);
-            let files = workspace.files.read(chunk, &bytes, content.as_ref());
+            let files = workspace
+                .files
+                .read(chunk, &bytes, content.as_ref(), sealing.as_ref());
             counted
                 .files_read
                 .fetch_add(files as u64, Ordering::Relaxed);

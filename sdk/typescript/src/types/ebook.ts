@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.ebook@91635e3a0b11ea81";
+export const SURFACE = "so.tilo.ebook@12d27116322c8886";
 
 /** One of "bookmark", "highlight", "note". */
 export type AnnoKind = "bookmark" | "highlight" | "note";
@@ -216,12 +216,6 @@ export interface DeleteSchemeArgs {
   scheme: string;
 }
 
-/** The arguments of `keep`. */
-export interface KeepArgs {
-  device: string;
-  kept: unknown;
-}
-
 /** Books — `ebook.library`. */
 export interface Library extends tilo.Resource {
   entries: Array<tilo.Entry<LibraryEntry>>;
@@ -353,25 +347,5 @@ export const BOOKSCATALOGUES_ACTIONS = [] as const;
 /** The `settings.books-catalogues` kind at `path`. */
 export function booksCatalogues(ws: tilo.Workspace, path: string): BooksCatalogues {
   return resourceProxy(ws, path, SURFACE, BOOKSCATALOGUES_ACTIONS) as unknown as BooksCatalogues;
-}
-
-/** Book files — `ebook.files`. */
-export interface Files extends tilo.Resource {
-  devices: Record<string, unknown>;
-  keep(args: {
-    device: string;
-    kept: unknown;
-  }): Promise<void>;
-  /** Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  keepMany(items: KeepArgs[]): Promise<tilo.ActionAnswer[]>;
-}
-
-/** The actions `Files` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const FILES_ACTIONS = ["keep", "keepMany"] as const;
-
-/** The `ebook.files` kind at `path`. */
-export function files(ws: tilo.Workspace, path: string): Files {
-  return resourceProxy(ws, path, SURFACE, FILES_ACTIONS) as unknown as Files;
 }
 

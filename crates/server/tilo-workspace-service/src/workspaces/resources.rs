@@ -531,7 +531,23 @@ impl GovernedWorkspace {
                 let Some(readers) = &known else {
                     return Ok(false);
                 };
-                let Some(Ok(keys)) = self.reader_keys(readers).await else {
+                let keys = match metadata.scheme {
+                    collab_types::EncryptionScheme::DocumentContentKey { group, .. } => {
+                        let Some(device) = &self.device else {
+                            return Ok(false);
+                        };
+                        let workspace = collab_types::WorkspaceId::parse(self.workspace())
+                            .ok_or("invalid resource workspace")?;
+                        let named =
+                            (readers != collab_types::EVERY_MEMBER).then_some(readers.as_str());
+                        let scope = neighbour_wire::KeyScope::document(workspace, app, doc, named)
+                            .filter(|scope| scope.group() == group)
+                            .ok_or("the encryption group belongs to another document")?;
+                        device.group_keys(&scope.to_string(), readers, false).await
+                    }
+                    _ => self.reader_keys(readers).await,
+                };
+                let Some(Ok(keys)) = keys else {
                     return Ok(false);
                 };
                 let ciphertext =
@@ -617,8 +633,25 @@ impl GovernedWorkspace {
         app: &str,
         write: &tilo_resource_store::Written,
     ) -> Result<OwnerCommitRequest, String> {
+        let now = tilo_clock::wall();
+        let named = (collab_types::is_store_document(&write.doc)
+            && write.readers != collab_types::EVERY_MEMBER)
+            .then_some(write.readers.as_str());
+        let isolated = self.peer().requires_document_keys(app, &write.doc, now)?;
+        let group = if isolated {
+            let workspace =
+                collab_types::WorkspaceId::parse(self.workspace()).ok_or("invalid workspace id")?;
+            neighbour_wire::KeyScope::document(workspace, app, &write.doc, named)
+                .ok_or("the document has an invalid reader set")?
+                .to_string()
+        } else {
+            self.workspace().to_owned()
+        };
         let keys = self
-            .reader_keys(&write.readers)
+            .device
+            .as_ref()
+            .ok_or("this device holds no group keys")?
+            .group_keys(&group, &write.readers, isolated)
             .await
             .ok_or("this device holds no keys of the document's readers yet")??;
         let founding = !self.peer().holds_document(app, &write.doc);
@@ -633,21 +666,15 @@ impl GovernedWorkspace {
         let (mut request, _) = self
             .draft_document_write(
                 &device.device(),
-                (app, &write.doc),
+                (app, &write.doc, named),
                 &bytes,
                 founding,
                 Some(&keys),
                 tilo_clock::wall(),
             )
             .map_err(|error| error.to_string())?;
-        if let CommitOperation::Document {
-            envelope, readers, ..
-        } = &mut request.operation
-        {
+        if let CommitOperation::Document { envelope, .. } = &mut request.operation {
             collab_types::sign_op(envelope, &*device.signer).map_err(|error| error.to_string())?;
-            if write.readers != collab_types::EVERY_MEMBER {
-                *readers = Some(write.readers.clone());
-            }
         }
         Ok(request)
     }

@@ -5754,69 +5754,6 @@
         "required": [],
         "description": ""
       },
-      "browser.personal-bookmarks.add-bookmark.Arguments": {
-        "type": "object",
-        "properties": {
-          "url": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "url",
-          "title"
-        ],
-        "description": ""
-      },
-      "browser.personal-bookmarks.remove-bookmark.Arguments": {
-        "type": "object",
-        "properties": {
-          "url": {
-            "type": "string"
-          },
-          "observed_tags": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "url",
-          "observed_tags"
-        ],
-        "description": ""
-      },
-      "browser.personal-bookmarks.import-bookmarks.Arguments": {
-        "type": "object",
-        "properties": {
-          "bundle": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "bundle"
-        ],
-        "description": ""
-      },
-      "browser.personal-bookmarks.remove-imported-node.Arguments": {
-        "type": "object",
-        "properties": {
-          "source": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "source",
-          "id"
-        ],
-        "description": ""
-      },
       "browser.browsing-history.visit.Arguments": {
         "type": "object",
         "properties": {
@@ -5886,6 +5823,69 @@
         "type": "object",
         "properties": {},
         "required": [],
+        "description": ""
+      },
+      "browser.personal-bookmarks.add-bookmark.Arguments": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "title"
+        ],
+        "description": ""
+      },
+      "browser.personal-bookmarks.remove-bookmark.Arguments": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "observed_tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "url",
+          "observed_tags"
+        ],
+        "description": ""
+      },
+      "browser.personal-bookmarks.import-bookmarks.Arguments": {
+        "type": "object",
+        "properties": {
+          "bundle": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "bundle"
+        ],
+        "description": ""
+      },
+      "browser.personal-bookmarks.remove-imported-node.Arguments": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "id"
+        ],
         "description": ""
       },
       "calculator.document.commit-history.Arguments": {
@@ -9382,70 +9382,6 @@
         "required": [],
         "description": ""
       },
-      "canvas.recent-artworks.remember.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "recent": {
-            "additionalProperties": false,
-            "properties": {
-              "at_ms": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "height": {
-                "type": "number"
-              },
-              "path": {
-                "type": "string"
-              },
-              "thumbnail": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "title": {
-                "type": "string"
-              },
-              "width": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "path",
-              "title",
-              "width",
-              "height",
-              "at_ms"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "device",
-          "recent"
-        ],
-        "description": ""
-      },
-      "canvas.recent-artworks.forget.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "device",
-          "path"
-        ],
-        "description": ""
-      },
       "chat.workspace.begin-chat.Arguments": {
         "type": "object",
         "properties": {},
@@ -12064,6 +12000,37 @@
                   "null"
                 ]
               },
+              "answered": {
+                "additionalProperties": false,
+                "properties": {
+                  "costMicros": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "tokens": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "provider",
+                  "model",
+                  "costMicros"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "app": {
                 "type": [
                   "string",
@@ -12495,59 +12462,23 @@
         ],
         "description": ""
       },
-      "chat.learned.learn.Arguments": {
+      "chat.drafts.import-previous.Arguments": {
         "type": "object",
         "properties": {
-          "text": {
-            "minLength": 1,
-            "pattern": "\\S",
+          "receipt": {
             "type": "string"
           },
-          "source": {
-            "minLength": 1,
-            "pattern": "\\S",
+          "key": {
+            "type": "string"
+          },
+          "markdown": {
             "type": "string"
           }
         },
         "required": [
-          "text",
-          "source"
-        ],
-        "description": ""
-      },
-      "chat.learned.correct.Arguments": {
-        "type": "object",
-        "properties": {
-          "fact": {
-            "type": "string"
-          },
-          "text": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "source": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "fact",
-          "text"
-        ],
-        "description": ""
-      },
-      "chat.learned.forget.Arguments": {
-        "type": "object",
-        "properties": {
-          "fact": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "fact"
+          "receipt",
+          "key",
+          "markdown"
         ],
         "description": ""
       },
@@ -13027,20 +12958,6 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": ""
-      },
-      "clocks.on-devices.keep.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "kept": {}
-        },
-        "required": [
-          "device",
-          "kept"
-        ],
         "description": ""
       },
       "code_editor.project.new-file.Arguments": {
@@ -16264,22 +16181,6 @@
         ],
         "description": ""
       },
-      "disk-usage.recent-folders.remember.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "folder": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "device",
-          "folder"
-        ],
-        "description": ""
-      },
       "disks.system.name-drive.Arguments": {
         "type": "object",
         "properties": {
@@ -16745,20 +16646,6 @@
         },
         "required": [
           "book"
-        ],
-        "description": ""
-      },
-      "ebook.files.keep.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "kept": {}
-        },
-        "required": [
-          "device",
-          "kept"
         ],
         "description": ""
       },
@@ -17754,71 +17641,6 @@
         ],
         "description": ""
       },
-      "files.recent.note.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
-          "last_use": {
-            "enum": [
-              "opened",
-              "changed"
-            ],
-            "type": "string"
-          },
-          "at_ms": {
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "device",
-          "path",
-          "last_use",
-          "at_ms"
-        ],
-        "description": ""
-      },
-      "files.recent.moved.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "from": {
-            "type": "string"
-          },
-          "to": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "device",
-          "from",
-          "to"
-        ],
-        "description": ""
-      },
-      "files.recent.forget.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "device",
-          "path"
-        ],
-        "description": ""
-      },
       "files.workspace.up.Arguments": {
         "type": "object",
         "properties": {},
@@ -17902,22 +17724,6 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": ""
-      },
-      "firewall.applied.applied.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "config": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "device",
-          "config"
-        ],
         "description": ""
       },
       "git_client.repo.store-repository.Arguments": {
@@ -18452,6 +18258,148 @@
         },
         "required": [
           "entry_id"
+        ],
+        "description": ""
+      },
+      "mail.mailbox.import-mailbox-entries.Arguments": {
+        "type": "object",
+        "properties": {
+          "folders": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "drafts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "in_reply_to": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "message": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "attachments": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "content_id": {
+                            "type": "string"
+                          },
+                          "filename": {
+                            "type": "string"
+                          },
+                          "mime": {
+                            "type": "string"
+                          },
+                          "size": {
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "content_id",
+                          "filename",
+                          "mime",
+                          "size"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "bcc": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    },
+                    "calendar_ics": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cc": {
+                      "type": "string"
+                    },
+                    "html_body": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "sender": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "account": {
+                          "type": "string"
+                        },
+                        "email": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "account",
+                        "email"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "subject": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "to",
+                    "cc",
+                    "bcc",
+                    "subject",
+                    "body"
+                  ],
+                  "type": "object"
+                },
+                "notes": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "message",
+                "notes"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "folders",
+          "drafts"
         ],
         "description": ""
       },
@@ -19797,6 +19745,21 @@
         ],
         "description": ""
       },
+      "mail.messages.import-previous-message.Arguments": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {},
+          "body": {}
+        },
+        "required": [
+          "id",
+          "state"
+        ],
+        "description": ""
+      },
       "mail.messages.deliver-message.Arguments": {
         "type": "object",
         "properties": {
@@ -20033,7 +19996,83 @@
         ],
         "description": ""
       },
+      "mail.trusted-senders.import-legacy.Arguments": {
+        "type": "object",
+        "properties": {
+          "senders": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "senders"
+        ],
+        "description": ""
+      },
       "mail.copies.keep-copies.Arguments": {
+        "type": "object",
+        "properties": {
+          "copies": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "account": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "folder": {
+                  "enum": [
+                    "inbox",
+                    "starred",
+                    "sent",
+                    "drafts",
+                    "archive",
+                    "trash",
+                    "junk"
+                  ],
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "minutes": {
+                  "type": "integer"
+                },
+                "uid": {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "uid_validity": {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "account",
+                "content",
+                "minutes",
+                "folder",
+                "uid",
+                "uid_validity"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "copies"
+        ],
+        "description": ""
+      },
+      "mail.copies.import-copies.Arguments": {
         "type": "object",
         "properties": {
           "copies": {
@@ -20102,6 +20141,12 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "account": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -20682,115 +20727,6 @@
         "required": [],
         "description": ""
       },
-      "maps.offline-areas.remember.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "region": {
-            "additionalProperties": false,
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "max": {
-                "additionalProperties": false,
-                "properties": {
-                  "lat": {
-                    "type": "number"
-                  },
-                  "lon": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "lat",
-                  "lon"
-                ],
-                "type": "object"
-              },
-              "min": {
-                "additionalProperties": false,
-                "properties": {
-                  "lat": {
-                    "type": "number"
-                  },
-                  "lon": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "lat",
-                  "lon"
-                ],
-                "type": "object"
-              },
-              "name": {
-                "type": "string"
-              },
-              "tiles": {
-                "maximum": 4294967295,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "z0": {
-                "maximum": 255,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "z1": {
-                "maximum": 255,
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "id",
-              "name",
-              "min",
-              "max",
-              "z0",
-              "z1",
-              "tiles"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "device",
-          "region"
-        ],
-        "description": ""
-      },
-      "maps.offline-areas.forget.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "area": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "device",
-          "area"
-        ],
-        "description": ""
-      },
-      "maps.offline-areas.clear.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "device"
-        ],
-        "description": ""
-      },
       "tilo.messages.deliver-message.Arguments": {
         "type": "object",
         "properties": {
@@ -21016,6 +20952,38 @@
         },
         "required": [
           "conversation"
+        ],
+        "description": ""
+      },
+      "messages.drafts.import-previous.Arguments": {
+        "type": "object",
+        "properties": {
+          "conversation": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation",
+          "body"
+        ],
+        "description": ""
+      },
+      "messages.drafts.sent.Arguments": {
+        "type": "object",
+        "properties": {
+          "conversation": {
+            "type": "string"
+          },
+          "delivered": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation",
+          "delivered"
         ],
         "description": ""
       },
@@ -22465,6 +22433,50 @@
         },
         "required": [
           "filter"
+        ],
+        "description": ""
+      },
+      "passwords.workspace-vault.keep-sealed.Arguments": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ciphertext": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "ciphertext"
+        ],
+        "description": ""
+      },
+      "passwords.workspace-vault.import-sealed.Arguments": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ciphertext": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "ciphertext"
+        ],
+        "description": ""
+      },
+      "passwords.workspace-vault.remove-sealed.Arguments": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
         ],
         "description": ""
       },
@@ -29888,19 +29900,90 @@
         ],
         "description": ""
       },
-      "terminal.recent-environments.used.Arguments": {
+      "terminal.history.import-run.Arguments": {
         "type": "object",
         "properties": {
-          "device": {
+          "command": {
             "type": "string"
           },
-          "target": {
+          "cwd": {
+            "type": "string"
+          },
+          "environment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exit": {
+            "maximum": 2147483647,
+            "minimum": -2147483648,
+            "type": "integer"
+          },
+          "ended_ms": {
+            "type": "integer"
+          },
+          "actor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "person": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "person"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "agent": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "agent"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "bot": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "bot"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              }
+            ]
+          },
+          "session": {
+            "type": "string"
+          },
+          "run": {
             "type": "string"
           }
         },
         "required": [
-          "device",
-          "target"
+          "command",
+          "cwd",
+          "exit",
+          "ended_ms",
+          "session",
+          "run"
         ],
         "description": ""
       },
@@ -30294,6 +30377,23 @@
         "type": "object",
         "properties": {},
         "required": [],
+        "description": ""
+      },
+      "tube.watch-history.import-previous.Arguments": {
+        "type": "object",
+        "properties": {
+          "previous": {
+            "items": {
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "previous"
+        ],
         "description": ""
       },
       "typst-editor.workspace.new-file.Arguments": {
@@ -31381,41 +31481,6 @@
         "required": [],
         "description": ""
       },
-      "video-player.recent.keep.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "rows": {}
-        },
-        "required": [
-          "device",
-          "rows"
-        ],
-        "description": ""
-      },
-      "video-player.recent.stood.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "position_ms": {
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "device",
-          "id",
-          "position_ms"
-        ],
-        "description": ""
-      },
       "weather.locations.save-location.Arguments": {
         "type": "object",
         "properties": {
@@ -32449,30 +32514,6 @@
     },
     {
       "app": "so.tilo.browser",
-      "resource": "browser.personal-bookmarks",
-      "action": "add-bookmark",
-      "arguments": "#/components/schemas/browser.personal-bookmarks.add-bookmark.Arguments"
-    },
-    {
-      "app": "so.tilo.browser",
-      "resource": "browser.personal-bookmarks",
-      "action": "remove-bookmark",
-      "arguments": "#/components/schemas/browser.personal-bookmarks.remove-bookmark.Arguments"
-    },
-    {
-      "app": "so.tilo.browser",
-      "resource": "browser.personal-bookmarks",
-      "action": "import-bookmarks",
-      "arguments": "#/components/schemas/browser.personal-bookmarks.import-bookmarks.Arguments"
-    },
-    {
-      "app": "so.tilo.browser",
-      "resource": "browser.personal-bookmarks",
-      "action": "remove-imported-node",
-      "arguments": "#/components/schemas/browser.personal-bookmarks.remove-imported-node.Arguments"
-    },
-    {
-      "app": "so.tilo.browser",
       "resource": "browser.browsing-history",
       "action": "visit",
       "arguments": "#/components/schemas/browser.browsing-history.visit.Arguments"
@@ -32500,6 +32541,30 @@
       "resource": "browser.browsing-history",
       "action": "clear-history",
       "arguments": "#/components/schemas/browser.browsing-history.clear-history.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "browser.personal-bookmarks",
+      "action": "add-bookmark",
+      "arguments": "#/components/schemas/browser.personal-bookmarks.add-bookmark.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "browser.personal-bookmarks",
+      "action": "remove-bookmark",
+      "arguments": "#/components/schemas/browser.personal-bookmarks.remove-bookmark.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "browser.personal-bookmarks",
+      "action": "import-bookmarks",
+      "arguments": "#/components/schemas/browser.personal-bookmarks.import-bookmarks.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "browser.personal-bookmarks",
+      "action": "remove-imported-node",
+      "arguments": "#/components/schemas/browser.personal-bookmarks.remove-imported-node.Arguments"
     },
     {
       "app": "so.tilo.calculator",
@@ -32940,18 +33005,6 @@
       "arguments": "#/components/schemas/canvas.artwork.save-artwork.Arguments"
     },
     {
-      "app": "so.tilo.canvas",
-      "resource": "canvas.recent-artworks",
-      "action": "remember",
-      "arguments": "#/components/schemas/canvas.recent-artworks.remember.Arguments"
-    },
-    {
-      "app": "so.tilo.canvas",
-      "resource": "canvas.recent-artworks",
-      "action": "forget",
-      "arguments": "#/components/schemas/canvas.recent-artworks.forget.Arguments"
-    },
-    {
       "app": "so.tilo.chat",
       "resource": "chat.workspace",
       "action": "begin-chat",
@@ -33265,21 +33318,9 @@
     },
     {
       "app": "so.tilo.chat",
-      "resource": "chat.learned",
-      "action": "learn",
-      "arguments": "#/components/schemas/chat.learned.learn.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.learned",
-      "action": "correct",
-      "arguments": "#/components/schemas/chat.learned.correct.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.learned",
-      "action": "forget",
-      "arguments": "#/components/schemas/chat.learned.forget.Arguments"
+      "resource": "chat.drafts",
+      "action": "import-previous",
+      "arguments": "#/components/schemas/chat.drafts.import-previous.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -33466,12 +33507,6 @@
       "resource": "clocks.collection",
       "action": "unfloat-stopwatch",
       "arguments": "#/components/schemas/clocks.collection.unfloat-stopwatch.Arguments"
-    },
-    {
-      "app": "so.tilo.clocks",
-      "resource": "clocks.on-devices",
-      "action": "keep",
-      "arguments": "#/components/schemas/clocks.on-devices.keep.Arguments"
     },
     {
       "app": "so.tilo.code-editor",
@@ -34080,12 +34115,6 @@
       "arguments": "#/components/schemas/discord.guild.plan-event.Arguments"
     },
     {
-      "app": "so.tilo.disk-usage",
-      "resource": "disk-usage.recent-folders",
-      "action": "remember",
-      "arguments": "#/components/schemas/disk-usage.recent-folders.remember.Arguments"
-    },
-    {
       "app": "so.tilo.disks",
       "resource": "disks.system",
       "action": "name-drive",
@@ -34198,12 +34227,6 @@
       "resource": "ebook.library",
       "action": "read-chapter",
       "arguments": "#/components/schemas/ebook.library.read-chapter.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.files",
-      "action": "keep",
-      "arguments": "#/components/schemas/ebook.files.keep.Arguments"
     },
     {
       "app": "so.tilo.feeds",
@@ -34483,24 +34506,6 @@
     },
     {
       "app": "so.tilo.file-explorer",
-      "resource": "files.recent",
-      "action": "note",
-      "arguments": "#/components/schemas/files.recent.note.Arguments"
-    },
-    {
-      "app": "so.tilo.file-explorer",
-      "resource": "files.recent",
-      "action": "moved",
-      "arguments": "#/components/schemas/files.recent.moved.Arguments"
-    },
-    {
-      "app": "so.tilo.file-explorer",
-      "resource": "files.recent",
-      "action": "forget",
-      "arguments": "#/components/schemas/files.recent.forget.Arguments"
-    },
-    {
-      "app": "so.tilo.file-explorer",
       "resource": "files.workspace",
       "action": "up",
       "arguments": "#/components/schemas/files.workspace.up.Arguments"
@@ -34552,12 +34557,6 @@
       "resource": "firewall.config",
       "action": "read-blocked",
       "arguments": "#/components/schemas/firewall.config.read-blocked.Arguments"
-    },
-    {
-      "app": "so.tilo.firewall",
-      "resource": "firewall.applied",
-      "action": "applied",
-      "arguments": "#/components/schemas/firewall.applied.applied.Arguments"
     },
     {
       "app": "so.tilo.git-client",
@@ -34672,6 +34671,12 @@
       "resource": "logs.journal",
       "action": "select-entry",
       "arguments": "#/components/schemas/logs.journal.select-entry.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.mailbox",
+      "action": "import-mailbox-entries",
+      "arguments": "#/components/schemas/mail.mailbox.import-mailbox-entries.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -34796,6 +34801,12 @@
     {
       "app": "so.tilo.mail",
       "resource": "mail.messages",
+      "action": "import-previous-message",
+      "arguments": "#/components/schemas/mail.messages.import-previous-message.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
       "action": "deliver-message",
       "arguments": "#/components/schemas/mail.messages.deliver-message.Arguments"
     },
@@ -34897,9 +34908,21 @@
     },
     {
       "app": "so.tilo.mail",
+      "resource": "mail.trusted-senders",
+      "action": "import-legacy",
+      "arguments": "#/components/schemas/mail.trusted-senders.import-legacy.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
       "resource": "mail.copies",
       "action": "keep-copies",
       "arguments": "#/components/schemas/mail.copies.keep-copies.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.copies",
+      "action": "import-copies",
+      "arguments": "#/components/schemas/mail.copies.import-copies.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -35008,24 +35031,6 @@
       "resource": "maps.workspace",
       "action": "clear-offline-areas",
       "arguments": "#/components/schemas/maps.workspace.clear-offline-areas.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "maps.offline-areas",
-      "action": "remember",
-      "arguments": "#/components/schemas/maps.offline-areas.remember.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "maps.offline-areas",
-      "action": "forget",
-      "arguments": "#/components/schemas/maps.offline-areas.forget.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "maps.offline-areas",
-      "action": "clear",
-      "arguments": "#/components/schemas/maps.offline-areas.clear.Arguments"
     },
     {
       "app": "so.tilo.messages",
@@ -35182,6 +35187,18 @@
       "resource": "messages.drafts",
       "action": "drop-draft",
       "arguments": "#/components/schemas/messages.drafts.drop-draft.Arguments"
+    },
+    {
+      "app": "so.tilo.messages",
+      "resource": "messages.drafts",
+      "action": "import-previous",
+      "arguments": "#/components/schemas/messages.drafts.import-previous.Arguments"
+    },
+    {
+      "app": "so.tilo.messages",
+      "resource": "messages.drafts",
+      "action": "sent",
+      "arguments": "#/components/schemas/messages.drafts.sent.Arguments"
     },
     {
       "app": "so.tilo.monitor",
@@ -35476,6 +35493,24 @@
       "resource": "passwords.vault",
       "action": "filter",
       "arguments": "#/components/schemas/passwords.vault.filter.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "passwords.workspace-vault",
+      "action": "keep-sealed",
+      "arguments": "#/components/schemas/passwords.workspace-vault.keep-sealed.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "passwords.workspace-vault",
+      "action": "import-sealed",
+      "arguments": "#/components/schemas/passwords.workspace-vault.import-sealed.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "passwords.workspace-vault",
+      "action": "remove-sealed",
+      "arguments": "#/components/schemas/passwords.workspace-vault.remove-sealed.Arguments"
     },
     {
       "app": "so.tilo.pdf-viewer",
@@ -37075,9 +37110,9 @@
     },
     {
       "app": "so.tilo.terminal",
-      "resource": "terminal.recent-environments",
-      "action": "used",
-      "arguments": "#/components/schemas/terminal.recent-environments.used.Arguments"
+      "resource": "terminal.history",
+      "action": "import-run",
+      "arguments": "#/components/schemas/terminal.history.import-run.Arguments"
     },
     {
       "app": "so.tilo.themes",
@@ -37264,6 +37299,12 @@
       "resource": "tube.watch-history",
       "action": "clear",
       "arguments": "#/components/schemas/tube.watch-history.clear.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tube.watch-history",
+      "action": "import-previous",
+      "arguments": "#/components/schemas/tube.watch-history.import-previous.Arguments"
     },
     {
       "app": "so.tilo.typst-editor",
@@ -37618,18 +37659,6 @@
       "resource": "video-player.library",
       "action": "clear-recent",
       "arguments": "#/components/schemas/video-player.library.clear-recent.Arguments"
-    },
-    {
-      "app": "so.tilo.video-player",
-      "resource": "video-player.recent",
-      "action": "keep",
-      "arguments": "#/components/schemas/video-player.recent.keep.Arguments"
-    },
-    {
-      "app": "so.tilo.video-player",
-      "resource": "video-player.recent",
-      "action": "stood",
-      "arguments": "#/components/schemas/video-player.recent.stood.Arguments"
     },
     {
       "app": "so.tilo.weather",

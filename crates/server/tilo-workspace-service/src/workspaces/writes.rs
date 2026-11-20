@@ -20,7 +20,7 @@ impl GovernedWorkspace {
     pub(super) fn draft_document_write(
         &self,
         device: &[u8; 32],
-        (app, document): (&str, &str),
+        (app, document, readers): (&str, &str, Option<&str>),
         changes: &[u8],
         founding: bool,
         sealed: Option<&key_group::ContentKeys>,
@@ -52,6 +52,7 @@ impl GovernedWorkspace {
         let envelope = peer
             .draft_write(
                 (app, document),
+                readers,
                 &frame,
                 seal.as_mut()
                     .map(|seal| seal as &mut tilo_peer_state::SealCheckpoint<'_>),
@@ -70,7 +71,7 @@ impl GovernedWorkspace {
                     document: document.to_owned(),
                     envelope: Box::new(envelope),
                     own,
-                    readers: None,
+                    readers: readers.map(str::to_owned),
                 },
             },
             author,
@@ -107,7 +108,7 @@ impl Workspaces {
             let governed = state.lock().await;
             governed.draft_document_write(
                 &device.device(),
-                (app, document),
+                (app, document, None),
                 changes,
                 founding,
                 sealed,

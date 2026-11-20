@@ -115,3 +115,6 @@ terminal-commands-stop = Stop
 terminal-commands-send = Enter
 terminal-commands-placeholder = Type a command
 terminal-commands-on-a-computer = This session's shell is on someone else's computer. Its output arrives here; type into it there.
+
+terminal-import-previous-history = Import previous workspace commands
+terminal-history-import-run = Import an earlier workspace command

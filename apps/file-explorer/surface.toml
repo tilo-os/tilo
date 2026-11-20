@@ -287,48 +287,6 @@ params = [
 ]
 
 [[resources]]
-kind = "files.recent"
-label = "Recent files"
-version = 1
-fields = [
-  { path = "devices", type = { map = "any" } },
-]
-
-[[resources.verbs]]
-id = "note"
-kind = "undoable"
-params = [
-  { name = "device", type = "text", required = true, schema = { type = "string" } },
-  { name = "path", required = true, schema = { type = "string" } },
-  { name = "last_use", type = { named = "RecentUse" }, required = true, schema = { type = "string", enum = ["opened", "changed"] } },
-  { name = "at_ms", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
-]
-
-[[resources.verbs]]
-id = "moved"
-kind = "undoable"
-params = [
-  { name = "device", type = "text", required = true, schema = { type = "string" } },
-  { name = "from", required = true, schema = { type = "string" } },
-  { name = "to", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "forget"
-kind = "undoable"
-params = [
-  { name = "device", type = "text", required = true, schema = { type = "string" } },
-  { name = "path", required = true, schema = { type = "string" } },
-]
-
-[[resources.types]]
-name = "RecentUse"
-cases = [
-  { name = "opened" },
-  { name = "changed" },
-]
-
-[[resources]]
 kind = "files.workspace"
 label = "Files window"
 version = 1

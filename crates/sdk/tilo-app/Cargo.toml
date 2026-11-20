@@ -68,7 +68,6 @@ tilo-rich-edit = { version = "0.1.0", path = "../tilo-rich-edit" }
 # What a headless test keeps on its profile as an earlier build stored it.
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 # Whose each app's records are, as the fleet's manifests declare (`[resources] own`).
-app-fleet = { version = "0.1.0", path = "../../packaging/app-fleet" }
 # The workspace's tree record, which a window that lists its folder's changes in History
 # opens for them.
 fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }

@@ -1279,6 +1279,7 @@ where
         _: WorkspaceId,
         _: &str,
         _: &str,
+        _named: Option<&str>,
         _: &[u8],
     ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
         Err("no history keys".into())
@@ -1449,6 +1450,7 @@ async fn a_draft_under_a_write_its_device_sent_meanwhile_is_saved() {
                 };
                 let envelope = view.peer().draft_write(
                     (APP, ""),
+                    None,
                     &mutation.encode().map_err(|error| error.to_string())?,
                     None,
                     author,

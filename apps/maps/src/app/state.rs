@@ -265,7 +265,7 @@ impl MapsApp {
         &mut self,
         dispatch: ui::framework::Dispatcher<Workspace>,
         offline_areas: Option<(
-            ui::framework::PersonResource<crate::offline_areas::OfflineAreas>,
+            ui::framework::Setting<crate::app::offline::DownloadedAreas>,
             String,
         )>,
     ) {

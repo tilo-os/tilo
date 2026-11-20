@@ -412,6 +412,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The person's own record of `P` the running app keeps, as its views
     /// open it.
+    #[cfg(feature = "test-support")]
     pub fn person<P: Resource>(&mut self) -> Option<super::PersonResource<P>> {
         self.harness()
             .with_widget_mut(|root: &mut ResourceRoot| root.storage.person::<P>())
@@ -437,6 +438,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
     ) -> Option<super::WorkspaceResource<P>> {
         self.harness()
             .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_resource::<P>(owner, id))
+            .flatten()
+    }
+
+    /// The app's profile record of `P`, as its views open it.
+    pub fn profile_resource<P: Resource>(&mut self) -> Option<super::PersonResource<P>> {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.profile_resource::<P>())
             .flatten()
     }
 
@@ -896,6 +904,10 @@ impl<A: ResourceApp> HeadlessApp<A> {
             },
             beside,
             &mut |context| {
+                #[cfg(feature = "test-support")]
+                if let Some(records) = context.person_resources().cloned() {
+                    context.provide_person_resources(records.with_legacy_member_fixture());
+                }
                 if let Some(configure) = configure.take() {
                     configure(context);
                 }
@@ -2193,20 +2205,27 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
         invoke: &Invoke<P>,
     ) -> Result<(), String> {
+        let base = self.checkout().id.clone();
+        self.chain_invoke_beside(&base, invoke).map(drop)
+    }
+
+    /// Apply an action beside an earlier base record in the same workspace.
+    pub fn chain_invoke_beside<P: super::Chained<Base = A::Resource>>(
+        &mut self,
+        id: &DocumentId,
+        invoke: &Invoke<P>,
+    ) -> Result<Option<u64>, String> {
         let me = tilo_resource::MemberId::person(&self.author);
         let base = Rc::new(self.state());
         let chain = super::Chain::<P>::detached_beside_in(
             self.records.clone(),
             <A as super::ResourceApp>::ID,
-            Some(&self.checkout().id),
+            Some(id),
             &me,
             move || Rc::clone(&base),
         )
         .ok_or_else(|| format!("the {} cannot be opened", P::LABEL))?;
-        chain
-            .invoke(invoke)
-            .map(drop)
-            .map_err(|error| error.to_string())
+        chain.invoke(invoke).map_err(|error| error.to_string())
     }
 
     #[allow(

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@f7f751ba63de3fed";
+export const SURFACE = "so.tilo.mail@5c73452d0fa24e9b";
 
 export interface DraftAttachment {
   content_id: string;
@@ -76,6 +76,18 @@ export interface DraftState {
 export type Folder = "inbox" | "starred" | "sent" | "drafts" | "archive" | "trash" | "junk";
 
 export interface LocalFolder {
+  name: string;
+}
+
+export interface PreviousDraft {
+  id: string;
+  message: DraftData;
+  in_reply_to: string | null;
+  notes: string;
+}
+
+export interface PreviousFolder {
+  id: string;
   name: string;
 }
 
@@ -263,6 +275,13 @@ export interface ServerAppliedArgs {
   updates: ServerUpdate[];
 }
 
+/** The arguments of `import-previous-message`. */
+export interface ImportPreviousMessageArgs {
+  id: string;
+  state: unknown;
+  body?: unknown;
+}
+
 /** The arguments of `publish-browser-identity`. */
 export interface PublishBrowserIdentityArgs {
   root: string;
@@ -373,14 +392,25 @@ export interface DistrustArgs {
   sender: string;
 }
 
+/** The arguments of `import-legacy`. */
+export interface ImportLegacyArgs {
+  senders: string[];
+}
+
 /** The arguments of `keep-copies`. */
 export interface KeepCopiesArgs {
+  copies: NewCopy[];
+}
+
+/** The arguments of `import-copies`. */
+export interface ImportCopiesArgs {
   copies: NewCopy[];
 }
 
 /** The arguments of `forget-copies`. */
 export interface ForgetCopiesArgs {
   messages: string[];
+  account?: string;
 }
 
 /** Mail — `mail.mailbox`. */
@@ -389,6 +419,12 @@ export interface Mailbox extends tilo.Resource {
   draft: DraftState;
   drafts: Array<tilo.Entry<DraftState>>;
   readonly retired: Array<tilo.Entry<RetiredCopy>>;
+  readonly imported: string[];
+  readonly taken_in: string[];
+  importMailboxEntries(args: {
+    folders: PreviousFolder[];
+    drafts: PreviousDraft[];
+  }): Promise<void>;
   serverApplied(args: {
     update: ServerUpdate;
   }): Promise<void>;
@@ -459,7 +495,7 @@ export interface Mailbox extends tilo.Resource {
 
 /** The actions `Mailbox` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MAILBOX_ACTIONS = ["serverApplied", "startDraftBody", "saveDraft", "createDraft", "showDraft", "attach", "discardDraft", "sendMessage", "checkMail", "draftMessage", "cancelSend", "searchMessages", "exportContent"] as const;
+export const MAILBOX_ACTIONS = ["importMailboxEntries", "serverApplied", "startDraftBody", "saveDraft", "createDraft", "showDraft", "attach", "discardDraft", "sendMessage", "checkMail", "draftMessage", "cancelSend", "searchMessages", "exportContent"] as const;
 
 /** The `mail.mailbox` kind at `path`. */
 export function mailbox(ws: tilo.Workspace, path: string): Mailbox {
@@ -507,6 +543,13 @@ export interface Messages extends tilo.Resource {
   }): Promise<void>;
   /** Runs `server-applied` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   serverAppliedMany(items: ServerAppliedArgs[]): Promise<tilo.ActionAnswer[]>;
+  importPreviousMessage(args: {
+    id: string;
+    state: unknown;
+    body?: unknown;
+  }): Promise<void>;
+  /** Runs `import-previous-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  importPreviousMessageMany(items: ImportPreviousMessageArgs[]): Promise<tilo.ActionAnswer[]>;
   deliverMessage(args: {
     from: string;
     subject: string;
@@ -528,7 +571,7 @@ export interface Messages extends tilo.Resource {
 
 /** The actions `Messages` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MESSAGES_ACTIONS = ["markRead", "markReadMany", "archive", "archiveMany", "trash", "trashMany", "moveMessages", "moveMessagesMany", "purge", "purgeMany", "ingest", "ingestMany", "serverApplied", "serverAppliedMany", "deliverMessage"] as const;
+export const MESSAGES_ACTIONS = ["markRead", "markReadMany", "archive", "archiveMany", "trash", "trashMany", "moveMessages", "moveMessagesMany", "purge", "purgeMany", "ingest", "ingestMany", "serverApplied", "serverAppliedMany", "importPreviousMessage", "importPreviousMessageMany", "deliverMessage"] as const;
 
 /** The `mail.messages` kind at `path`. */
 export function messages(ws: tilo.Workspace, path: string): Messages {
@@ -667,6 +710,7 @@ export function identities(ws: tilo.Workspace, path: string): Identities {
 /** Trusted senders — `mail.trusted-senders`. */
 export interface TrustedSenders extends tilo.Resource {
   senders: string[];
+  readonly distrusted: string[];
   trust(args: {
     sender: string;
   }): Promise<void>;
@@ -677,27 +721,39 @@ export interface TrustedSenders extends tilo.Resource {
   }): Promise<void>;
   /** Runs `distrust` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   distrustMany(items: DistrustArgs[]): Promise<tilo.ActionAnswer[]>;
+  importLegacy(args: {
+    senders: string[];
+  }): Promise<void>;
+  /** Runs `import-legacy` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  importLegacyMany(items: ImportLegacyArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `TrustedSenders` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TRUSTEDSENDERS_ACTIONS = ["trust", "trustMany", "distrust", "distrustMany"] as const;
+export const TRUSTEDSENDERS_ACTIONS = ["trust", "trustMany", "distrust", "distrustMany", "importLegacy", "importLegacyMany"] as const;
 
 /** The `mail.trusted-senders` kind at `path`. */
 export function trustedSenders(ws: tilo.Workspace, path: string): TrustedSenders {
   return resourceProxy(ws, path, SURFACE, TRUSTEDSENDERS_ACTIONS) as unknown as TrustedSenders;
 }
 
-/** Mail on your devices — `mail.copies`. */
+/** Workspace mail — `mail.copies`. */
 export interface Copies extends tilo.Resource {
   readonly copies: Array<tilo.Entry<KeptCopy>>;
+  readonly removed: string[];
   keepCopies(args: {
     copies: NewCopy[];
   }): Promise<void>;
   /** Runs `keep-copies` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   keepCopiesMany(items: KeepCopiesArgs[]): Promise<tilo.ActionAnswer[]>;
+  importCopies(args: {
+    copies: NewCopy[];
+  }): Promise<void>;
+  /** Runs `import-copies` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  importCopiesMany(items: ImportCopiesArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetCopies(args: {
     messages: string[];
+    account?: string;
   }): Promise<void>;
   /** Runs `forget-copies` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forgetCopiesMany(items: ForgetCopiesArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -705,7 +761,7 @@ export interface Copies extends tilo.Resource {
 
 /** The actions `Copies` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const COPIES_ACTIONS = ["keepCopies", "keepCopiesMany", "forgetCopies", "forgetCopiesMany"] as const;
+export const COPIES_ACTIONS = ["keepCopies", "keepCopiesMany", "importCopies", "importCopiesMany", "forgetCopies", "forgetCopiesMany"] as const;
 
 /** The `mail.copies` kind at `path`. */
 export function copies(ws: tilo.Workspace, path: string): Copies {

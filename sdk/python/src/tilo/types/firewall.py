@@ -28,14 +28,12 @@ __all__ = [
     "Target",
     "ZoneKind",
     "Config",
-    "Applied",
     "StartArgs",
     "StopArgs",
     "EnterPanicModeArgs",
     "ExitPanicModeArgs",
     "DeleteRuleArgs",
     "ImportArgs",
-    "AppliedArgs",
 ]
 
 Action = Literal["allow", "deny"]
@@ -90,15 +88,9 @@ ImportArgs = TypedDict("ImportArgs", {
 })
 """The arguments of `import`."""
 
-AppliedArgs = TypedDict("AppliedArgs", {
-    "device": "str",
-    "config": "str",
-})
-"""The arguments of `applied`."""
-
 class Config(Resource):
     """Firewall — `firewall.config`."""
-    __surface__ = "so.tilo.firewall@8d556bea928f1554"
+    __surface__ = "so.tilo.firewall@79278c5e2f6f2928"
     @property
     def enabled(self) -> bool:
         """Read only."""
@@ -169,27 +161,5 @@ class Config(Resource):
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
     __actions__ = frozenset({"start", "start_many", "stop", "stop_many", "enter_panic_mode", "enter_panic_mode_many", "exit_panic_mode", "exit_panic_mode_many", "delete_rule", "delete_rule_many", "import_", "import_many", "read_blocked"})
-
-
-class Applied(Resource):
-    """Applied configuration — `firewall.applied`."""
-    __surface__ = "so.tilo.firewall@8d556bea928f1554"
-    devices: dict[str, str]
-
-    def applied(self,
-        *,
-        device: str,
-        config: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("applied", device=device, config=config)
-
-    def applied_many(self, items: list[AppliedArgs]) -> list[dict[str, Any]]:
-        """Runs `applied` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("applied", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"applied", "applied_many"})
 
 

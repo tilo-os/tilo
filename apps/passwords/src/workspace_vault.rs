@@ -1,305 +1,188 @@
-//! The person's Passwords kept in their workspace's vault, on the server that keeps the
-//! workspace: what a window with no vault of its device's own reads and edits, a browser
-//! page's above all. Every device of the person's reads the same entries there.
-//!
-//! The entries are read once the window opens, and again whenever it looks after a while, so
-//! what another device changed shows here too. An edit shows at once and is sent to the server;
-//! [`WorkspaceVault::flush`] says whether the server kept it yet, and a refusal is read back
-//! from the server so the window never shows what it does not keep.
+use accounts::{CredentialOwner, SecretId, SecretItem, SecretStore};
+use std::sync::Arc;
+use ui::collaboration::document_content::ContentLink;
+use ui::framework::{ResourceOpener, WorkspaceResource};
+use ui::resource::ResourceSaveStatus;
+use ui::tilo_resource::Id;
+use zeroize::Zeroizing;
 
-use std::cell::RefCell;
+use passwords_model::WorkspaceVaultEntries;
 
-use accounts::{SecretId, SecretItem};
-use tilo_clock::time::{Duration, Instant};
-use ui::tilo_actions::InvocationUpdate;
-use ui::tilo_actions::remote::person_vault::{self, Entries, ForgetEntry, KeepEntry};
-use ui::tilo_actions::remote::{ActionCallError, InvokeArgument};
-
-/// How long the entries shown are taken as current before the server is asked again, so what
-/// another device of the person's changed shows here.
-const FRESH_FOR: Duration = Duration::from_secs(5);
+pub(crate) use ui::tilo_actions::policy::roles::WORKSPACE_VAULT_DOCUMENT;
 
 pub(crate) struct WorkspaceVault {
-    remote: ui::RemoteActions,
-    state: RefCell<State>,
-}
-
-#[derive(Default)]
-struct State {
-    /// What the server answered last, edits made here since included; `None` until it first
-    /// answered.
-    entries: Option<Vec<SecretItem>>,
-    /// The read of every entry, while it is asked.
-    listing: Option<ui::InvocationCall>,
-    /// When the entries were last asked for.
-    asked_at: Option<Instant>,
-    /// The edits sent and not yet answered.
-    writes: Vec<ui::InvocationCall>,
-    /// Why the server could not be read, or did not keep an edit, until it next answers.
-    trouble: Option<String>,
-    /// Advances with every change of what the window shows.
-    revision: u64,
-}
-
-/// What an answered request said.
-enum Settled {
-    Entries(Vec<SecretItem>),
-    Refused(String),
+    opener: ResourceOpener<WorkspaceVaultEntries>,
 }
 
 impl WorkspaceVault {
-    /// The person's entries, asked of the server `remote` reaches.
-    pub(crate) fn new(remote: ui::RemoteActions) -> Self {
-        let vault = Self {
-            remote,
-            state: RefCell::default(),
-        };
-        vault.ask_entries(&mut vault.state.borrow_mut());
-        vault
+    pub(crate) fn new(opener: ResourceOpener<WorkspaceVaultEntries>) -> Self {
+        Self { opener }
     }
 
-    fn ask_entries(&self, state: &mut State) {
-        state.listing = Some(self.remote.invoke(
-            person_vault::target(person_vault::ENTRIES),
-            InvokeArgument::None,
-            None,
-        ));
-        state.asked_at = Some(tilo_clock::now());
+    fn record(&self) -> Result<WorkspaceResource<WorkspaceVaultEntries>, String> {
+        self.opener
+            .open(WORKSPACE_VAULT_DOCUMENT)
+            .ok_or_else(|| "the workspace vault is unavailable".into())
     }
 
-    fn send(
-        &self,
-        action: &str,
-        argument: serde_json::Result<serde_json::Value>,
-    ) -> Result<(), String> {
-        let Ok(serde_json::Value::Object(map)) = argument else {
-            return Err("The entry could not be sent".to_owned());
-        };
-        let call = self.remote.invoke(
-            person_vault::target(action),
-            InvokeArgument::Json(map),
-            None,
-        );
-        let mut state = self.state.borrow_mut();
-        state.writes.push(call);
-        state.revision = state.revision.wrapping_add(1);
-        Ok(())
-    }
-
-    /// Take what the server answered since the last look, and ask again for entries grown
-    /// stale.
-    fn poll(&self) {
-        let mut state = self.state.borrow_mut();
-        // What the window shows before the answers are taken: only a change of it is news to
-        // the window, so a password it shows stays shown while the server answers the same.
-        let (shown, troubled) = (state.entries.clone(), state.trouble.clone());
-        if let Some(settled) = state.listing.as_ref().and_then(settled) {
-            state.listing = None;
-            match settled {
-                Settled::Entries(entries) => {
-                    // An edit still on its way shows until the server answers it.
-                    if state.writes.is_empty() {
-                        state.entries = Some(entries);
-                    }
-                    state.trouble = None;
-                }
-                Settled::Refused(reason) => state.trouble = Some(reason),
-            }
+    fn link(record: &WorkspaceResource<WorkspaceVaultEntries>) -> Result<Arc<ContentLink>, String> {
+        if !record.may_read() {
+            return Err("you may not read this vault".into());
         }
-        let mut waiting = Vec::new();
-        let mut answered = None;
-        for call in std::mem::take(&mut state.writes) {
-            match settled(&call) {
-                None => waiting.push(call),
-                Some(Settled::Entries(entries)) => {
-                    state.trouble = None;
-                    answered = Some(entries);
-                }
-                Some(Settled::Refused(reason)) => {
-                    state.trouble = Some(reason);
-                    // Show what the server keeps, not the edit it refused.
-                    state.asked_at = None;
-                }
-            }
-        }
-        state.writes = waiting;
-        // The last answer is what the server keeps once no edit is on its way.
-        if state.writes.is_empty()
-            && let Some(entries) = answered
-        {
-            state.entries = Some(entries);
-        }
-        let grown_old = state
-            .asked_at
-            .is_none_or(|asked| tilo_clock::now().saturating_duration_since(asked) >= FRESH_FOR);
-        if state.listing.is_none() && state.writes.is_empty() && grown_old {
-            self.ask_entries(&mut state);
-        }
-        if !same_entries(shown.as_deref(), state.entries.as_deref()) || troubled != state.trouble {
-            state.revision = state.revision.wrapping_add(1);
-        }
+        let route = record
+            .record()
+            .route()
+            .ok_or("the vault has no workspace route")?;
+        Ok(ContentLink::of(&route))
     }
 
-    /// Whether the server answered with the entries yet.
-    pub(crate) fn is_open(&self) -> bool {
-        self.poll();
-        self.state.borrow().entries.is_some()
-    }
-
-    /// Why the server can't be read now, or did not keep the last edit.
-    pub(crate) fn trouble(&self) -> Option<String> {
-        self.poll();
-        self.state.borrow().trouble.clone()
-    }
-
-    /// Advances with every change of what the window shows.
     pub(crate) fn revision(&self) -> u64 {
-        self.poll();
-        self.state.borrow().revision
+        let Ok(record) = self.record() else {
+            return 0;
+        };
+        let epoch = Self::link(&record)
+            .ok()
+            .and_then(|link| link.private_field_epoch())
+            .map_or(0, |epoch| epoch.wrapping_add(1));
+        record.revision().rotate_left(16) ^ epoch
     }
 
-    /// Every entry, as the server last answered with the edits made here since.
-    pub(crate) fn list(&self) -> Vec<SecretItem> {
-        self.poll();
-        let mut entries = self.state.borrow().entries.clone().unwrap_or_default();
-        entries.sort_by(|a, b| {
-            a.title
-                .to_lowercase()
-                .cmp(&b.title.to_lowercase())
-                .then_with(|| a.id.cmp(&b.id))
-        });
-        entries
-    }
-
-    pub(crate) fn get(&self, id: &SecretId) -> Option<SecretItem> {
-        self.list().into_iter().find(|entry| &entry.id == id)
-    }
-
-    /// Keep `entry`, new or edited: it shows at once, and is the server's to keep.
-    pub(crate) fn put(&self, entry: &mut SecretItem) -> Result<(), String> {
-        entry.updated_unix = tilo_clock::unix_now();
-        let entry_value =
-            serde_json::to_value(&*entry).map_err(|_| "The entry could not be sent".to_owned())?;
-        self.send(
-            person_vault::KEEP_ENTRY,
-            serde_json::to_value(KeepEntry { entry: entry_value }),
-        )?;
-        let mut state = self.state.borrow_mut();
-        let entries = state.entries.get_or_insert_with(Vec::new);
-        entries.retain(|kept| kept.id != entry.id);
-        entries.push(entry.clone());
-        Ok(())
-    }
-
-    /// Forget the entry `id`: whether one was shown.
-    pub(crate) fn remove(&self, id: &SecretId) -> Result<bool, String> {
-        let shown = self.get(id).is_some();
-        self.send(
-            person_vault::FORGET_ENTRY,
-            serde_json::to_value(ForgetEntry { id: id.0.clone() }),
-        )?;
-        if let Some(entries) = self.state.borrow_mut().entries.as_mut() {
-            entries.retain(|kept| &kept.id != id);
+    pub(crate) fn items(&self) -> Result<Vec<SecretItem>, String> {
+        let record = self.record()?;
+        let link = Self::link(&record)?;
+        if link.private_field_epoch().is_none() {
+            return Err("the workspace vault keys are unavailable".into());
         }
-        Ok(shown)
+        let state = record
+            .try_get()
+            .ok_or("the workspace vault is unavailable")?;
+        state
+            .entries()
+            .map(|(id, sealed)| Self::open_item(&link, id, &sealed.0))
+            .collect()
     }
 
-    /// Whether the server kept every edit sent: `Ok(false)` while one is on its way.
-    ///
-    /// # Errors
-    ///
-    /// Why the server did not keep the last edit.
-    pub(crate) fn flush(&self) -> Result<bool, String> {
-        self.poll();
-        let state = self.state.borrow();
-        if !state.writes.is_empty() {
+    pub(crate) fn check_read(&self) -> Result<(), String> {
+        let record = self.record()?;
+        Self::link(&record)?
+            .private_field_epoch()
+            .map(drop)
+            .ok_or_else(|| "the workspace vault keys are unavailable".into())
+    }
+
+    pub(crate) fn item(&self, id: &SecretId) -> Result<SecretItem, String> {
+        let record = self.record()?;
+        let link = Self::link(&record)?;
+        let state = record
+            .try_get()
+            .ok_or("the workspace vault is unavailable")?;
+        let id = Id::from_raw(&id.0);
+        let sealed = state.entry(&id).ok_or("item no longer exists")?;
+        Self::open_item(&link, &id, &sealed.0)
+    }
+
+    fn open_item(link: &ContentLink, id: &Id, sealed: &str) -> Result<SecretItem, String> {
+        let payload = link.open_private_field(id.as_str(), sealed)?;
+        let item: SecretItem =
+            serde_json::from_slice(&payload).map_err(|_| "invalid encrypted vault item")?;
+        if item.id.0 != id.as_str() {
+            return Err("vault item identifier mismatch".into());
+        }
+        Ok(item)
+    }
+
+    pub(crate) fn put(&self, item: &SecretItem) -> Result<(), String> {
+        let record = self.record()?;
+        let link = Self::link(&record)?;
+        let sealed = Self::seal_item(&link, item)?;
+        record
+            .invoke(&WorkspaceVaultEntries::KEEP_SEALED.with((item.id.0.clone(), sealed)))
+            .map_err(|error| error.to_string())
+    }
+
+    fn seal_item(link: &ContentLink, item: &SecretItem) -> Result<String, String> {
+        if !item.may_share_with_workspace() {
+            return Err("a device credential must stay with its device".into());
+        }
+        let payload = Zeroizing::new(serde_json::to_vec(item).map_err(|_| "invalid vault item")?);
+        link.seal_private_field(&item.id.0, &payload)
+    }
+
+    pub(crate) fn import_device_vault(
+        &self,
+        owner: Option<&CredentialOwner>,
+        invoker: Option<ui::tilo_actions::ActionInvoker>,
+    ) -> Result<usize, String> {
+        let record = self.record()?;
+        if !record.may("import-sealed") {
+            return Err("you may not import into this vault".into());
+        }
+        let link = Self::link(&record)?;
+        if link.private_field_epoch().is_none() {
+            return Err("the workspace vault keys are unavailable".into());
+        }
+        let read = |store: &SecretStore| match store.recovery_error() {
+            Some(error) => Err(error.to_owned()),
+            None => Ok(store.list()),
+        };
+        let items = match owner {
+            Some(owner) => owner
+                .read(read)
+                .map_err(|error| format!("could not read vault: {error:?}"))??,
+            None => read(&SecretStore::open())?,
+        };
+        let mut imported = 0;
+        for item in items.iter().filter(|item| item.may_share_with_workspace()) {
+            let id = Id::from_raw(&item.id.0);
+            let state = record
+                .try_get()
+                .ok_or("the workspace vault is unavailable")?;
+            if state.removed.contains(&id) || state.entry(&id).is_some() {
+                continue;
+            }
+            let ciphertext = Self::seal_item(&link, item)?;
+            let action = WorkspaceVaultEntries::IMPORT_SEALED.with((item.id.0.clone(), ciphertext));
+            match &invoker {
+                Some(invoker) => record.invoke_as(invoker, &action),
+                None => record.invoke(&action),
+            }
+            .map_err(|error| error.to_string())?;
+            imported += 1;
+        }
+        Ok(imported)
+    }
+
+    pub(crate) fn remove(&self, id: &SecretId) -> Result<bool, String> {
+        let record = self.record()?;
+        if Self::link(&record)?.private_field_epoch().is_none() {
+            return Err("the workspace vault keys are unavailable".into());
+        }
+        let id = Id::from_raw(&id.0);
+        let state = record
+            .try_get()
+            .ok_or("the workspace vault is unavailable")?;
+        if state.entry(&id).is_none() {
             return Ok(false);
         }
-        match &state.trouble {
-            Some(reason) if state.entries.is_some() => Err(reason.clone()),
-            _ => Ok(true),
-        }
+        record
+            .invoke(&WorkspaceVaultEntries::REMOVE_SEALED.with(id.as_str().to_owned()))
+            .map_err(|error| error.to_string())?;
+        Ok(true)
     }
-}
 
-/// Whether `a` and `b` are the same entries, in whatever order the server listed them.
-fn same_entries(a: Option<&[SecretItem]>, b: Option<&[SecretItem]>) -> bool {
-    fn by_id(entries: &[SecretItem]) -> Vec<&SecretItem> {
-        let mut sorted: Vec<&SecretItem> = entries.iter().collect();
-        sorted.sort_by(|x, y| x.id.cmp(&y.id));
-        sorted
-    }
-    match (a, b) {
-        (Some(a), Some(b)) => a.len() == b.len() && by_id(a) == by_id(b),
-        (None, None) => true,
-        _ => false,
-    }
-}
-
-/// What `call` was answered, or `None` while it is still on its way.
-fn settled(call: &ui::InvocationCall) -> Option<Settled> {
-    let refused = |reason: String| Some(Settled::Refused(reason));
-    match call.get() {
-        ui::Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => {
-            match output
-                .value
-                .map(serde_json::from_value::<Entries>)
-                .and_then(Result::ok)
-                .map(|answered| {
-                    answered
-                        .entries
-                        .into_iter()
-                        .filter_map(|entry| serde_json::from_value(entry).ok())
-                        .collect()
-                }) {
-                Some(entries) => Some(Settled::Entries(entries)),
-                None => refused("The vault's answer could not be read".to_owned()),
+    pub(crate) fn flush(&self) -> Result<bool, String> {
+        match self
+            .record()?
+            .record()
+            .save_status()
+            .map_err(|error| error.to_string())?
+        {
+            ResourceSaveStatus::Saved => Ok(true),
+            ResourceSaveStatus::Saving => Ok(false),
+            ResourceSaveStatus::Failed(error) => Err(error),
+            ResourceSaveStatus::MemoryOnly => {
+                Err("the workspace vault has no durable store".into())
             }
         }
-        ui::Arrival::Ready(InvocationUpdate::Failed { error, .. }) => refused(error.message),
-        ui::Arrival::Ready(InvocationUpdate::Cancelled { message, .. }) => {
-            refused(message.unwrap_or_else(|| "The request was cancelled".to_owned()))
-        }
-        ui::Arrival::Failed(
-            ActionCallError::Refused { reason } | ActionCallError::InvalidRequest { reason },
-        ) => refused(reason),
-        ui::Arrival::Failed(error) => refused(error.to_string()),
-        ui::Arrival::Ready(_) | ui::Arrival::Pending { .. } => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use accounts::SecretItem;
-
-    use super::WorkspaceVault;
-
-    /// The server answering again with what the window shows is no change of it, so a
-    /// password the window shows stays shown; what another device changed is one.
-    #[test]
-    fn only_a_change_of_the_entries_is_news_to_the_window() {
-        let served = crate::served_vault::served();
-        let vault = WorkspaceVault::new(ui::RemoteActions::current());
-        let mut item = SecretItem::login("Bakery", "ada", "crumb-Loaf-42");
-        vault.put(&mut item).unwrap();
-        assert_eq!(vault.flush(), Ok(true));
-        let shown = vault.revision();
-
-        vault.state.borrow_mut().asked_at = None;
-        assert_eq!(vault.revision(), shown, "the same entries read again");
-        assert_eq!(vault.revision(), shown);
-
-        let mut other = SecretItem::login("Library", "ada", "shelf-7");
-        other.updated_unix = 1;
-        served
-            .kept
-            .lock()
-            .unwrap()
-            .insert(other.id.0.clone(), serde_json::to_value(&other).unwrap());
-        vault.state.borrow_mut().asked_at = None;
-        // One look asks the server again, the next takes its answer.
-        vault.revision();
-        assert_ne!(vault.revision(), shown, "an entry another device added");
-        assert_eq!(vault.list().len(), 2);
     }
 }

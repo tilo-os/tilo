@@ -33,10 +33,6 @@ optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files",
 
 [resources]
 kinds = ["mail.mailbox", "mail.messages", "tilo.chain-unsent", "tilo.accounts", "tilo.contacts.identities", "tilo.rich-text", "mail.copies", "mail.trusted-senders"]
-# The mailbox and its messages are the workspace's, so mail an import or an
-# account brings in reads the same in every member's Mail. Each member keeps
-# the rest as their own; nobody else in the workspace receives it.
-own = ["mail.copies", "mail.trusted-senders", "tilo.chain-unsent"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -158,3 +154,55 @@ action = "account-settings"
 label = "Account settings"
 kind = "read"
 operation = "view"
+[[offers]]
+resource = "mail.mailbox"
+action = "import-sender-trust"
+label = "Import previous sender trust into this workspace"
+confirm = true
+[[offers]]
+resource = "mail.mailbox"
+action = "import-saved-copies"
+label = "Import saved mail"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "mail.mailbox"
+action = "import-mailbox"
+label = "Import previous mailbox"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "mail.mailbox"
+action = "import-message-state"
+label = "Import earlier message state"
+confirm = true
+[[offers]]
+resource = "mail.trusted-senders"
+action = "trust"
+label = "Trust this sender"
+asks = "sender"
+[[offers]]
+resource = "mail.trusted-senders"
+action = "distrust"
+label = "Stop trusting this sender"
+asks = "sender"
+[[offers]]
+resource = "mail.trusted-senders"
+action = "import-legacy"
+label = "Import previous sender trust"
+asks = "senders"
+[[offers]]
+resource = "mail.copies"
+action = "keep-copies"
+label = "Keep fetched mail"
+asks = "copies"
+[[offers]]
+resource = "mail.copies"
+action = "import-copies"
+label = "Import fetched mail"
+asks = "copies"
+[[offers]]
+resource = "mail.copies"
+action = "forget-copies"
+label = "Forget fetched mail"
+asks = "messages"

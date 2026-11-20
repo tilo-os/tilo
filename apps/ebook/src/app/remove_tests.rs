@@ -42,19 +42,21 @@ fn with_dropped_book(dir: &Path) -> (TestApp<EbookShell>, String, tilo_test_env:
         "the dropped book opens in the reader"
     );
     assert_eq!(app.state().entries.len(), 1, "it joined the library");
-    let granted = grant(&mut app, &id).expect("this device opens it from its file");
+    let granted = grant(&app, &id).expect("this device opens it from its file");
     assert!(granted.is_file(), "{granted:?} is the book's file");
     (app, id, env)
 }
 
-/// Where this device opens the book `id` from, as the book files resource
-/// keeps it: `None` once it forgot the book's file.
-fn grant(app: &mut TestApp<EbookShell>, id: &str) -> Option<PathBuf> {
-    let record = app.person::<crate::local_library::BookFiles>()?;
-    crate::local_library::LocalLibrary::load(record, "test-device".to_owned())
-        .books
-        .get(id)
-        .cloned()
+/// Where this device opens the book from, until it forgets the path.
+fn grant(app: &TestApp<EbookShell>, id: &str) -> Option<PathBuf> {
+    use crate::local_library::{DeviceBookFiles, LocalLibrary};
+    LocalLibrary::load(
+        app.settings::<DeviceBookFiles>(),
+        ui::framework::testing::TEST_WORKSPACE.to_owned(),
+    )
+    .books
+    .get(id)
+    .cloned()
 }
 
 /// Activate the control the shelf or the reader publishes as `target`, as
@@ -133,7 +135,7 @@ fn a_cancelled_removal_leaves_the_book_opening_and_a_confirmed_one_forgets_its_f
     press_remove(&mut app, &id);
     assert!(app.asking().is_some(), "removing asks first");
     assert!(
-        grant(&mut app, &id).is_some(),
+        grant(&app, &id).is_some(),
         "nothing is forgotten while the person is asked"
     );
     app.harness().key("Escape");
@@ -141,7 +143,7 @@ fn a_cancelled_removal_leaves_the_book_opening_and_a_confirmed_one_forgets_its_f
     assert!(app.asking().is_none(), "the person said no");
     assert_eq!(app.state().entries.len(), 1, "the book stays on the shelf");
     assert!(
-        grant(&mut app, &id).is_some(),
+        grant(&app, &id).is_some(),
         "and this device still opens it from its file"
     );
     let mut app = opens_after_reopening(app, &id);
@@ -159,7 +161,7 @@ fn a_cancelled_removal_leaves_the_book_opening_and_a_confirmed_one_forgets_its_f
     assert!(app.confirm_asked().is_some(), "the person agreed");
     assert!(app.state().entries.is_empty(), "the book left the library");
     assert!(books(&mut app).library.is_empty(), "and the shelf");
-    assert_eq!(grant(&mut app, &id), None, "this device forgot its file");
+    assert_eq!(grant(&app, &id), None, "this device forgot its file");
     assert!(
         !books(&mut app).watched_sources.contains_key(&watched),
         "its watched file may be found again"
@@ -184,7 +186,7 @@ fn removing_through_the_action_api_forgets_the_file_only_once_confirmed() {
     app.settle();
     assert_eq!(app.state().entries.len(), 1, "the book stays on the shelf");
     assert!(
-        grant(&mut app, &id).is_some(),
+        grant(&app, &id).is_some(),
         "and this device still opens it from its file"
     );
     let mut app = opens_after_reopening(app, &id);
@@ -193,5 +195,5 @@ fn removing_through_the_action_api_forgets_the_file_only_once_confirmed() {
     app.settle();
     assert!(app.state().entries.is_empty(), "the book left the library");
     assert!(books(&mut app).library.is_empty(), "and the shelf");
-    assert_eq!(grant(&mut app, &id), None, "this device forgot its file");
+    assert_eq!(grant(&app, &id), None, "this device forgot its file");
 }

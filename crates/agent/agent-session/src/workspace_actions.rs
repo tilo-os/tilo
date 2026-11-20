@@ -45,7 +45,7 @@
 //! host device itself takes part in the workspace's documents (a workspace the host
 //! governs), it cannot be admitted to them a second time; the host hands the
 //! service the keys it holds instead
-//! ([`WorkspaceDocumentsLink::host_keys`]), for each record a request reads or
+//! ([`WorkspaceDocumentsLink::serving_keys`]), for each document a request reads or
 //! acts on, fresh for every act.
 
 mod arguments;
@@ -1189,7 +1189,7 @@ impl Workspace {
     }
 
     /// Hold the keys the host device hands over for `routes`
-    /// ([`WorkspaceDocumentsLink::host_keys`]), noting each in `handed`. The
+    /// ([`WorkspaceDocumentsLink::serving_keys`]), noting each in `handed`. The
     /// session then opens what it held for them and wakes the wait. A record
     /// to act on whose keys the host refuses is refused at once; a listing
     /// goes on without it.
@@ -1202,7 +1202,7 @@ impl Workspace {
     ) -> Result<(), ActionCallError> {
         for route in routes {
             handed.insert(route.clone());
-            match link.host_keys(&route, false) {
+            match link.serving_keys(&route, false) {
                 None => {}
                 Some(Ok(keys)) => {
                     self.peer
@@ -2933,7 +2933,7 @@ impl Worker {
                 .shared
                 .link
                 .get()
-                .and_then(|link| link.host_keys(&route, true))
+                .and_then(|link| link.serving_keys(&route, true))
         {
             let keys = keys.map_err(|reason| {
                 Outcome::Rejected(ActionCallError::Unavailable {

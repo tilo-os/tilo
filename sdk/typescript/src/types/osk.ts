@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.osk@0632dbc6f3a723f6";
+export const SURFACE = "so.tilo.osk@05e8fcea8c336e29";
 
 export interface KeyOffset {
   dx: number;
@@ -85,6 +85,7 @@ export interface Learned extends tilo.Resource {
   readonly transitions: Record<string, Record<string, Record<string, number>>>;
   readonly kept: string[];
   readonly touch: Record<string, KeyOffset>;
+  readonly restored_previous: boolean;
   learn(args: {
     lesson: Lesson;
   }): Promise<void>;

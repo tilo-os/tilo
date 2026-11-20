@@ -51,13 +51,13 @@ use ui::widget::{
 
 use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LaunchInput, Live,
-    PersonResource, RunMode, Setting, ViewCx,
+    RunMode, Setting, ViewCx,
 };
 use ui::tilo_resource::{ActionDecl, Id};
 
 use crate::actions::VideoEffect;
 use crate::i18n::CATALOG;
-use crate::preferences::{PLAYBACK_RATES, PlayerSettings, RecentMedia, RecentVideos, ResumePoints};
+use crate::preferences::{PLAYBACK_RATES, PlayerSettings, RecentMedia, ResumePoints, VideoRecents};
 use crate::shared::{Library as PlayerResource, library as verbs};
 use ui::widget::DrawChild;
 
@@ -312,7 +312,7 @@ pub(crate) struct PlayerState {
     setting: Option<Setting<PlayerSettings>>,
     /// The recent videos resource and this device's id; `None` for a capture or a past
     /// version.
-    recents: Option<(PersonResource<RecentVideos>, String)>,
+    recents: Option<(Setting<VideoRecents>, String)>,
     /// Where each video left off on this device, by its opaque identity.
     resume: ResumePoints,
     /// The resume point last written, so a playing video writes every few seconds and a
@@ -686,13 +686,12 @@ impl PlayerState {
                 let setting = cx.settings::<PlayerSettings>();
                 self.adopt_settings(&setting.get());
                 self.setting = Some(setting);
-                self.recents = cx
-                    .person::<RecentVideos>()
-                    .zip(cx.device().map(str::to_owned));
-                if let Some((record, device)) = &self.recents {
-                    let rows = record.with(|recent| recent.on(device));
-                    self.adopt_recent(&rows);
+                let workspace = cx.workspace().unwrap_or_default();
+                let recents = VideoRecents::open(cx, &workspace);
+                if let Some(rows) = recents.get().by_workspace.get(&workspace) {
+                    self.adopt_recent(rows);
                 }
+                self.recents = Some((recents, workspace));
                 self.open_launch(&cx.launch());
             }
             RunMode::Capture => {

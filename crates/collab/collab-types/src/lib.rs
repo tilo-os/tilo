@@ -93,7 +93,7 @@ pub const DOCUMENT_URI_SCHEME: &str = "tilo-document";
 // Convenience re-exports so downstream callers can do
 // `use collab_types::{SignedOp, Role, OpKind, ArtifactKind, ...}`
 // without reaching into individual modules.
-pub use artifact::ArtifactId;
+pub use artifact::{ArtifactId, FILES_TREE_KIND, file_content_artifact};
 pub use canonical::{CanonicalError, canonical_bytes};
 pub use caps::{
     Access, CapDecision, CapOverride, DeviceCap, Effect, FsAuthority, LaunchGrants, ResourceRef,
@@ -139,8 +139,8 @@ pub use op::{
 pub use own_resource::{OwnResource, own_kinds};
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use personal::{
-    is_personal_cluster, person_document_id, person_resource_type, personal_cluster,
-    personal_cluster_of,
+    is_personal_cluster, person_document_context, person_document_for_workspace,
+    person_document_id, person_resource_type, personal_cluster, personal_cluster_of,
 };
 pub use readers::{
     EVERY_MEMBER, Readers, app_document_id, content_artifact_id, is_store_document, reader_group,
@@ -162,6 +162,10 @@ pub use tilo_action_policy::{MemberId, PersonId, PersonIdError};
 pub use validator::{
     DEFAULT_WORKSPACE, InboundState, ValidationError, document_node, validate_admitted_inbound_op,
     validate_replayed_inbound_op,
+};
+pub use validator::{
+    DocumentAccessRule, document_access_changes, document_access_rules, document_access_scopes,
+    document_access_target,
 };
 pub use workspace_document::{
     WORKSPACE_DOCUMENTS, WorkspaceDocument, workspace_document, workspace_document_id,

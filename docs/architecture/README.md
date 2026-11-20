@@ -28,9 +28,9 @@ copies and compute, never a requirement.
 
 **Devices sync over iroh, end to end encrypted.** Devices reach the other
 devices of a workspace directly or through any device that stores it. Content
-is sealed under content keys whose group is an MLS group made of exactly the
-workspace's key-holding devices. Members added later receive the keys of every
-past epoch, so they read the whole history.
+is sealed with MLS content keys. Shared documents can use the workspace group.
+A restricted document has its own group, which gives history keys only to
+devices currently permitted to read it.
 
 **All shared state is CRDT.** Every resource is an Automerge document,
 including settings. Membership itself is a resource (`workspace.members`)

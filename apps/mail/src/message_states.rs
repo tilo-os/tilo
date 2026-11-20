@@ -354,31 +354,30 @@ impl MessageStates {
         }
     }
 
-    /// Bring in a member's own messages
-    ///
-    /// Messages a member's own mailbox kept before the workspace kept one
-    /// for everyone ([`crate::own_mailbox`]), each as that mailbox held it:
-    /// what the member did with it, what its server holds, and a message
-    /// held whole. One the mailbox knows already stays as it is here.
-    #[action(external, by_app, items = messages)]
-    pub fn take_in(
+    /// Recover a message and its flags from the member's earlier mailbox.
+    #[action(external, writes = messages, writes = held)]
+    pub fn import_previous_message(
         &mut self,
-        #[param("The messages, as the member's own mailbox kept them")] messages: Vec<
-            crate::own_mailbox::KeptMessage,
-        >,
-    ) {
-        for kept in messages {
-            let Some(key) = message_key(&kept.id) else {
-                continue;
-            };
-            if self.holds(&key) {
-                continue;
-            }
-            self.messages.push(key.clone(), kept.state.0);
-            if let Some(held) = kept.held {
-                self.held.push(key, held.0);
-            }
+        id: String,
+        state: serde_json::Value,
+        body: Option<serde_json::Value>,
+    ) -> Result<(), Refusal> {
+        let key = message_key(&id).ok_or_else(no_message)?;
+        if self.holds(&key) {
+            return Ok(());
         }
+        let mut state =
+            MessageState::from_json(&state).map_err(|error| Refusal::new(error.to_string()))?;
+        // Importing a message must never replay its server operation.
+        state.server = None;
+        if let Some(body) = body.filter(|_| !state.purged) {
+            let body = crate::held::HeldMessage::from_json(&body)
+                .map_err(|error| Refusal::new(error.to_string()))?;
+            body.check()?;
+            self.held.push(key.clone(), body);
+        }
+        self.messages.push(key, state);
+        Ok(())
     }
 
     /// Deliver message
@@ -488,15 +487,17 @@ pub fn prepare(
                 let retired = mail.retired_copy_ids();
                 messages.retain(|baseline| !retired.contains(baseline.id.trim()));
             }
+            MessageStatesAction::ImportPreviousMessage(verb::ImportPreviousMessage {
+                id, ..
+            }) if message_key(id)
+                .is_some_and(|key| parts.iter().any(|(_, part)| part.holds(&key))) =>
+            {
+                return Err(Refusal::new(
+                    "the workspace mailbox already has this message",
+                ));
+            }
             MessageStatesAction::DeliverMessage(verb::DeliverMessage { message }) => {
                 crate::held::prepare_delivery(message, parts)?;
-            }
-            // A message another part keeps already stays as it is there.
-            MessageStatesAction::TakeIn(verb::TakeIn { messages }) => {
-                messages.retain(|kept| {
-                    message_key(&kept.id)
-                        .is_some_and(|key| !parts.iter().any(|(_, part)| part.holds(&key)))
-                });
             }
             _ => {}
         }
@@ -671,6 +672,15 @@ impl ui::framework::Chained for MessageStates {
             "mail-messages",
             &ui::resource::DocumentId::workspace_default(),
         )
+    }
+
+    /// Locate the workspace chain or an older member mailbox's original parts.
+    fn chain_beside(base: &ui::resource::DocumentId) -> ui::resource::DocumentId {
+        if base.is_package_primary() {
+            Self::chain()
+        } else {
+            base.clone()
+        }
     }
 
     fn prepare(

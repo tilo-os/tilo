@@ -1,21 +1,19 @@
-//! The senders whose remote images load without asking: a resource Mail
-//! keeps beside its own in the workspace it is open in
-//! ([`ResourceEnv::person`](ui::framework::ResourceEnv::person)), synced with
-//! the workspace. Trusting a sender is the person's edit, in its history
-//! and undone like any of theirs.
+//! The workspace's sender trust, governed by Mail's workspace permissions.
 
 use std::collections::BTreeSet;
 
-use ui::framework::PersonResource;
+use ui::framework::ResourceOpener;
 use ui::prelude::{Model, resource, tilo_resource};
 use ui::tilo_resource::Set;
 
-use super::app::MailApp;
+pub(crate) use ui::tilo_actions::policy::roles::WORKSPACE_MAIL_TRUST_DOCUMENT as DOCUMENT;
 
 /// The senders, by lowercase address, whose remote images load.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct TrustedSenders {
     pub senders: Set<String>,
+    #[model(readonly)]
+    pub distrusted: Set<String>,
 }
 
 impl TrustedSenders {
@@ -34,15 +32,32 @@ impl TrustedSenders {
 )]
 impl TrustedSenders {
     /// Load remote images from `sender` without asking.
-    #[action]
+    #[action(writes = senders, writes = distrusted)]
     pub fn trust(&mut self, sender: String) {
-        self.senders.insert(sender.to_ascii_lowercase());
+        let sender = sender.to_ascii_lowercase();
+        self.distrusted.remove(&sender);
+        self.senders.insert(sender);
     }
 
     /// Ask again before loading remote images from `sender`.
-    #[action]
+    #[action(writes = senders, writes = distrusted)]
     pub fn distrust(&mut self, sender: String) {
-        self.senders.remove(&sender.to_ascii_lowercase());
+        let sender = sender.to_ascii_lowercase();
+        self.senders.remove(&sender);
+        self.distrusted.insert(sender);
+    }
+
+    /// Import previous sender trust
+    ///
+    /// Keep the workspace's decisions when importing a member's previous list.
+    #[action(writes = senders)]
+    pub fn import_legacy(&mut self, senders: Vec<String>) {
+        for sender in senders {
+            let sender = sender.to_ascii_lowercase();
+            if !self.distrusted.contains(&sender) {
+                self.senders.insert(sender);
+            }
+        }
     }
 }
 
@@ -50,64 +65,29 @@ impl TrustedSenders {
     /// The trusted senders.
     #[must_use]
     pub fn addresses(&self) -> BTreeSet<String> {
-        self.senders.iter().cloned().collect()
+        self.senders
+            .iter()
+            .filter(|sender| !self.distrusted.contains(sender))
+            .cloned()
+            .collect()
     }
 }
 
-/// The trusted senders record a live window follows, and the set as the
-/// window last read or wrote it.
-pub(crate) struct Followed {
-    record: PersonResource<TrustedSenders>,
-    seen: BTreeSet<String>,
-}
-
-impl MailApp {
-    /// Follow the person's trusted senders in this window.
-    pub(crate) fn follow_trusted_senders(&mut self, record: PersonResource<TrustedSenders>) {
-        let seen = record.with(TrustedSenders::addresses);
-        self.shared.borrow_mut().remote_senders.clone_from(&seen);
-        self.trusted_senders = Some(Followed { record, seen });
-    }
-
-    /// Adopt what another window or device trusted, then write what this
-    /// window changed as the person's edits.
-    pub(crate) fn sync_trusted_senders(&mut self) {
-        let Some(followed) = self.trusted_senders.as_mut() else {
-            return;
-        };
-        let stored = followed.record.with(TrustedSenders::addresses);
-        if stored != followed.seen {
-            self.shared.borrow_mut().remote_senders.clone_from(&stored);
-            followed.seen = stored;
-            self.shared.borrow_mut().dirty = true;
-            return;
-        }
-        let shown = self.shared.borrow().remote_senders.clone();
-        if shown == followed.seen {
-            return;
-        }
-        let edits = shown
-            .difference(&followed.seen)
-            .map(|sender| TrustedSenders::TRUST.with(sender.clone()))
-            .chain(
-                followed
-                    .seen
-                    .difference(&shown)
-                    .map(|sender| TrustedSenders::DISTRUST.with(sender.clone())),
+/// Import reads the old member record only when the member asks to share its list.
+pub(crate) fn import_legacy(opener: &ResourceOpener<TrustedSenders>) -> Result<(), String> {
+    let target = opener
+        .open(DOCUMENT)
+        .filter(|record| record.may_read() && record.may("import-legacy"))
+        .ok_or("the workspace does not grant sender trust changes")?;
+    if let Some(legacy) = opener.legacy_member_state()? {
+        target
+            .invoke(
+                &TrustedSenders::IMPORT_LEGACY
+                    .with(legacy.addresses().into_iter().collect::<Vec<_>>()),
             )
-            .collect::<Vec<_>>();
-        for edit in &edits {
-            if let Err(error) = followed.record.invoke(edit) {
-                self.shared.borrow_mut().status =
-                    Some(crate::state::Notice::error(crate::i18n::t_args(
-                        "mail-status-trusted-senders-not-saved",
-                        &[("error", ui::i18n::ArgValue::Text(error.to_string()))],
-                    )));
-                break;
-            }
-        }
-        followed.seen = followed.record.with(TrustedSenders::addresses);
+            .map_err(|error| error.to_string())?;
     }
+    Ok(())
 }
 
 #[cfg(test)]

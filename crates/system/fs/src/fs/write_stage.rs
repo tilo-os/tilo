@@ -67,6 +67,7 @@ pub struct WriteStage {
     len: u64,
     valid: RangeSet,
     base: Option<Hash>,
+    workspace: Option<collab_types::WorkspaceId>,
 }
 
 /// Shared by all memory stages of one mount. Reservations include deferred
@@ -163,6 +164,7 @@ impl WriteStage {
             len: 0,
             valid: RangeSet::new(),
             base: None,
+            workspace: None,
         }
     }
 
@@ -214,7 +216,17 @@ impl WriteStage {
             len,
             valid: RangeSet::new(),
             base,
+            workspace: None,
         })
+    }
+
+    pub(super) fn with_workspace(mut self, workspace: Option<collab_types::WorkspaceId>) -> Self {
+        self.workspace = workspace;
+        self
+    }
+
+    pub(super) fn workspace(&self) -> Option<collab_types::WorkspaceId> {
+        self.workspace
     }
 
     pub(super) fn shared(self) -> SharedStage {
@@ -418,6 +430,7 @@ impl WriteStage {
             bytes,
             start,
             base,
+            workspace: self.workspace,
             gaps,
         }))
     }
@@ -497,6 +510,7 @@ pub(super) struct MissingRanges {
     bytes: Vec<u8>,
     start: u64,
     base: Hash,
+    workspace: Option<collab_types::WorkspaceId>,
     gaps: Vec<Range<u64>>,
 }
 
@@ -524,7 +538,10 @@ impl MissingRanges {
         let mut parts = Vec::with_capacity(self.gaps.len());
         for gap in &self.gaps {
             let len = gap.end.saturating_sub(gap.start);
-            match hydrator.read_local(self.base, gap.start, len).await {
+            match hydrator
+                .read_local_scoped(self.base, gap.start, len, self.workspace)
+                .await
+            {
                 Some(part) => parts.push(part),
                 None => return Err(self),
             }
@@ -550,7 +567,7 @@ impl MissingRanges {
         for gap in &gaps {
             let len = gap.end.saturating_sub(gap.start);
             let part = hydrator
-                .read(self.base, gap.start, len)
+                .read_scoped(self.base, gap.start, len, self.workspace)
                 .await
                 .map_err(|error| io::Error::other(error.to_string()))?;
             self.place(gap, &part)?;

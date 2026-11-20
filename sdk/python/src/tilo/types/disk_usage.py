@@ -21,39 +21,9 @@ from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "DiskUsage",
-    "RecentFolders",
-    "RememberArgs",
 ]
-
-RememberArgs = TypedDict("RememberArgs", {
-    "device": "str",
-    "folder": "str",
-})
-"""The arguments of `remember`."""
 
 class DiskUsage(Resource):
     """Disk Usage Analyzer — `disk-usage`."""
-    __surface__ = "so.tilo.disk-usage@710d1950408d78af"
-
-class RecentFolders(Resource):
-    """Recent folders — `disk-usage.recent-folders`."""
-    __surface__ = "so.tilo.disk-usage@710d1950408d78af"
-    devices: dict[str, Any]
-
-    def remember(self,
-        *,
-        device: str,
-        folder: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("remember", device=device, folder=folder)
-
-    def remember_many(self, items: list[RememberArgs]) -> list[dict[str, Any]]:
-        """Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("remember", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"remember", "remember_many"})
-
+    __surface__ = "so.tilo.disk-usage@b0b4baa489f7ab13"
 

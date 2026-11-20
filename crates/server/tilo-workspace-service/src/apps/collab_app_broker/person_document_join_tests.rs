@@ -56,3 +56,26 @@ fn an_app_joins_the_persons_workspace_only_for_the_records_it_declares() {
         "an app that declares none of them is refused"
     );
 }
+
+#[test]
+fn contextual_views_can_join_the_profile_with_their_own_kind() {
+    let app = "so.tilo.lang.views";
+    let context = uuid::Uuid::from_u128(89);
+    let document = collab_types::person_document_for_workspace("tl.so.tilo.lang.views", context);
+    let views = route(app, &document);
+    assert_eq!(person_document_join(app, &views), Ok(()));
+    assert!(person_document_join("so.tilo.notes", &views).is_err());
+}
+
+#[test]
+fn a_legacy_package_can_join_its_declared_profile_document() {
+    let app = "test.legacy-lang-app";
+    let surface = b"[[resources]]\nkind = \"tl.test.legacy-lang-app\"\nlabel = \"Notes\"\nversion = 1\nown = true\n";
+    collab_types::app_surface::register_package(app, surface);
+    let document = collab_types::person_document_for_workspace(
+        "tl.test.legacy-lang-app",
+        uuid::Uuid::from_u128(96),
+    );
+    assert_eq!(person_document_join(app, &route(app, &document)), Ok(()));
+    assert!(person_document_join("test.other-app", &route(app, &document)).is_err());
+}

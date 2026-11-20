@@ -24,7 +24,7 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, Weak};
 
-use tilo_desktop_search::content_index::{AppContentIndex, SlotKey};
+use tilo_desktop_search::content_index::{AppContentIndex, IndexKey};
 use tilo_lock::MutexRecover as _;
 use ui::search::index_publication::{IndexEntry, IndexState, Publisher};
 
@@ -375,7 +375,7 @@ impl RecordIndex {
                 },
                 entries,
             );
-            let slot = SlotKey::new(&app, &workspace, &record);
+            let slot = IndexKey::new(&app, &workspace, &record);
             for delta in deltas {
                 content.apply(&slot, delta);
             }
@@ -398,3 +398,22 @@ impl tilo_broker_core::services::DocumentIndexChanges for RecordIndex {
 
 #[cfg(test)]
 mod tests;
+
+/// Guard results already published before a workspace's document access changed.
+pub(crate) fn install_read_policy(
+    engine: &Arc<crate::engine::Engine>,
+    content: &Arc<AppContentIndex>,
+) {
+    let reader = Arc::downgrade(engine);
+    content.set_read_policy(
+        move |key| {
+            let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&key.workspace) else {
+                return true;
+            };
+            reader
+                .upgrade()
+                .is_some_and(|engine| engine.document_read_policy(workspace)(&key.app, &key.record))
+        },
+        tilo_identity::policy_change::epoch,
+    );
+}

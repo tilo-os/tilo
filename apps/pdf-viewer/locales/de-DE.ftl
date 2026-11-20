@@ -322,3 +322,5 @@ pdf-signature-profile-set-strokes = Unterschrift zeichnen
 
 ## What the app is called in a window and in the launcher
 pdf-viewer-app-title = PDF-Betrachter
+
+pdf-signature-profile-restore-previous = Vorherige Signatur wiederherstellen

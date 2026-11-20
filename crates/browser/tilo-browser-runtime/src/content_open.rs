@@ -5,8 +5,63 @@
 //! opened window reads, by hash, as the workspace broker stages it for an app
 //! it launches.
 
+#[cfg(target_arch = "wasm32")]
+use collab_types::{ContentRetention, EncryptionMetadata, WorkspaceId, file_content_artifact};
 use tilo_content::ContentStore;
+#[cfg(target_arch = "wasm32")]
+use tilo_session_client::{DocumentRoute, engine::SealKeys};
 use ui::application::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn files_route(workspace: &str) -> DocumentRoute {
+    DocumentRoute {
+        app_id: fs_protocol::tree::FILES_APP.to_owned(),
+        cluster_id: workspace.to_owned(),
+        document: fs_protocol::tree::document_id(),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn file_bytes(
+    bytes: Vec<u8>,
+    content: &ContentStore,
+    limit: u64,
+    access: Option<(u32, &str)>,
+) -> Option<Vec<u8>> {
+    let fetch = |chunk: &[u8; 32]| content.read(&hex::encode(chunk));
+    let sealed = fs_content::Manifest::decode(&bytes)
+        .ok()
+        .and_then(|manifest| manifest.sealed());
+    let Some(sealed) = sealed else {
+        return fs_content::whole(bytes, limit, fetch);
+    };
+    let (peer, workspace) = access?;
+    let handle = crate::peer_sync::handle_of(peer)?;
+    let route = files_route(workspace);
+    let workspace = route.workspace_id().ok()?;
+    let group = WorkspaceId::from_u128(u128::from_be_bytes(sealed.group));
+    let SealKeys::Here(keys) = handle.engine().document_content_keys(&route, group).ok()? else {
+        return None;
+    };
+    let metadata =
+        EncryptionMetadata::content_group(workspace, group, sealed.epoch, ContentRetention::Delta);
+    let address = file_content_artifact(workspace);
+    fs_content::whole_with(bytes, limit, fetch, |_, chunk| {
+        keys.open_content(address, &metadata, chunk)
+            .ok()
+            .map(|bytes| bytes.to_vec())
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn file_bytes(
+    bytes: Vec<u8>,
+    content: &ContentStore,
+    limit: u64,
+    _access: Option<(u32, &str)>,
+) -> Option<Vec<u8>> {
+    fs_content::whole(bytes, limit, |chunk| content.read(&hex::encode(chunk)))
+}
 
 /// The file the content `hash` in `content` opens as, named `name` where the
 /// opener knows the file's name, else by its hash, and typed by what its
@@ -19,6 +74,7 @@ pub(crate) fn opened_file(
     hash: &str,
     content: &ContentStore,
     name: Option<&str>,
+    workspace: Option<(u32, &str)>,
 ) -> Result<(OpenFile, OpenFileReceipt), String> {
     let gone = || "What this window was to open is no longer here".to_owned();
     let bytes = content
@@ -34,10 +90,8 @@ pub(crate) fn opened_file(
             ui::format::memory(MAX_OPEN_FILE_BYTES as u64)
         ));
     }
-    let bytes = fs_content::whole(bytes, MAX_OPEN_FILE_BYTES as u64, |chunk| {
-        content.read(&hex::encode(chunk))
-    })
-    .ok_or_else(gone)?;
+    let bytes =
+        file_bytes(bytes, content, MAX_OPEN_FILE_BYTES as u64, workspace).ok_or_else(gone)?;
     let (extension, media_type) = tilo_content::opened_as(&bytes);
     // Bytes say a file is text, not which: its name says it is notes, and plain text reads as
     // the Markdown it is, or a table kept as text. An empty file named so is one not yet written.
@@ -79,6 +133,7 @@ pub(crate) fn opening_app(
     content: &ContentStore,
     hash: &str,
     name: &str,
+    workspace: Option<(u32, &str)>,
 ) -> Result<Opening, String> {
     let Some(bytes) = content.read(hash) else {
         return Ok(Opening::Coming);
@@ -87,16 +142,15 @@ pub(crate) fn opening_app(
     // one asks the workspace for it.
     if fs_content::is_manifest(&bytes) {
         let manifest = fs_content::Manifest::decode(&bytes).map_err(|error| error.to_string())?;
-        let whole = manifest.chunks().iter().all(|chunk| {
-            content
-                .read(&hex::encode(chunk.hash))
-                .is_some_and(|part| part.len() == chunk.len as usize)
-        });
+        let whole = manifest
+            .chunks()
+            .iter()
+            .all(|chunk| content.read(&hex::encode(chunk.hash)).is_some());
         if !whole {
             return Ok(Opening::Coming);
         }
     }
-    let (file, _) = opened_file(hash, content, Some(name))?;
+    let (file, _) = opened_file(hash, content, Some(name), workspace)?;
     Ok(crate::dropped_files::opens_in(file.bytes(), file.name())
         .map_or(Opening::NoApp, Opening::App))
 }
@@ -149,11 +203,11 @@ mod tests {
         let content = store();
         let png = b"\x89PNG\r\n\x1a\n-a-capture".to_vec();
         let hash = content.put(&png).unwrap();
-        let (file, _) = opened_file(&hash, &content, None).unwrap();
+        let (file, _) = opened_file(&hash, &content, None, None).unwrap();
         assert_eq!(file.name(), format!("{hash}.png"));
         assert_eq!(file.media_type(), "image/png");
         assert_eq!(file.bytes(), png.as_slice());
-        assert!(opened_file(&"ab".repeat(32), &content, None).is_err());
+        assert!(opened_file(&"ab".repeat(32), &content, None, None).is_err());
     }
 
     #[test]
@@ -174,17 +228,17 @@ mod tests {
             hex::encode(manifest.id()),
             "kept under the hash the tree names"
         );
-        let (file, _) = opened_file(&hash, &content, Some("scan.pdf")).unwrap();
+        let (file, _) = opened_file(&hash, &content, Some("scan.pdf"), None).unwrap();
         assert_eq!(file.name(), "scan.pdf");
         assert_eq!(file.media_type(), "application/pdf");
         assert_eq!(file.bytes(), pdf.as_slice());
         // Text named as notes opens as the Markdown Notes opens.
         let note = content.put(b"# Plan\n- one\n").unwrap();
-        let (file, _) = opened_file(&note, &content, Some("plan.md")).unwrap();
+        let (file, _) = opened_file(&note, &content, Some("plan.md"), None).unwrap();
         assert_eq!(file.media_type(), "text/markdown");
-        let (file, _) = opened_file(&note, &content, Some("todo.txt")).unwrap();
+        let (file, _) = opened_file(&note, &content, Some("todo.txt"), None).unwrap();
         assert_eq!(file.media_type(), "text/markdown");
-        let (file, _) = opened_file(&note, &content, None).unwrap();
+        let (file, _) = opened_file(&note, &content, None, None).unwrap();
         assert_eq!(file.media_type(), "text/plain");
         // A new file, made empty and named as notes, is a note not yet written.
         let stream = fs_content::Streamed::new(0, None);
@@ -193,15 +247,15 @@ mod tests {
         };
         let (manifest, _) = stream.finish(&mut keep).unwrap();
         let empty = content.put_public(&manifest.encode()).unwrap();
-        let (file, _) = opened_file(&empty, &content, Some("plan.txt")).unwrap();
+        let (file, _) = opened_file(&empty, &content, Some("plan.txt"), None).unwrap();
         assert_eq!(file.name(), "plan.txt");
         assert_eq!(file.media_type(), "text/markdown");
         assert!(file.bytes().is_empty());
         // A table kept as text is what its name says, for the app that opens tables.
         let table = content.put(b"name,amount\nTea,4\n").unwrap();
-        let (file, _) = opened_file(&table, &content, Some("data.csv")).unwrap();
+        let (file, _) = opened_file(&table, &content, Some("data.csv"), None).unwrap();
         assert_eq!(file.media_type(), "text/csv");
-        let (file, _) = opened_file(&table, &content, Some("data.TSV")).unwrap();
+        let (file, _) = opened_file(&table, &content, Some("data.TSV"), None).unwrap();
         assert_eq!(file.media_type(), "text/tab-separated-values");
     }
 
@@ -221,7 +275,7 @@ mod tests {
         let text = content.put_public(&manifest.encode()).unwrap();
         assert!(
             matches!(
-                opening_app(&content, &text, "letter.txt").unwrap(),
+                opening_app(&content, &text, "letter.txt", None).unwrap(),
                 Opening::App(app) if app == "so.tilo.notes"
             ),
             "a text document kept as chunks opens in Notes"
@@ -230,7 +284,7 @@ mod tests {
         let table = content.put(b"item,cost\nrent,900\n").unwrap();
         assert!(
             matches!(
-                opening_app(&content, &table, "budget.csv").unwrap(),
+                opening_app(&content, &table, "budget.csv", None).unwrap(),
                 Opening::App(app) if app == "so.tilo.sheets"
             ),
             "a table kept whole opens in Sheets"
@@ -238,17 +292,17 @@ mod tests {
         let png = b"\x89PNG\r\n\x1a\n-a-capture".to_vec();
         let photo = content.put(&png).unwrap();
         assert!(matches!(
-            opening_app(&content, &photo, "spring.png").unwrap(),
+            opening_app(&content, &photo, "spring.png", None).unwrap(),
             Opening::App(app) if app == "so.tilo.photos"
         ));
         let blob = content.put(&[0_u8, 1, 2, 3]).unwrap();
         assert!(matches!(
-            opening_app(&content, &blob, "blob.bin").unwrap(),
+            opening_app(&content, &blob, "blob.bin", None).unwrap(),
             Opening::NoApp
         ));
         assert!(
             matches!(
-                opening_app(&content, &"ab".repeat(32), "gone.txt").unwrap(),
+                opening_app(&content, &"ab".repeat(32), "gone.txt", None).unwrap(),
                 Opening::Coming
             ),
             "content the page does not hold is a file still on its way"
@@ -259,7 +313,7 @@ mod tests {
         let only_manifest = bare.put_public(&manifest.encode()).unwrap();
         assert!(
             matches!(
-                opening_app(&bare, &only_manifest, "letter.txt").unwrap(),
+                opening_app(&bare, &only_manifest, "letter.txt", None).unwrap(),
                 Opening::Coming
             ),
             "a file whose chunks are on their way is still coming"
@@ -278,10 +332,10 @@ mod tests {
         stream.push(&csv, &mut keep).unwrap();
         let (manifest, _) = stream.finish(&mut keep).unwrap();
         let hash = kept.put_public(&manifest.encode()).unwrap();
-        assert!(opened_file(&hash, &windows, Some("big.csv")).is_err());
+        assert!(opened_file(&hash, &windows, Some("big.csv"), None).is_err());
 
         hand_over(&kept, &windows, &hash).unwrap();
-        let (file, _) = opened_file(&hash, &windows, Some("big.csv")).unwrap();
+        let (file, _) = opened_file(&hash, &windows, Some("big.csv"), None).unwrap();
         assert_eq!(file.media_type(), "text/csv");
         assert_eq!(file.bytes(), csv.as_slice());
         assert!(hand_over(&kept, &windows, &"ab".repeat(32)).is_err());

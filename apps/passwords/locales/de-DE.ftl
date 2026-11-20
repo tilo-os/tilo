@@ -147,6 +147,7 @@ passwords-effect-hide = Geheimnis verbergen
 passwords-effect-delete = Element löschen
 passwords-effect-favorite = Zu Favoriten
 passwords-effect-import = Passwörter importieren
+passwords-import-device-vault = Tresor dieses Geräts in den Arbeitsbereich importieren
 passwords-effect-export = CSV exportieren…
 passwords-effect-filter = Tresor filtern
 passwords-effect-open = Öffnen

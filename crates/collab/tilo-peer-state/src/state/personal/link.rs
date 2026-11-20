@@ -130,13 +130,27 @@ impl PersonalSync {
             SystemTime,
         ) -> Result<NeighbourMsg, String>,
     ) -> Result<NeighbourMsg, String> {
+        self.publish_if(|store, key, now| publish(store, key, now).map(Some))?
+            .ok_or_else(|| "a personal write returned no message".to_owned())
+    }
+
+    /// Publish a local write if the store needs one. The check and write run
+    /// under the same lock as sibling writes.
+    pub fn publish_if(
+        &self,
+        publish: impl FnOnce(
+            &mut super::PersonalStore,
+            &dyn DeviceSigner,
+            SystemTime,
+        ) -> Result<Option<NeighbourMsg>, String>,
+    ) -> Result<Option<NeighbourMsg>, String> {
         let now = tilo_clock::wall();
         let message = self
             .0
             .store
             .write(|store| publish(store, self.0.key.as_ref(), now));
         self.publish_refusals();
-        Ok(self.published(message?))
+        Ok(message?.map(|message| self.published(message)))
     }
 
     /// Send every refusal set this device's verdicts moved into since the

@@ -139,15 +139,21 @@ impl<R: Resource> Replica<R> {
         self
     }
 
+    /// Attribute actions to an actor already admitted by the caller.
+    #[must_use]
+    pub fn as_acting(mut self, acting: tilo_actions::Acting) -> Self {
+        self.author = acting.member_id().cloned();
+        self.acting = Some(acting);
+        self
+    }
+
     /// Attribute later actions to the agent `agent` acting for `person`, as
     /// a host does for an agent's calls.
     #[must_use]
-    pub fn as_agent_for(mut self, agent: &str, person: &str) -> Self {
-        self.author = Some(MemberId::agent(agent));
-        self.acting = Some(
+    pub fn as_agent_for(self, agent: &str, person: &str) -> Self {
+        self.as_acting(
             tilo_actions::Acting::agent(agent).acting_for(tilo_actions::Acting::person(person)),
-        );
-        self
+        )
     }
 
     /// Attribute later actions to the bot installation `installation`

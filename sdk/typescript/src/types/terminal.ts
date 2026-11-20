@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.terminal@0eb86146532955a5";
+export const SURFACE = "so.tilo.terminal@0294d320fd92b088";
 
 export interface Command {
   command: string;
@@ -146,10 +146,16 @@ export interface RememberArgs {
   actor?: unknown;
 }
 
-/** The arguments of `used`. */
-export interface UsedArgs {
-  device: string;
-  target: string;
+/** The arguments of `import-run`. */
+export interface ImportRunArgs {
+  command: string;
+  cwd: string;
+  exit: number;
+  ended_ms: number;
+  session: string;
+  run: string;
+  environment?: string;
+  actor?: unknown;
 }
 
 /** Terminal — `terminal.session`. */
@@ -243,34 +249,26 @@ export interface History extends tilo.Resource {
   }): Promise<void>;
   /** Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rememberMany(items: RememberArgs[]): Promise<tilo.ActionAnswer[]>;
+  importRun(args: {
+    command: string;
+    cwd: string;
+    exit: number;
+    ended_ms: number;
+    session: string;
+    run: string;
+    environment?: string;
+    actor?: unknown;
+  }): Promise<void>;
+  /** Runs `import-run` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  importRunMany(items: ImportRunArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `History` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const HISTORY_ACTIONS = ["remember", "rememberMany"] as const;
+export const HISTORY_ACTIONS = ["remember", "rememberMany", "importRun", "importRunMany"] as const;
 
 /** The `terminal.history` kind at `path`. */
 export function terminalHistory(ws: tilo.Workspace, path: string): History {
   return resourceProxy(ws, path, SURFACE, HISTORY_ACTIONS) as unknown as History;
-}
-
-/** Recent environments — `terminal.recent-environments`. */
-export interface RecentEnvironments extends tilo.Resource {
-  devices: Record<string, string>;
-  used(args: {
-    device: string;
-    target: string;
-  }): Promise<void>;
-  /** Runs `used` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  usedMany(items: UsedArgs[]): Promise<tilo.ActionAnswer[]>;
-}
-
-/** The actions `RecentEnvironments` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const RECENTENVIRONMENTS_ACTIONS = ["used", "usedMany"] as const;
-
-/** The `terminal.recent-environments` kind at `path`. */
-export function recentEnvironments(ws: tilo.Workspace, path: string): RecentEnvironments {
-  return resourceProxy(ws, path, SURFACE, RECENTENVIRONMENTS_ACTIONS) as unknown as RecentEnvironments;
 }
 

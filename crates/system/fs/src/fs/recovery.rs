@@ -29,12 +29,21 @@ impl QuickFS {
         for item in loaded {
             let entry = &item.entry;
             let label = entry.path.as_deref().unwrap_or(&entry.key);
+            let workspace = entry
+                .path
+                .as_deref()
+                .and_then(|path| self.hydrator.scoped_workspace(path));
             let target = {
                 let ns = self.ns();
                 entry
                     .document_id
                     .and_then(|document_id| ns.ino_for_document_id(document_id))
                     .filter(|ino| ns.getattr(*ino).is_some())
+                    .filter(|ino| {
+                        ns.path_for(*ino)
+                            .and_then(|path| self.hydrator.scoped_workspace(&path))
+                            == workspace
+                    })
             };
             if let Some(ino) = target
                 && self.ns().hash_for(ino) == entry.base()
@@ -60,8 +69,11 @@ impl QuickFS {
             // exactly these bytes, and there is nothing to restore. Asked by the content id the
             // bytes produce, so a file the version did reach is not copied beside itself.
             if let Some(ino) = target
-                && let Ok(Some((staged, _))) =
-                    self.store_version_blocking(VersionSource::Bytes(&item.bytes), entry.base())
+                && let Ok(Some((staged, _))) = self.store_version_blocking(
+                    VersionSource::Bytes(&item.bytes),
+                    entry.base(),
+                    workspace,
+                )
             {
                 let current = self.ns().hash_for(ino);
                 if current == Some(staged) {
@@ -81,18 +93,29 @@ impl QuickFS {
                     Some((parent, name.as_bytes().to_vec()))
                 })
             };
+            if workspace.is_some() && location.is_none() {
+                continue;
+            }
             let (parent, name) = location
                 .unwrap_or_else(|| (crate::namespace::ROOT_INO, entry.key.clone().into_bytes()));
             let copy_name = unsaved_copy_name(&name, &item.bytes);
-            match self.create_preserved_copy(parent, &copy_name, VersionSource::Bytes(&item.bytes))
-            {
+            match self.create_preserved_copy(
+                parent,
+                &copy_name,
+                VersionSource::Bytes(&item.bytes),
+                workspace,
+            ) {
                 Ok(path) => {
                     // Each of these names the place, what the bytes were derived from, and
                     // what the file and the bytes each are now: a copy made for bytes the file
                     // already holds is a bug, and these are the four facts that say which.
                     let current = target.and_then(|ino| self.ns().hash_for(ino));
                     let staged = self
-                        .store_version_blocking(VersionSource::Bytes(&item.bytes), entry.base())
+                        .store_version_blocking(
+                            VersionSource::Bytes(&item.bytes),
+                            entry.base(),
+                            workspace,
+                        )
                         .ok()
                         .flatten()
                         .map(|(hash, _)| hash);

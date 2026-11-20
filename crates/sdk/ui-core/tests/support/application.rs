@@ -272,7 +272,6 @@ pub fn definition(create: tilo_ui::application::ComponentFactory) -> Application
         optional: vec![],
         opens: &[],
         workspace_resource: false,
-        member_resource: false,
         opens_before_resource: false,
         create,
     }

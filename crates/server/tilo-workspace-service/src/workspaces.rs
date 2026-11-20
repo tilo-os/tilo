@@ -32,7 +32,7 @@ mod authored;
 mod authority;
 mod bootstrap;
 mod branch;
-pub use branch::{BranchContent, Branched};
+pub use branch::{BranchContent, BranchFileKeys, Branched};
 mod channel_governance;
 mod commit;
 mod mcp_server;
@@ -274,34 +274,6 @@ const PUBLICATIONS: &str = "published";
 /// The extension of the file beside a workspace record holding its join
 /// receipts ([`appended`]).
 const RECEIPTS: &str = "joins";
-
-impl WorkspaceDocumentEntry {
-    /// The record `stored` names: `published`, the publications file's, before
-    /// the publications it holds, and `receipted`, the receipts file's, before
-    /// the receipts its log holds.
-    fn read(
-        stored: document_format::StoredResource,
-        mut published: Vec<Publication>,
-        mut receipted: Vec<tilo_peer_state::join_log::JoinCompletionRecord>,
-    ) -> Self {
-        let mut outgoing = stored.outgoing;
-        published.append(&mut outgoing);
-        let mut collaboration = stored.collaboration;
-        receipted.append(&mut collaboration.join_completions);
-        collaboration.join_completions = receipted;
-        Self {
-            version: DOCUMENT_VERSION,
-            workspace: stored.workspace,
-            workspace_id: stored.workspace_id,
-            owner: stored.owner,
-            peer: stored.peer,
-            generation: stored.generation,
-            outgoing: published,
-            published: stored.published,
-            collaboration,
-        }
-    }
-}
 
 /// The file of a workspace's join receipts.
 type Receipts = appended::Appended<tilo_peer_state::join_log::JoinCompletionRecord>;
@@ -1198,23 +1170,6 @@ impl Workspaces {
             .channels
             .as_ref()
             .map(|channels| Arc::clone(&channels.keys))
-    }
-
-    /// The content keys of `route`'s workspace, for this host's own endpoints
-    /// (the workspace actions it runs for its members' pages and bots), as the
-    /// device it runs on answers: `create` opens the channel for the record the
-    /// writes are about to start, and otherwise only an existing channel is
-    /// read. `None` when this host runs on a device that takes part in no
-    /// channel of the workspace.
-    pub async fn own_route_keys(
-        &self,
-        route: &tilo_peer_state::document_frame::DocumentRoute,
-        create: bool,
-    ) -> GroupKeysAnswer {
-        let device = self.device_keys()?;
-        device
-            .group_keys(&route.cluster_id, collab_types::EVERY_MEMBER, create)
-            .await
     }
 
     /// Set what this host offers its workspaces, as the entry its person keeps

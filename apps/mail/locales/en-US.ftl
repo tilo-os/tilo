@@ -52,7 +52,7 @@ mail-move-messages = Moved messages to { $to }
 mail-purge = Deleted messages for good
 mail-ingest = Fetched mail
 mail-server-applied = The mail server took a change
-mail-keep-copies = Kept fetched mail for your other devices
+mail-keep-copies = Kept fetched mail for the workspace
 mail-forget-copies = Dropped mail its server no longer holds
 mail-mail-copies-copies = Changed the mail kept for your other devices
 mail-start-draft-body = Started writing a message
@@ -193,7 +193,9 @@ mail-status-deleted = { $count ->
     [one] Deleted one message
    *[other] Deleted { $count } messages
 }
-mail-status-trusted-senders-not-saved = Couldn’t save your trusted senders: { $error }
+mail-status-trusted-senders-not-saved = Couldn’t save workspace sender trust: { $error }
+mail-import-sender-trust = Import previous sender trust into this workspace
+mail-trusted-senders-import-legacy = Import previous sender trust
 mail-status-account-not-saved = Selected account, but could not save that preference: { $error }
 mail-status-purged = { $count ->
     [one] Permanently deleted one trashed message
@@ -306,8 +308,9 @@ mail-trusted-senders-distrust = Stop trusting this sender
 ## What the app is called in a window and in the launcher
 mail-app-title = Mail
 ## What the resources are called, and the actions on them
-mail-copies = Mail on your devices
+mail-copies = Workspace mail
 mail-copies-keep-copies = Keep fetched mail
+mail-copies-import-copies = Import fetched mail
 mail-copies-forget-copies = Forget fetched mail
 
 ## An account that cannot be checked: what the list says there, for as long
@@ -368,3 +371,10 @@ mail-attachment-unknown-message = That message is no longer in this mailbox
 mail-attachment-not-loaded = That attachment is no longer in this mailbox
 mail-attachment-not-kept = { $file } is no longer kept on this device
 mail-attachment-changed = That attachment changed since it was downloaded
+mail-import-saved-copies = Import saved mail
+mail-import-mailbox = Import previous mailbox
+mail-mailbox-import-mailbox-entries = Import previous mailbox
+mail-workspace-access-denied = Your role does not grant access to this workspace’s mail
+
+mail-messages-import-previous-message = Recover an earlier message
+mail-import-message-state = Import earlier message state

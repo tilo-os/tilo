@@ -1,36 +1,68 @@
-//! The window's side of the mail the person's devices hold for one another
+//! The window's side of the mail the workspace holds
 //! ([`crate::copies`]): what it fetches is kept for them, and what they kept
 //! and this device lacks is taken into the mailbox.
 
-use ui::framework::PersonResource;
+use ui::framework::WorkspaceResource;
 
 use super::MailApp;
 use crate::model::Message;
 
 impl MailApp {
-    pub(crate) fn share_copies(&mut self, record: PersonResource<crate::copies::MailCopies>) {
-        if let Some(content) = record.content() {
-            self.copies = Some(crate::copies::Copies::new(record, content));
+    pub(crate) fn open_peer_copies(&mut self) {
+        if self.copies.is_none()
+            && let Some(record) = self
+                .copies_opener
+                .as_ref()
+                .and_then(|opener| opener.open(crate::copies::DOCUMENT))
+            && let Some(content) = record.record().content()
+        {
+            self.share_copies(record, content);
         }
     }
 
-    pub(super) fn take_peer_copies(&mut self, doc: &mut ui::widget::Edits<'_>) {
+    pub(crate) fn share_copies(
+        &mut self,
+        record: WorkspaceResource<crate::copies::MailCopies>,
+        content: tilo_content::ContentStore,
+    ) {
+        self.shared.borrow_mut().workspace_copies = Some(record.clone());
+        self.copies = Some(crate::copies::Copies::new(record, content));
+    }
+
+    pub(super) fn take_peer_copies(&mut self) {
         let Some(copies) = self.copies.as_mut() else {
             return;
         };
+        if !copies.record().may_read() {
+            copies.discard_pending();
+            let mut state = self.shared.borrow_mut();
+            let removed = std::mem::take(&mut state.workspace_messages);
+            state.purge_workspace_messages(&removed);
+            return;
+        }
         if !copies.due() {
             return;
+        }
+        let record = copies.record().get();
+        {
+            let mut state = self.shared.borrow_mut();
+            let removed = state
+                .workspace_messages
+                .iter()
+                .copied()
+                .filter(|&id| {
+                    state
+                        .mailbox
+                        .get(id)
+                        .is_none_or(|message| record.copy(&message.account, id).is_none())
+                })
+                .collect::<std::collections::HashSet<_>>();
+            state.purge_workspace_messages(&removed);
         }
         let mail = self.shared.borrow().messages();
         let taken = {
             let st = self.shared.borrow();
-            let accounts: Vec<String> = st
-                .accounts
-                .accounts
-                .iter()
-                .map(|account| account.config.email.clone())
-                .collect();
-            copies.take(&accounts, |id| {
+            copies.take(|id| {
                 st.mailbox.get(id).is_some()
                     || mail
                         .messages
@@ -41,23 +73,13 @@ impl MailApp {
         if taken.is_empty() {
             return;
         }
-        let baselines: Vec<crate::actions::IngestBaseline> = taken
-            .iter()
-            .filter_map(|message| kept_baseline(&mail, message))
-            .collect();
         let mut st = self.shared.borrow_mut();
-        let accounts: std::collections::BTreeSet<String> = taken
-            .iter()
-            .map(|message| message.account.clone())
-            .collect();
         for message in taken {
+            if st.mailbox.get(message.id).is_some() {
+                continue;
+            }
+            st.workspace_messages.insert(message.id);
             st.mailbox.insert(message);
-        }
-        if !baselines.is_empty() {
-            st.ingest_baselines(doc, baselines);
-        }
-        for account in accounts {
-            self.keep_on_device(&mut st, &account);
         }
         st.dirty = true;
     }
@@ -119,7 +141,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
     }
 
     fn device(
-        record: PersonResource<crate::copies::MailCopies>,
+        record: WorkspaceResource<crate::copies::MailCopies>,
         link: &Arc<ui::collaboration::document_content::ContentLink>,
     ) -> (
         MailApp,
@@ -138,8 +160,65 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             ContentStore::memory(),
             Arc::clone(link),
         );
-        app.copies = Some(crate::copies::Copies::new(record, content));
+        app.share_copies(record, content);
         (app, doc, requests, incoming)
+    }
+
+    #[test]
+    fn importing_saved_mail_reads_the_previous_record_and_reseals_its_content() {
+        use crate::copies::{DOCUMENT, MailCopies, NewCopy, kept};
+
+        let person = "a9".repeat(32);
+        let mut host =
+            ui::framework::testing::TestApp::<crate::MailShell>::for_person(&person).unwrap();
+        let previous = host.person::<MailCopies>().unwrap();
+        let legacy_content = previous.content().unwrap();
+        let current = host
+            .shared_resource::<MailCopies>(ui::apps::MAIL, DOCUMENT)
+            .unwrap();
+        let account = "mail@x.example";
+        let (message, bytes) = sent_by_server(account, 17, 500, "Saved on another device.");
+        let reference = legacy_content.put(&bytes).unwrap();
+        previous
+            .invoke(&MailCopies::KEEP_COPIES.with(kept::KeepCopies {
+                copies: vec![NewCopy {
+                    id: message.id.to_string(),
+                    account: account.into(),
+                    content: reference.clone(),
+                    minutes: 500,
+                    folder: Folder::Inbox,
+                    uid: 17,
+                    uid_validity: 7,
+                }],
+            }))
+            .unwrap();
+
+        let import = crate::actions::MailEffect::ImportSavedCopies;
+        let first = host.effect_confirmed(&import).unwrap().value.unwrap();
+        assert_eq!(first["imported"], 1);
+        let state = current.get();
+        let copy = state.copy(account, message.id).unwrap();
+        assert!(tilo_content::is_sealed(&copy.content));
+        assert_ne!(copy.content, reference);
+        let route = current.record().route().unwrap();
+        let link = ui::collaboration::document_content::ContentLink::of(&route);
+        let address = tilo_content::content_address(&copy.content).unwrap();
+        let (_, ciphertext) = link
+            .take_requests()
+            .offers
+            .into_iter()
+            .find(|(offered, _)| offered == &address)
+            .expect("the imported content was sent on the workspace route");
+        assert!(!ciphertext.windows(24).any(|window| window == &bytes[..24]));
+        link.arrive(address, ciphertext);
+        assert_eq!(
+            current.record().content().unwrap().read(&copy.content),
+            Some(bytes)
+        );
+        assert_eq!(
+            host.effect_confirmed(&import).unwrap().value.unwrap()["imported"],
+            0
+        );
     }
 
     #[test]
@@ -147,16 +226,42 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         clippy::too_many_lines,
         reason = "two devices and the route between them, step by step"
     )]
-    fn a_device_takes_mail_its_other_device_fetched_while_its_server_is_unreachable() {
+    fn a_member_reads_mail_another_member_fetched_and_loses_access_on_revocation() {
         use ui::collaboration::document_content::ContentLink;
 
         let person = "c7".repeat(32);
         let mut first_host =
             ui::framework::testing::TestApp::<crate::MailShell>::for_person(&person).unwrap();
+        let reader = "b9".repeat(32);
         let mut second_host =
-            ui::framework::testing::TestApp::<crate::MailShell>::for_person(&person).unwrap();
-        let first_resource = first_host.person::<crate::copies::MailCopies>().unwrap();
-        let second_resource = second_host.person::<crate::copies::MailCopies>().unwrap();
+            ui::framework::testing::TestApp::<crate::MailShell>::for_person(&reader).unwrap();
+        use ui::tilo_actions::policy::{
+            Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
+        };
+        let workspace = ui::framework::testing::TEST_WORKSPACE;
+        let mut policy = WorkspacePolicy::new(workspace, &person);
+        policy.members.insert(reader.clone(), Role::Viewer);
+        policy.grants.push(Grant::new(
+            "read-fetched-mail",
+            Grantee::role(Role::Viewer),
+            TreePath::workspace(workspace)
+                .app(ui::apps::MAIL)
+                .resource(crate::copies::DOCUMENT),
+            KindSet::READ,
+            Answer::Allow,
+            Grantee::person(person.as_str()),
+        ));
+        second_host.set_permissions(ui::permissions::PermissionContext::from_access(
+            MemberAccess::person(policy, reader.as_str()),
+        ));
+        let first_resource = first_host
+            .shared_resource::<crate::copies::MailCopies>(ui::apps::MAIL, crate::copies::DOCUMENT)
+            .unwrap();
+        let second_resource = second_host
+            .shared_resource::<crate::copies::MailCopies>(ui::apps::MAIL, crate::copies::DOCUMENT)
+            .unwrap();
+        assert!(second_resource.may_read());
+        assert!(!second_resource.may("keep-copies"));
         let first_link = Arc::new(ContentLink::default());
         let second_link = Arc::new(ContentLink::default());
         let (mut first, mut first_doc, first_requests, first_events) =
@@ -168,7 +273,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         assert_eq!(
             second.shared.borrow().accounts.active_config().email,
             account,
-            "the person's accounts follow them"
+            "both simulated connections reach the same account"
         );
 
         let (old, old_raw) = sent_by_server(&account, 41, 1_000, "From last year.");
@@ -207,14 +312,12 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             &automerge::ROOT,
         );
 
-        // The person's resource names both, by a sealed reference to what the
-        // server sent; the ciphertext went to the first device's host, which
-        // keeps it with the resource, and the window let go of its own copy.
+        // The workspace names both messages using sealed content references.
+        // The host retains the ciphertext and the window releases its copy.
         let kept = first_resource.get();
         let named = |message: &Message| {
-            kept.copies
-                .get(&ui::tilo_resource::Id::from_raw(message.id.to_string()))
-                .expect("the message is kept for the person's devices")
+            kept.copy(&account, message.id)
+                .expect("the workspace keeps the message")
                 .clone()
         };
         let old_reference = named(&old).content;
@@ -321,10 +424,10 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             })
         );
         assert!(second.shared.borrow().mailbox.get(newer.id).is_some());
-        // The mailbox resource knows where its server holds it, as for mail
-        // fetched here.
+        // The workspace copy is visible without entering the previous mailbox record.
         let mail = crate::resource::TestMail::messages(&second.shared.borrow());
-        assert!(mail.knows(&old.id.to_string()));
+        assert!(!mail.knows(&old.id.to_string()));
+        assert!(second.shared.borrow().workspace_messages.contains(&old.id));
 
         second
             .state()
@@ -343,5 +446,9 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
                 ..
             }
         ));
+        second_host.set_role(ui::permissions::Role::Viewer);
+        assert!(!second.shared.borrow().may_read_message(old.id));
+        second.take_peer_copies();
+        assert!(second.shared.borrow().mailbox.get(old.id).is_none());
     }
 }

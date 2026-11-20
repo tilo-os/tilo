@@ -60,10 +60,12 @@ params = [
 kind = "osk.learned"
 label = "What the keyboard learned"
 version = 1
+person = true
 fields = [
   { path = "transitions", type = { map = { map = { map = "int" } } }, readonly = true },
   { path = "kept", type = { set = "text" }, readonly = true },
   { path = "touch", type = { map = { named = "KeyOffset" } }, readonly = true },
+  { path = "restored_previous", type = "bool", readonly = true },
 ]
 
 [[resources.verbs]]

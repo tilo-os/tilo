@@ -1,6 +1,4 @@
-//! Watch history: the videos the person watched, newest first, in a resource beside the
-//! library ([`ResourceEnv::person`](ui::framework::ResourceEnv::person)), kept in the workspace
-//! Tube is open in and synced with it; the library never holds it.
+//! The workspace's watch history, stored beside Tube's library.
 
 use std::collections::BTreeMap;
 
@@ -9,7 +7,7 @@ use tilo_resource::{self, Model, resource};
 
 pub const MAX_HISTORY_ENTRIES: usize = 1000;
 
-/// The person's watch history: each video watched, by id, with when it was last watched
+/// The workspace's watch history: each video watched, by id, with when it was last watched
 /// (milliseconds since the Unix epoch, on the device that watched it), and where it was
 /// left (milliseconds into the video).
 #[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -17,12 +15,18 @@ pub struct WatchHistory {
     pub watched: BTreeMap<String, u64>,
     #[serde(default)]
     pub positions: BTreeMap<String, u64>,
+    #[model(readonly, default = BTreeMap::new())]
+    #[serde(default)]
+    pub forgotten: BTreeMap<String, bool>,
+    #[model(readonly, default = false)]
+    #[serde(default)]
+    pub cleared: bool,
 }
 
 pub const RESUME_TOLERANCE_MS: u64 = 20_000;
 
 impl WatchHistory {
-    /// What the resource holds: the videos the person watched, newest first, and where each
+    /// What the resource holds: the videos watched in the workspace, newest first, and where each
     /// was left off.
     pub fn read_document(
         &self,
@@ -70,17 +74,37 @@ impl WatchHistory {
     }
 
     /// Remove from history.
-    #[action]
+    #[action(writes = watched, writes = positions, writes = forgotten)]
     pub fn forget(&mut self, video: String) {
         self.watched.remove(&video);
         self.positions.remove(&video);
+        self.forgotten.insert(video, true);
     }
 
     /// Clear watch history.
-    #[action]
+    #[action(writes = watched, writes = positions, writes = cleared)]
     pub fn clear(&mut self) {
         self.watched.clear();
         self.positions.clear();
+        self.cleared = true;
+    }
+
+    /// Import earlier viewing history.
+    #[action(external, writes = watched, writes = positions)]
+    pub fn import_previous(&mut self, previous: Vec<(String, u64, Option<u64>)>) {
+        if self.cleared {
+            return;
+        }
+        for (video, watched, position) in previous.into_iter().take(MAX_HISTORY_ENTRIES) {
+            if self.forgotten.contains_key(&video) || self.watched.contains_key(&video) {
+                continue;
+            }
+            if let Some(position) = position {
+                self.positions.entry(video.clone()).or_insert(position);
+            }
+            self.watched.insert(video, watched);
+        }
+        self.keep_newest();
     }
 }
 

@@ -246,7 +246,7 @@ paths = [
 [[allow]]
 reason = "The name a device's store and a page's store keep a run of unpublished writes under: files and keys written under it, found by it for as long as stores keep runs this way."
 words = ["custody"]
-paths = ["crates/collab/tilo-peer-state/src/owner/publication.rs"]
+paths = ["crates/collab/tilo-peer-state/src/owner/publication.rs", "crates/collab/tilo-peer-state/src/owner/publication_tests.rs"]
 
 [[allow]]
 reason = "Taffy's layout constraint, an external API's type name."
@@ -283,6 +283,8 @@ paths = [
     "apps/tl/mail/*",
     "crates/platform/mail-session/*",
     "crates/platform/mail-parts/*",
+    "crates/platform/tilolang-process/src/mail_recovery.rs",
+    "crates/platform/tilolang-process/tests/own_resources.rs",
     "crates/server/tilo-workspace-service/src/workspaces/mail_watch.rs",
     "crates/server/tilo-workspace-service/src/workspaces/person_settings.rs",
     "crates/server/tilo-workspace-service/src/workspaces/person_settings/sending.rs",
@@ -1642,6 +1644,12 @@ identifiers = ["Channel", "channel_id"]
 paths = ["apps/tube/src/rows.rs", "apps/tube/src/actions.rs"]
 
 [[allow]]
+reason = "The JSON field and variant in older filesystem capability lists, read in place so upgrading preserves the device's existing permissions."
+words = ["principal", "subject"]
+identifiers = ["Principal", "subject"]
+paths = ["crates/system/fs/src/caps_file.rs", "crates/system/fs/src/caps_file/legacy.rs"]
+
+[[allow]]
 reason = "A test drives the workspace service through the fixture named `test_host` and the `host` field of the service every embedder reads; neither is prose."
 words = ["host"]
 identifiers = ["host", "test_host"]
@@ -1960,3 +1968,14 @@ reason = "The Flatpak transfer `Runner`'s method that reads a Flatpak installati
 words = ["run"]
 identifiers = ["run"]
 paths = ["crates/platform/imager-backend/src/setup/flatpak_transfer/portable_absent.rs"]
+
+[[allow]]
+reason = "The toolkit enum for a live or historical window."
+words = ["run"]
+identifiers = ["RunMode"]
+paths = ["apps/mail/src/resource.rs", "apps/video-player/src/app.rs"]
+
+[[allow]]
+reason = "Terminal command history keeps the existing command execution id in its saved schema."
+words = ["run"]
+paths = ["apps/terminal/src/history.rs"]

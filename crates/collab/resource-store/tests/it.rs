@@ -1435,6 +1435,22 @@ mod store {
     }
 
     #[test]
+    fn forgetting_a_document_hides_its_rows_until_loaded_again() {
+        let (mut store, doc, bytes) = kept();
+        let issues = store.watch(ISSUE);
+        let _notes = store.watch("Note");
+
+        store.forget_document(&doc);
+        assert!(store.document(&doc).is_none());
+        assert_eq!(store.count(ISSUE, &[], &anyone), 0);
+        assert_eq!(store.changed(), BTreeSet::from([issues]));
+
+        store.load(&doc, &bytes).unwrap();
+        assert_eq!(store.count(ISSUE, &[], &anyone), 3);
+        assert_eq!(store.changed(), BTreeSet::from([issues]));
+    }
+
+    #[test]
     fn a_watch_names_the_commits_of_its_kind() {
         let mut store = Store::new();
         let issues = store.watch(ISSUE);

@@ -346,7 +346,7 @@ impl Hydrator {
             for chunk in index.chunks() {
                 chunks.push(Want::chunk(
                     Hash::from(chunk.hash),
-                    u64::from(chunk.len),
+                    index.stored_len(chunk),
                     *hash,
                 ));
             }

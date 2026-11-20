@@ -17,7 +17,6 @@ use tilo_document::{RichTextAction, RichTextState};
 use tilo_rich_text::{
     Draft, FieldOutcome, PersonField, RichTextComposer, RichTextSource, RichTextSurface, SubmitKey,
 };
-use ui::framework::PersonResource;
 use ui::rich_edit::{BlockContent, BlockEditor, PresenceKeyFn};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -28,14 +27,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::drafts::ChatDrafts;
+use crate::drafts::{ChatDrafts, DraftRecord};
 
 /// The draft a channel or thread composer edits: the rich text kept under
-/// its key in the person's own drafts resource ([`ChatDrafts`]), never in the
-/// workspace's chat resource.
+/// its key in the workspace's drafts resource ([`ChatDrafts`]).
 pub struct DraftField {
     key: String,
-    record: Option<PersonResource<ChatDrafts>>,
+    record: Option<DraftRecord>,
     read_only: bool,
     field: Option<PersonField<ChatDrafts>>,
 }
@@ -50,11 +48,11 @@ impl DraftField {
         }
     }
 
-    fn field(key: &str, record: &PersonResource<ChatDrafts>) -> PersonField<ChatDrafts> {
+    fn field(key: &str, record: &DraftRecord) -> PersonField<ChatDrafts> {
         let located = key.to_owned();
         let edited = key.to_owned();
         let started = key.to_owned();
-        PersonField::new(
+        PersonField::workspace(
             record.clone(),
             move |doc: &AutoCommit| crate::projection::draft(doc, &located),
             move |edit| ui::tilo_resource::Stamped {
@@ -101,6 +99,10 @@ impl DraftField {
 impl RichTextSource for DraftField {
     fn read_only(&self) -> bool {
         self.read_only || self.field.as_ref().is_none_or(RichTextSource::read_only)
+    }
+
+    fn can_read(&self) -> bool {
+        self.field.as_ref().is_none_or(RichTextSource::can_read)
     }
 
     fn sync(&mut self, doc: &AutoCommit) {
@@ -217,6 +219,10 @@ impl RichTextSource for ComposerSource {
         self.read_only || (self.private_key.is_none() && self.shared.read_only())
     }
 
+    fn can_read(&self) -> bool {
+        self.private_key.is_some() || self.shared.can_read()
+    }
+
     fn sync(&mut self, doc: &AutoCommit) {
         if self.private_key.is_none() {
             self.shared.sync(doc);
@@ -330,18 +336,19 @@ impl DraftComposer {
         }
     }
 
-    /// Keep drafts in the person's own `record` from now on.
-    pub fn attach_drafts(&mut self, record: PersonResource<ChatDrafts>) {
+    /// Keep channel drafts in the workspace record.
+    pub fn attach_drafts(&mut self, record: DraftRecord) {
         let source = self.host.widget_mut().source_mut();
         source.shared.record = Some(record);
         source.shared.retarget();
     }
 
-    /// Edit the draft of `key` (a channel, or a thread): the person's own,
-    /// in their drafts resource, or kept on this device when the window knows
-    /// no person.
+    /// Edit a workspace channel draft or the device's private composer.
     pub fn set_key(&mut self, key: &str) {
-        if !self.host.widget().source().shared.kept() {
+        let channel = key.split_once("::t::").map_or(key, |(channel, _)| channel);
+        if crate::chat::Chat::is_direct(&ui::tilo_resource::Id::from_raw(channel))
+            || !self.host.widget().source().shared.kept()
+        {
             self.set_private_draft(key.to_owned());
             return;
         }

@@ -22,7 +22,24 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.passwords@b6109e598f8cd769";
+export const SURFACE = "so.tilo.passwords@cdacb161a95d8124";
+
+/** The arguments of `keep-sealed`. */
+export interface KeepSealedArgs {
+  id: string;
+  ciphertext: string;
+}
+
+/** The arguments of `import-sealed`. */
+export interface ImportSealedArgs {
+  id: string;
+  ciphertext: string;
+}
+
+/** The arguments of `remove-sealed`. */
+export interface RemoveSealedArgs {
+  id: string;
+}
 
 /** Password vault — `passwords.vault`. */
 export interface Vault extends tilo.Resource {
@@ -56,5 +73,38 @@ export const VAULT_ACTIONS = ["denyAccess", "add", "listLogins", "cancel", "copy
 /** The `passwords.vault` kind at `path`. */
 export function vault(ws: tilo.Workspace, path: string): Vault {
   return resourceProxy(ws, path, SURFACE, VAULT_ACTIONS) as unknown as Vault;
+}
+
+/** Workspace vault — `passwords.workspace-vault`. */
+export interface WorkspaceVault extends tilo.Resource {
+  readonly sealed: Array<tilo.Entry<string>>;
+  readonly imported: Array<tilo.Entry<string>>;
+  readonly removed: string[];
+  keepSealed(args: {
+    id: string;
+    ciphertext: string;
+  }): Promise<void>;
+  /** Runs `keep-sealed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  keepSealedMany(items: KeepSealedArgs[]): Promise<tilo.ActionAnswer[]>;
+  importSealed(args: {
+    id: string;
+    ciphertext: string;
+  }): Promise<void>;
+  /** Runs `import-sealed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  importSealedMany(items: ImportSealedArgs[]): Promise<tilo.ActionAnswer[]>;
+  removeSealed(args: {
+    id: string;
+  }): Promise<void>;
+  /** Runs `remove-sealed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  removeSealedMany(items: RemoveSealedArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `WorkspaceVault` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WORKSPACEVAULT_ACTIONS = ["keepSealed", "keepSealedMany", "importSealed", "importSealedMany", "removeSealed", "removeSealedMany"] as const;
+
+/** The `passwords.workspace-vault` kind at `path`. */
+export function workspaceVault(ws: tilo.Workspace, path: string): WorkspaceVault {
+  return resourceProxy(ws, path, SURFACE, WORKSPACEVAULT_ACTIONS) as unknown as WorkspaceVault;
 }
 

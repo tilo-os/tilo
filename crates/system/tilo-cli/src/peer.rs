@@ -423,7 +423,37 @@ impl Peer {
             person: collab_types::Ed25519PublicKey(device.cert().user_public_key),
             device: collab_types::Ed25519PublicKey(key),
         };
+        let engine = Arc::clone(device.session().engine());
+        let route = tilo_session_client::DocumentRoute {
+            cluster_id: workspace.to_string(),
+            app_id: fs_protocol::tree::FILES_APP.to_owned(),
+            document: fs_protocol::tree::document_id(),
+        };
+        let keys = tilo_fs::hydration::FileKeys::from_session(workspace, move || {
+            use tilo_session_client::engine::SealKeys;
+            anyhow::ensure!(
+                engine.document_read_policy(workspace)(&route.app_id, &route.document),
+                "this device cannot read the workspace's files"
+            );
+            match engine
+                .document_seal_keys(&route)
+                .map_err(anyhow::Error::msg)?
+            {
+                SealKeys::Here(keys) => {
+                    let keys = if keys.workspace() != workspace
+                        && let Ok(SealKeys::Here(history)) = engine.seal_keys(workspace)
+                    {
+                        keys.with_workspace_history(history)
+                    } else {
+                        keys
+                    };
+                    Ok(keys)
+                }
+                _ => anyhow::bail!("the Files content keys are not ready"),
+            }
+        });
         let parts = mount::Parts {
+            keys,
             replica: &replica,
             store: Arc::clone(&self.store),
             endpoint: self.endpoint.clone(),

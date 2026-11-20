@@ -427,7 +427,7 @@ async fn copy(
     let mut done = 0_u64;
     for file in files {
         let mut head = Vec::new();
-        let hash = keep(page.content(), file, &mut head, &mut |at| {
+        let hash = keep(page, file, &mut head, &mut |at| {
             report("copying", done.saturating_add(at), total, &title);
         })
         .await
@@ -509,25 +509,61 @@ async fn copy(
 /// Keep `file` in `content` as its chunks and manifest, read a piece at a time, telling `read`
 /// how many of its bytes were kept; its first bytes go into `head`. Its manifest's hash (hex).
 async fn keep(
-    content: &tilo_content::ContentStore,
+    page: &WorkspaceFiles,
     file: &Picked,
     head: &mut Vec<u8>,
     read: &mut dyn FnMut(u64),
 ) -> Result<String, String> {
+    use tilo_session_client::engine::SealKeys;
+
     let size = file.size();
+    let content = page.content();
+    let (address, sealing) = page.file_sealing()?;
+    let SealKeys::Here(keys) = sealing else {
+        return Err("the workspace's Files keys are still arriving".into());
+    };
+    let generation = (keys.workspace(), keys.epoch());
     let mut stream = fs_content::Streamed::new(size, None);
     let mut refused: Option<String> = None;
-    let mut store = |_: &fs_content::ChunkRef, bytes: &[u8]| {
-        if refused.is_none()
-            && let Err(error) = content.put_public(bytes)
-        {
-            refused = Some(error.to_string());
+    let mut chunks = Vec::new();
+    let mut overhead = None;
+    let mut store = |part: &fs_content::ChunkRef, bytes: &[u8]| {
+        if refused.is_some() {
+            return;
+        }
+        let mut keep = || -> Result<(), String> {
+            let (_, sealed) = keys
+                .seal_content(address, collab_types::ContentRetention::Delta, bytes)
+                .map_err(|error| error.to_string())?;
+            let extra = u32::try_from(sealed.len().saturating_sub(bytes.len()))
+                .map_err(|error| error.to_string())?;
+            if *overhead.get_or_insert(extra) != extra {
+                return Err("inconsistent sealed file chunk length".into());
+            }
+            let hash = content
+                .put_public(&sealed)
+                .map_err(|error| error.to_string())?;
+            let mut address = [0; 32];
+            hex::decode_to_slice(hash, &mut address).map_err(|error| error.to_string())?;
+            chunks.push(fs_content::ChunkRef {
+                hash: address,
+                len: part.len,
+            });
+            Ok(())
+        };
+        if let Err(error) = keep() {
+            refused = Some(error);
         }
     };
     let mut at = 0_u64;
     while at < size {
         let to = at.saturating_add(READ_PIECE).min(size);
         let bytes = file.read(at, to).await?;
+        let (_, current) = page.file_sealing()?;
+        if !matches!(current, SealKeys::Here(keys) if (keys.workspace(), keys.epoch()) == generation)
+        {
+            return Err("file access changed during the upload".into());
+        }
         if head.is_empty() {
             head.extend_from_slice(
                 bytes
@@ -547,6 +583,18 @@ async fn keep(
     if let Some(refused) = refused {
         return Err(refused);
     }
+    let manifest = match overhead {
+        Some(overhead) => fs_content::Manifest::new_sealed(
+            manifest.tier(),
+            chunks,
+            fs_content::SealedChunks {
+                group: *generation.0.as_uuid().as_bytes(),
+                epoch: generation.1,
+                overhead,
+            },
+        ),
+        None => manifest,
+    };
     content
         .put_public(&manifest.encode())
         .map_err(|error| error.to_string())

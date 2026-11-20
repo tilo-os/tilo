@@ -23,10 +23,8 @@ __all__ = [
     "Bookmark",
     "FileTask",
     "Receipt",
-    "RecentUse",
     "Folder",
     "Tree",
-    "Recent",
     "Workspace",
     "AddBookmarkArgs",
     "RemoveBookmarkArgs",
@@ -37,9 +35,6 @@ __all__ = [
     "TrashArgs",
     "RestoreArgs",
     "ListChunkArgs",
-    "NoteArgs",
-    "MovedArgs",
-    "ForgetArgs",
 ]
 
 class Bookmark(TypedDict):
@@ -55,8 +50,6 @@ class Receipt(TypedDict):
     cut: bool
     restore: bool
     error: str | None
-
-RecentUse = Literal["opened", "changed"]
 
 AddBookmarkArgs = TypedDict("AddBookmarkArgs", {
     "place": "str",
@@ -112,30 +105,9 @@ ListChunkArgs = TypedDict("ListChunkArgs", {
 })
 """The arguments of `list-chunk`."""
 
-NoteArgs = TypedDict("NoteArgs", {
-    "device": "str",
-    "path": "str",
-    "last_use": "RecentUse",
-    "at_ms": "int",
-})
-"""The arguments of `note`."""
-
-MovedArgs = TypedDict("MovedArgs", {
-    "device": "str",
-    "from": "str",
-    "to": "str",
-})
-"""The arguments of `moved`."""
-
-ForgetArgs = TypedDict("ForgetArgs", {
-    "device": "str",
-    "path": "str",
-})
-"""The arguments of `forget`."""
-
 class Folder(Resource):
     """Folder — `files.folder`."""
-    __surface__ = "so.tilo.file-explorer@22335a63282c089d"
+    __surface__ = "so.tilo.file-explorer@48745a32c6881e37"
     places: list[Entry[Bookmark]]
 
     def add_bookmark(self,
@@ -357,7 +329,7 @@ class Folder(Resource):
 
 class Tree(Resource):
     """Files — `files.tree`."""
-    __surface__ = "so.tilo.file-explorer@22335a63282c089d"
+    __surface__ = "so.tilo.file-explorer@48745a32c6881e37"
     def new_folder(self,
         *,
         parent: Any,
@@ -449,62 +421,9 @@ class Tree(Resource):
     __actions__ = frozenset({"new_folder", "new_folder_many", "new_file", "new_file_many", "move", "move_many", "write", "write_many", "trash", "trash_many", "restore", "restore_many", "list_chunk", "list_chunk_many"})
 
 
-class Recent(Resource):
-    """Recent files — `files.recent`."""
-    __surface__ = "so.tilo.file-explorer@22335a63282c089d"
-    devices: dict[str, Any]
-
-    def note(self,
-        *,
-        device: str,
-        path: str,
-        last_use: RecentUse,
-        at_ms: int,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("note", device=device, path=path, last_use=last_use, at_ms=at_ms)
-
-    def note_many(self, items: list[NoteArgs]) -> list[dict[str, Any]]:
-        """Runs `note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("note", items)
-
-    def moved(self,
-        *,
-        device: str,
-        from_: str,
-        to: str,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["device"] = device
-        args["from"] = from_
-        args["to"] = to
-        return self.action("moved", **args)
-
-    def moved_many(self, items: list[MovedArgs]) -> list[dict[str, Any]]:
-        """Runs `moved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("moved", items)
-
-    def forget(self,
-        *,
-        device: str,
-        path: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("forget", device=device, path=path)
-
-    def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
-        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("forget", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"note", "note_many", "moved", "moved_many", "forget", "forget_many"})
-
-
 class Workspace(Resource):
     """Files window — `files.workspace`."""
-    __surface__ = "so.tilo.file-explorer@22335a63282c089d"
+    __surface__ = "so.tilo.file-explorer@48745a32c6881e37"
     def up(self) -> None:
         """Runs the app's action."""
         return self.action("up")

@@ -50,7 +50,7 @@ ForgetArgs = TypedDict("ForgetArgs", {
 
 class Keyboard(Resource):
     """On-screen keyboard — `osk.keyboard`."""
-    __surface__ = "so.tilo.osk@0632dbc6f3a723f6"
+    __surface__ = "so.tilo.osk@05e8fcea8c336e29"
     def set_layout(self, *, value: str) -> None:
         """Runs the app's action."""
         return self.action("set-layout", value=value)
@@ -86,7 +86,7 @@ class Keyboard(Resource):
 
 class Learned(Resource):
     """What the keyboard learned — `osk.learned`."""
-    __surface__ = "so.tilo.osk@0632dbc6f3a723f6"
+    __surface__ = "so.tilo.osk@05e8fcea8c336e29"
     @property
     def transitions(self) -> dict[str, dict[str, dict[str, int]]]:
         """Read only."""
@@ -99,6 +99,10 @@ class Learned(Resource):
     def touch(self) -> dict[str, KeyOffset]:
         """Read only."""
         return self.fields["touch"]
+    @property
+    def restored_previous(self) -> bool:
+        """Read only."""
+        return self.fields["restored_previous"]
 
     def learn(self, *, lesson: Lesson) -> None:
         """Runs the app's action."""

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.clocks@e9f7a4bd4d373070";
+export const SURFACE = "so.tilo.clocks@43e52d1090e872f9";
 
 export interface Alarm {
   label: string;
@@ -135,12 +135,6 @@ export interface LapArgs {
 export interface ResetStopwatchArgs {
 }
 
-/** The arguments of `keep`. */
-export interface KeepArgs {
-  device: string;
-  kept: unknown;
-}
-
 /** Clocks — `clocks.collection`. */
 export interface Collection extends tilo.Resource {
   world_clocks: Array<tilo.Entry<WorldClock>>;
@@ -239,25 +233,5 @@ export const COLLECTION_ACTIONS = ["addWorldClock", "addWorldClockMany", "remove
 /** The `clocks.collection` kind at `path`. */
 export function collection(ws: tilo.Workspace, path: string): Collection {
   return resourceProxy(ws, path, SURFACE, COLLECTION_ACTIONS) as unknown as Collection;
-}
-
-/** Clocks on each device — `clocks.on-devices`. */
-export interface OnDevices extends tilo.Resource {
-  devices: Record<string, unknown>;
-  keep(args: {
-    device: string;
-    kept: unknown;
-  }): Promise<void>;
-  /** Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  keepMany(items: KeepArgs[]): Promise<tilo.ActionAnswer[]>;
-}
-
-/** The actions `OnDevices` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const ONDEVICES_ACTIONS = ["keep", "keepMany"] as const;
-
-/** The `clocks.on-devices` kind at `path`. */
-export function onDevices(ws: tilo.Workspace, path: string): OnDevices {
-  return resourceProxy(ws, path, SURFACE, ONDEVICES_ACTIONS) as unknown as OnDevices;
 }
 

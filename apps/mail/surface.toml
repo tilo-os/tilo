@@ -6,7 +6,7 @@ format = 2
 kind = "mail.mailbox"
 label = "Mail"
 version = 1
-shows = ["account-settings", "always-load-remote-content", "compose", "contact-recipients", "forward", "inspect", "load-remote-content", "open", "open-link", "reply", "reply-all"]
+shows = ["account-settings", "compose", "contact-recipients", "forward", "inspect", "load-remote-content", "open", "open-link", "reply", "reply-all"]
 fields = [
   { path = "folders", type = { collection = { named = "LocalFolder" } }, stored = "collection" },
   { path = "folders.*.name", type = "text", label = true },
@@ -55,6 +55,17 @@ fields = [
   { path = "retired.*.account", type = "text" },
   { path = "retired.*.locator", type = "text" },
   { path = "retired.*.removed", type = "bool" },
+  { path = "imported", type = { set = "text" }, readonly = true },
+  { path = "taken_in", type = { set = "text" }, readonly = true },
+]
+
+[[resources.verbs]]
+id = "import-mailbox-entries"
+kind = "outside"
+writes = ["record", "drafts.*", "folders.*", "imported"]
+params = [
+  { name = "folders", type = { list = { named = "PreviousFolder" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, id = { type = "string" } }, required = ["id", "name"] } } },
+  { name = "drafts", type = { list = { named = "PreviousDraft" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, in_reply_to = { type = ["string", "null"] }, message = { type = "object", additionalProperties = false, properties = { attachments = { type = "array", items = { type = "object", additionalProperties = false, properties = { content_id = { type = "string" }, filename = { type = "string" }, mime = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["content_id", "filename", "mime", "size"] } }, bcc = { type = "string" }, body = { type = "string" }, calendar_ics = { type = ["string", "null"] }, cc = { type = "string" }, html_body = { type = ["string", "null"] }, sender = { type = ["object", "null"], additionalProperties = false, properties = { account = { type = "string" }, email = { type = "string" } }, required = ["account", "email"] }, subject = { type = "string" }, to = { type = "string" } }, required = ["to", "cc", "bcc", "subject", "body"] }, notes = { type = "string" } }, required = ["id", "message", "notes"] } } },
 ]
 
 [[resources.verbs]]
@@ -259,6 +270,22 @@ fields = [
 ]
 
 [[resources.types]]
+name = "PreviousDraft"
+fields = [
+  { name = "id", type = "text" },
+  { name = "message", type = { named = "DraftData" } },
+  { name = "in_reply_to", type = { option = "text" } },
+  { name = "notes", type = "text" },
+]
+
+[[resources.types]]
+name = "PreviousFolder"
+fields = [
+  { name = "id", type = "text" },
+  { name = "name", type = "text" },
+]
+
+[[resources.types]]
 name = "RetiredCopy"
 fields = [
   { name = "account", type = "text" },
@@ -359,6 +386,16 @@ id = "server-applied"
 kind = "undoable"
 params = [
   { name = "updates", type = { list = { named = "ServerUpdate" } }, required = true, schema = { type = "array", items = { oneOf = [{ type = "object", additionalProperties = false, properties = { Flags = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, folder = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }, id = { type = "string" }, locator = { type = "string" }, read = { type = "boolean" }, starred = { type = "boolean" } }, required = ["id", "account", "locator", "folder", "read", "starred"] } }, required = ["Flags"] }, { type = "object", additionalProperties = false, properties = { Move = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, from = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }, id = { type = "string" }, locator = { type = "string" }, to = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] } }, required = ["id", "account", "locator", "from", "to"] } }, required = ["Move"] }, { type = "object", additionalProperties = false, properties = { Remove = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, folder = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }, id = { type = "string" }, locator = { type = "string" } }, required = ["id", "account", "locator", "folder"] } }, required = ["Remove"] }, { type = "object", additionalProperties = false, properties = { SaveDraft = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, draft = { type = "object", additionalProperties = false, properties = { attachments = { type = "array", items = { type = "object", additionalProperties = false, properties = { content_id = { type = "string" }, filename = { type = "string" }, mime = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["content_id", "filename", "mime", "size"] } }, bcc = { type = "string" }, body = { type = "string" }, calendar_ics = { type = ["string", "null"] }, cc = { type = "string" }, html_body = { type = ["string", "null"] }, sender = { type = ["object", "null"], additionalProperties = false, properties = { account = { type = "string" }, email = { type = "string" } }, required = ["account", "email"] }, subject = { type = "string" }, to = { type = "string" } }, required = ["to", "cc", "bcc", "subject", "body"] }, id = { type = "string" }, in_reply_to = { type = ["string", "null"] }, locator = { type = "string" }, written = { type = "string" } }, required = ["id", "account", "locator", "written", "draft"] } }, required = ["SaveDraft"] }] } } },
+]
+
+[[resources.verbs]]
+id = "import-previous-message"
+kind = "undoable"
+writes = ["record", "messages.*", "held.*"]
+params = [
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+  { name = "state", required = true, schema = {} },
+  { name = "body", type = { option = "any" }, required = false, schema = {} },
 ]
 
 [[resources.verbs]]
@@ -753,11 +790,13 @@ label = "Trusted senders"
 version = 1
 fields = [
   { path = "senders", type = { set = "text" } },
+  { path = "distrusted", type = { set = "text" }, readonly = true },
 ]
 
 [[resources.verbs]]
 id = "trust"
 kind = "undoable"
+writes = ["record", "senders", "distrusted"]
 params = [
   { name = "sender", type = "text", required = true, schema = { type = "string" } },
 ]
@@ -765,13 +804,22 @@ params = [
 [[resources.verbs]]
 id = "distrust"
 kind = "undoable"
+writes = ["record", "senders", "distrusted"]
 params = [
   { name = "sender", type = "text", required = true, schema = { type = "string" } },
 ]
 
+[[resources.verbs]]
+id = "import-legacy"
+kind = "undoable"
+writes = ["record", "senders"]
+params = [
+  { name = "senders", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
 [[resources]]
 kind = "mail.copies"
-label = "Mail on your devices"
+label = "Workspace mail"
 version = 1
 fields = [
   { path = "copies", type = { collection = { named = "KeptCopy" } }, readonly = true, stored = "collection" },
@@ -781,11 +829,21 @@ fields = [
   { path = "copies.*.folder", type = { named = "Folder" } },
   { path = "copies.*.uid", type = "int" },
   { path = "copies.*.uid_validity", type = "int" },
+  { path = "removed", type = { set = "text" }, readonly = true },
 ]
 
 [[resources.verbs]]
 id = "keep-copies"
 kind = "undoable"
+writes = ["record", "copies.*", "removed"]
+params = [
+  { name = "copies", type = { list = { named = "NewCopy" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, content = { type = "string" }, folder = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }, id = { type = "string" }, minutes = { type = "integer" }, uid = { type = "integer", maximum = 4294967295, minimum = 0 }, uid_validity = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["id", "account", "content", "minutes", "folder", "uid", "uid_validity"] } } },
+]
+
+[[resources.verbs]]
+id = "import-copies"
+kind = "undoable"
+writes = ["record", "copies.*"]
 params = [
   { name = "copies", type = { list = { named = "NewCopy" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { account = { type = "string" }, content = { type = "string" }, folder = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] }, id = { type = "string" }, minutes = { type = "integer" }, uid = { type = "integer", maximum = 4294967295, minimum = 0 }, uid_validity = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["id", "account", "content", "minutes", "folder", "uid", "uid_validity"] } } },
 ]
@@ -793,8 +851,10 @@ params = [
 [[resources.verbs]]
 id = "forget-copies"
 kind = "undoable"
+writes = ["record", "copies.*", "removed"]
 params = [
   { name = "messages", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "account", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.types]]

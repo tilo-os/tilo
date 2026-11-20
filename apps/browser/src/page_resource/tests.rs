@@ -251,7 +251,7 @@ fn two_agents_answer_the_form(app: &mut App, engine: &TestEngine) {
 
 /// Browser's resource of page actions, as its window holds it.
 fn record(app: &mut App) -> PersonResource<PageResource> {
-    app.person::<PageResource>()
+    app.profile_resource::<PageResource>()
         .expect("Browser keeps a resource of page actions")
 }
 
@@ -819,7 +819,7 @@ fn history_steps_through_the_record_one_action_at_a_time() {
 /// record: same route, and after the workspace's sync the same actions by
 /// the same authors.
 #[test]
-fn another_device_of_the_workspace_reads_the_same_resource() {
+fn another_device_of_the_person_reads_the_same_resource() {
     let engine = TestEngine::new();
     let mut laptop = open(&engine);
     two_agents_answer_the_form(&mut laptop, &engine);
@@ -827,11 +827,11 @@ fn another_device_of_the_workspace_reads_the_same_resource() {
     let (on_laptop, on_phone) = (record(&mut laptop), record(&mut phone));
     assert!(
         on_laptop.syncs(),
-        "the resource has a route in the workspace"
+        "the resource has a route in the person’s profile"
     );
     let route = on_laptop.record().route().expect("a route");
     assert_eq!(Some(&route), on_phone.record().route().as_ref());
-    assert_eq!(route.cluster_id.to_string(), WORKSPACE);
+    assert_ne!(route.cluster_id.to_string(), WORKSPACE);
 
     let tab = only_tab(&on_laptop);
     assert!(held(&on_phone, &tab).is_empty(), "not synced yet");

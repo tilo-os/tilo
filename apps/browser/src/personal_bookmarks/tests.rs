@@ -103,7 +103,7 @@ fn live_personal_import_search_folder_and_removal_never_edit_workspace_bookmarks
     let (mut app, engine) = live();
     let bundle = bundle();
     import(&mut app, &bundle);
-    let record = app.person::<PersonalBookmarks>().unwrap();
+    let record = app.profile_resource::<PersonalBookmarks>().unwrap();
     let original = record.get();
     assert_eq!(original.imported_trees()[0].nodes.len(), 64);
     assert!(app.state().bookmarks.is_empty());
@@ -188,7 +188,7 @@ fn personal_search_entries_join_the_bookmarks_scope_and_no_other_library_section
     let bundle = bundle();
     import(&mut app, &bundle);
     let flat_url = "https://continuity.test/flat";
-    app.person::<PersonalBookmarks>()
+    app.profile_resource::<PersonalBookmarks>()
         .unwrap()
         .apply(&ui::tilo_resource::Stamped {
             operation: PersonalBookmarksAction::AddBookmark(personal_bookmarks::AddBookmark {
@@ -306,7 +306,7 @@ fn removing_a_personal_placement_removes_only_its_own_search_hit() {
 }
 fn assert_folder_controls(app: &mut TestApp<TestBrowser>, bundle: &ImportBundle) {
     use crate::personal_bookmark_view::ViewRequest;
-    let record = app.person::<PersonalBookmarks>().unwrap();
+    let record = app.profile_resource::<PersonalBookmarks>().unwrap();
     let state = record.get();
     let next = crate::browser_widget::personal::request_resource(
         &state.projected(),

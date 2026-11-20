@@ -126,6 +126,7 @@ impl ResourceApp for SettingsShell {
     const TITLE: &'static str = "Settings";
     const TITLE_KEY: &'static str = "settings-app-title";
     const ICON: Option<&'static str> = Some("settings");
+    const WORKSPACE_RESOURCE: bool = true;
     const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour {
         autofocus_on_structure_change: true,
         appearance_reconcile: true,
@@ -463,20 +464,12 @@ mod web_tests {
 }
 
 #[cfg(test)]
-mod own_resource_tests {
-    /// What Settings changes is the person's: a window naming no resource opens
-    /// their own document of the workspace, never the workspace's, so a reader
-    /// of the workspace changes their own settings like anyone else.
+mod workspace_resource_tests {
     #[test]
-    fn settings_opens_the_persons_own_resource() {
-        let definition = ui::framework::definition::<super::SettingsShell>();
-        let person = ui::permissions::MemberId::person("ad".repeat(32));
-        let own = definition
-            .member_resource_of(&person)
-            .expect("each member keeps their own Settings resource");
-        assert_eq!(
-            own.id,
-            ui::resource::DocumentId::of_member(person.id(), "settings.root").unwrap()
-        );
+    fn settings_uses_the_packages_workspace_resource() {
+        let app =
+            ui::framework::testing::TestApp::<super::SettingsShell>::for_person(&"ad".repeat(32))
+                .unwrap();
+        assert!(app.record().is_package_primary());
     }
 }

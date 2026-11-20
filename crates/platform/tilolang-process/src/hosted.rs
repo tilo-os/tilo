@@ -42,7 +42,7 @@ use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::instance::document::{DocumentError, InstanceDocument, ReadDocument};
+use tilolang_tilo::instance::document::{DocumentError, InstanceDocument};
 use tilolang_tilo::instance::{Config, Instance, LaterBuilds, Mode, Platform, Publication};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
@@ -52,7 +52,10 @@ use tilolang_tilo::publish::{
 };
 use tilolang_tilo::runtime::ids::MemberId;
 use tilolang_tilo::used::UsedApp;
+
+mod used;
 use tilolang_tilo::{HostEffect, OpenEffect};
+use used::{Used, used_apps, workspace_id};
 
 use crate::phrases::Phrases;
 use crate::presence::Presence;
@@ -795,6 +798,7 @@ pub struct Hosted {
     /// The workspace's document of each person's own state: what the person picked in the views
     /// and what they have seen, given to the views and kept back as they change it.
     personal: PersonalDocument,
+    mail_archive: Option<Rc<dyn durable_store::DurableStore>>,
     /// Who else is where in the document, as the connection hears it, and what the instance last
     /// said of its own person there.
     presence: Presence,
@@ -858,7 +862,7 @@ impl Hosted {
         let in_scope = scope.enter();
         let used = used_apps(&spec, &bundle, &mut record);
         let personal = PersonalDocument::open(
-            record.route().cluster_id,
+            workspace_id(&spec, &record),
             &spec.app,
             &kept.documents,
             record.manager_mut(),
@@ -902,6 +906,9 @@ impl Hosted {
         registry.connect_content(record.content().clone());
         drop(in_scope);
         let presence = Presence::new(&spec.app, &spec.person);
+        let mail_archive =
+            (spec.app == crate::mail_recovery::APP).then(|| Rc::clone(&kept.documents));
+
         Self {
             spec,
             bundle,
@@ -932,6 +939,7 @@ impl Hosted {
             identity: None,
             scope,
             personal,
+            mail_archive,
             access,
             presence,
             early: Vec::new(),
@@ -1051,6 +1059,8 @@ impl Hosted {
             return false;
         }
         *self.access.borrow_mut() = access;
+        self.published_from = None;
+        self.answers = Answers::default();
         self.person_changed();
         true
     }
@@ -1423,6 +1433,34 @@ impl Hosted {
         descriptor.shows(&offered);
     }
 
+    fn apply_document_grants(&self, descriptors: &mut [ActionDescriptor]) {
+        use tilo_action_policy::{Answer, Context, TreePath};
+
+        let route = self.record.route();
+        let document = route.document.as_deref().unwrap_or("");
+        if !collab_types::validator::requires_independent_document_keys(&route.app_id, document) {
+            return;
+        }
+        let access = self.access.borrow();
+        let Some(access) = &*access else {
+            return;
+        };
+        let app = TreePath::workspace(&route.cluster_id.to_string()).app(&route.app_id);
+        let context = Context::at_time(tilo_clock::wall());
+        for descriptor in descriptors {
+            let need = descriptor.contract.need();
+            let node = app
+                .clone()
+                .kind(&descriptor.resource_kind)
+                .resource(document)
+                .field(need.field.as_deref().unwrap_or(""))
+                .action(&descriptor.address.action);
+            if access.answer(&node, need.kind, &context) != Answer::Allow {
+                descriptor.contract.availability = tilo_actions::Availability::not_allowed(None);
+            }
+        }
+    }
+
     /// Where the publications stand now: what an answer is read at, and how far it stands
     /// without being read again.
     fn moved(&self) -> u64 {
@@ -1627,7 +1665,16 @@ impl Hosted {
             .and_then(MemberId::person_id)
             .or_else(|| invoker.acting.acted_for_person());
         let route = self.record.route();
-        if !tilolang_tilo::reaches(&route.app_id, route.document.as_deref(), person) {
+        let profile_record = route
+            .document
+            .as_deref()
+            .and_then(collab_types::person_document_context);
+        let reaches = if profile_record.is_some() {
+            person.and_then(collab_types::personal_cluster_of) == Some(route.cluster_id)
+        } else {
+            tilolang_tilo::reaches(&route.app_id, route.document.as_deref(), person)
+        };
+        if !reaches {
             let update = failed(
                 invocation,
                 Refused::new("permission_denied", "this is another member's own document"),
@@ -1859,6 +1906,40 @@ impl Hosted {
         output
     }
 
+    fn recover_earlier_mail(
+        &self,
+        host: &tilolang_tilo::host::Host,
+        invoker: &ActionInvoker,
+    ) -> Result<String, Refused> {
+        let route = self.record.route();
+        let policy_node = collab_types::document_node(
+            &route.cluster_id.to_string(),
+            &route.app_id,
+            route.document.as_deref().unwrap_or_default(),
+        );
+        let may_import = invoker.acting.is_person()
+            && invoker.acting.by.member_id().and_then(MemberId::person_id)
+                == Some(self.spec.person.as_str())
+            && self.access.borrow().as_ref().is_some_and(|access| {
+                use tilo_action_policy::ActionKind;
+                let now = tilo_clock::wall();
+                [ActionKind::Read, ActionKind::Undoable]
+                    .into_iter()
+                    .all(|kind| access.allows(&policy_node, kind, now))
+            });
+        if !may_import {
+            return Err(Refused::new(
+                "permission_denied",
+                "Only the archive owner can recover mail into a workspace they may edit",
+            ));
+        }
+        let documents = self.mail_archive.as_ref().ok_or_else(|| {
+            Refused::new("action_unavailable", "The earlier mailbox is unavailable")
+        })?;
+        crate::mail_recovery::arguments(documents, route, &self.spec.person, &self.bundle, host)
+            .map_err(|error| Refused::new("action_failed", error))
+    }
+
     /// Build the action `address` names for `invoker`, through the spec the instance publishes
     /// now, and run it: a document action is applied as the invoker's step; the host's own
     /// vocabulary is answered by the runtime, and what it commits is the invoker's.
@@ -1881,6 +1962,15 @@ impl Hosted {
             .instance
             .host()
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
+        let recovery;
+        let argument = if self.spec.app == crate::mail_recovery::APP
+            && address.action == crate::mail_recovery::ACTION
+        {
+            recovery = self.recover_earlier_mail(&host, &invoker)?;
+            Some(recovery.as_str())
+        } else {
+            argument
+        };
         // The action is applied as soon as it is built: the run that builds it is the one whose
         // writes the document commits.
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
@@ -2124,6 +2214,7 @@ impl Hosted {
         self.refused.clear();
         let mut descriptors = tilo_actions::api::survey(&resources);
         self.answer_what_the_window_shows(&mut descriptors);
+        self.apply_document_grants(&mut descriptors);
         // The directory is built when a caller asks for it: what the surface holds is the
         // snapshot's input, not the answer to a question nobody asked.
         if self
@@ -2315,72 +2406,6 @@ impl Hosted {
     pub fn personal(&self) -> &tilolang_tilo::personal::PersonalState {
         self.personal.state()
     }
-}
-
-/// Another app the app uses, read from its own document.
-struct Used {
-    record: ReadDocument,
-    app: UsedApp,
-    /// Whether the document took in a change its readings have not been read again for.
-    moved: bool,
-}
-
-/// The other apps `bundle`'s app uses ([`Spec::installed`]), each joined on `document`'s connection
-/// and read through its own package.
-fn used_apps(spec: &Spec, bundle: &Bundle, document: &mut InstanceDocument) -> Vec<Used> {
-    let workspace = document.route().cluster_id;
-    bundle
-        .imports
-        .iter()
-        .filter_map(|import| {
-            let records = spec.installed.get(&import.meta.app)?;
-            let packages = packages_of(&bundle.imports, &import.meta);
-            let app = UsedApp::new(&packages, &spec.person)
-                .map_err(|error| {
-                    tracing::error!(app = spec.app, used = import.meta.app, %error, "a used app's package did not load");
-                })
-                .ok()?;
-            let route = crate::route_under(&import.meta, records, workspace, &spec.person);
-            let mut read = ReadDocument::join(route, document.manager_mut(), &import.meta.resource_type());
-            read.hold_in(app.host());
-            Some(Used {
-                record: read,
-                app,
-                moved: false,
-            })
-        })
-        .collect()
-}
-
-/// The packages `meta`'s app is read through, from `imports`: those it uses, in the order they
-/// load, then its own.
-fn packages_of<'a>(
-    imports: &'a [tilolang_tilo::bundle::Import],
-    meta: &'a tilolang_tilo::runtime::Meta,
-) -> Vec<(&'a [u8], &'a tilolang_tilo::runtime::Meta)> {
-    let mut needed: HashSet<&str> = HashSet::new();
-    let mut pending = vec![meta];
-    while let Some(next) = pending.pop() {
-        for used in &next.uses {
-            if needed.insert(used.as_str())
-                && let Some(import) = imports.iter().find(|import| import.meta.app == *used)
-            {
-                pending.push(&import.meta);
-            }
-        }
-    }
-    imports
-        .iter()
-        .filter(|import| import.meta.app != meta.app && needed.contains(import.meta.app.as_str()))
-        .map(|import| (import.wasm.as_slice(), &import.meta))
-        .chain(std::iter::once((
-            imports
-                .iter()
-                .find(|import| import.meta.app == meta.app)
-                .map_or(&[][..], |import| import.wasm.as_slice()),
-            meta,
-        )))
-        .collect()
 }
 
 /// Where the runtime sends what a view or an action changes of another app's resources: queued

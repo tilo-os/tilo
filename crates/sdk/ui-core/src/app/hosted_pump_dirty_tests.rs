@@ -473,7 +473,6 @@ tilo_test_env::scenario! {
             optional: vec![],
             opens: &[],
             workspace_resource: false,
-            member_resource: false,
             opens_before_resource: false,
             create: owned_declared_directory_factory,
         };
@@ -565,7 +564,6 @@ tilo_test_env::scenario! {
             optional: vec![],
             opens: &[],
             workspace_resource: false,
-            member_resource: false,
             opens_before_resource: false,
             create: owned_declared_directory_factory,
         };

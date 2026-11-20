@@ -206,3 +206,7 @@ messages-app-title = Nachrichten
 messages-drafts = Nachrichtenentwürfe
 messages-drafts-keep-draft = Entwurf behalten
 messages-drafts-drop-draft = Entwurf verwerfen
+
+messages-import-previous-draft = Vorherigen Entwurf importieren
+messages-drafts-import-previous = Vorherigen Entwurf für eine Unterhaltung wiederherstellen
+messages-drafts-sent = Gesendeten Entwurf entfernen

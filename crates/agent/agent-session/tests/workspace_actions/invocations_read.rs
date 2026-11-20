@@ -119,7 +119,7 @@ impl WorkspaceDocumentsLink for Reading {
     fn workspace_policy(&self, _workspace: WorkspaceId, caller: &Caller) -> Option<ViewReadPolicy> {
         self.policy(caller)
     }
-    fn host_keys(
+    fn serving_keys(
         &self,
         route: &DocumentRoute,
         create: bool,

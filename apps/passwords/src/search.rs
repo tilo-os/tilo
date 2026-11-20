@@ -140,7 +140,7 @@ mod tests {
                 None,
                 "a past version says nothing"
             );
-            let _vault = crate::served_vault::served();
+            let _vault = crate::test_vault::isolated();
             let open = crate::vault::Core::with_model(crate::PasswordsModel::open());
             assert_eq!(open.secrets_unlocked(), Some(open.recovery_error.is_none()));
         }

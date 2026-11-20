@@ -41,7 +41,6 @@ fn definition(workspace_resource: bool) -> ApplicationDefinition {
         optional: vec![],
         opens: &[],
         workspace_resource,
-        member_resource: false,
         opens_before_resource: false,
         create: no_component,
     }
@@ -133,7 +132,7 @@ tilo_test_env::scenario! {
         let want = default_resource(&definition);
 
         assert!(matches!(
-            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
+            opening(&definition, &store, None, false, INSTANCE).unwrap(),
             Opening::Arriving
         ));
         assert_eq!(
@@ -146,7 +145,7 @@ tilo_test_env::scenario! {
         let theirs = written_elsewhere(&want, "the workspace's");
         arrives(&memory, &store, &want.id, theirs);
         let Opening::Target(LaunchTarget::Record { checkout, .. }) =
-            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap()
+            opening(&definition, &store, None, false, INSTANCE).unwrap()
         else {
             panic!("the record the workspace sent is what opens");
         };
@@ -168,11 +167,11 @@ tilo_test_env::scenario! {
         let want = default_resource(&definition);
 
         assert!(matches!(
-            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
+            opening(&definition, &store, None, false, INSTANCE).unwrap(),
             Opening::Arriving
         ));
         store.note_workspace_answered(want.id.clone());
-        let Opening::New(id) = opening(&definition, &store, None, false, INSTANCE, &author()).unwrap() else {
+        let Opening::New(id) = opening(&definition, &store, None, false, INSTANCE).unwrap() else {
             panic!("a record the workspace does not hold is a new one");
         };
         assert_eq!(id, want.id, "the new record is the one the page named");
@@ -189,13 +188,13 @@ tilo_test_env::scenario! {
         let want = DocumentCheckout::package_primary(definition.resource_type.clone());
 
         assert!(matches!(
-            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
+            opening(&definition, &store, None, false, INSTANCE).unwrap(),
             Opening::Arriving
         ));
         let theirs = written_elsewhere(&want, "the workspace's own");
         arrives(&memory, &store, &want.id, theirs);
         let Opening::Target(LaunchTarget::Record { checkout, .. }) =
-            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap()
+            opening(&definition, &store, None, false, INSTANCE).unwrap()
         else {
             panic!("the workspace's own document is what opens");
         };
@@ -204,12 +203,12 @@ tilo_test_env::scenario! {
         // A workspace that holds none of it: the app starts it.
         let (_memory, store) = page(&definition);
         assert!(matches!(
-            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
+            opening(&definition, &store, None, false, INSTANCE).unwrap(),
             Opening::Arriving
         ));
         store.note_workspace_answered(want.id);
         assert!(matches!(
-            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
+            opening(&definition, &store, None, false, INSTANCE).unwrap(),
             Opening::Target(LaunchTarget::PrimaryNew)
         ));
     }
@@ -222,49 +221,32 @@ tilo_test_env::scenario! {
         let store = owners.open(PACKAGE, WORKSPACE).unwrap();
         let definition = definition(false);
         let want = default_resource(&definition);
-        let Opening::New(id) = opening(&definition, &store, None, false, INSTANCE, &author()).unwrap() else {
+        let Opening::New(id) = opening(&definition, &store, None, false, INSTANCE).unwrap() else {
             panic!("a record of the page's own is new");
         };
         assert_eq!(id, want.id);
         assert!(store.wanted_resources().is_empty());
     }
 
-    phase an_app_each_member_keeps_opens_the_persons_own_record;
-    // An app whose record is each member's own (Settings: the person's appearance, accounts and
-    // devices) opens the person's own record, never the workspace's: it waits for the workspace
-    // to send the one another device of theirs wrote, then starts it as theirs.
+    phase an_archived_member_document_leaves_the_workspace_primary_available;
     {
-        let mut definition = definition(true);
-        definition.member_resource = true;
+        let definition = definition(true);
         let own = DocumentId::of_member(author().id(), definition.resource_type.as_str())
-            .expect("a root key names an own record");
-        let (_memory, store) = page(&definition);
-        assert!(matches!(
-            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
-            Opening::Arriving
-        ));
-        assert_eq!(
-            store.wanted_resources(),
-            std::slice::from_ref(&own),
-            "the person's own record is asked for, not the workspace's"
-        );
-        store.note_workspace_answered(own.clone());
-        let Opening::New(id) = opening(&definition, &store, None, false, INSTANCE, &author()).unwrap()
-        else {
-            panic!("the person starts their own record");
-        };
-        assert_eq!(id, own);
-
-        // Theirs, once a device of theirs wrote it: that is what opens.
+            .expect("a root key names a previous member record");
         let (memory, store) = page(&definition);
         let checkout = DocumentCheckout::new(own.clone(), definition.resource_type.clone());
-        arrives(&memory, &store, &own, written_elsewhere(&checkout, "mine"));
-        let Opening::Target(LaunchTarget::Record { checkout, .. }) =
-            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap()
-        else {
-            panic!("the person's own record opens");
-        };
-        assert_eq!(checkout.id, own);
+        arrives(&memory, &store, &own, written_elsewhere(&checkout, "previous copy"));
+        let primary = DocumentId::package_primary();
+        assert!(matches!(
+            opening(&definition, &store, None, false, INSTANCE).unwrap(),
+            Opening::Arriving
+        ));
+        assert_eq!(store.wanted_resources(), std::slice::from_ref(&primary));
+        store.note_workspace_answered(primary);
+        assert!(matches!(
+            opening(&definition, &store, None, false, INSTANCE).unwrap(),
+            Opening::Target(LaunchTarget::PrimaryNew)
+        ));
     }
 
     phase a_window_on_a_record_the_workspace_will_not_send_says_so;
@@ -282,7 +264,6 @@ tilo_test_env::scenario! {
             Some(theirs.as_str()),
             false,
             INSTANCE,
-            &author(),
         )
         .unwrap() else {
             panic!("the link names the record");

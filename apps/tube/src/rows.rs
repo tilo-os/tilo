@@ -1,6 +1,6 @@
 //! What Tube shows that the document does not hold, published beneath the resource as rows of
 //! declared types: the open watch page with its comments, the fetched catalogue (videos, creators,
-//! playlists, the completed search), the person's watch history and playback preferences, and the
+//! playlists, the completed search), the workspace's watch history and the person's playback preferences, and the
 //! paired Grayjay devices. A row says what it is by its type, and offers its type's effects
 //! bound to it.
 
@@ -22,7 +22,7 @@ const MAX_COMMENTS: usize = 50;
 #[row(kind = "tube.collection", label = "Collection")]
 pub(crate) struct Collection;
 
-/// One video the person watched, in their history.
+/// One video watched in the workspace.
 #[derive(tilo_resource::Row)]
 #[row(
     kind = "tube.history-entry",
@@ -31,7 +31,7 @@ pub(crate) struct Collection;
 )]
 pub(crate) struct HistoryEntry;
 
-/// The person's watch history.
+/// The workspace's watch history.
 #[derive(tilo_resource::Row)]
 #[row(kind = "tube.history", label = "Watch history", effects = TubeEffect)]
 pub(crate) struct History;

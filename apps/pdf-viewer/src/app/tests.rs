@@ -2623,8 +2623,12 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
             ui::framework::testing::TestApp::<crate::PdfViewerShell>::for_person(&"ad".repeat(32))
                 .expect("the reader for a person");
         let record = host
-            .person::<crate::signature::SignatureProfile>()
+            .profile_resource::<crate::signature::SignatureProfile>()
             .expect("the person's signature resource");
+        assert_ne!(
+            record.record().route().unwrap().cluster_id.to_string(),
+            ui::framework::testing::TEST_WORKSPACE
+        );
         let (mut app, mut st) = app_with_state();
         app.attach_signature(record.clone());
         app.begin_edit(EditTarget::Signer, "");

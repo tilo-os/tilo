@@ -136,6 +136,8 @@ pub struct OskShell;
 impl ResourceApp for OskShell {
     type Resource = Osk;
     const ID: &'static str = crate::KEYBOARD_APP_ID;
+    const PERSON_RESOURCES: &'static [ui::framework::PersonKind] =
+        &[ui::framework::PersonKind::profile::<crate::learned::Learned>()];
     const TITLE: &'static str = "On-screen keyboard";
     const TITLE_KEY: &'static str = "osk-app-title";
     const ICON: Option<&'static str> = Some("osk");
@@ -409,7 +411,7 @@ mod tests {
 
     fn learned(app: &mut TestApp<OskShell>) -> crate::learned::Learned {
         let record = app
-            .person::<crate::learned::Learned>()
+            .profile_resource::<crate::learned::Learned>()
             .expect("the person's resource of what the keyboard learned");
         (*record.get()).clone()
     }
@@ -464,7 +466,7 @@ mod tests {
             .unwrap();
         app.settle();
         let record = app
-            .person::<crate::learned::Learned>()
+            .profile_resource::<crate::learned::Learned>()
             .expect("the person's resource of what the keyboard learned");
         let document = record.record().document().expect("the resource's document");
         let mut replica = ui::tilo_resource::Replica::<crate::learned::Learned>::load(&document)

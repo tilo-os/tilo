@@ -202,7 +202,7 @@ tilo_test_env::scenario! {
 
     phase filters_favorites_and_confirmed_deletes_are_real_vault_state;
     {
-        let _vault = crate::served_vault::served();
+        let _vault = crate::test_vault::isolated();
         let mut model = crate::PasswordsModel::open();
         let mut kept = SecretItem::login("Kept", "ada", "kept-secret-1A");
         let mut gone = SecretItem::login("Removed", "ada", "removed-secret-1A");
@@ -240,7 +240,7 @@ tilo_test_env::scenario! {
     phase every_capture_scenario_stages_on_the_fixture_vault;
     {
         for scenario in SCENARIOS.iter().copied().map(Some).chain([None]) {
-            let _vault = crate::served_vault::served();
+            let _vault = crate::test_vault::isolated();
             let mut app = PasswordsWindow::new(crate::PasswordsModel::open());
             app.stager()(scenario);
             app.settle();
@@ -408,7 +408,7 @@ tilo_test_env::scenario! {
         eprintln!("phase copying and revealing are distinct actions");
         {
             let _clipboard = clipboard_fixture(true);
-            let _vault = crate::served_vault::served();
+            let _vault = crate::test_vault::isolated();
             let mut model = crate::PasswordsModel::open();
             let mut item = SecretItem::login("Account", "ada", "private-value");
             item.add_origin("https://example.invalid").unwrap();
@@ -447,7 +447,7 @@ tilo_test_env::scenario! {
         eprintln!("phase a failed copy says so and leaves the clipboard alone");
         {
             let _clipboard = clipboard_fixture(false);
-            let _vault = crate::served_vault::served();
+            let _vault = crate::test_vault::isolated();
             let mut model = crate::PasswordsModel::open();
             let mut item = SecretItem::login("Account", "ada", "private-value");
             item.add_origin("https://example.invalid").unwrap();
@@ -476,7 +476,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
     eprintln!("phase a new login is saved, then edited without retyping its password");
     {
         let _clipboard = clipboard_fixture(true);
-        let _vault = crate::served_vault::served();
+        let _vault = crate::test_vault::isolated();
         let mut app = PasswordsWindow::new(crate::PasswordsModel::open());
         request(&mut app, Request::NewItem);
         assert_eq!(app.core().screen, Screen::Editor);
@@ -569,7 +569,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
 
     eprintln!("phase editing keeps fields and tags the editor does not show");
     {
-        let _vault = crate::served_vault::served();
+        let _vault = crate::test_vault::isolated();
         let mut model = crate::PasswordsModel::open();
         let mut item = SecretItem::login("Deployment", "ada", "token");
         item.kind = SecretItemKind::Other;
@@ -641,7 +641,7 @@ tilo_test_env::scenario! {
     // An empty vault has nothing to review: the page says so instead of grading zero passwords
     // as all clear.
     {
-        let _vault = crate::served_vault::served();
+        let _vault = crate::test_vault::isolated();
         let app = PasswordsWindow::new(crate::PasswordsModel::open());
         let shared = Rc::clone(&app.core);
         shared.borrow_mut().screen = Screen::Review;
@@ -722,7 +722,7 @@ tilo_test_env::scenario! {
     // A bare host is the https site it names, a corrected field drops its complaint at once,
     // and a saved item is kept, with nothing left writing.
     {
-        let _vault = crate::served_vault::served();
+        let _vault = crate::test_vault::isolated();
         let mut app = PasswordsWindow::new(crate::PasswordsModel::open());
         request(&mut app, Request::NewItem);
         {
@@ -771,7 +771,7 @@ fn import_and_restore_flows_round_trip_through_portals() {
     eprintln!("phase an import previews conflicts before writing");
     {
         use std::io::Write;
-        let _vault = crate::served_vault::served();
+        let _vault = crate::test_vault::isolated();
         let csv_path = temp_root("import").with_extension("csv");
         let mut selected = std::fs::File::create(&csv_path).unwrap();
         selected
@@ -810,7 +810,7 @@ fn import_and_restore_flows_round_trip_through_portals() {
     eprintln!("phase an encrypted backup restores complete items");
     {
         let base = temp_root("backup-flow");
-        let _vault = crate::served_vault::served();
+        let _vault = crate::test_vault::isolated();
         let backup_path = base.join("portable-vault.tilopw");
         std::fs::create_dir_all(&base).unwrap();
         let mut item = SecretItem::login("Studio", "ada", "private-token");

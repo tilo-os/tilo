@@ -499,6 +499,30 @@ async fn content_keys(
     let Some(device) = device else {
         return Err(PeerDocumentReadError::Encrypted);
     };
+    if peer.publication().has_document_keys(app, resource) {
+        let keys = super::sealed_documents::read_document_keys(
+            device,
+            workspace,
+            (app, resource),
+            true,
+            false,
+        )
+        .await;
+        return match keys {
+            Ok(keys)
+                if peer
+                    .publication()
+                    .sealed_keys_available(app, resource, |metadata| keys.covers(metadata)) =>
+            {
+                Ok(Sealing::Sealed(keys))
+            }
+            Ok(_) => Ok(Sealing::Due),
+            Err(error) => {
+                tracing::debug!(%workspace, %app, %resource, %error, "a sealed resource waits for its document keys");
+                Ok(Sealing::Due)
+            }
+        };
+    }
     let epochs = peer.publication().sealed_epochs(app, resource);
     match device
         .group_keys(workspace, collab_types::EVERY_MEMBER, false)

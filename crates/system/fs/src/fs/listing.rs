@@ -35,6 +35,9 @@ impl QuickFS {
         &self,
         ino: u64,
     ) -> Option<Vec<(u64, FileType, fs_protocol::FileNameV1)>> {
+        if !self.may_read_workspace() {
+            return None;
+        }
         // A listing is good while nothing in the tree or the ACL changed: a folder's pages then
         // pay for it once, not once per page. The revision is read before the folder is, so a
         // cached page never asks the namespace for a thousand names to throw them away.

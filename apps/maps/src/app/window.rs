@@ -81,11 +81,13 @@ impl ui::widget::Collaborative for MapWindow {
 
 pub(crate) fn window(cx: &ViewCx<Workspace>, mut app: MapsApp) -> Element {
     // A live window keeps this device's offline areas; a capture shows what it was staged with.
-    let offline_areas = cx
-        .mode()
-        .is_live()
-        .then(|| cx.person().zip(cx.device().map(str::to_owned)))
-        .flatten();
+    let offline_areas = cx.mode().is_live().then(|| {
+        let workspace = cx.workspace().unwrap_or_default().to_owned();
+        (
+            super::offline::DownloadedAreas::open(cx, &workspace),
+            workspace,
+        )
+    });
     app.attach_framework(cx.dispatcher(), offline_areas);
     let mut presented = None;
     if let Some(workspace) = cx.live().changed_since(&mut presented) {

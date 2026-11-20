@@ -80,6 +80,8 @@ mod api;
 mod demanding;
 mod dispatching;
 mod follow;
+mod held;
+pub(crate) use held::Chains;
 mod listing;
 mod named;
 mod part;
@@ -91,12 +93,13 @@ use routing::{route, route_at};
 mod shares;
 mod tree;
 mod waiting;
+pub(crate) use waiting::QueuedWrites;
 
 use super::made::Made;
 use dispatching::detached_dispatch;
 pub(crate) use dispatching::dispatching;
 use listing::{Listing, Page};
-use part::{HeldPart, OnWritten, PartType, live_of};
+use part::{HeldPart, OnWritten, PartType, by_part, live_of, part_edit};
 pub(crate) use reading::PastPart;
 use reading::{ChainRead, offer_nested_reads, parse_read_cursor, read_cursor, read_spec};
 use shares::Written;
@@ -404,6 +407,7 @@ pub(crate) struct WorkspaceResources {
     pub(crate) permissions: Option<LivePermissions>,
     pub(crate) app_id: &'static str,
     pub(crate) app_title: &'static str,
+    pub(crate) device_queue: Option<ui_core::storage::Settings<waiting::QueuedWrites>>,
 }
 
 /// The parts a window holds, oldest first, by their numbers.
@@ -495,8 +499,8 @@ pub(crate) struct ChainState {
     /// ([`Chain::undo_last`]), and the steps it took back, for Redo.
     written: RefCell<Vec<Written>>,
     undone: RefCell<Vec<Written>>,
-    /// What [`ChainCore::waiting_resource`] writes into this chain, as a part
-    /// holding only that reads ([`ChainState::unwritten`]), at its heads.
+    /// What the waiting actions would write into this chain, projected
+    /// as one part ([`ChainState::unwritten`]).
     unwritten: RefCell<Unwritten>,
     /// Whether the actions that waited are being applied now.
     draining: Cell<bool>,
@@ -549,6 +553,7 @@ pub(crate) struct ChainCore {
     /// applies them in order once the part is here, across a closed window
     /// and a restart.
     waiting_resource: DocumentCheckout,
+    workspace_key: String,
     /// Whether [`Self::waiting_resource`] was looked for on this device.
     unsent_looked: Cell<bool>,
 }
@@ -559,7 +564,8 @@ pub(crate) type Later = Box<dyn FnOnce(Result<u64, ActionError>)>;
 
 /// What the actions waiting for their part write, read as a part, at the
 /// heads of the record that keeps them.
-type Unwritten = (Vec<ChangeHash>, Option<Rc<dyn Any>>);
+type QueueRevision = (Vec<ChangeHash>, Option<ui_core::storage::SettingsRevision>);
+type Unwritten = (QueueRevision, Option<Rc<dyn Any>>);
 
 /// The kind of the record of a person's actions waiting for their part.
 const UNSENT_KIND: &str = tilo_actions::surface::CHAIN_UNSENT_KIND;
@@ -1099,6 +1105,7 @@ impl ChainCore {
             search_readers: RefCell::default(),
             looked: Cell::new(None),
             followed_at: Cell::new(None),
+            workspace_key: workspace.store.app_and_home().1,
             earlier_at: Cell::new(None),
             read_at: Cell::new(None),
             waiting_resource: unsent_checkout(&workspace.me),
@@ -1546,27 +1553,17 @@ impl ChainCore {
         Ok(())
     }
 
-    /// Open the record of waiting actions where this device keeps it, once;
-    /// with `create`, start it where nothing of it is here.
-    fn open_unsent(&self, create: bool) -> bool {
+    /// Open a legacy queue already held on this device.
+    fn open_unsent(&self) -> bool {
         let store = &self.workspace.store;
         if store.is_ready(&self.waiting_resource.id) {
             return true;
         }
-        if self.unsent_looked.replace(true) && !create {
+        if self.unsent_looked.replace(true) {
             return false;
         }
         match store.open_if_held(&self.waiting_resource) {
             Ok(_) => true,
-            // Nothing of it here, or a store that keeps no canonical records
-            // (a test's): started as every record is.
-            Err(ResourceOpenError::MissingResource | ResourceOpenError::IdentityMismatch) if create => {
-                self.create(&self.waiting_resource, |_| Ok(()))
-                    .map_err(|error| {
-                        tracing::warn!(kind = self.part.kind, %error, "the record of waiting writes cannot be started");
-                    })
-                    .is_ok()
-            }
             Err(ResourceOpenError::MissingResource | ResourceOpenError::IdentityMismatch) => false,
             // Read by whatever runs now: looked for again at the next refresh.
             Err(ResourceOpenError::Busy) => {
@@ -1583,7 +1580,26 @@ impl ChainCore {
     /// The actions waiting for a part of this chain, oldest first: each
     /// entry's id, its action's JSON and who invoked it.
     fn unsent(&self) -> Vec<(String, serde_json::Value, ActionInvoker)> {
-        if !self.open_unsent(false) {
+        let mut queued = self.legacy_unsent();
+        if let Some(settings) = &self.workspace.device_queue {
+            if let Some(entries) = settings
+                .get()
+                .workspaces
+                .get_mut(&self.workspace_key)
+                .and_then(|chains| chains.remove(self.chain.as_str()))
+            {
+                queued.extend(
+                    entries
+                        .into_iter()
+                        .map(|entry| (entry.id, entry.action, entry.invoker)),
+                );
+            }
+        }
+        queued
+    }
+
+    fn legacy_unsent(&self) -> Vec<(String, serde_json::Value, ActionInvoker)> {
+        if !self.open_unsent() {
             return Vec::new();
         }
         let kind = self.part.kind;
@@ -1615,6 +1631,29 @@ impl ChainCore {
 
     /// Take the entry `id` out of the record of waiting actions.
     fn forget_unsent(&self, id: &str) {
+        if let Some(settings) = self
+            .workspace
+            .device_queue
+            .as_ref()
+            .filter(|_| id.starts_with("local:"))
+        {
+            if let Err(error) = settings.update(|queue| {
+                if let Some(chains) = queue.workspaces.get_mut(&self.workspace_key) {
+                    if let Some(entries) = chains.get_mut(self.chain.as_str()) {
+                        entries.retain(|entry| entry.id != id);
+                        if entries.is_empty() {
+                            chains.remove(self.chain.as_str());
+                        }
+                    }
+                    if chains.is_empty() {
+                        queue.workspaces.remove(&self.workspace_key);
+                    }
+                }
+            }) {
+                tracing::error!(kind = self.part.kind, %error, "could not finish a queued workspace write");
+            }
+            return;
+        }
         let chain = self.chain.as_str().to_owned();
         let forgotten = self.edit_unsent(move |doc| {
             let Some((Value::Object(ObjType::List), list)) = doc.get(ROOT, chain.as_str())? else {
@@ -1830,13 +1869,11 @@ impl ChainState {
         self.unwritten.borrow().1.clone()
     }
 
-    /// Read the list of waiting actions again when it changed (here, in
-    /// another window, on another of the person's devices). Whether it did.
+    /// Follow edits to the queue from other windows on this device.
     fn follow_unsent(&self) -> bool {
-        // Not here (nothing waits), or read by whatever runs now: as it was.
-        let Some(heads) = self
+        let heads = self
             .core
-            .open_unsent(false)
+            .open_unsent()
             .then(|| {
                 self.core.workspace.store.read(
                     &self.core.waiting_resource.id,
@@ -1844,14 +1881,20 @@ impl ChainState {
                 )
             })
             .flatten()
-        else {
-            return false;
-        };
-        if self.unwritten.borrow().0 == heads {
+            .unwrap_or_default();
+        let revision = (
+            heads,
+            self.core
+                .workspace
+                .device_queue
+                .as_ref()
+                .map(ui_core::storage::Settings::revision),
+        );
+        if self.unwritten.borrow().0 == revision {
             return false;
         }
         let unwritten = self.read_unwritten(&self.unsent());
-        *self.unwritten.borrow_mut() = (heads, unwritten);
+        *self.unwritten.borrow_mut() = (revision, unwritten);
         true
     }
 
@@ -2248,24 +2291,6 @@ impl ChainState {
             &|| (part.children)(&**state),
         )
     }
-}
-
-/// The members of a group by the part each changes (`indices`, in the
-/// group's order), parts in order: one function for every part type.
-#[inline(never)]
-fn by_part(indices: &[u64]) -> Vec<(u64, Vec<usize>)> {
-    let mut per_part: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
-    for (at, index) in indices.iter().enumerate() {
-        per_part.entry(*index).or_default().push(at);
-    }
-    per_part.into_iter().collect()
-}
-
-/// A history verb on a part, from its payload: decoded by one function for
-/// every part type.
-#[inline(never)]
-fn part_edit(payload: &[u8]) -> Result<PartEdit, String> {
-    tilo_actions::decode_json(payload).map_err(|error| error.to_string())
 }
 
 /// A chain of records the app keeps beside its own, held for a view or
@@ -2748,6 +2773,7 @@ impl<P: Chained> Chain<P> {
             permissions: None,
             app_id,
             app_title: app_id,
+            device_queue: None,
         };
         let chain = match record {
             Some(record) => P::chain_beside(record),
@@ -2818,174 +2844,5 @@ fn answer(kind: &str, id: &str, written: Result<u64, ActionError>) {
                 tracing::warn!(kind, %error, "a write that waited for its part was refused");
             }
         }
-    }
-}
-
-/// The chains a window holds, by part type and chain.
-type HeldChains = BTreeMap<(&'static str, String), Rc<ChainState>>;
-
-/// The chains a window's views opened, by part type and chain: one per each;
-/// and the child records they opened, by container.
-#[derive(Default)]
-pub(crate) struct Chains {
-    held: RefCell<HeldChains>,
-    /// The child records held, by their container's address.
-    children: RefCell<BTreeMap<String, Rc<dyn Any>>>,
-    apis: RefCell<Vec<Rc<dyn ResourceApi>>>,
-}
-
-impl Chains {
-    /// The chain of `P`, opened in `workspace` on first use.
-    pub(crate) fn open<P: Chained>(
-        &self,
-        workspace: Option<&WorkspaceResources>,
-        record: Option<&DocumentId>,
-        base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
-    ) -> Option<Rc<ChainState>> {
-        // Beside the record the window shows: the app's own record of the
-        // workspace, or the one per member where the app keeps those.
-        let chain = match record {
-            Some(record) => P::chain_beside(record),
-            None if P::BESIDE_RESOURCE => return None,
-            None => P::chain(),
-        };
-        if let Some(held) = self.opened(P::KIND, &chain) {
-            return Some(held);
-        }
-        self.open_at::<P>(workspace?, &chain, base)
-    }
-
-    /// The chain of `P` that lives beside the record `base`
-    /// ([`Chained::chain_beside`]), opened in `workspace` on first use.
-    pub(crate) fn open_beside<P: Chained>(
-        &self,
-        workspace: Option<&WorkspaceResources>,
-        base: &DocumentId,
-        base_state: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
-    ) -> Option<Rc<ChainState>> {
-        self.open_at::<P>(workspace?, &P::chain_beside(base), base_state)
-    }
-
-    /// The chain of `P` kept at `chain` in `workspace`, opened on first use.
-    /// The base is one of the app's own record, or a record of a workspace it
-    /// keeps beside its own (a chat, whose parts hold its messages).
-    pub(crate) fn open_at<P: Chained>(
-        &self,
-        workspace: &WorkspaceResources,
-        chain: &DocumentId,
-        base_state: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
-    ) -> Option<Rc<ChainState>> {
-        if let Some(held) = self.opened(P::KIND, chain) {
-            return Some(held);
-        }
-        let state = Rc::new(ChainState::open::<P>(
-            workspace.clone(),
-            base_state,
-            chain.clone(),
-        )?);
-        self.hold(chain, &state);
-        Some(state)
-    }
-
-    /// The chain of parts of `kind` held for `chain`, if the views opened it.
-    fn opened(&self, kind: &'static str, chain: &DocumentId) -> Option<Rc<ChainState>> {
-        self.held
-            .borrow()
-            .get(&(kind, chain.as_str().to_owned()))
-            .cloned()
-    }
-
-    /// Keep `state` for the views that ask for its chain again, published
-    /// and answered beside the others.
-    fn hold(&self, chain: &DocumentId, state: &Rc<ChainState>) {
-        self.held.borrow_mut().insert(
-            (state.part().kind, chain.as_str().to_owned()),
-            Rc::clone(state),
-        );
-        self.apis
-            .borrow_mut()
-            .push(Rc::clone(state) as Rc<dyn ResourceApi>);
-    }
-
-    /// The children of `C` the parent lists, held in `workspace` on first use:
-    /// published and answered beside the chains, through the same API.
-    pub(crate) fn open_children<C: super::children::ChildResource>(
-        &self,
-        workspace: Option<&WorkspaceResources>,
-        parent: impl Fn() -> Rc<<C::Parent as Resource>::State> + 'static,
-    ) -> Option<Rc<super::children::ChildrenState<C>>> {
-        let key = ui_core::resource::children_resource_id(&C::parent_resource(), C::KIND);
-        if let Some(held) = self.children.borrow().get(&key) {
-            return Rc::clone(held)
-                .downcast::<super::children::ChildrenState<C>>()
-                .ok();
-        }
-        let state = Rc::new(super::children::ChildrenState::<C>::open(
-            workspace?.clone(),
-            Rc::new(parent),
-        )?);
-        self.children
-            .borrow_mut()
-            .insert(key, Rc::clone(&state) as Rc<dyn Any>);
-        self.apis
-            .borrow_mut()
-            .push(Rc::clone(&state) as Rc<dyn ResourceApi>);
-        Some(state)
-    }
-
-    pub(crate) fn apis(&self) -> Vec<Rc<dyn ResourceApi>> {
-        self.apis.borrow().clone()
-    }
-
-    /// Answer one published action of a chain: apply it to the part it
-    /// changes, for whoever the host admitted to invoke it.
-    pub(crate) fn answer(
-        &self,
-        me: Option<&tilo_resource::MemberId>,
-        payload: &[u8],
-        live: &mut ui_core::widget::Edits<'_>,
-    ) -> Result<tilo_actions::ActionOutput, Refusal> {
-        let request: super::resources::ResourceAction =
-            tilo_actions::decode_json(payload).map_err(|error| Refusal::new(error.to_string()))?;
-        let api = self
-            .apis
-            .borrow()
-            .iter()
-            .find(|api| api.id() == request.record)
-            .cloned()
-            .ok_or_else(|| Refusal::new(format!("no chain `{}` is open here", request.record)))?;
-        let invoker = ui_core::invocation_scope::current_invoker()
-            .or_else(|| me.cloned().map(ActionInvoker::member))
-            .ok_or_else(|| Refusal::new("nobody changes a past version"))?;
-        let asked = ASKED.with(|asked| asked.replace(request.answers.clone()));
-        let output = api.apply_in_refused(&request.action, &invoker, live);
-        ASKED.with(|asking| asking.replace(asked));
-        let mut output = output?;
-        // A verb declared to answer nothing answers nothing of its own
-        // ([`Self::answering`] kept only what the write made), which a caller
-        // still needs: a create's made items are the ids of what it made, and
-        // without them it cannot learn the id it created. It still names the
-        // text it wrote: where it landed.
-        if request.quiet {
-            let made = api::only_made(output.value.take());
-            output.value = match output.wrote() {
-                Some(wrote) => tilo_actions::ActionOutput::noting_wrote(made, &wrote),
-                None => made,
-            };
-        }
-        Ok(output)
-    }
-
-    /// Answer a read of the chain `chain` ([`CHAIN_READ_TYPE`]) from the
-    /// parts this device holds.
-    pub(crate) fn read(&self, chain: &str, payload: &[u8]) -> Result<serde_json::Value, String> {
-        let api = self
-            .apis
-            .borrow()
-            .iter()
-            .find(|api| api.id() == chain)
-            .cloned()
-            .ok_or_else(|| format!("no chain `{chain}` is open here"))?;
-        api.read(payload)
     }
 }

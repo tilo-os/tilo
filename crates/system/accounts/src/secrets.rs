@@ -38,6 +38,8 @@ mod owner_tests;
 #[serde(transparent)]
 pub struct SecretId(pub String);
 
+const MESSAGING_PROFILE_SCOPE: &str = "tilo.messaging.profile.scope";
+
 impl SecretId {
     pub fn new() -> Self {
         Self(uuid::Uuid::new_v4().to_string())
@@ -93,6 +95,12 @@ impl std::fmt::Debug for SecretItem {
 }
 
 impl SecretItem {
+    /// Device authentication material is excluded from shared workspace vaults.
+    #[must_use]
+    pub fn may_share_with_workspace(&self) -> bool {
+        !self.fields.contains_key(MESSAGING_PROFILE_SCOPE)
+    }
+
     /// A list of items from its JSON form (a backup's), read by code the
     /// runtime holds once rather than every app that reads such a list.
     #[inline(never)]
@@ -546,7 +554,7 @@ impl CredentialBroker {
         // This metadata lookup does not return or retain another plaintext copy.
         zeroize::Zeroize::zeroize(&mut item.password);
         let bound = item.kind == SecretItemKind::Other
-            && item.fields.get("tilo.messaging.profile.scope")
+            && item.fields.get(MESSAGING_PROFILE_SCOPE)
                 == Some(&serde_json::to_string(scope).map_err(|_| BrokerError::CorruptItem)?);
         if !bound {
             return Err(BrokerError::Denied);

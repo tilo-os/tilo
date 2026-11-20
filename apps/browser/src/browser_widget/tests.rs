@@ -478,7 +478,7 @@ pub(super) fn person_history() -> (
 ) {
     let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
     let record = app
-        .person::<crate::history::BrowsingHistory>()
+        .profile_resource::<crate::history::BrowsingHistory>()
         .expect("a test profile keeps person resources");
     (app, record)
 }

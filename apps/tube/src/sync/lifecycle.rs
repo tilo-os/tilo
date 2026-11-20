@@ -680,7 +680,7 @@ pub fn state_from_model(model: &TubeModel) -> SyncState {
         .collect();
     SyncState {
         subscriptions,
-        watch_history: model.history.clone(),
+        watch_history: Vec::new(),
         settings: Some(model.settings.clone()),
     }
 }

@@ -509,6 +509,15 @@ pub(crate) struct Link;
 #[derive(Clone, PartialEq, Eq, Effect)]
 #[effect(operation = "terminal.effects")]
 pub enum TerminalEffect {
+    /// Import earlier workspace commands.
+    #[effect(
+        kind = "undoable",
+        attended,
+        privileged,
+        returns,
+        label = "terminal-import-previous-history"
+    )]
+    ImportPreviousHistory,
     /// Inspect session
     ///
     /// Read this member's actual process lifecycle and startup cause.
@@ -695,7 +704,7 @@ impl ResourceApp for TerminalShell {
     }
 
     fn resources(resources: &mut ui::framework::Resources<'_>) {
-        resources.person::<crate::history::CommandHistory>();
+        resources.workspace_record::<crate::history::CommandHistory>(crate::history::DOCUMENT);
     }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
@@ -815,20 +824,23 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
         self.set_run_action(Terminal::RUN.on(cx.actions().resource_id()));
         if cx.mode().is_live()
             && let (Some(history), Some(record), Some(me)) = (
-                cx.person::<crate::history::CommandHistory>(),
+                cx.shared_resource::<crate::history::CommandHistory>(
+                    ui::apps::TERMINAL,
+                    crate::history::DOCUMENT,
+                ),
                 cx.document_id(),
                 cx.me(),
             )
         {
-            self.remember_in(history, record.uri(), me.clone());
+            self.remember_in(
+                history,
+                cx.resource_opener(ui::apps::TERMINAL),
+                record.uri(),
+                me.clone(),
+            );
         }
-        if cx.mode().is_live()
-            && let (Some(record), Some(device)) = (
-                cx.person::<crate::target::RecentEnvironments>(),
-                cx.device(),
-            )
-        {
-            self.recent_in(crate::target::RecentTarget::in_resource(record, device));
+        if cx.mode().is_live() {
+            self.recent_in(crate::target::RecentTarget::open(&cx));
         }
     }
 
@@ -845,6 +857,9 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
         cx: &mut EffectCx<Terminal, Self>,
     ) -> EffectAnswer {
         match effect {
+            TerminalEffect::ImportPreviousHistory => {
+                Ok(Effected::value(self.import_previous_history()?))
+            }
             TerminalEffect::InspectSession => Ok(Effected::value(self.inspect_session())),
             TerminalEffect::ReadScreen => Ok(Effected::value(self.read_session())),
             TerminalEffect::InspectEditor => Ok(Effected::value(self.inspect_editor())),
@@ -909,20 +924,23 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
         self.set_run_action(Terminal::RUN.on(cx.actions().resource_id()));
         if cx.mode().is_live()
             && let (Some(history), Some(record), Some(me)) = (
-                cx.person::<crate::history::CommandHistory>(),
+                cx.shared_resource::<crate::history::CommandHistory>(
+                    ui::apps::TERMINAL,
+                    crate::history::DOCUMENT,
+                ),
                 cx.document_id(),
                 cx.me(),
             )
         {
-            self.remember_in(history, record.uri(), me.clone());
+            self.remember_in(
+                history,
+                cx.resource_opener(ui::apps::TERMINAL),
+                record.uri(),
+                me.clone(),
+            );
         }
-        if cx.mode().is_live()
-            && let (Some(record), Some(device)) = (
-                cx.person::<crate::target::RecentEnvironments>(),
-                cx.device(),
-            )
-        {
-            self.recent_in(crate::target::RecentTarget::in_resource(record, device));
+        if cx.mode().is_live() {
+            self.recent_in(crate::target::RecentTarget::open(&cx));
         }
     }
     #[cfg(feature = "samples")]
@@ -940,6 +958,9 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
         cx: &mut EffectCx<Terminal, Self>,
     ) -> EffectAnswer {
         match effect {
+            TerminalEffect::ImportPreviousHistory => Ok(Effected::value(
+                self.terminal_mut().import_previous_history()?,
+            )),
             TerminalEffect::InspectSession => Ok(Effected::value(self.inspect_session())),
             TerminalEffect::ReadScreen => Ok(Effected::value(self.read_session())),
             TerminalEffect::InspectEditor => {

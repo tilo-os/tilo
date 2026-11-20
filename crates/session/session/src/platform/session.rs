@@ -663,11 +663,12 @@ impl Session {
             std::sync::Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
         let key_link = crate::workspace_keys::KeyLink::new();
         changes.waking(options.wake.handle());
-        let resource_index = engine.as_ref().map(|_| {
+        let resource_index = engine.as_ref().map(|engine| {
+            crate::resource_index::install_read_policy(engine, &options.content);
             crate::resource_index::start(
                 &document_reads,
                 std::sync::Arc::clone(&options.content),
-                crate::platform::records::Changes::clone(&changes),
+                changes.clone(),
             )
         });
         let resource_changes = resource_index.clone().map(|index| {
@@ -718,6 +719,9 @@ impl Session {
             Some(peer_documents.clone()),
             workspace_service.clone(),
         );
+        if let Some(personal) = sync.as_ref().and_then(|sync| sync.personal()) {
+            conversations.use_personal_store(personal.sync().clone());
+        }
         // The records the session itself writes are the workspaces' own, and its writes reach this
         // device's apps as a member's do. Search finds the records the workspaces hold, and
         // brings one here, through them.
@@ -2968,33 +2972,4 @@ fn app_of_resource(resource: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    //! What the session's own hosts tell the watchdog.
-
-    use std::time::Duration;
-
-    use tilo_liveness::watchdog::{Policy, Watchdog};
-
-    use super::{LoopTurns as _, Turns};
-
-    /// The compositor's hook marks the loop's turns as the watchdog counts them, so a loop that
-    /// waits for events is never judged.
-    #[test]
-    fn the_compositor_hook_marks_the_loops_turns() {
-        let watchdog = Watchdog::watch_this_thread(
-            Policy {
-                period: Duration::from_millis(50),
-                hung_after: Duration::from_secs(60 * 60),
-                report_within: Duration::from_secs(1),
-            },
-            |_| panic!("a loop that marks its turns is never judged hung"),
-        )
-        .expect("the watchdog thread starts");
-        let turns = Turns(watchdog);
-        for _ in 0..3 {
-            turns.parking();
-            std::thread::sleep(Duration::from_millis(20));
-            turns.unparked();
-        }
-    }
-}
+mod tests;

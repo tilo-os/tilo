@@ -36,7 +36,6 @@ __all__ = [
     "Settings",
     "Library",
     "BooksCatalogues",
-    "Files",
     "ShelveArgs",
     "ShelveFoundArgs",
     "RemoveFromLibraryArgs",
@@ -51,7 +50,6 @@ __all__ = [
     "DeleteAnnotationArgs",
     "RemoveFontArgs",
     "DeleteSchemeArgs",
-    "KeepArgs",
 ]
 
 AnnoKind = Literal["bookmark", "highlight", "note"]
@@ -232,15 +230,9 @@ DeleteSchemeArgs = TypedDict("DeleteSchemeArgs", {
 })
 """The arguments of `delete-scheme`."""
 
-KeepArgs = TypedDict("KeepArgs", {
-    "device": "str",
-    "kept": "Any",
-})
-"""The arguments of `keep`."""
-
 class Library(Resource):
     """Books — `ebook.library`."""
-    __surface__ = "so.tilo.ebook@91635e3a0b11ea81"
+    __surface__ = "so.tilo.ebook@12d27116322c8886"
     entries: list[Entry[LibraryEntry]]
     progress: dict[str, Progress]
     settings: Settings
@@ -440,29 +432,7 @@ class Library(Resource):
 
 class BooksCatalogues(Resource):
     """Book catalogues — `settings.books-catalogues`."""
-    __surface__ = "so.tilo.ebook@91635e3a0b11ea81"
+    __surface__ = "so.tilo.ebook@12d27116322c8886"
     keep_catalogues: bool
-
-
-class Files(Resource):
-    """Book files — `ebook.files`."""
-    __surface__ = "so.tilo.ebook@91635e3a0b11ea81"
-    devices: dict[str, Any]
-
-    def keep(self,
-        *,
-        device: str,
-        kept: Any,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("keep", device=device, kept=kept)
-
-    def keep_many(self, items: list[KeepArgs]) -> list[dict[str, Any]]:
-        """Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("keep", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"keep", "keep_many"})
 
 

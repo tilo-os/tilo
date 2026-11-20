@@ -30,7 +30,7 @@ use crate::model::{
     validate_source,
 };
 use crate::model::{StoredRule, StoredZonePaths};
-use crate::resource::{AppliedConfig, Firewall, FirewallEffect};
+use crate::resource::{AppliedOnDevice, Firewall, FirewallEffect};
 use crate::view::{
     self, Draft, Intent, Intents, PageModel, PendingSwitch, SwitchKey, Switches, Tab,
 };
@@ -124,7 +124,7 @@ pub(crate) struct Store {
     blocked_rev: u64,
 
     dispatcher: Option<Dispatcher<Firewall>>,
-    applied: Option<crate::resource::AppliedOnDevice>,
+    applied: Option<(ui::framework::Setting<AppliedOnDevice>, String)>,
     jobs: Option<ui::framework::Jobs<Firewall>>,
     applying: Option<String>,
 
@@ -204,9 +204,10 @@ impl Store {
     /// remembers what this device's firewalld holds.
     fn attach(&mut self, cx: &ViewCx<Firewall>) {
         self.dispatcher = Some(cx.dispatcher());
-        self.applied = cx
-            .person::<AppliedConfig>()
-            .zip(cx.device().map(str::to_owned));
+        if cx.mode().is_live() {
+            let workspace = cx.workspace().unwrap_or_default().to_owned();
+            self.applied = Some((AppliedOnDevice::open(cx, &workspace), workspace));
+        }
         self.host_writes = cx.mode() == RunMode::Live || cfg!(test);
         if self.host_writes {
             self.jobs = Some(cx.jobs());
@@ -361,14 +362,15 @@ impl Store {
     /// given it: a job of the window, the latest configuration replacing one still being
     /// applied.
     fn apply_to_device(&mut self, me: &Shared, config: &FirewallConfig) {
-        let (Some(jobs), Some((record, device))) = (&self.jobs, &self.applied) else {
+        let (Some(jobs), Some((receipt, workspace))) = (&self.jobs, &self.applied) else {
             return;
         };
         if !self.capability.is_granted() {
             return;
         }
+        let applied = receipt.get();
         let Some((canonical, config)) =
-            record.with(|applied| crate::resource::pending_apply(config, applied.on(device)).pop())
+            crate::resource::pending_apply(config, applied.in_workspace(workspace)).pop()
         else {
             return;
         };

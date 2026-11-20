@@ -61,7 +61,7 @@ mod frame;
 mod interaction;
 mod layout;
 mod nav_surface;
-mod offline;
+pub(crate) mod offline;
 mod places;
 mod places_panel;
 mod presences;
@@ -181,7 +181,7 @@ pub struct MapsApp {
 
     dispatch: Option<ui::framework::Dispatcher<Workspace>>,
     offline_areas: Option<(
-        ui::framework::PersonResource<crate::offline_areas::OfflineAreas>,
+        ui::framework::Setting<crate::app::offline::DownloadedAreas>,
         String,
     )>,
 

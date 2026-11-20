@@ -1063,9 +1063,6 @@ impl ApplicationOwner {
         initial_view: Option<ApplicationLocalView>,
         runner_inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
-        if let Some(own) = definition.member_resource_of(&self.author) {
-            return self.prepare_resource(definition, instance_id, own, runner_inputs);
-        }
         let records = self.resources_for(definition)?;
         if definition.keeps_workspace_resource() {
             let primary = DocumentCheckout::package_primary(definition.resource_type.clone());
@@ -1188,6 +1185,7 @@ impl ApplicationOwner {
         const MAX_SUCCESSORS: usize = 64;
         let mut successors = 0;
         let target = loop {
+            definition.refuse_archived_document(&records, &self.author, &checkout.id)?;
             match records.try_open_resource(&checkout) {
                 Ok(_) => {
                     break LaunchTarget::Record {
@@ -1275,7 +1273,6 @@ mod native_process_tests {
             optional: vec![],
             opens: &[],
             workspace_resource: false,
-            member_resource: false,
             opens_before_resource: false,
             create: rejected_factory,
         }
@@ -1406,12 +1403,11 @@ mod native_process_tests {
             ));
         }
 
-        phase a_window_of_an_app_kept_as_each_members_own_opens_the_persons_own_record;
+        phase members_open_the_same_workspace_primary;
         {
             use crate::application_test_support as probe;
             let mut definition = definition(probe::APP);
             definition.workspace_resource = true;
-            definition.member_resource = true;
             let workspace = "3f2b1c00-0000-4000-8000-00000000000c";
             let resource_of = |person: &str| {
                 let temp = tempfile::tempdir().unwrap();
@@ -1437,17 +1433,17 @@ mod native_process_tests {
             let (ada, bo) = ("ab".repeat(32), "cd".repeat(32));
             assert_eq!(
                 resource_of(&ada),
-                DocumentId::of_member(&ada, "host.probe").unwrap(),
-                "Ada's window opens her own record of the workspace"
+                DocumentId::package_primary(),
+                "Ada opens the workspace record"
             );
             assert_eq!(
                 resource_of(&bo),
-                DocumentId::of_member(&bo, "host.probe").unwrap(),
-                "Bo's opens his, never hers"
+                DocumentId::package_primary(),
+                "Bo opens that same workspace record"
             );
             assert!(
                 resource_of("person-a").is_package_primary(),
-                "someone without a root identity is a member of no workspace: the workspace's record"
+                "a standalone identity also opens the workspace record"
             );
         }
 

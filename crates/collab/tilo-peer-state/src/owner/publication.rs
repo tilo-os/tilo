@@ -5,13 +5,18 @@ use crate::StatePeer;
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, enrollment, stored};
 use crate::owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
 use collab_types::signer::DeviceSigner;
-use collab_types::{EncryptionMetadata, OpKind, SignedOp};
+use collab_types::{OpKind, SignedOp};
 use neighbour_wire::NeighbourMsg;
 use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use web_time::SystemTime;
+
+mod history_keys;
+
+pub use history_keys::SealedHistoryKeys;
+use history_keys::seal_for_document;
 
 /// Writes ownership keeps in its record at its head, where the server session sends them from,
 /// and at most as many again at its tail. Every write past them waits in runs of the store's
@@ -81,41 +86,6 @@ impl Resting {
     }
 }
 
-/// The channel keys a device holds for the sealed records of its workspaces:
-/// what its owner compacts their histories with
-/// ([`NativeWorkspaceOwner::keep_sealed_histories`]).
-pub trait SealedHistoryKeys: collab_types::signer::MaybeSendSync {
-    /// Open `write`, an admitted write of a sealed record's history of
-    /// `workspace` (a compaction included), under any epoch whose key this
-    /// device holds.
-    ///
-    /// # Errors
-    /// This device holds no key that opens it.
-    fn open(&self, workspace: WorkspaceId, write: &SignedOp) -> Result<Vec<u8>, String>;
-    /// Seal `snapshot`, the merged history of `app`'s `record`, as that
-    /// record's checkpoint under its channel's current epoch.
-    ///
-    /// # Errors
-    /// This device holds no current key of the record's channel.
-    fn seal_checkpoint(
-        &self,
-        workspace: WorkspaceId,
-        app: &str,
-        record: &str,
-        snapshot: &[u8],
-    ) -> Result<(EncryptionMetadata, Vec<u8>), String>;
-    /// Seal `write` again under its channel's current epoch: one of this device's sealed writes
-    /// of `workspace` that expired held before its host took it. Answers the encryption and
-    /// payload its renewal carries.
-    ///
-    /// # Errors
-    /// This device holds no key that opens it, or none of its channel's current epoch.
-    fn renew(
-        &self,
-        workspace: WorkspaceId,
-        write: &SignedOp,
-    ) -> Result<(EncryptionMetadata, Vec<u8>), String>;
-}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoredPublication {
     version: u32,
@@ -2006,8 +1976,20 @@ impl NativeWorkspaceOwner {
         let Some(keys) = self.0.history_keys.lock().clone() else {
             return Ok(0);
         };
-        let mut reseal = |write: &SignedOp| keys.renew(workspace, write);
         let draft = |view: &NativeCommittedView| {
+            let mut reseal =
+                |(app, document): (&str, &str), named: Option<&str>, write: &SignedOp| {
+                    if view.peer.requires_document_keys(app, document, now)? {
+                        let route = (app, document);
+                        let readers = view.peer.document_key_holders_read_by(route, named, now)?;
+                        keys.renew_scoped(workspace, route, named, &readers, write)
+                    } else {
+                        let readers = named.unwrap_or(collab_types::EVERY_MEMBER);
+                        let group = collab_types::reader_group(workspace, readers)
+                            .ok_or("invalid reader set for write renewal")?;
+                        keys.renew(group, write)
+                    }
+                };
             let entries = &state_of(&view.record)?.entries;
             let originals = entries
                 .iter()
@@ -2176,19 +2158,25 @@ impl NativeWorkspaceOwner {
             {
                 due.push(route.clone());
             }
-            let mut open = |write: &SignedOp| keys.open(workspace, write);
             due.into_iter()
                 .filter_map(|(app, record)| {
                     if asked.is_none() && resting.contains(&(app.clone(), record.clone())) {
                         return None;
                     }
-                    let mut seal =
-                        |snapshot: &[u8]| keys.seal_checkpoint(workspace, &app, &record, snapshot);
                     let route = (app.as_str(), record.as_str());
+                    let named = keys.named_readers(workspace, &record);
+                    if neighbour_wire::KeyScope::has_named_readers(&record) && named.is_none() {
+                        return None;
+                    }
+                    let group = collab_types::reader_group(workspace, named.as_deref().unwrap_or(collab_types::EVERY_MEMBER))?;
+                    let mut open = |write: &SignedOp| keys.open(group, write);
+                    let mut seal = |snapshot: &[u8]| {
+                        seal_for_document(&*keys, &view.peer, workspace, route, named.as_deref(), snapshot, now)
+                    };
                     let ops = view
                         .peer
                         .publication()
-                        .draft_sealed_compaction(route, None, &mut open, &mut seal, device, now)
+                        .draft_sealed_compaction(route, named.as_deref(), None, &mut open, &mut seal, device, now)
                         .inspect_err(|error| {
                             tracing::warn!(%error, %app, %record, "sealed record history stays uncompacted");
                             failed
@@ -2201,7 +2189,7 @@ impl NativeWorkspaceOwner {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push((app.clone(), record.clone()));
-                    Some(Ok((None, (app, record), ops)))
+                    Some(Ok((None, (app, record, named), ops)))
                 })
                 .collect()
         };
@@ -2209,9 +2197,16 @@ impl NativeWorkspaceOwner {
         // inside it now are what this device knows of the host's history beside it.
         let admit = |live: &mut StatePeer,
                      publication: &mut StoredPublication,
-                     (app, record): (String, String),
+                     (app, record, named): (String, String, Option<String>),
                      ops| {
-            compacted_here(live, publication, runs, (&app, &record), ops, now)
+            compacted_here(
+                live,
+                publication,
+                runs,
+                ((&app, &record), named.as_deref()),
+                ops,
+                now,
+            )
         };
         let compacted = self
             .commit_outgoing(workspace, signer, now, draft, admit)
@@ -2245,8 +2240,9 @@ impl NativeWorkspaceOwner {
         keys: &dyn SealedHistoryKeys,
         now: SystemTime,
     ) -> Result<(), String> {
-        let runs = self.ownership(workspace);
-        let next = self.with_current(workspace, |view| next_drafted(view, runs, keys, now))?;
+        let admissions = self.ownership(workspace);
+        let next =
+            self.with_current(workspace, |view| next_drafted(view, admissions, keys, now))?;
         let Some((id, message, drafted)) = next else {
             return Ok(());
         };
@@ -2271,7 +2267,7 @@ impl NativeWorkspaceOwner {
             drafted_here(
                 live,
                 publication,
-                runs,
+                admissions,
                 (route, &history),
                 message,
                 ops,
@@ -2543,7 +2539,7 @@ fn compacted_here(
     live: &mut StatePeer,
     publication: &mut StoredPublication,
     runs: Ownership<'_>,
-    (app, record): (&str, &str),
+    ((app, record), named): ((&str, &str), Option<&str>),
     ops: Vec<SignedOp>,
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
@@ -2564,7 +2560,7 @@ fn compacted_here(
     let unanswered = ops.first().cloned();
     let message = live
         .publication_mut()
-        .admit_sealed_compaction(app, record, ops, now)?
+        .admit_sealed_compaction(app, record, named, ops, now)?
         .into_iter()
         .next()
         .ok_or("a compaction publishes as its own message")?;
@@ -2605,6 +2601,7 @@ fn next_drafted(
     let NeighbourMsg::AppDocument {
         app_id,
         document_id,
+        readers,
         ..
     } = &message
     else {
@@ -2621,10 +2618,16 @@ fn next_drafted(
         .map(|write| write.seq)
         .max()
         .unwrap_or(0);
-    let mut open = |write: &SignedOp| keys.open(workspace, write);
-    let mut seal = |snapshot: &[u8]| keys.seal_checkpoint(workspace, route.0, route.1, snapshot);
+    let named = readers.as_deref();
+    let group = collab_types::reader_group(workspace, named.unwrap_or(collab_types::EVERY_MEMBER))
+        .ok_or("invalid reader set for compaction")?;
+    let mut open = |write: &SignedOp| keys.open(group, write);
+    let mut seal = |snapshot: &[u8]| {
+        seal_for_document(keys, &view.peer, workspace, route, named, snapshot, now)
+    };
     let drafted = view.peer.publication().draft_sealed_compaction_of(
         route,
+        named,
         history.clone(),
         &mut open,
         &mut seal,
@@ -2894,53 +2897,5 @@ fn take_hosted(
 #[path = "publication_encoding_tests.rs"]
 mod encoding_tests;
 #[cfg(test)]
-mod tests {
-    use super::{COMPACTION_RETRY, Resting, WorkspaceId};
-
-    fn workspace() -> WorkspaceId {
-        WorkspaceId::parse("23fb5a50-60db-42bd-bb3b-f597bfab1377").unwrap()
-    }
-
-    /// What a store keeps beside an entry has the name stores wrote it with before the code
-    /// called it anything else, and the name builds gave it for a while is the other one a
-    /// store looks under.
-    #[test]
-    fn kept_writes_are_named_as_stores_have_kept_them() {
-        let hash = [0xab; 32];
-        let hex = "ab".repeat(32);
-        assert_eq!(
-            super::ownership_run_name(workspace(), hash),
-            format!("23fb5a50-60db-42bd-bb3b-f597bfab1377.custody.{hex}")
-        );
-        assert_eq!(
-            super::ownership_name_between(workspace(), hash),
-            format!("23fb5a50-60db-42bd-bb3b-f597bfab1377.ownership.{hex}")
-        );
-    }
-
-    /// One history that cannot fold yet rests a while, and every other history of the
-    /// workspace — one that is full and refusing writes, say — is folded on the very next pass.
-    #[test]
-    fn a_history_that_cannot_fold_rests_alone() {
-        let resting = Resting::default();
-        let (stuck, ready) = (
-            ("so.tilo.files".to_owned(), "tree".to_owned()),
-            ("so.tilo.files".to_owned(), "chunk.1@tree".to_owned()),
-        );
-        resting.failed(workspace(), stuck.clone());
-        let still = resting.pass(workspace());
-        assert_eq!(still, std::collections::BTreeSet::from([stuck]));
-        assert!(!still.contains(&ready), "another record is not resting");
-
-        // Its rest is spent after its passes, and it is tried again.
-        for _ in 0..COMPACTION_RETRY {
-            resting.pass(workspace());
-        }
-        assert!(resting.pass(workspace()).is_empty());
-
-        // One that folds leaves no rest behind.
-        resting.failed(workspace(), ready.clone());
-        resting.folded(workspace(), ready.clone());
-        assert!(!resting.pass(workspace()).contains(&ready));
-    }
-}
+#[path = "publication_tests.rs"]
+mod tests;

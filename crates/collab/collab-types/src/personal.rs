@@ -65,12 +65,36 @@ pub fn person_document_id(kind: &str) -> String {
     format!("derived:{kind}@{PERSON_RESOURCE_BASE}")
 }
 
+/// A personal record that remembers which workspace its contents refer to.
+#[must_use]
+pub fn person_document_for_workspace(kind: &str, workspace: uuid::Uuid) -> String {
+    format!("derived:context.{workspace}@{}", person_document_id(kind))
+}
+
+/// The workspace context recorded in a personal document's id.
+#[must_use]
+pub fn person_document_context(record: &str) -> Option<uuid::Uuid> {
+    let (context, _) = profile_context(chunk_base(record))?;
+    Some(context)
+}
+
+fn profile_context(record: &str) -> Option<(uuid::Uuid, &str)> {
+    let (context, base) = record.strip_prefix("derived:context.")?.split_once('@')?;
+    let id = uuid::Uuid::parse_str(context).ok()?;
+    (id.to_string() == context && personal_kind(base).is_some()).then_some((id, base))
+}
+
 /// The kind a person record's id names; `None` for any other record. A chunk of one
 /// (`derived:chunk.<n>@<record>`, `n` from 1) is part of the record it splits, and names
 /// the same kind.
 #[must_use]
 pub fn person_resource_type(record: &str) -> Option<&str> {
     let record = chunk_base(record);
+    let record = profile_context(record).map_or(record, |(_, base)| base);
+    personal_kind(record)
+}
+
+fn personal_kind(record: &str) -> Option<&str> {
     record
         .strip_prefix("derived:")?
         .strip_suffix(PERSON_RESOURCE_BASE)?

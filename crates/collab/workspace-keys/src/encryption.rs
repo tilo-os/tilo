@@ -1,18 +1,6 @@
-//! End-to-end encryption of workspaces on this device: one MLS group per workspace, whose members are
-//! exactly the devices that hold the workspace's keys ([`KeyDirectory::allowed_devices`]), and
-//! every key holder commits the group to that set. Every record of the workspace seals under the
-//! group's content keys, or, when only some of its members read it, under the keys of the group of
-//! that reader set ([`WorkspaceKeys::reader_group`]), which only their devices hold.
-//!
-//! [`WorkspaceKeys::pump`] runs the protocol over the workspace transport: inbound frames
-//! advance the group and access requests wait for the next commit, frames the transport did not take
-//! are published again, and two geneses made at once resolve to one without losing what was sealed
-//! under the other ([`key_group::peer`]).
-//!
-//! Every change registers the group's check ([`SealCheckRegistry`]: plaintext and another group's
-//! ciphertext are refused on every ingress path) and is announced
-//! ([`KeyProvider::workspace_changed`]), so an endpoint holding a route's keys asks the identity
-//! service again only when they change.
+//! End-to-end encryption of workspaces on this device. Workspace groups follow the
+//! trusted devices of a workspace. Reader sets and protected documents have groups
+//! whose keys reach only their permitted readers.
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
@@ -27,7 +15,7 @@ use collab_types::{
     Ed25519PublicKey, EncryptionMetadata, MlsAccessRequestV1, MlsGovernanceFrame, SignedOp,
 };
 use key_group::{Access, ContentKeys, GroupPeer, PeerEvent, VaultKey, WelcomeRefusal};
-use neighbour_wire::NeighbourMsg;
+use neighbour_wire::{KeyScope, NeighbourMsg};
 
 use crate::schedule::{PolicySchedule, RECHECK_INTERVAL};
 use crate::seal_checks::SealCheckRegistry;
@@ -210,6 +198,14 @@ pub enum InboundGovernance {
         workspace: WorkspaceId,
         request: Box<collab_types::MlsAccessRequestV1>,
     },
+    DocumentFrame {
+        scope: neighbour_wire::KeyScope,
+        frame: Box<MlsGovernanceFrame>,
+    },
+    DocumentAccessRequest {
+        scope: neighbour_wire::KeyScope,
+        request: Box<MlsAccessRequestV1>,
+    },
 }
 
 impl InboundGovernance {
@@ -219,11 +215,22 @@ impl InboundGovernance {
         match message {
             NeighbourMsg::MlsGovernance {
                 workspace, frame, ..
-            } => WorkspaceId::parse(&workspace).map(|workspace| Self::Frame { workspace, frame }),
+            } => match neighbour_wire::KeyScope::parse(&workspace)? {
+                neighbour_wire::KeyScope::Workspace(workspace) => {
+                    Some(Self::Frame { workspace, frame })
+                }
+                scope @ KeyScope::Document { .. } => Some(Self::DocumentFrame { scope, frame }),
+            },
             NeighbourMsg::MlsAccessRequest {
                 workspace, request, ..
-            } => WorkspaceId::parse(&workspace)
-                .map(|workspace| Self::AccessRequest { workspace, request }),
+            } => match neighbour_wire::KeyScope::parse(&workspace)? {
+                neighbour_wire::KeyScope::Workspace(workspace) => {
+                    Some(Self::AccessRequest { workspace, request })
+                }
+                scope @ KeyScope::Document { .. } => {
+                    Some(Self::DocumentAccessRequest { scope, request })
+                }
+            },
             _ => None,
         }
     }
@@ -240,6 +247,31 @@ pub trait GovernanceTransport {
 
 /// The access policy inputs this service needs from the workspace model.
 pub trait KeyDirectory: collab_types::signer::MaybeSendSync {
+    /// The certified devices whose current policy allows them to read an
+    /// exact document. Until a directory can answer it, the document has no
+    /// key directory.
+    fn document_devices(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        document: &str,
+        now: u64,
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        let _ = (workspace, app, document, now);
+        None
+    }
+
+    /// Whether this document has or must start using its own group.
+    /// An unsettled policy cannot choose the group to hand to an endpoint.
+    fn requires_document_keys(
+        &self,
+        _workspace: WorkspaceId,
+        _app: &str,
+        _document: &str,
+    ) -> Option<bool> {
+        Some(false)
+    }
+
     /// Every device that holds `workspace`'s keys at wall-clock `now` (seconds since the Unix
     /// epoch): the devices of its members that read and run work there. `None` while this device
     /// cannot tell: the workspace's governance is unknown here, and it then admits and removes no
@@ -320,6 +352,16 @@ pub trait KeyStorage: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     fn held(&self) -> Vec<WorkspaceId> {
         Vec::new()
     }
+    /// Document routes of the groups this store keeps.
+    fn scopes(&self) -> Vec<KeyScope> {
+        Vec::new()
+    }
+
+    /// Keep the route before saving the group's peer state.
+    fn keep_scope(&self, _scope: &KeyScope) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Whether this store already keeps group state: a vault whose master
     /// key is gone opens none of it, so it is never replaced by a new one. A
     /// store whose state lives elsewhere answers `false`.
@@ -415,6 +457,30 @@ impl KeyStorage for KeyDir {
             .collect()
     }
 
+    fn scopes(&self) -> Vec<KeyScope> {
+        let Ok(entries) = std::fs::read_dir(&self.state) else {
+            return Vec::new();
+        };
+        entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.extension()?.to_str()? != "scope" {
+                    return None;
+                }
+                let group = WorkspaceId::parse(path.file_stem()?.to_str()?)?;
+                let scope = KeyScope::parse(&std::fs::read_to_string(path).ok()?)?;
+                (KeyScope::requires_document(group) && scope.group() == group).then_some(scope)
+            })
+            .collect()
+    }
+
+    fn keep_scope(&self, scope: &KeyScope) -> Result<(), String> {
+        let path = self.state.join(format!("{}.scope", scope.group()));
+        tilo_files::native::atomic::write_private(&path, scope.to_string().as_bytes())
+            .map_err(|error| error.to_string())
+    }
+
     fn reader_groups(&self) -> Vec<(WorkspaceId, String)> {
         tilo_files::native::atomic::json::load_or_default(&self.state.join(READER_GROUPS))
     }
@@ -424,9 +490,30 @@ impl KeyStorage for KeyDir {
             .map_err(|error| error.to_string())
     }
 
+    fn forget(&self, group: WorkspaceId) -> Result<(), String> {
+        self.peers()
+            .forget(group)
+            .map_err(|error| error.to_string())?;
+        match std::fs::remove_file(self.state.join(format!("{group}.scope"))) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     fn holds_key_state(&self) -> Result<bool, String> {
         match std::fs::read_dir(&self.state) {
-            Ok(mut entries) => Ok(entries.next().is_some()),
+            Ok(entries) => {
+                for entry in entries {
+                    let path = entry.map_err(|error| error.to_string())?.path();
+                    if path.extension().and_then(|ext| ext.to_str()) != Some("scope")
+                        && path.file_name().and_then(|name| name.to_str()) != Some(READER_GROUPS)
+                    {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(format!("{}: {error}", self.state.display())),
         }
@@ -634,6 +721,7 @@ impl WorkspaceKeys {
         }
         for group in groups {
             self.forget_group(group)?;
+            self.bump(group);
         }
         self.forget_group(workspace)
     }
@@ -665,6 +753,14 @@ impl WorkspaceKeys {
         let mut service = Self::with_store(Some(config), directory, seal_checks);
         for (workspace, readers) in kept {
             service.directory.group(workspace, &readers);
+        }
+        for scope in service
+            .store
+            .as_ref()
+            .into_iter()
+            .flat_map(|store| store.state.scopes())
+        {
+            service.directory.register_scope(scope);
         }
         let now = tilo_clock::now();
         for workspace in held {
@@ -762,6 +858,14 @@ impl WorkspaceKeys {
     /// for access, and creates the group when no genesis arrives. The caller
     /// has already decided the endpoint may read the workspace.
     pub fn access(&mut self, workspace: WorkspaceId, now: Instant) -> KeyAccess {
+        let document_readers = if neighbour_wire::KeyScope::requires_document(workspace) {
+            let Some(readers) = self.current_document_readers(workspace) else {
+                return KeyAccess::Unavailable;
+            };
+            Some(readers)
+        } else {
+            None
+        };
         if self.store.is_none() {
             self.note_unopened(workspace, Unopened::unnamed(workspace));
             return KeyAccess::NoSecretStore;
@@ -787,6 +891,15 @@ impl WorkspaceKeys {
         let was_wanted = entry.wanted;
         entry.wanted = true;
         let access = match entry.peer.access() {
+            Access::Ready { .. }
+                if document_readers
+                    .as_ref()
+                    .is_some_and(|readers| !entry.peer.members().is_subset(readers)) =>
+            {
+                // Until the group removes excluded devices, its exporter
+                // can still be held by them.
+                KeyAccess::Waiting
+            }
             Access::Ready { .. } => entry
                 .peer
                 .content_keys()
@@ -810,6 +923,52 @@ impl WorkspaceKeys {
             self.queued = true;
         }
         access
+    }
+
+    fn takes_part(&self, group: WorkspaceId) -> bool {
+        self.allowed_devices(group, tilo_clock::unix_now())
+            .zip(self.device())
+            .is_some_and(|(allowed, device)| allowed.contains(&device))
+    }
+
+    fn current_document_readers(&self, group: WorkspaceId) -> Option<BTreeSet<Ed25519PublicKey>> {
+        let readers = self.allowed_devices(group, tilo_clock::unix_now())?;
+        readers.contains(&self.device()?).then_some(readers)
+    }
+
+    fn allowed_devices(&self, group: WorkspaceId, now: u64) -> Option<BTreeSet<Ed25519PublicKey>> {
+        self.directory.allowed_devices(group, now)
+    }
+
+    fn parent_workspace(&self, group: WorkspaceId) -> WorkspaceId {
+        self.directory.carrier(group)
+    }
+
+    fn remember_scope(&mut self, scope: neighbour_wire::KeyScope) -> Option<WorkspaceId> {
+        let group = scope.group();
+        if matches!(scope, neighbour_wire::KeyScope::Workspace(_)) {
+            return (!neighbour_wire::KeyScope::requires_document(group)).then_some(group);
+        }
+        if let Some(known) = self.directory.document_scope(group) {
+            return (known == &scope).then_some(group);
+        }
+        if self.peers.contains_key(&group)
+            && let Some(store) = &self.store
+            && let Err(error) = store.state.keep_scope(&scope)
+        {
+            tracing::warn!(%group, %error, "the document key route could not be saved");
+            return None;
+        }
+        self.directory.register_scope(scope)
+    }
+
+    /// Open the MLS group for this exact scope, without falling back to its
+    /// workspace's group.
+    pub fn access_scope(&mut self, scope: neighbour_wire::KeyScope, now: Instant) -> KeyAccess {
+        let Some(group) = self.remember_scope(scope) else {
+            return KeyAccess::Unavailable;
+        };
+        self.access(group, now)
     }
 
     /// Remember that `group` could not be opened, so its route hears when
@@ -843,7 +1002,12 @@ impl WorkspaceKeys {
         for (workspace, entry) in &mut self.unopened {
             match &mut entry.retry {
                 None => {
-                    let opens = stored && takes_part(&self.directory, device, entry.workspace);
+                    let opens = stored
+                        && self
+                            .directory
+                            .allowed_devices(entry.workspace, tilo_clock::unix_now())
+                            .zip(device)
+                            .is_some_and(|(allowed, device)| allowed.contains(&device));
                     if recheck && opens {
                         changed.push((*workspace, true));
                     }
@@ -890,12 +1054,21 @@ impl WorkspaceKeys {
         &self,
         workspace: WorkspaceId,
     ) -> Option<Result<ContentKeys, String>> {
+        if neighbour_wire::KeyScope::requires_document(workspace) {
+            let readers = self.current_document_readers(workspace)?;
+            if self
+                .peers
+                .get(&workspace)
+                .is_some_and(|entry| !entry.peer.members().is_subset(&readers))
+            {
+                return Some(Err("the document group is updating its readers".into()));
+            }
+        }
         if let Some(keys) = self.existing_keys(workspace) {
             return Some(Ok(keys));
         }
         if self.store.is_none()
             || self
-                .directory
                 .allowed_devices(workspace, tilo_clock::unix_now())
                 .is_none()
         {
@@ -910,6 +1083,9 @@ impl WorkspaceKeys {
         &self,
         workspace: WorkspaceId,
     ) -> Option<Result<ContentKeys, String>> {
+        if neighbour_wire::KeyScope::requires_document(workspace) {
+            return self.record_keys(workspace);
+        }
         match (self.existing_keys(workspace), self.copied.get(&workspace)) {
             (None, Some(copied)) => Some(Ok(copied.clone())),
             _ => self.record_keys(workspace),
@@ -1146,7 +1322,10 @@ impl WorkspaceKeys {
             self.peers.values().map(|entry| entry.workspace).collect();
         let next = workspaces
             .into_iter()
-            .filter_map(|workspace| self.directory.next_policy_change(workspace, wall))
+            .filter_map(|workspace| {
+                self.directory
+                    .next_policy_change(self.parent_workspace(workspace), wall)
+            })
             .filter(|at| *at > wall)
             .min();
         if let Some(at) = next {
@@ -1168,7 +1347,36 @@ impl WorkspaceKeys {
                     self.receive_request(group, *request, now, wall);
                 }
             }
+            InboundGovernance::DocumentFrame { scope, frame } => {
+                if frame.workspace == scope.group()
+                    && frame.check().is_ok()
+                    && let Some(group) = self.accept_document_scope(scope, frame.signed_by, wall)
+                {
+                    self.receive_frame(group, *frame, now, wall);
+                }
+            }
+            InboundGovernance::DocumentAccessRequest { scope, request } => {
+                if request.workspace == scope.group()
+                    && request.verify().is_ok()
+                    && let Some(group) = self.accept_document_scope(scope, request.device, wall)
+                {
+                    self.receive_request(group, *request, now, wall);
+                }
+            }
         }
+    }
+
+    fn accept_document_scope(
+        &mut self,
+        scope: neighbour_wire::KeyScope,
+        sender: Ed25519PublicKey,
+        wall: u64,
+    ) -> Option<WorkspaceId> {
+        let readers = self.directory.scope_devices(&scope, wall)?;
+        if !readers.contains(&self.device()?) || !readers.contains(&sender) {
+            return None;
+        }
+        self.remember_scope(scope)
     }
 
     /// Judge the frames each group held for the policy ([`Self::receive_frame`])
@@ -1201,7 +1409,7 @@ impl WorkspaceKeys {
             .map(|(workspace, _)| *workspace)
             .collect();
         for workspace in held {
-            let allowed = self.directory.allowed_devices(workspace, wall);
+            let allowed = self.allowed_devices(workspace, wall);
             let (Some(entry), Some(store)) = (self.peers.get_mut(&workspace), &self.store) else {
                 continue;
             };
@@ -1259,7 +1467,7 @@ impl WorkspaceKeys {
             self.receive_frame(workspace, frame, now, wall);
             return;
         }
-        let allowed = self.directory.allowed_devices(workspace, wall);
+        let allowed = self.allowed_devices(workspace, wall);
         let (Some(entry), Some(store)) = (self.peers.get_mut(&workspace), &self.store) else {
             return;
         };
@@ -1364,7 +1572,6 @@ impl WorkspaceKeys {
         if !self.peers.contains_key(&workspace)
             && request.verify().is_ok()
             && self
-                .directory
                 .allowed_devices(workspace, wall)
                 .is_some_and(|allowed| {
                     allowed.contains(&request.device)
@@ -1419,7 +1626,6 @@ impl WorkspaceKeys {
         wall: u64,
     ) -> Vec<MlsGovernanceFrame> {
         let admitted = self
-            .directory
             .allowed_devices(workspace, wall)
             .is_some_and(|allowed| {
                 allowed.contains(asker)
@@ -1440,11 +1646,29 @@ impl WorkspaceKeys {
         if !self.peers.contains_key(&workspace) {
             return;
         }
-        let allowed = self.directory.allowed_devices(workspace, wall);
+        let allowed = self.allowed_devices(workspace, wall);
         let (Some(entry), Some(store)) = (self.peers.get_mut(&workspace), &self.store) else {
             return;
         };
         entry.dirty = false;
+        if workspace.is_document_key_group()
+            && allowed
+                .as_ref()
+                .is_some_and(|readers| !readers.contains(&entry.peer.device()))
+        {
+            entry.wanted = false;
+            entry.turn_at = None;
+            entry.request = None;
+            entry.signing = None;
+            match entry.peer.withdraw_for_policy(&store.vault) {
+                Ok(true) => self.bump(workspace),
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(%error, group = %workspace, "could not save the key state after losing access");
+                }
+            }
+            return;
+        }
         // While this device cannot tell who holds the workspace's keys it
         // commits nothing and removes no one; nor does a reader.
         let Some(allowed) = allowed.filter(|_| store.role == KeyRole::Committer) else {
@@ -1492,6 +1716,9 @@ impl WorkspaceKeys {
     /// Hand the transport every frame this device wrote or must publish
     /// again; kept for the next pass while the transport refuses one.
     fn publish(&mut self, workspace: WorkspaceId, transport: &dyn GovernanceTransport) {
+        let Some(wire_scope) = self.wire_scope(workspace) else {
+            return;
+        };
         let Some(entry) = self
             .peers
             .get_mut(&workspace)
@@ -1507,7 +1734,7 @@ impl WorkspaceKeys {
             tracing::debug!(%workspace, epoch = frame.epoch, "key frame published");
             self.delivery = self.delivery.wrapping_add(1);
             accepted &= transport.publish(NeighbourMsg::MlsGovernance {
-                workspace: self.directory.carrier(entry.workspace).to_string(),
+                workspace: wire_scope.clone(),
                 frame: Box::new(frame.clone()),
                 delivery: self.delivery,
             });
@@ -1515,6 +1742,14 @@ impl WorkspaceKeys {
         if accepted {
             entry.peer.published();
         }
+    }
+
+    fn wire_scope(&self, group: WorkspaceId) -> Option<String> {
+        if let Some(scope) = self.directory.document_scope(group) {
+            return Some(scope.to_string());
+        }
+        (!neighbour_wire::KeyScope::requires_document(group))
+            .then(|| self.directory.carrier(group).to_string())
     }
 
     /// Ask again at once for the groups this device still waits on: the
@@ -1537,6 +1772,9 @@ impl WorkspaceKeys {
         now: Instant,
         wall: u64,
     ) {
+        let Some(wire_scope) = self.wire_scope(workspace) else {
+            return;
+        };
         let (Some(entry), Some(store)) = (self.peers.get_mut(&workspace), &self.store) else {
             return;
         };
@@ -1601,7 +1839,7 @@ impl WorkspaceKeys {
         tracing::debug!(%workspace, device = ?request.device, issued = request.issued_at, "key access asked");
         self.delivery = self.delivery.wrapping_add(1);
         let message = NeighbourMsg::MlsAccessRequest {
-            workspace: self.directory.carrier(entry.workspace).to_string(),
+            workspace: wire_scope,
             request: Box::new(request),
             delivery: self.delivery,
         };
@@ -1613,13 +1851,19 @@ impl WorkspaceKeys {
     /// name the group's readers here: a workspace whose governance is unknown
     /// and which is no personal cluster of this device's.
     fn start_peer(&mut self, workspace: WorkspaceId, now: Instant) -> key_group::Result<bool> {
-        if !takes_part(&self.directory, self.device(), workspace) {
+        if !self.takes_part(workspace) {
             return Ok(false);
         }
         if self.open_peer(workspace, now)? {
             return Ok(true);
         }
         let store = self.store.as_ref().ok_or_else(no_store)?;
+        if let Some(scope) = self.directory.document_scope(workspace) {
+            store
+                .state
+                .keep_scope(scope)
+                .map_err(key_group::Error::Storage)?;
+        }
         let signer = Box::new(Arc::clone(&store.signer));
         let peer = GroupPeer::waiting(Some(store.state.peers()), workspace, signer, &store.vault)?;
         self.insert_peer(workspace, peer, now);
@@ -1638,7 +1882,6 @@ impl WorkspaceKeys {
         }
         let due = self.directory.founds(workspace) && (entry.wanted || now >= entry.founding.at);
         let reads = self
-            .directory
             .allowed_devices(workspace, wall)
             .zip(self.device())
             .is_some_and(|(allowed, device)| allowed.contains(&device));
@@ -1681,7 +1924,7 @@ impl WorkspaceKeys {
             // device joins as itself, as any further device of the member
             // does.
             Err(key_group::Error::OtherDevice) => {
-                if takes_part(&self.directory, self.device(), workspace) {
+                if self.takes_part(workspace) {
                     tracing::info!(
                         %workspace,
                         "group state named the device this machine was copied from; joining as this device"
@@ -1781,22 +2024,6 @@ fn wait_after_pass(deadline: Option<Instant>, now: Instant) -> Option<Duration> 
     })
 }
 
-/// Whether this device may take the group up: the directory names it among
-/// the group's readers. A group whose readers the directory names without
-/// this device can be neither founded nor joined by it, and a group whose
-/// readers no one can name here (a workspace this device holds no view of) opens
-/// nothing.
-fn takes_part(
-    directory: &reader_groups::Directory,
-    device: Option<Ed25519PublicKey>,
-    workspace: WorkspaceId,
-) -> bool {
-    directory
-        .allowed_devices(workspace, tilo_clock::unix_now())
-        .zip(device)
-        .is_some_and(|(allowed, device)| allowed.contains(&device))
-}
-
 /// Wakes a host's parked governance pump.
 pub type PumpWake = Arc<dyn Fn() + Send + Sync>;
 
@@ -1816,9 +2043,44 @@ impl SharedKeys {
     }
 
     /// Run `operation` on the service; `None` when the lock is poisoned.
-    pub(crate) fn run<T>(&self, operation: impl FnOnce(&mut WorkspaceKeys) -> T) -> Option<T> {
+    pub(crate) fn with_service<T>(
+        &self,
+        operation: impl FnOnce(&mut WorkspaceKeys) -> T,
+    ) -> Option<T> {
         let mut service = self.inner.lock().ok()?;
         Some(operation(&mut service))
+    }
+
+    // The native owner can hold a workspace lock when it examines history.
+    // The key pump reads governance in the opposite order, so defer if busy.
+    pub(crate) fn held_history_keys(
+        &self,
+        group: WorkspaceId,
+        readers: Option<&BTreeSet<[u8; 32]>>,
+    ) -> Result<ContentKeys, String> {
+        let service = self
+            .inner
+            .try_lock()
+            .map_err(|_| "the key service is busy")?;
+        let entry = service
+            .peers
+            .get(&group)
+            .ok_or("this device holds no history keys")?;
+        if let Some(readers) = readers {
+            let device = service.device().ok_or("the key service has no device")?;
+            if !readers.contains(device.as_bytes())
+                || entry
+                    .peer
+                    .members()
+                    .iter()
+                    .any(|member| !readers.contains(member.as_bytes()))
+            {
+                return Err("the key group is updating its readers".into());
+            }
+        }
+        let keys = entry.peer.content_keys();
+        drop(service);
+        keys.ok_or_else(|| "this device holds no history keys".into())
     }
 
     /// See [`WorkspaceKeys::ask_on_entry`]; the ownership's signature is awaited without
@@ -1829,7 +2091,7 @@ impl SharedKeys {
         now: Instant,
         wall: u64,
     ) -> Option<MlsAccessRequestV1> {
-        match self.run(|service| service.entry_request(workspace, now, wall))?? {
+        match self.with_service(|service| service.entry_request(workspace, now, wall))?? {
             entry::EntryRequest::Signed(request) => Some(request),
             entry::EntryRequest::Unsigned(workspace, mut request, signing) => {
                 let signature = signing
@@ -1839,7 +2101,7 @@ impl SharedKeys {
                     )
                     .ok()?;
                 request.signature = collab_types::Signature::from_bytes(signature);
-                self.run(|service| service.entry_signed(workspace, request, now))
+                self.with_service(|service| service.entry_signed(workspace, request, now))
             }
         }
     }
@@ -1849,7 +2111,7 @@ impl SharedKeys {
     /// # Errors
     /// What the store kept could not be removed, or the service is gone.
     pub fn forget_workspace(&self, workspace: WorkspaceId) -> Result<(), String> {
-        self.run(|service| service.forget_workspace(workspace))
+        self.with_service(|service| service.forget_workspace(workspace))
             .unwrap_or_else(|| Err("the key service is gone".into()))
     }
 
@@ -1869,7 +2131,7 @@ impl SharedKeys {
     /// creating anything. `None` when this device takes part in no group
     /// of the workspace; [`Err`] when it does and holds none yet.
     pub fn record_keys(&self, workspace: WorkspaceId) -> Option<Result<ContentKeys, String>> {
-        self.run(|service| service.record_keys(workspace))
+        self.with_service(|service| service.record_keys(workspace))
             .unwrap_or_else(|| Some(Err("the key service is unavailable".into())))
     }
 
@@ -1895,6 +2157,23 @@ impl SharedKeys {
         self.inner.lock().ok()?.reader_group(workspace, readers)
     }
 
+    /// Find the declared reader set from this device's retained group routes.
+    #[must_use]
+    pub fn named_readers(&self, workspace: WorkspaceId, document: &str) -> Option<String> {
+        self.inner
+            .try_lock()
+            .ok()?
+            .directory
+            .named_readers(workspace, document)
+    }
+
+    /// Set the exact route for a group. The directory supplies the scope's
+    /// current access when the group is used.
+    pub fn register_scope(&self, scope: neighbour_wire::KeyScope) -> Option<WorkspaceId> {
+        self.with_service(|service| service.remember_scope(scope))
+            .flatten()
+    }
+
     /// See [`WorkspaceKeys::frames_for`], under the policy now.
     #[must_use]
     pub fn frames_for(
@@ -1903,8 +2182,10 @@ impl SharedKeys {
         asker: &Ed25519PublicKey,
         epoch: u64,
     ) -> Vec<MlsGovernanceFrame> {
-        self.run(|service| service.frames_for(workspace, asker, epoch, tilo_clock::unix_now()))
-            .unwrap_or_default()
+        self.with_service(|service| {
+            service.frames_for(workspace, asker, epoch, tilo_clock::unix_now())
+        })
+        .unwrap_or_default()
     }
 
     /// See [`WorkspaceKeys::access`]; also returns the service's
@@ -1915,7 +2196,7 @@ impl SharedKeys {
 
     /// [`Self::access`] at the caller's own `now`.
     pub fn access_at(&self, workspace: WorkspaceId, now: Instant) -> (KeyAccess, u64) {
-        let Some((access, generation, queued)) = self.run(|service| {
+        let Some((access, generation, queued)) = self.with_service(|service| {
             let access = service.access(workspace, now);
             (
                 access,
@@ -1934,14 +2215,14 @@ impl SharedKeys {
     /// [`WorkspaceKeys::signatures`] on the shared service, never holding it while the
     /// device's ownership signs.
     pub async fn signatures(&self) {
-        let Some(owed) = self.run(WorkspaceKeys::take_signing) else {
+        let Some(owed) = self.with_service(WorkspaceKeys::take_signing) else {
             return;
         };
         let mut answered = Vec::with_capacity(owed.len());
         for (workspace, request, signing) in owed {
             answered.push((workspace, request, signing.await));
         }
-        let queued = self.run(|service| {
+        let queued = self.with_service(|service| {
             for (workspace, request, signed) in answered {
                 service.signed(workspace, request, signed);
             }
@@ -1956,7 +2237,8 @@ impl SharedKeys {
 
     /// Whether the device's ownership owes a signature ([`WorkspaceKeys::signing`]).
     pub fn signing(&self) -> bool {
-        self.run(|service| service.signing()).unwrap_or(false)
+        self.with_service(|service| service.signing())
+            .unwrap_or(false)
     }
 
     /// Open `envelope`, a new sealed write to one of `workspace`'s groups, for
@@ -2013,7 +2295,7 @@ impl SharedKeys {
     /// [`Self::pump`] at the caller's own `now`, for a host that keeps a
     /// clock of its own.
     pub fn pump_at(&self, transport: &dyn GovernanceTransport, now: Instant) {
-        self.run(|service| service.pump(transport, now, tilo_clock::unix_now()));
+        self.with_service(|service| service.pump(transport, now, tilo_clock::unix_now()));
     }
 
     /// [`Self::pump`], then how long until the protocol next has work that
@@ -2028,7 +2310,7 @@ impl SharedKeys {
     pub fn pump_until_due(&self, transport: &dyn GovernanceTransport) -> Option<Duration> {
         let inbound = transport.take_inbound();
         let now = tilo_clock::now();
-        let deadline = self.run(|service| {
+        let deadline = self.with_service(|service| {
             service.pump_inbound(inbound, transport, now, tilo_clock::unix_now());
             service.next_pump_deadline(now)
         })?;
@@ -2198,9 +2480,17 @@ impl KeyProvider {
         create: bool,
         wait: Duration,
     ) -> Option<Result<ContentKeys, String>> {
-        let workspace = self
-            .get()?
-            .reader_group(WorkspaceId::parse(workspace)?, readers)?;
+        let service = self.get()?;
+        let scope = KeyScope::parse(workspace)?;
+        let workspace = match scope {
+            KeyScope::Workspace(workspace) => service.reader_group(workspace, readers)?,
+            KeyScope::Document {
+                readers: ref named, ..
+            } if readers == named.as_deref().unwrap_or(collab_types::EVERY_MEMBER) => {
+                service.register_scope(scope)?
+            }
+            KeyScope::Document { .. } => return None,
+        };
         if !create {
             let access = self.get()?;
             // Asked off the caller's task: the service takes its lock and
@@ -2286,25 +2576,86 @@ impl tilo_identity::sources::GroupKeySource for KeyProvider {
         workspace: WorkspaceId,
         known_generation: u64,
     ) -> Option<Result<tilo_identity::sources::GroupKeys, String>> {
-        use tilo_identity_client::wire::KeyAccess as Wire;
         let groups = self.get()?;
         let (access, generation) = groups.access(workspace);
-        // A caller holding no keys asks with generation 0, which is also
-        // the generation of a service that has changed nothing since it
-        // started (a group it restored from disk, after a restart): it is
-        // sent the keys, never told they are unchanged.
-        let held = known_generation != 0 && generation == known_generation;
-        Some(match access {
-            KeyAccess::Ready(keys) if !held => keys
-                .to_bytes()
-                .map(|bytes| (Wire::Ready, generation, bytes.to_vec()))
-                .map_err(|error| error.to_string()),
-            KeyAccess::Ready(_) => Ok((Wire::Ready, generation, Vec::new())),
-            KeyAccess::Waiting => Ok((Wire::Waiting, generation, Vec::new())),
-            KeyAccess::Removed => Ok((Wire::Removed, generation, Vec::new())),
-            KeyAccess::Unavailable => Ok((Wire::Unavailable, generation, Vec::new())),
-            KeyAccess::NoSecretStore => Ok((Wire::NoSecretStore, generation, Vec::new())),
-        })
+        Some(wire_keys(access, generation, known_generation))
+    }
+
+    fn document_access(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        document: &str,
+        known_generation: u64,
+    ) -> Option<Result<tilo_identity::sources::GroupKeys, String>> {
+        let groups = self.get()?;
+        let Some(scoped) = groups.with_service(|service| {
+            service
+                .directory
+                .requires_document_keys(workspace, app, document)
+        })?
+        else {
+            return Some(wire_keys(
+                KeyAccess::Waiting,
+                groups.generation(),
+                known_generation,
+            ));
+        };
+        let named = if KeyScope::has_named_readers(document) {
+            let Some(readers) = groups.named_readers(workspace, document) else {
+                return Some(wire_keys(
+                    KeyAccess::Waiting,
+                    groups.generation(),
+                    known_generation,
+                ));
+            };
+            Some(readers)
+        } else {
+            None
+        };
+        let original = match &named {
+            Some(readers) => groups.reader_group(workspace, readers)?,
+            None => workspace,
+        };
+        if !scoped {
+            return self.access(original, known_generation);
+        }
+        let scope = KeyScope::document(workspace, app, document, named.as_deref())?;
+        let group = groups.register_scope(scope)?;
+        let (mut access, _) = groups.access(group);
+        if let KeyAccess::Ready(keys) = &mut access
+            && let (KeyAccess::Ready(history), _) = groups.access(original)
+        {
+            *keys = keys.clone().with_workspace_history(history);
+        }
+        // A policy edit can select a different group without moving either
+        // group yet. Distinguish that transition from an unchanged answer.
+        let generation = groups.with_service(|service| service.generation())? | (1 << 63);
+        Some(wire_keys(access, generation, known_generation))
+    }
+}
+
+fn wire_keys(
+    access: KeyAccess,
+    generation: u64,
+    known_generation: u64,
+) -> Result<tilo_identity::sources::GroupKeys, String> {
+    use tilo_identity_client::wire::KeyAccess as Wire;
+    // A caller holding no keys asks with generation 0, which is also
+    // the generation of a service that has changed nothing since it
+    // started (a group it restored from disk, after a restart): it is
+    // sent the keys, never told they are unchanged.
+    let held = known_generation != 0 && generation == known_generation;
+    match access {
+        KeyAccess::Ready(keys) if !held => keys
+            .to_bytes()
+            .map(|bytes| (Wire::Ready, generation, bytes.to_vec()))
+            .map_err(|error| error.to_string()),
+        KeyAccess::Ready(_) => Ok((Wire::Ready, generation, Vec::new())),
+        KeyAccess::Waiting => Ok((Wire::Waiting, generation, Vec::new())),
+        KeyAccess::Removed => Ok((Wire::Removed, generation, Vec::new())),
+        KeyAccess::Unavailable => Ok((Wire::Unavailable, generation, Vec::new())),
+        KeyAccess::NoSecretStore => Ok((Wire::NoSecretStore, generation, Vec::new())),
     }
 }
 

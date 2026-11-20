@@ -1076,7 +1076,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         )
     }
 
-    fn host_keys(
+    fn serving_keys(
         &self,
         route: &tilo_peer_state::document_frame::DocumentRoute,
         create: bool,

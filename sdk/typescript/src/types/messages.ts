@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.messages@cebfaa2cb667be8b";
+export const SURFACE = "so.tilo.messages@693ad7c3ef9da7d3";
 
 export interface Conversation {
   with: string;
@@ -181,6 +181,18 @@ export interface KeepDraftArgs {
 /** The arguments of `drop-draft`. */
 export interface DropDraftArgs {
   conversation: string;
+}
+
+/** The arguments of `import-previous`. */
+export interface ImportPreviousArgs {
+  conversation: string;
+  body: string;
+}
+
+/** The arguments of `sent`. */
+export interface SentArgs {
+  conversation: string;
+  delivered: string;
 }
 
 /** Messages — `tilo.messages`. */
@@ -372,6 +384,7 @@ export function identities(ws: tilo.Workspace, path: string): Identities {
 /** Message drafts — `messages.drafts`. */
 export interface Drafts extends tilo.Resource {
   drafts: Record<string, string>;
+  readonly handled: Record<string, boolean>;
   keepDraft(args: {
     conversation: string;
     body: string;
@@ -383,11 +396,23 @@ export interface Drafts extends tilo.Resource {
   }): Promise<void>;
   /** Runs `drop-draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   dropDraftMany(items: DropDraftArgs[]): Promise<tilo.ActionAnswer[]>;
+  importPrevious(args: {
+    conversation: string;
+    body: string;
+  }): Promise<void>;
+  /** Runs `import-previous` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  importPreviousMany(items: ImportPreviousArgs[]): Promise<tilo.ActionAnswer[]>;
+  sent(args: {
+    conversation: string;
+    delivered: string;
+  }): Promise<void>;
+  /** Runs `sent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  sentMany(items: SentArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Drafts` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DRAFTS_ACTIONS = ["keepDraft", "keepDraftMany", "dropDraft", "dropDraftMany"] as const;
+export const DRAFTS_ACTIONS = ["keepDraft", "keepDraftMany", "dropDraft", "dropDraftMany", "importPrevious", "importPreviousMany", "sent", "sentMany"] as const;
 
 /** The `messages.drafts` kind at `path`. */
 export function drafts(ws: tilo.Workspace, path: string): Drafts {

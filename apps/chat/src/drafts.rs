@@ -1,9 +1,61 @@
 //! What is being written and has not been sent: a resource of Chat's beside
 //! the conversation, kept in the workspace Chat is open in. It is
-//! [`chat_model::ChatDrafts`], which every device holding the workspace's keys
-//! reads and changes; this module keeps the tests of its verbs beside the app.
+//! [`chat_model::ChatDrafts`], which workspace roles authorize members to read or change.
 
 pub use chat_model::drafts::{ChatDrafts, ChatDraftsAction, drafts, line};
+
+pub(crate) use ui::tilo_actions::policy::roles::WORKSPACE_CHAT_DRAFTS_DOCUMENT as DOCUMENT;
+use ui::tilo_resource;
+pub(crate) type DraftRecord = ui::framework::WorkspaceResource<ChatDrafts>;
+
+#[derive(Clone, tilo_resource::Effect)]
+#[effect(operation = "chat.previous-drafts")]
+pub(crate) enum ImportEffect {
+    /// Import earlier channel drafts.
+    #[effect(
+        kind = "undoable",
+        attended,
+        privileged,
+        returns,
+        label = "chat-import-previous-drafts"
+    )]
+    ImportPreviousDrafts,
+}
+
+pub(crate) fn import_previous(
+    opener: &ui::framework::ResourceOpener<ChatDrafts>,
+) -> Result<usize, String> {
+    use ui::tilo_resource::Id;
+    let record = opener
+        .open(DOCUMENT)
+        .filter(|record| record.may_read() && record.may("import-previous"))
+        .ok_or("the workspace must grant permission to import channel drafts")?;
+    let Some((source, previous, _)) = opener.legacy_member_content()? else {
+        return Ok(0);
+    };
+    let current = record.get();
+    let mut imported = 0;
+    for (key, draft) in &previous.drafts {
+        let channel = key
+            .split_once("::t::")
+            .map_or(key.as_str(), |(channel, _)| channel);
+        if crate::chat::Chat::is_direct(&Id::from_raw(channel))
+            || current.drafts.contains_key(key)
+            || draft.text().trim().is_empty()
+        {
+            continue;
+        }
+        let receipt = format!("{source}/{key}");
+        if current.imported.contains(&receipt) {
+            continue;
+        }
+        record
+            .invoke(&ChatDrafts::IMPORT_PREVIOUS.with((receipt, key.clone(), draft.markdown())))
+            .map_err(|error| error.to_string())?;
+        imported += 1;
+    }
+    Ok(imported)
+}
 
 #[cfg(test)]
 mod tests {

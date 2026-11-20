@@ -26,8 +26,6 @@ optional = ["clipboard", "files.paths", "app-files", "secrets", "network.http", 
 
 [resources]
 kinds = ["tube.library", "tube.watch-history"]
-# Each member keeps one of each as their own; nobody else in the workspace receives it.
-own = ["tube.watch-history"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

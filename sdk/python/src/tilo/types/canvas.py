@@ -54,9 +54,7 @@ __all__ = [
     "Shape",
     "Style",
     "UseSelection",
-    "Recent",
     "Artwork",
-    "RecentArtworks",
     "EditMarksArgs",
     "RemoveMarksArgs",
     "ArrangeArgs",
@@ -72,8 +70,6 @@ __all__ = [
     "NewArtworkArgs",
     "OpenArtworkArgs",
     "CombineArgs",
-    "RememberArgs",
-    "ForgetArgs",
 ]
 
 class AddLayer(TypedDict):
@@ -406,14 +402,6 @@ class UseSelection(TypedDict):
     defringe: bool | None
     cleaned: list[list[str]] | None
 
-class Recent(TypedDict):
-    path: str
-    title: str
-    width: float
-    height: float
-    at_ms: int
-    thumbnail: str | None
-
 EditMarksArgs = TypedDict("EditMarksArgs", {
     "pixelated": NotRequired["bool | None"],
     "ids": "list[str]",
@@ -571,21 +559,9 @@ CombineArgs = TypedDict("CombineArgs", {
 })
 """The arguments of `combine`."""
 
-RememberArgs = TypedDict("RememberArgs", {
-    "device": "str",
-    "recent": "Recent",
-})
-"""The arguments of `remember`."""
-
-ForgetArgs = TypedDict("ForgetArgs", {
-    "device": "str",
-    "path": "str",
-})
-"""The arguments of `forget`."""
-
 class Artwork(Resource):
     """Artwork — `canvas.artwork`."""
-    __surface__ = "so.tilo.canvas@42eb6bdb0066adef"
+    __surface__ = "so.tilo.canvas@6690ea648a6b5cb5"
     title: str
     width: float
     height: float
@@ -1288,39 +1264,5 @@ class Artwork(Resource):
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
     __actions__ = frozenset({"paint", "draw", "chart", "edit_marks", "edit_marks_many", "remove_marks", "remove_marks_many", "arrange", "arrange_many", "add_layer", "add_layer_many", "edit_layer", "edit_layer_many", "remove_layer", "remove_layer_many", "set_artwork", "set_artwork_many", "save_medium", "save_medium_many", "remove_medium", "remove_medium_many", "align", "align_many", "set_reference", "set_reference_many", "import_svg", "open_picture", "open_picture_many", "new_artwork", "new_artwork_many", "open_artwork", "open_artwork_many", "select", "use_selection", "combine", "combine_many", "look", "measure", "export", "compare_versions", "export_svg", "compare", "save_artwork"})
-
-
-class RecentArtworks(Resource):
-    """Recent artworks — `canvas.recent-artworks`."""
-    __surface__ = "so.tilo.canvas@42eb6bdb0066adef"
-    devices: dict[str, Any]
-
-    def remember(self,
-        *,
-        device: str,
-        recent: Recent,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("remember", device=device, recent=recent)
-
-    def remember_many(self, items: list[RememberArgs]) -> list[dict[str, Any]]:
-        """Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("remember", items)
-
-    def forget(self,
-        *,
-        device: str,
-        path: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("forget", device=device, path=path)
-
-    def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
-        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("forget", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"remember", "remember_many", "forget", "forget_many"})
 
 

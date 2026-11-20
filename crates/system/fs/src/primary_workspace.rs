@@ -28,6 +28,7 @@ struct Paths {
     identity: PathBuf,
     config: PathBuf,
     runtime: PathBuf,
+    identity_socket: PathBuf,
     /// The storage socket alone, so Settings can be handed this directory
     /// without the blob and authority sockets in `runtime`.
     storage: PathBuf,
@@ -47,6 +48,7 @@ fn paths(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Paths> {
         identity: var("TILO_IDENTITY_ROOT").map_or_else(|| data_home.join("tilo"), PathBuf::from),
         config: base("XDG_CONFIG_HOME", ".config").join("tilo"),
         runtime: runtime_dir.join("tilo/files-workspace"),
+        identity_socket: runtime_dir.join("tilo/services/identity.sock"),
         storage: runtime_dir.join("tilo/files-storage"),
     };
     for path in [&paths.state, &paths.identity, &paths.config, &paths.runtime] {
@@ -105,6 +107,8 @@ fn command(args: &PrimaryArgs, env: &dyn Fn(&str) -> Option<OsString>) -> Result
         .arg(paths.storage.join("storage.sock"))
         .arg("--blob-sock")
         .arg(paths.runtime.join("fs-blobs.sock"))
+        .arg("--workspace-key-socket")
+        .arg(&paths.identity_socket)
         .arg("--session-link")
         .arg(paths.runtime.join(fs::net::LINK_FILE))
         .env("TILO_IDENTITY_ROOT", &paths.identity)
@@ -157,9 +161,10 @@ mod tests {
             b"saved",
         )
         .expect("write a kept document");
+        let runtime = home.join("runtime");
         let env = |name: &str| match name {
             "HOME" => Some(home.clone().into_os_string()),
-            "XDG_RUNTIME_DIR" => Some(home.join("run").into_os_string()),
+            "XDG_RUNTIME_DIR" => Some(runtime.clone().into_os_string()),
             "TILO_IDENTITY_ROOT" => Some(home.join("certified").into_os_string()),
             _ => None,
         };
@@ -168,6 +173,12 @@ mod tests {
             admin_binary: PathBuf::from("/bin/true"),
         };
         let serve = command(&args, &env).expect("ready fixture");
+        let mut flags = serve.get_args();
+        assert!(flags.any(|arg| arg == "--workspace-key-socket"));
+        assert_eq!(
+            flags.next(),
+            Some(runtime.join("tilo/services/identity.sock").as_os_str())
+        );
         let envs: std::collections::HashMap<_, _> = serve.get_envs().collect();
         assert_eq!(
             envs[OsStr::new("TILO_IDENTITY_ROOT")],
@@ -175,7 +186,7 @@ mod tests {
         );
         assert_eq!(
             envs[OsStr::new("TILO_AUTHORITY_SOCKET_DIR")],
-            Some(home.join("run/tilo/files-workspace").as_os_str())
+            Some(runtime.join("tilo/files-workspace").as_os_str())
         );
         assert!(!home.join("certified").exists());
     }

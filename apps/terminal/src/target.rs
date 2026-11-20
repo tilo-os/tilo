@@ -1,7 +1,12 @@
 //! Where a terminal session runs: every session is bound to a target
 //! (docs/app-model/environments.md).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "desktop")]
+use ui::framework::SurfaceCx;
+use ui::storage::{Scope, Settings, SettingsSchema};
 use ui::tilo_resource::{self, Model, Refusal, resource};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -175,26 +180,70 @@ impl RecentEnvironments {
     }
 }
 
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct DeviceEnvironments {
+    #[serde(default)]
+    by_workspace: BTreeMap<String, SessionTarget>,
+}
+
+impl SettingsSchema for DeviceEnvironments {
+    const SCOPE: Scope = Scope::DeviceLocal;
+}
+
 #[derive(Clone, Default)]
 pub struct RecentTarget {
-    record: Option<(ui::framework::PersonResource<RecentEnvironments>, String)>,
+    record: Option<(Settings<DeviceEnvironments>, String)>,
 }
 
 impl std::fmt::Debug for RecentTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RecentTarget")
-            .field("device", &self.record.as_ref().map(|(_, device)| device))
+            .field(
+                "workspace",
+                &self.record.as_ref().map(|(_, workspace)| workspace),
+            )
             .finish_non_exhaustive()
     }
 }
 
 impl RecentTarget {
-    pub fn in_resource(
-        record: ui::framework::PersonResource<RecentEnvironments>,
-        device: impl Into<String>,
+    #[cfg(feature = "desktop")]
+    pub(crate) fn open(cx: &SurfaceCx<crate::Terminal>) -> Self {
+        let workspace = cx.workspace().unwrap_or_default();
+        let settings = cx.settings::<DeviceEnvironments>();
+        if !settings.get().by_workspace.contains_key(&workspace)
+            && let Some(device) = cx.device()
+        {
+            let opener = cx.resource_opener::<RecentEnvironments>(ui::apps::TERMINAL);
+            match opener.legacy_member_state() {
+                Ok(Some(previous)) => {
+                    if let Some(target) = previous.on(device)
+                        && let Err(error) = settings.update(|state| {
+                            state
+                                .by_workspace
+                                .entry(workspace.clone())
+                                .or_insert(target);
+                        })
+                    {
+                        tracing::warn!(%error, "could not restore the recent terminal environment");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "could not read the recent terminal environment")
+                }
+            }
+        }
+        Self::in_settings(settings.settings().clone(), workspace)
+    }
+
+    #[cfg(any(test, feature = "desktop"))]
+    pub(crate) fn in_settings(
+        settings: Settings<DeviceEnvironments>,
+        workspace: impl Into<String>,
     ) -> Self {
         Self {
-            record: Some((record, device.into())),
+            record: Some((settings, workspace.into())),
         }
     }
 
@@ -203,8 +252,8 @@ impl RecentTarget {
     }
 
     pub fn load(&self) -> Option<SessionTarget> {
-        let (record, device) = self.record.as_ref()?;
-        record.with(|recent| recent.on(device))
+        let (settings, workspace) = self.record.as_ref()?;
+        settings.get().by_workspace.get(workspace).cloned()
     }
 
     /// Remember `target` if it is an environment; the device's own shell and
@@ -213,14 +262,15 @@ impl RecentTarget {
         if !matches!(target, SessionTarget::Environment { .. }) {
             return;
         }
-        let Some((record, device)) = self.record.as_ref() else {
+        let Some((settings, workspace)) = self.record.as_ref() else {
             return;
         };
         if self.load().as_ref() == Some(target) {
             return;
         }
-        let used = RecentEnvironments::USED.with((device.clone(), target.encode()));
-        if let Err(error) = record.invoke(&used) {
+        if let Err(error) = settings.update(|state| {
+            state.by_workspace.insert(workspace.clone(), target.clone());
+        }) {
             tracing::warn!(%error, "terminal: the recent environment could not be kept");
         }
     }
@@ -324,9 +374,11 @@ mod tests {
 
     #[test]
     fn a_new_tab_opens_the_most_recent_environment_and_never_the_host_by_habit() {
-        let mut app = ui::framework::testing::TestApp::<crate::TerminalShell>::new().unwrap();
-        let recent =
-            RecentTarget::in_resource(app.person::<RecentEnvironments>().unwrap(), "test-device");
+        let app = ui::framework::testing::TestApp::<crate::TerminalShell>::new().unwrap();
+        let recent = RecentTarget::in_settings(
+            app.settings::<DeviceEnvironments>(),
+            ui::framework::testing::TEST_WORKSPACE,
+        );
         assert_eq!(recent.load(), None);
         assert_eq!(
             default_target(recent.load().as_ref(), true),

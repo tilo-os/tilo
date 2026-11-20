@@ -36,6 +36,7 @@ struct PageActions {
     /// The page's peer with the workspace's server, which carries what the content store asks
     /// for.
     peer: Option<u32>,
+    workspace: String,
     /// Files the person chose in search whose bytes were still on their way from the workspace:
     /// each by its content's hash and the name its row gave it, opened when it arrives.
     pending: std::cell::RefCell<Vec<(String, String)>>,
@@ -88,7 +89,7 @@ impl AppActions for PageActions {
         // A tree names a file by the hash of its content manifest when it was kept in chunks, as a
         // workspace's own folder and a drop keep one: what the app opens is the file the manifest
         // lists, never the manifest's own bytes.
-        match crate::content_open::opening_app(&self.content, hash, name) {
+        match crate::content_open::opening_app(&self.content, hash, name, self.content_route()) {
             Ok(crate::content_open::Opening::App(app)) => {
                 self.open(hash, name, &app)?;
             }
@@ -129,7 +130,12 @@ impl AppActions for PageActions {
     fn open_arrived(&self) {
         let pending = std::mem::take(&mut *self.pending.borrow_mut());
         for (hash, name) in pending {
-            match crate::content_open::opening_app(&self.content, &hash, &name) {
+            match crate::content_open::opening_app(
+                &self.content,
+                &hash,
+                &name,
+                self.content_route(),
+            ) {
                 Ok(crate::content_open::Opening::App(app)) => {
                     // A window that will not open is said by the app's own card: the row is gone
                     // from the palette, which said what it could when it was chosen.
@@ -151,6 +157,10 @@ impl AppActions for PageActions {
 const MAX_PENDING_OPENS: usize = 32;
 
 impl PageActions {
+    fn content_route(&self) -> Option<(u32, &str)> {
+        self.peer.map(|peer| (peer, self.workspace.as_str()))
+    }
+
     /// Open the file `hash`, called `name`, in `app`: the window names the file by the name the
     /// tree gave it, so text opens as the Markdown a note is and a table as the table Sheets
     /// imports.
@@ -286,6 +296,7 @@ fn mount(parts: SearchParts) -> Rc<SessionSearch> {
             reveals: parts.reveals,
             content,
             peer: parts.peer,
+            workspace: parts.workspace.clone(),
             pending: std::cell::RefCell::new(Vec::new()),
         }) as Rc<dyn AppActions>),
         Some(parts.wake),

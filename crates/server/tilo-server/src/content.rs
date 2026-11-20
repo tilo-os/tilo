@@ -14,6 +14,7 @@
 
 pub mod branch;
 pub mod collection;
+mod migrate_files;
 
 use std::path::Path;
 use std::sync::Arc;

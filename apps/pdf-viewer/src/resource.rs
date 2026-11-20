@@ -787,6 +787,10 @@ impl ResourceApp for PdfViewerShell {
     const ID: &'static str = ui::apps::PDF_VIEWER;
     // Each window shows what it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
+    const PERSON_RESOURCES: &'static [ui::framework::PersonKind] =
+        &[ui::framework::PersonKind::profile::<
+            crate::signature::SignatureProfile,
+        >()];
     const TITLE: &'static str = "PDF Viewer";
     const TITLE_KEY: &'static str = "pdf-viewer-app-title";
     const ICON: Option<&'static str> = Some("pdf-viewer");
@@ -907,8 +911,29 @@ fn reader_view(cx: &ViewCx<PdfMarkup>, mut app: PdfApp) -> Element {
     }
     // A capture shows the scenario's signature, never the person's.
     if cx.mode().is_live()
-        && let Some(signature) = cx.person::<crate::signature::SignatureProfile>()
+        && let Some(signature) = cx.profile_resource::<crate::signature::SignatureProfile>()
     {
+        use crate::signature::SignatureProfile;
+        let held = signature.get();
+        if !held.restored_previous && held.signer.is_empty() && held.strokes.is_empty() {
+            let opener = cx.resource_opener::<SignatureProfile>(ui::apps::PDF_VIEWER);
+            let imported = opener.legacy_member_state().and_then(|previous| {
+                if let Some(previous) = previous
+                    .filter(|previous| !previous.signer.is_empty() || !previous.strokes.is_empty())
+                {
+                    signature
+                        .invoke(
+                            &SignatureProfile::RESTORE_PREVIOUS
+                                .with(ui::tilo_resource::Model::to_json(&*previous)),
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            });
+            if let Err(error) = imported {
+                tracing::warn!(%error, "could not restore the previous signature");
+            }
+        }
         app.attach_signature(signature);
     }
     app.follow(cx.live().clone(), cx.read_only_state());

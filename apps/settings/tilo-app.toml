@@ -49,8 +49,6 @@ query = true
 invoke = true
 [resources]
 kinds = ["settings.accessibility", "settings.mcp-server", "settings.agent-providers", "settings.appearance", "settings.audio", "settings.automatic-display", "settings.continuity", "settings.device-vpn", "settings.default-apps", "settings.widgets", "settings.desktop-controls", "settings.display", "settings.display-placement", "settings.display-change", "settings.input", "settings.notifications", "settings.osk-sources", "settings.power", "settings.root", "settings.updates", "tilo.accounts", "settings.locale", "settings.clock", "settings.shortcuts", "settings.accessibility-device", "settings.appearance-device", "settings.audio-device", "settings.desktop-controls-device", "settings.hosted-agent-providers", "settings.input-device", "settings.night-light", "settings.network-usage", "settings.identity", "settings.search_history", "shell-views"]
-# Each member keeps their own; nobody else in the workspace receives it.
-own = ["settings.root"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

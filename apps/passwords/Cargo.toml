@@ -31,8 +31,6 @@ winit.workspace = true
 serde_json.workspace = true
 tilo-seal = { path = "../../crates/system/tilo-seal" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
-# When the vault on the workspace's server was last read, in a browser too.
-tilo-clock = { path = "../../crates/platform/tilo-clock" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

@@ -547,7 +547,6 @@ fn an_apps_index_is_not_one_of_its_records() {
             optional: vec![],
             opens: &[],
             workspace_resource: false,
-            member_resource: false,
             opens_before_resource: false,
             create: no_component,
         }

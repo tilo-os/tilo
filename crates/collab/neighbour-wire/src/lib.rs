@@ -21,10 +21,12 @@ pub mod colorimetry;
 pub mod content;
 pub mod hdr_metadata;
 pub mod input;
+mod key_scope;
 /// Work one device offers another: the question, and what each answers.
 pub mod offer;
 pub mod placement;
 pub mod retention;
+pub use key_scope::KeyScope;
 pub mod unit_chain;
 
 pub use retention::{Retention, app_document_channel, audience, retention, standalone};
@@ -872,7 +874,11 @@ impl NeighbourMsg {
     pub fn governance_workspace(&self) -> Option<&str> {
         match self {
             Self::MlsGovernance { workspace, .. } | Self::MlsAccessRequest { workspace, .. } => {
-                Some(workspace)
+                Some(
+                    workspace
+                        .split_once('/')
+                        .map_or(workspace, |(workspace, _)| workspace),
+                )
             }
             _ => None,
         }
