@@ -788,6 +788,77 @@ fn a_typed_name_is_kept_when_the_card_closes() {
     assert_eq!(card.take_choice(), None);
 }
 
+/// The person has given no name yet: the field asks for one, showing what to type, and never holds
+/// the words said in place of a name, which someone typing would write over.
+#[test]
+fn a_field_asking_for_a_name_holds_none() {
+    let mut card = ProfileCard::new();
+    card.toggle(
+        &ProfileModel {
+            name: "Someone without a name yet".into(),
+            given_name: Some(String::new()),
+            ..model()
+        },
+        Rect::new(1200.0, 2.0, 1220.0, 22.0),
+        Rect::new(0.0, 0.0, 1280.0, 720.0),
+    );
+    assert_eq!(card.draft(), "", "the field holds the name they gave, none");
+    card.set_draft("Grace");
+    card.close();
+    assert_eq!(
+        card.take_choice(),
+        Some(ProfileChoice::Rename("Grace".into())),
+        "what they type is the name, never the words it was typed over"
+    );
+}
+
+/// An empty field is no answer, and the words that stand in for a name are none either: neither
+/// keeps a name, so neither loses the one they have.
+#[test]
+fn an_empty_field_and_the_words_for_no_name_keep_nothing() {
+    let mut card = opened();
+    card.set_draft("");
+    card.close();
+    assert_eq!(card.take_choice(), None);
+    let mut card = opened();
+    card.set_draft("Someone without a name yet");
+    card.close();
+    assert_eq!(
+        card.take_choice(),
+        None,
+        "the words said for a person without a name are never theirs"
+    );
+}
+
+/// The card that kept a name opens on it, and a name changed again is kept again rather than
+/// compared against the one it had first.
+#[test]
+fn a_name_changed_again_is_kept_again() {
+    let mut card = opened();
+    card.set_draft("Kim Lee");
+    card.close();
+    assert_eq!(
+        card.take_choice(),
+        Some(ProfileChoice::Rename("Kim Lee".into()))
+    );
+    let named = ProfileModel {
+        name: "Kim Lee".into(),
+        ..model()
+    };
+    card.toggle(
+        &named,
+        Rect::new(1200.0, 2.0, 1220.0, 22.0),
+        Rect::new(0.0, 0.0, 1280.0, 720.0),
+    );
+    assert_eq!(card.draft(), "Kim Lee", "the card opens on what was kept");
+    card.set_draft("Grace Hopper");
+    card.close();
+    assert_eq!(
+        card.take_choice(),
+        Some(ProfileChoice::Rename("Grace Hopper".into()))
+    );
+}
+
 #[test]
 fn an_unchanged_or_blank_name_changes_nothing() {
     let mut card = opened();

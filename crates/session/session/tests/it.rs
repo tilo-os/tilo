@@ -201,6 +201,8 @@ mod portal_questions;
 mod power;
 #[path = "primary_display.rs"]
 mod primary_display;
+#[path = "profile_name.rs"]
+mod profile_name;
 #[path = "questions.rs"]
 mod questions;
 #[path = "refounded_workspace.rs"]

@@ -1892,3 +1892,57 @@ async fn a_name_given_in_one_workspace_is_the_persons_everywhere() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }
+
+/// A person who changes their mind: the name they give last is the one they go by, in the
+/// workspace and in the profile this server keeps for them.
+#[tokio::test]
+async fn a_person_renames_themselves_and_the_last_name_is_the_one_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let kept = std::sync::Arc::new(KeptNames::default());
+    workspaces.person_names(kept.clone());
+    let lounge = workspaces.create("Lounge").await.unwrap().workspace;
+    let person = SigningKey::from_bytes(&rand::random());
+    let root = person.verifying_key().to_bytes();
+    workspaces
+        .set_member_administrator(&lounge, &owner, rand::random(), root, Some("Eager Lynx"))
+        .await
+        .unwrap();
+    let named = async || {
+        workspaces
+            .summary(&lounge)
+            .await
+            .unwrap()
+            .members
+            .into_iter()
+            .find(|member| member.root() == Some(root) && !member.removed)
+            .map(|member| member.name)
+    };
+    let theirs = device_of(
+        &person,
+        "their laptop",
+        DeviceCapabilities::server_key_grant(),
+    );
+
+    workspaces
+        .name_self(&lounge, &theirs, "Quinten", tilo_clock::unix_now_ns())
+        .await
+        .unwrap();
+    assert_eq!(named().await.as_deref(), Some("Quinten"));
+    workspaces
+        .name_self(&lounge, &theirs, "Quinten Wolff", tilo_clock::unix_now_ns())
+        .await
+        .unwrap();
+    assert_eq!(
+        named().await.as_deref(),
+        Some("Quinten Wolff"),
+        "the second name they give is the one the workspace calls them by"
+    );
+    assert_eq!(
+        kept.name_of(&root).as_deref(),
+        Some("Quinten Wolff"),
+        "and the one kept with their profile"
+    );
+}

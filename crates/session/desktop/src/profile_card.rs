@@ -81,6 +81,22 @@ fn visibility_detail_key(visibility: ui::PresenceVisibility) -> &'static str {
     }
 }
 
+/// The name the card's field starts with and checks against: the one the person gave, else the
+/// name [`ProfileModel::name`] carries where [`ProfileModel::given_name`] says that is one they
+/// gave. A card asking for a name in place of the hint ([`ProfileModel::ask_name`]) asks because
+/// there is none to show.
+fn given(model: &ProfileModel) -> &str {
+    if model.ask_name && !model.can_rename {
+        return "";
+    }
+    let name = model.given_name.as_deref().unwrap_or(&model.name).trim();
+    if ui::presence::is_unnamed_person(name) {
+        ""
+    } else {
+        name
+    }
+}
+
 /// What a profile action is about, so the card can group them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProfileGroup {
@@ -110,6 +126,10 @@ pub struct ProfileAction {
 pub struct ProfileModel {
     /// The name everyone here sees.
     pub name: String,
+    /// The name the person gave themselves, as their own field starts with: blank while they gave
+    /// none, even where `name` stands in the words said for a person without one. `None` where
+    /// `name` is already the one they gave.
+    pub given_name: Option<String>,
     /// The stable identity the avatar's colour and initials derive from when the person chose no
     /// colour.
     pub identity: String,
@@ -1744,18 +1764,13 @@ impl ProfileCard {
             self.close();
             return;
         }
-        self.shown.clone_from(&model.name);
+        // The field holds the name they gave, never the words that stand in for one they have not:
+        // an empty field says what to type, and leaves nothing to type over. What it opened with is
+        // what it says is already kept.
+        let given = given(model).to_owned();
+        given.clone_into(&mut self.shown);
         self.status_shown.clone_from(&model.status);
-        // Asked for a name, or nobody named them yet: the field starts empty, showing what to
-        // type. The words said in place of a name are what everyone else reads, never a value to
-        // select and delete before writing one.
-        let asked = model.ask_name && !model.can_rename;
-        let unnamed = ui::presence::is_unnamed_person(&model.name);
-        self.draft.set(if asked || unnamed {
-            String::new()
-        } else {
-            model.name.clone()
-        });
+        self.draft.set(given);
         self.status_draft.set(model.status.clone());
         self.settle.set(None);
         self.asked.set(false);
@@ -1860,8 +1875,9 @@ impl ProfileCard {
         let name = self.draft.get();
         let name = name.trim();
         // A person asked for a name they have not given yet keeps being asked; an empty field is
-        // no answer, never a way to lose the name they have.
-        if !name.is_empty() && name != self.shown.trim() {
+        // no answer, never a way to lose the name they have, and the words that stand in for a
+        // name nobody gave are what the field says, never a name to keep.
+        if !ui::presence::is_unnamed_person(name) && name != self.shown.trim() {
             name.clone_into(&mut self.shown);
             self.note(ProfileChoice::Rename(name.to_owned()));
             kept = true;
