@@ -25,6 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from story import Failed, Person, Story, until, walk  # noqa: E402
 from real_apps import Agent  # noqa: E402
 
+SHELL = "so.tilo.session"
+CHROME = "desktop:chrome"
 APPS = "file-explorer tasks notes chat settings"
 AGENT = "Claude Code"
 FILE = "agent-notes.md"
@@ -139,18 +141,17 @@ def steps(story: Story) -> None:
     story.step("Ada connects their agent to the workspace", connect)
 
     def writes_file():
+        # The folder Ada's Files window shows: Files' own write, the one it offers agents.
         try:
+            work.do(["files#write-file-here"], {"name": FILE, "text": BODY.decode()})
+        except Failed as refused:
+            # Where Files offers no write here, the workspace's put: the content, then its name.
             stored = work.call("tilo_put_many", {"files": [base64.b64encode(BODY).decode()]})
-        except Failed:
-            begun = work.call("tilo_put_begin", {"size": len(BODY)})
-            upload = int(re.search(r"\d+", begun).group())
-            work.call("tilo_put_append", {"upload": upload, "offset": 0,
-                                          "chunk": base64.b64encode(BODY).decode()})
-            stored = work.call("tilo_put_finish", {"upload": upload})
-        content = re.search(r"tilo\.content:[0-9a-f]+", stored)
-        if not content:
-            raise Failed(f"the upload answered no content reference: {stored[:300]}")
-        work.do(["files#open"], {"content": content.group(), "name": FILE})
+            content = re.search(r"tilo\.content:[0-9a-f]+", stored)
+            if not content:
+                raise Failed(f"Files' write was refused ({refused}) and the upload answered no "
+                             f"content reference: {stored[:300]}") from refused
+            work.do(["files#open"], {"content": content.group(), "name": FILE})
         try:
             until(f"{FILE} in Ada's Files window", lambda: ada.shows(FILE), 30, 0.25)
         finally:
@@ -189,11 +190,27 @@ def steps(story: Story) -> None:
     story.step("The agent posts in Chat", chat)
 
     def under_its_name():
-        story.note("actions-history", [
-            {k: row.get(k) for k in ("provider", "id", "name")} for row in ada.session.actions("history")])
-        story.note("actions-activity", [
-            {k: row.get(k) for k in ("provider", "id", "name")} for row in ada.session.actions("activity")])
-        story.note("controls-at-history", ada.names())
+        # The shell's own history of the workspace: every change, each under who made it.
+        ada.session.invoke(SHELL, f"{CHROME}\u001factivity")
+        changes = {FILE: FILE, TASK: TASK, NOTE: NOTE, "the message": "message"}
+
+        def listed():
+            names = ada.names()
+            return all(any(text.lower() in name.lower() for name in names)
+                       for text in changes.values()) and names
+
+        try:
+            names = until("History listing the agent's file, issue, note and message", listed, 30, 0.25)
+        finally:
+            story.note("history-controls", ada.names())
+        # Each row names who made it: the agent, by its own name, on the row or right beside it.
+        unnamed = []
+        for what, text in changes.items():
+            at = next(i for i, name in enumerate(names) if text.lower() in name.lower())
+            if not any(AGENT in name for name in names[max(0, at - 4):at + 5]):
+                unnamed.append(what)
+        if unnamed:
+            raise Failed(f"History does not name {AGENT} beside {', '.join(unnamed)}")
 
     story.step("Ada sees each change under the agent’s name", under_its_name)
 

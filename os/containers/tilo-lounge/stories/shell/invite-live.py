@@ -30,6 +30,8 @@ CHROME = "desktop:chrome"
 INVITATIONS = "session:invite"
 JOIN_INVITATION = "TILO_SHELL_JOIN_INVITATION_FILE"
 NOTES = "so.tilo.notes"
+# How the top bar's workspace control is named, before the workspace in front.
+SWITCHER = "Switch workspace, now in "
 # How a person's own face in their top bar is named, after their name.
 PROFILE = " (you): your profile"
 # What both computers have: Notes, where Ada writes, and what a person's desktop has besides.
@@ -51,8 +53,10 @@ def front(one: Person) -> dict | None:
     return next((w for w in held if w.get("id") == active), held[0] if held else None)
 
 
-def named(one: Person, name: str) -> dict | None:
-    return next((w for w in workspaces(one) if w.get("name") == name), None)
+def in_front_named(one: Person, name: str) -> bool:
+    """Whether this person's shell says the workspace in front is `name`: its top bar's workspace
+    control is named after it (the state dump's tree carries no names)."""
+    return one.shows(f"{SWITCHER}{name}")
 
 
 def peers(one: Person, workspace: str) -> tuple[dict, list[dict]]:
@@ -129,16 +133,18 @@ def steps(story: Story) -> None:
 
     story.step("Ada gives their name", lambda: name_self(ada, "Ada"), people=[ada])
 
+    shared = {}
+
     def new_workspace():
         story.note("actions-workspace", actions_matching(ada, "workspace"))
         before = {w.get("id") for w in workspaces(ada)}
         ada.session.invoke(SHELL, f"{CHROME}\u001fnew-workspace", {"name": WORKSPACE})
         made = until("a new workspace on Ada's shell", lambda: next(
             (w for w in workspaces(ada) if w.get("id") not in before), None), 30, 0.2)
-        story.note("new-workspace", made)
-        until(f"Ada's new workspace named {WORKSPACE!r}",
-              lambda: named(ada, WORKSPACE), 15, 0.2)
-        stand_in(ada, named(ada, WORKSPACE)["id"])
+        shared["id"] = made["id"]
+        stand_in(ada, made["id"])
+        until(f"Ada's top bar saying she is in {WORKSPACE}",
+              lambda: in_front_named(ada, WORKSPACE), 15, 0.2)
 
     story.step(f"Ada makes a new workspace, “{WORKSPACE}”", new_workspace, people=[ada])
 
@@ -164,22 +170,17 @@ def steps(story: Story) -> None:
 
     story.step("Grace opens the invitation on her computer", grace_opens)
 
-    shared = {}
-
     def grace_joins():
         began = time.monotonic()
-        wanted = named(ada, WORKSPACE)["id"]
+        wanted = shared["id"]
         until("Grace's shell to hold Garden club",
               lambda: any(w.get("id") == wanted for w in workspaces(grace)), 240, 0.5)
         stand_in(grace, wanted)
-        shared["id"] = wanted
         # A computer new to Tilo knows no name for its person yet: Grace gives hers.
         name_self(grace, "Grace")
         story.timing("Grace's join, to standing in Garden club", (time.monotonic() - began) * 1000)
-        held = next(w for w in workspaces(grace) if w.get("id") == wanted)
-        story.note("grace-workspace", held)
-        if held.get("name") != WORKSPACE:
-            raise Failed(f"Grace's shell names the workspace {held.get('name')!r}, not {WORKSPACE!r}")
+        until(f"Grace's top bar saying she is in {WORKSPACE}",
+              lambda: in_front_named(grace, WORKSPACE), 30, 0.2)
 
     story.step(f"Grace joins {WORKSPACE}", grace_joins)
 
