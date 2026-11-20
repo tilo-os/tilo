@@ -20,6 +20,7 @@ fn stand_in(wrapped: bool) -> Started {
         names: vec!["localhost".to_owned()],
         login: LOGIN.to_owned(),
         password: TAKEN.to_owned(),
+        oauth_token: None,
         imap: "127.0.0.1:0".to_owned(),
         smtp: "127.0.0.1:0".to_owned(),
         imap_wrapped: wrapped,
@@ -162,4 +163,50 @@ fn on_ports_that_are_tls_from_the_first_byte_both_servers_take_the_one_login() {
     // It sends no mail, and says so instead of taking a message it would drop.
     assert!(replied(&mut server, "MAIL FROM:<ada@example.test>").starts_with("554 "));
     assert!(replied(&mut server, "QUIT").starts_with("221 "));
+}
+
+/// An account a provider signed in on its own page is proved with the
+/// bearer token it carries: XOAUTH2 to both servers, and the stand-in's
+/// no-mail rule is not a refused sign-in.
+#[test]
+fn the_sign_in_proof_takes_a_bearer_token_by_xoauth2() {
+    let up = started(Serving {
+        names: vec!["localhost".to_owned()],
+        login: LOGIN.to_owned(),
+        password: TAKEN.to_owned(),
+        oauth_token: Some("access-token-1".to_owned()),
+        imap: "127.0.0.1:0".to_owned(),
+        smtp: "127.0.0.1:0".to_owned(),
+        imap_wrapped: true,
+        smtp_wrapped: false,
+    })
+    .expect("the stand-in starts");
+    let mut account = accounts::Account::new(LOGIN, accounts::email::TYPE_ID);
+    account.config = serde_json::json!({
+        "email": LOGIN,
+        "username": LOGIN,
+        "imap_host": "localhost",
+        "imap_port": up.imap.port(),
+        "imap_tls": true,
+        "smtp_host": "localhost",
+        "smtp_port": up.smtp.port(),
+        "auth": "oauth",
+    });
+    assert_eq!(
+        crate::LiveAccountTester::email_with_roots(
+            &account,
+            &accounts::Secret::password("access-token-1"),
+            roots_of(&up),
+        )
+        .unwrap(),
+        "IMAP and SMTP sign-in succeeded"
+    );
+    assert!(
+        crate::LiveAccountTester::email_with_roots(
+            &account,
+            &accounts::Secret::password("another-token"),
+            roots_of(&up),
+        )
+        .is_err()
+    );
 }

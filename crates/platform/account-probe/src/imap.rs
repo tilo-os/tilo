@@ -19,6 +19,28 @@ use web_time::{Duration, Instant};
 /// A connection to an IMAP server once it is secure.
 pub type SecureStream = tokio_rustls::client::TlsStream<TcpStream>;
 
+/// The SASL `XOAUTH2` client response Google and Microsoft take in place of
+/// a password: `user=<name>\x01auth=Bearer <token>\x01\x01`.
+#[must_use]
+pub fn xoauth2_token(user: &str, access_token: &str) -> String {
+    format!("user={user}\x01auth=Bearer {access_token}\x01\x01")
+}
+
+/// An `XOAUTH2` sign-in: whatever the server asks, the answer is the
+/// account's bearer token.
+pub struct Bearer {
+    pub user: String,
+    pub access_token: String,
+}
+
+impl async_imap::Authenticator for Bearer {
+    type Response = String;
+
+    fn process(&mut self, _challenge: &[u8]) -> Self::Response {
+        xoauth2_token(&self.user, &self.access_token)
+    }
+}
+
 /// Where a connection made for a server's name may go, and what looks that
 /// name up. The name is looked up once and the connection goes to exactly an
 /// address of that answer, so no second look-up, which might answer

@@ -237,6 +237,125 @@ impl OAuthIssuer {
     }
 }
 
+/// A provider's web client, as a server that finishes the sign-in needs it:
+/// the registration a browser is sent back to the server with, and the
+/// endpoints it is sent to and exchanges its code at. Only a server's
+/// environment configures one; a build with none signs nobody in this way.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebClient {
+    pub client_id: String,
+    /// Sent on the code exchange where the provider issued one (Google's
+    /// web clients are confidential; Microsoft's may be public).
+    pub client_secret: Option<String>,
+    /// Where the person's browser signs in.
+    pub authorize: String,
+    /// Where the code is exchanged, and a grant renewed.
+    pub token: String,
+    /// Where the address the grant belongs to is read.
+    pub profile: String,
+}
+
+/// The environment variable a provider's web client id is read from.
+#[must_use]
+pub const fn web_client_id_key(issuer: OAuthIssuer) -> Option<&'static str> {
+    match issuer {
+        OAuthIssuer::Google => Some("TILO_OAUTH_GOOGLE_WEB_CLIENT_ID"),
+        OAuthIssuer::Microsoft => Some("TILO_OAUTH_MICROSOFT_WEB_CLIENT_ID"),
+        _ => None,
+    }
+}
+
+/// The environment variable a provider's web client secret is read from.
+#[must_use]
+pub const fn web_client_secret_key(issuer: OAuthIssuer) -> Option<&'static str> {
+    match issuer {
+        OAuthIssuer::Google => Some("TILO_OAUTH_GOOGLE_WEB_CLIENT_SECRET"),
+        OAuthIssuer::Microsoft => Some("TILO_OAUTH_MICROSOFT_WEB_CLIENT_SECRET"),
+        _ => None,
+    }
+}
+
+fn env_value(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// The provider's web client, from the environment: `None` when its client
+/// id is unset, the "not configured" state. Endpoints default to the
+/// provider's own and may be pointed elsewhere by
+/// `TILO_OAUTH_<PROVIDER>_AUTHORIZE_URL` / `_TOKEN_URL` (a local stack's
+/// stand-in); `TILO_OAUTH_<PROVIDER>_PROFILE_URL` does the same for the
+/// address.
+#[must_use]
+pub fn web_client(issuer: OAuthIssuer) -> Option<WebClient> {
+    let key = web_client_id_key(issuer)?;
+    let client_id = env_value(key)?;
+    let client_secret = web_client_secret_key(issuer).and_then(env_value);
+    let own = issuer.endpoints();
+    let prefix = match issuer {
+        OAuthIssuer::Google => "TILO_OAUTH_GOOGLE",
+        OAuthIssuer::Microsoft => "TILO_OAUTH_MICROSOFT",
+        _ => return None,
+    };
+    let at =
+        |name: &str, default: String| env_value(&format!("{prefix}_{name}")).unwrap_or(default);
+    Some(WebClient {
+        client_id,
+        client_secret,
+        authorize: at("AUTHORIZE_URL", own.authorization_endpoint),
+        token: at("TOKEN_URL", own.token_endpoint),
+        profile: at(
+            "PROFILE_URL",
+            match issuer {
+                OAuthIssuer::Google => {
+                    "https://gmail.googleapis.com/gmail/v1/users/me/profile".to_owned()
+                }
+                _ => "https://graph.microsoft.com/v1.0/me?$select=mail".to_owned(),
+            },
+        ),
+    })
+}
+
+/// The scopes a server asks for: the chosen uses' scopes, plus what is
+/// needed to learn which address the grant belongs to.
+#[must_use]
+pub fn web_scopes(issuer: OAuthIssuer, mail: bool, calendar: bool) -> Vec<String> {
+    let table = crate::ClientTable::defaults();
+    let mut scopes = Vec::new();
+    if mail {
+        scopes.extend(table.scopes(OAuthUse::mail(issuer)).iter().cloned());
+    }
+    if calendar {
+        scopes.extend(table.scopes(OAuthUse::calendar(issuer)).iter().cloned());
+    }
+    for scope in match issuer {
+        OAuthIssuer::Google => ["openid", "email"].as_slice(),
+        OAuthIssuer::Microsoft => ["openid", "email", "User.Read"].as_slice(),
+        _ => &[],
+    } {
+        if !scopes.iter().any(|kept| kept == scope) {
+            scopes.push((*scope).to_owned());
+        }
+    }
+    scopes
+}
+
+/// The provider's descriptor as a server's sign-in asks it: the web client's
+/// endpoints, the provider's authorization parameters, and the scopes of the
+/// uses the person chose.
+#[must_use]
+pub fn web_provider(issuer: OAuthIssuer, scopes: Vec<String>, client: &WebClient) -> Provider {
+    let mut descriptor = issuer.endpoints();
+    client
+        .authorize
+        .clone_into(&mut descriptor.authorization_endpoint);
+    client.token.clone_into(&mut descriptor.token_endpoint);
+    descriptor.scopes = scopes;
+    descriptor
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {

@@ -22,7 +22,7 @@
 }
 
 http://127.0.0.1:{$TILO_SH_SERVER_PORT} {
-	@host path /mode /avatars /avatars/* /discord/callback
+	@host path /mode /avatars /avatars/* /discord/callback /accounts/return
 	handle @host {
 		reverse_proxy 127.0.0.1:{$TILO_SH_ROUTES_PORT}
 	}

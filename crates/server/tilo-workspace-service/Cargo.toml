@@ -129,6 +129,10 @@ accounts = { path = "../../system/accounts" }
 agent-provider-config = { path = "../../agent/provider-config" }
 settings-store = { path = "../../system/settings-store" }
 tilo-account-probe = { path = "../../platform/account-probe" }
+# The client registrations, token renewal and Nextcloud login flow a
+# provider's own page leaves a person's account signed in with.
+account-credentials = { path = "../../system/account-credentials", features = ["store"] }
+tilo-oauth = { path = "../../system/tilo-oauth" }
 # The calendar servers of the accounts a person keeps here.
 tilo-dav = { path = "../../system/tilo-dav" }
 tilo-mail-session = { path = "../../platform/mail-session" }
@@ -145,6 +149,8 @@ tilo-workspace-agent = { path = "../../platform/tilo-workspace-agent" }
 rustix = { workspace = true, features = ["process"], optional = true }
 
 [dev-dependencies]
+# The stand-in authorization server a sign-in test walks the browser through.
+tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }
 # The MCP tools a device's session takes for an agent whose turn is in its own process, taken as its session's
 # steps in the broker's tests.
 tilo-mcp = { path = "../../runtime/tilo-mcp" }

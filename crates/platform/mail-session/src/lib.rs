@@ -550,7 +550,7 @@ async fn sign_in(
         .or_else(|| field(account, "email"))
         .ok_or_else(|| "account has no IMAP login name".to_string())?;
     if secret.password.is_empty() {
-        return Err("account has no saved password".into());
+        return Err(no_sign_in(account));
     }
     let user = login_name(&user)?;
     let password = login_name(&secret.password)?;
@@ -571,8 +571,18 @@ async fn sign_in(
     let client =
         tilo_account_probe::imap::open(&reach, &named, port, security, config, NETWORK_TIMEOUT)
             .await?;
-    timeout(NETWORK_TIMEOUT, client.login(user, password))
-        .await
+    // A provider that signed the account in on its own page takes a bearer
+    // token by `XOAUTH2`; every other account signs in with its password.
+    let signed_in = if signed_in_with_oauth(account) {
+        let bearer = tilo_account_probe::imap::Bearer {
+            user: user.to_owned(),
+            access_token: password.to_owned(),
+        };
+        timeout(NETWORK_TIMEOUT, client.authenticate("XOAUTH2", bearer)).await
+    } else {
+        timeout(NETWORK_TIMEOUT, client.login(user, password)).await
+    };
+    signed_in
         .map_err(|_| "IMAP server did not answer before the timeout".to_string())?
         .map_err(|(error, _)| match error {
             async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_) => {
@@ -580,6 +590,26 @@ async fn sign_in(
             }
             _ => "IMAP server closed the connection unexpectedly".to_string(),
         })
+}
+
+/// Whether `account` signs in with a bearer token instead of a password.
+fn signed_in_with_oauth(account: &accounts::Account) -> bool {
+    account
+        .config
+        .get("auth")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|auth| {
+            accounts::email::AuthMethod::from_key(auth) == accounts::email::AuthMethod::OAuth
+        })
+}
+
+/// What an account without a sign-in is told, in the words of what it keeps.
+fn no_sign_in(account: &accounts::Account) -> String {
+    if signed_in_with_oauth(account) {
+        "account has no saved sign-in".to_owned()
+    } else {
+        "account has no saved password".to_owned()
+    }
 }
 
 /// What an account's session is kept under: the account, and where and as
@@ -592,7 +622,11 @@ fn kept_under(account: &accounts::Account) -> String {
         field(account, "imap_host").unwrap_or_default(),
         port_of(account, "imap_port", 993),
         field(account, "username").unwrap_or_default()
-    )
+    ) + if signed_in_with_oauth(account) {
+        "\noauth"
+    } else {
+        ""
+    }
 }
 
 fn field(account: &accounts::Account, name: &str) -> Option<String> {
@@ -1314,7 +1348,7 @@ async fn send_message(
         .or_else(|| field(account, "email"))
         .ok_or_else(|| "account has no SMTP login name".to_string())?;
     if secret.password.is_empty() {
-        return Err("account has no saved password".into());
+        return Err(no_sign_in(account));
     }
     let envelope = sending.envelope()?;
     // The server's name is looked up once, within what this session reaches,
@@ -1341,12 +1375,19 @@ async fn send_message(
         465 => lettre::transport::smtp::client::Tls::Wrapper(params),
         _ => lettre::transport::smtp::client::Tls::Required(params),
     };
+    // A bearer token is offered by `XOAUTH2` alone; a password by the
+    // mechanisms that carry one.
+    let mechanisms = if signed_in_with_oauth(account) {
+        vec![Mechanism::Xoauth2]
+    } else {
+        vec![Mechanism::Login, Mechanism::Plain]
+    };
     let transport =
         AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(answered.ip().to_string())
             .port(port)
             .tls(tls)
             .credentials(Credentials::new(user, secret.password.clone()))
-            .authentication(vec![Mechanism::Login, Mechanism::Plain])
+            .authentication(mechanisms)
             .timeout(Some(NETWORK_TIMEOUT))
             .build();
     timeout(NETWORK_TIMEOUT, transport.send_raw(&envelope, mime))
@@ -1700,6 +1741,82 @@ mod tests {
             .unwrap_err();
         assert!(sent.contains(inside), "{sent}");
         assert_eq!(connections(), 0, "nothing is connected to, to send");
+    }
+
+    /// An account a provider signed in on its own page carries a bearer
+    /// token, and both of its servers take it by XOAUTH2: the session reads
+    /// its folder and can send, and the stand-in's refusal is its own rule
+    /// about mail, not a refused sign-in.
+    #[test]
+    fn an_oauth_account_signs_in_and_sends_with_its_bearer_token() {
+        use tilo_account_probe::stand_in::{Serving, started};
+
+        let up = started(Serving {
+            names: vec!["localhost".to_owned()],
+            login: "ada@example.test".to_owned(),
+            password: String::new(),
+            oauth_token: Some("access-token-1".to_owned()),
+            imap: "127.0.0.1:0".to_owned(),
+            smtp: "127.0.0.1:0".to_owned(),
+            imap_wrapped: false,
+            smtp_wrapped: false,
+        })
+        .expect("the stand-in starts");
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(up.certificate.clone()).expect("its certificate");
+        let tls =
+            Arc::new(tilo_net::client_config_with_roots(roots).expect("a client configuration"));
+        let mut account = accounts::Account::new("ada@example.test", accounts::email::TYPE_ID);
+        account.config = serde_json::json!({
+            "email": "ada@example.test",
+            "username": "ada@example.test",
+            "imap_host": "localhost",
+            "imap_port": up.imap.port(),
+            "imap_tls": false,
+            "smtp_host": "localhost",
+            "smtp_port": up.smtp.port(),
+            "auth": "oauth",
+        });
+        let secret = accounts::Secret::password("access-token-1");
+        let reach = tilo_account_probe::imap::Reach::any();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        runtime.block_on(async {
+            let mut session = sign_in(Some(Arc::clone(&tls)), Some(&reach), &account, &secret)
+                .await
+                .expect("the bearer token signs in");
+            let inbox = session.select("INBOX").await.expect("an inbox");
+            assert_eq!(inbox.exists, 0);
+            let _ = session.logout().await;
+        });
+
+        let leaving = Leaving::read(SendMail {
+            account: "ada@example.test".into(),
+            from_address: "ada@example.test".into(),
+            to: "Bob <bob@example.test>".into(),
+            subject: "Hello".into(),
+            body: "Hi".into(),
+            ..SendMail::default()
+        })
+        .expect("a message");
+        let mime = write_leaving(&leaving, &[], None).expect("its text");
+        let refused = runtime
+            .block_on(send_message(
+                Some(&reach),
+                &account,
+                &secret,
+                &leaving,
+                &mime,
+                std::slice::from_ref(&up.certificate),
+            ))
+            .expect_err("the stand-in sends no mail");
+        assert!(refused.contains("554"), "{refused}");
+        assert!(
+            !refused.contains("535"),
+            "the sign-in was refused: {refused}"
+        );
     }
 
     /// A folder is found by its special-use mark before its name, and a

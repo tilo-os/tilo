@@ -299,6 +299,7 @@ members = [
     "crates/dev/collab-probe",
     "crates/dev/copy-lint",
     "crates/dev/fake-discord",
+    "crates/dev/fake-oauth",
     "crates/dev/nested-session-bus",
     "crates/dev/headless-schema",
     "crates/dev/test-env",

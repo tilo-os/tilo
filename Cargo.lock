@@ -5084,6 +5084,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fake-oauth"
+version = "0.1.0"
+dependencies = [
+ "tilo-lock",
+ "tilo-oauth",
+ "workspace-hack",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -23986,6 +23995,7 @@ dependencies = [
 name = "tilo-workspace-service"
 version = "0.1.0"
 dependencies = [
+ "account-credentials",
  "accounts",
  "agent-provider-config",
  "app-cli",
@@ -24061,6 +24071,7 @@ dependencies = [
  "tilo-model-engine",
  "tilo-model-gateway",
  "tilo-net",
+ "tilo-oauth",
  "tilo-peer-state",
  "tilo-resource",
  "tilo-resource-store",

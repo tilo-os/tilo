@@ -96,18 +96,22 @@ pub(crate) async fn greets(
 }
 
 /// Sign in as `user` to the SMTP server called `named` at `port`, and leave.
-/// Each step of it may take `step`.
+/// Each step of it may take `step`. With `oauth`, `password` is a bearer
+/// token and the sign-in is `AUTH XOAUTH2`; otherwise it is the account's
+/// password, over `PLAIN` or `LOGIN`.
 ///
 /// # Errors
 /// The server could not be reached, did not answer as an SMTP server, would
 /// not upgrade a connection that has to, presented a certificate `tls` does
-/// not trust, offers no password sign-in, or rejected the credential.
+/// not trust, offers no sign-in of the kind wanted, or rejected the
+/// credential.
 pub(crate) async fn sign_in(
     to: &crate::imap::Reach,
     named: &str,
     port: u16,
     user: &str,
     password: &str,
+    oauth: bool,
     tls: Arc<rustls::ClientConfig>,
     step: Duration,
 ) -> Result<(), String> {
@@ -122,7 +126,14 @@ pub(crate) async fn sign_in(
         })
     };
     let encoded = |text: &str| base64::engine::general_purpose::STANDARD.encode(text);
-    let answer = if offers("PLAIN") {
+    let answer = if oauth {
+        if !offers("XOAUTH2") {
+            let _ = ask(&mut server, "QUIT", step).await;
+            return Err("SMTP server offers no token sign-in".into());
+        }
+        let token = encoded(&crate::imap::xoauth2_token(user, password));
+        ask(&mut server, &format!("AUTH XOAUTH2 {token}"), step).await?
+    } else if offers("PLAIN") {
         let token = encoded(&format!("\0{user}\0{password}"));
         ask(&mut server, &format!("AUTH PLAIN {token}"), step).await?
     } else if offers("LOGIN") {

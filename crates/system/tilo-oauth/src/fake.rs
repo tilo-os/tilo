@@ -32,6 +32,9 @@ struct State {
     access_token: Option<String>,
     /// When set, token requests must carry this `client_secret`.
     client_secret: Option<String>,
+    /// The mailbox the grant belongs to, as `/profile` answers it: both the
+    /// Gmail and the Microsoft shape, so one stand-in serves either.
+    email: String,
     token_hold: Option<Arc<ExchangeHold>>,
 }
 
@@ -97,6 +100,7 @@ impl FakeAuthorizationServer {
     pub fn start() -> Self {
         let state = Arc::new(Mutex::new(State {
             token_lifetime: 3600,
+            email: "ada@example.test".to_owned(),
             ..State::default()
         }));
         let shared = Arc::clone(&state);
@@ -129,6 +133,17 @@ impl FakeAuthorizationServer {
 
     pub fn url(&self) -> String {
         self.responder.url()
+    }
+
+    /// Where the address the grant belongs to is answered, in the shapes
+    /// Gmail's and Microsoft's profile endpoints answer in.
+    pub fn profile_url(&self) -> String {
+        format!("{}/profile", self.responder.url())
+    }
+
+    /// The mailbox a sign-in here belongs to.
+    pub fn set_identity(&self, email: &str) {
+        email.clone_into(&mut self.state.lock_recover().email);
     }
 
     pub fn set_token_lifetime(&self, seconds: u64) {
@@ -207,6 +222,13 @@ fn handle(shared: &Mutex<State>, request: &Request) -> Reply {
     }
     match (request.method.as_str(), path) {
         ("GET", "/authorize") => authorize(shared, &query_of(&request.target)),
+        ("GET", "/profile") => json(
+            200,
+            &serde_json::json!({
+                "emailAddress": shared.lock_recover().email,
+                "mail": shared.lock_recover().email,
+            }),
+        ),
         ("POST", "/token") => token(shared, &query_of(&format!("?{}", request.body_text()))),
         ("POST", "/revoke") => {
             let form = query_of(&format!("?{}", request.body_text()));

@@ -1,7 +1,8 @@
 //! What a persistent workspace's deployment reaches from outside, beside the
 //! browser listener its members use: the host's health at `GET /mode`, the
-//! avatars its bots publish at `GET /avatars/<name>`, and Discord's sign-in
-//! callback at `GET /discord/callback`.
+//! avatars its bots publish at `GET /avatars/<name>`, Discord's sign-in
+//! callback at `GET /discord/callback`, and the answer of a provider's own
+//! sign-in page at `GET /accounts/return`.
 //!
 //! The listener answers from the moment the process starts: `/mode` says
 //! `starting` (503) while the host opens its workspaces, and `up` (200) once
@@ -22,6 +23,7 @@ use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response, StatusCode, header};
 use tilo_connector::ConnectorProcess;
+use tilo_server::workspaces::Workspaces;
 use tilo_server_protocol::public_avatars::{MAX_AVATAR_BYTES, is_avatar_name, sniff};
 
 use super::bots::hand_to_discord;
@@ -43,6 +45,9 @@ pub(super) struct Serving {
     pub web_entry: Option<String>,
     /// The workspace's Discord bridge, which a linked account is handed to.
     pub discord: Option<Arc<ConnectorProcess>>,
+    /// The server that keeps people's accounts, which finishes a sign-in
+    /// begun on a provider's own page.
+    pub accounts: Option<Arc<Workspaces>>,
 }
 
 /// A running listener. Dropping it stops serving.
@@ -63,6 +68,7 @@ impl Handle {
             sign_in: serving.sign_in,
             web_entry: serving.web_entry,
             discord: serving.discord,
+            accounts: serving.accounts,
         });
         if served.is_err() {
             tracing::warn!("the deployment routes already serve; they keep what they serve");
@@ -114,6 +120,7 @@ struct Http {
     sign_in: Option<SignIn>,
     web_entry: Option<String>,
     discord: Option<Arc<ConnectorProcess>>,
+    accounts: Option<Arc<Workspaces>>,
 }
 
 async fn accept_loop(tcp: tokio::net::TcpListener, http: Arc<Routes>) {
@@ -166,6 +173,7 @@ async fn handle<B>(routes: &Routes, request: Request<B>) -> Response<Full<Bytes>
         })),
         ["avatars", name] => avatar(http, name).await,
         ["discord", "callback"] => http.callback(&query).await,
+        ["accounts", "return"] => http.accounts_return(&query).await,
         // A browser that opened an address here asks for a page, not for a
         // text body: it goes to the site, which has one.
         _ if wants_a_page && http.web_entry.is_some() => {
@@ -225,6 +233,77 @@ impl Http {
             Err(failed) => failed_page(failed.said(), entry),
         }
     }
+}
+
+impl Http {
+    /// `GET /accounts/return`: back from a provider's own sign-in page. The
+    /// server keeps the account the provider vouched for, and the browser is
+    /// told it can close the page; nothing of the sign-in travels further.
+    async fn accounts_return(&self, query: &str) -> Response<Full<Bytes>> {
+        let Some(accounts) = &self.accounts else {
+            return error(StatusCode::NOT_FOUND, "not found");
+        };
+        match accounts.accounts_return(query).await {
+            Ok(()) => page(
+                StatusCode::OK,
+                "You're signed in",
+                "The account is ready in Settings. You can close this tab.",
+                None,
+            ),
+            Err(said) => page(
+                StatusCode::BAD_REQUEST,
+                "That sign-in didn't finish",
+                &said,
+                Some("Start it again from Settings > External accounts."),
+            ),
+        }
+    }
+}
+
+/// A small answer to a browser that just finished a sign-in: what happened,
+/// and, on failure, where to start again.
+fn page(
+    status: StatusCode,
+    heading: &str,
+    said: &str,
+    again: Option<&str>,
+) -> Response<Full<Bytes>> {
+    let escape = |text: &str| {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    let again = again.map_or_else(String::new, |again| {
+        format!("<p class=hint>{}</p>", escape(again))
+    });
+    let page = format!(
+        "<!doctype html><html lang=en><head><meta charset=utf-8>\
+<meta name=viewport content=\"width=device-width,initial-scale=1\">\
+<title>{heading}</title>\
+<style>\
+:root{{color-scheme:dark;--ground:#121214;--card:#1c1d21;--line:#2c2e34;--ink:#ddd;--heading:#f2f2f4;--text:#b9b9c0;--hint:#8d8d96}}\
+@media (prefers-color-scheme:light){{:root{{color-scheme:light;--ground:#f5f5f7;--card:#fff;--line:#e2e3e8;--ink:#26272b;--heading:#121214;--text:#55565e;--hint:#787982}}}}\
+html,body{{margin:0;min-height:100%;background:var(--ground);color:var(--ink);font:14px/1.5 system-ui,sans-serif}}\
+body{{display:grid;place-items:center;box-sizing:border-box;padding:16px}}\
+.card{{display:grid;gap:10px;box-sizing:border-box;width:min(360px,100%);padding:26px;border-radius:14px;background:var(--card);border:1px solid var(--line)}}\
+h1{{margin:0;font-size:18px;font-weight:600;line-height:1.35;color:var(--heading);text-wrap:balance}}\
+p{{margin:0;color:var(--text)}}\
+p.hint{{color:var(--hint)}}\
+</style></head>\
+<body><main class=card aria-labelledby=heading>\
+<h1 id=heading>{heading}</h1><p>{said}</p>{again}</main></body></html>",
+        heading = escape(heading),
+        said = escape(said),
+        again = again
+    );
+    let mut response = Response::new(Full::new(Bytes::from(page)));
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    response
 }
 
 /// A sign-in with Discord that linked nothing: the product's own card saying
@@ -393,6 +472,7 @@ mod tests {
                     sign_in: None,
                     web_entry: None,
                     discord: None,
+                    accounts: None,
                 })
                 .is_ok()
         );

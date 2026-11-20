@@ -19,7 +19,7 @@ use base64::Engine as _;
 use rustls::pki_types::CertificateDer;
 
 /// What an IMAP server of this kind says it can do once the connection is secure.
-const IMAP_OFFERS: &str = "IMAP4rev1 AUTH=PLAIN";
+const IMAP_OFFERS: &str = "IMAP4rev1 AUTH=PLAIN AUTH=XOAUTH2";
 
 /// What a stand-in serves: the names its certificate is for, the one login it takes, where
 /// its two servers listen, and which of them is TLS from the first byte.
@@ -27,6 +27,9 @@ pub struct Serving {
     pub names: Vec<String>,
     pub login: String,
     pub password: String,
+    /// A bearer token the stand-in takes in place of the password, by
+    /// `XOAUTH2`: the sign-in a provider's own page leaves an account with.
+    pub oauth_token: Option<String>,
     pub imap: String,
     pub smtp: String,
     pub imap_wrapped: bool,
@@ -45,12 +48,19 @@ struct Taking {
     name: String,
     login: String,
     password: String,
+    oauth_token: Option<String>,
     tls: Arc<rustls::ServerConfig>,
 }
 
 impl Taking {
     fn takes(&self, login: &str, password: &str) -> bool {
         login == self.login && password == self.password
+    }
+
+    /// Whether `user` with `token` is the one login signed in with
+    /// `XOAUTH2`.
+    fn takes_token(&self, user: &str, token: &str) -> bool {
+        user.trim() == self.login && self.oauth_token.as_deref() == Some(token.trim())
     }
 }
 
@@ -92,6 +102,7 @@ pub fn started(serving: Serving) -> Result<Started, String> {
             .unwrap_or_else(|| "localhost".to_owned()),
         login: serving.login,
         password: serving.password,
+        oauth_token: serving.oauth_token,
         tls: Arc::new(tls),
     });
     serve(
@@ -212,6 +223,19 @@ fn plain_login(token: &str) -> Option<(String, String)> {
     Some((login, password))
 }
 
+/// The user and bearer token an `XOAUTH2` sign-in carries, decoded:
+/// `user=<name>\x01auth=Bearer <token>\x01\x01`.
+fn oauth2_login(token: &str) -> Option<(String, String)> {
+    let said = base64::engine::general_purpose::STANDARD
+        .decode(token.trim())
+        .ok()?;
+    let said = String::from_utf8(said).ok()?;
+    let mut fields = said.split('\u{1}');
+    let user = fields.next()?.strip_prefix("user=")?.to_owned();
+    let bearer = fields.next()?.strip_prefix("auth=Bearer ")?.to_owned();
+    Some((user, bearer))
+}
+
 /// What the client answers to `prompt`, decoded.
 fn asked<S: Read + Write>(lines: &mut Lines<S>, prompt: &str) -> Option<String> {
     lines.say(prompt).then_some(())?;
@@ -309,19 +333,24 @@ fn imap_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking) {
             }
             "AUTHENTICATE" => {
                 let mut words = rest.split(' ');
-                let plain = words
-                    .next()
-                    .is_some_and(|mechanism| mechanism.eq_ignore_ascii_case("PLAIN"));
+                let mechanism = words.next().unwrap_or_default().to_ascii_uppercase();
+                let plain = mechanism == "PLAIN";
+                let xoauth2 = mechanism == "XOAUTH2";
                 let token = match words.next() {
                     Some(token) => Some(token.to_owned()),
-                    None if plain && lines.say("+ ") => lines.line(),
+                    None if (plain || xoauth2) && lines.say("+ ") => lines.line(),
                     None => None,
                 };
-                signed_in = plain
+                signed_in = (plain
                     && token
                         .as_deref()
                         .and_then(plain_login)
-                        .is_some_and(|(login, password)| taking.takes(&login, &password));
+                        .is_some_and(|(login, password)| taking.takes(&login, &password)))
+                    || (xoauth2
+                        && token
+                            .as_deref()
+                            .and_then(oauth2_login)
+                            .is_some_and(|(user, token)| taking.takes_token(&user, &token)));
                 lines.say(&signed(&tag, signed_in))
             }
             "IDLE" if signed_in => {
@@ -441,7 +470,8 @@ fn smtp_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking) {
         let command = words.next().unwrap_or_default().to_ascii_uppercase();
         let said = match command.as_str() {
             "EHLO" | "HELO" => {
-                lines.say(&format!("250-{}", taking.name)) && lines.say("250 AUTH PLAIN LOGIN")
+                lines.say(&format!("250-{}", taking.name))
+                    && lines.say("250 AUTH PLAIN LOGIN XOAUTH2")
             }
             "AUTH" => {
                 let mechanism = words.next().unwrap_or_default().to_ascii_uppercase();
@@ -457,9 +487,25 @@ fn smtp_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking) {
                             .and_then(|_| asked(lines, "334 UGFzc3dvcmQ6"));
                         login.zip(password)
                     }
+                    "XOAUTH2" => match words.next() {
+                        Some(token) => oauth2_login(token),
+                        None => lines
+                            .say("334 ")
+                            .then_some(())
+                            .and_then(|()| lines.line())
+                            .as_deref()
+                            .and_then(oauth2_login),
+                    },
                     _ => None,
                 };
-                if said.is_some_and(|(login, password)| taking.takes(&login, &password)) {
+                let accepted = said
+                    .as_ref()
+                    .is_some_and(|(login, secret)| taking.takes(login, secret));
+                let accepted_token = mechanism == "XOAUTH2"
+                    && said
+                        .as_ref()
+                        .is_some_and(|(user, token)| taking.takes_token(user, token));
+                if accepted || accepted_token {
                     lines.say("235 2.7.0 signed in")
                 } else {
                     lines.say("535 5.7.8 the mail stand-in does not take this login")

@@ -348,9 +348,7 @@ pub(super) fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
             incoming_port: port(account, "imap_port", 993),
             outgoing_host: field(account, "smtp_host"),
             outgoing_port: port(account, "smtp_port", 465),
-            has_secret: vault
-                .get_for(account)
-                .is_some_and(|secret| !secret.password.is_empty()),
+            has_secret: vault.get_for(account).is_some_and(|secret| !secret.is_empty()),
             identities: accounts::email::AccountConfig::from_value(account.config.clone())
                 .map_or_else(
                     |error| {
@@ -386,10 +384,10 @@ pub(super) fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
             .active_id(&email)
             .map(ToString::to_string)
             .unwrap_or_default(),
-        signing_in: Vec::new(),
+        signing_in: super::sign_in::signing_in(root),
         // Which providers this server begins a sign-in with is the sign-in
-        // module's to say; nothing here begins one.
-        signs_in_with: Vec::new(),
+        // module's to say.
+        signs_in_with: super::sign_in::signs_in_with(),
     })
 }
 

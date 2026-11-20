@@ -1304,6 +1304,8 @@ mod page_use_tests;
 #[cfg(test)]
 mod personal_tests;
 #[cfg(test)]
+mod sign_in_tests;
+#[cfg(test)]
 mod telling_tests;
 #[cfg(test)]
 mod tests;

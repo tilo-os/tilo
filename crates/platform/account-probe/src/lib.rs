@@ -20,9 +20,10 @@ mod dav_reach_tests;
 pub mod imap;
 pub mod mail_servers;
 mod smtp;
-/// A mail server with real sockets that takes one made-up login: what a rehearsal signs in to.
-#[cfg(test)]
-mod stand_in;
+/// A mail server with real sockets that takes one made-up login: what a
+/// rehearsal signs in to.
+#[cfg(any(test, feature = "test-support"))]
+pub mod stand_in;
 
 pub trait AccountTester: Send + Sync {
     /// Resolve real calendars during setup. Test doubles must opt in explicitly.
@@ -50,6 +51,45 @@ pub trait AccountTester: Send + Sync {
         account: &accounts::Account,
         secret: &accounts::Secret,
     ) -> Result<String, String>;
+}
+
+/// Sign in to the IMAP server `client` opened: with the account's bearer
+/// token by XOAUTH2 where the provider signed it in on its own page, and
+/// with its password otherwise. Errors never carry the credential.
+async fn imap_signed_in(
+    client: async_imap::Client<imap::SecureStream>,
+    user: &str,
+    secret: &str,
+    oauth: bool,
+) -> Result<async_imap::Session<imap::SecureStream>, String> {
+    let signed_in = if oauth {
+        let bearer = imap::Bearer {
+            user: user.to_owned(),
+            access_token: secret.to_owned(),
+        };
+        timeout(
+            LiveAccountTester::NETWORK_TIMEOUT,
+            client.authenticate("XOAUTH2", bearer),
+        )
+        .await
+    } else {
+        timeout(
+            LiveAccountTester::NETWORK_TIMEOUT,
+            client.login(user, secret),
+        )
+        .await
+    };
+    signed_in
+        .map_err(|_| "IMAP server did not answer before the timeout".to_string())?
+        .map_err(|(error, _)| match error {
+            async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_) => {
+                "IMAP server rejected the saved credential".to_string()
+            }
+            async_imap::error::Error::Validate(_) => {
+                "login contains unsupported control characters".to_string()
+            }
+            _ => "IMAP server closed the connection unexpectedly".to_string(),
+        })
 }
 
 #[derive(Default)]
@@ -145,6 +185,16 @@ impl LiveAccountTester {
             .and_then(|value| u16::try_from(value).ok())
             .unwrap_or(465);
 
+        // An account the provider signed in on its own page is proved the
+        // way it will read and send: its secret is a bearer token, carried
+        // by XOAUTH2 to both servers.
+        let oauth = account
+            .config
+            .get("auth")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|auth| {
+                accounts::email::AuthMethod::from_key(auth) == accounts::email::AuthMethod::OAuth
+            });
         let tls = tilo_net::client_config_with_roots(roots)
             .map(Arc::new)
             .map_err(|_| "could not initialize secure protocol versions".to_string())?;
@@ -163,18 +213,7 @@ impl LiveAccountTester {
                 Self::NETWORK_TIMEOUT,
             )
             .await?;
-            let mut session = timeout(Self::NETWORK_TIMEOUT, client.login(user, password))
-                .await
-                .map_err(|_| "IMAP server did not answer before the timeout".to_string())?
-                .map_err(|(error, _)| match error {
-                    async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_) => {
-                        "IMAP server rejected the saved credential".to_string()
-                    }
-                    async_imap::error::Error::Validate(_) => {
-                        "login contains unsupported control characters".to_string()
-                    }
-                    _ => "IMAP server closed the connection unexpectedly".to_string(),
-                })?;
+            let mut session = imap_signed_in(client, user, password, oauth).await?;
             let _ = timeout(Self::NETWORK_TIMEOUT, session.logout()).await;
             // An account that reads mail and cannot send any is found out
             // here, not at its person's first message.
@@ -184,6 +223,7 @@ impl LiveAccountTester {
                 smtp_port,
                 user,
                 password,
+                oauth,
                 tls,
                 Self::NETWORK_TIMEOUT,
             )

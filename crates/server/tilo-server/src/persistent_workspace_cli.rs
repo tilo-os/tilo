@@ -1506,6 +1506,14 @@ pub(crate) async fn run(
             .serve_web_also_at(config, args.web.public_origins_also.clone())
             .await
             .context("start the browser listener")?;
+        // A provider's sign-in page sends the browser back to the routes this
+        // deployment publishes at the same origin as the web entry.
+        workspaces.accounts_call_back_at(
+            args.web
+                .public_origin
+                .clone()
+                .unwrap_or_else(|| web.origin.clone()),
+        );
         println!(
             "{}",
             OperatorEvent::Started {
@@ -1624,6 +1632,7 @@ pub(crate) async fn run(
                 sign_in,
                 web_entry: args.web.web_entry.clone(),
                 discord: discord.clone(),
+                accounts: Some(Arc::new(workspaces.clone())),
             });
             println!(
                 "{}",

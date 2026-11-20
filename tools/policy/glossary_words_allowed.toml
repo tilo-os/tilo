@@ -1785,3 +1785,25 @@ paths = [
     "crates/agent/agent-session/tests/workspace_actions/hosted_agent_terminal.rs",
     "crates/agent/agent-session/tests/workspace_actions/hosted_turn_asks_again.rs",
 ]
+
+[[allow]]
+reason = "The standard library's one constructor for a pair that stops a Nextcloud login flow; nothing here is a Tilo channel."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/system/account-credentials/src/nextcloud.rs"]
+
+[[allow]]
+reason = "The workspace service's own test harness name, which the tests of the accounts it keeps call."
+words = ["host"]
+identifiers = ["test_host"]
+
+[[allow]]
+reason = "The stack's own names for a service's private directory and the command that starts one there, which a service added to it calls."
+words = ["run"]
+identifiers = ["runs", "run_native"]
+paths = ["os/containers/tilo-sh/stack.sh"]
+
+[[allow]]
+reason = "The mail account settings' own field names for its incoming and outgoing server, which a test of the mail session writes."
+words = ["host"]
+identifiers = ["imap_host", "smtp_host"]

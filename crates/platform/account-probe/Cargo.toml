@@ -11,6 +11,11 @@ name = "tilo_account_probe"
 path = "src/lib.rs"
 doctest = false
 
+[features]
+# The stand-in mail server with real sockets, for a crate's own tests to
+# sign in to: it takes one made-up login and no real password.
+test-support = ["dep:rcgen"]
+
 [dependencies]
 # The account and secret shapes the probes read; nothing here keeps either.
 accounts = { path = "../../system/accounts" }
@@ -34,6 +39,8 @@ tokio-rustls.workspace = true
 serde_json.workspace = true
 # A deadline that is the same clock on every host, a page included.
 web-time = "1"
+# The stand-in's own certificate, where a test build serves one.
+rcgen = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -42,6 +49,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 tilo-test-env = { path = "../../dev/test-env" }
 test-http = { path = "../../dev/test-http" }
+# The stand-in's certificate, in this crate's own tests.
 rcgen.workspace = true
 
 [lints]

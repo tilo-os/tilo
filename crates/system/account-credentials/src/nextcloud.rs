@@ -123,6 +123,13 @@ fn read_json(response: reqwest::blocking::Response) -> Result<serde_json::Value,
     serde_json::from_str(&body).map_err(|_| NextcloudError::Protocol("not JSON"))
 }
 
+/// A pair that stops a login flow: sending on it, or dropping the sender,
+/// ends [`LoginFlow::wait`] with [`NextcloudError::Cancelled`].
+#[must_use]
+pub fn cancellation() -> (mpsc::Sender<()>, mpsc::Receiver<()>) {
+    mpsc::channel()
+}
+
 pub struct LoginFlow {
     http: reqwest::blocking::Client,
     server: Url,

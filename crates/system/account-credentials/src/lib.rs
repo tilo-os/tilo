@@ -75,7 +75,10 @@ pub use credential_store::{
     imported_oauth_secret, is_cloud_type, is_copied_secret, oauth_secret, password_credential,
     protected_grant_protocol, requires_protected_consumer,
 };
-pub use providers::{Capability, OAuthCloud, OAuthIssuer, OAuthUse};
+pub use providers::{
+    Capability, OAuthCloud, OAuthIssuer, OAuthUse, WebClient, web_client, web_client_id_key,
+    web_client_secret_key, web_provider, web_scopes,
+};
 #[cfg(feature = "store")]
 pub use tilo_oauth::client::Authorization;
 #[cfg(feature = "store")]

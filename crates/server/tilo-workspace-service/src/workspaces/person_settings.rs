@@ -19,6 +19,8 @@
 //! here, as the holder's own operations refuse one.
 
 mod sending;
+/// Signing in on a provider's own page, and the server's end of it.
+mod sign_in;
 pub mod turn_mail;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -454,6 +456,8 @@ impl Workspaces {
                 if !named.contains(&listed.active) {
                     listed.active = String::new();
                 }
+                // Whose sign-in is running is the person's own business.
+                listed.signing_in.clear();
                 listed
             })),
             person_accounts::FETCH => {
@@ -596,6 +600,14 @@ impl Workspaces {
         {
             return Err(ActionCallError::Refused { reason });
         }
+        // Signing in on a provider's own page: begun, stopped, and the
+        // accounts as they are.
+        if matches!(
+            request.target.address.action.as_str(),
+            person_accounts::BEGIN_SIGN_IN | person_accounts::CANCEL_SIGN_IN
+        ) {
+            return sign_in::accounts_sign_in(self, person, &root, request).await;
+        }
         // What changes the accounts a person keeps is answered before the
         // rest: finding servers, adding an account, saying what it feeds and
         // removing it.
@@ -733,6 +745,13 @@ pub(super) enum AskingAboutMail {
 struct NamedAgent<'a> {
     workspace: &'a str,
     agent: &'a str,
+}
+
+/// Let a sign-in go stale, as the minutes passing would: a test's hand on a
+/// clock it cannot wait for.
+#[cfg(test)]
+pub(crate) fn expire_sign_in(id: &str) {
+    sign_in::expire(id);
 }
 
 /// The `provider` a removing action names.
