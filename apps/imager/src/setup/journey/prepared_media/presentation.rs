@@ -32,6 +32,7 @@ pub(super) struct PreparedApi {
         &crate::setup::staging::plan::Plan,
         &std::sync::atomic::AtomicBool,
     ) -> std::io::Result<()>,
+    pub copy_ciphertext: fn(&PreparedMedia, &mut std::fs::File) -> std::io::Result<()>,
     pub prepare_original_on_media: fn(
         &Arc<PreparedMedia>,
         &crate::setup::original_admission::ReviewedOriginalImage,
@@ -155,6 +156,9 @@ impl PreparedMedia {
         cancel: &std::sync::atomic::AtomicBool,
     ) -> std::io::Result<()> {
         (self.api.deliver_desktop_preparation)(self, home, cancel)
+    }
+    pub(crate) fn copy_ciphertext(&self, output: &mut std::fs::File) -> std::io::Result<()> {
+        (self.api.copy_ciphertext)(self, output)
     }
     pub(crate) fn prepare_original_on_media(
         self: &Arc<Self>,
@@ -682,6 +686,8 @@ mod tests;
 pub(crate) use super::prepared_media_native::offline;
 #[cfg(not(target_os = "linux"))]
 pub(crate) mod offline {
+    use std::sync::Arc;
+
     pub(crate) struct OfflineMediaReview {
         _private: (),
     }
