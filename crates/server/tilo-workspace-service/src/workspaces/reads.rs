@@ -172,6 +172,18 @@ impl Workspaces {
         Ok(listing)
     }
 
+    /// The members' own records `workspace`'s copy here knows, by app and route, each with whose
+    /// it is: none for a workspace this service does not hold.
+    pub(crate) async fn own_records(
+        &self,
+        workspace: &str,
+    ) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
+        let Some(held) = self.held_workspace(workspace).await else {
+            return std::collections::BTreeMap::new();
+        };
+        held.lock().await.peer().own_resources()
+    }
+
     /// The workspaces this service holds, by their ids.
     pub(crate) async fn held_workspaces(&self) -> Vec<String> {
         self.inner.workspaces.lock().await.keys().cloned().collect()

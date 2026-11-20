@@ -72,7 +72,7 @@ pub(crate) use desktop_writes::writes_desktop;
 mod holding;
 pub(crate) use holding::{HostWorkspaceRequest, decode_hex, owners, work_takes};
 mod member;
-pub use member::{MemberDevice, MemberMaterial, MemberWrite};
+pub use member::{AdmittedWrite, MemberDevice, MemberMaterial};
 mod run_admission;
 pub use run_admission::{Refusal, SessionAdmission};
 mod host_invitations;
@@ -2294,7 +2294,7 @@ impl Workspaces {
         )?;
         // The write that starts a document is told like every write after
         // it: an agent a person's first message asks is woken by it.
-        self.tell_followers(&workspace, (app_id, document_id), &message)
+        self.tell_followers(&workspace, author, (app_id, document_id), &message)
             .await;
         self.settle(&mut workspace).await
     }
@@ -2609,7 +2609,7 @@ impl Workspaces {
             }
             crate::timing::window("workspace.compact", compacting);
         }
-        self.tell_followers(workspace, (app, record), &message)
+        self.tell_followers(workspace, author, (app, record), &message)
             .await;
     }
 

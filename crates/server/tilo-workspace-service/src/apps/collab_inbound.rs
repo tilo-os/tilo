@@ -34,6 +34,34 @@ pub struct RemoteDocument {
     pub own: Option<collab_types::OwnResource>,
 }
 
+impl RemoteDocument {
+    /// The app write `write` carries, which a workspace held here took in
+    /// from another device ([`crate::workspaces::Workspaces::admitted_writes`]):
+    /// `None` for a write of anything but an app's record.
+    #[must_use]
+    pub fn admitted(write: &crate::workspaces::AdmittedWrite) -> Option<Self> {
+        let neighbour_wire::NeighbourMsg::AppDocument {
+            app_id,
+            document_id,
+            envelope,
+            own,
+            ..
+        } = write.message.as_ref()
+        else {
+            return None;
+        };
+        Some(Self {
+            app_id: app_id.clone(),
+            cluster_id: write.workspace.to_string(),
+            document_id: document_id.clone(),
+            author: write.access.clone(),
+            replayed: false,
+            envelope: (**envelope).clone(),
+            own: own.clone(),
+        })
+    }
+}
+
 /// How far an admitted device's live op may be dated from this clock.
 const MAX_CLOCK_SKEW: Duration = Duration::from_secs(300);
 

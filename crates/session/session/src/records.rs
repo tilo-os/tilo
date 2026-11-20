@@ -463,6 +463,21 @@ pub(crate) mod testing {
             self.0.documents(workspace)
         }
 
+        fn own_records(
+            &self,
+            workspace: &str,
+        ) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
+            self.0
+                .documents(workspace)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(app, record)| {
+                    let own = self.0.own_resource(workspace, &app, &record)?;
+                    Some(((app, record), own.owner))
+                })
+                .collect()
+        }
+
         fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
             // What this device wrote of the document and the copy has not taken in yet is held
             // here too, as the service holds a write it took.

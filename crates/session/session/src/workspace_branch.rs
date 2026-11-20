@@ -162,11 +162,9 @@ type Sources = BTreeMap<(String, String), AutoCommit>;
 type Local = BTreeMap<(String, String), Vec<PathBuf>>;
 
 /// What ticks when a read or a seal waiting for what is not here yet may answer otherwise: a write
-/// landing from another device, a host's answer or replay, a channel's keys changing.
+/// this device's workspace service took in from another device, a channel's keys changing.
 fn events(engine: &Engine) -> Vec<tokio::sync::watch::Receiver<u64>> {
     let mut events = vec![engine.arrivals().watching()];
-    events.extend(engine.replays());
-    events.extend(engine.record_answers());
     events.extend(engine.keys().get().and_then(|keys| keys.changes()));
     events
 }
@@ -1616,6 +1614,10 @@ mod tests {
 
         fn listing(&self, _: &str) -> Result<Vec<(String, String)>, String> {
             Ok(Vec::new())
+        }
+
+        fn own_records(&self, _: &str) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
+            std::collections::BTreeMap::new()
         }
 
         fn holds(&self, _: &str, _: &str, _: &str) -> bool {

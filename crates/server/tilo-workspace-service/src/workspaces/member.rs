@@ -57,9 +57,10 @@ pub(super) struct Members {
     materials: std::sync::Mutex<std::collections::HashMap<WorkspaceId, (TransportHint, u64)>>,
     /// Told each time a workspace is held here as a member copy.
     held: Arc<tokio::sync::Notify>,
-    /// Each write the device serving a member copy sent, as it is kept: the
-    /// embedder hands it to the apps following the workspace's records.
-    writes: tokio::sync::broadcast::Sender<MemberWrite>,
+    /// Each write of another device a workspace held here took in, governed
+    /// or a member copy: the embedder hands it to the apps following the
+    /// workspace's records ([`Workspaces::admitted_writes`]).
+    pub(super) writes: tokio::sync::broadcast::Sender<AdmittedWrite>,
 }
 
 impl Default for Members {
@@ -75,22 +76,23 @@ impl Default for Members {
     }
 }
 
-/// How many member writes an embedder that has not read them yet is told of
+/// How many admitted writes an embedder that has not read them yet is told of
 /// before the oldest is dropped.
-const WRITES_HELD: usize = 64;
+const WRITES_HELD: usize = 1024;
 
-/// A write the device serving a member copy sent, as this device kept it.
+/// Another device's write a workspace held here took in, as the workspace
+/// took it: what this device's apps are shown of it.
 #[derive(Clone, Debug)]
-pub struct MemberWrite {
+pub struct AdmittedWrite {
     /// The workspace the write is of.
     pub workspace: WorkspaceId,
     /// The device that wrote it.
     pub author: [u8; 32],
-    /// The frame, encoded as it arrived.
-    pub body: Vec<u8>,
-    /// The author's access in the workspace, as its governance gives it:
-    /// `None` when it could not be read now.
-    pub access: Option<tilo_action_policy::MemberAccess>,
+    /// The write, as the workspace decoded and admitted it.
+    pub message: Arc<NeighbourMsg>,
+    /// The author's access in the workspace, as its governance gave it when
+    /// the write was taken in.
+    pub access: tilo_action_policy::MemberAccess,
 }
 
 impl Members {
@@ -557,10 +559,20 @@ impl Workspaces {
         Arc::clone(&self.inner.member.held)
     }
 
-    /// Each write the device serving a member copy sends, as it is kept here.
+    /// Each write of another device that a workspace held here took in, in
+    /// the order it was taken: a member's write to a workspace this service
+    /// governs, and every write the device serving a member copy sends. This
+    /// device's own writes are not told: its apps have them already. A slow
+    /// receiver lags, and then reads again what it follows.
     #[must_use]
-    pub fn member_writes(&self) -> tokio::sync::broadcast::Receiver<MemberWrite> {
+    pub fn admitted_writes(&self) -> tokio::sync::broadcast::Receiver<AdmittedWrite> {
         self.inner.member.writes.subscribe()
+    }
+
+    /// The device this service's member copies act as, once it is handed one:
+    /// the device whose own writes [`Self::admitted_writes`] does not tell.
+    pub(super) fn member_device_key(&self) -> Option<[u8; 32]> {
+        self.inner.member.device.get().map(|device| device.device())
     }
 
     /// Every workspace held here as a member copy.
@@ -1368,12 +1380,20 @@ impl Workspaces {
         let taken = governed.take_served(author, message)
             || governed.follow_kept(author, message.clone()).await.changed;
         if taken {
-            self.tell_followers(&governed, (app_id.clone(), document_id.clone()), message)
-                .await;
+            self.tell_followers(
+                &governed,
+                author,
+                (app_id.clone(), document_id.clone()),
+                message,
+            )
+            .await;
             self.keep_soon(&mut governed);
+        } else {
+            // A write the copy cannot take in yet (a sealed record whose keys have not reached the
+            // service) is still the apps' to show, which may hold its keys.
+            self.hand_on(&governed, author, message);
         }
         let workspace_id = governed.workspace_id();
-        let access = governed.peer().permissions(author, tilo_clock::wall()).ok();
         drop(governed);
         self.inner
             .host
@@ -1390,12 +1410,6 @@ impl Workspaces {
             .await?
             .durable()
             .await?;
-        let _ = self.inner.member.writes.send(MemberWrite {
-            workspace: workspace_id,
-            author,
-            body: body.to_vec(),
-            access,
-        });
         Ok(())
     }
 }

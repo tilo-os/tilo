@@ -327,14 +327,15 @@ impl ServiceWorkspaces {
         Some((action_service, self.endpoint(), runtime))
     }
 
-    /// Hand every write the device serving a member copy sends to the apps
-    /// following the workspace's records, on `channels` and `fanout`.
-    pub(super) fn follow_member_writes(
+    /// Hand every write of another device the workspaces held here take in
+    /// to the apps following the workspace's records, on `channels` and
+    /// `fanout`.
+    pub(super) fn follow_admitted_writes(
         &self,
         channels: Arc<Mutex<tilo_workspace_service::apps::collab_core::BrokerChannels>>,
         fanout: Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
     ) {
-        let mut writes = self.copies().member_writes();
+        let mut writes = self.copies().admitted_writes();
         tilo_rt::app().spawn(async move {
             loop {
                 let write = match writes.recv().await {
@@ -342,36 +343,13 @@ impl ServiceWorkspaces {
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 };
-                let Ok(message) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&write.body)
-                else {
-                    continue;
-                };
-                let Some(access) = write.access else {
-                    continue;
-                };
-                let neighbour_wire::NeighbourMsg::AppDocument {
-                    app_id,
-                    document_id,
-                    envelope,
-                    own,
-                    ..
-                } = message
-                else {
-                    continue;
-                };
-                tilo_workspace_service::apps::collab_inbound::deliver(
-                    &channels,
-                    &fanout,
-                    tilo_workspace_service::apps::collab_inbound::RemoteDocument {
-                        app_id,
-                        cluster_id: write.workspace.to_string(),
-                        document_id,
-                        author: access,
-                        replayed: false,
-                        envelope: *envelope,
-                        own,
-                    },
-                );
+                if let Some(document) =
+                    tilo_workspace_service::apps::collab_inbound::RemoteDocument::admitted(&write)
+                {
+                    tilo_workspace_service::apps::collab_inbound::deliver(
+                        &channels, &fanout, document,
+                    );
+                }
             }
         });
     }

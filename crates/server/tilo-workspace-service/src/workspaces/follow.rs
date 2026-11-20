@@ -41,12 +41,13 @@ pub(super) struct Followed {
 }
 
 impl Workspaces {
-    /// Tell whoever follows the workspace's documents that `message`, a member's
+    /// Tell whoever follows the workspace's documents that `message`, `author`'s
     /// write of `document` of `app`, is in `workspace`'s copy: the write that
     /// starts a document as every write after it, since a follower nobody told
     /// reads it only when it next looks at everything. Sent while the
     /// workspace is still locked, so whoever it wakes reads a copy that holds
-    /// the write.
+    /// the write. Another device's write is also handed on whole
+    /// ([`Workspaces::admitted_writes`]), for this device's apps to show.
     #[cfg_attr(
         not(feature = "agents"),
         expect(
@@ -57,9 +58,11 @@ impl Workspaces {
     pub(super) async fn tell_followers(
         &self,
         workspace: &GovernedWorkspace,
+        author: [u8; 32],
         (app, document): (String, String),
         message: &neighbour_wire::NeighbourMsg,
     ) {
+        self.hand_on(workspace, author, message);
         // What the write carried, read here where it is at hand, so a document
         // whose repair keeps changes is read only for a write that could
         // release one of them.
@@ -77,6 +80,32 @@ impl Workspaces {
             record: document,
             #[cfg(feature = "agents")]
             carried,
+        });
+    }
+
+    /// Hand `message`, `author`'s write `workspace` took in, to the apps of
+    /// this device that follow it: not a write of this device's own, which its
+    /// apps wrote, and not one whose author the workspace grants nothing now.
+    pub(super) fn hand_on(
+        &self,
+        workspace: &GovernedWorkspace,
+        author: [u8; 32],
+        message: &neighbour_wire::NeighbourMsg,
+    ) {
+        if self.member_device_key() == Some(author)
+            || !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. })
+            || self.inner.member.writes.receiver_count() == 0
+        {
+            return;
+        }
+        let Ok(access) = workspace.peer().permissions(author, tilo_clock::wall()) else {
+            return;
+        };
+        let _ = self.inner.member.writes.send(super::AdmittedWrite {
+            workspace: workspace.workspace_id(),
+            author,
+            message: Arc::new(message.clone()),
+            access,
         });
     }
 }

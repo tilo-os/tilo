@@ -36,6 +36,9 @@ pub(crate) use emoji::Emoji as EmojiTab;
 pub(crate) struct WorkspaceTabs {
     pub(crate) agents: AgentsTab,
     pub(crate) emoji: EmojiTab,
+    /// The workspaces' records, as this device's workspace service holds them: the documents a
+    /// rule of the workspace's can reach.
+    pub(crate) records: crate::engine_records::EngineRecords,
 }
 
 impl WorkspaceTabs {
@@ -48,6 +51,7 @@ impl WorkspaceTabs {
         Self {
             agents: AgentsTab::new(std::rc::Rc::new(records.clone()), wake.clone()),
             emoji: EmojiTab::new(records.clone(), wake),
+            records: records.clone(),
         }
     }
 }
@@ -414,13 +418,12 @@ fn set_document_access(
     access: String,
 ) {
     let own = fed.handle.read(|tree| {
-        tree.active_workspace()
-            .zip(fed.engine)
-            .is_some_and(|(ws, engine)| {
-                engine
-                    .own_resource(&ws.id().to_string(), &app, &document)
-                    .is_some()
-            })
+        tree.active_workspace().is_some_and(|ws| {
+            fed.tabs
+                .records
+                .own_records(&ws.id().to_string())
+                .contains_key(&(app.clone(), document.clone()))
+        })
     });
     if own {
         refuse(state, fed, "this document belongs to a person");
@@ -856,6 +859,7 @@ fn settings(
                 person,
                 apps,
                 engine.filter(|_| tab == sheet::Tab::Permissions),
+                &records.records,
             )
         }),
         // The workspace's agents are Chat's record, opened when the tab is first shown.
@@ -1163,6 +1167,7 @@ fn permissions(
     person: &UserId,
     apps: &dyn domain::AppDirectory,
     engine: Option<&Engine>,
+    held: &crate::engine_records::EngineRecords,
 ) -> sheet::Permissions {
     let listed = domain::listed_permissions(ws, apps, person);
     let manage = ws.may_administer(person);
@@ -1240,7 +1245,7 @@ fn permissions(
                 .collect(),
             grant: t("workspace-settings-grant"),
         },
-        documents: manage.then(|| document_access(ws, person, apps, engine)),
+        documents: manage.then(|| document_access(ws, person, apps, engine, held)),
         sections,
         revoke: t("workspace-settings-revoke"),
         empty: (
@@ -1263,13 +1268,19 @@ fn document_access(
     person: &UserId,
     apps: &dyn domain::AppDirectory,
     engine: Option<&Engine>,
+    held: &crate::engine_records::EngineRecords,
 ) -> sheet::DocumentAccess {
     let workspace = ws.id().to_string();
+    // The workspace's records as its copy here holds them, that this device reads: not its own
+    // documents, nor a member's own record, which no rule of the workspace's reaches.
     let documents = engine.map_or_else(Vec::new, |engine| {
-        let mut documents = engine.documents(&workspace).unwrap_or_default();
+        let reads = engine.document_read_policy(ws.id());
+        let own = held.own_records(&workspace);
+        let mut documents = held.listing(&workspace);
         documents.retain(|(app, document_id)| {
             collab_types::workspace_document(app, document_id).is_none()
-                && engine.own_resource(&workspace, app, document_id).is_none()
+                && !own.contains_key(&(app.clone(), document_id.clone()))
+                && reads(app, document_id)
         });
         documents
     });

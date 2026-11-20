@@ -85,6 +85,10 @@ pub trait DeviceDocuments: Send + Sync + 'static {
     /// The service is not open or holds no such workspace.
     fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String>;
 
+    /// The members' own records `workspace` holds, by app and route, each with the person whose
+    /// it is ([`collab_types::OwnResource`]): records no rule of the workspace's reaches.
+    fn own_records(&self, workspace: &str) -> std::collections::BTreeMap<(String, String), [u8; 32]>;
+
     /// Whether the service holds anything of `app`'s `resource` in `workspace`.
     fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool;
 

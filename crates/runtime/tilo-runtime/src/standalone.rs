@@ -195,7 +195,7 @@ impl Standalone {
         // service that holds its governance answers: what every launch here
         // hands the app it starts.
         apps.keep_launch_grants(Arc::clone(&workspaces) as Arc<dyn apps::LaunchGrantsSource>);
-        workspaces.follow_member_writes(Arc::clone(&channels), Arc::clone(&fanout));
+        workspaces.follow_admitted_writes(Arc::clone(&channels), Arc::clone(&fanout));
         // The member copies' files, once the broker that carries their records
         // runs: where a member taking a workspace's work runs it.
         let replica_slot = files::ReplicaSlot::default();

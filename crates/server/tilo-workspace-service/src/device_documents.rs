@@ -128,6 +128,17 @@ impl DeviceDocuments for ServiceDocuments {
         on_its_own(async move { workspaces.own_listing(&workspace).await })
     }
 
+    fn own_records(
+        &self,
+        workspace: &str,
+    ) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
+        let Some(workspaces) = self.0.copies() else {
+            return std::collections::BTreeMap::new();
+        };
+        let workspace = workspace.to_owned();
+        on_its_own(async move { workspaces.own_records(&workspace).await })
+    }
+
     fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
         let Some(workspaces) = self.0.copies() else {
             return false;

@@ -2261,35 +2261,63 @@ impl PeerDocuments {
         }
     }
 
-    /// Hand one admitted input's app documents to this device's apps on their routes: its own,
-    /// and every held write it brought what that write waited for, which reach the apps no other
-    /// way.
-    fn deliver(&self, input: &native_ingress::Input, report: &tilo_peer_state::AdmissionReport) {
-        for write in input.app_writes(report) {
-            self.deliver_write(&input.workspace().to_string(), write);
-        }
+    /// Show this device's apps every write of another device that `workspaces`, this device's
+    /// workspace service, takes in from now on: a member's write to a workspace it governs, and
+    /// what the device serving a workspace this device joined sends. Followed until the service
+    /// stops.
+    pub(crate) fn follow(&self, workspaces: &tilo_workspace_service::workspaces::Workspaces) {
+        let mut writes = workspaces.admitted_writes();
+        let documents = self.clone();
+        tokio::spawn(async move {
+            loop {
+                match writes.recv().await {
+                    Ok(write) => {
+                        if let Some(document) =
+                            tilo_workspace_service::apps::collab_inbound::RemoteDocument::admitted(
+                                &write,
+                            )
+                        {
+                            documents.deliver(document);
+                        }
+                    }
+                    // Writes went by unheard: every read waiting for one reads again.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if let Some(arrivals) = &documents.arrivals {
+                            arrivals.landed();
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+    }
+
+    /// Hand one app write the session wrote through this device's workspace service to this
+    /// device's apps on its route.
+    pub(crate) fn deliver_write(&self, write: tilo_peer_state::owner::AppWrite) {
+        self.deliver(tilo_workspace_service::apps::collab_inbound::RemoteDocument {
+            app_id: write.app_id,
+            cluster_id: write.cluster_id,
+            document_id: write.document_id,
+            author: write.author,
+            replayed: write.replayed,
+            envelope: write.envelope,
+            own: write.own,
+        });
     }
 
     /// Hand one app write to this device's apps on its route: another device's, or one the
-    /// session wrote into the engine itself.
-    pub(crate) fn deliver_write(&self, workspace: &str, write: tilo_peer_state::owner::AppWrite) {
-        let (app, record) = (write.app_id.clone(), write.document_id.clone());
-        tilo_workspace_service::apps::collab_inbound::deliver(
-            &self.channels,
-            &self.fanout,
-            tilo_workspace_service::apps::collab_inbound::RemoteDocument {
-                app_id: write.app_id,
-                cluster_id: write.cluster_id,
-                document_id: write.document_id,
-                author: write.author,
-                replayed: write.replayed,
-                envelope: write.envelope,
-                own: write.own,
-            },
+    /// session wrote itself.
+    fn deliver(&self, document: tilo_workspace_service::apps::collab_inbound::RemoteDocument) {
+        let (workspace, app, record) = (
+            document.cluster_id.clone(),
+            document.app_id.clone(),
+            document.document_id.clone(),
         );
-        // What search holds of the record is read again from what the peer wrote into it.
+        tilo_workspace_service::apps::collab_inbound::deliver(&self.channels, &self.fanout, document);
+        // What search holds of the record is read again from what was written into it.
         if let Some(changes) = &self.changes {
-            changes.changed(workspace, &app, &record);
+            changes.changed(&workspace, &app, &record);
         }
         // A read of the record that this device held none of until now waits for it, and one that
         // holds it open reads what landed: a write on its route answers both, and nothing else
@@ -2298,7 +2326,7 @@ impl PeerDocuments {
             arrivals.landed();
         }
         if let Some(state) = self.fanout.app_broker() {
-            state.wake_document_reads(workspace, &app, &record);
+            state.wake_document_reads(&workspace, &app, &record);
         }
     }
 }

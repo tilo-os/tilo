@@ -15,7 +15,7 @@ use tilo_session_client::network::Event;
 use super::adopt::{Carrier, enter, redeem};
 use super::own_service::open as open_own_service;
 use super::{
-    DesktopEvent, DeviceActions, Engine, Enrolled, HostCmd, KeyLink, PeerDocuments, endpoint_for,
+    DesktopEvent, DeviceActions, Engine, Enrolled, HostCmd, KeyLink, endpoint_for,
 };
 use tilo_network_actor::WorkspaceId;
 
@@ -682,6 +682,12 @@ async fn listening(
         let opening = open_own_service(service, identity, engine, &endpoint, &reachability);
         opened = own_service_opened(Box::pin(opening), service, &actor, actions.get()).await;
     }
+    // Other devices' writes reach this device's apps from its workspace service, which holds
+    // every workspace this device governs or joined.
+    let service = own_service.as_ref().and_then(OwnService::get);
+    if let (true, Some(documents), Some(service)) = (opened, documents, service) {
+        documents.follow(service.workspaces());
+    }
     let founding_link = link.clone();
     let (events, carrying, attending) = heard(
         identity.is_some(),
@@ -689,7 +695,6 @@ async fn listening(
         desktop_events,
         wake,
         link,
-        documents,
     );
     // A workspace this device makes is founded on its own service from now on, carried here.
     if let (true, Some(service), Some(identity), Some(engine)) =
@@ -728,16 +733,14 @@ async fn listening(
 }
 
 /// Hear the peer actor: what it says reaches the client, and what a workspace's host says after
-/// this device joined it is taken in where this device's workspaces are kept, on a thread of its
-/// own and in the host's order. What admission takes in from another device goes to this device's
-/// apps through `documents`.
+/// this device joined it of the workspace's governance is taken in where this device's workspaces
+/// are kept, on a thread of its own and in the host's order.
 fn heard(
     holds_ownership: bool,
     arrivals: std::sync::mpsc::Sender<Event>,
     desktop_events: std::sync::mpsc::Sender<DesktopEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
     link: Option<Arc<KeyLink>>,
-    documents: Option<PeerDocuments>,
 ) -> (
     tokio::sync::mpsc::Sender<NetEvent>,
     tokio::task::JoinHandle<()>,
@@ -746,7 +749,7 @@ fn heard(
     let replayed = link.clone();
     let (admissions, attending) = if holds_ownership {
         let (say, hear) = tokio::sync::mpsc::unbounded_channel();
-        let attending = tokio::spawn(async move { take_in(hear, link, documents).await });
+        let attending = tokio::spawn(async move { take_in(hear, link).await });
         (Some(say), Some(attending))
     } else {
         (None, None)
@@ -811,13 +814,14 @@ enum Taken {
     Ready(WorkspaceId, bool),
 }
 
-/// Take what hosts replay into the workspaces this device holds, as it arrives: each run of one
-/// session admitted together and in the order the host said it, on a blocking thread so no replay
-/// holds up the peer network.
+/// Take what hosts replay of the governance of the workspaces this device holds, as it arrives:
+/// each run of one session admitted together and in the order the host said it, on a blocking
+/// thread so no replay holds up the peer network. An app's record is not taken in here: this
+/// device's workspace service holds every workspace's records, and its apps read and hear them
+/// there.
 async fn take_in(
     mut replayed: tokio::sync::mpsc::UnboundedReceiver<Taken>,
     link: Option<Arc<KeyLink>>,
-    documents: Option<PeerDocuments>,
 ) {
     while let Some(taken) = replayed.recv().await {
         let mut waiting = vec![taken];
@@ -829,12 +833,7 @@ async fn take_in(
             let input = match taken {
                 Taken::Input(input) => *input,
                 Taken::Ready(ws, documents_when_opened) => {
-                    admit(
-                        std::mem::take(&mut run),
-                        link.as_deref(),
-                        documents.as_ref(),
-                    )
-                    .await;
+                    admit(std::mem::take(&mut run), link.as_deref()).await;
                     if let Some(link) = &link {
                         link.host_ready(ws, documents_when_opened);
                     }
@@ -849,27 +848,26 @@ async fn take_in(
             {
                 continue;
             }
+            if matches!(input.message(), neighbour_wire::NeighbourMsg::AppDocument { .. }) {
+                continue;
+            }
             if run
                 .first()
                 .is_some_and(|first: &tilo_network_actor::native_ingress::Input| {
                     !first.same_session(&input)
                 })
             {
-                admit(run, link.as_deref(), documents.as_ref()).await;
+                admit(run, link.as_deref()).await;
                 run = Vec::new();
             }
             run.push(input);
         }
-        admit(run, link.as_deref(), documents.as_ref()).await;
+        admit(run, link.as_deref()).await;
     }
 }
 
 /// Admit one session's inputs, as one commit of the workspace they belong to.
-async fn admit(
-    inputs: Vec<tilo_network_actor::native_ingress::Input>,
-    link: Option<&KeyLink>,
-    documents: Option<&PeerDocuments>,
-) {
+async fn admit(inputs: Vec<tilo_network_actor::native_ingress::Input>, link: Option<&KeyLink>) {
     let Some(workspace) = inputs
         .first()
         .map(tilo_network_actor::native_ingress::Input::workspace)
@@ -888,14 +886,9 @@ async fn admit(
         }
     };
     let mut replay_wanted = false;
-    for (input, report) in admitted.inputs {
+    for (_, report) in admitted.inputs {
         match report {
-            Ok(report) => {
-                replay_wanted |= report.replay_wanted;
-                if let Some(documents) = documents {
-                    documents.deliver(&input, &report);
-                }
-            }
+            Ok(report) => replay_wanted |= report.replay_wanted,
             Err(error) if error.is_device_failure() => {
                 tracing::warn!(
                     %error,

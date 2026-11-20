@@ -165,6 +165,30 @@ impl EngineRecords {
             .is_some_and(|reads| reads.workspaces().iter().any(|held| held == workspace))
     }
 
+    /// Every record the workspaces' copy holds of `workspace`, by app and route: none while the
+    /// copy is not here, or holds no such workspace.
+    pub(crate) fn listing(&self, workspace: &str) -> Vec<(String, String)> {
+        self.0.reads.borrow().as_ref().map_or_else(Vec::new, |reads| {
+            reads.listing(workspace).unwrap_or_else(|error| {
+                tracing::debug!(%error, %workspace, "the workspace's records were not listed");
+                Vec::new()
+            })
+        })
+    }
+
+    /// The members' own records the workspaces' copy holds of `workspace`, each with whose it is.
+    pub(crate) fn own_records(
+        &self,
+        workspace: &str,
+    ) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
+        self.0
+            .reads
+            .borrow()
+            .as_ref()
+            .map(|reads| reads.own_records(workspace))
+            .unwrap_or_default()
+    }
+
     /// Keep `doc`, `app`'s `record` in `workspace` as a service of the session runs over it, in
     /// the workspace: what the workspace holds of the record is taken into it, and what the
     /// service writes in it is written into the workspace and handed to this device's apps, the
@@ -778,7 +802,7 @@ impl Inner {
                     replica.sync.advance(heads);
                 }
                 if let Some(apps) = self.apps.borrow().as_ref() {
-                    apps.deliver_write(workspace, write);
+                    apps.deliver_write(write);
                 }
                 if let Some(changes) = self.changes.borrow().as_ref() {
                     changes.note(workspace, app, record, false);
