@@ -177,6 +177,68 @@ impl Programs {
         }
         !programs.is_empty()
     }
+
+    /// End every open program of `entries`, in whichever workspace it was started, and wait up
+    /// to `patience` for them to go. Answers the entries still open after that: a program the
+    /// service cannot end, or one that did not stop, says its capsule must not lose its files
+    /// under it.
+    pub(crate) fn close_entries(
+        &self,
+        entries: &BTreeSet<String>,
+        patience: std::time::Duration,
+    ) -> Vec<String> {
+        let (closable, stuck): (Vec<_>, Vec<String>) = {
+            let inner = self.inner();
+            let mut closable = Vec::new();
+            let mut stuck = Vec::new();
+            for running in inner
+                .running
+                .values()
+                .filter(|running| entries.contains(&running.entry_id))
+            {
+                match &running.program {
+                    Some(program) => closable.push(Arc::clone(program)),
+                    // A program the service holds no handle on cannot be ended from here, so
+                    // it is said back at once rather than waited out.
+                    None => stuck.push(running.entry_id.clone()),
+                }
+            }
+            drop(inner);
+            (closable, stuck)
+        };
+        if !stuck.is_empty() {
+            return stuck;
+        }
+        for program in &closable {
+            program.stop();
+        }
+        if closable.is_empty() {
+            return Vec::new();
+        }
+        let deadline = std::time::Instant::now().checked_add(patience);
+        let mut inner = self.inner();
+        loop {
+            let open: Vec<String> = inner
+                .running
+                .values()
+                .filter(|running| entries.contains(&running.entry_id))
+                .map(|running| running.entry_id.clone())
+                .collect();
+            if open.is_empty() {
+                return Vec::new();
+            }
+            let Some(left) = deadline
+                .and_then(|deadline| deadline.checked_duration_since(std::time::Instant::now()))
+            else {
+                return open;
+            };
+            let (next, _) = self
+                .ended
+                .wait_timeout(inner, left)
+                .unwrap_or_else(PoisonError::into_inner);
+            inner = next;
+        }
+    }
 }
 
 /// Watch `program` on a thread of its own until it ended: then give back what its launch was
@@ -340,5 +402,52 @@ mod tests {
         assert_eq!(ends.len(), 1);
         assert!(!ends[0].success);
         assert_eq!(ends[0].exit_code, None, "ended by a signal");
+    }
+
+    /// A capsule's delete ends its open programs first, in whichever workspace they were
+    /// started, and answers only once they are gone: no file disappears under a program still
+    /// using it.
+    #[test]
+    fn a_capsules_programs_are_ended_before_its_files_go() {
+        let programs = Arc::new(Programs::default());
+        for (workspace, entry) in [("one", "psftp"), ("two", "putty")] {
+            let child = std::process::Command::new("sleep")
+                .arg("30")
+                .spawn_locked()
+                .expect("a program starts");
+            let program = crate::ChildProgram::new(child).expect("its pidfd");
+            watch(
+                &programs,
+                entry,
+                workspace,
+                entry,
+                Box::new(program),
+                true,
+                Box::new(|| {}),
+            )
+            .expect("watched");
+        }
+        let entries = BTreeSet::from(["psftp".to_owned(), "putty".to_owned()]);
+        assert!(
+            programs
+                .close_entries(&entries, std::time::Duration::from_secs(10))
+                .is_empty(),
+            "both programs ended"
+        );
+        assert!(programs.running_in("one").is_empty());
+        assert!(programs.running_in("two").is_empty());
+    }
+
+    /// A program the service cannot end is named back rather than waited out: the capsule's
+    /// files do not go under it.
+    #[test]
+    fn a_program_that_cannot_be_ended_is_named_back() {
+        let programs = Programs::default();
+        programs.started("putty", "one", None);
+        let entries = BTreeSet::from(["putty".to_owned()]);
+        assert_eq!(
+            programs.close_entries(&entries, std::time::Duration::from_millis(50)),
+            ["putty"]
+        );
     }
 }

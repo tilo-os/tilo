@@ -104,6 +104,8 @@ pub struct WindowsApp {
     pub recommended_route: Route,
     pub runner: String,
     pub capsule: String,
+    /// What the setup that installed it is called, as its installer named it.
+    pub setup_name: Option<String>,
     pub catalogue_source: String,
     pub confidence: Confidence,
     pub reason: String,
@@ -163,6 +165,30 @@ pub struct Catalogue {
     pub vm_install_confirmation: Option<VmInstallConfirmation>,
 }
 
+/// The capsule a catalogue app reports while its setup is still running, which keeps no data
+/// of its own yet.
+pub const PENDING_CAPSULE: &str = "Pending private capsule";
+
+/// What one setup put on this computer: the private capsule every program of it shares, and
+/// every program that goes when the capsule's data goes. They came from one installer and
+/// keep one set of files, so the manager acts on them as a group.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Setup {
+    /// What the setup is called, as its installer named it; empty when the service reports
+    /// no name.
+    pub name: String,
+    /// Every program of the setup, in the order the manager lists them.
+    pub programs: Vec<String>,
+}
+
+impl Setup {
+    /// Whether the setup holds more than one program: the point at which an operation on one
+    /// program reaches the others.
+    pub fn holds_several(&self) -> bool {
+        self.programs.len() > 1
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VmInstallConfirmation {
     pub display_name: String,
@@ -176,5 +202,28 @@ impl Catalogue {
     }
     pub fn app_mut(&mut self, id: &str) -> Option<&mut WindowsApp> {
         self.apps.iter_mut().find(|app| app.id == id)
+    }
+    /// The setup `app` belongs to, when its data can be deleted now: its private capsule with
+    /// every program that shares it. `None` for a program the Windows appliance shows, which
+    /// keeps no capsule of its own, and while a setup is still changing.
+    pub fn setup_of(&self, app: &WindowsApp) -> Option<Setup> {
+        if app.route == Route::Vm || app.capsule == PENDING_CAPSULE {
+            return None;
+        }
+        let programs: Vec<&WindowsApp> = self
+            .apps
+            .iter()
+            .filter(|other| other.route != Route::Vm && other.capsule == app.capsule)
+            .collect();
+        if !programs.iter().any(|other| other.can_delete_data) {
+            return None;
+        }
+        Some(Setup {
+            name: programs
+                .iter()
+                .find_map(|other| other.setup_name.clone())
+                .unwrap_or_default(),
+            programs: programs.iter().map(|other| other.name.clone()).collect(),
+        })
     }
 }

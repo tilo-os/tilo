@@ -220,9 +220,9 @@ impl SampleProvider {
         };
         Self { native_controls: false, catalogue: Catalogue {
             apps: vec![
-                WindowsApp { id: "adobe-reader".into(), name: "Adobe Acrobat Reader".into(), publisher: "Adobe".into(), route: Route::Wine, recommended_route: Route::Wine, runner: "Wine 11.0".into(), capsule: "Adobe Reader".into(), catalogue_source: "Tilo compatibility catalogue".into(), confidence: Confidence::Verified, reason: "A verified recipe runs Reader in Wine, the lightest way to open it in isolation.".into(), status: AppStatus::Ready, grants: grants(&[("Downloads", "Read and write", true), ("Clipboard", "On demand", true), ("Camera", "Off", false)]), fallback_detail: "Reader sees only the folders and devices listed above.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for apps in the Windows appliance.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed 12 June 2026".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for apps in the Windows appliance.".into()) },
-                WindowsApp { id: "cyberpunk-2077".into(), name: "Cyberpunk 2077".into(), publisher: "CD PROJEKT RED".into(), route: Route::Proton, recommended_route: Route::Proton, runner: "Proton 10.0".into(), capsule: "Steam library".into(), catalogue_source: "Steam + ProtonDB recipe".into(), confidence: Confidence::Community, reason: "Games run best in Proton with the Steam Runtime, which includes the fixes this game is known to need.".into(), status: AppStatus::Running, grants: grants(&[("Games library", "Read and write", true), ("Controller", "Connected devices", true), ("Microphone", "Off", false)]), fallback_detail: "The game sees only its library and connected controllers.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for apps in the Windows appliance.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed 3 May 2026".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for apps in the Windows appliance.".into()) },
-                WindowsApp { id: "visual-studio".into(), name: "Visual Studio".into(), publisher: "Microsoft".into(), route: Route::Vm, recommended_route: Route::Vm, runner: "Windows 11".into(), capsule: "Shared Windows appliance".into(), catalogue_source: "Tilo compatibility catalogue".into(), confidence: Confidence::Verified, reason: "Visual Studio needs Windows services that Wine can't provide, so it runs in the Windows appliance.".into(), status: AppStatus::Ready, grants: grants(&[("Audio playback", "On", true), ("Files on this computer", "Off", false), ("Clipboard", "Off", false), ("Microphone and network", "Off", false)]), fallback_detail: "Files reach Visual Studio only when you open them with it.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("This app window can't receive files from this computer yet.".into()), route_override_available: false, route_override_unavailable_reason: Some("Only an administrator can change how this app opens.".into()), can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: false, can_publish_vm_candidate: false, installation_detail: Some("Installed 21 April 2026".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
+                WindowsApp { id: "adobe-reader".into(), name: "Adobe Acrobat Reader".into(), publisher: "Adobe".into(), route: Route::Wine, recommended_route: Route::Wine, runner: "Wine 11.0".into(), capsule: "Adobe Reader".into(), setup_name: Some("Adobe Acrobat Reader".into()), catalogue_source: "Tilo compatibility catalogue".into(), confidence: Confidence::Verified, reason: "A verified recipe opens Reader in Wine, the lightest way to open it in isolation.".into(), status: AppStatus::Ready, grants: grants(&[("Downloads", "Read and write", true), ("Clipboard", "On demand", true), ("Camera", "Off", false)]), fallback_detail: "Reader sees only the folders and devices listed above.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for apps in the Windows appliance.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed 12 June 2026".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for apps in the Windows appliance.".into()) },
+                WindowsApp { id: "cyberpunk-2077".into(), name: "Cyberpunk 2077".into(), publisher: "CD PROJEKT RED".into(), route: Route::Proton, recommended_route: Route::Proton, runner: "Proton 10.0".into(), capsule: "Steam library".into(), setup_name: Some("Steam library".into()), catalogue_source: "Steam + ProtonDB recipe".into(), confidence: Confidence::Community, reason: "The Steam Runtime plays this game best, and it includes the fixes the game is known to need.".into(), status: AppStatus::Running, grants: grants(&[("Games library", "Read and write", true), ("Controller", "Connected devices", true), ("Microphone", "Off", false)]), fallback_detail: "The game sees only its library and connected controllers.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for apps in the Windows appliance.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed 3 May 2026".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for apps in the Windows appliance.".into()) },
+                WindowsApp { id: "visual-studio".into(), name: "Visual Studio".into(), publisher: "Microsoft".into(), route: Route::Vm, recommended_route: Route::Vm, runner: "Windows 11".into(), capsule: "Shared Windows appliance".into(), setup_name: None, catalogue_source: "Tilo compatibility catalogue".into(), confidence: Confidence::Verified, reason: "Visual Studio needs Windows services that Wine can't provide, so it opens in the Windows appliance.".into(), status: AppStatus::Ready, grants: grants(&[("Audio playback", "On", true), ("Files on this computer", "Off", false), ("Clipboard", "Off", false), ("Microphone and network", "Off", false)]), fallback_detail: "Files reach Visual Studio only when you open them with it.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("This app window can't receive files from this computer yet.".into()), route_override_available: false, route_override_unavailable_reason: Some("Only an administrator can change how this app opens.".into()), can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: false, can_publish_vm_candidate: false, installation_detail: Some("Installed 21 April 2026".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
             ], vm: ApplianceState { ready: true, detail: "The Windows appliance is ready.".into(), running_apps: 0, shared_session_active: false, shared_session_grants: Vec::new(), shared_session_contributors: Vec::new() }, vm_install_confirmation: None } }
     }
 
@@ -235,6 +235,55 @@ impl SampleProvider {
                     .into(),
             recommended_route: Route::Wine,
         });
+    }
+
+    /// A suite of programs one setup installed into a capsule of its own: what a person has
+    /// after running one installer that put several programs on the computer.
+    pub(crate) fn seed_suite(&mut self) {
+        let programs = [
+            ("psftp", "PSFTP"),
+            ("putty", "PuTTY"),
+            ("puttygen", "PuTTYGen"),
+            ("pageant", "Pageant"),
+        ];
+        for (id, name) in programs {
+            self.catalogue.apps.push(WindowsApp {
+                id: id.into(),
+                name: name.into(),
+                publisher: "Simon Tatham".into(),
+                route: Route::Wine,
+                recommended_route: Route::Wine,
+                runner: "Wine 11.0".into(),
+                capsule: "wine-putty".into(),
+                setup_name: Some("PuTTY 0.85 (64-bit)".into()),
+                catalogue_source: "Tilo compatibility catalogue".into(),
+                confidence: Confidence::Verified,
+                reason: "A verified recipe opens it in Wine, beside the other programs the setup installed.".into(),
+                status: AppStatus::Ready,
+                grants: Vec::new(),
+                fallback_detail: "It sees only its own files and the folders listed above.".into(),
+                launch_available: true,
+                launch_unavailable_reason: None,
+                portal_file_open_available: false,
+                portal_file_open_unavailable_reason: Some(
+                    "Open file is available only for apps in the Windows appliance.".into(),
+                ),
+                route_override_available: true,
+                route_override_unavailable_reason: None,
+                can_retry_install: false,
+                can_escalate_install_to_vm: false,
+                can_remove_launcher: true,
+                can_vendor_uninstall: true,
+                can_delete_data: true,
+                can_publish_vm_candidate: false,
+                installation_detail: Some("Installed 18 November 2026".into()),
+                vm_fallback_available: false,
+                vm_fallback_unavailable_reason: Some(
+                    "Open in Windows VM is available only for apps in the Windows appliance."
+                        .into(),
+                ),
+            });
+        }
     }
 
     pub(crate) fn seed_setup_failure(&mut self) {
@@ -291,6 +340,7 @@ impl CompatibilityProvider for SampleProvider {
             recommended_route: Route::Wine,
             runner: "Wine 11.0".into(),
             capsule: "imported-sample".into(),
+            setup_name: Some(name.to_owned()),
 
             catalogue_source: "Default settings".into(),
             confidence: Confidence::Heuristic,
@@ -717,6 +767,7 @@ impl LiveProvider {
             .iter()
             .rev()
             .find(|end| self.stopping.as_deref() != Some(end.entry_id.as_str()))
+            && applications.iter().any(|app| app.id == end.entry_id)
             && let Some(notice) = ended_notice(end)
         {
             self.notice = Some(notice);
@@ -793,7 +844,8 @@ impl LiveProvider {
             route: Route::Wine,
             recommended_route: Route::Wine,
             runner: "Choosing…".into(),
-            capsule: "Pending private capsule".into(),
+            capsule: crate::model::PENDING_CAPSULE.into(),
+            setup_name: None,
 
             catalogue_source: "Checking the installer…".into(),
             confidence: Confidence::Heuristic,
@@ -1341,7 +1393,7 @@ fn operation(response: Result<ProtocolResponse, SessionError>) -> WorkerEvent {
             Ok("Launcher removed; the installed application and its data were kept.".into())
         }
         Ok(ProtocolResponse::DataDeleted { .. }) => {
-            Ok("Application and all of its private capsule data were deleted.".into())
+            Ok("The setup's data and every app that shared it were deleted.".into())
         }
         Ok(ProtocolResponse::OpensWithSet { route, .. }) => Ok(match route {
             Some(RouteKind::Proton) => "It opens with Proton from now on.",
@@ -1438,6 +1490,7 @@ fn app_from_vm_candidate(candidate: &compat_service::VmInstallCandidate) -> Wind
         recommended_route: Route::Vm,
         runner: "Windows".into(),
         capsule: "Shared Windows appliance".into(),
+        setup_name: None,
         catalogue_source: "Found by Windows setup".into(),
         confidence: Confidence::Verified,
         reason: candidate.version.as_ref().map_or_else(
@@ -1551,6 +1604,7 @@ fn app_from_managed(
                 .clone()
                 .unwrap_or_else(|| "Unavailable private capsule".into())
         },
+        setup_name: installation.map(|item| item.display_name.clone()),
         catalogue_source: if route == Route::Vm {
             "Installed in Windows".into()
         } else if explanation.catalogue_record.is_some() {
@@ -1620,6 +1674,7 @@ fn app_from_installation(installation: &ManagedInstallation) -> WindowsApp {
         recommended_route: route,
         runner: installation.runner.clone(),
         capsule: installation.capsule_id.clone(),
+        setup_name: Some(installation.display_name.clone()),
 
         catalogue_source: "Added from a file".into(),
         confidence: Confidence::Heuristic,
@@ -1838,6 +1893,50 @@ mod tests {
                 "The managed Windows appliance is ready."
             );
         }
+    }
+
+    /// The setup a program came from is the installation that put it there, named by the
+    /// service: the page and the delete confirmation read it from here, and its programs are
+    /// every one the capsule holds.
+    #[test]
+    fn a_managed_installations_name_is_the_setup_its_programs_read() {
+        let capsule = |id: &str, name: &str| {
+            let mut application = managed_vm();
+            application.id = id.into();
+            application.display_name = name.into();
+            application.capsule_id = Some("wine-putty".into());
+            application.explanation.route = RouteKind::Wine;
+            application.explanation.capsule_id = Some("wine-putty".into());
+            application.recommended_route = RouteKind::Wine;
+            application
+        };
+        let installations = [ManagedInstallation {
+            capsule_id: "wine-putty".into(),
+            display_name: "PuTTY 0.85 (64-bit)".into(),
+            route: RouteKind::Wine,
+            runner: "Wine".into(),
+            status: InstallationStatus::Installed,
+            program_count: 2,
+            can_retry: false,
+            can_vendor_uninstall: true,
+            can_delete_data: true,
+            detail: "Installed 18 November 2026.".into(),
+        }];
+        let catalogue = catalogue_from_managed(
+            vec![
+                capsule("windows-psftp", "PSFTP"),
+                capsule("windows-putty", "PuTTY"),
+            ],
+            &installations,
+            VmAvailability::ready("Ready"),
+            None,
+            None,
+        );
+        let putty = catalogue.app("windows-putty").expect("the program");
+        assert_eq!(putty.setup_name.as_deref(), Some("PuTTY 0.85 (64-bit)"));
+        let setup = catalogue.setup_of(putty).expect("its setup");
+        assert_eq!(setup.name, "PuTTY 0.85 (64-bit)");
+        assert_eq!(setup.programs, ["PSFTP", "PuTTY"]);
     }
 
     fn managed_vm() -> ManagedApplication {
@@ -2131,6 +2230,32 @@ mod tests {
             ended_notice(&said(None)).as_deref(),
             Some("Probe stopped: wine: could not load ntdll.so")
         );
+    }
+
+    /// A program the list no longer carries is gone from the list: deleting a setup's data
+    /// ends its open programs, and a sentence about one having stopped would outlive every
+    /// thing it names.
+    #[test]
+    fn a_program_the_list_no_longer_carries_is_not_said_to_have_stopped() {
+        let (mut provider, event_tx) = connected_to_nothing();
+        event_tx
+            .send(WorkerEvent::Listed(Box::new(Listed {
+                applications: Vec::new(),
+                installations: Vec::new(),
+                vm_availability: VmAvailability::ready("Ready"),
+                vm_installation: None,
+                vm_uninstallation: None,
+                ended: vec![ProgramEnd {
+                    entry_id: "windows-putty".into(),
+                    display_name: "PuTTY".into(),
+                    success: false,
+                    exit_code: None,
+                    error: None,
+                    said: None,
+                }],
+            })))
+            .unwrap();
+        assert_eq!(provider.take_notice(), None);
     }
 
     /// A manager connected to no one, and the worker's side of its events, so a test can drive

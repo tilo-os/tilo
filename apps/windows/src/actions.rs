@@ -90,17 +90,17 @@ pub enum WindowsEffect {
         #[param("The application's id")]
         app: String,
     },
-    /// Retry installation.
+    /// Retry the setup whose private capsule this is.
     #[effect(row, job, privileged, kind = "outside", on = crate::rows::CompatApp)]
-    #[effect(on = crate::rows::PrivateData)]
+    #[effect(on = crate::rows::Setup)]
     RetryInstall {
-        #[param("The application's private capsule")]
+        #[param("The private capsule the setup installed into")]
         capsule: String,
     },
     #[effect(row, job, privileged, kind = "outside", on = crate::rows::CompatApp)]
-    #[effect(on = crate::rows::PrivateData)]
+    #[effect(on = crate::rows::Setup)]
     EscalateInstall {
-        #[param("The application's private capsule")]
+        #[param("The private capsule the setup installed into")]
         capsule: String,
     },
     #[effect(row, job, destructive, kind = "outside", on = crate::rows::CompatApp)]
@@ -109,15 +109,16 @@ pub enum WindowsEffect {
         app: String,
     },
     #[effect(row, job, destructive, kind = "outside", on = crate::rows::CompatApp)]
-    #[effect(on = crate::rows::PrivateData)]
+    #[effect(on = crate::rows::Setup)]
     Uninstall {
         #[param("The application's id")]
         app: String,
     },
-    #[effect(row, job, destructive, kind = "outside", phrase = "Self::data_name", on = crate::rows::CompatApp)]
-    #[effect(on = crate::rows::PrivateData)]
+    /// Delete the setup's data: everything stored in the private capsule it installed into,
+    /// which every program of the setup shares.
+    #[effect(row, job, destructive, kind = "outside", phrase = "Self::data_name", on = crate::rows::Setup)]
     DeleteData {
-        #[param("The application's private capsule")]
+        #[param("The private capsule the setup installed into")]
         capsule: String,
     },
 }
@@ -141,8 +142,8 @@ impl WindowsEffect {
     }
 }
 
-/// The application whose data a destructive invocation loses, for its caller
-/// to type: the app row's or the private-data row's id names the app.
+/// The capsule a destructive invocation loses, for its caller to type: the setup row's id
+/// names the capsule whose files go.
 impl WindowsEffect {
     fn data_name(&self) -> String {
         match self {
@@ -153,7 +154,7 @@ impl WindowsEffect {
 }
 
 /// What the service reports, as rows beneath the manager: the install awaiting a choice,
-/// the appliance and every catalogue application.
+/// the appliance, and the setups the catalogue's programs came from.
 pub fn live_rows(catalogue: &Catalogue) -> Vec<LiveRow> {
     let mut rows = Vec::new();
     if let Some(confirmation) = &catalogue.vm_install_confirmation {
@@ -166,7 +167,36 @@ pub fn live_rows(catalogue: &Catalogue) -> Vec<LiveRow> {
         APPLIANCE_ROW,
         "Managed Windows appliance",
     ));
-    rows.extend(catalogue.apps.iter().map(app_row));
+    rows.extend(
+        catalogue
+            .apps
+            .iter()
+            .filter(|app| !keeps_a_capsule(app))
+            .map(app_row),
+    );
+    // One row per setup, holding every program it installed: the programs share one capsule,
+    // so what acts on the capsule acts on all of them at once.
+    let mut setups: Vec<(&str, &crate::model::WindowsApp)> = Vec::new();
+    for app in catalogue.apps.iter().filter(|app| keeps_a_capsule(app)) {
+        if !setups.iter().any(|(capsule, _)| *capsule == app.capsule) {
+            setups.push((&app.capsule, app));
+        }
+    }
+    for (capsule, first) in setups {
+        let programs: Vec<&crate::model::WindowsApp> = catalogue
+            .apps
+            .iter()
+            .filter(|app| keeps_a_capsule(app) && app.capsule == capsule)
+            .collect();
+        let mut setup = LiveRow::typed::<crate::rows::Setup>(
+            setup_resource_id(capsule),
+            setup_label(first, &programs),
+        );
+        for program in programs {
+            setup = setup.row(app_row(program));
+        }
+        rows.push(setup);
+    }
     rows
 }
 
@@ -174,50 +204,113 @@ pub const APPLIANCE_ROW: &str = "windows.appliance";
 
 pub const PENDING_INSTALL_ROW: &str = "windows.pending-install";
 
-/// One catalogue application's row, and beneath it the private data it keeps.
-fn app_row(app: &crate::model::WindowsApp) -> LiveRow {
-    let row = LiveRow::typed::<crate::rows::CompatApp>(
-        crate::search::app_resource_id(&app.id),
-        &app.name,
-    );
-    if app.route == Route::Vm || app.capsule == "Pending private capsule" {
-        return row;
-    }
-    row.row(LiveRow::typed::<crate::rows::PrivateData>(
-        format!("{}:{}", crate::rows::PRIVATE_DATA_PREFIX, app.id),
-        format!("{} private data", app.capsule),
-    ))
+/// Whether `app` is installed in a private capsule of its own (rather than running in the
+/// Windows appliance, or still being set up).
+fn keeps_a_capsule(app: &crate::model::WindowsApp) -> bool {
+    app.route != Route::Vm && app.capsule != crate::model::PENDING_CAPSULE
 }
+
+/// The name a setup's row carries: what its installer called it, or the programs it put
+/// there when the service reports no name.
+fn setup_label(first: &crate::model::WindowsApp, programs: &[&crate::model::WindowsApp]) -> String {
+    if let Some(name) = first
+        .setup_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+    {
+        return name.to_owned();
+    }
+    let names: Vec<String> = programs
+        .iter()
+        .map(|program| program.name.clone())
+        .collect();
+    format!("{} setup", crate::strings::names(&names))
+}
+
+/// One catalogue application's row.
+fn app_row(app: &crate::model::WindowsApp) -> LiveRow {
+    LiveRow::typed::<crate::rows::CompatApp>(crate::search::app_resource_id(&app.id), &app.name)
+}
+
+/// The row of the setup that installed into `capsule`.
+pub fn setup_resource_id(capsule: &str) -> String {
+    format!("{}:{capsule}", crate::rows::SETUP_PREFIX)
+}
+
+const CODE: &str = "unavailable";
+const NOT_OFFERED: &str =
+    "The service did not offer this operation for the current installation state";
+const CANNOT_LAUNCH: &str = "This application cannot launch right now";
 
 /// What the row `id` is like now, as the service reports it: an appliance
 /// that is not set up offers no lifecycle, and an application offers the
 /// operations of its installation state, with the service's reason why not.
 pub fn row_status(catalogue: &Catalogue, id: &str) -> Vec<EffectStatus> {
-    const CODE: &str = "unavailable";
-    const NOT_OFFERED: &str =
-        "The service did not offer this operation for the current installation state";
-    const CANNOT_LAUNCH: &str = "This application cannot launch right now";
     if id == APPLIANCE_ROW {
-        if catalogue.vm.ready {
-            return Vec::new();
-        }
-        return [
-            WindowsEffect::RECOVERY,
-            WindowsEffect::START,
-            WindowsEffect::RESTART,
-            WindowsEffect::SUSPEND,
-            WindowsEffect::RESUME,
-            WindowsEffect::SHUTDOWN,
-            WindowsEffect::TEMPORARY_NETWORK,
-            WindowsEffect::UPDATE_NETWORK,
-            WindowsEffect::REVOKE_NETWORK,
-        ]
-        .into_iter()
-        .map(|effect| {
-            EffectStatus::unavailable(effect, CODE, "Set up the managed Windows appliance first")
-        })
-        .collect();
+        return appliance_status(catalogue);
     }
+    if let Some(capsule) = crate::rows::capsule_of_row(id) {
+        return setup_status(catalogue, capsule);
+    }
+    app_status(catalogue, id)
+}
+
+/// What a ready appliance offers, and what one that is not set up refuses.
+fn appliance_status(catalogue: &Catalogue) -> Vec<EffectStatus> {
+    if catalogue.vm.ready {
+        return Vec::new();
+    }
+    [
+        WindowsEffect::RECOVERY,
+        WindowsEffect::START,
+        WindowsEffect::RESTART,
+        WindowsEffect::SUSPEND,
+        WindowsEffect::RESUME,
+        WindowsEffect::SHUTDOWN,
+        WindowsEffect::TEMPORARY_NETWORK,
+        WindowsEffect::UPDATE_NETWORK,
+        WindowsEffect::REVOKE_NETWORK,
+    ]
+    .into_iter()
+    .map(|effect| {
+        EffectStatus::unavailable(effect, CODE, "Set up the managed Windows appliance first")
+    })
+    .collect()
+}
+
+/// What a setup's row refuses: its operations act on its capsule, so what one program's
+/// installation state allows, the setup allows, since every program shares the state.
+fn setup_status(catalogue: &Catalogue, capsule: &str) -> Vec<EffectStatus> {
+    let Some(app) = catalogue.apps.iter().find(|app| app.capsule == capsule) else {
+        return Vec::new();
+    };
+    [
+        refusal(
+            WindowsEffect::RETRY_INSTALL,
+            app.can_retry_install,
+            None,
+            NOT_OFFERED,
+        ),
+        refusal(
+            WindowsEffect::ESCALATE_INSTALL,
+            app.can_escalate_install_to_vm,
+            None,
+            NOT_OFFERED,
+        ),
+        refusal(
+            WindowsEffect::DELETE_DATA,
+            app.can_delete_data,
+            None,
+            NOT_OFFERED,
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// What an app's row refuses of its own operations.
+fn app_status(catalogue: &Catalogue, id: &str) -> Vec<EffectStatus> {
     let Some(app) = catalogue.app(crate::rows::app_of_row(id)) else {
         return Vec::new();
     };
@@ -275,12 +368,6 @@ pub fn row_status(catalogue: &Catalogue, id: &str) -> Vec<EffectStatus> {
         refusal(
             WindowsEffect::UNINSTALL,
             app.can_vendor_uninstall,
-            None,
-            NOT_OFFERED,
-        ),
-        refusal(
-            WindowsEffect::DELETE_DATA,
-            app.can_delete_data,
             None,
             NOT_OFFERED,
         ),
@@ -411,32 +498,53 @@ mod tests {
                     "missing appliance action {expected}"
                 );
             }
-            assert_eq!(
+            // A program the Windows appliance shows keeps no private capsule of its own, so it
+            // stands on its own; the private-capsule programs sit under their setups.
+            assert!(
                 rows.iter()
-                    .filter(|resource| resource.kind == "windows.compat-app")
-                    .count(),
-                3
+                    .any(|resource| resource.id.as_str() == "windows.app:visual-studio")
+            );
+            assert!(
+                rows.iter()
+                    .all(|resource| resource.id.as_str() != "windows.app:adobe-reader"),
+                "a program of a private capsule is listed under its setup"
+            );
+            let setups: Vec<&str> = rows
+                .iter()
+                .filter(|resource| resource.kind == "windows.setup")
+                .map(|resource| resource.id.as_str())
+                .collect();
+            assert_eq!(
+                setups,
+                ["windows.setup:Adobe Reader", "windows.setup:Steam library"]
             );
         }
         {
             let rows = sample_rows();
-            let reader = rows
+            let setup = rows
+                .iter()
+                .find(|resource| resource.id.as_str() == "windows.setup:Adobe Reader")
+                .expect("the setup holding Reader");
+            let reader = setup
+                .children
                 .iter()
                 .find(|resource| resource.id.as_str() == "windows.app:adobe-reader")
                 .expect("reader resource");
-            let prefix = reader
-                .children
-                .iter()
-                .find(|resource| resource.kind == "windows.prefix")
-                .expect("private prefix resource");
             assert!(
-                prefix
+                !reader
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "delete-data"),
+                "deleting acts on the setup's capsule, never on one program as if it were alone"
+            );
+            assert!(
+                setup
                     .actions
                     .iter()
                     .any(|action| action.id == "delete-data")
             );
-            assert!(prefix.actions.iter().any(|action| action.id == "uninstall"));
-            let delete = prefix
+            assert!(setup.actions.iter().any(|action| action.id == "uninstall"));
+            let delete = setup
                 .actions
                 .iter()
                 .find(|action| action.id == "delete-data")
@@ -444,7 +552,7 @@ mod tests {
             assert_eq!(
                 delete.contract.confirmation,
                 tilo_actions::ConfirmationPolicy::Phrase {
-                    phrase: crate::rows::app_of_row(prefix.id.as_str()).to_owned(),
+                    phrase: "Adobe Reader".to_owned(),
                 },
                 "an agent or a script must type what it loses, as a person does"
             );

@@ -21,9 +21,40 @@ pub fn format_all(key: &str, args: &[(&str, String)]) -> String {
     CATALOG.t_args(key, &vars)
 }
 
+/// Names read back as a person says them in a sentence: "`PuTTY`", "`PuTTY` and `PSFTP`", or
+/// "`PSFTP`, `PuTTY` and `PuTTYGen`".
+pub fn names(names: &[String]) -> String {
+    match names.split_last() {
+        None => String::new(),
+        Some((only, [])) => only.clone(),
+        Some((last, leading)) => format_all(
+            "windows-names-and",
+            &[("leading", leading.join(", ")), ("last", last.clone())],
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{format_all, t};
+    use super::{format_all, names, t};
+
+    /// Names read back as a person says them, whichever count a setup installed.
+    #[test]
+    fn names_are_said_as_a_person_says_them() {
+        let word = |name: &str| name.to_owned();
+        assert_eq!(names(&[]), "");
+        assert_eq!(names(&[word("PuTTY")]), "PuTTY");
+        assert_eq!(names(&[word("PuTTY"), word("PSFTP")]), "PuTTY and PSFTP");
+        assert_eq!(
+            names(&[
+                word("PSFTP"),
+                word("PuTTY"),
+                word("PuTTYGen"),
+                word("Pageant")
+            ]),
+            "PSFTP, PuTTY, PuTTYGen and Pageant"
+        );
+    }
 
     #[test]
     fn controls_resolve_from_the_bundle() {
@@ -46,6 +77,14 @@ mod tests {
             "windows-ended-could-not-open",
             "windows-ended-stopped",
             "windows-ended-stopped-saying",
+            "windows-delete-setup",
+            "windows-setup",
+            "windows-setup-programs",
+            "windows-confirm-delete-setup-title",
+            "windows-confirm-delete-setup-unnamed-title",
+            "windows-confirm-delete-setup-body",
+            "windows-confirm-delete-setup-action",
+            "windows-setup-data-deleted",
         ] {
             assert_ne!(t(key), key, "missing Fluent key: {key}");
         }

@@ -381,6 +381,9 @@ impl WindowsApp {
         if scenario == "pending-install" {
             provider.seed_install_confirmation();
         }
+        if scenario == "confirm-delete-setup" {
+            provider.seed_suite();
+        }
         let mut app = Self::with_provider(Box::new(provider));
         app.stage_scenario(Some(scenario));
         app
@@ -460,6 +463,22 @@ impl WindowsApp {
                     .apps
                     .first()
                     .map(|first| first.capsule.clone());
+            }
+            "confirm-delete-setup" => {
+                // The first program of the suite the setup installed, with the delete
+                // confirmation over it: what goes is the setup's four programs.
+                self.selected = self
+                    .catalogue
+                    .apps
+                    .iter()
+                    .position(|app| app.capsule == "wine-putty")
+                    .unwrap_or(0);
+                self.push_content = true;
+                self.confirm_delete_data = self
+                    .catalogue
+                    .apps
+                    .get(self.selected)
+                    .map(|app| app.capsule.clone());
             }
             _ => {}
         }
@@ -919,8 +938,10 @@ impl WindowsApp {
         let Some(capsule) = self.confirm_delete_data.take() else {
             return;
         };
+        // The setup's programs go with its capsule, so the notice is the truth for all of
+        // them, not only the one whose page asked.
         let result = self.provider.borrow_mut().delete_data(&capsule);
-        self.report(result, "windows-data-deleted");
+        self.report(result, setup::deleted_notice_key(&self.catalogue, &capsule));
         self.refresh();
     }
 
@@ -1800,6 +1821,14 @@ impl WindowsApp {
             vec![Box::new(PropertyList::new(about).shared_column(&facts))],
         ));
 
+        // The setup this program came from, when it keeps one: its programs share the
+        // capsule, so what manages the capsule manages all of them.
+        // The setup this program came from, when it keeps one: its programs share the
+        // capsule, so what manages the capsule manages all of them.
+        if let Some(sentence) = setup::programs_sentence(&self.catalogue, app) {
+            page.sections
+                .push(section("windows-setup", vec![Box::new(body(&sentence))]));
+        }
         let mut manage: Vec<Element> = Vec::new();
         for (available, key, role, intent) in [
             (
@@ -1832,16 +1861,19 @@ impl WindowsApp {
                 ButtonRole::Destructive,
                 Intent::Uninstall,
             ),
-            (
-                app.can_delete_data,
-                "windows-delete-data",
-                ButtonRole::Destructive,
-                Intent::DeleteData,
-            ),
         ] {
             if available {
                 manage.push(Box::new(action_button(key, key, role, intents, intent)));
             }
+        }
+        if let Some(key) = setup::delete_button(&self.catalogue, app) {
+            manage.push(Box::new(action_button(
+                key,
+                key,
+                ButtonRole::Destructive,
+                intents,
+                Intent::DeleteData,
+            )));
         }
         if !manage.is_empty() {
             page.sections.push(section(
@@ -2069,14 +2101,29 @@ impl WindowsApp {
             .map(|app| app.name.clone())
             .unwrap_or_default();
         let (title, message, action, confirm_intent, cancel, destructive) = match confirm {
-            Confirm::Delete => (
-                strings::t("windows-confirm-delete-title"),
-                strings::format("windows-confirm-delete-body", "app", &name),
-                strings::t("windows-confirm-delete-action"),
-                Intent::ConfirmDelete,
-                Intent::CancelDelete,
-                true,
-            ),
+            Confirm::Delete => match self
+                .selected_app()
+                .and_then(|app| setup::delete_confirmation(&self.catalogue, app))
+            {
+                // Every program of the setup goes with the capsule they share, so the dialog
+                // names them all rather than the one whose page it opened from.
+                Some((title, message, action)) => (
+                    title,
+                    message,
+                    action,
+                    Intent::ConfirmDelete,
+                    Intent::CancelDelete,
+                    true,
+                ),
+                None => (
+                    strings::t("windows-confirm-delete-title"),
+                    strings::format("windows-confirm-delete-body", "app", &name),
+                    strings::t("windows-confirm-delete-action"),
+                    Intent::ConfirmDelete,
+                    Intent::CancelDelete,
+                    true,
+                ),
+            },
             Confirm::Escalate => (
                 strings::t("windows-confirm-escalation-title"),
                 strings::t("windows-confirm-escalation-body"),
@@ -2404,7 +2451,10 @@ impl ui::widget::Decorator for WindowsWindow {
 
 mod controls;
 #[cfg(test)]
+mod delete_tests;
+#[cfg(test)]
 mod dispatch_tests;
+mod setup;
 
 #[cfg(test)]
 mod tests {

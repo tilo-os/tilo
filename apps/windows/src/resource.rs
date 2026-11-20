@@ -131,6 +131,7 @@ const SCENARIOS: &[&str] = &[
     "error",
     "error-compact",
     "confirm-delete",
+    "confirm-delete-setup",
     "appliance",
     "appliance-setup",
     "pending-install",
@@ -173,7 +174,11 @@ impl ResourceApp for WindowsShell {
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario.unwrap_or("wide") {
-            "detail" | "error-compact" | "vm-detail" | "confirm-delete" => (480, 800),
+            "detail"
+            | "error-compact"
+            | "vm-detail"
+            | "confirm-delete"
+            | "confirm-delete-setup" => (480, 800),
             "running" | "closed" | "ended-with-error" | "ended-overview" | "could-not-open"
             | "vm-running" | "long-name" | "error" | "pending-install" | "support-missing"
             | "support-installing" | "support-failed" => (1000, 760),
@@ -191,6 +196,9 @@ impl ResourceApp for WindowsShell {
         }
         if fixture.scenario() == Some("pending-install") {
             sample.seed_install_confirmation();
+        }
+        if fixture.scenario() == Some("confirm-delete-setup") {
+            sample.seed_suite();
         }
         fixture.provide(sample);
     }

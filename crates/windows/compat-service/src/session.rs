@@ -41,6 +41,9 @@ use tilo_app_id::apps::WINDOWS as MANAGER_APP_ID;
 const FRAMING: Framing = Framing::little_endian(1024 * 1024).reject_empty();
 const MAX_CLIENT_WORKERS: usize = 8;
 const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a capsule's open programs are given to end before its data is deleted: a keeper
+/// ends its program at once, so this is only reached by one that refuses to go.
+const CLOSE_BEFORE_DELETE: Duration = Duration::from_secs(10);
 const VM_INSTALL_CONFIRMATION_SECONDS: u64 = 5 * 60;
 
 struct PendingVmInstall {
@@ -1407,11 +1410,28 @@ where
                 .entries()?
                 .into_iter()
                 .filter(|entry| entry.capsule_id == capsule_id)
-                .map(|entry| entry.entry_id)
                 .collect::<Vec<_>>();
+            // A program of the capsule that is open is ended before its files go: the keeper
+            // takes its window and tab with it, and nothing is deleted under a program still
+            // using it. A program that does not end says so, and nothing is deleted.
+            let entries = retiring
+                .iter()
+                .map(|entry| entry.entry_id.clone())
+                .collect::<BTreeSet<_>>();
+            let still_open = managed
+                .programs
+                .close_entries(&entries, CLOSE_BEFORE_DELETE);
+            if !still_open.is_empty() {
+                let names: Vec<&str> = retiring
+                    .iter()
+                    .filter(|entry| still_open.contains(&entry.entry_id))
+                    .map(|entry| entry.program.display_name.as_str())
+                    .collect();
+                return Err(SessionError::StillOpen(names.join(", ")));
+            }
             managed.delete_data(&capsule_id)?;
             for entry in retiring {
-                allowed_entry_ids.remove(&entry);
+                allowed_entry_ids.remove(&entry.entry_id);
             }
             Ok(ProtocolResponse::DataDeleted { capsule_id })
         }
@@ -1967,6 +1987,8 @@ pub enum SessionError {
     UnknownEntry,
     #[error("no program of this application is open that can be ended here")]
     NotRunning,
+    #[error("this setup still has open programs ({0}); close them and try again")]
+    StillOpen(String),
     #[error("{NOT_ADMINISTRATOR}")]
     NotAdministrator,
     #[error(
@@ -2011,6 +2033,7 @@ impl SessionError {
             Self::VmInstallConfirmationExpired => "confirmation_expired",
             Self::UnknownEntry => "unknown_entry",
             Self::NotRunning => "not_running",
+            Self::StillOpen(_) => "still_open",
             Self::NotAdministrator => "not_administrator",
             Self::OpenWithOtherRunner { .. } => "open_with_other_runner",
             Self::Authority(_) => "authority_unavailable",
