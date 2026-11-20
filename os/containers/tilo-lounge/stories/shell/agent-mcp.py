@@ -126,7 +126,9 @@ def steps(story: Story) -> None:
 
     def ada_opens():
         took = ada.start(apps=APPS)
-        story.timing("Ada's session start, to its first frame", took)
+        story.timing("Ada's session start, to its first frame", took["tookMs"])
+        story.timing("Ada's session start, to its first frame, with the development launcher's installing", took["launcherMs"])
+        return {"tookMs": took["tookMs"]}
 
     story.step("Ada opens Tilo", ada_opens)
 

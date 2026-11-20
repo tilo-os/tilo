@@ -90,15 +90,26 @@ class Person:
             prepare(self.state, apps=apps)
             self.prepared = True
 
-    def start(self, *, apps: str = APPS, fresh: bool = True, env: dict | None = None) -> float:
-        """Open this person's Tilo: their session starts and draws its first frame. Answers how
-        long that took, in ms."""
+    def start(self, *, apps: str = APPS, fresh: bool = True, env: dict | None = None) -> dict:
+        """Open this person's Tilo: their session starts and answers with a frame. Answers
+        `{"tookMs": …}`, the session's own time from its start until it answered, which is what a
+        person waits for; `launcherMs` is the whole start, with what the development launcher
+        installs and checks before the session runs, which no person's computer does."""
         self.prepare(apps)
         began = time.monotonic()
         self.starts += 1
         tag = self.key if self.starts == 1 else f"{self.key}-{self.starts}"
         self.session.start(apps=apps, fresh=fresh, out=self.logs, tag=tag, env=env)
-        return (time.monotonic() - began) * 1000
+        launcher = (time.monotonic() - began) * 1000
+        said = self.state / "logs/ready.log"
+
+        def answered():
+            found = re.search(r"answers after (\d+) ms",
+                              said.read_text(errors="replace") if said.is_file() else "")
+            return found and int(found.group(1))
+
+        return {"tookMs": until("the session to say how long it took to answer", answered, 10, 0.05),
+                "launcherMs": launcher}
 
     def stop(self) -> None:
         self.session.stop()

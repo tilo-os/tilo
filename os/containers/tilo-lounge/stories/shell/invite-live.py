@@ -113,21 +113,28 @@ def name_self(one: Person, name: str) -> None:
 
 def steps(story: Story) -> None:
     ada, grace = story.person("Ada"), story.person("Grace")
+    # Both computers have their apps before anyone opens Tilo.
     ada.prepare(APPS)
+    grace.prepare(APPS)
 
     def ada_opens():
         took = ada.start(apps=APPS)
-        story.timing("Ada's session start, to its first frame", took)
+        story.timing("Ada's session start, to its first frame", took["tookMs"])
+        story.timing("Ada's session start, to its first frame, with the development launcher's installing", took["launcherMs"])
+        after = time.monotonic()
         until("Ada's shell to hold a workspace", lambda: front(ada), 60)
-        story.note("ada-first-controls", ada.names())
+        return {"tookMs": took["tookMs"] + (time.monotonic() - after) * 1000}
 
     story.step("Ada opens Tilo", ada_opens, people=[ada])
 
     def ada_again():
         ada.stop()
         took = ada.start(apps=APPS, fresh=False)
-        story.timing("Ada's session start again, to its first frame", took)
+        story.timing("Ada's session start again, to its first frame", took["tookMs"])
+        story.timing("Ada's session start again, to its first frame, with the development launcher's installing", took["launcherMs"])
+        after = time.monotonic()
         until("Ada's shell to hold a workspace again", lambda: front(ada), 60)
+        return {"tookMs": took["tookMs"] + (time.monotonic() - after) * 1000}
 
     story.step("Ada opens Tilo again", ada_again, people=[ada])
 
@@ -162,11 +169,12 @@ def steps(story: Story) -> None:
     story.step("Ada makes an invitation link", invitation, people=[ada])
 
     def grace_opens():
-        grace.prepare(APPS)
         path = story.out / "invitation.txt"
         path.write_text(link["text"])
         took = grace.start(apps=APPS, env={JOIN_INVITATION: str(path)})
-        story.timing("Grace's session start with the invitation, to its first frame", took)
+        story.timing("Grace's session start with the invitation, to its first frame", took["tookMs"])
+        story.timing("Grace's session start with the invitation, to its first frame, with the development launcher's installing", took["launcherMs"])
+        return {"tookMs": took["tookMs"]}
 
     story.step("Grace opens the invitation on her computer", grace_opens)
 

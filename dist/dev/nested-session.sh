@@ -844,13 +844,14 @@ confirm_ready() {
         cp "$runtime/session.json" "$ready_out.partial"
         mv "$ready_out.partial" "$ready_out"
     fi
-    echo "the session answers after $((SECONDS - started)) s"
+    local now=${EPOCHREALTIME/[.,]/}
+    echo "the session answers after $(((now - started_us) / 1000)) ms"
     while IFS= read -r line; do
         say "!! this session started without part of its desktop: $line"
     done < <(grep -E 'no quick settings app is installed|no on-screen keyboard is installed|no lock screen' \
                  "$logs/session.log" 2>/dev/null || true)
 }
-started=$SECONDS
+started_us=${EPOCHREALTIME/[.,]/}
 confirm_ready > "$logs/ready.log" &
 status=0
 wait "$session_pid" || status=$?
