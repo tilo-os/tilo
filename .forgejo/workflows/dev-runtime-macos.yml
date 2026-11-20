@@ -80,6 +80,7 @@ on:
       - "crates/packaging/runtime-bundle/**"
       - "crates/packaging/tilo-app-package/**"
       - "crates/platform/account-probe/**"
+      - "crates/platform/mail-parts/**"
       - "crates/platform/mail-session/**"
       - "crates/platform/tilo-app-id/**"
       - "crates/platform/tilo-appearance/**"
