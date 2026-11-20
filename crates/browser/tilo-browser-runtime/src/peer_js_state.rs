@@ -35,7 +35,9 @@ pub(super) struct JsVoiceMember {
     deafened: bool,
 }
 
-pub(super) fn voice_members(members: Vec<tilo_server_protocol::voice::VoiceMember>) -> Vec<JsVoiceMember> {
+pub(super) fn voice_members(
+    members: Vec<tilo_server_protocol::voice::VoiceMember>,
+) -> Vec<JsVoiceMember> {
     members
         .into_iter()
         .map(|member| JsVoiceMember {

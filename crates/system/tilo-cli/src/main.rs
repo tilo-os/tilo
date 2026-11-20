@@ -1230,7 +1230,9 @@ fn recovery_words() -> Result<zeroize::Zeroizing<String>> {
         words
     };
     if words.trim().is_empty() {
-        bail!("`tilo login --recovery-key` reads your 24 recovery words from standard input, and got none.");
+        bail!(
+            "`tilo login --recovery-key` reads your 24 recovery words from standard input, and got none."
+        );
     }
     Ok(words)
 }
@@ -1248,7 +1250,9 @@ fn login_without_a_tab(cli: &Cli) -> Option<Result<ExitCode>> {
     } = &cli.cmd
     {
         let held = if *recovery_key {
-            recovery_words().and_then(|words| identity::restore(&words)).map(Some)
+            recovery_words()
+                .and_then(|words| identity::restore(&words))
+                .map(Some)
         } else {
             identity::held()
         };

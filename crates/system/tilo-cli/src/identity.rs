@@ -174,17 +174,21 @@ pub fn restore(words: &str) -> Result<Person> {
         &login::label("tilo", &login::hostname()),
         IdentityStorage::for_session(),
     )
-    .map_err(|error| match tilo_identity::store::recovery_words_error(&error) {
-        Some(tilo_identity::store::RecoveryWordsError::DifferentIdentity { expected, .. }) => {
-            anyhow!(
-                "This computer holds another Tilo identity ({}), not the one these words are: \
+    .map_err(
+        |error| match tilo_identity::store::recovery_words_error(&error) {
+            Some(tilo_identity::store::RecoveryWordsError::DifferentIdentity {
+                expected, ..
+            }) => {
+                anyhow!(
+                    "This computer holds another Tilo identity ({}), not the one these words are: \
                  log in as that person, or use a computer account of its own for this one.",
-                hex::encode(expected)
-            )
-        }
-        Some(problem) => anyhow!("{problem}"),
-        None => anyhow!(error).context(format!("restore the identity in {}", dir.display())),
-    })?;
+                    hex::encode(expected)
+                )
+            }
+            Some(problem) => anyhow!("{problem}"),
+            None => anyhow!(error).context(format!("restore the identity in {}", dir.display())),
+        },
+    )?;
     held()?.context("the identity just restored is not there")
 }
 
@@ -551,7 +555,10 @@ mod tests {
         // Her words again keep her, on the same device; someone else's are refused.
         let again = restore(&words).unwrap();
         assert_eq!(again.public_key(), ada.public_key());
-        assert_eq!(again.cert.device_public_key, restored.cert.device_public_key);
+        assert_eq!(
+            again.cert.device_public_key,
+            restored.cert.device_public_key
+        );
         let refused = restore(&bea_words).err().expect("another person's words");
         assert!(
             refused.to_string().contains("another Tilo identity"),

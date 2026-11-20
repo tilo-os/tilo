@@ -360,7 +360,10 @@ impl Worker {
 
     /// The app a workspace's `app.<app>#open` (or `#start`) names, when this
     /// host runs it.
-    pub(super) fn asked_app(&self, target: &tilo_actions::remote::RemoteActionTarget) -> Option<String> {
+    pub(super) fn asked_app(
+        &self,
+        target: &tilo_actions::remote::RemoteActionTarget,
+    ) -> Option<String> {
         target
             .address
             .resource

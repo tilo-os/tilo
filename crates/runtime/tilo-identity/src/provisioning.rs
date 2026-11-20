@@ -1567,7 +1567,12 @@ pub fn restore_person(
             }
             .into());
         }
-        ensure_collaboration_identity_with_device_label(identity_dir, paths, storage, device_label)?;
+        ensure_collaboration_identity_with_device_label(
+            identity_dir,
+            paths,
+            storage,
+            device_label,
+        )?;
         return Ok(user);
     }
     // The words carry no name: the person keeps the one their workspaces know them by.

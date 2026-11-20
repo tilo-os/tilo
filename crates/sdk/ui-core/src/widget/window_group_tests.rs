@@ -348,10 +348,7 @@ impl Widget for RetainedTraversalProbe {
 }
 
 impl crate::component_lifecycle::ComponentLifecycle for RetainedTraversalProbe {
-    fn unsaved_documents(
-        &self,
-        _: &AutoCommit,
-    ) -> Vec<crate::close_admission::UnsavedDocument> {
+    fn unsaved_documents(&self, _: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
         self.hits.unsaved.set(self.hits.unsaved.get() + 1);
         vec![]
     }
