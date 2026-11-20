@@ -407,6 +407,13 @@ impl DesktopSurface {
                 }
             }
         }
+        if sync.delivered {
+            // The windows' apps ran this pass before their bars were read: what the person did in
+            // a bar reaches its app in the next pass, so this one asks for it. Nothing else may
+            // come to ask (a click held still brings no further input), and the press would wait
+            // for the next pointer move or clock tick.
+            self.shared.borrow().wake.wake();
+        }
         changed |= sync.changed;
         changed |= self.publish_window_names();
         changed |= self.ask_bar_changes();

@@ -45,6 +45,10 @@ pub struct HostedSync {
     pub closing: Vec<TabId>,
     pub searched: bool,
     pub declared: Vec<TabId>,
+    /// Something the person did in a bar was handed to an app sharing this process. The app
+    /// hears it only in its next pass, and the apps already had theirs in this one: whoever
+    /// syncs asks for that pass, or the press waits for whatever input or timer comes next.
+    pub delivered: bool,
 }
 
 impl WindowParts {
@@ -341,6 +345,7 @@ impl WindowParts {
             if let Some((_, window)) = windows.iter().find(|(shown, _)| *shown == tab) {
                 window.deliver(event);
                 sync.changed = true;
+                sync.delivered = true;
             }
         }
         sync.changed |= !sync.closing.is_empty();

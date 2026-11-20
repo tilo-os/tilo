@@ -150,6 +150,73 @@ fn each_apps_parts_stand_in_its_windows_bar_and_a_press_reaches_it() {
     }
 }
 
+/// A press on a window bar's part, released where it went down with nothing after it (a person who
+/// clicks and holds still), reaches the window's app in the frames the page asks for: the apps ran
+/// their pass before the bar was read, so the pass that hands the press over asks for the one that
+/// hears it, rather than leaving it for the next pointer move or clock tick.
+#[test]
+fn a_bar_press_with_nothing_after_it_reaches_its_app_in_the_frames_asked_for() {
+    let mut minter = IdMinter::new(7);
+    let tabs = vec![Tab {
+        id: minter.mint(),
+        title: "Tasks".into(),
+        tile: tilo_desktop_model::TileContent::LocalApp {
+            app_id: "so.tilo.tasks".into(),
+            label: "Tasks".into(),
+            note: String::new(),
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    }];
+    let heard: Rc<RefCell<Vec<ToolbarEvent>>> = Rc::default();
+    let apps = vec![("back", Rc::clone(&heard)), ("back", Rc::clone(&heard))];
+    let tree = seed_tree(&mut minter, "Office", tabs);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(PartApps(apps)));
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    handle.set_wake({
+        let asked = std::sync::Arc::clone(&asked);
+        std::sync::Arc::new(move || {
+            asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })
+    });
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1600, 800),
+        ui::Theme::dark(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let button = frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .expect("the strip is shown")
+        .groups[0]
+        .bar_for_tests()
+        .toolbar_rects()
+        .3
+        .first()
+        .copied()
+        .expect("the app's part is a button in its bar");
+    asked.store(0, std::sync::atomic::Ordering::Relaxed);
+
+    frame.click_at(button.center().x, button.center().y);
+    // Only the frames something asked for, as the page draws: no forced pass, no further input.
+    for _ in 0..8 {
+        if asked.swap(0, std::sync::atomic::Ordering::Relaxed) == 0 {
+            break;
+        }
+        frame.woken();
+    }
+    assert_eq!(
+        *heard.borrow(),
+        vec![ToolbarEvent::Action { id: "back".into() }],
+        "the app heard the press without another input or a forced frame"
+    );
+}
+
 /// The tabs of the shown strip, with the id of the one each group shows.
 fn shown_tabs(frame: &ui::headless::FrameHarness) -> Vec<(u64, u64)> {
     frame
