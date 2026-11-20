@@ -327,7 +327,7 @@ mod transport {
         link: Descriptor,
         open: impl Fn(PendingWindow) -> bool + Send + 'static,
     ) -> std::io::Result<()> {
-        *served() = link.try_clone().ok();
+        *served() = runtime_portal::process_link::try_clone(&link).ok();
         let open = Arc::new(Mutex::new(open));
         let reopen: Reopen = Arc::new(move |pending| match open.lock() {
             Ok(open) => open(pending),
@@ -533,7 +533,7 @@ mod transport {
 
         /// A process serves `link` as the launcher handed it one.
         fn serves(link: Descriptor) {
-            *served() = link.try_clone().ok();
+            *served() = runtime_portal::process_link::try_clone(&link).ok();
         }
 
         /// The windows of a process that are still leaving: the windowless endpoint it

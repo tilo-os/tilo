@@ -453,6 +453,21 @@ pub fn into_raw(descriptor: Descriptor) -> crate::RawFd {
     match descriptor {}
 }
 
+/// A second handle on `link`, for the reader a process keeps beside the one it
+/// serves.
+///
+/// # Errors
+///
+/// The descriptor could not be duplicated.
+pub fn try_clone(link: &Descriptor) -> io::Result<Descriptor> {
+    #[cfg(unix)]
+    {
+        link.try_clone()
+    }
+    #[cfg(not(unix))]
+    match *link {}
+}
+
 /// The link the launcher handed this process, taken once.
 #[must_use]
 pub fn take() -> Option<Descriptor> {
