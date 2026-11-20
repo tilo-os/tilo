@@ -22,7 +22,7 @@ use tilo_actions::remote::{ActionProvider as _, InvocationReceipt, ReceiptStatus
 
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{caller, settled};
-use super::accounts_tests::{asking, key_of};
+use super::accounts_tests::{asking, key_of, listed};
 use crate::workspaces::tests::{governor, test_host};
 
 /// What an action answered.
@@ -573,4 +573,83 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
         .unwrap(),
     );
     assert!(stopped.signing_in.is_empty());
+}
+
+/// The addresses a follow of the accounts says now.
+fn addresses(listed: &MailAccounts) -> Vec<String> {
+    listed
+        .accounts
+        .iter()
+        .map(|account| account.address.clone())
+        .collect()
+}
+
+/// A sign-in finished in another tab comes back outside any window's call: a window already
+/// following the accounts is woken with the account, and one that starts following after reads
+/// it too.
+#[tokio::test]
+async fn a_sign_in_finished_elsewhere_reaches_every_follow_of_the_accounts() {
+    let fake = tilo_oauth::fake::FakeAuthorizationServer::start();
+    fake.set_identity("ada@gmail.example");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    web_client(&mut env, "GOOGLE", &fake);
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let actions = ServiceWorkspaceActions::new();
+    actions.attach(workspaces.clone());
+    let root = SigningKey::from_bytes(&rand::random());
+    let device = key_of(&root, "studio");
+    let page = actions.in_workspace_as(
+        workspaces.create("Mail").await.unwrap().workspace_id,
+        &device,
+    );
+    let ada = caller(&device);
+    let landing = Landing::stand();
+    workspaces.accounts_call_back_at(landing.origin.clone());
+
+    let watch = settled(page.invoke(&ada, asking(person_accounts::WATCH, json!({}))))
+        .await
+        .unwrap()
+        .invocation;
+    assert!(addresses(&listed(&page, &ada, watch)).is_empty());
+
+    let step: SignInStep = answered(
+        settled(page.invoke(
+            &ada,
+            asking(
+                person_accounts::BEGIN_SIGN_IN,
+                json!({"provider": "google", "services": {"mail": true, "calendar": true}}),
+            ),
+        ))
+        .await
+        .unwrap(),
+    );
+    // The window reads the sign-in under way, and waits for what comes next.
+    let mut waking = page.next_change(&ada, &watch).expect("a follower is woken");
+    for _ in 0..8 {
+        if !listed(&page, &ada, watch).signing_in.is_empty() {
+            break;
+        }
+        settled(waking).await;
+        waking = page.next_change(&ada, &watch).expect("a follower is woken");
+    }
+    assert_eq!(listed(&page, &ada, watch).signing_in.len(), 1);
+
+    tilo_oauth::fake::browse(&step.open).unwrap();
+    workspaces.accounts_return(&landing.query()).await.unwrap();
+    settled(waking).await;
+    let now = listed(&page, &ada, watch);
+    assert_eq!(addresses(&now), ["ada@gmail.example"], "{now:?}");
+    assert!(now.signing_in.is_empty(), "{now:?}");
+
+    let fresh = settled(page.invoke(&ada, asking(person_accounts::WATCH, json!({}))))
+        .await
+        .unwrap()
+        .invocation;
+    assert_eq!(
+        addresses(&listed(&page, &ada, fresh)),
+        ["ada@gmail.example"]
+    );
 }

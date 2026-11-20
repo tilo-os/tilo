@@ -76,7 +76,7 @@ fn keep(root: &std::path::Path, address: &str) {
 }
 
 /// The listing the follow `id` reads now, as the window is sent it.
-fn listed(
+pub(super) fn listed(
     host: &impl tilo_actions::remote::ActionProvider,
     caller: &Caller,
     id: InvocationId,
