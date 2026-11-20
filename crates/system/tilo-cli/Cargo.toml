@@ -64,6 +64,10 @@ postcard.workspace = true
 hex.workspace = true
 rand.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "io-std", "signal"] }
+# The holder names its work and, when it stops answering, logs what held it with every
+# thread's stack: a folder that stalls for seconds says why rather than leaving a person
+# waiting in silence.
+tilo-rt = { path = "../../platform/tilo-rt" }
 # `tilo mcp`: the MCP projection of a workspace, its actions asked of the
 # workspace's host through this device's session, as the person their
 # workspaces name.

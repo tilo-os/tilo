@@ -1558,6 +1558,9 @@ where
                     Ok(prepared) => {
                         crate::timing::window(steps.prepare, preparing);
                         let persisting = crate::timing::start();
+                        // The write itself, quanta and all: one that takes seconds is named
+                        // in the stall report with whatever else the process was doing.
+                        let _doing = tilo_rt::stall::doing("a retained write");
                         let mut prepared = Some(prepared);
                         let result = loop {
                             let shared = state.clone();

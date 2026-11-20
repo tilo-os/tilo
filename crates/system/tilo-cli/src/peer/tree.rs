@@ -755,6 +755,9 @@ impl Sync {
     /// Merge what each opened record holds that this namespace has not merged yet, and open
     /// the chunks the tree's own record lists that this device has not opened.
     async fn pull_all(&mut self) {
+        // Opening a sealed history takes as long as it is: named while it runs, so a folder
+        // that waits for it says so in a stall report.
+        let _doing = tilo_rt::stall::doing("a folder's tree coming in");
         let engine = Arc::clone(self.link.engine());
         let workspace = self.workspace.to_string();
         let now = Instant::now();
@@ -934,6 +937,9 @@ impl Sync {
     /// Hand the session what the namespace changed since it last did, once the batch the
     /// first of those changes started is due: one write per record that changed.
     async fn push(&mut self) {
+        // A write of a folder's tree that takes seconds names itself, with what else holds
+        // the process, for as long as it takes.
+        let _doing = tilo_rt::stall::doing("a folder's tree going out");
         if !self.status.lock_recover().opened {
             // The host has not said what it holds: a tree written now could found a second
             // one beside it.

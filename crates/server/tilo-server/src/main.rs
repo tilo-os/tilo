@@ -59,6 +59,10 @@ mod workspace_strips;
 /// Default location for the daemon config on a Fedora bootc image.
 const DEFAULT_CONFIG_PATH: &str = "/etc/tilo/server.toml";
 
+/// How long a piece of work, or the whole runtime, may go without an answer before the
+/// server says what it was doing: shorter than anything a person calls a wait.
+const STALL: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[derive(Parser)]
 #[command(name = "tilo-server", version, about = "Tilo host + server daemon")]
 struct Cli {
@@ -147,15 +151,25 @@ fn run() -> anyhow::Result<()> {
         #[cfg(not(feature = "web"))]
         Cmd::Run {} => cmd_run(&cli.config),
         #[cfg(feature = "web")]
-        Cmd::Dev(args) => {
-            tilo_rt::daemon("tilo-server").run(web_cli::dev(args, wait_for_shutdown()))?
-        }
+        Cmd::Dev(args) => tilo_rt::daemon("tilo-server")
+            .run(watched(web_cli::dev(args, wait_for_shutdown())))?,
         #[cfg(feature = "web")]
-        Cmd::Workspace(args) => {
-            tilo_rt::daemon("tilo-server").run(web_cli::workspace(*args, wait_for_shutdown()))?
-        }
+        Cmd::Workspace(args) => tilo_rt::daemon("tilo-server")
+            .run(watched(web_cli::workspace(*args, wait_for_shutdown())))?,
         #[cfg(feature = "web")]
         Cmd::PageHost(args) => tilo_rt::daemon("tilo-server").run(web_cli::page_host(args))?,
+    }
+}
+
+/// `work` as this process's server, watched: what the server is doing is named where it
+/// does it ([`tilo_rt::stall::doing`]), and a piece of work or a whole runtime that goes
+/// [`STALL`] without an answer logs it, with every thread's stack, rather than leaving a
+/// person waiting with nothing said.
+fn watched<F: std::future::Future>(work: F) -> impl std::future::Future<Output = F::Output> {
+    async move {
+        tilo_rt::stall::watch(STALL);
+        tilo_rt::stall::heartbeat(&tokio::runtime::Handle::current());
+        work.await
     }
 }
 
@@ -182,7 +196,7 @@ fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow
     #[cfg(not(feature = "web"))]
     let _lock =
         tilo_server::state_lock::StateLock::acquire(&cfg.state_root).map_err(anyhow::Error::msg)?;
-    tilo_rt::daemon("tilo-server").run(async move {
+    tilo_rt::daemon("tilo-server").run(watched(async move {
         // Every change the server receives is decided against its app's
         // surface: the one it runs the app with, or one the workspace keeps
         // beside it.
@@ -218,7 +232,7 @@ fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow
         #[cfg(not(feature = "web"))]
         server.shutdown().await;
         Ok::<(), anyhow::Error>(())
-    })?
+    }))?
 }
 
 fn load_identity(

@@ -483,6 +483,10 @@ fn hold_for<E: Enter>(
     trim_log();
     let _ = shared.held_as.set(claim);
     let runtime = bridge_runtime()?;
+    // A holder that stops answering for seconds says what it was doing, with every thread's
+    // stack, long before [`WEDGED`] ends it: a person's `ls` that waits has a reason in the log.
+    tilo_rt::stall::watch(WEDGED.min(STALL));
+    tilo_rt::stall::heartbeat(&runtime.handle());
     runtime.spawn(beating());
     let watching = watch_workers();
     let served = runtime.block_on(serve_held(place, shared, holding));
@@ -840,6 +844,11 @@ fn status_answer<E: Enter>(shared: &Arc<Shared<E>>, runtime: &tokio::runtime::Ha
 /// that a fresh one takes its place: everything that walks a whole tree is done off them, so a
 /// worker that gives no sign for this long is stuck, and nothing in the process frees it.
 const WEDGED: Duration = Duration::from_secs(120);
+
+/// How long one piece of the holder's work may take, or its workers stay quiet, before it says
+/// what it was doing with every thread's stack: a wait a person would notice, reported while it
+/// lasts rather than after [`WEDGED`] ends it.
+const STALL: Duration = Duration::from_secs(5);
 
 /// When the runtime's workers last took a step: [`beating`] notes it every second.
 struct Beat {

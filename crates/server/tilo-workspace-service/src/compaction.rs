@@ -984,6 +984,9 @@ pub(crate) async fn owner_run<T: Send + 'static>(
     + Send
     + 'static,
 ) -> Result<T, String> {
+    // Queued behind the retained writes ahead of it: a run that waits seconds for its turn
+    // is named in the stall report rather than a silent gap in the log.
+    let _doing = tilo_rt::stall::doing("a persistence owner run");
     let owner = crate::persistence::handle(workspace).await;
     let receipt = owner
         .submit_prepared_wait(

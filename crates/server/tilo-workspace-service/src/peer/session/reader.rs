@@ -517,6 +517,9 @@ impl<'s, 'c, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, 'c, R> {
         cx: SessionLoop<'c, '_>,
     ) -> Result<(), PeerError> {
         trace_native_publication("server_received", &env, None);
+        // A frame that holds its connection for seconds is named in the stall report by
+        // what it was: the kind of frame, with the other work outstanding beside it.
+        let _doing = tilo_rt::stall::doing(env.kind());
         if matches!(env, Envelope::Commit { .. }) {
             return self.handle_commit(env, inbound_budget, cx).await;
         }

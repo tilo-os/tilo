@@ -309,6 +309,9 @@ impl Direct {
         let Ok(authorization) = hyper::header::HeaderValue::from_str(&self.authorization) else {
             return;
         };
+        // The command on the other end of this connection waits for this: one that takes
+        // seconds is named in a stall report rather than left as an unexplained wait.
+        let _doing = tilo_rt::stall::doing("a command through this computer's session");
         crate::serve_connection(Arc::clone(&self.server), stream, Some(authorization)).await;
     }
 

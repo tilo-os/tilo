@@ -55,6 +55,9 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 # The link an invitation is handed over as: sealed onto the site's shelf.
 tilo-workspace-directory = { path = "../../session/workspace-directory" }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+# A call this computer's login answers names itself while it runs, so a process that
+# stops answering says which call held it (`tilo_rt::stall`).
+tilo-rt = { path = "../../platform/tilo-rt" }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
