@@ -78,12 +78,10 @@ impl Pages {
     pub(super) fn caller_of<'a>(&'a self, job: &'a PageJob) -> Option<&'a Caller> {
         match job {
             PageJob::Open { caller, .. } => Some(&**caller),
-            PageJob::Act { page, .. } | PageJob::Close { page, .. } => {
-                match self.held.get(page) {
-                    Some(HeldPage::App { who, .. }) => Some(&who.caller),
-                    Some(HeldPage::Home { .. }) | None => None,
-                }
-            }
+            PageJob::Act { page, .. } | PageJob::Close { page, .. } => match self.held.get(page) {
+                Some(HeldPage::App { who, .. }) => Some(&who.caller),
+                Some(HeldPage::Home { .. }) | None => None,
+            },
         }
     }
 }
@@ -300,7 +298,9 @@ impl Worker {
     /// same for everyone in it, and nothing is acted on it.
     fn open_home(&mut self, workspace_id: WorkspaceId) -> Result<OpenedPage, PageRefusal> {
         // The workspace has to be readable here, as an app's page does.
-        let state = self.refresh(workspace_id, Needs::Workspace).map_err(refused)?;
+        let state = self
+            .refresh(workspace_id, Needs::Workspace)
+            .map_err(refused)?;
         state.workspace.as_ref().ok_or(PageRefusal::Elsewhere)?;
         let mut apps: Vec<_> = self
             .catalogue
@@ -318,8 +318,9 @@ impl Worker {
                 .rsplit_once('.')
                 .map_or(app.app_id(), |(_, last)| last);
             let icon = match &app.icon {
-                ui::IconDescriptor::Named(icon) => ui::icons::Icon::from_name(icon)
-                    .map_or_else(String::new, ui::icons::icon_svg),
+                ui::IconDescriptor::Named(icon) => {
+                    ui::icons::Icon::from_name(icon).map_or_else(String::new, ui::icons::icon_svg)
+                }
                 _ => String::new(),
             };
             let _ = write!(
@@ -332,7 +333,9 @@ impl Worker {
         body.push_str("</ul></div>");
         self.pages.next = self.pages.next.wrapping_add(1);
         let page = self.pages.next;
-        self.pages.held.insert(page, HeldPage::Home { workspace_id });
+        self.pages
+            .held
+            .insert(page, HeldPage::Home { workspace_id });
         Ok(OpenedPage {
             page,
             title: "Tilo".to_owned(),
@@ -366,11 +369,11 @@ impl Worker {
         // it: a pass over it answers that nothing changed. It is read again
         // first, so a workspace no longer readable here is refused.
         if let Some(workspace_id) = home {
-            self.refresh(workspace_id, Needs::Workspace).map_err(refused)?;
+            self.refresh(workspace_id, Needs::Workspace)
+                .map_err(refused)?;
             return Ok(Vec::new());
         }
-        let (workspace_id, who, route) =
-            app.ok_or_else(|| unavailable("the page was closed"))?;
+        let (workspace_id, who, route) = app.ok_or_else(|| unavailable("the page was closed"))?;
         let started = std::time::Instant::now();
         // Others' writes since are merged before the person acts, as they
         // would have seen them in a window.
