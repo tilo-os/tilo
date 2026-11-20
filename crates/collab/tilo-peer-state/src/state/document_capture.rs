@@ -218,21 +218,22 @@ impl KeptDocument {
         {
             return None;
         }
-        let bytes = self.capture(usize::MAX)?.ok()?;
         let opened = self.0.as_mut()?;
+        // Saved anew rather than captured: a capture appends the changes since the last one to
+        // what it handed out then, which loads change by change, several times slower than a
+        // saved document. The whole reads after this hand the same bytes out.
+        let document = opened.document.committed_document();
+        let bytes = saved_whole(document, usize::MAX).ok()?;
+        let heads = document.get_heads();
+        tilo_automerge::shared::hold(&bytes, &opened.document);
+        opened.captured = Some((bytes.clone(), heads.clone()));
         opened.stored = Some(opened.size);
         Some(StoredOpening {
             count: opened.count,
             last: opened.last,
             snapshot: opened.snapshot.as_ref().map(snapshot_digest),
             size: opened.size,
-            heads: opened
-                .document
-                .committed_document()
-                .get_heads()
-                .iter()
-                .map(|head| head.0)
-                .collect(),
+            heads: heads.iter().map(|head| head.0).collect(),
             bytes,
         })
     }
