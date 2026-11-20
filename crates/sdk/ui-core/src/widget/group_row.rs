@@ -3252,7 +3252,7 @@ impl GroupRow {
 
     /// Display under `p` when this strip is partitioned; `None` on a
     /// single continuous row, so a same-row swipe is never a rehome.
-    fn output_at(&self, p: Point) -> Option<u32> {
+    pub fn output_at(&self, p: Point) -> Option<u32> {
         let section = self.section_at(p)?;
         self.sections
             .get(section)

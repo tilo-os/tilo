@@ -66,6 +66,8 @@ mod lookup;
 use lookup::{find_group, find_tab, observe_ids};
 #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
 mod elsewhere;
+#[cfg(test)]
+mod float_drag_tests;
 mod live_shares;
 mod liveness;
 mod notices;

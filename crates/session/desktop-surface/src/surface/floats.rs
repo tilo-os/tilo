@@ -26,6 +26,21 @@ fn place_of(at: Rect) -> CanvasPlace {
     )
 }
 
+/// Put `group` on `display` where that is not where it stands. Whether the tree changed.
+fn rehome(shared: &mut Shared, group: u64, display: Option<u32>) -> bool {
+    let tree = &mut shared.tree;
+    let Some(display) = display.filter(|_| tree.is_partitioned()) else {
+        return false;
+    };
+    if tree.outputs.display_of(group) == Some(display)
+        || !tree.outputs.move_group(&tree.workspaces, group, display)
+    {
+        return false;
+    }
+    tree.external_revision = tree.external_revision.wrapping_add(1);
+    true
+}
+
 /// The work area `area` as the model keeps it.
 pub(super) fn area_of(area: Rect) -> CanvasPlace {
     place_of(area)
@@ -329,6 +344,10 @@ pub(super) fn carry_out(
             ) {
                 return false;
             }
+            // The display the hand let it go on is the one it stands on from here, as a window
+            // let go into the strip over another display does: a window carried off its strip
+            // above one display and let go above another belongs to the other.
+            rehome(shared, group, row.output_at(at.center()));
             group
         }
         FloatAsk::Snap { group } => {

@@ -2749,7 +2749,7 @@ fn a_window_moved_along_the_strip_stays_in_view() {
 }
 
 /// Press, carry to `to` in small steps, and let go: the hand that drags a window.
-fn carry(frame: &mut ui::headless::FrameHarness, from: Point, to: Point) {
+pub(super) fn carry(frame: &mut ui::headless::FrameHarness, from: Point, to: Point) {
     frame.send(&ui::synthetic_input::cursor_moved(from.x, from.y));
     frame.send(&ui::synthetic_input::mouse_press());
     for step in 1..=20 {
