@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Git runs no pre-commit hook for a merge commit, so a merge would be judged by
+# nothing: code it brings in never saw the checks every other commit passes.
+# This runs the same judgement, before git writes the merge's commit.
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+exec "$here/pre-commit" "$@"

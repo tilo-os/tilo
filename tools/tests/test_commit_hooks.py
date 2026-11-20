@@ -19,7 +19,7 @@ class CommitHookTests(unittest.TestCase):
         self.git("init", "-q", "-b", "main")
         for key, value in (("user.name", "Test"), ("user.email", "test@example.org"), ("commit.gpgsign", "false")):
             self.git("config", key, value)
-        paths = ["tools/policy/check_source_content.py", "tools/policy/check_public_references.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/policy/check_wire_enums.py", "tools/policy/check_breakpoints.py", "tools/policy/check_socket_paths.py", "tools/policy/check_catalogue_coverage.py", "tools/policy/check_copy_language.py", "tools/policy/judged.py", "tools/policy/added_line_policy.py", "tools/policy/rust_source.py", "tools/ci/comparison_range.py", "tools/dev/install-git-hooks.py", ".githooks/commit-msg", ".githooks/merge-generated"]
+        paths = ["tools/policy/check_source_content.py", "tools/policy/check_public_references.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/policy/check_wire_enums.py", "tools/policy/check_breakpoints.py", "tools/policy/check_socket_paths.py", "tools/policy/check_catalogue_coverage.py", "tools/policy/check_copy_language.py", "tools/policy/judged.py", "tools/policy/added_line_policy.py", "tools/policy/rust_source.py", "tools/ci/comparison_range.py", "tools/dev/install-git-hooks.py", ".githooks/pre-merge-commit", ".githooks/commit-msg", ".githooks/merge-generated"]
         for name in paths:
             dest = self.root / name
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -356,6 +356,39 @@ class CommitHookTests(unittest.TestCase):
         result = self.ci()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("enum Lifetime no longer has Until", result.stderr)
+
+    def test_a_merge_commit_passes_the_pre_commit_checks(self):
+        marker = self.root / "merge-judged"
+        self.judging_pre_commit("exit 0\n")
+        self.topic_change()
+        self.git("merge", "--no-ff", "-m", "test: merge topic", "topic")
+        self.assertTrue(marker.exists(), "the merge commit passed no pre-commit judgement")
+
+    def test_a_refused_judgement_aborts_the_merge(self):
+        self.judging_pre_commit("exit 1\n")
+        self.topic_change()
+        merged = self.git("merge", "--no-ff", "-m", "test: merge topic", "topic", check=False)
+        self.assertNotEqual(0, merged.returncode, "the merge committed past a refused judgement")
+
+    def judging_pre_commit(self, verdict):
+        """A pre-commit that notes it was asked, then ends with ``verdict``."""
+        pre = self.root / ".githooks/pre-commit"
+        pre.write_text(
+            "#!/bin/sh\n"
+            'echo ran > "$(git rev-parse --show-toplevel)/merge-judged"\n' + verdict
+        )
+        pre.chmod(0o755)
+
+    def topic_change(self):
+        """``topic`` and ``main`` each move, so their merge is a merge commit."""
+        self.git("checkout", "-qb", "topic")
+        (self.root / "topic.txt").write_text("topic\n")
+        self.git("add", "--", "topic.txt")
+        self.git("commit", "--no-verify", "-qm", "test: topic change")
+        self.git("checkout", "-q", "main")
+        (self.root / "main.txt").write_text("main\n")
+        self.git("add", "--", "main.txt")
+        self.git("commit", "--no-verify", "-qm", "test: main change")
 
     def test_installer_preserves_unrelated_hooks_and_is_idempotent(self):
         self.assertIn("verified", self.run_installer().stdout)
