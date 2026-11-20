@@ -14,10 +14,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, mpsc};
+use std::time::Instant;
+
+use tilo_lock::MutexRecover as _;
+use tilo_server_protocol::WorkspaceId;
 
 use super::catch_up::{HOLD_ROUNDS, chains_untold, hold, hold_parts, read_parts};
 use super::part_wait::{ChainWait, PART_WAIT};
-use super::{DocumentRoute, Mounted, Worker, WorkspaceState};
+use super::{DocumentRoute, Job, Mounted, Worker, WorkspaceState};
 use crate::worker::ConfinedReplica;
 
 /// How many parts a replica holds none of before they are taken in off the serving thread:
@@ -202,10 +206,19 @@ impl Worker {
         let (send, done) = mpsc::channel();
         let holder = holder.clone();
         let state = state.clone();
+        let shared = Arc::clone(&self.shared);
+        let workspace_id = WorkspaceId::parse(&key.0.cluster_id);
         let spawned = std::thread::Builder::new()
             .name("parts-in".into())
             .spawn(move || {
                 let _ = send.send(take_in(&holder, copy, &state));
+                // The request that waited for them goes on: parts taken in off this thread
+                // wake it, as a part arriving from the workspace does.
+                if let Some(workspace_id) = workspace_id
+                    && let Some(jobs) = shared.jobs.lock_recover().as_ref()
+                {
+                    let _ = jobs.send((Instant::now(), Job::Loaded(workspace_id)));
+                }
             });
         if let Err(error) = spawned {
             tracing::warn!(%error, "workspace actions: no thread was started to take in a document's parts");

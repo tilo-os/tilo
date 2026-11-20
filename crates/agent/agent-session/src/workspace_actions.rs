@@ -1538,7 +1538,7 @@ impl Worker {
         // the workspace for each wake would make a busy workspace pay a read
         // for every change the service hears, including the changes of every
         // other workspace.
-        if matches!(job, Job::Joined(_) | Job::Called(_)) {
+        if matches!(job, Job::Joined(_) | Job::Called(_) | Job::Loaded(_)) {
             self.timed(queued, job);
             return;
         }
@@ -1960,6 +1960,7 @@ impl Worker {
                 } => done.complete(self.invocations(workspace_id, &caller, &query)),
                 Job::Joined(workspace_id) => self.resume(workspace_id),
                 Job::Called(workspace_id) => self.call_answered(workspace_id),
+                Job::Loaded(workspace_id) => self.parts_loaded(workspace_id),
                 Job::Rename(workspace_id, route) => self.rename(workspace_id, &route),
                 Job::Page(job) => self.page_job(*job),
                 Job::Forget(workspace_id) => self.forget(workspace_id),

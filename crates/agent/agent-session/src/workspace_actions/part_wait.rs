@@ -7,9 +7,9 @@
 //! as a request waiting for its workspace's join or keys does: every request
 //! of a workspace is served on one thread, and a write that held it for the
 //! whole wait held every other request of the workspace behind it, a listing
-//! as much as the person's next click. The thread looks again at the write
-//! when the workspace changes and after a pause that grows while the part
-//! stays away, and serves everything else in between.
+//! as much as the person's next click. The thread applies the write again after
+//! a long pause, or once a replica it waits on took its parts in, and serves
+//! everything else in between.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -25,14 +25,12 @@ use super::{Job, Needs, Worker};
 /// asked: inside the wait the API's own caller makes, so it hears either what
 /// the write made or why not.
 pub(super) const PART_WAIT: Duration = Duration::from_secs(30);
-/// The first pause before a write waiting for its part is applied again:
-/// short, as a part usually arrives at once.
-const PART_LOOK: Duration = Duration::from_millis(10);
-/// The longest pause between those tries, as a part stays away: a part that arrives, or the
-/// word that the workspace holds none of it, wakes the write at once, so the pause only
-/// bounds what nothing announced. Every try takes the workspace's thread, and a shorter
-/// one held the workspace's other requests behind tries that found nothing new.
-const PART_LOOK_MAX: Duration = Duration::from_secs(1);
+/// The pause after which a write waiting for its part is applied again when nothing
+/// re-applied it sooner ([`Worker::parts_loaded`], or a change of its workspace that
+/// something of it waited for). Every try takes the workspace's thread while it reads, so
+/// the pause is long: a shorter one ran a try whenever the part did not arrive at once, and
+/// held the workspace's other requests behind tries that found nothing new.
+const PART_RECHECK: Duration = Duration::from_secs(5);
 
 /// One operation to apply to what is mounted here, as the request named it.
 pub(super) struct Invoked<'a> {
@@ -54,8 +52,6 @@ pub(super) struct Invoked<'a> {
 pub(super) struct Tried {
     /// When it was asked: its wait is counted from then ([`PART_WAIT`]).
     queued: Instant,
-    /// The pause before it is applied again.
-    look: Duration,
     /// Whether its person confirmed it when it was first applied: the answer
     /// is taken once, so a write applied again goes on as confirmed as it was.
     confirmed: Option<bool>,
@@ -136,7 +132,6 @@ impl PartWaits {
         };
         self.serving = Some(self.resumed.take().unwrap_or(Tried {
             queued,
-            look: PART_LOOK,
             confirmed: None,
         }));
         self.held = None;
@@ -296,7 +291,6 @@ impl Worker {
         let now = Instant::now();
         let tried = self.part_waits.serving.unwrap_or(Tried {
             queued: now,
-            look: PART_LOOK,
             confirmed: None,
         });
         if tried
@@ -314,24 +308,21 @@ impl Worker {
     }
 
     /// Hold `job`, the request just served, off this thread until its part
-    /// arrives: applied again on the workspace's next change, or after a pause
-    /// that grows while the part stays away.
+    /// arrives: applied again after a long pause, or once a replica it waits on
+    /// took its parts in.
     pub(super) fn await_part(&mut self, workspace_id: WorkspaceId, job: Job) {
         let Some(tried) = self.part_waits.held.take() else {
             return;
         };
         let at = Instant::now()
-            .checked_add(tried.look)
+            .checked_add(PART_RECHECK)
             .unwrap_or_else(Instant::now);
         let moved = self.moved(workspace_id);
         self.part_waits.awaiting.push_back(Awaiting {
             workspace_id,
-            moved,
-            tried: Tried {
-                look: tried.look.saturating_mul(2).min(PART_LOOK_MAX),
-                ..tried
-            },
+            tried,
             at,
+            moved,
             job,
         });
         // The part arriving changes the workspace, which wakes this thread.
@@ -353,6 +344,29 @@ impl Worker {
                             awaiting.workspace_id == workspace_id && awaiting.moved != moved
                         })
                 });
+        self.part_waits.awaiting = waiting;
+        for Awaiting {
+            workspace_id,
+            tried,
+            job,
+            ..
+        } in due
+        {
+            self.part_waits.resumed = Some(tried);
+            self.timed(tried.queued, job);
+            self.stop_waiting_if_idle(workspace_id);
+        }
+    }
+
+    /// A replica of `workspace_id` took its parts in off this thread: the requests waiting
+    /// for them go on. A request waiting for a part the workspace has still to send goes on
+    /// too and waits again — one try when a replica's parts come in costs less than asking
+    /// each waiting request which of the two it waited for, and parts are taken in once.
+    pub(super) fn parts_loaded(&mut self, workspace_id: WorkspaceId) {
+        let (due, waiting): (VecDeque<_>, VecDeque<_>) =
+            std::mem::take(&mut self.part_waits.awaiting)
+                .into_iter()
+                .partition(|awaiting| awaiting.workspace_id == workspace_id);
         self.part_waits.awaiting = waiting;
         for Awaiting {
             workspace_id,

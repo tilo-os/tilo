@@ -114,6 +114,9 @@ pub(super) enum Job {
     /// An app's worker answered the operation a request of the workspace handed off this
     /// thread: the request goes on ([`call_wait`]).
     Called(WorkspaceId),
+    /// A replica's parts were taken in off the thread ([`part_load`]): the request that
+    /// waited for them goes on.
+    Loaded(WorkspaceId),
     /// A workspace was deleted: the service lets go of all it holds of it.
     Forget(WorkspaceId),
     /// A document written since its name was last read: its name in its app's index is
@@ -141,6 +144,7 @@ impl Job {
             Self::Changed { .. } => "changed",
             Self::Joined(_) => "joined",
             Self::Called(_) => "called",
+            Self::Loaded(_) => "loaded",
             Self::Forget(_) => "forget",
             Self::Rename(..) => "rename",
             Self::Page(_) => "page",
@@ -183,6 +187,7 @@ impl Job {
             | Self::ContentLink { .. }
             | Self::Joined(_)
             | Self::Called(_)
+            | Self::Loaded(_)
             | Self::Page(_) => Urgency::Read,
             Self::Invoke { .. } | Self::Ran(_) | Self::Arrived { .. } | Self::Forget(_) => {
                 Urgency::Write
@@ -211,6 +216,7 @@ impl Job {
             | Self::Ran(_)
             | Self::Joined(_)
             | Self::Called(_)
+            | Self::Loaded(_)
             | Self::Forget(_)
             | Self::Rename(..) => None,
         }
@@ -230,6 +236,7 @@ impl Job {
             | Self::Invocations { workspace_id, .. }
             | Self::Changed { workspace_id, .. }
             | Self::Arrived { workspace_id, .. }
+            | Self::Loaded(workspace_id)
             | Self::Rename(workspace_id, _) => Some(*workspace_id),
             Self::Page(job) => Some(job.workspace()),
             Self::Feedback { .. }
@@ -262,6 +269,7 @@ impl Job {
             | Self::Arrived { .. }
             | Self::Joined(_)
             | Self::Called(_)
+            | Self::Loaded(_)
             | Self::Forget(_)
             | Self::Page(_)
             | Self::Rename(..) => Keys::Joined,
