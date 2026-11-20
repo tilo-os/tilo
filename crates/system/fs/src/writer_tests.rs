@@ -248,14 +248,9 @@ fn an_environment_that_does_not_read_never_holds_up_a_request() {
         .unwrap();
     std::io::Write::write_all(&mut fifo, b"CLAUDE_CODE_SESSION_ID=s7\0").unwrap();
     drop(fifo);
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while resolver.procs.waiting.load(Ordering::Acquire) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the waiting read never ended"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    tilo_test_env::wait_until("the waiting read to end", || {
+        !resolver.procs.waiting.load(Ordering::Acquire)
+    });
     std::fs::remove_file(&environ).unwrap();
     std::fs::write(&environ, b"CLAUDE_CODE_SESSION_ID=s7\0").unwrap();
     assert_eq!(
