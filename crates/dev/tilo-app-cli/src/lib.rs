@@ -29,6 +29,8 @@ pub mod interface_versions;
 mod json;
 pub mod model_wasm;
 pub mod native_libs;
+/// Binding a package to a signed native SDK checks its ELF evidence, a Linux runtime bundle's.
+#[cfg(target_os = "linux")]
 pub mod native_sdk;
 mod pack;
 pub mod portability;
@@ -533,6 +535,7 @@ pub use dev_reload::run_as_build_tool_if_requested;
 #[derive(Debug)]
 pub struct PackageRequest {
     /// Independently selected signed native SDK; never an authored runtime override.
+    #[cfg(target_os = "linux")]
     pub sdk: Option<native_sdk::SdkSelection>,
     pub output: Option<PathBuf>,
     pub identity: Option<PathBuf>,
@@ -5021,6 +5024,7 @@ struct AppPackageSpec {
 /// Returns an error when preflight, compilation, staging, packing, or
 /// verification fails, or when the destination exists without `force`.
 pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutcome> {
+    #[cfg(target_os = "linux")]
     native_sdk::validate_request(request)?;
     if request.platform == PackagePlatform::Web {
         return web::package_web(start, request);
@@ -5043,14 +5047,7 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
     } = NativeTarget::resolve(start, request)?;
     let manifest_source = std::fs::read_to_string(&spec.manifest_path)
         .with_context(|| format!("reading {}", spec.manifest_path.display()))?;
-    // `[budget]` bounds the thin Tilo OS build; a desktop build carries the whole toolkit and answers
-    // to the registry's desktop limit instead.
-    let budget = if desktop {
-        size::Budget::default()
-    } else {
-        size::Budget::from_manifest(&manifest_source)
-            .with_context(|| format!("reading [budget] from {}", spec.manifest_path.display()))?
-    };
+    let budget = package_budget(desktop, &manifest_source, &spec.manifest_path)?;
     let output = package_output(&spec, request, desktop_arch)?;
     let output_parent = output
         .parent()
@@ -5088,14 +5085,14 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         triple.as_deref(),
         &shipped,
     )?;
-    if let Some(selection) = &request.sdk {
-        manifest.package.runtime = Some(native_sdk::bind_staged(
-            selection,
-            built,
-            (&payload, &shipped),
-            (&spec.app_dir, triple.as_deref()),
-        )?);
-    }
+    #[cfg(target_os = "linux")]
+    bind_signed_sdk(
+        &mut manifest,
+        request,
+        built,
+        (&payload, &shipped),
+        (&spec.app_dir, triple.as_deref()),
+    )?;
     let packed = pack::pack_manifest(
         manifest,
         resource_kinds,
@@ -5124,6 +5121,37 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         entrypoints,
         size,
     })
+}
+
+/// What the payload may weigh: a desktop build carries the whole toolkit and answers to the
+/// registry's desktop limit; a thin Tilo OS build is bounded by its `[budget]`.
+fn package_budget(
+    desktop: bool,
+    manifest_source: &str,
+    manifest_path: &Path,
+) -> Result<size::Budget> {
+    if desktop {
+        return Ok(size::Budget::default());
+    }
+    size::Budget::from_manifest(manifest_source)
+        .with_context(|| format!("reading [budget] from {}", manifest_path.display()))
+}
+
+/// Bind the package to the signed native SDK its build selected, checking the compiler's own ELF
+/// evidence against the verified bundle.
+#[cfg(target_os = "linux")]
+fn bind_signed_sdk(
+    manifest: &mut tilo_app_package::Manifest,
+    request: &PackageRequest,
+    built: HashMap<String, PathBuf>,
+    staged: (&Path, &[(String, PathBuf)]),
+    target: (&Path, Option<&str>),
+) -> Result<()> {
+    let Some(selection) = &request.sdk else {
+        return Ok(());
+    };
+    manifest.package.runtime = Some(native_sdk::bind_staged(selection, built, staged, target)?);
+    Ok(())
 }
 
 /// What a native `package` or `build` compiles, for which triple, and how.
@@ -5220,6 +5248,7 @@ impl NativeBuild {
 /// Returns an error for the web platform (see [`web::build_web`]), when
 /// preflight fails, or when Cargo does.
 pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuild> {
+    #[cfg(target_os = "linux")]
     native_sdk::validate_request(request)?;
     if request.platform == PackagePlatform::Web {
         bail!("a web build is `tilo-app build --platform web`, not a native build");
@@ -5262,16 +5291,24 @@ pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuil
 
 /// Where the package goes: `--output`, or `dist/<package>.tapp` (with the platform and architecture for
 /// a desktop build). Refuses to replace an existing file without `force`, and creates the directory.
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(
+        unused_variables,
+        reason = "signed native SDK resources are a Linux package path"
+    )
+)]
 fn package_resources(
     spec: &AppPackageSpec,
     request: &PackageRequest,
     built: &HashMap<String, PathBuf>,
     triple: Option<&str>,
 ) -> Result<Vec<String>> {
-    match request.sdk.as_ref().filter(|sdk| sdk.compiler.is_some()) {
-        Some(sdk) => native_sdk::compiler::declared_resources(sdk, built, &spec.app_dir, triple),
-        None => resource_kinds::declared_by_app(&spec.app_dir),
+    #[cfg(target_os = "linux")]
+    if let Some(sdk) = request.sdk.as_ref().filter(|sdk| sdk.compiler.is_some()) {
+        return native_sdk::compiler::declared_resources(sdk, built, &spec.app_dir, triple);
     }
+    resource_kinds::declared_by_app(&spec.app_dir)
 }
 
 fn package_output(
@@ -5608,11 +5645,32 @@ struct BuildPlan<'a> {
     profile: &'a str,
 }
 
+/// Point the build at the signed native SDK's canonical cohort wrapper, so the app and the toolkit
+/// come from one checkout and one compiler.
+#[cfg(target_os = "linux")]
+fn configure_sdk_graph(
+    command: &mut ProcessCommand,
+    spec: &AppPackageSpec,
+    plan: &BuildPlan<'_>,
+    features: &mut Vec<String>,
+) -> Result<()> {
+    let root = find_repo_root(&spec.app_dir)
+        .filter(|_| app_is_workspace_member(&spec.app_dir))
+        .context("native SDK packaging requires a checkout workspace app; scaffold with tilo-app new in the SDK checkout")?;
+    *features =
+        native_sdk::configure_graph(command, &root, plan.profile, &spec.cargo_package, features)?;
+    if let Some(target) = plan.triple {
+        command.arg("--target").arg(target);
+    }
+    Ok(())
+}
+
 fn build_entrypoints(
     spec: &AppPackageSpec,
     plan: &BuildPlan<'_>,
     request: &PackageRequest,
 ) -> Result<HashMap<String, PathBuf>> {
+    #[cfg(target_os = "linux")]
     if request
         .sdk
         .as_ref()
@@ -5635,20 +5693,14 @@ fn build_entrypoints(
         command.arg("--bin").arg(cargo_bin);
     }
     let mut features = request.features.clone();
-    if request.sdk.is_some() {
-        let root = find_repo_root(&spec.app_dir)
-            .filter(|_| app_is_workspace_member(&spec.app_dir))
-            .context("native SDK packaging requires a checkout workspace app; scaffold with tilo-app new in the SDK checkout")?;
-        features = native_sdk::configure_graph(
-            &mut command,
-            &root,
-            plan.profile,
-            &spec.cargo_package,
-            &features,
-        )?;
-        if let Some(target) = plan.triple {
-            command.arg("--target").arg(target);
-        }
+    #[cfg(target_os = "linux")]
+    let against_sdk = request.sdk.is_some();
+    // A signed native SDK is a Linux runtime bundle; no other platform selects one.
+    #[cfg(not(target_os = "linux"))]
+    let against_sdk = false;
+    if against_sdk {
+        #[cfg(target_os = "linux")]
+        configure_sdk_graph(&mut command, spec, plan, &mut features)?;
     } else if plan.thin {
         let triple = if let Some(target) = plan.triple {
             target.to_owned()
@@ -5685,6 +5737,7 @@ fn build_entrypoints(
     for line in BufReader::new(stdout).lines() {
         let line = line.context("reading Cargo artifact stream")?;
         collect_cargo_message(&line, &expected_manifest, &mut artifacts);
+        #[cfg(target_os = "linux")]
         if request.sdk.is_some() {
             native_sdk::collect_toolkit(&line, &spec.app_dir, &mut artifacts)?;
         }

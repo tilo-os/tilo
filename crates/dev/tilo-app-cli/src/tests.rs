@@ -4214,6 +4214,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let error = package_app(
             &destination.join("src/lib.rs"),
             &PackageRequest {
+                #[cfg(target_os = "linux")]
                 sdk: None,
                 output: None,
                 identity: None,
@@ -4248,6 +4249,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let error = package_app(
             &destination,
             &PackageRequest {
+                #[cfg(target_os = "linux")]
                 sdk: None,
                 output: None,
                 identity: None,
