@@ -83,7 +83,9 @@ mod unix {
             #[arg(long)]
             no_backup_i_understand: bool,
         },
-        /// Write the passphrase-encrypted backup of this identity.
+        /// Write the passphrase-encrypted backup of this identity. A new
+        /// device's setup restores it as this same person ("Use my existing
+        /// identity", "Restore from a backup"), with a device of its own.
         Backup {
             /// Where to write it; the file must not exist yet.
             #[arg(long, value_name = "PATH")]
@@ -92,6 +94,10 @@ mod unix {
             #[arg(long, value_name = "FILE")]
             passphrase_file: Option<PathBuf>,
         },
+        /// Print the 24 words of this identity's recovery key. A new device
+        /// restores the identity with them ("Enter your recovery key"), as
+        /// it does with the backup; anyone who reads them can act as you.
+        RecoveryKey,
         /// Join an identity another device on this network holds.
         ///
         /// Shows a code and waits; on the other device run
@@ -282,7 +288,7 @@ mod unix {
                 }
             };
         }
-        let result = refuse_root()
+        let result = refuse_elevated()
             .and_then(|()| PersonPaths::from_env().map_err(anyhow::Error::msg))
             .and_then(|person| {
                 let context = Context {
@@ -391,6 +397,7 @@ mod unix {
                 );
                 Ok(())
             }
+            Cmd::RecoveryKey => recovery_key(context),
             Cmd::Pair { label, timeout } => {
                 let label = label
                     .or_else(|| {
@@ -450,10 +457,28 @@ mod unix {
         }
     }
 
-    fn refuse_root() -> anyhow::Result<()> {
-        if rustix::process::geteuid().is_root() {
+    fn recovery_key(context: &Context) -> anyhow::Result<()> {
+        let identity = context.require_identity()?;
+        let words = tilo_identity::store::recovery_words(&identity.record_path)
+            .context("read the identity's recovery key")?;
+        context.emit(
+            &json!({ "identity": identity.id, "words": words.as_str() }),
+            &words,
+        );
+        Ok(())
+    }
+
+    /// A person who starts this with sudo or pkexec means their own account's
+    /// identity, and would act on root's instead, or write root's files into
+    /// their home. Root that is the account itself (a container's, a server's
+    /// own login) keeps an identity like any other account.
+    fn refuse_elevated() -> anyhow::Result<()> {
+        let elevated = ["SUDO_UID", "PKEXEC_UID"]
+            .iter()
+            .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
+        if elevated && rustix::process::geteuid().is_root() {
             return Err(guided(
-                "this runs as the account that owns the identity, not as root",
+                "this acts as the account that owns the identity, not with sudo",
                 "run it again as that account, without sudo; it asks for an administrator \
                  itself when a step needs one",
             ));

@@ -92,15 +92,20 @@ fn every_old_name_runs_its_help_through_the_alias() {
 }
 
 /// `tilo login --new-identity` makes one identity whose root this computer
-/// holds, in its identity store, and keeps it: a second run says so and
-/// prints the same user public key.
+/// holds, in the store a Tilo session on this account reads, and keeps it: a
+/// second time says so and prints the same user public key. The session finds
+/// that person there and verifies them as its own.
 #[test]
-fn a_new_identity_is_made_once() {
-    let scratch = tempfile::tempdir().unwrap();
+fn a_new_identity_is_made_once_where_the_session_reads_it() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config");
+    let root = home.path().join("identity-root");
     let run = |args: &[&str]| {
         let out = Command::new(tilo_test_env::package_binary!("tilo"))
             .args(args)
-            .env("TILO_IDENTITY_DIR", scratch.path())
+            .env("HOME", home.path())
+            .env("XDG_CONFIG_HOME", &config)
+            .env("TILO_IDENTITY_ROOT", &root)
             .env("TILO_IDENTITY_FILE_SECRETS", "1")
             .output_locked()
             .unwrap();
@@ -113,13 +118,25 @@ fn a_new_identity_is_made_once() {
     let (key, said) = run(&["login", "--new-identity", "--name", "Ada"]);
     assert_eq!(key.len(), 64, "{key}");
     assert!(said.contains("Made Ada's Tilo identity"), "{said}");
-    assert!(
-        tilo_identity_client::resolve_active_identity(&scratch.path().join("person")).is_some(),
-        "the root is kept in the identity store"
-    );
     let (again, said) = run(&["login", "--new-identity", "--name", "Someone else"]);
     assert_eq!(again, key);
     assert!(said.contains("already holds Ada's"), "{said}");
+
+    let identity_dir = config.join("tilo/identity");
+    let active = tilo_identity_client::resolve_active_identity(&identity_dir)
+        .expect("the session's identity store holds the person");
+    let metadata = tilo_identity::store::load_metadata_from_path(&active).unwrap();
+    assert_eq!(hex::encode(metadata.group_public_key), key);
+    assert_eq!(metadata.display_name, "Ada");
+    assert!(metadata.single_device, "this computer holds the root");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+    tilo_identity::provisioning::verify_collaboration_identity(
+        &identity_dir,
+        &tilo_device_identity::IdentityPaths::under(&root),
+        tilo_clock::unix_now_ns(),
+    )
+    .expect("the session verifies the person and this device as its own");
 }
 
 /// What `tilo mcp` may hold of its own while it waits for its agent: it is a thin bridge. Most

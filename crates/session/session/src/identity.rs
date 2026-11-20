@@ -172,19 +172,7 @@ pub(crate) fn person_in(workspace: &str, person: &str) -> String {
 /// and the people they work with see it from now on. Says what stopped it when it could not.
 pub(crate) fn rename_to(name: &str) -> Result<(), String> {
     let dir = tilo_identity::store::identity_dir_from_env().map_err(|error| error.to_string())?;
-    let record = tilo_identity_client::resolve_active_identity(&dir)
-        .ok_or_else(|| "no active identity".to_owned())?;
-    let id = record
-        .file_stem()
-        .and_then(std::ffi::OsStr::to_str)
-        .ok_or_else(|| "identity record without an id".to_owned())?
-        .to_owned();
-    let colour = tilo_identity_client::load_metadata_from_path(&record)
-        .map(|metadata| metadata.avatar_color)
-        .map_err(|error| error.to_string())?;
-    tilo_identity::store::update_identity_profile(&dir, &id, name, colour)
-        .map(drop)
-        .map_err(|error| error.to_string())
+    tilo_identity::store::rename_active_identity(&dir, name).map_err(|error| error.to_string())
 }
 
 /// Put a host offer to the person: one about who they are ([`HostAction::is_personal`], their name

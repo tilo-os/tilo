@@ -181,8 +181,7 @@ fn list() -> Result<std::process::ExitCode> {
 /// not reached it yet.
 fn saved_recovery_keys() -> Result<Vec<tilo_session_client::machines::MachineRecovery>> {
     let state = tilo_paths::state_dir().context("this account has no state directory (no HOME)")?;
-    let dir = identity::dir()?;
-    let paths = identity::device_paths(&dir);
+    let paths = identity::paths();
     let user = persist::read_public_key(&paths.user_pubkey)
         .context("this computer holds no identity; there is no store to read")?;
     let cert = persist::read_device_cert(&paths.device_cert_for_user(&user))
@@ -374,7 +373,7 @@ fn opened_at(at_ns: u64) -> String {
 /// action on the person's Servers workspace that asks it.
 fn ask(server: &str, operation: &ServerOperation) -> Result<ServerOperationResult> {
     let dir = identity::dir()?;
-    let paths = identity::device_paths(&dir);
+    let paths = identity::paths();
     let user = persist::read_public_key(&paths.user_pubkey)
         .context("this computer holds no identity; start `tilo login` first")?;
     let signing_key = persist::load_device_key(&paths)?;

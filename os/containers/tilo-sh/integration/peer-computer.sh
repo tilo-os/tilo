@@ -10,6 +10,7 @@ mkdir -p "$scratch/home" "$scratch/state" "$scratch/config" "$scratch/runtime"
 chmod 700 "$scratch/runtime"
 computer=(env -u DBUS_SESSION_BUS_ADDRESS -u TILO_API_KEY -u TILO_DEVICE_DIR
   HOME="$scratch/home" XDG_STATE_HOME="$scratch/state" XDG_CONFIG_HOME="$scratch/config"
+  TILO_IDENTITY_ROOT="$scratch/identity"
   XDG_RUNTIME_DIR="$scratch/runtime" TILO_SITE="$TILO_SITE" TILO_API_URL="$TILO_API_URL")
 as_computer() { "${computer[@]}" "$@"; }
 say() { printf '%s\n' "$*" >&2; }

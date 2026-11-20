@@ -25,9 +25,7 @@ pub struct SystemIdentity {
 
 impl SessionPaths {
     pub fn from_process() -> Self {
-        let root = std::env::var_os("TILO_IDENTITY_ROOT")
-            .filter(|value| !value.is_empty())
-            .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
+        let root = tilo_identity::provisioning::collaboration_identity_root();
         Self {
             home: crate::identity::session_home(),
             user: std::env::var_os("USER").filter(|value| !value.is_empty()),

@@ -1469,14 +1469,66 @@ pub fn verify_collaboration_identity(
     Ok(())
 }
 
-/// Resolve the system identity root, with the same test/development override
-/// used by the filesystem synchroniser, and this session's device-key
-/// identity store ([`IdentityStorage::for_session`]).
+/// Where this device's key and certificates live, for every program of this
+/// account (the session, its setup, `tilo`, `tilo-identity`): `$TILO_IDENTITY_ROOT`
+/// when set, else Tilo's system tree (`/var/lib/tilo`) on a machine that has
+/// one, else the account's own data directory (`$XDG_DATA_HOME/tilo`), as on
+/// a computer running Tilo beside another operating system.
+#[must_use]
+pub fn collaboration_identity_root() -> PathBuf {
+    if let Some(root) = std::env::var_os("TILO_IDENTITY_ROOT").filter(|value| !value.is_empty()) {
+        return PathBuf::from(root);
+    }
+    let system = Path::new(SYSTEM_IDENTITY_ROOT);
+    if system.join("device").is_dir() {
+        return system.to_path_buf();
+    }
+    tilo_paths::data_dir()
+        .filter(|dir| dir.is_absolute())
+        .map_or_else(|| system.to_path_buf(), |dir| dir.join("tilo"))
+}
+
+const SYSTEM_IDENTITY_ROOT: &str = "/var/lib/tilo";
+
+/// This device's identity paths under [`collaboration_identity_root`], with
+/// this session's device-key identity store ([`IdentityStorage::for_session`]).
 pub fn collaboration_identity_paths() -> IdentityPaths {
-    std::env::var_os("TILO_IDENTITY_ROOT")
-        .filter(|value| !value.is_empty())
-        .map_or_else(IdentityPaths::default_system, IdentityPaths::under)
+    IdentityPaths::under(collaboration_identity_root())
         .with_device_key_ownership(IdentityStorage::for_session().device_key_ownership())
+}
+
+/// Make a new person whose root this account holds: a fresh root kept as this
+/// account's identity in `identity_dir`, named `display_name` (unnamed while
+/// it is empty), and this device certified by it as `device_label` in `paths`,
+/// as a session provisions its own. How `tilo login --new-identity` makes one,
+/// so a session started on this account later is that same person. Answers
+/// the person's user public key.
+///
+/// # Errors
+///
+/// This account already has an identity (one it holds the root of, or one
+/// joined from another device), or the identity cannot be written, secured
+/// or certified.
+pub fn create_person(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    display_name: &str,
+    device_label: &str,
+    storage: IdentityStorage,
+) -> io::Result<[u8; 32]> {
+    if let Some(existing) = tilo_identity_client::resolve_active_identity(identity_dir) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "this account already has a Tilo identity ({})",
+                existing.display()
+            ),
+        ));
+    }
+    let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+    import_single_device_root(identity_dir, &root, display_name, storage)?;
+    ensure_collaboration_identity_with_device_label(identity_dir, paths, storage, device_label)?;
+    Ok(root.verifying_key().to_bytes())
 }
 
 fn import_primary_identity(

@@ -205,7 +205,7 @@ fn choices(add: &AddArgs) -> Result<install_plan::Choices> {
 fn plan_and_mint(add: &AddArgs) -> Result<std::process::ExitCode> {
     let choices = choices(add)?;
     let dir = identity::dir()?;
-    let paths = identity::device_paths(&dir);
+    let paths = identity::paths();
     let home_peers = tilo_server_protocol::home_peer_registry_path(&dir);
     let (token, named) = install_plan::mint(&paths, &home_peers).map_err(anyhow::Error::msg)?;
     let id = install_plan::new_id();

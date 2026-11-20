@@ -2030,7 +2030,7 @@ mod tests {
             }
         });
         let nobody = tempfile::tempdir().unwrap();
-        env.set(crate::identity::DIR_ENV, nobody.path());
+        env.set("XDG_CONFIG_HOME", nobody.path());
         let out = dir.join("visa.json");
         let api_url = api_server.url();
         let reach = Reach {

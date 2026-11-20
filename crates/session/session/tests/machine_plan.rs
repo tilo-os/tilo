@@ -17,7 +17,6 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use ed25519_dalek::SigningKey;
 use tilo_device_identity::IdentityPaths;
 use tilo_session::{AppSocket, Options};
 
@@ -30,22 +29,13 @@ const ANSWER_WITHIN: Duration = Duration::from_secs(60);
 /// `tilo login --new-identity` on a fresh profile: the person's root in the
 /// one identity directory the session reads, and the device key, certificate
 /// and fleet entry the session's broker admits this computer by.
-fn login(identity_dir: &Path, root_seed: u8) {
-    let paths = IdentityPaths::under(identity_dir);
-    let root = SigningKey::from_bytes(&[root_seed; 32]);
-    std::fs::write(identity_dir.join("name"), "plan cycle owner\n").unwrap();
-    tilo_identity::provisioning::import_single_device_root(
+fn login(identity_dir: &Path) {
+    tilo_identity::provisioning::create_person(
         identity_dir,
-        &root,
+        &IdentityPaths::under(identity_dir),
+        "plan cycle owner",
         "plan cycle owner",
         tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .unwrap();
-    tilo_identity::provisioning::ensure_collaboration_identity_with_device_label(
-        identity_dir,
-        &paths,
-        tilo_identity::provisioning::IdentityStorage::Files,
-        "plan cycle owner",
     )
     .unwrap();
 }
@@ -132,7 +122,7 @@ fn a_person_on_a_fresh_profile_plans_a_machine_and_is_answered() {
     home.env()
         .set("TILO_IDENTITY_ROOT", &identity)
         .set("TILO_SECRETS_DIR", &secrets);
-    login(&identity, 21);
+    login(&identity);
     let socket = home.runtime().join("test-control.sock");
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),

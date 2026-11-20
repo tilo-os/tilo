@@ -631,6 +631,26 @@ pub fn update_identity_profile(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
 }
 
+/// Name this account's active identity `display_name`, keeping its colour: its
+/// own desktop and the people it works with see the name from then on.
+///
+/// # Errors
+///
+/// No identity is active in `dir`, or as [`update_identity_profile`].
+pub fn rename_active_identity(dir: &std::path::Path, display_name: &str) -> io::Result<()> {
+    let active = resolve_active_identity(dir)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no active identity"))?;
+    let id = active
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "identity file without an id"))?
+        .to_owned();
+    let colour = load_metadata_from_path(&active)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
+        .avatar_color;
+    update_identity_profile(dir, &id, display_name, colour).map(drop)
+}
+
 /// Publish name, colour and canonical pixels together under the identity lifecycle
 /// lock, preserving signing/provider ownership. A failed durability acknowledgement
 /// must still be treated as a failed save by the caller.

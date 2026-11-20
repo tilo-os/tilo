@@ -27,7 +27,10 @@ identifiers = ["host_rendered"]
 reason = "The identity registry's field naming the file an identity is kept in."
 words = ["record"]
 identifiers = ["record_path"]
-paths = ["crates/runtime/tilo-runtime/src/standalone/mcp_admission_tests.rs"]
+paths = [
+    "crates/runtime/tilo-identity/src/bin/tilo-identity.rs",
+    "crates/runtime/tilo-runtime/src/standalone/mcp_admission_tests.rs",
+]
 
 [[allow]]
 reason = "The native test pair's serving daemon runs under the profile `host`, which names its cache and identity directories."
