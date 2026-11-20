@@ -1395,7 +1395,7 @@ installer-accounts-source-label = { $service }: { $account }
 
 installer-accounts-source-identity = { $account } ({ $identity })
 
-installer-accounts-intro = Connect the services you want in Tilo. This is optional; you can connect them after setup in Settings, under External accounts.
+installer-accounts-intro = Connect the services you want in Tilo. This is optional; you can connect them after setup in Settings, under Accounts.
 
 installer-accounts-google-drive = Google Drive
 

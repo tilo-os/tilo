@@ -407,7 +407,7 @@ files-recent-not-a-folder = Recent is not a folder; open one to add files
 ## Cloud accounts
 files-account-sign-in-title = Sign in to { $account }
 files-account-sign-in-needed = { $service } at { $host } needs you to sign in again before this folder can sync.
-files-account-sign-in-where = You can do that in Settings, under External accounts.
+files-account-sign-in-where = You can do that in Settings, under Accounts.
 files-account-service-at-host = { $service } at { $host }
 files-account-folder = Folder: { $path }
 files-account-check-again = Check again

@@ -3140,7 +3140,7 @@ settings-notifications-mute-app-hour = Mute notifications for an hour
 
 # The person's accounts and model providers on a page: the host that runs
 # their workspace keeps them, so the pane shows what it answered.
-settings-web-accounts-list = Accounts
+settings-web-accounts-list = Connected
 settings-web-accounts-add-title = Add an account
 settings-web-accounts-add = Add account
 settings-web-accounts-set-up = Set up

@@ -82,7 +82,7 @@ mod tests {
         root.children.push(ResourceSpec::new(
             "settings.section:external_accounts",
             "settings.section",
-            "External accounts",
+            "Accounts",
         ));
         vec![root]
     }

@@ -655,7 +655,7 @@ fn settings_link() -> ui::tilo_actions::remote::InvokeRequest {
 }
 
 /// A link into another app goes to the window that already shows what it names. Mail's link to
-/// Settings' External accounts, with Settings open: no second Settings window, the open one comes
+/// Settings' Accounts page, with Settings open: no second Settings window, the open one comes
 /// forward, and the link's action is the one handed on to run in it. With no Settings window, or
 /// one that closed since the host looked, the link opens one.
 #[test]

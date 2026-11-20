@@ -1,7 +1,7 @@
 // A link into another app goes to the window that already shows what it
 // names. Mail's "Add an email account" leads to Settings: with Settings
 // open, no second Settings window opens, the open one comes forward and
-// shows External accounts; with none open, the link opens one there.
+// shows its Accounts page; with none open, the link opens one there.
 //
 // usage: node app-link.mjs BUNDLE_DIR [OUT_DIR]
 //   BUNDLE_DIR  build.sh --bundle desktop output
@@ -86,13 +86,13 @@ async function run() {
   };
   const SETTINGS = 'so.tilo.settings', MAIL = 'so.tilo.mail';
   // Mail's own way to its accounts, where it is drawn on screen.
-  const link = () => until('Mail offering its link to External accounts', async () => {
+  const link = () => until('Mail offering its link to Accounts', async () => {
     const {width} = await evaluate('(({width}) => ({width}))(tiloMount.canvas.getBoundingClientRect())');
     return (await nodes()).find(n => n.role === 'Button' && n.name === 'Add an email account' && n.x >= 0 && n.x + n.w <= width);
   });
   // The page Settings shows: its title over the pane, on screen.
-  const onAccounts = () => until('Settings showing External accounts', async () =>
-    (await nodes()).some(n => /Heading/.test(n.role) && n.name === 'External accounts' && n.w > 0));
+  const onAccounts = () => until('Settings showing Accounts', async () =>
+    (await nodes()).some(n => /Heading/.test(n.role) && n.name === 'Accounts' && n.w > 0));
 
   await command(verb.openApp(SETTINGS));
   const [settings] = await until('Settings open', async () => { const open = await windowsOf(SETTINGS); return open.length === 1 && open; });
@@ -100,7 +100,7 @@ async function run() {
   const [mail] = await until('Mail open', async () => { const open = await windowsOf(MAIL); return open.length === 1 && open; });
   await command(verb.focus(mail.route));
   await until('Mail in front', async () => (await snapshot()).active?.tab === mail.route.tab);
-  assert.ok(!(await nodes()).some(n => /Heading/.test(n.role) && n.name === 'External accounts'), 'Settings starts on another page');
+  assert.ok(!(await nodes()).some(n => /Heading/.test(n.role) && n.name === 'Accounts'), 'Settings starts on another page');
 
   // Settings is open: the link goes to its window.
   let button = await link();
@@ -120,7 +120,7 @@ async function run() {
   assert.equal((await windowsOf(SETTINGS)).length, 1, 'still one Settings window');
   console.log(JSON.stringify({step: 'pressed-again', ok: true}));
 
-  // No Settings window: the link opens one, on External accounts.
+  // No Settings window: the link opens one, on Accounts.
   await command(verb.closeTab(settings.route));
   await until('Settings closed', async () => (await windowsOf(SETTINGS)).length === 0);
   await command(verb.focus(mail.route));

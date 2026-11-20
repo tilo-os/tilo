@@ -152,7 +152,7 @@ fn account_items(
     let provider = signs_in_with(account);
     let title = match (provider, &servers) {
         (Some(provider), _) => Some(format!(
-            "connect {} with {provider}'s sign-in, in Settings > External accounts; the \
+            "connect {} with {provider}'s sign-in, in Settings > Accounts; the \
              sign-in Thunderbird keeps for it is Thunderbird's own and is not reused",
             account.display_name
         )),
@@ -449,7 +449,7 @@ fn through_provider(
     }
     lander.say(&format!(
         "{address} is not connected: it signs in with {provider}'s own sign-in. Connect it in \
-         Settings > External accounts with {provider}; Mail then syncs it from its server."
+         Settings > Accounts with {provider}; Mail then syncs it from its server."
     ));
     Ok(())
 }

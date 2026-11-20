@@ -93,7 +93,7 @@ fn presentation_state_stays_local() {
         assert_eq!(semantics.name.as_deref(), Some("No email account yet"));
         assert!(semantics.children.iter().any(|node| {
             node.role == ui::a11y::Role::Button
-                && node.name.as_deref() == Some("Open External accounts")
+                && node.name.as_deref() == Some("Add an email account")
         }));
         assert!(
             first.first_run.perform_action(
@@ -168,7 +168,7 @@ tilo_test_env::scenario! {
             .expect("a fresh Mail window has semantics");
         assert_eq!(
             route_named(&window, ACCOUNT_ROUTE).as_deref(),
-            Some("Open External accounts"),
+            Some("Add an email account"),
             "the window's own tree names the account route, not only its page"
         );
         assert!(
@@ -195,7 +195,7 @@ tilo_test_env::scenario! {
             .expect("a fresh Mail window has semantics");
         assert_eq!(
             route_named(&window, ACCOUNT_ROUTE).as_deref(),
-            Some("Externe Konten öffnen"),
+            Some("E-Mail-Konto hinzufügen"),
         );
         crate::i18n::CATALOG.set_locale("en-US");
     }
@@ -238,7 +238,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             refused.message.as_deref(),
-            Some("Prüfe das Passwort in den Einstellungen unter Externe Konten.")
+            Some("Prüfe das Passwort in den Einstellungen unter Konten.")
         );
 
         // A send that fails is still a notice that fades, and it reads in German.

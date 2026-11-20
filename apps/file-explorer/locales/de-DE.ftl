@@ -406,7 +406,7 @@ files-recent-not-a-folder = „Zuletzt verwendet“ ist kein Ordner; öffne eine
 ## Cloud-Konten
 files-account-sign-in-title = Bei { $account } anmelden
 files-account-sign-in-needed = { $service } unter { $host } braucht eine neue Anmeldung, bevor dieser Ordner synchronisiert werden kann.
-files-account-sign-in-where = Das geht in den Einstellungen unter „Externe Konten“.
+files-account-sign-in-where = Das geht in den Einstellungen unter „Konten“.
 files-account-service-at-host = { $service } unter { $host }
 files-account-folder = Ordner: { $path }
 files-account-check-again = Erneut prüfen

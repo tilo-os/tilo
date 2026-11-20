@@ -3138,7 +3138,7 @@ settings-input-device-set-pad-dial = Festlegen, was ein Ring oder Streifen in ei
 settings-notifications-unmute-app-now = Mitteilungen wieder einschalten
 settings-notifications-mute-app-hour = Mitteilungen eine Stunde stummschalten
 
-settings-web-accounts-list = Konten
+settings-web-accounts-list = Verbunden
 settings-web-accounts-add-title = Konto hinzufügen
 settings-web-accounts-add = Konto hinzufügen
 settings-web-accounts-set-up = Einrichten
