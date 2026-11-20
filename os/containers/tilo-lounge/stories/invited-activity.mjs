@@ -49,7 +49,7 @@ const shows = (tab, text, what, timeout) => tab.evaluate('globalThis.tiloMount?.
 // person's card in the roster's place, and pressing it again opens everyone
 // here, so a person presses until the rows stand where the card was.
 const opensHere = async tab => {
-  const standing = `(() => {
+  const opened_view = `(() => {
     const out = [];
     const node = n => { if (n.name) out.push(n.name); (n.children || []).forEach(node); };
     const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
@@ -61,7 +61,7 @@ const opensHere = async tab => {
   })()`;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     await pressNaming(tab, '^(Everyone here|.*Show who is here)$', 'the faces in the top bar');
-    const opened = await tab.waitFor(standing, {timeout: stepLimit(2)}).catch(() => '');
+    const opened = await tab.waitFor(opened_view, {timeout: stepLimit(2)}).catch(() => '');
     if (opened === 'roster') return;
     if (opened === 'card') console.log(`the press opened a card where everyone here stands (${attempt}); pressing again`);
   }
