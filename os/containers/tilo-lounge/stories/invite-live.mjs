@@ -14,7 +14,7 @@
 // step failed or ran over its budget.
 import {sleep} from '../../../../tools/web/chrome.mjs';
 import {stepLimit, SHELL} from '../integration/waits.mjs';
-import {click, found, key, NODE_VALUES, openMarks, pageText, pressNamed, sealedLink, searcher, TREE_TEXT, until}
+import {click, find, found, key, NODE_VALUES, openMarks, pageText, pressNamed, sealedLink, searcher, TREE_TEXT, until}
   from '../integration/shell.mjs';
 import {recorder, StoryStopped} from './recorder.mjs';
 
@@ -36,9 +36,28 @@ const pressWhen = async (tab, name, what, timeout = stepLimit(3)) => {
 // The text the desktop shows, as a person would read it.
 const shows = (tab, text, what, timeout) => tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {})
   .then(() => until(tab, `(${TREE_TEXT}).includes(${JSON.stringify(text)})`, what, timeout));
+// What a reader hears of a page: its names and values, and what each node says beside them.
+const SPOKEN = `(() => {
+  const out = [];
+  const node = n => { for (const part of [n.name, n.value, n.description]) if (part) out.push(part); (n.children || []).forEach(node); };
+  const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+  const root = globalThis.tiloMount?.state()?.semantics?.root;
+  if (root) walk(root);
+  return out.join('\\n');
+})()`;
+const says = (tab, text, what, timeout) => tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {})
+  .then(() => until(tab, `(${SPOKEN}).includes(${JSON.stringify(text)})`, what, timeout));
 // The rows of a page's People list: everyone here but the person themself.
 const peopleRows = tab => tab.evaluate('JSON.stringify(globalThis.tiloMount?.people?.() ?? [])').then(JSON.parse).catch(() => []);
 const arrived = `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`;
+// Open the other person here from the bar: their own face where it is a control of its own,
+// else what opens everyone.
+const openOther = async (tab, whose) => {
+  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+  const [other] = await peopleRows(tab);
+  const face = other?.label && JSON.parse(await find(tab, other.label).catch(() => 'null'));
+  await pressWhen(tab, face ? other.label : 'Everyone here', `the faces in ${whose} top bar`);
+};
 // The workspace the page has open, by its id, once it is open under `name`.
 const openWorkspace = name => `(() => {
   const chosen = JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null');
@@ -117,6 +136,8 @@ try {
       const values = JSON.parse(${NODE_VALUES});
       return values.find(value => new RegExp(${JSON.stringify(sealedLink.source)}).test(value)) ?? '';
     })()`, 'the invitation link');
+    // The link copied, Ada closes the sheet as a person does: it stood over the bar's faces.
+    await key(ada.tab, 'Escape');
   });
 
   const grace = await story.person('Grace');
@@ -165,10 +186,12 @@ try {
 
   await story.step('Grace follows Ada', async () => {
     // Follow is in the people panel, which the faces in the top bar open.
-    await pressWhen(grace.tab, 'Everyone here', 'the faces in Grace’s top bar');
+    await openOther(grace.tab, 'Grace’s');
     await pressWhen(grace.tab, 'Follow Ada', 'Follow Ada in Grace’s people panel');
     await shows(grace.tab, 'Following Ada', 'Grace’s page saying they follow Ada', stepLimit(2));
-    await shows(ada.tab, 'Following you', 'Ada’s page saying Grace follows them', stepLimit(2));
+    // Ada sees who follows them where they see who is here: Grace's row says so.
+    await openOther(ada.tab, 'Ada’s');
+    await says(ada.tab, 'Following you', 'Ada’s page saying Grace follows them', stepLimit(2));
   });
 
   await story.step('Ada opens Notes and starts a note', async () => {
@@ -181,8 +204,10 @@ try {
     if (!await press(ada.tab, 'New note')) fail('Notes’ New note is not where a person can press it');
     await until(ada.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? null).includes('MultilineTextInput')`, 'the new note’s text field');
     story.web.action(ada, Date.now() - pressed, 'a new note');
-    // Following Ada, Grace is shown Notes too.
-    await until(grace.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Notes')`,
+    // Following Ada, Grace is shown the note too, under the name Ada's window has.
+    const labels = `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).map(entry => entry.label)`;
+    const adaShows = await ada.tab.evaluate(`JSON.stringify(${labels})`).catch(() => '[]');
+    await until(grace.tab, `${labels}.some(label => label === 'Notes' || ${adaShows}.includes(label))`,
       'Notes on Grace’s screen', stepLimit(3));
   });
 
