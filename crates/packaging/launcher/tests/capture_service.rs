@@ -255,6 +255,14 @@ fn assert_worker_reaped(receive: &std::sync::mpsc::Receiver<OwnedFd>) {
 
 #[test]
 fn signed_capture_worker_confines_source_and_output_and_reaps_on_cancel() {
+    // What the test observes is a denial: a broker-private ancestor refuses the caller. Root reads
+    // it anyway, and so does a job sandbox's capability-dropped root, so the premise is the
+    // ordinary account exactly.
+    tilo_test_env::require_capability!(
+        NonRoot,
+        tilo_test_env::non_root_identity(),
+        "the denial observed through a broker-private ancestor is an ordinary account's"
+    );
     let payload = super::support::capture_worker_payload();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     home.env().set(launcher::run::DEBUG_STDERR_ENV, "1");
@@ -360,10 +368,13 @@ fn signed_capture_worker_confines_source_and_output_and_reaps_on_cancel() {
 #[test]
 fn signed_original_source_reader_drops_source_groups_only_after_namespace_confinement() {
     const CHILD: &str = "TILO_ORIGINAL_READER_QUALIFICATION_CHILD";
+    // The reader drops root's groups inside a mount namespace of its own, which root alone may
+    // enter: a user namespace's root holds no mount privilege over the host, and a job sandbox's
+    // capability-dropped root has none at all.
     tilo_test_env::require_capability!(
-        Chown,
-        tilo_test_env::switch_identity(65534),
-        "the original reader drops root's groups inside a mount namespace of its own"
+        Root,
+        tilo_test_env::root_identity(),
+        "the original reader enters a mount namespace of its own as root"
     );
     if std::env::var_os(CHILD).is_none() {
         // Own only this disposable child mount namespace.

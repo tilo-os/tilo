@@ -5,6 +5,12 @@
 //! job, and a skipped test must not look like a passing one.
 //! [`require_capability!`](crate::require_capability) does both: it skips with a message naming the
 //! capability, unless `TILO_REQUIRE_<CAP>=1` is set, in which case it fails the test instead.
+//!
+//! Two capabilities are about the account a test runs as, not about hardware: [`Capability::NonRoot`]
+//! and [`Capability::Root`]. A test that observes what file permissions refuse, or what only root may
+//! do, has an outcome that depends on who runs it, so it states that premise and the micro-VM tier
+//! runs it as that account (`setpriv --reuid=1000` for the first, the guest's own root for the
+//! second) instead of letting a root CI job pass it vacuously.
 
 #[cfg(unix)]
 use crate::SpawnUnderEnvLock as _;
@@ -29,6 +35,8 @@ pub enum Capability {
     KernelKeyring,
     NetworkTunnel,
     XServer,
+    NonRoot,
+    Root,
 }
 
 impl Capability {
@@ -49,6 +57,8 @@ impl Capability {
         Self::KernelKeyring,
         Self::NetworkTunnel,
         Self::XServer,
+        Self::NonRoot,
+        Self::Root,
     ];
 
     #[must_use]
@@ -70,6 +80,8 @@ impl Capability {
             Self::KernelKeyring => "TILO_REQUIRE_KEYRING",
             Self::NetworkTunnel => "TILO_REQUIRE_TUN",
             Self::XServer => "TILO_REQUIRE_XSERVER",
+            Self::NonRoot => "TILO_REQUIRE_NONROOT",
+            Self::Root => "TILO_REQUIRE_ROOT",
         }
     }
 
@@ -98,6 +110,8 @@ impl fmt::Display for Capability {
             Self::KernelKeyring => "the kernel keyring",
             Self::NetworkTunnel => "TUN devices with ip and nft",
             Self::XServer => "an X server for Wayland (xwayland-satellite and Xwayland)",
+            Self::NonRoot => "an ordinary account that file permissions confine",
+            Self::Root => "real root, which file permissions do not confine",
         })
     }
 }
@@ -277,6 +291,82 @@ pub fn network_tunnel() -> std::io::Result<()> {
     )
 }
 
+/// Whether this process's file permissions confine it: an ordinary account cannot read a directory
+/// whose mode is 0000, while root holding `CAP_DAC_OVERRIDE` reads it anyway. A capability-dropped
+/// job sandbox's root is confined too, which is why this alone cannot tell the two accounts apart.
+#[cfg(target_os = "linux")]
+fn file_permissions_confine() -> std::io::Result<bool> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let directory = tempfile::tempdir()?;
+    let refused = directory.path().join("no-access");
+    std::fs::create_dir(&refused)?;
+    std::fs::set_permissions(&refused, std::fs::Permissions::from_mode(0o000))?;
+    let read = std::fs::read_dir(&refused);
+    std::fs::set_permissions(&refused, std::fs::Permissions::from_mode(0o700))?;
+    match read {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+/// The effective user id, read back from a file this process creates.
+#[cfg(target_os = "linux")]
+fn effective_uid() -> std::io::Result<u32> {
+    use std::os::unix::fs::MetadataExt as _;
+    let file = tempfile::NamedTempFile::new()?;
+    Ok(file.as_file().metadata()?.uid())
+}
+
+/// Which account a test's premise names.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Account {
+    Ordinary,
+    Root,
+}
+
+/// Whether a process with this effective user id and this confinement is the named account.
+#[cfg(target_os = "linux")]
+fn premise(account: Account, uid: u32, confined: bool) -> Result<(), String> {
+    match account {
+        Account::Ordinary if uid == 0 => Err(
+            "this process runs as uid 0, so it is root and not the ordinary account the test \
+             needs"
+                .into(),
+        ),
+        Account::Ordinary if !confined => Err(format!(
+            "uid {uid} reads a mode-0000 directory, so it holds CAP_DAC_OVERRIDE"
+        )),
+        Account::Ordinary => Ok(()),
+        Account::Root if uid != 0 => Err(format!("this process runs as uid {uid}, not root")),
+        Account::Root if confined => Err(
+            "file permissions confine this uid 0 process, so its capabilities were dropped".into(),
+        ),
+        Account::Root => Ok(()),
+    }
+}
+
+/// The premise of a test that observes what an ordinary account may not read. It fails for real
+/// root, and also for a job sandbox's root, which runs as uid 0 but holds no capability.
+#[cfg(target_os = "linux")]
+pub fn non_root_identity() -> std::io::Result<()> {
+    premise(
+        Account::Ordinary,
+        effective_uid()?,
+        file_permissions_confine()?,
+    )
+    .map_err(std::io::Error::other)
+}
+
+/// The premise of a test that observes what only root may do. It fails for an ordinary account and
+/// for a job sandbox's root, whose dropped capabilities leave it confined like one.
+#[cfg(target_os = "linux")]
+pub fn root_identity() -> std::io::Result<()> {
+    premise(Account::Root, effective_uid()?, file_permissions_confine()?)
+        .map_err(std::io::Error::other)
+}
+
 #[cfg(target_os = "linux")]
 pub type NamedProbe = (&'static str, fn() -> std::io::Result<()>);
 
@@ -288,6 +378,8 @@ pub const PROBES: &[NamedProbe] = &[
     ("bubblewrap-with-proc", bubblewrap_with_proc),
     ("bubblewrap-overlay", bubblewrap_overlay),
     ("network-tunnel", network_tunnel),
+    ("non-root-identity", non_root_identity),
+    ("root-identity", root_identity),
 ];
 
 #[cfg(target_os = "linux")]
@@ -439,6 +531,36 @@ mod tests {
             run(true);
             assert!(reached.get());
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_identity_premise_states_the_account_this_process_runs_as() {
+        use super::{Account, non_root_identity, premise, root_identity};
+        for (account, uid, confined) in [
+            (Account::Ordinary, 1000, true),
+            (Account::Ordinary, 0, true),
+            (Account::Ordinary, 1000, false),
+            (Account::Root, 0, false),
+            (Account::Root, 1000, true),
+            (Account::Root, 0, true),
+        ] {
+            // Only the ordinary account of a real machine, and real root, satisfy a premise.
+            assert_eq!(
+                premise(account, uid, confined).is_ok(),
+                matches!(
+                    (account, uid, confined),
+                    (Account::Ordinary, 1000, true) | (Account::Root, 0, false)
+                ),
+                "{account:?} as uid {uid}, confined {confined}"
+            );
+        }
+        let confined = non_root_identity();
+        let root = root_identity();
+        assert!(
+            confined.is_ok() != root.is_ok(),
+            "exactly one account premise must hold here: non-root {confined:?}, root {root:?}"
+        );
     }
 
     #[test]

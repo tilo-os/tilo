@@ -7972,7 +7972,6 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "workspace-hack",
- "zbus",
  "zeroize",
 ]
 

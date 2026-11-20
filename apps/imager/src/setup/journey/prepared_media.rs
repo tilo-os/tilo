@@ -3063,19 +3063,11 @@ mod tests {
         let target = root.join("installed-machine");
         std::fs::create_dir(&target).unwrap();
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let published = reviewed.publish_enrolled_system(&target, password);
-        // SAFETY: geteuid has no preconditions. Both authority branches assert
-        // the production result; neither skips the positive private import.
-        if rustix::process::geteuid().as_raw() == 0 {
-            published.unwrap();
-            assert_eq!(
-                std::fs::read(target.join("device/cert.bin")).unwrap(),
-                certificate
-            );
-        } else {
-            assert!(published.is_err());
-            assert!(!target.join("device-private/keypair.bin").exists());
-        }
+        reviewed.publish_enrolled_system(&target, password).unwrap();
+        assert_eq!(
+            std::fs::read(target.join("device/cert.bin")).unwrap(),
+            certificate
+        );
     }
 
     #[test]
@@ -3223,6 +3215,14 @@ mod tests {
 
     #[test]
     fn media_preparation_exports_actual_enrolled_device_without_root_backup_fallback() {
+        // Publishing an enrolled system is root's alone (`installed_person::root`), so the
+        // premise is stated here, in the test: stated inside a helper, a missing capability
+        // would leave the helper alone and pass the test.
+        tilo_test_env::require_capability!(
+            Root,
+            tilo_test_env::root_identity(),
+            "publishing an enrolled system writes what only root may"
+        );
         let (ownership, mut pairing) = super::super::pairing::certified_fixture();
         let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
         while pairing.busy() {

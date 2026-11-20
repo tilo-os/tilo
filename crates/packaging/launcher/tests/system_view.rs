@@ -31,14 +31,16 @@ const LISTER: &str = "/tilo-view-lister";
 
 #[test]
 fn the_view_exposes_exactly_what_per_path_binds_did() {
+    // Bind-mounting the system into a view takes root's mount privilege: a user namespace's root
+    // cannot bind the host's filesystems, and a job sandbox's capability-dropped root holds no
+    // mount privilege at all. The micro-VM check `launcher-root` runs this as the guest's root.
+    tilo_test_env::require_capability!(
+        Root,
+        tilo_test_env::root_identity(),
+        "composing a view bind-mounts the system, which only real root may do"
+    );
     let exe = std::env::current_exe().unwrap();
-    let mut unshare = Command::new("unshare");
-    // Root (a CI container) already holds mount privilege; anyone else takes it in a user namespace of
-    // their own.
-    if !rustix::process::geteuid().is_root() {
-        unshare.args(["--user", "--map-root-user"]);
-    }
-    let output = unshare
+    let output = Command::new("unshare")
         .args(["--mount", "--propagation", "private"])
         .arg(&exe)
         .args([

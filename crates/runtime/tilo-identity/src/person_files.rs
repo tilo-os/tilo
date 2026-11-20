@@ -225,17 +225,22 @@ mod tests {
         assert!(!ran);
         assert!(!real.join("fleet.json").exists());
 
-        if own != 0 {
-            // Its nearest existing ancestor is root's.
-            let foreign = as_person(
-                Some(own),
-                Path::new("/tilo-no-such-dir/identity"),
-                || Ok(()),
-            );
-            assert_eq!(foreign.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
-            let other = as_person(Some(own.wrapping_add(1)), &real, || Ok(()));
-            assert_eq!(other.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
-        }
+        // Its nearest existing ancestor is root's, and the directory belongs
+        // to another account: only an account file permissions confine is
+        // refused those.
+        tilo_test_env::require_capability!(
+            NonRoot,
+            tilo_test_env::non_root_identity(),
+            "a directory owned by another account is only refused to an ordinary account"
+        );
+        let foreign = as_person(
+            Some(own),
+            Path::new("/tilo-no-such-dir/identity"),
+            || Ok(()),
+        );
+        assert_eq!(foreign.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        let other = as_person(Some(own.wrapping_add(1)), &real, || Ok(()));
+        assert_eq!(other.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
 
         as_person(Some(own), &real.join("identity"), || {
             std::fs::create_dir_all(real.join("identity/fleets"))?;
@@ -246,11 +251,12 @@ mod tests {
 
     #[test]
     fn root_writes_into_a_persons_directory_only_as_the_person() {
-        let person = another_person().filter(|_| rustix::process::geteuid().as_raw() == 0);
-        let Some(person_uid) = person else {
-            // Not root, or no other person exists here: nothing switches.
-            return;
-        };
+        tilo_test_env::require_capability!(
+            Root,
+            tilo_test_env::root_identity(),
+            "writing for another account switches to it, which only root can do"
+        );
+        let person_uid = another_person().expect("root's user namespace maps another account");
         // Under /tmp, not TMPDIR: the person must reach the directory, and the
         // test environment's TMPDIR is root's alone (0700), as a person's
         // home is not.
@@ -261,11 +267,9 @@ mod tests {
         std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let person = home.path().join("person");
         std::fs::create_dir(&person).unwrap();
-        if std::os::unix::fs::chown(&person, Some(person_uid), Some(person_uid)).is_err() {
-            // A root without the capability to hand files to anyone (a
-            // capability-stripped sandbox) cannot switch either.
-            return;
-        }
+        // Real root hands the directory to the person: dropping a capability
+        // would leave this a confined process, which the premise above refuses.
+        std::os::unix::fs::chown(&person, Some(person_uid), Some(person_uid)).unwrap();
         let protected = home.path().join("protected");
         std::fs::create_dir(&protected).unwrap();
         let identity = person.join("identity");
