@@ -182,22 +182,10 @@ pub struct KeyLink {
     /// The workspaces whose state moved since it was last read: their channels and their rosters
     /// are read again.
     changed: Mutex<BTreeSet<ModelWorkspaceId>>,
-    /// The workspaces, by topic, whose host finished replaying what it retains to this device
-    /// ([`Self::host_ready`]): every record comes with that history, so a record not here then is
-    /// not anywhere.
-    replayed: Mutex<BTreeSet<Topic>>,
-    /// The workspaces, by topic, whose host sends records only once a device opens them
-    /// ([`Self::host_ready`]): what a record not here is decided by, together with the host's answer
-    /// about it ([`Self::resource_opened`]).
-    when_opened: Mutex<BTreeSet<Topic>>,
     /// The records this device asked the workspaces' hosts for, by topic and retained channel, and
     /// what each answered: `None` while the answer is owed, the frames it sent once it came
     /// ([`Self::resource_opened`]).
     records: Mutex<AskedRecords>,
-    /// Ticks whenever a host finished its replay.
-    replays: tokio::sync::watch::Sender<u64>,
-    /// Ticks whenever a host answered for a record this device opened.
-    answers: tokio::sync::watch::Sender<u64>,
     /// What this session says on the peer network, once it is running.
     outgoing: Mutex<Option<std::sync::Arc<dyn crate::Outbox>>>,
     /// The workspaces whose group's frames this device asked the person's other devices for, each
@@ -214,11 +202,7 @@ impl KeyLink {
         Arc::new(Self {
             inbound: Mutex::new(Vec::new()),
             changed: Mutex::new(BTreeSet::new()),
-            replayed: Mutex::new(BTreeSet::new()),
-            when_opened: Mutex::new(BTreeSet::new()),
             records: Mutex::new(AskedRecords::new()),
-            replays: tokio::sync::watch::Sender::new(0),
-            answers: tokio::sync::watch::Sender::new(0),
             outgoing: Mutex::new(None),
             wanted: Mutex::new(BTreeMap::new()),
             keys: Mutex::new(None),
@@ -392,16 +376,8 @@ impl KeyLink {
     }
 
     /// The host of the workspace on topic `ws` finished replaying what it retains to this device,
-    /// after the replay's own writes. `documents_when_opened`: it sends this device only the
-    /// workspace's governance, its shared desktop and the heads of its chained records, and every
-    /// other record once it opens it ([`Self::open_resource`]).
-    pub fn host_ready(&self, ws: Topic, documents_when_opened: bool) {
-        if documents_when_opened {
-            self.when_opened.lock_recover().insert(ws);
-        }
-        self.replayed.lock_recover().insert(ws);
-        self.replays
-            .send_modify(|count| *count = count.wrapping_add(1));
+    /// after the replay's own writes.
+    pub fn host_ready(&self, ws: Topic) {
         // A group that waited on the history is founded now, if it held no genesis.
         self.park.poke();
         // A host session that just came up owes this device the records it asked for before it was
@@ -414,21 +390,6 @@ impl KeyLink {
             .map(|((_, channel), asked)| (*channel, asked.own.clone()))
             .collect();
         self.ask_for(ws, asked);
-    }
-
-    /// Whether `workspace`'s host finished replaying what it retains to this device.
-    pub fn has_replayed(&self, workspace: ModelWorkspaceId) -> bool {
-        self.replayed.lock_recover().contains(&topic_of(workspace))
-    }
-
-    /// Whether `workspace`'s host sends a device only the workspace's governance, its shared
-    /// desktop and the heads of its chained records, and every other record once the device opens
-    /// it ([`Self::open_resource`]): a record that is not here is not new until the host answered it
-    /// holds none of it ([`Self::resource_opened`]).
-    pub fn documents_when_opened(&self, workspace: ModelWorkspaceId) -> bool {
-        self.when_opened
-            .lock_recover()
-            .contains(&topic_of(workspace))
     }
 
     /// Ask `workspace`'s hosts for the record on `channel`
@@ -489,8 +450,6 @@ impl KeyLink {
             .entry((ws, channel))
             .or_default()
             .answer = Some(answer);
-        self.answers
-            .send_modify(|count| *count = count.wrapping_add(1));
         self.park.poke();
     }
 
@@ -505,18 +464,6 @@ impl KeyLink {
             .lock_recover()
             .get(&(topic_of(workspace), *channel))
             .and_then(|asked| asked.answer)
-    }
-
-    /// Wait for the next record a host answered for, from a value read before the wait.
-    #[must_use]
-    pub fn answers(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.answers.subscribe()
-    }
-
-    /// Wait for the next replay a host finished, from a value read before the wait.
-    #[must_use]
-    pub fn replays(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.replays.subscribe()
     }
 
     /// Ask the host of `workspace` to replay what it retains: a message the workspace held back

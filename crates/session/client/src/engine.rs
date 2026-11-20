@@ -1259,36 +1259,6 @@ impl Engine {
         })
     }
 
-    /// Whether `workspace`'s host finished replaying to this device what it retains: every record
-    /// comes with it, so one that is not here then is one the workspace has none of — unless the
-    /// host sends records only when they are opened
-    /// ([`Self::documents_when_opened`]).
-    #[must_use]
-    pub fn host_replayed(&self, workspace: &str) -> bool {
-        let Some(workspace) = WorkspaceId::parse(workspace) else {
-            return false;
-        };
-        self.link
-            .lock_recover()
-            .as_ref()
-            .is_some_and(|link| link.has_replayed(workspace))
-    }
-
-    /// Whether `workspace`'s host sends this device only the workspace's governance, its shared
-    /// desktop and the heads of its chained records, and every other record once this device opens
-    /// it ([`Self::open_resource`]): a record that is not here is not new until the host answered it
-    /// holds none of it ([`Self::resource_answer`]).
-    #[must_use]
-    pub fn documents_when_opened(&self, workspace: &str) -> bool {
-        let Some(workspace) = WorkspaceId::parse(workspace) else {
-            return false;
-        };
-        self.link
-            .lock_recover()
-            .as_ref()
-            .is_some_and(|link| link.documents_when_opened(workspace))
-    }
-
     /// Ask `workspace`'s hosts for `app`'s `record`
     /// (`neighbour_wire::app_document_channel`): what they hold of it, and their changes to it from
     /// then on. Asked once per record while the peer network runs; `false` when there is no peer network to ask
@@ -1328,18 +1298,6 @@ impl Engine {
             .lock_recover()
             .as_ref()?
             .resource_answer(workspace, &channel)
-    }
-
-    /// What ticks whenever a host answered for a record this device opened; `None` with no peer network.
-    #[must_use]
-    pub fn record_answers(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
-        self.link.lock_recover().as_ref().map(|link| link.answers())
-    }
-
-    /// What ticks whenever a host finished its replay; `None` with no peer network.
-    #[must_use]
-    pub fn replays(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
-        self.link.lock_recover().as_ref().map(|link| link.replays())
     }
 
     /// Whether `workspace` is held on this device, by its own workspace service: everything the

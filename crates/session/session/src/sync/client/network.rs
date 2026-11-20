@@ -762,26 +762,12 @@ fn heard(
                     let _ = say.send(Taken::Input(input.clone()));
                 }
                 // Its replay ended, behind the replay's writes: told after they are taken in.
-                (
-                    NetEvent::HostReady {
-                        ws,
-                        documents_when_opened,
-                        ..
-                    },
-                    Some(say),
-                ) => {
-                    let _ = say.send(Taken::Ready(*ws, *documents_when_opened));
+                (NetEvent::HostReady { ws, .. }, Some(say)) => {
+                    let _ = say.send(Taken::Ready(*ws));
                 }
-                (
-                    NetEvent::HostReady {
-                        ws,
-                        documents_when_opened,
-                        ..
-                    },
-                    None,
-                ) => {
+                (NetEvent::HostReady { ws, .. }, None) => {
                     if let Some(link) = &replayed {
-                        link.host_ready(*ws, *documents_when_opened);
+                        link.host_ready(*ws);
                     }
                 }
                 _ => {}
@@ -809,9 +795,8 @@ fn heard(
 enum Taken {
     /// A write it replays or carries into a workspace this device holds.
     Input(Box<tilo_network_actor::native_ingress::Input>),
-    /// It finished replaying what it retains of the workspace on this topic, and whether it sends
-    /// records only once a device opens them.
-    Ready(WorkspaceId, bool),
+    /// It finished replaying what it retains of the workspace on this topic.
+    Ready(WorkspaceId),
 }
 
 /// Take what hosts replay of the governance of the workspaces this device holds, as it arrives:
@@ -832,10 +817,10 @@ async fn take_in(
         for taken in waiting {
             let input = match taken {
                 Taken::Input(input) => *input,
-                Taken::Ready(ws, documents_when_opened) => {
+                Taken::Ready(ws) => {
                     admit(std::mem::take(&mut run), link.as_deref()).await;
                     if let Some(link) = &link {
-                        link.host_ready(ws, documents_when_opened);
+                        link.host_ready(ws);
                     }
                     continue;
                 }
