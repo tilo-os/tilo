@@ -148,7 +148,7 @@ RUN --mount=type=bind,source=os/containers/tilo-sh/caddy.env,target=/tmp/tilo-ca
     && echo "$sha  /tmp/$release" | sha512sum --check --strict \
     && tar -xzf "/tmp/$release" -C /tmp caddy \
     && install -m 0755 /tmp/caddy /usr/local/bin/caddy \
-    && rm -f "/tmp/$release" /tmp/caddy /tmp/tilo-caddy.env \
+    && rm -f "/tmp/$release" /tmp/caddy \
     && openssl version && caddy version
 
 # The browser target for the wasm lint (tools/ci/check-wasm.sh).
