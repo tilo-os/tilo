@@ -880,27 +880,20 @@ pub struct Person {
 
 impl Person {
     /// The person `name` , provisioned as a computer's first use provisions them.
+    ///
+    /// Provisioned by its roots, never by this process's environment: the site's threads and
+    /// every other person's live in this process, and the identity they look up is the one the
+    /// environment names.
     pub fn new(name: &str) -> Self {
         let identity = tempfile::tempdir().expect("a directory for the person's identity");
         let config = identity.path().join("config");
-        let system = identity.path().join("system");
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("HOME", identity.path().join("home"))
-                .set("XDG_CONFIG_HOME", &config)
-                .set("XDG_DATA_HOME", identity.path().join("data"))
-                .set("XDG_STATE_HOME", identity.path().join("state"))
-                .set("XDG_CACHE_HOME", identity.path().join("cache"))
-                .set("TILO_IDENTITY_ROOT", &system)
-                .set(FILE_SECRETS_ENV, "1");
-            tilo_identity::provisioning::ensure_collaboration_identity(
-                &config.join("tilo/identity"),
-                &IdentityPaths::under(&system),
-                IdentityStorage::Files,
-            )
-            .expect("this person's identity");
-        }
         let identity_dir = config.join("tilo/identity");
+        tilo_identity::provisioning::ensure_collaboration_identity(
+            &identity_dir,
+            &IdentityPaths::under(identity.path().join("system")),
+            IdentityStorage::Files,
+        )
+        .expect("this person's identity");
         let record = tilo_identity_client::resolve_active_identity(&identity_dir)
             .expect("the identity this machine provisioned for the person");
         let root = tilo_identity::store::load_from_path(record).expect("the person's root key");
@@ -1014,6 +1007,33 @@ impl Person {
             announced: None,
         }
     }
+}
+
+/// Provisioning a person writes their profile and changes nothing this process reads: another
+/// person's lookups, on any thread of this process, keep answering the profile the environment
+/// names.
+#[test]
+fn provisioning_a_person_leaves_the_process_environment_alone() {
+    let watched = [
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+        "TILO_IDENTITY_ROOT",
+        FILE_SECRETS_ENV,
+    ];
+    let before: Vec<_> = watched.into_iter().map(std::env::var_os).collect();
+    let person = Person::new("Ada");
+    let after: Vec<_> = watched.into_iter().map(std::env::var_os).collect();
+    assert_eq!(
+        before, after,
+        "provisioning a person leaves the environment alone"
+    );
+    assert!(
+        person.config_home().join("tilo/identity").is_dir(),
+        "the person's identity is at their own roots"
+    );
 }
 
 impl Person {
