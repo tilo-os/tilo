@@ -306,6 +306,10 @@ type Receipts = appended::Appended<tilo_peer_state::join_log::JoinCompletionReco
 struct GovernedWorkspace {
     record: WorkspaceDocumentEntry,
     peer: Replica,
+    /// When the workspace was made, ms since the epoch: the time of the first
+    /// change its governance holds, read once as it opens. A listing says it,
+    /// and a later change to the workspace does not move it.
+    made_at_ms: Option<i64>,
     path: PathBuf,
     /// The files of `record.peer`'s large parts.
     parts: peer_parts::PeerParts,
@@ -469,6 +473,7 @@ impl GovernedWorkspace {
         device: Option<&DeviceKeys>,
     ) -> Result<Self, String> {
         let published_heads = peer.workspace_heads();
+        let made_at_ms = peer.governance().made_at_ms();
         Ok(Self {
             admissions: admissions::Admissions::open(&path)
                 .map_err(|error| format!("admissions: {error}"))?,
@@ -479,6 +484,7 @@ impl GovernedWorkspace {
             resources: resources::Resources::open(&path, entry.workspace_id),
             record: entry,
             peer: Replica::new(peer),
+            made_at_ms,
             parts,
             publications,
             receipts,
@@ -829,7 +835,7 @@ impl GovernedWorkspace {
 
     /// This workspace as a listing names it: what it is called and which
     /// generation it stands at, without the people a summary answers, which
-    /// a listing does not.
+    /// a listing does not, and when it was made.
     fn listing(&self) -> WorkspaceListing {
         WorkspaceListing {
             workspace: self.record.workspace.clone(),
@@ -839,6 +845,7 @@ impl GovernedWorkspace {
             role: None,
             labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
             unattended: false,
+            made_at_ms: self.made_at_ms,
         }
     }
 }

@@ -3,7 +3,9 @@
 //!
 //! The switcher is only that: every workspace the person has, the one they are in marked, the two
 //! ways to another one (a new one, or joining one), and the way into the shown workspace's own
-//! settings, which hold its name, its people and leaving it. The Tilo mark opens the overview.
+//! settings, which hold its name, its people and leaving it. The person's own desktop, where the
+//! session offers one, is no workspace of theirs: it stands above them, apart, as what it is. The
+//! Tilo mark opens the overview.
 //!
 //! Behind the strip's name beside it ([`MenuPlace::Strips`]) the same menu lists the workspace's
 //! strips, the shown one marked, and makes a new one, next to where the person pressed.
@@ -100,6 +102,9 @@ pub struct WorkspaceMenuModel {
     pub shell: Vec<WorkspaceAction>,
     /// Every workspace the person has, the one they are in among them. Unused on the shell.
     pub workspaces: Vec<WorkspaceEntry>,
+    /// The person's own desktop, where the session offers it: their private place, never one of the
+    /// workspaces above, and shown apart from them. Unused on the shell and the strips menu.
+    pub own_desktop: Option<WorkspaceAction>,
     /// The ways to another workspace: a new one, joining one. Unused on the shell.
     pub actions: Vec<WorkspaceAction>,
     /// The way into the shown workspace's own settings, last in the switcher.
@@ -184,9 +189,15 @@ impl WorkspaceMenu {
         )
     }
 
-    /// The switcher: the workspaces, then the ways to another one.
+    /// The switcher: the person's own desktop, where they have one, then the workspaces, then the
+    /// ways to another one.
     fn switcher_rows(model: &WorkspaceMenuModel) -> Vec<Row> {
-        let mut rows: Vec<Row> = model.workspaces.iter().map(WorkspaceEntry::row).collect();
+        let mut rows: Vec<Row> = model.own_desktop.iter().map(WorkspaceAction::row).collect();
+        if !rows.is_empty() && !model.workspaces.is_empty() {
+            // The person's own desktop is no workspace: a rule says the list below is the others.
+            rows.push(Row::rule());
+        }
+        rows.extend(model.workspaces.iter().map(WorkspaceEntry::row));
         if !rows.is_empty() && !model.actions.is_empty() {
             rows.push(Row::rule());
         }
@@ -423,6 +434,12 @@ mod tests {
                     WorkspaceMenuChoice::Action("open-workspace:lounge".into()),
                 ),
             ],
+            own_desktop: Some(WorkspaceAction {
+                id: "open-workspace:own".into(),
+                title: "Open your desktop".into(),
+                icon: Some(Icon::User),
+                destructive: false,
+            }),
             actions: vec![
                 action("new-workspace", "New workspace"),
                 action("join-workspace", "Join a workspace"),
@@ -486,6 +503,8 @@ mod tests {
             assert_eq!(
                 menu.labels(),
                 [
+                    Some("Open your desktop".to_owned()),
+                    None,
                     Some("Studio".to_owned()),
                     Some("Garden".to_owned()),
                     Some("Lounge".to_owned()),
@@ -494,9 +513,27 @@ mod tests {
                     Some("Join a workspace".to_owned()),
                     None,
                     Some("Workspace settings".to_owned()),
-                ]
+                ],
+                "the person's own desktop stands apart above their workspaces"
             );
             assert_eq!(menu.marked().as_deref(), Some("Studio"), "the one the person is in is marked");
+        }
+
+        phase the_persons_own_desktop_is_offered_apart_and_chosen_like_a_workspace;
+        {
+            let mut menu = opened(&model());
+            assert!(menu.choose("Open your desktop"));
+            assert_eq!(
+                menu.take_choice(),
+                Some(WorkspaceMenuChoice::Action("open-workspace:own".into()))
+            );
+            // Without one of their own (or in it, where no other place exists), the list is the
+            // workspaces alone.
+            let alone = opened(&WorkspaceMenuModel {
+                own_desktop: None,
+                ..model()
+            });
+            assert_eq!(alone.labels()[0], Some("Studio".to_owned()));
         }
 
         phase choosing_a_workspace_goes_there_once_and_closes_the_menu;

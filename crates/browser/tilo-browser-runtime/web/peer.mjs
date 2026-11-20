@@ -1282,7 +1282,8 @@ async function connect({
     /** The person's workspaces as their host lists them (`workspaces.rs`,
      * `personal`): `[{workspace, name, role?, host?}]`, each naming its host
      * where this one does not keep it. What the workspace switcher offers
-     * besides the workspaces this browser remembered. */
+     * besides the workspaces this browser remembered, each saying when it was
+     * made so two of one name are told apart. */
     personalWorkspaces: async () => (await ask('personal')).workspaces ?? [],
     getSnapshot: () => snapshot,
     /** How many changes this page made to the workspace's records and sent:

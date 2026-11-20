@@ -792,6 +792,44 @@ test('workspaces that share a name are told apart by a place a person knows, nev
   }
 });
 
+test('two workspaces of one name and one owner are told apart by when they were made', () => {
+  const now = new Date(2026, 10, 5, 12, 0).getTime();
+  const at = (day, hour, minute = 0) => new Date(2026, 10, day, hour, minute).getTime();
+  const studio = (workspace, madeAt) => ({id: `open-workspace:https://a.example/${workspace}`, name: 'Studio', origin: 'https://a.example',
+    workspace, home: false, own: false, unavailable: false, role: 'owner', madeAt});
+  const labels = choices => workspaceActions(choices, {now}).map(action => action.label);
+  // Both are the person's, so "yours" tells nothing: the day each was made does.
+  assert.deepEqual(labels([studio('A', at(3, 9)), studio('B', at(4, 9))]),
+    ['Studio · made 3 Nov', 'Studio · made 4 Nov']);
+  // Made the same day, the time of day says which, and a day that is today
+  // reads as today.
+  const yesterday = [studio('A', at(4, 9, 20)), studio('B', at(4, 16, 45))];
+  assert.deepEqual(labels(yesterday), ['Studio · made 4 Nov 09:20', 'Studio · made 4 Nov 16:45']);
+  const today = [studio('A', at(5, 9, 20)), studio('B', at(5, 11, 5))];
+  assert.deepEqual(labels(today), ['Studio · made today 09:20', 'Studio · made today 11:05']);
+  // A year gone by says its year, and the subtitle says when it was made too.
+  const old = [studio('A', new Date(2024, 10, 3, 9).getTime())];
+  assert.deepEqual(labels(old), ['Studio']);
+  assert.equal(workspaceActions(old, {now})[0].subtitle, 'Workspace · a.example · made 3 Nov 2024');
+  // Two made in the same minute read alike: nothing is added that would not tell them apart.
+  assert.deepEqual(labels([studio('A', at(4, 9)), studio('B', at(4, 9))]), ['Studio', 'Studio']);
+});
+
+test('the person’s own desktop is its own kind of place, not another workspace', () => {
+  const own = {id: 'open-workspace:own', name: 'Your desktop', origin: null, workspace: null, home: false, own: true, unavailable: false, place: null, role: null, madeAt: null};
+  assert.deepEqual(workspaceActions([own]), [{
+    id: 'open-workspace:own',
+    title: 'Open your desktop',
+    label: 'Your desktop',
+    source: 'desktop',
+    icon: 'user',
+    subtitle: 'Your own desktop, in this browser',
+  }]);
+  // Offered first by the choices, so the menu can stand it above the workspaces.
+  const choices = workspaceChoices({own: true});
+  assert.deepEqual(choices.map(choice => [choice.own, choice.name, choice.madeAt]), [[true, 'Your desktop', null]]);
+});
+
 test('a workspace asked for under a name the switcher holds is numbered past it', () => {
   // The shell's own rule, for the workspaces the page makes: two of one name
   // never stand side by side where a person picks one by its name.
@@ -842,7 +880,7 @@ test('the host’s list names the person’s workspaces, and memory says where t
   const listed = [
     // The answering host keeps these itself (it names no address for them):
     // reached here, and named as it names them, no longer marked as not opening.
-    {workspace: 'OWN', name: 'My workspace', role: 'owner', host: {name: 'workspaces.example'}},
+    {workspace: 'OWN', name: 'My workspace', role: 'owner', host: {name: 'workspaces.example'}, made_at_ms: 1_700_000_000_000},
     {workspace: 'LOUNGE', name: 'Lounge', host: {name: 'workspaces.example'}},
     // Another host's: its name is no page address, so only a workspace this
     // browser reached before is offered.
@@ -853,9 +891,9 @@ test('the host’s list names the person’s workspaces, and memory says where t
   ];
   const answering = 'https://workspaces.example';
   assert.deepEqual(knownWorkspaces({entered, listed, answering}), [
-    {origin: answering, workspace: 'OWN', name: 'My workspace', hostDevice: '11'.repeat(32), unavailable: false, place: 'workspaces.example', role: 'owner'},
-    {origin: 'https://elsewhere.example', workspace: 'AWAY', name: 'Away', hostDevice: '22'.repeat(32), unavailable: false, place: 'eu1.example', role: null},
-    {origin: answering, workspace: 'LOUNGE', name: 'Lounge', unavailable: false, place: 'workspaces.example', role: null},
+    {origin: answering, workspace: 'OWN', name: 'My workspace', hostDevice: '11'.repeat(32), unavailable: false, place: 'workspaces.example', role: 'owner', madeAt: 1_700_000_000_000},
+    {origin: 'https://elsewhere.example', workspace: 'AWAY', name: 'Away', hostDevice: '22'.repeat(32), unavailable: false, place: 'eu1.example', role: null, madeAt: null},
+    {origin: answering, workspace: 'LOUNGE', name: 'Lounge', unavailable: false, place: 'workspaces.example', role: null, madeAt: null},
   ]);
   // In the Lounge, neither the home nor the workspace in front is offered back.
   assert.deepEqual(workspaceChoices({home, homeWorkspace: 'LOUNGE', entered, listed, answering,

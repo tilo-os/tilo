@@ -738,6 +738,7 @@ impl Workspaces {
                 role: listed.role.clone(),
                 labels: listed.labels.clone(),
                 unattended: listed.unattended,
+                made_at_ms: listed.made_at_ms,
             });
         }
         let reaches = |workspace: &str| {

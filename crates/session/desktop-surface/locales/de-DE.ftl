@@ -354,6 +354,7 @@ history-notification-description-sourced = { $severity }. Von { $source }. { $ti
 host-action-source-identity = Identität
 host-action-source-devices = Geräte
 host-action-source-workspace = Arbeitsbereich
+action-source-desktop = Dein Desktop
 host-action-source-session = Dieser Computer
 notification-center-group-description = { $count } Benachrichtigungen. Eingabe zum { $expanded ->
         [yes] Einklappen

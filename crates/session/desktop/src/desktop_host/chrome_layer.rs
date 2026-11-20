@@ -954,8 +954,8 @@ impl DesktopChrome {
         }
     }
 
-    /// Whether the workspace menu offers joining another workspace: the host published the action
-    /// that opens the directory workspaces are joined from.
+    /// Whether the workspace menu offers joining another workspace: the session published the
+    /// action that opens the directory workspaces are joined from.
     fn may_join_workspace(&self) -> bool {
         self.handle
             .host_actions()
@@ -964,11 +964,12 @@ impl DesktopChrome {
     }
 
     /// What the workspace menu offers now, opened at `place` . Behind the bar's name it is the
-    /// switcher: every workspace of this desktop, the one shown marked, then the person's others
-    /// the host knows, then making or joining one, then the shown workspace's settings. Behind the
+    /// switcher: the person's own desktop where the page offers one, apart above every workspace
+    /// of this desktop and the person's others the session knows (the one shown marked), then
+    /// making or joining one, then the shown workspace's settings. Behind the
     /// strip's name it lists the workspace's strips and makes one. Opened on the shell, it holds
     /// the shell's own commands instead: the welcome verbs its launchpad declares, which the same
-    /// host actions run from the cards, search and an agent, and a new strip.
+    /// actions run from the cards, search and an agent, and a new strip.
     fn workspace_menu_model(&self, place: MenuPlace) -> WorkspaceMenuModel {
         let actions = self.handle.host_actions();
         let row = |action: &HostAction| WorkspaceAction {
@@ -1024,6 +1025,16 @@ impl DesktopChrome {
                 })
                 .collect()
         });
+        // The person's own desktop is no workspace: the page offers it as its own kind of action,
+        // and the switcher shows it above the workspaces, apart from them.
+        let own_desktop = actions
+            .iter()
+            .find(|action| action.source == Some(HostActionSource::Desktop))
+            .map(|action| {
+                let mut own = row(action);
+                own.icon = own.icon.or(Some(ui::icons::Icon::User));
+                own
+            });
         // The person's workspaces this desktop does not hold: going to one is the host's.
         workspaces.extend(
             actions
@@ -1038,6 +1049,7 @@ impl DesktopChrome {
         WorkspaceMenuModel {
             place: MenuPlace::Bar,
             workspaces,
+            own_desktop,
             // Only the ways to another workspace: what is about this one is in its settings.
             actions: self
                 .new_workspace_row(&actions)
@@ -1063,8 +1075,8 @@ impl DesktopChrome {
         }
     }
 
-    /// The switcher's New workspace: the host's own, where it makes workspaces itself, else the
-    /// shell's, where the person may make one here.
+    /// The switcher's New workspace: the session's own, where it makes workspaces itself, else
+    /// the shell's, where the person may make one here.
     fn new_workspace_row(&self, actions: &[HostAction]) -> Option<WorkspaceAction> {
         if let Some(action) = actions.iter().find(|action| action.id == NEW_WORKSPACE) {
             return Some(WorkspaceAction {

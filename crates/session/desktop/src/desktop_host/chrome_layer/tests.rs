@@ -24,6 +24,20 @@ fn en() {
     ui::i18n::I18nManager::init("en-US");
 }
 
+/// An action a session publishes for the desktop's menus and search, of `source`.
+fn action(id: &str, title: &str, source: HostActionSource) -> HostAction {
+    HostAction {
+        id: id.into(),
+        title: title.into(),
+        label: None,
+        subtitle: None,
+        icon: None,
+        destructive: false,
+        unasked: false,
+        source: Some(source),
+    }
+}
+
 fn layout_tree() -> Layout {
     let tabs = vec![Tab {
         id: 20,
@@ -425,16 +439,6 @@ fn the_about_sheets_updates_link_opens_settings() {
 fn the_workspace_menu_offers_the_persons_other_workspaces() {
     en();
     let (mut chrome, handle) = chrome_over_a_shell();
-    let action = |id: &str, title: &str, source: HostActionSource| HostAction {
-        id: id.into(),
-        title: title.into(),
-        label: None,
-        subtitle: None,
-        icon: None,
-        destructive: false,
-        unasked: false,
-        source: Some(source),
-    };
     handle.set_host_actions(vec![
         HostAction {
             label: Some("Tilo".into()),
@@ -499,6 +503,81 @@ fn the_workspace_menu_offers_the_persons_other_workspaces() {
     let elsewhere = chrome.overview().tilo.elsewhere;
     assert_eq!(
         elsewhere,
+        [(
+            "open-workspace:https://tilo.sh/abc".to_owned(),
+            "Open Tilo".to_owned()
+        )]
+    );
+}
+
+/// The person's own desktop is offered above their workspaces and apart from them, with its own
+/// picture: it is their private place, not another workspace, and the overview never lists it as
+/// one.
+#[test]
+fn the_persons_own_desktop_is_offered_apart_from_their_workspaces() {
+    en();
+    let (mut chrome, handle) = chrome_over_a_shell();
+    handle.set_host_actions(vec![
+        HostAction {
+            label: Some("Your desktop".into()),
+            icon: Some("user".into()),
+            ..action(
+                "open-workspace:own",
+                "Open your desktop",
+                HostActionSource::Desktop,
+            )
+        },
+        HostAction {
+            label: Some("Tilo".into()),
+            ..action(
+                "open-workspace:https://tilo.sh/abc",
+                "Open Tilo",
+                HostActionSource::Workspaces,
+            )
+        },
+    ]);
+    let model = chrome.workspace_menu_model(crate::workspace_menu::MenuPlace::Bar);
+    assert_eq!(
+        model
+            .own_desktop
+            .as_ref()
+            .map(|own| (own.id.as_str(), own.icon)),
+        Some(("open-workspace:own", Some(ui::icons::Icon::User))),
+        "the person's own desktop, with the person's own picture"
+    );
+    assert!(
+        model
+            .workspaces
+            .iter()
+            .all(|entry| entry.name != "Your desktop"),
+        "never among the workspaces"
+    );
+    let mut menu = crate::workspace_menu::WorkspaceMenu::new();
+    menu.toggle(
+        &model,
+        ui::kurbo::Rect::new(0.0, 0.0, 80.0, 24.0),
+        ui::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0),
+    );
+    let rows = menu.labels();
+    assert_eq!(
+        (
+            rows.first().cloned().flatten().as_deref(),
+            rows.get(1).cloned().flatten()
+        ),
+        (Some("Open your desktop"), None),
+        "above the workspaces, with a rule between: {rows:?}"
+    );
+    assert!(menu.choose("Open your desktop"));
+    assert_eq!(
+        menu.take_choice(),
+        Some(crate::workspace_menu::WorkspaceMenuChoice::Action(
+            "open-workspace:own".into()
+        ))
+    );
+    // The overview lists workspaces elsewhere, never the person's own desktop.
+    chrome.toggle_overview();
+    assert_eq!(
+        chrome.overview().tilo.elsewhere,
         [(
             "open-workspace:https://tilo.sh/abc".to_owned(),
             "Open Tilo".to_owned()

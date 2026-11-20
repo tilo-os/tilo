@@ -294,6 +294,9 @@ pub enum HostActionSource {
     /// The session itself, on this computer: locking the screen, logging out, restarting the
     /// computer, shutting it down.
     Session,
+    /// The person's own desktop: their private one, which is no workspace of
+    /// theirs and is offered apart from them.
+    Desktop,
 }
 
 impl HostActionSource {
@@ -304,6 +307,7 @@ impl HostActionSource {
             Self::Identity => "host-action-source-identity",
             Self::Devices => "host-action-source-devices",
             Self::Workspaces | Self::Workspace => "host-action-source-workspace",
+            Self::Desktop => "action-source-desktop",
             Self::Session => "host-action-source-session",
         })
     }

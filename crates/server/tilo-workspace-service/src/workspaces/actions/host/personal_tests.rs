@@ -488,6 +488,83 @@ fn listed_device<'a>(
         .unwrap_or_else(|| panic!("{} is in the record", cert.device_label))
 }
 
+/// A listed workspace says when it was made, from the first change its
+/// governance holds, so two workspaces of one name are told apart by it. A
+/// later change to the workspace — a rename — does not move it.
+#[tokio::test]
+async fn a_listed_workspace_says_when_it_was_made_and_a_rename_does_not_move_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let actions = ServiceWorkspaceActions::new();
+    actions.attach(workspaces.clone());
+    let root = SigningKey::from_bytes(&rand::random());
+    // The site let the person in: an invitation into its home names them.
+    let home = workspaces.create("Lounge").await.unwrap().workspace;
+    assert!(workspaces.admit_own_through(&home));
+    workspaces
+        .issue(
+            &home,
+            workspaces.serving_certificate(),
+            crate::workspaces::IssueInvitationRequest {
+                request_id: rand::random(),
+                role: tilo_peer_state::join::Role::Viewer,
+                recipient_user_public_key: Some(root.verifying_key().to_bytes()),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let desktop = key_of(&root, "studio", DeviceCapabilities::member());
+    let made = |list: &PersonalList, workspace: &str| {
+        list.workspaces
+            .iter()
+            .find(|one| one.workspace == workspace)
+            .and_then(|one| one.made_at_ms)
+    };
+
+    let before = tilo_clock::unix_now_ns() / 1_000_000;
+    let created: CreatedWorkspace = serde_json::from_value(
+        invoke(
+            &actions,
+            &desktop,
+            CREATE_OWN_WORKSPACE,
+            json!({"name": "Studio"}),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    let after = tilo_clock::unix_now_ns() / 1_000_000;
+    let listed = read(&actions, &desktop).await;
+    let made_at = made(&listed, &created.workspace.workspace)
+        .expect("a listed workspace says when it was made");
+    let at = u64::try_from(made_at).expect("a time after the epoch");
+    assert!(
+        before / 1_000 <= at / 1_000 && at / 1_000 <= after / 1_000,
+        "{made_at} lies between {before} and {after}"
+    );
+
+    workspaces
+        .rename(&created.workspace.workspace, "Studio again")
+        .await
+        .unwrap();
+    let renamed = read(&actions, &desktop).await;
+    assert_eq!(
+        made(&renamed, &created.workspace.workspace),
+        Some(made_at),
+        "a later change to the workspace does not move when it was made"
+    );
+
+    server.shutdown().await;
+}
+
 /// A session of a person's key with this host says in their record that the
 /// key is here now, and when it was last: a session that ends says when it
 /// left, and the record keeps it across the host opening its files again.

@@ -111,6 +111,23 @@ impl PeerGovernance<'_> {
     pub fn heads(self) -> Vec<[u8; 32]> {
         self.peer.governance_heads().unwrap_or_default()
     }
+    /// When the workspace was made, ms since the epoch: the time of the
+    /// earliest change its governance holds, its founder's seed. A later
+    /// change to it does not move it.
+    ///
+    /// `None` when the governance holds no change, or none that names a time.
+    #[must_use]
+    pub fn made_at_ms(self) -> Option<i64> {
+        let doc = self.peer.core.workspace_doc.as_ref()?;
+        let at = doc
+            .committed_document()
+            .get_changes_meta(&[])
+            .iter()
+            .map(|change| change.timestamp)
+            .min()?
+            .checked_mul(1000)?;
+        (at > 0).then_some(at)
+    }
     /// Whether the governance carries a device's removal without its cut
     /// ([`crate::removals`]): one recorded before cuts were kept. Until the
     /// device that governs the workspace completes it

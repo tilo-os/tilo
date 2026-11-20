@@ -915,6 +915,7 @@ impl Personal {
                     workspace: workspace.to_string(),
                     labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
                     unattended: false,
+                    made_at_ms: None,
                 }
             })
             .collect();

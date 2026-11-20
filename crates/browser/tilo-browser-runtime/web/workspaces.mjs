@@ -142,8 +142,9 @@ function isHomeWorkspace({home, homeWorkspace = null, scope}) {
  * winning and one it lists no longer marked as not opening. A listing also says
  * the host's own name (`place`: a site's name, or the label of the person's
  * computer that keeps it) and the part the person takes in the workspace
- * (`role`), which is what the switcher tells two workspaces of one name apart
- * by: never the address this browser dialled.
+ * (`role`) and when it was made (`madeAt`, ms since the epoch), which are what
+ * the switcher tells two workspaces of one name apart by: never the address
+ * this browser dialled.
  */
 export function knownWorkspaces({entered = [], listed = [], answering = null} = {}) {
   const known = entered.map(entry => ({...entry}));
@@ -160,8 +161,11 @@ export function knownWorkspaces({entered = [], listed = [], answering = null} = 
     const name = typeof workspace.name === 'string' && workspace.name ? workspace.name : null;
     const place = typeof workspace.host?.name === 'string' && workspace.host.name ? workspace.host.name : null;
     const role = typeof workspace.role === 'string' && workspace.role ? workspace.role : null;
-    if (at >= 0) known[at] = {...known[at], origin: originOf(origin), ...(name ? {name} : {}), place, role, unavailable: false};
-    else known.push({origin: originOf(origin), workspace: workspace.workspace, name, place, role, unavailable: false});
+    // When the server that keeps it made it, ms since the epoch: a workspace
+    // whose server did not say keeps none it was told before.
+    const madeAt = Number.isFinite(workspace.made_at_ms) ? workspace.made_at_ms : (at >= 0 ? known[at].madeAt ?? null : null);
+    if (at >= 0) known[at] = {...known[at], origin: originOf(origin), ...(name ? {name} : {}), place, role, madeAt, unavailable: false};
+    else known.push({origin: originOf(origin), workspace: workspace.workspace, name, place, role, madeAt, unavailable: false});
   }
   return known;
 }
@@ -173,10 +177,14 @@ export function knownWorkspaces({entered = [], listed = [], answering = null} = 
  * `homeWorkspace` is the workspace this browser was admitted to through the
  * home's entry, so that workspace is offered once, as the home.
  * Where the person may have a desktop of their own (`own`), it comes first,
- * so a workspace is never a dead end. Each choice is
- * `{id, name, origin, workspace, home, own, unavailable, place, role}`; `id` is
- * its host action id, `place` the host's name as people know it and `role` the
- * part the person takes in it, where the host said either.
+ * so a workspace is never a dead end. It is no workspace of theirs: the
+ * desktop's menu offers it above them, as the person's own place, and never
+ * in the list of workspaces it switches between.
+ * Each choice is
+ * `{id, name, origin, workspace, home, own, unavailable, place, role, madeAt}`;
+ * `id` is its host action id, `place` the host's name as people know it,
+ * `role` the part the person takes in it and `madeAt` when it was made (ms
+ * since the epoch), where the host said either.
  */
 export function workspaceChoices({home = null, homeWorkspace = null, entered = [], listed = [], answering = null, current = null, own = false}) {
   const here = current?.kind === 'workspace' ? current : null;
@@ -184,17 +192,17 @@ export function workspaceChoices({home = null, homeWorkspace = null, entered = [
   const isHome = scope => isHomeWorkspace({home, homeWorkspace, scope});
   const choices = [];
   if (own && current?.kind !== 'own') {
-    choices.push({id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', origin: null, workspace: null, home: false, own: true, unavailable: false, place: null, role: null});
+    choices.push({id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', origin: null, workspace: null, home: false, own: true, unavailable: false, place: null, role: null, madeAt: null});
   }
   if (homeOrigin && !(here && isHome(here))) {
     choices.push({id: `${OPEN_WORKSPACE}home`, name: home.name || new URL(homeOrigin).host, origin: homeOrigin,
-      workspace: home.workspace ?? null, home: true, own: false, unavailable: false, place: null, role: null});
+      workspace: home.workspace ?? null, home: true, own: false, unavailable: false, place: null, role: null, madeAt: null});
   }
   for (const entry of knownWorkspaces({entered, listed, answering})) {
     if (isHome({host: entry.origin, workspace: entry.workspace}) || (here && originOf(here.host) === entry.origin && here.workspace === entry.workspace)) continue;
     choices.push({id: `${OPEN_WORKSPACE}${entry.origin}/${entry.workspace}`, name: entry.name || new URL(entry.origin).host,
       origin: entry.origin, workspace: entry.workspace, home: false, own: false, unavailable: entry.unavailable,
-      place: entry.place ?? null, role: entry.role ?? null});
+      place: entry.place ?? null, role: entry.role ?? null, madeAt: entry.madeAt ?? null});
   }
   return choices;
 }
@@ -242,30 +250,73 @@ function placeOf(choice) {
 const roleWord = role => ({owner: 'yours', editor: 'editor', commenter: 'commenter',
   moderator: 'moderator', viewer: 'viewer'}[role] ?? null);
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+const sameDay = (at, now) => at.getFullYear() === now.getFullYear()
+  && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
+
+/** The day `ms` was, as a person reads it: "today", "3 Nov", or "3 Nov 2024"
+ * when it was not this year. */
+function dayOf(ms, now) {
+  const at = new Date(ms);
+  if (sameDay(at, now)) return 'today';
+  const day = `${at.getDate()} ${MONTHS[at.getMonth()]}`;
+  return at.getFullYear() === now.getFullYear() ? day : `${day} ${at.getFullYear()}`;
+}
+
+/** The clock time `ms` was, as a person reads it: "14:02". */
+const clockOf = ms => {
+  const at = new Date(ms);
+  return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+};
+
 /**
  * The host actions that open `choices` (`workspaceChoices`), for desktop
  * search. The workspace menu lists each by name beside the one in front
  * (named `current`), so two that share a name are told apart by something a
- * person knows: the host it is on as people name it, or whose it is to them.
+ * person knows: the host it is on as people name it, whose it is to them, or
+ * when it was made. The person's own desktop is no workspace: its action is
+ * of its own kind (`desktop`), which the desktop offers apart from them.
  */
-export function workspaceActions(choices, {current = null} = {}) {
+export function workspaceActions(choices, {current = null, now = Date.now()} = {}) {
+  const today = new Date(now);
   const names = [current, ...choices.map(choice => choice.name)].filter(Boolean);
   const shared = name => names.filter(other => other === name).length > 1;
+  const named = choice => choices.filter(other => other.name === choice.name);
   /** A place that only this one of the same-named workspaces is on: a place
    * two of them share tells them apart from nobody. */
   const ownPlace = choice => {
     const place = placeOf(choice);
-    return place && choices.filter(other => other.name === choice.name && placeOf(other) === place).length === 1 ? place : null;
+    return place && named(choice).filter(other => placeOf(other) === place).length === 1 ? place : null;
+  };
+  /** Whose it is, told only where no other of the same name is whose in the
+   * same way: two workspaces of one person's are both "yours". */
+  const ownRole = choice => {
+    const word = roleWord(choice.role);
+    return word && named(choice).filter(other => roleWord(other.role) === word).length === 1 ? word : null;
+  };
+  /** When it was made, told only where no other of the same name was made
+   * alike: those made the same day read by the time of day too. */
+  const madeTell = choice => {
+    if (!Number.isFinite(choice.madeAt)) return null;
+    const day = dayOf(choice.madeAt, today);
+    const others = named(choice).filter(other => other !== choice && Number.isFinite(other.madeAt));
+    const withTime = others.some(other => dayOf(other.madeAt, today) === day);
+    const when = other => `${dayOf(other, today)}${withTime ? ` ${clockOf(other)}` : ''}`;
+    return others.some(other => when(other.madeAt) === when(choice.madeAt)) ? null : `made ${when(choice.madeAt)}`;
   };
   return choices.map(choice => {
     if (choice.own) {
-      return {id: choice.id, title: 'Open your desktop', label: choice.name, source: 'workspaces', subtitle: 'Your own desktop, in this browser'};
+      return {id: choice.id, title: 'Open your desktop', label: choice.name, source: 'desktop', icon: 'user',
+        subtitle: 'Your own desktop, in this browser'};
     }
     const place = placeOf(choice);
-    const tell = ownPlace(choice) ?? roleWord(choice.role);
+    const tell = ownPlace(choice) ?? ownRole(choice) ?? madeTell(choice);
     const label = !shared(choice.name) || !tell ? choice.name : `${choice.name} · ${tell}`;
-    // `label` and `source`: the desktop's workspace menu lists it by name.
-    const about = ['Workspace', place, ...(choice.unavailable ? ['did not open last time'] : [])].filter(Boolean).join(' · ');
+    // `label` and `source`: the desktop's workspace menu lists it by name; the
+    // source its own action kind, so the person's desktop is offered apart.
+    const made = Number.isFinite(choice.madeAt) ? `made ${dayOf(choice.madeAt, today)}` : null;
+    const about = ['Workspace', place, made, ...(choice.unavailable ? ['did not open last time'] : [])].filter(Boolean).join(' · ');
     return {id: choice.id, title: `Open ${label}`, label, source: 'workspaces', subtitle: about};
   });
 }

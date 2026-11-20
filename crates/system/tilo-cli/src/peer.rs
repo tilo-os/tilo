@@ -842,6 +842,7 @@ mod tests {
                 role: Some("owner".to_owned()),
                 labels: tilo_server_session::workspaces::WorkspaceLabels::default(),
                 unattended: false,
+                made_at_ms: None,
             }],
             devices: Vec::new(),
         };

@@ -316,6 +316,7 @@ history-notification-description-sourced = { $severity }. From { $source }. { $t
 host-action-source-identity = Identity
 host-action-source-devices = Devices
 host-action-source-workspace = Workspace
+action-source-desktop = Your desktop
 host-action-source-session = This computer
 notification-center-group-description = { $count } notifications. Press Enter to { $expanded ->
         [yes] collapse

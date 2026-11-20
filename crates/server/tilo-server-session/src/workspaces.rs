@@ -360,6 +360,11 @@ pub struct PersonalWorkspace {
     /// that answers keeps it for them.
     #[serde(default, skip_serializing_if = "WorkspaceLabels::is_empty")]
     pub labels: WorkspaceLabels,
+    /// When the server that answers made it, ms since the epoch: two
+    /// workspaces of one name are told apart by it. `None` when the list's
+    /// keeper does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_at_ms: Option<i64>,
     /// Whether its owner let keys made for it alone run commands in its
     /// machine without asking them each time
     /// ([`RUN_UNATTENDED`]), when the host that answers keeps it for them.
@@ -496,6 +501,11 @@ pub struct WorkspaceListing {
     /// to the owner alone.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unattended: bool,
+    /// When the workspace was made, ms since the epoch: the time of the first
+    /// change its governance holds, which a later change does not move. Two
+    /// workspaces of one name are told apart by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_at_ms: Option<i64>,
 }
 
 /// What a person labels a workspace of their own with, for their own

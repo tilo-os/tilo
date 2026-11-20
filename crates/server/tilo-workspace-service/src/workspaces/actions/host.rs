@@ -489,6 +489,7 @@ fn listing(summary: &WorkspaceSummary) -> WorkspaceListing {
         role: None,
         labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
         unattended: false,
+        made_at_ms: None,
     }
 }
 
@@ -950,23 +951,32 @@ impl Workspaces {
             });
             return listed;
         }
-        self.list()
-            .await
-            .iter()
-            .filter(|summary| {
-                only.names(&summary.workspace) && self.lists_to(device, &summary.workspace)
-            })
-            .map(|summary| WorkspaceListing {
+        // The person who owns this server lists what it governs: each workspace's own
+        // listing answers when it was made, which no summary carries.
+        let mut listed: Vec<WorkspaceListing> = Vec::new();
+        for summary in self.list().await {
+            if !only.names(&summary.workspace) || !self.lists_to(device, &summary.workspace) {
+                continue;
+            }
+            let mut one = WorkspaceListing {
                 role: Some(OWNER_ROLE.to_owned()),
                 labels: self
                     .own()
                     .map(|own| own.labels_of(&summary.workspace))
                     .unwrap_or_default(),
                 unattended: self.listed_unattended(&summary.workspace),
-                ..listing(summary)
-            })
-            .filter(|listed| labelled(&listed.labels, labels))
-            .collect()
+                ..listing(&summary)
+            };
+            one.made_at_ms = self
+                .listing_of(&summary.workspace)
+                .await
+                .ok()
+                .and_then(|listing| listing.made_at_ms);
+            if labelled(&one.labels, labels) {
+                listed.push(one);
+            }
+        }
+        listed
     }
 
     /// The workspace of `device`'s person's own it asks for, already permitted
