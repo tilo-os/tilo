@@ -192,9 +192,9 @@ impl Workspaces {
         agent: &str,
         keeper: &[u8; 32],
     ) -> Option<[u8; 32]> {
-        let governed = self.workspace(&workspace.to_string()).await.ok()?;
-        let governed = governed.lock().await;
-        self.approved_agent(&governed.peer(), workspace, agent, keeper)
+        let reading = self.reading(workspace).await?;
+        let peer = reading.replica.lock();
+        self.approved_agent(&peer, workspace, agent, keeper)
             .map(|(cert, _)| cert.device_public_key)
     }
 
@@ -250,9 +250,10 @@ impl Workspaces {
         if entry.created_at != created_at {
             return None;
         }
-        let governed = self.workspace(&workspace.to_string()).await.ok()?;
-        let governed = governed.lock().await;
-        let peer = governed.peer();
+        // Read without the workspace's lock, which is held across a commit's
+        // writes: every call an agent makes reads this before it saves.
+        let reading = self.reading(workspace).await?;
+        let peer = reading.replica.lock();
         let (cert, delegation) = self.approved_agent(&peer, workspace, agent, keeper)?;
         if caller.device_public_key() != Some(&cert.device_public_key)
             || session != (&cert, &delegation)
@@ -270,8 +271,7 @@ impl Workspaces {
         let access = peer.permissions(cert.device_public_key, now).ok()?;
         let sandbox = peer.governance().governed_sandbox().ok()?;
         drop(peer);
-        let workspace = governed.workspace().to_owned();
-        drop(governed);
+        let workspace = reading.workspace;
         let agent_bound = entry.turn_rules(&workspace);
         Some(ViewReadPolicy {
             workspace,
