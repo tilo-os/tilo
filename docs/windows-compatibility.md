@@ -257,10 +257,13 @@ so it opens its window through Xwayland, and the keeper gives its sandbox that
 display's socket and authority file. Both stay open across an in-place restart;
 each is shut down with the desktop only when the login ends.
 
-An X11 window tells its size limits where Wine's Wayland driver does not, so a
-Proton window of a fixed size (PuTTY's settings, for one) floats as a dialog in
-front of the tabs rather than taking a tab of its own; under Wine the same
-window takes a tab. Proton
+An X11 window tells its size limits where Wine's Wayland driver does not, but a
+size is no mark of a dialog: a window that names a parent floats as a dialog of
+it, and a program's own top-level window takes a tab whatever size it keeps. A
+Proton program's fixed-size settings window (PuTTY's, for one) therefore takes
+a tab of its own, as the same window does under Wine; a tab never narrows below
+the smallest width its window keeps, so the strip scrolls rather than cutting
+it off. Proton
 loads Vulkan only for a program that draws with Direct3D: PuTTY draws with GDI,
 and Proton said nothing about Vulkan for it.
 

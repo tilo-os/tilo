@@ -5,31 +5,20 @@
 //! while that is shown, hidden with it otherwise. A dialog naming no parent
 //! floats centred on the display the person works on. Whether a window is
 //! a dialog is judged from what the client says about it, never from its
-//! name: a parent (`xdg_toplevel.set_parent`, an X11 window's
-//! `WM_TRANSIENT_FOR`), or a fixed size (`min == max`) that fits well
-//! inside the display, a dialog's shape rather than a document's.
+//! name or its size: a parent (`xdg_toplevel.set_parent`, an X11 window's
+//! `WM_TRANSIENT_FOR`). A program's own top-level window takes a tab
+//! whatever size it keeps: a fixed size is how an X11 settings window opens
+//! under Proton as much as how a calculator's main window does.
 
 use ui::kurbo::{Point, Rect};
 
 use crate::Window;
 
-/// Whether `window` floats rather than taking a tab, on a display of
-/// `display` (width, height).
+/// Whether `window` floats rather than taking a tab: it names the window it
+/// belongs to.
 #[must_use]
-pub fn floats(window: &Window, display: Option<(f64, f64)>) -> bool {
-    window.parent.is_some() || has_dialog_size(window, display)
-}
-
-/// The client fixed its size (`min == max`, both set) to something no more
-/// than two thirds of the display each way.
-fn has_dialog_size(window: &Window, display: Option<(f64, f64)>) -> bool {
-    let (Some(min), Some(max)) = (window.min_size, window.max_size) else {
-        return false;
-    };
-    let fits = display.is_none_or(|(width, height)| {
-        f64::from(min.0) * 3.0 <= width * 2.0 && f64::from(min.1) * 3.0 <= height * 2.0
-    });
-    min == max && min.0 > 0 && min.1 > 0 && fits
+pub fn floats(window: &Window) -> bool {
+    window.parent.is_some()
 }
 
 /// Where a window of `size` sits centred over `area`: its top-left corner,
@@ -59,32 +48,27 @@ mod tests {
             parent: Some(7),
             ..window()
         };
-        assert!(floats(&dialog, Some((1280.0, 800.0))));
-        assert!(!floats(&window(), Some((1280.0, 800.0))));
+        assert!(floats(&dialog));
+        assert!(!floats(&window()));
     }
 
+    /// A program's first window keeps a size on many programs, and is no
+    /// dialog for it: a fixed size behind the strip is a tab like any other.
     #[test]
-    fn a_small_fixed_size_floats_and_a_large_or_free_one_does_not() {
-        let fixed = |w, h| Window {
-            min_size: Some((w, h)),
-            max_size: Some((w, h)),
-            ..window()
-        };
-        let display = Some((1280.0, 800.0));
-        assert!(floats(&fixed(400, 300), display));
-        assert!(!floats(&fixed(1200, 300), display), "wider than two thirds");
-        assert!(!floats(&fixed(400, 700), display), "taller than two thirds");
-        let free = Window {
+    fn a_window_keeping_one_size_takes_a_tab_without_a_parent() {
+        let fixed = Window {
             min_size: Some((400, 300)),
-            max_size: Some((800, 600)),
+            max_size: Some((400, 300)),
             ..window()
         };
-        assert!(!floats(&free, display), "a size range is a document's");
-        let min_only = Window {
+        assert!(!floats(&fixed));
+        let child = Window {
+            parent: Some(7),
             min_size: Some((400, 300)),
+            max_size: Some((400, 300)),
             ..window()
         };
-        assert!(!floats(&min_only, display));
+        assert!(floats(&child), "its parent decides, not its size");
     }
 
     #[test]

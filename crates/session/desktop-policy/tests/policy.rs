@@ -549,6 +549,42 @@ fn a_window_taken_full_screen_covers_its_display() {
     );
 }
 
+/// A program's own top-level window takes a tab whatever size it keeps: an X11 settings window
+/// that fixes its size names no parent, so it is no dialog. One that names the window it belongs
+/// to floats over it, its size aside.
+#[test]
+fn a_fixed_size_window_without_a_parent_takes_a_tab() {
+    let (mut driver, mut policy) = mount();
+    displays(&mut policy);
+    map(&mut driver, &mut policy, 1, "a");
+    let fixed = Window {
+        min_size: Some((400, 240)),
+        max_size: Some((400, 240)),
+        ..window(2, "b")
+    };
+    policy.map(fixed).unwrap();
+    settle(&mut driver);
+    assert!(!policy.is_floating(2), "a fixed size alone is no dialog");
+    assert!(policy.tab_of(2).is_some(), "it gets a tab of its own");
+    assert_eq!(
+        shown(&policy.placement()),
+        [1, 2],
+        "the tab stands beside the one before it"
+    );
+
+    policy
+        .map(Window {
+            parent: Some(1),
+            min_size: Some((400, 240)),
+            max_size: Some((400, 240)),
+            ..window(3, "c")
+        })
+        .unwrap();
+    settle(&mut driver);
+    assert!(policy.is_floating(3), "its parent decides, not its size");
+    assert_eq!(shown(&policy.placement()), [1, 2], "a dialog takes no tab");
+}
+
 #[test]
 fn a_dialog_floats_over_its_parent_and_answers_for_it() {
     let (mut driver, mut policy) = mount();
@@ -1274,11 +1310,11 @@ fn each_kept_window_takes_back_exactly_its_own_tab() {
     );
 }
 
-/// A kept window of a dialog's shape (a fixed size, as a setup wizard has) that stood in a tab
-/// before an in-place restart takes that tab back rather than floating over the strip, and its
-/// tab closes with it when the program ends.
+/// A kept window that stood in a tab before an in-place restart takes that tab back and its tab
+/// closes with it when the program ends. A fixed size is no dialog's mark, so a setup wizard
+/// comes back into its tab rather than floating over the strip.
 #[test]
-fn a_kept_window_of_a_dialogs_shape_takes_back_its_tab() {
+fn a_kept_window_takes_back_its_tab_and_closes_with_it() {
     let (mut driver, mut policy) = mount();
     map(&mut driver, &mut policy, 1, "org.example.Setup");
     let saved = policy.tab_of(1).expect("a tab");
@@ -1309,8 +1345,8 @@ fn a_kept_window_of_a_dialogs_shape_takes_back_its_tab() {
         ..kept(11, "org.example.Setup", 50, "wizard")
     };
     assert!(
-        tilo_desktop_policy::floating::floats(&wizard, Some((1280.0, 800.0))),
-        "the wizard has a dialog's shape"
+        !tilo_desktop_policy::floating::floats(&wizard),
+        "a fixed size is no dialog's mark"
     );
     policy.map(wizard).unwrap();
     settle(&mut driver);

@@ -1812,7 +1812,7 @@ impl State {
         for window in floats {
             self.space.raise_element(&window, false);
         }
-        // A dialog naming no parent floats over every window, so a tab focused after it shows
+        // A dialog stays in front of the window it belongs to, so a tab focused after it shows
         // never covers it.
         let dialogs: Vec<_> = self
             .space
@@ -1821,7 +1821,6 @@ impl State {
                 window
                     .toplevel()
                     .is_some_and(|toplevel| toplevel.parent().is_some())
-                    || describe(self, window).is_some_and(|info| self.policy.dialog(&info))
             })
             .cloned()
             .collect();
