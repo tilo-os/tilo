@@ -1923,8 +1923,20 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     // Before anything is served: from here on a stop signal ends the mount through the final save
     // instead of killing the process.
     let mut stop = StopSignals::install()?;
+    // A daemon that ended without unmounting (a kill, a crash, a mount this process may not
+    // unmount) leaves a mount answering nothing; the path cannot be mounted again, and making it
+    // fails, until the dead mount is gone.
+    fs::fuse_session::clear_stale_mount(&mount_point)?;
     if !mount_point.exists() {
-        std::fs::create_dir_all(&mount_point)?;
+        match std::fs::create_dir_all(&mount_point) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                // The mount died as the path was being made; clear it and make the path again.
+                fs::fuse_session::clear_stale_mount(&mount_point)?;
+                std::fs::create_dir_all(&mount_point)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
 
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));

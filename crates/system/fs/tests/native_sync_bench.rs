@@ -320,6 +320,8 @@ impl Daemon {
     ) -> Self {
         let cache = dir.join(format!("{name}-cache"));
         std::fs::create_dir_all(&cache).unwrap();
+        // A mount the previous instance left answering nothing is cleared, as the daemon does.
+        let _ = fs::fuse_session::clear_stale_mount(mount);
         std::fs::create_dir_all(mount).unwrap();
         let sockets = dir.join(format!("{name}-s"));
         std::fs::create_dir_all(&sockets).unwrap();
