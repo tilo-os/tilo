@@ -152,6 +152,20 @@ pub fn system_payload_dir() -> PathBuf {
         .map_or_else(|| PathBuf::from(SYSTEM_PAYLOAD_DIR), PathBuf::from)
 }
 
+/// Whether `payload_root` lies in the system store, which only an image update
+/// writes: what makes a package one the image ships.
+#[must_use]
+pub fn image_shipped(payload_root: &Path) -> bool {
+    let Ok(payload) = payload_root.canonicalize() else {
+        return false;
+    };
+    [Some(system_payload_dir()), system_data_dir()]
+        .into_iter()
+        .flatten()
+        .filter_map(|root| root.canonicalize().ok())
+        .any(|root| payload.starts_with(root))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
