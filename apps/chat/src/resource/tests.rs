@@ -550,11 +550,18 @@ tilo_test_env::scenario! {
                 "{}",
                 offer.action
             );
-            assert!(
-                action.params().is_empty(),
-                "{} takes no parameters",
-                offer.action
-            );
+            match offer.asks.as_deref() {
+                Some(asked) => assert!(
+                    action.params().iter().any(|param| param.name == asked),
+                    "{} takes the typed line the manifest asks for ({asked})",
+                    offer.action
+                ),
+                None => assert!(
+                    action.params().is_empty(),
+                    "{} takes no parameters",
+                    offer.action
+                ),
+            }
         }
     }
 }
