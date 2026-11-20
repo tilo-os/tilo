@@ -10,6 +10,7 @@ use collab_types::signer::DeviceSigner;
 use std::{sync::Arc, time::Duration};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_identity::identity_store::DeviceIdentity;
+use tilo_server_protocol::refusal::Refusal;
 
 /// This device's own workspace host, running in this process: a workspace placed on
 /// this device is linked through it, as an endpoint cannot dial itself.
@@ -53,13 +54,10 @@ impl Linked {
     ///
     /// The connection ends badly, or either device is no longer in the
     /// workspace's roster.
-    pub async fn run(self) -> Result<(), tilo_server_protocol::refusal::Refusal> {
+    pub async fn run(self) -> Result<(), Refusal> {
         match self.host {
             Host::Dialled(dialed) => dialed.run(&self.link).await,
-            Host::Paired(pairing) => pairing
-                .sync()
-                .await
-                .map_err(tilo_server_protocol::refusal::Refusal::Other),
+            Host::Paired(pairing) => pairing.sync().await.map_err(Refusal::Other),
         }
     }
 }
@@ -71,29 +69,34 @@ impl Reach {
     ///
     /// # Errors
     /// The hint does not authenticate for the workspace, the host refuses this
-    /// device or cannot be reached in 10 seconds, or a workspace hosted here
-    /// is held by no host of this device.
+    /// device or cannot be reached in 10 seconds, or a workspace placed here
+    /// is served by nothing of this device. A refusal is typed: a workspace its
+    /// owner deleted is what the caller forgets, not a host to dial again.
     pub async fn session(
         &self,
         connect: &Connect,
         via: &TransportHint,
         signer: Arc<dyn DeviceSigner>,
-    ) -> Result<Linked, String> {
-        let (payload, _) =
-            WorkspaceDeviceHintV1::authenticate_transport_hint(via).map_err(|e| e.to_string())?;
+    ) -> Result<Linked, Refusal> {
+        let (payload, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(via)
+            .map_err(|error| Refusal::Other(error.to_string()))?;
         let workspace = connect.workspace();
         if payload.workspace_id != workspace {
-            return Err("native link workspace pin mismatch".into());
+            return Err(Refusal::Other("native link workspace pin mismatch".into()));
         }
-        let link = connect.link(signer)?;
+        let link = connect.link(signer).map_err(Refusal::Other)?;
         let own = link.device();
         if super::hosted_by(via, &own) {
             let host = self
                 .own_host
                 .as_ref()
-                .ok_or("this device's workspace host is not running")?
+                .ok_or_else(|| {
+                    Refusal::Other("this device's workspace service is not running".into())
+                })?
                 .direct(payload.workspace_id)
-                .ok_or("this device's workspace host holds no such workspace")?;
+                .ok_or_else(|| {
+                    Refusal::Other("this device's workspace service holds no such workspace".into())
+                })?;
             // Paired now, so what this device writes before the link syncs
             // is not lost.
             let pairing = DirectSync::pairing(&link, &host);
@@ -110,7 +113,7 @@ impl Reach {
             link.dial(&self.endpoint, payload.endpoint_addr, host),
         )
         .await
-        .map_err(|_| "native link connection timed out".to_string())??;
+        .map_err(|_| Refusal::Other("native link connection timed out".to_string()))??;
         Ok(Linked {
             link,
             host: Host::Dialled(Box::new(dialed)),

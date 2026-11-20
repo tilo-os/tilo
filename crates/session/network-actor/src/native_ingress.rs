@@ -104,7 +104,7 @@ impl Holder for NativeHolder {
     fn dial_failed(
         &self,
         via: TransportHint,
-        reason: String,
+        reason: tilo_server_protocol::refusal::Refusal,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
             let _ = self
@@ -587,9 +587,21 @@ impl ActorState {
     }
 
     /// A dial of `via`, one of the workspace's holders, failed.
-    pub(super) fn native_dial_failed(&self, ws: WorkspaceId, via: &TransportHint, reason: &str) {
+    pub(super) async fn native_dial_failed(
+        &mut self,
+        ws: WorkspaceId,
+        via: &TransportHint,
+        reason: &tilo_server_protocol::refusal::Refusal,
+    ) {
         self.tally.note("NativeHostDial");
         if !self.native_routes.contains(ws) {
+            return;
+        }
+        // A holder that said the workspace's owner deleted it has nothing for
+        // this device any more, however the dial found it out: the workspace
+        // leaves as it does when the news comes over a link that was up.
+        if *reason == tilo_server_protocol::refusal::Refusal::WorkspaceDeleted {
+            self.native_link_closed(ws, true).await;
             return;
         }
         // The host did not answer: until a link with a host of the workspace

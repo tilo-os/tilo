@@ -508,7 +508,9 @@ enum InternalEvent {
     NativeDialFailed {
         ws: WorkspaceId,
         via: Box<tilo_peer_state::join::TransportHint>,
-        reason: String,
+        /// Why the holder turned this device away, typed: a workspace its
+        /// owner deleted is one this device forgets, not one to dial again.
+        reason: tilo_server_protocol::refusal::Refusal,
     },
     /// A workspace's hold dials none of its holders now, for `cause`.
     NativeCannotDial {
@@ -1933,7 +1935,7 @@ impl ActorState {
                 self.native_link_closed(ws, deleted).await;
             }
             Some(InternalEvent::NativeDialFailed { ws, via, reason }) => {
-                self.native_dial_failed(ws, &via, &reason);
+                self.native_dial_failed(ws, &via, &reason).await;
             }
             Some(InternalEvent::NativeCannotDial { ws, cause }) => {
                 self.native_cannot_dial(ws, cause);

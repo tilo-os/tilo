@@ -910,43 +910,50 @@ impl DirectSync {
     /// # Errors
     ///
     /// The connection fails, the other device refuses this one, or this
-    /// device is not in the workspace's roster.
+    /// device is not in the workspace's roster. A holder that refuses this
+    /// device while it dials gives the reason typed, so a workspace its owner
+    /// deleted says so here and not only on a link that had come up.
     pub async fn dial(
         &self,
         endpoint: &Endpoint,
         addr: impl Into<EndpointAddr>,
         device: [u8; 32],
-    ) -> Result<Dialed, String> {
+    ) -> Result<Dialed, Refusal> {
         let addr: EndpointAddr = addr.into();
         let connection = endpoint
             .connect(addr, DIRECT_ALPN)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Refusal::Other(error.to_string()))?;
 
         let (mut send, mut recv) = connection
             .open_bi()
             .await
-            .map_err(|error| error.to_string())?;
-        let workspace = self.workspace()?;
-        write_link(&mut send, &LinkFrame::Workspace(workspace)).await?;
+            .map_err(|error| Refusal::Other(error.to_string()))?;
+        let workspace = self.workspace().map_err(Refusal::Other)?;
+        write_link(&mut send, &LinkFrame::Workspace(workspace))
+            .await
+            .map_err(Refusal::Other)?;
         // The other device listens before this returns, so what the caller
         // publishes from now on reaches it: an unsealed write it missed is in
         // no store to catch up from.
         match read_link(&mut recv, MAX_FRAME_BYTES).await {
             Ok(Some(LinkFrame::Ready)) => {}
             Ok(other) => {
-                return Err(format!(
+                return Err(Refusal::Other(format!(
                     "the device answered {other:?} instead of that it listens"
-                ));
+                )));
             }
+            // A device that refuses the dial closes with its reason typed: a
+            // workspace its owner deleted is one this device forgets rather
+            // than dials again.
             Err(error) => {
-                return Err(refusal(&connection).map_or(error, |refusal| refusal.to_string()));
+                return Err(refusal(&connection).unwrap_or(Refusal::Other(error)));
             }
         }
         // Who the dialled device is, this one learns from what it sends: its
         // certificate is in the frames it opens with, and a device that has
         // not synced yet holds no roster to refuse by.
-        self.certificate()?;
+        self.certificate().map_err(Refusal::Other)?;
         // Subscribed before the dial returns: the caller may send at once.
         let live = self.0.outgoing.subscribe();
         Ok(Dialed {
@@ -969,10 +976,7 @@ impl DirectSync {
     ) -> Result<(), Refusal> {
         let addr = addr.into();
         let device = *addr.id.as_bytes();
-        let dialed = self
-            .dial(endpoint, addr, device)
-            .await
-            .map_err(Refusal::Other)?;
+        let dialed = self.dial(endpoint, addr, device).await?;
         dialed.run(self).await
     }
 

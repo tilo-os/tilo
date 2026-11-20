@@ -683,7 +683,7 @@ impl Holder for Causes {
     fn dial_failed(
         &self,
         _via: TransportHint,
-        reason: String,
+        reason: tilo_server_protocol::refusal::Refusal,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         panic!("the hold dialled a holder: {reason}");
     }

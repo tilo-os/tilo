@@ -15,6 +15,7 @@ use std::{
     time::Duration,
 };
 use tilo_identity::identity_store::DeviceIdentity;
+use tilo_server_protocol::refusal::Refusal;
 use tokio::sync::Notify;
 
 /// The first pause before dialling again; each failure doubles it.
@@ -52,11 +53,12 @@ pub trait Holder: Send + Sync {
     }
     /// Dialling `via`, one of the workspace's holders, failed with `reason`.
     /// The hold no longer counts as establishing a link unless it goes on to
-    /// another holder.
+    /// another holder. The reason is typed, so a workspace its owner deleted
+    /// is told from a holder that is merely out of reach.
     fn dial_failed(
         &self,
         via: TransportHint,
-        reason: String,
+        reason: Refusal,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// The hold dials none of the workspace's holders now, for `cause`.
     fn cannot_dial(&self, cause: CannotDial) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
