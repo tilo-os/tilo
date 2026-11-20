@@ -2591,7 +2591,7 @@ mod tests {
             }
         }
 
-        phase a_capability_list_an_older_image_seeded_is_refused_until_the_machine_reseeds_it;
+        phase a_capability_list_an_older_image_seeded_gives_way_to_the_one_the_image_ships;
         // tmpfiles' `C` never overwrites, so a machine keeps the capability list of the image it was
         // installed with across every update. The shipped version must mount with its grant through
         // the same loader fs.service uses; a version in a schema the code no longer reads must be
@@ -2615,24 +2615,17 @@ mod tests {
             );
             let identity: IdentityKey = [0x5A; 32];
             let local = vec![parse_member("person:local").unwrap()];
-            for path in &versions {
-                let is_shipped = std::fs::read(path).is_ok_and(|bytes| bytes == shipped);
-                let file = match CapabilityFile::load(path, identity, local.clone()) {
-                    Ok(file) => file,
-                    Err(error) => {
-                        assert!(
-                            !is_shipped,
-                            "the list the image ships today must load on an upgraded machine: \
-                             {error}"
-                        );
-                        assert!(
-                            error.to_string().contains("remove it"),
-                            "{} is refused without saying how a machine re-seeds it: {error}",
-                            path.display()
-                        );
-                        continue;
-                    }
-                };
+            let default = os_file("os/usr/share/tilo/fs-capabilities.json");
+            for seeded in &versions {
+                // As a machine that kept this list finds it after an update: the list an older
+                // image seeded gives way to the one the image ships, and every one loads.
+                let machine = tempfile::tempdir().unwrap();
+                let path = &machine.path().join("fs-capabilities.json");
+                std::fs::copy(seeded, path).unwrap();
+                let file = CapabilityFile::load_with_default(path, &default, identity, local.clone())
+                    .unwrap_or_else(|error| {
+                        panic!("{} must load on an upgraded machine: {error}", seeded.display())
+                    });
                 let handle = file.handle();
                 assert!(
                     handle.permits(&identity, "/notes/today.md", Access::Write),
