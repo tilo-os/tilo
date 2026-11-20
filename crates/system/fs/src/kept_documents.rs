@@ -231,6 +231,34 @@ impl KeptDocuments {
                 Err(error) => failed = Some(error),
             }
         }
+        // What was written is read back and compared with the tree, for isolating a save that
+        // claims a generation it did not write.
+        if std::env::var_os("TILO_FS_KEEP_VERIFY").is_some() {
+            let live = namespace.lock_recover().document_heads();
+            match KeptDocuments::open(&self.dir)
+                .and_then(|(_, documents)| {
+                    Namespace::from_documents_read("verify", documents).map_err(io::Error::other)
+                })
+                .map(|(mut reopened, _)| reopened.document_heads())
+            {
+                Ok(disk) if disk == live => {
+                    eprintln!("kept tree matches: {} documents", live.len())
+                }
+                Ok(disk) => {
+                    let differs: Vec<_> = live
+                        .iter()
+                        .filter(|(chunk, heads)| disk.get(chunk) != Some(heads))
+                        .map(|(chunk, _)| *chunk)
+                        .collect();
+                    eprintln!(
+                        "kept tree differs in {differs:?}: live {} documents, disk {}",
+                        live.len(),
+                        disk.len()
+                    );
+                }
+                Err(error) => eprintln!("kept tree does not read back: {error}"),
+            }
+        }
         failed.map_or(Ok(()), Err)
     }
 }
