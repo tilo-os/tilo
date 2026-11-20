@@ -282,12 +282,14 @@ owner_cmd tilo machine add --os server --name "$server_name" \
 plan_id="$(sed -n 's/^plan \([0-9a-f]\{32\}\).*/\1/p' "$evidence/03-plan.txt" | head -n 1)"
 [[ "$plan_id" =~ ^[0-9a-f]{32}$ ]] || die "the plan's id is not in the command's answer: $(cat "$evidence/03-plan.txt")"
 owner_control actions invoke tilo.machines $'machines\x1fmachine.show' \
-  --args-json "{\"plan\":\"$plan_id\"}" > "$evidence/03-plan-entry.json" \
+  --args-json "{\"plan\":\"$plan_id\"}" --wait=30000 \
+  > "$evidence/03-plan-entry.json" \
   || { cat "$evidence/03-plan-entry.json" >&2; die 'the plan entry could not be read back'; }
-jq -e '.plan.plan == $id and (.plan.open | length == 0)' --arg id "$plan_id" \
+jq -e '.receipt.update.output.value.plan as $plan
+  | $plan.plan == $id and ($plan.open | length == 0)' --arg id "$plan_id" \
   "$evidence/03-plan-entry.json" >/dev/null \
   || die 'the plan entry is not the complete plan the machine installs from'
-jq '.plan' "$evidence/03-plan-entry.json" > "$storage/plan.json"
+jq '.receipt.update.output.value.plan' "$evidence/03-plan-entry.json" > "$storage/plan.json"
 owner ssh "cat $owner_root/machine.token" > "$storage/machine.token" \
   || die 'the token could not be taken from the owner device'
 chmod 0600 "$storage/machine.token" "$storage/plan.json"
@@ -470,7 +472,7 @@ await_owner_question() {
 answer_owner() {
   local verdict=$1 resource=$2 action=answer
   [ "$verdict" = allow ] || action=cancel
-  owner_control actions invoke so.tilo.session "${resource}"$'\x1f'"${action}" \
+  owner_control actions invoke so.tilo.session "${resource}"$'\x1f'"${action}" --wait \
     > "$out/owner-answer-$verdict.txt" 2>&1 \
     || { cat "$out/owner-answer-$verdict.txt" >&2; die "the owner's sheet could not be answered ($verdict)"; }
 }
