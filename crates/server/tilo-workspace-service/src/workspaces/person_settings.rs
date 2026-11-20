@@ -763,6 +763,17 @@ pub(crate) fn account_secret_for_test(root: &Path, id: &str) -> Result<accounts:
     account_with_secret(root, id).map(|(_, secret)| secret)
 }
 
+/// Keep `tokens` as `account`'s sign-in, as a sign-in on its provider's page
+/// does: a test's hand on a grant it cannot fetch through a browser.
+#[cfg(test)]
+pub(crate) fn seal_grant_for_test(
+    root: &Path,
+    account: &accounts::Account,
+    tokens: &tilo_oauth::TokenSet,
+) -> Result<(), String> {
+    oauth_grant::ProviderGrant::seal(root, account, tokens)
+}
+
 /// The `provider` a removing action names.
 pub(super) fn provider_argument(request: &InvokeRequest) -> Result<String, ActionCallError> {
     let value: Map<String, Value> = argument(request, "the provider")?;

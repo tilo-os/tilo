@@ -14,13 +14,17 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use account_credentials::{Capability, CredentialStore, OAuthIssuer, OAuthUse};
+use account_credentials::{Capability, CredentialError, CredentialStore, OAuthIssuer, OAuthUse};
 use tilo_oauth::{Registration, TokenSet};
+
+/// What an account whose provider will not renew its grant is told: the
+/// person signs in again, which is all that helps.
+const SIGN_IN_AGAIN: &str = "That account's sign-in needs renewing. Sign in again";
 
 /// One provider's grant for one of a person's accounts.
 #[allow(
     dead_code,
-    reason = "where every provider's grant is kept and read: mail renews it today, and a model provider's sign-in reads it next"
+    reason = "where every provider's grant is kept and read: mail and calendar renew it, and a model provider's sign-in reads it next"
 )]
 pub(crate) struct ProviderGrant {
     /// The account it was signed in for, as the person's store names it.
@@ -43,9 +47,12 @@ impl ProviderGrant {
     }
 
     /// The grant kept for `account`, when there is one.
-    #[allow(
-        dead_code,
-        reason = "a reader of a grant that does not read mail (the model provider's sign-in) lands separately"
+    #[cfg_attr(
+        not(feature = "agents"),
+        allow(
+            dead_code,
+            reason = "the calendar reader that reads a grant back is built with the agents feature"
+        )
     )]
     pub(crate) fn load(root: &Path, account: &str) -> Result<Option<Self>, String> {
         let vault = super::credentials(root)?;
@@ -64,8 +71,14 @@ impl ProviderGrant {
     }
 
     /// The access token to use now, renewed through the one shared path when
-    /// it ran out. The renewal holds the grant's lock, so two readers never
+    /// it expired. The renewal holds the grant's lock, so two readers never
     /// renew the same grant at once.
+    ///
+    /// A provider that will not renew the grant again (it was revoked, or
+    /// the refresh token is no good) takes the dead grant out of the vault:
+    /// the account then lists as one whose person signs in again, in plain
+    /// words. A provider that was merely not reached keeps the grant, and the
+    /// refusal says so, because asking again may end.
     pub(crate) fn access_token(
         root: &Path,
         account: &str,
@@ -76,10 +89,36 @@ impl ProviderGrant {
         let _renewing = RENEWING
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        vault_store(root)
-            .oauth_access_token(&accounts::AccountId::from(account.to_owned()), use_, false)
-            .map(|token| token.to_string())
-            .map_err(|_| "That account's sign-in needs renewing. Sign in again".to_string())
+        let id = accounts::AccountId::from(account.to_owned());
+        match vault_store(root).oauth_access_token(&id, use_, false) {
+            Ok(token) => Ok(token.to_string()),
+            Err(CredentialError::NeedsAuthentication) => {
+                forget_dead_grant(root, &id);
+                Err(SIGN_IN_AGAIN.to_string())
+            }
+            Err(CredentialError::Offline) => Err(format!(
+                "{} could not be reached to renew that account's sign-in. Try again",
+                use_.issuer.label()
+            )),
+            Err(error) => Err(format!(
+                "That account's sign-in could not be renewed: {error}"
+            )),
+        }
+    }
+}
+
+/// Take a grant the provider will not renew out of the vault, so the account
+/// lists as one that needs its person to sign in again.
+fn forget_dead_grant(root: &Path, id: &accounts::AccountId) {
+    let removed = super::credentials(root).and_then(|mut vault| {
+        vault.remove(id);
+        vault.try_save()
+    });
+    if let Err(error) = removed {
+        tracing::warn!(
+            %error,
+            "oauth: a grant the provider will not renew could not be taken out of the vault"
+        );
     }
 }
 
@@ -118,21 +157,27 @@ pub(super) fn vault_store(root: &Path) -> CredentialStore {
     store
 }
 
-/// The issuer a kept account signs in with, from its settings.
-#[allow(
-    dead_code,
-    reason = "only reading a grant back asks this; mail's reader knows its issuer from the account it was given"
+/// The issuer a kept account signs in with, from its settings: `provider` for
+/// a mail account, `calendar_provider` for the calendar server the same
+/// sign-in opened.
+#[cfg_attr(
+    not(feature = "agents"),
+    allow(
+        dead_code,
+        reason = "the calendar reader that reads a grant back is built with the agents feature"
+    )
 )]
-fn issuer_of_account(root: &Path, account: &str) -> Result<OAuthIssuer, String> {
+pub(crate) fn issuer_of_account(root: &Path, account: &str) -> Result<OAuthIssuer, String> {
     let store = accounts::AccountStore::load_in(root);
     let kept = store
         .get(&accounts::AccountId::from(account.to_owned()))
         .ok_or_else(|| "That account is not kept here".to_string())?;
-    match kept
+    let provider = kept
         .config
         .get("provider")
-        .and_then(serde_json::Value::as_str)
-    {
+        .or_else(|| kept.config.get("calendar_provider"))
+        .and_then(serde_json::Value::as_str);
+    match provider {
         Some("google" | "google-drive") => Ok(OAuthIssuer::Google),
         Some("microsoft" | "onedrive") => Ok(OAuthIssuer::Microsoft),
         _ => Err("That account's provider is not one this server signs in with".into()),

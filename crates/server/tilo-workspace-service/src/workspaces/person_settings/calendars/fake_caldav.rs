@@ -8,7 +8,9 @@
 //! and from none, a `calendar-query` for a server asked without one, and
 //! `GET`, `PUT` and `DELETE` of one entry with their `ETag` preconditions.
 //! Every request must sign in with the account's name and password, as
-//! Basic credentials.
+//! Basic credentials, or, for a server a provider's sign-in opened, with the
+//! access token of that grant as a bearer token
+//! ([`Server::start_bearer`]).
 //!
 //! It schedules by itself, as the servers people rent do (RFC 6638): an
 //! account whose name is an address is the person written to there. What an
@@ -70,6 +72,12 @@ struct Calendar {
 struct State {
     user: String,
     password: String,
+    /// The access token a sign-in on a provider's page left, where this
+    /// server is one that opens only with it.
+    bearer: Option<String>,
+    /// Every bearer token a request carried, in order: what a test checks
+    /// the client sent, renewed or not.
+    bearer_tokens: Vec<String>,
     calendars: BTreeMap<String, Calendar>,
     /// Grows with every change to any calendar.
     token: u64,
@@ -425,6 +433,8 @@ impl State {
         Self {
             user: user.to_owned(),
             password: password.to_owned(),
+            bearer: None,
+            bearer_tokens: Vec::new(),
             calendars: BTreeMap::new(),
             token: 1,
             syncs: true,
@@ -466,13 +476,18 @@ impl State {
     }
 
     fn signed_in(&self, request: &Request) -> bool {
-        let wanted = base64(format!("{}:{}", self.user, self.password).as_bytes());
-        request
+        let Some((scheme, sent)) = request
             .header("Authorization")
             .and_then(|sent| sent.split_once(' '))
-            .is_some_and(|(scheme, sent)| {
-                scheme.eq_ignore_ascii_case("Basic") && sent.trim() == wanted
-            })
+        else {
+            return false;
+        };
+        let sent = sent.trim();
+        if scheme.eq_ignore_ascii_case("Bearer") {
+            return self.bearer.as_deref().is_some_and(|wanted| sent == wanted);
+        }
+        let wanted = base64(format!("{}:{}", self.user, self.password).as_bytes());
+        scheme.eq_ignore_ascii_case("Basic") && sent == wanted
     }
 
     fn calendar_props(&self, calendar: &Calendar) -> String {
@@ -711,6 +726,12 @@ impl State {
     }
 
     fn answer(&mut self, request: &Request) -> Reply {
+        if let Some(token) = request
+            .header("Authorization")
+            .and_then(|sent| sent.strip_prefix("Bearer "))
+        {
+            self.bearer_tokens.push(token.trim().to_owned());
+        }
         if !self.signed_in(request) {
             return Reply::status(401).header("WWW-Authenticate", "Basic realm=\"calendars\"");
         }
@@ -746,7 +767,23 @@ impl Server {
     /// If the loopback listener cannot be created.
     #[must_use]
     pub fn start(user: &str, password: &str) -> Self {
-        let state = Arc::new(Mutex::new(State::new(user, password)));
+        Self::serving(State::new(user, password))
+    }
+
+    /// A server a provider's sign-in opened: it takes `token`, the grant's
+    /// access token, as a bearer token, and no password.
+    ///
+    /// # Panics
+    /// If the loopback listener cannot be created.
+    #[must_use]
+    pub fn start_bearer(user: &str, token: &str) -> Self {
+        let mut state = State::new(user, "");
+        state.bearer = Some(token.to_owned());
+        Self::serving(state)
+    }
+
+    fn serving(state: State) -> Self {
+        let state = Arc::new(Mutex::new(state));
         let served = Arc::clone(&state);
         Self {
             responder: Mutex::new(Responder::handle(move |request| {
@@ -754,6 +791,13 @@ impl Server {
             })),
             state,
         }
+    }
+
+    /// Every bearer token requests carried, in order: what a client sent,
+    /// before and after its grant was renewed.
+    #[must_use]
+    pub fn bearer_tokens(&self) -> Vec<String> {
+        lock(&self.state).bearer_tokens.clone()
     }
 
     /// The address a person types for the account: `http://127.0.0.1:<port>/dav/`.

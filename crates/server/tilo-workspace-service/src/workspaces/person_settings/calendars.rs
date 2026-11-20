@@ -406,6 +406,36 @@ fn password_of(root: &Path, account: &str) -> Result<String, String> {
         .ok_or_else(|| "That calendar account has no sign-in yet".to_owned())
 }
 
+/// Whether `account` has a sign-in to read its server with: a password, or
+/// the grant a sign-in on its provider's page left. A grant the provider
+/// will not renew any more is taken out of the vault, and the account lists
+/// without a sign-in until its person signs in again.
+fn has_sign_in(root: &Path, account: &str) -> bool {
+    password_of(root, account).is_ok()
+        || matches!(
+            super::oauth_grant::ProviderGrant::load(root, account),
+            Ok(Some(grant)) if !grant.tokens.refresh_token.is_empty()
+        )
+}
+
+/// What reads `account`'s server: the password its person gave, or the
+/// access token of the grant their sign-in on its provider's page left,
+/// renewed through the one shared path when it expired.
+fn sign_in(root: &Path, account: &Account) -> Result<Credentials, String> {
+    if let Ok(issuer) = super::oauth_grant::issuer_of_account(root, &account.id) {
+        let token = super::oauth_grant::ProviderGrant::access_token(
+            root,
+            &account.id,
+            account_credentials::OAuthUse::calendar(issuer),
+        )?;
+        return Ok(Credentials::bearer(token));
+    }
+    Ok(Credentials::new(
+        account.username.clone(),
+        password_of(root, &account.id)?,
+    ))
+}
+
 fn view(root: &Path, account: &Account) -> AccountView {
     let kept = read_kept(root, &account.id);
     AccountView {
@@ -413,7 +443,7 @@ fn view(root: &Path, account: &Account) -> AccountView {
         name: account.name.clone(),
         server_url: account.server_url.clone(),
         username: account.username.clone(),
-        has_secret: password_of(root, &account.id).is_ok(),
+        has_secret: has_sign_in(root, &account.id),
         calendars: account
             .calendars
             .iter()
@@ -448,7 +478,11 @@ fn server_of(server_url: &str) -> Result<Url, String> {
 /// redirect, so the sign-in reaches that server alone. It goes only where
 /// `reach` lets it, judged at the connection itself: what the server's name
 /// answered when the account was added decides nothing now.
-fn client(account: &Account, password: &str, reach: &Reach) -> Result<(DavClient, Url), String> {
+fn client(
+    account: &Account,
+    credentials: Credentials,
+    reach: &Reach,
+) -> Result<(DavClient, Url), String> {
     let server = server_of(&account.server_url)?;
     let client = DavClient::new(&tilo_dav::Options {
         user_agent: None,
@@ -458,10 +492,7 @@ fn client(account: &Account, password: &str, reach: &Reach) -> Result<(DavClient
         lookup: Some(reach.lookup()),
     })
     .map_err(|_| "could not start the secure connection".to_owned())?
-    .with_credentials(Credentials::new(
-        account.username.clone(),
-        password.to_owned(),
-    ));
+    .with_credentials(credentials);
     Ok((client, server))
 }
 
@@ -475,8 +506,13 @@ fn on_server(server: &Url, address: &str) -> Result<Url, String> {
 
 /// Pull every calendar of `account` into `kept`: what changed since the
 /// last pull where the server tells, everything where it does not.
-fn pull(account: &Account, password: &str, kept: &mut Kept, reach: &Reach) -> Result<(), String> {
-    let (client, server) = client(account, password, reach)?;
+fn pull(
+    account: &Account,
+    credentials: Credentials,
+    kept: &mut Kept,
+    reach: &Reach,
+) -> Result<(), String> {
+    let (client, server) = client(account, credentials, reach)?;
     let wanted: BTreeSet<&str> = account
         .calendars
         .iter()
@@ -561,8 +597,8 @@ fn pull(account: &Account, password: &str, kept: &mut Kept, reach: &Reach) -> Re
 /// not end leaves the copy as it was and says why with it.
 fn sync(root: &Path, reach: &Reach, account: &Account) -> Result<(), String> {
     let mut kept = read_kept(root, &account.id);
-    let pulled = password_of(root, &account.id)
-        .and_then(|password| pull(account, &password, &mut kept, reach));
+    let pulled =
+        sign_in(root, account).and_then(|credentials| pull(account, credentials, &mut kept, reach));
     match &pulled {
         Ok(()) => {
             kept.synced_at_ms = now_ms();
@@ -872,7 +908,7 @@ fn write(
     if account.read_only {
         return Err(READ_ONLY.into());
     }
-    let (client, server) = client(account, &password_of(root, &account.id)?, reach)?;
+    let (client, server) = client(account, sign_in(root, account)?, reach)?;
     let response = client
         .put(
             on_server(&server, url)?,
@@ -1079,7 +1115,7 @@ fn carry_out(root: &Path, reach: &Reach, planned: Planned) -> Result<Value, Stri
             if account.read_only {
                 return Err(READ_ONLY.into());
             }
-            let (client, server) = client(&account, &password_of(root, &account.id)?, reach)?;
+            let (client, server) = client(&account, sign_in(root, &account)?, reach)?;
             let matching = found.etag.as_deref().unwrap_or("*");
             // The server answers nobody for its person: where they were
             // invited, declining is theirs to say.

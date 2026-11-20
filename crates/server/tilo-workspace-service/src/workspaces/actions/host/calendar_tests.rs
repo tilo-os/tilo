@@ -53,6 +53,11 @@ mod turn;
 #[path = "calendar_read_only_tests.rs"]
 mod read_only;
 
+/// The calendar server a sign-in on her provider's page opened is read with
+/// the grant that sign-in left.
+#[path = "calendar_oauth_tests.rs"]
+mod oauth;
+
 /// The sign-in no answer, file or request may show.
 const PASSWORD: &str = "marker-7f3a-calendar-password";
 
@@ -136,6 +141,15 @@ impl Ada {
             address: ActionAddress::new(held::RESOURCE, action),
         };
         asked(&self.page(), caller, target, argument).await
+    }
+
+    /// Her calendar server is one a sign-in on her provider's page opened:
+    /// it takes `token`, that grant's access token, as a bearer token and
+    /// no password, and holds the calendar "work".
+    fn reading_a_grant(self, token: &str) -> Self {
+        let server = fake_caldav::Server::start_bearer(ADDRESS, token);
+        server.add_calendar("work", "Work");
+        Self { server, ..self }
     }
 
     /// Ada adds her account with the password she types.
