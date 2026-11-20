@@ -1519,10 +1519,21 @@ fn a_photo_the_second_device_never_fetched_opens() {
             Ok(bytes) => format!("{} bytes", bytes.len()),
             Err(error) => format!("the same error ({error})"),
         };
+        let why = pair
+            .host
+            .last_saying("refusing")
+            .or_else(|| pair.host.last_saying("holds no such blob"))
+            .or_else(|| {
+                pair.peer
+                    .as_ref()
+                    .and_then(|peer| peer.last_saying("content hydration"))
+            })
+            .or_else(|| pair.host.last_saying("certify"));
         panic!(
-            "the second computer cannot open a photo it never fetched ({error}); it lists {} of \
+            "the second computer cannot open a photo it never fetched ({error}){}; it lists {} of \
              the {files} photos; the first computer opens it as {host_answers}; its log:\n{}\nthe \
              first computer's log:\n{}",
+            why.map_or_else(String::new, |why| format!(": {why}")),
             list_directory(&peer_flat),
             pair.peer.as_ref().expect("the peer is serving").dump(),
             pair.host.dump()
@@ -1879,9 +1890,15 @@ fn a_workspace_of_files_on_a_size_ladder() {
         // The daemons say why the bytes did not arrive: a refusal, a peer
         // that never answered, or content the first computer does not hold.
         let why = pair
-            .peer
-            .as_ref()
-            .and_then(|peer| peer.last_saying("content hydration"));
+            .host
+            .last_saying("refusing")
+            .or_else(|| pair.host.last_saying("holds no such blob"))
+            .or_else(|| {
+                pair.peer
+                    .as_ref()
+                    .and_then(|peer| peer.last_saying("content hydration"))
+            })
+            .or_else(|| pair.host.last_saying("certify"));
         panic!(
             "the joining device holds {} of the {} files the writer holds ({error}){}; its log:\n{}\nthe \
              first computer's log:\n{}",
