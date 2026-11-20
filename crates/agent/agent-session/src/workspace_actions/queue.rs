@@ -253,6 +253,9 @@ fn asker(job: &Job, log: &std::sync::Mutex<InvocationLog>) -> Asker {
                 Asker::Service
             }
         }
+        Job::Page(job) => job
+            .caller()
+            .map_or(Asker::Person, |caller| by(is_agent(caller))),
         Job::Rename(..) => Asker::Agent,
         Job::Ran(_) | Job::Joined(_) | Job::Forget(_) => Asker::Service,
     }

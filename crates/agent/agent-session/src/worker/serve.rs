@@ -333,7 +333,9 @@ impl Worker {
                 .split_once('#')
                 .map_or(path, |(widget, _)| widget)
                 .to_owned();
-            if let Err(reason) = replica.act_on_page(&widget, target, &action.semantic()) {
+            if let Err(reason) =
+                replica.act_on_page(&widget, target, &super::proto::semantic(action))
+            {
                 tracing::debug!(%reason, widget, "app worker: the page's action was refused");
             }
         }

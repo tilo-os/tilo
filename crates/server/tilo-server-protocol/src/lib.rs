@@ -55,6 +55,7 @@ pub mod login_code;
 pub mod mesh;
 pub mod metrics;
 pub mod operator;
+pub mod page;
 pub mod policy;
 pub mod process_lease;
 pub mod public_avatars;

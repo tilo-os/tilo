@@ -75,6 +75,10 @@ pub(super) struct Bounded {
     pub(super) agent: Option<String>,
     /// The name that agent goes by ([`Caller::agent_name`]).
     pub(super) agent_name: Option<String>,
+    /// The web page the person acts through, when they act through one
+    /// ([`super::pages`]): each page holds a replica of its own, which shows
+    /// what that page shows.
+    pub(super) page: Option<u64>,
 }
 
 /// The replica a bounded caller acts through, by the document it holds and who.
@@ -82,6 +86,7 @@ pub(super) type BoundedKey = (
     DocumentRoute,
     ui::permissions::policy::PersonId,
     Option<String>,
+    Option<u64>,
 );
 
 /// A caller's replica of one document, and the permissions it was opened with.
@@ -482,6 +487,7 @@ pub(super) fn bounded(
             person: person.into(),
             agent: None,
             agent_name: None,
+            page: None,
         });
     }
     let agent = caller.acting().agent_id()?;
@@ -504,6 +510,7 @@ pub(super) fn bounded(
         agent: Some(agent.to_owned()),
         agent_name: caller.agent_name().map(str::to_owned),
         person_caller,
+        page: None,
     })
 }
 
@@ -752,7 +759,12 @@ impl Worker {
         // read: a record this host cannot open is unavailable now, never a
         // record that does not exist.
         let holder = self.mount_held(route, state).map_err(unavailable)?;
-        let key = (holder.clone(), who.person.clone(), who.agent.clone());
+        let key = (
+            holder.clone(),
+            who.person.clone(),
+            who.agent.clone(),
+            who.page,
+        );
         // A replica set aside heard of nothing written while it was: it merges what the
         // workspace holds whole, as one opened anew does.
         let unparked = self.parked.unpark(&key, super::publish::REUSE_WAIT);
@@ -790,18 +802,31 @@ impl Worker {
             self.bounded.remove(&key);
             self.evict_bounded();
             let (bytes, heads) = state.document(&holder).map_err(unavailable)?;
-            let app = ConfinedReplica::open(
-                &self.catalogue,
-                &holder.app_id,
-                &holder.cluster_id,
-                &ui::permissions::MemberId::Person(who.person.clone()),
-                &member_actor(&policy, who, &self.own_device)?,
-                Seed::Existing {
-                    record: reads::document_id(&holder.document).map_err(unavailable)?,
-                    changes: vec![bytes],
-                },
-                true,
-            )
+            let member = ui::permissions::MemberId::Person(who.person.clone());
+            let actor = member_actor(&policy, who, &self.own_device)?;
+            let seed = Seed::Existing {
+                record: reads::document_id(&holder.document).map_err(unavailable)?,
+                changes: vec![bytes],
+            };
+            let app = if who.page.is_some() {
+                ConfinedReplica::open_page(
+                    &self.catalogue,
+                    (&holder.app_id, &holder.cluster_id),
+                    &member,
+                    &actor,
+                    seed,
+                )
+            } else {
+                ConfinedReplica::open(
+                    &self.catalogue,
+                    &holder.app_id,
+                    &holder.cluster_id,
+                    &member,
+                    &actor,
+                    seed,
+                    true,
+                )
+            }
             .map_err(|error| unavailable(error.to_string()))?;
             let app = self.lend(app, &holder.cluster_id);
             self.bounded.insert(
@@ -1209,7 +1234,7 @@ impl Worker {
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
     )]
-    fn save_bounded(
+    pub(super) fn save_bounded(
         &mut self,
         workspace_id: WorkspaceId,
         (who, route, state): (&Bounded, &DocumentRoute, &WorkspaceState),

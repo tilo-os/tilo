@@ -116,6 +116,8 @@ pub(super) enum Job {
     /// A document written since its name was last read: its name in its app's index is
     /// read again ([`publish`]).
     Rename(WorkspaceId, DocumentRoute),
+    /// A web page of a workspace's app: opened, acted on or closed ([`pages`]).
+    Page(Box<pages::PageJob>),
 }
 
 impl Job {
@@ -137,6 +139,7 @@ impl Job {
             Self::Joined(_) => "joined",
             Self::Forget(_) => "forget",
             Self::Rename(..) => "rename",
+            Self::Page(_) => "page",
         }
     }
 
@@ -174,7 +177,8 @@ impl Job {
             | Self::Content { .. }
             | Self::ContentGet { .. }
             | Self::ContentLink { .. }
-            | Self::Joined(_) => Urgency::Read,
+            | Self::Joined(_)
+            | Self::Page(_) => Urgency::Read,
             Self::Invoke { .. } | Self::Ran(_) | Self::Arrived { .. } | Self::Forget(_) => {
                 Urgency::Write
             }
@@ -197,6 +201,7 @@ impl Job {
             | Self::Changed { workspace_id, .. }
             | Self::Arrived { workspace_id, .. }
             | Self::Rename(workspace_id, _) => Some(*workspace_id),
+            Self::Page(job) => Some(job.workspace()),
             Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) | Self::Forget(_) => None,
         }
     }
@@ -213,7 +218,8 @@ impl Job {
             | Self::Changes { .. }
             | Self::Invocations { .. }
             | Self::ReadDocument { .. }
-            | Self::Changed { .. } => Keys::Workspace,
+            | Self::Changed { .. }
+            | Self::Page(_) => Keys::Workspace,
             Self::Feedback { .. }
             | Self::Invoke { .. }
             | Self::Ran(_)

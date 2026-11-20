@@ -606,6 +606,7 @@ fn a_replica_kept_for_a_slow_save_comes_back_to_the_caller_never_reopened() {
         route(WORKSPACE, "so.tilo.tasks", ""),
         "ada".into(),
         None::<String>,
+        None,
     );
     // The replica the caller acted through, identified by the one token
     // inside it: one opened again would carry another.
@@ -660,6 +661,7 @@ fn a_replica_kept_for_a_slow_save_comes_back_to_the_caller_never_reopened() {
         route(WORKSPACE, "so.tilo.tasks", ""),
         "grace".into(),
         None::<String>,
+        None,
     );
     let saved = super::publish::SaveWatch::new();
     saved.set(true);

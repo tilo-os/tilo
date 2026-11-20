@@ -80,6 +80,7 @@ mod opened;
 mod opened_file;
 mod outcome;
 mod packaged;
+mod pages;
 mod part_wait;
 mod person_ask;
 mod placed;
@@ -102,12 +103,12 @@ pub use link::{
     AskedInTurn, AsksInConversation, FeedbackReviewer, HostDevice, PackagedCall, ViewDocument,
     ViewReadPolicy, WorkspaceDocumentsLink,
 };
+pub use pages::OpenedPage;
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::Ordering;
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::engine::ResourceReading;
@@ -1324,6 +1325,7 @@ struct Worker {
     /// The documents the request being served wrote to ([`publish::Worker::saved`]):
     /// what its answer's link opens ([`share::Worker::changed_link`]).
     wrote: HashSet<DocumentRoute>,
+    pages: pages::Pages,
 }
 
 /// The API's answer for an action it has nothing by that address.
@@ -1405,6 +1407,7 @@ impl Worker {
             said_directly: HashMap::new(),
             joining: HashMap::new(),
             writing_as: None,
+            pages: pages::Pages::default(),
             clock: 0,
             handed: HashMap::new(),
             canonical: canonical::CanonicalReads::default(),
@@ -1846,6 +1849,7 @@ impl Worker {
                 } => done.complete(self.invocations(workspace_id, &caller, &query)),
                 Job::Joined(workspace_id) => self.resume(workspace_id),
                 Job::Rename(workspace_id, route) => self.rename(workspace_id, &route),
+                Job::Page(job) => self.page_job(*job),
                 Job::Forget(workspace_id) => self.forget(workspace_id),
                 Job::Content {
                     workspace_id,
@@ -1894,8 +1898,8 @@ impl Worker {
         self.shared.joins.lock_recover().remove(&workspace_id);
         self.shared.stores.lock_recover().remove(&workspace_id);
         self.mounted.retain(|route, _| !of(route));
-        self.bounded.retain(|(route, _, _), _| !of(route));
-        self.parked.retain(|(route, _, _)| !of(route));
+        self.bounded.retain(|(route, ..), _| !of(route));
+        self.parked.retain(|(route, ..)| !of(route));
         self.beside.retain(|route, held| !of(route) && !of(held));
         self.channels_opened.retain(|route| !of(route));
         self.trees.retain(|(held, _), _| *held != workspace_id);

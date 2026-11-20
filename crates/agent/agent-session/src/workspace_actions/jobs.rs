@@ -27,6 +27,7 @@ impl Job {
             | Self::Joined(workspace_id)
             | Self::Forget(workspace_id)
             | Self::Rename(workspace_id, _) => *workspace_id,
+            Self::Page(job) => job.workspace(),
             Self::Ran(ended) => ended.workspace_id,
         }
     }

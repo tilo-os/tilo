@@ -590,19 +590,21 @@ impl ConfinedReplica {
     /// The worker could not show it.
     pub fn page_show(&self, show: Option<&str>) -> Result<(String, String, String), AppError> {
         let mut inner = self.lock();
-        match self.call(
+        let reply = self.call(
             &mut inner,
             &Request::PageShow {
                 show: show.map(str::to_owned),
             },
-        )? {
-            Reply::Shown { title, css, body } => {
-                // Showing it may have written (a note opened keeps where
-                // its person is): taken with the next take.
-                inner.dirty = true;
-                inner.beside_dirty = true;
-                Ok((title, css, body))
-            }
+        );
+        if reply.is_ok() {
+            // Showing it may have written (a note opened keeps where its
+            // person is): taken with the next take.
+            inner.dirty = true;
+            inner.beside_dirty = true;
+        }
+        drop(inner);
+        match reply? {
+            Reply::Shown { title, css, body } => Ok((title, css, body)),
             Reply::Failed(reason) => Err(worker_error(reason)),
             _ => Err(worker_error("the worker answered out of turn")),
         }
@@ -625,12 +627,14 @@ impl ConfinedReplica {
             None => Request::PagePatch,
         };
         let mut inner = self.lock();
-        match self.call(&mut inner, &request)? {
-            Reply::Patches(patches) => {
-                inner.dirty = true;
-                inner.beside_dirty = true;
-                Ok(patches)
-            }
+        let reply = self.call(&mut inner, &request);
+        if reply.is_ok() {
+            inner.dirty = true;
+            inner.beside_dirty = true;
+        }
+        drop(inner);
+        match reply? {
+            Reply::Patches(patches) => Ok(patches),
             Reply::Failed(reason) => Err(worker_error(reason)),
             _ => Err(worker_error("the worker answered out of turn")),
         }

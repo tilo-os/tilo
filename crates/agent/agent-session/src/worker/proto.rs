@@ -19,6 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::api::ApiError;
+pub use tilo_server_protocol::page::PageAction;
 use wire_frame::Framing;
 
 /// Frames in either direction: a record's whole document, with workspace.
@@ -249,34 +250,17 @@ pub(crate) enum Request {
     PagePatch,
 }
 
-/// What a person does on an element of a page, as the view's semantic action
-/// ([`ui::a11y::Action`]) it stands for.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PageAction {
-    Activate,
-    Toggle,
-    Focus,
-    /// A field's or a block's whole text.
-    Value(String),
-    /// A selection in a field's text, in grapheme indices.
-    Select {
-        anchor: u32,
-        focus: u32,
-    },
-}
-
-impl PageAction {
-    pub(crate) fn semantic(&self) -> ui::a11y::Action {
-        match self {
-            Self::Activate => ui::a11y::Action::Activate,
-            Self::Toggle => ui::a11y::Action::ToggleCheck,
-            Self::Focus => ui::a11y::Action::Focus,
-            Self::Value(value) => ui::a11y::Action::SetValue(value.clone()),
-            Self::Select { anchor, focus } => ui::a11y::Action::SetSelection {
-                anchor: usize::try_from(*anchor).unwrap_or(usize::MAX),
-                focus: usize::try_from(*focus).unwrap_or(usize::MAX),
-            },
-        }
+/// What a person does on a page, as the view's semantic action it stands for.
+pub(crate) fn semantic(action: &PageAction) -> ui::a11y::Action {
+    match action {
+        PageAction::Activate => ui::a11y::Action::Activate,
+        PageAction::Toggle => ui::a11y::Action::ToggleCheck,
+        PageAction::Focus => ui::a11y::Action::Focus,
+        PageAction::Value(value) => ui::a11y::Action::SetValue(value.clone()),
+        PageAction::Select { anchor, focus } => ui::a11y::Action::SetSelection {
+            anchor: usize::try_from(*anchor).unwrap_or(usize::MAX),
+            focus: usize::try_from(*focus).unwrap_or(usize::MAX),
+        },
     }
 }
 

@@ -592,7 +592,7 @@ impl Worker {
         let made: Vec<_> = self
             .bounded
             .keys()
-            .filter(|(route, _, _)| routes.contains(route) || holders.contains(route))
+            .filter(|(route, _, _, _)| routes.contains(route) || holders.contains(route))
             .cloned()
             .collect();
         // Set aside until the host holds what they wrote, and let go if it

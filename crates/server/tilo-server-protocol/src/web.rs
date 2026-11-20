@@ -240,6 +240,10 @@ pub const LINK_CERTIFY_KEPT: &str = "tilo-certify-kept-1";
 /// the session (the relay handshake, `crate::auth`), then the live session's own
 /// admission and `moq-lite` follow, as over iroh.
 pub const LINK_LIVE_SESSION_PATH: &str = "/peer/v1/link/live-session";
+/// A workspace's apps as web pages ([`crate::page`]): the first stream proves
+/// which device opened the session (the handshake of `crate::auth`), then
+/// carries the pages it asks for and what its person does on them.
+pub const LINK_PAGE_PATH: &str = "/peer/v1/link/page";
 
 /// Whether its owner deleted the workspace a device names by its id, below
 /// [`API_PREFIX`]: what a device the host no longer lets in (it was a member
