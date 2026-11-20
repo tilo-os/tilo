@@ -154,16 +154,27 @@ async fn a_message_of_100_mib_comes_into_a_hosted_workspace_whole_with_its_parts
     assert!(sent.len() > 100 * 1024 * 1024, "{} bytes", sent.len());
 
     // As `tilo migrate` delivers it: the message kept and each large part's pieces, uploaded.
+    // What each stage costs is said at the end, as the importer's own stages: how long the
+    // message is read and split, how long its bytes take to reach the store, and how long Mail
+    // takes to take it.
+    let started = std::time::Instant::now();
     let split = tilo_mail_parts::split(&sent);
+    let splitting = started.elapsed();
     let original = uploaded(&client, &workspace, &split.rest).await;
     let mut parts = Vec::new();
+    let mut uploading = std::time::Duration::ZERO;
+    let mut pieces_uploaded = 0_usize;
     for part in &split.apart {
         let mut pieces = Vec::new();
         for piece in part.pieces() {
+            let started = std::time::Instant::now();
             pieces.push(uploaded(&client, &workspace, piece).await);
+            uploading = uploading.saturating_add(started.elapsed());
+            pieces_uploaded = pieces_uploaded.saturating_add(1);
         }
         parts.push(json!({"at": part.at, "size": part.size, "pieces": pieces}));
     }
+    let started = std::time::Instant::now();
     let (answer, followed) = delivered_followed(
         &on_server,
         &token,
@@ -182,6 +193,12 @@ async fn a_message_of_100_mib_comes_into_a_hosted_workspace_whole_with_its_parts
         "migrate-thunderbird-large",
     )
     .await;
+    let delivering = started.elapsed();
+    eprintln!(
+        "a message of {} bytes: split in {splitting:?}, {pieces_uploaded} pieces kept apart \
+         uploaded in {uploading:?}, Mail took it in {delivering:?}",
+        sent.len()
+    );
     assert!(
         followed,
         "a message of this size is not kept within the answer's wait: {answer}"
