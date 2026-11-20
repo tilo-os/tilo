@@ -294,9 +294,10 @@ fn settled(call: &ui::InvocationCall) -> Option<Result<serde_json::Value, String
 }
 
 /// A request that never reached the server, in the person's words: what
-/// the call layer says is for logs, not for the page.
+/// the call layer says is for the console, where whoever looks into it
+/// reads why, not for the page.
 fn unreached(error: &ActionCallError) -> String {
-    tracing::debug!(%error, "settings: a request did not reach the server");
+    tracing::warn!(?error, "settings: a request did not reach the server");
     t("settings-web-accounts-unreachable")
 }
 
