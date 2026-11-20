@@ -15,6 +15,8 @@ pub(super) struct BarStrips {
     /// The active workspace's strips, in order.
     strips: Vec<(StripId, String)>,
     active: Option<StripId>,
+    /// What the bar calls the strip shown: its own name, or the place it stands in.
+    shown: Option<String>,
 }
 
 /// The drawn chevron between the workspace and the strip's name.
@@ -45,18 +47,22 @@ impl TopBarChrome {
             .or_else(|| tree.active_strip_id())
             .filter(|id| self.strips.strips.iter().any(|(strip, _)| strip == id))
             .or_else(|| self.strips.strips.first().map(|(id, _)| *id));
+        self.strips.shown = self.strips.active.and_then(|active| {
+            let (at, (_, name)) = self
+                .strips
+                .strips
+                .iter()
+                .enumerate()
+                .find(|(_, (id, _))| *id == active)?;
+            Some(tilo_desktop_surface::names::strip_named(name, at))
+        });
     }
 
-    /// The shown strip's name, which the bar names after the workspace (Home, a chevron, Research):
-    /// only for a strip with a name, so a strip nobody named leaves the bar to the workspace.
+    /// The shown strip's name, which the bar names after the workspace (Home, a chevron, Research).
+    /// A strip nobody named is called by the place it stands in ("Strip 1"), so even a workspace of
+    /// one strip says it has strips, and the name is where they are listed and added.
     pub(super) fn strip_name(&self) -> Option<&str> {
-        let active = self.strips.active?;
-        self.strips
-            .strips
-            .iter()
-            .find(|(id, _)| *id == active)
-            .map(|(_, name)| name.trim())
-            .filter(|name| !name.is_empty())
+        self.strips.shown.as_deref()
     }
 
     /// The gap either side of the chevron before the strip's name.

@@ -204,10 +204,13 @@ impl PaintedOverlay {
         })
     }
 
-    /// Whether `chrome` has it on screen.
+    /// Whether `chrome` has it on screen. The strip column is published at rest too: the New strip
+    /// button that stands at its foot is one of the navigator's own controls, not only the labels.
     fn is_open(self, chrome: &DesktopChrome) -> bool {
         match self {
-            Self::StripLabels => chrome.navigator.is_open(),
+            Self::StripLabels => {
+                chrome.navigator.is_open() || chrome.navigator_frame.new_strip_offered
+            }
             Self::Emoji => chrome.emoji.is_open(),
             Self::Identify => chrome.identify.is_up(ui::time::now()),
             Self::Search => chrome.search.is_open(),
@@ -611,7 +614,7 @@ impl DesktopChrome {
     /// What one painted overlay says to assistive technology, while it is up.
     fn overlay_accessibility(&self, overlay: PaintedOverlay) -> Option<ui::a11y::AccessNode> {
         match overlay {
-            PaintedOverlay::StripLabels => self.navigator.accessibility(),
+            PaintedOverlay::StripLabels => self.navigator.accessibility(&self.navigator_frame),
             PaintedOverlay::Emoji => self.emoji.accessibility(),
             PaintedOverlay::Identify => self.identify.accessibility(ui::time::now()),
             PaintedOverlay::Search => self.search.accessibility(),
@@ -1683,6 +1686,7 @@ impl DesktopChrome {
         };
         let shown = self.handle.shown_tabs();
         let scroll = self.handle.presentation().pan.map_or(0.0, |pan| pan.offset);
+        let may_add = self.may_add_strip();
         self.navigator.set_model(StripNavigator::model_of(
             &tree,
             &Viewer {
@@ -1690,10 +1694,10 @@ impl DesktopChrome {
                 own_id: &author,
                 may_rename: &may_rename,
                 // Offered as the workspace menu's is: to whom the rules let add one.
-                may_add: self.may_add_strip(),
+                may_add,
             },
         ));
-        self.navigator_frame = StripFrame::of_tree(&tree, area, (&shown, scroll), covered);
+        self.navigator_frame = StripFrame::of_tree(&tree, area, (&shown, scroll), covered, may_add);
         self.navigator
             .observe(&self.navigator_frame, ui::time::now());
     }
@@ -2695,9 +2699,9 @@ impl Widget for DesktopChrome {
         if target.starts_with(crate::strip_switcher::TARGET_PREFIX)
             && matches!(action, ui::a11y::Action::Activate)
         {
-            let Some(answer) = self
-                .navigator
-                .activate_target(&self.navigator_frame, target)
+            let Some(answer) =
+                self.navigator
+                    .activate_target(&self.navigator_frame, target, ui::time::now())
             else {
                 return false;
             };

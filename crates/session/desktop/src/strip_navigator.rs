@@ -23,7 +23,7 @@ use winit::keyboard::{Key, ModifiersState};
 
 use crate::strip_indicators::{SlidingFocus, StripIndicators, StripPosition};
 use crate::strip_switcher::{
-    Command, DrawCx, KeyAnswer, Press, RIBBON_REST_ALPHA, StripSwitcher, SwitcherModel,
+    Command, DrawCx, KeyAnswer, Press, RIBBON_REST_ALPHA, Row, StripSwitcher, SwitcherModel, Target,
 };
 
 /// What the host does for the navigator.
@@ -37,6 +37,10 @@ pub enum StripNavigation {
 
 /// Where the ribbon and rail stand and what they report, as the host reads it from its own state.
 #[derive(Clone, Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts each read on its own: whether the ribbon, the New strip button, the labels and the rail are offered"
+)]
 pub struct StripFrame {
     /// The ribbon: the active workspace's strips, the shown one focused.
     pub ribbon: StripRibbon,
@@ -50,9 +54,13 @@ pub struct StripFrame {
     /// How far the shown strip is scrolled, in layout pixels.
     pub scroll_x: f64,
     /// The ribbon shows and takes input: off under an overview, a fullscreen
-    /// window or a panel that replaces them, and in a workspace of one strip,
-    /// where a mark would stand on the content's edge with nothing to choose.
+    /// window or a panel that replaces them. A lone strip's mark shows where
+    /// adding a strip is offered, so the mark and the New strip button at the
+    /// column's foot read together as "one strip, and another may join".
     pub ribbon_offered: bool,
+    /// The New strip button stands at the column's foot: below the last mark,
+    /// where the person may add a strip and the shell is not covered.
+    pub new_strip_offered: bool,
     /// The labels may open here, from the top bar, a key or the workspace menu: off wherever they
     /// would cover a panel that replaces the shell.
     pub switcher_offered: bool,
@@ -80,6 +88,7 @@ impl StripFrame {
             windows: Vec::new(),
             scroll_x: 0.0,
             ribbon_offered: false,
+            new_strip_offered: false,
             switcher_offered: false,
             rail_offered: false,
         }
@@ -87,12 +96,14 @@ impl StripFrame {
 
     /// The frame of `tree` in `content` , for a host that draws the desktop in one area: the active
     /// workspace's strips, the shown strip's windows, and which of them are on screen (`shown`:
-    /// each window's active tab and where it was laid out). Offered unless `covered` .
+    /// each window's active tab and where it was laid out). Offered unless `covered` ; the New
+    /// strip button too unless `may_add` says the person may not add a strip.
     pub fn of_tree(
         tree: &Layout,
         content: Rect,
         (shown, scroll_x): (&[(TabId, Rect)], f64),
         covered: bool,
+        may_add: bool,
     ) -> Self {
         let Some(workspace) = tree.active_workspace() else {
             return Self::empty(content);
@@ -134,22 +145,36 @@ impl StripFrame {
             strip: strip.map(|strip| strip.id),
             windows: groups.iter().map(|group| group.id).collect(),
             scroll_x,
-            // One strip has nothing to switch to, so its mark would stand on the content's edge as
-            // a handle that does nothing: the ribbon shows where there is another strip to choose.
-            ribbon_offered: !covered && workspace.strips.len() > 1,
+            // One strip has nothing to switch to, so its mark stands on the content's edge only
+            // where adding a strip is offered: the lone mark and the button at the column's foot
+            // read together as "one strip, and another may join".
+            ribbon_offered: !covered && (workspace.strips.len() > 1 || may_add),
+            new_strip_offered: !covered && may_add && !workspace.strips.is_empty(),
             switcher_offered: !covered,
             rail_offered: !covered,
         }
     }
 
-    /// The ribbon's pointer band: resting there opens the labels.
+    /// The ribbon's pointer band: resting there opens the labels, and so does the New strip button
+    /// at its foot, whose pill then says what it does.
     pub fn zone(&self) -> Rect {
-        match (
+        if !self.ribbon_offered {
+            return Rect::ZERO;
+        }
+        let marks = match (
             self.ribbon.hit_rect(0),
             self.ribbon.hit_rect(self.ribbon.count.saturating_sub(1)),
         ) {
-            (Some(first), Some(last)) if self.ribbon_offered => first.union(last),
+            (Some(first), Some(last)) => first.union(last),
             _ => Rect::ZERO,
+        };
+        match self
+            .new_strip_offered
+            .then(|| self.ribbon.new_strip_hit_rect())
+            .flatten()
+        {
+            Some(button) => marks.union(button),
+            None => marks,
         }
     }
 
@@ -185,6 +210,8 @@ pub struct StripNavigator {
     position: Option<StripPosition>,
     ribbon_hover: Option<usize>,
     rail_hover: Option<usize>,
+    /// The pointer is on the New strip button at the column's foot.
+    new_strip_hover: bool,
     /// A press the navigator took: its release is the navigator's too.
     owns_release: bool,
 }
@@ -241,11 +268,11 @@ impl StripNavigator {
     }
 
     fn hovered(&self) -> bool {
-        self.ribbon_hover.is_some() || self.rail_hover.is_some()
+        self.ribbon_hover.is_some() || self.rail_hover.is_some() || self.new_strip_hover
     }
 
-    /// The pointer came onto the ribbon or rail, or left them: they stay while it is on them, and
-    /// the hold restarts when it leaves.
+    /// The pointer came onto the ribbon, the New strip button or the rail, or left them: they stay
+    /// while it is on them, and the hold restarts when it leaves.
     fn hover_changed(&mut self, now: Instant) {
         if let Some(mut position) = self.position.clone() {
             position.hovered = self.hovered();
@@ -264,14 +291,29 @@ impl StripNavigator {
         self.rail_hover
     }
 
+    /// The pointer is on the New strip button at the column's foot.
+    pub fn new_strip_hover(&self) -> bool {
+        self.new_strip_hover
+    }
+
+    /// Whether `p` is on the New strip button.
+    fn new_strip_at(frame: &StripFrame, p: Point) -> bool {
+        frame.new_strip_offered
+            && frame
+                .ribbon
+                .new_strip_hit_rect()
+                .is_some_and(|rect| rect.contains(p))
+    }
+
     /// The pointer moved to `p` . Returns whether anything visible changed.
     pub fn pointer_moved(&mut self, frame: &StripFrame, p: Point, now: Instant) -> bool {
         let hover = (
             frame.ribbon_offered.then(|| frame.ribbon.hit(p)).flatten(),
             frame.rail_offered.then(|| frame.rail.hit(p)).flatten(),
+            Self::new_strip_at(frame, p),
         );
-        let changed = hover != (self.ribbon_hover, self.rail_hover);
-        (self.ribbon_hover, self.rail_hover) = hover;
+        let changed = hover != (self.ribbon_hover, self.rail_hover, self.new_strip_hover);
+        (self.ribbon_hover, self.rail_hover, self.new_strip_hover) = hover;
         if changed {
             self.hover_changed(now);
         }
@@ -284,7 +326,9 @@ impl StripNavigator {
     }
 
     pub fn pointer_left(&mut self, now: Instant) -> bool {
-        let hovered = self.ribbon_hover.take().is_some() | self.rail_hover.take().is_some();
+        let hovered = self.ribbon_hover.take().is_some()
+            | self.rail_hover.take().is_some()
+            | std::mem::take(&mut self.new_strip_hover);
         if hovered {
             self.hover_changed(now);
         }
@@ -376,9 +420,9 @@ impl StripNavigator {
         })
     }
 
-    /// A left press at `p` : on the open labels, a ribbon mark (which opens them) or a rail
-    /// segment. `None` when it is none of them and goes on to what is under it, else what to do
-    /// (possibly nothing).
+    /// A left press at `p` : on the open labels, the New strip button at the column's foot, a
+    /// ribbon mark (which opens them) or a rail segment. `None` when it is none of them and goes on
+    /// to what is under it, else what to do (possibly nothing).
     pub fn press(
         &mut self,
         frame: &StripFrame,
@@ -387,6 +431,12 @@ impl StripNavigator {
     ) -> Option<Option<StripNavigation>> {
         if let Some(answer) = self.press_labels(frame, p, now) {
             return Some(answer);
+        }
+        // The button acts at once: a click or tap makes the strip and opens the labels pinned with
+        // its name in place, as the labels' own New strip row does.
+        if Self::new_strip_at(frame, p) {
+            self.owns_release = true;
+            return Some(self.new_strip(frame, now));
         }
         if self.open_from_ribbon(frame, p, now) {
             self.owns_release = true;
@@ -521,10 +571,11 @@ impl StripNavigator {
         if self.switcher.is_open() {
             return 1.0;
         }
-        // One strip is no news: a lone mark said nothing and read as a stray sliver at the screen's
-        // edge. It shows while the pointer reaches for it (and while moving), as a second strip
-        // does at rest.
-        let rest = if frame.ribbon.count > 1 {
+        // One strip is no news, so its mark alone said nothing and read as a stray sliver at the
+        // screen's edge. Beside the New strip button it reads as "one strip, and another may
+        // join", so it rests as a second strip's mark does; without the button it shows only while
+        // the pointer reaches for it (and while moving).
+        let rest = if frame.ribbon.count > 1 || frame.new_strip_offered {
             RIBBON_REST_ALPHA
         } else {
             0.0
@@ -575,6 +626,33 @@ impl StripNavigator {
         drawn_extent((0..ribbon.count).map(|i| ribbon.segment_rect_at(i, focus)))
     }
 
+    /// Paint the New strip button at the column's foot; its extent, for damage, when painted. It is
+    /// a control in its own right, so it paints whole at rest rather than fading in with the marks.
+    pub fn draw_new_strip(
+        &mut self,
+        frame: &StripFrame,
+        cx: &mut DrawCx<'_>,
+        _now: Instant,
+    ) -> Option<Rect> {
+        if !frame.new_strip_offered {
+            return None;
+        }
+        let rect = frame.ribbon.new_strip_rect()?;
+        // The toolkit's own raised control: a plate with its edge and primary ink, lifted under
+        // the pointer.
+        let name = crate::i18n::t("strip-switcher-new-strip");
+        ui::widget::Button::paint(
+            cx.scene,
+            cx.transform,
+            cx.text,
+            cx.theme,
+            &ui::widget::ButtonFace::icon_only(rect, ui::icons::Icon::Plus, &name)
+                .role(ui::widget::ButtonRole::Secondary)
+                .hovered(self.new_strip_hover),
+        );
+        Some(rect.inflate(1.5, 1.5))
+    }
+
     /// Paint the rail; its extent, for damage, when painted.
     pub fn draw_rail(
         &mut self,
@@ -619,9 +697,10 @@ impl StripNavigator {
         };
         // Each a damage part of its own: a fade or a slide repaints where the control painted, not
         // the page around it.
-        let parts: [(&'static str, PartDraw); 3] = [
+        let parts: [(&'static str, PartDraw); 4] = [
             ("desktop.strip-labels", Self::draw_labels),
             ("desktop.strip-ribbon", Self::draw_ribbon),
+            ("desktop.strip-new-strip", Self::draw_new_strip),
             ("desktop.strip-rail", Self::draw_rail),
         ];
         for (key, draw) in parts {
@@ -695,22 +774,56 @@ impl StripNavigator {
         .min()
     }
 
-    /// The labels for assistive technology, while open.
-    pub fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.switcher.accessibility()
+    /// What assistive technology reaches: the labels while they are open, and the New strip button
+    /// on its own at rest, so a reader finds it without the labels being open. They are one button:
+    /// while the labels are open the at-rest one is not exported beside their own New strip row.
+    pub fn accessibility(&self, frame: &StripFrame) -> Option<ui::a11y::AccessNode> {
+        if self.switcher.is_open() {
+            return self.switcher.accessibility();
+        }
+        let button = frame
+            .new_strip_offered
+            .then(|| frame.ribbon.new_strip_rect())
+            .flatten()?;
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                .with_name(crate::i18n::t("strip-switcher-new-strip"))
+                .with_bounds(button)
+                .with_action_target(StripSwitcher::target_name(Target::Row(Row::NewStrip)))
+                .with_state(ui::a11y::AccessState::new().focusable(true)),
+        )
     }
 
-    /// Named targets for harnesses: the ribbon, and each label when open.
+    /// Named targets for harnesses: the ribbon, the New strip button at rest, and each label when
+    /// open.
     pub fn test_rects(&self, frame: &StripFrame) -> Vec<(String, Rect)> {
-        self.switcher.test_rects(frame.zone())
+        let mut out = self.switcher.test_rects(frame.zone());
+        if !self.switcher.is_open()
+            && frame.new_strip_offered
+            && let Some(button) = frame.ribbon.new_strip_rect()
+        {
+            out.push(("strip_switcher.new_strip".into(), button));
+        }
+        out
     }
 
-    /// Activate the switcher's semantic target `target` as a press would.
+    /// Activate the switcher's semantic target `target` as a press would: the New strip button at
+    /// rest acts as a press on it does, making the strip and opening the labels for its name.
     pub fn activate_target(
         &mut self,
         frame: &StripFrame,
         target: &str,
+        now: Instant,
     ) -> Option<Option<StripNavigation>> {
+        if !self.switcher.is_open()
+            && target == StripSwitcher::target_name(Target::Row(Row::NewStrip))
+        {
+            return if frame.new_strip_offered {
+                Some(self.new_strip(frame, now))
+            } else {
+                None
+            };
+        }
         self.switcher.place(&frame.ribbon);
         let answer = self.switcher.activate_target(target)?;
         self.switcher.place(&frame.ribbon);
@@ -813,7 +926,7 @@ mod tests {
     }
 
     fn frame(tree: &Layout, shown: &[(TabId, Rect)], scroll: f64) -> StripFrame {
-        StripFrame::of_tree(tree, CONTENT, (shown, scroll), false)
+        StripFrame::of_tree(tree, CONTENT, (shown, scroll), false, true)
     }
 
     fn navigator(tree: &Layout, t: Instant) -> (StripNavigator, StripFrame) {
@@ -850,16 +963,37 @@ mod tests {
         }
 
         phase one_strip_offers_no_ribbon_and_a_second_one_does;
-        // A workspace with one strip has nothing to switch to, so the ribbon stays off and no bare
-        // mark stands on the content's edge; a second strip brings it back.
+        // A workspace with one strip has nothing to switch to: to whom may not add a strip, the
+        // ribbon stays off and no bare mark stands on the content's edge. To whom may, the lone
+        // mark stands with the New strip button under it. A second strip brings the ribbon back
+        // for everyone.
         {
             let mut alone = tree();
             alone.workspaces[0].strips.truncate(1);
-            let one = frame(&alone, &[(1001, Rect::new(40.0, 60.0, 600.0, 780.0))], 0.0);
+            let shown = [(1001, Rect::new(40.0, 60.0, 600.0, 780.0))];
+            let one = StripFrame::of_tree(&alone, CONTENT, (&shown, 0.0), false, false);
             assert!(!one.ribbon_offered, "nothing to switch to");
+            assert!(!one.new_strip_offered, "nor a strip to add");
             assert_eq!(one.zone(), Rect::ZERO, "and nothing to rest on");
             assert!(one.switcher_offered, "though its labels still open");
             assert!(one.rail_offered, "the strip's windows still show");
+
+            let mut nav = StripNavigator::default();
+            nav.set_model(StripNavigator::model_of(&alone, &viewer(&|_| true)));
+            let may = frame(&alone, &shown, 0.0);
+            assert!(may.ribbon_offered && may.new_strip_offered, "one strip, and another may join");
+            let button = may.ribbon.new_strip_rect().expect("the button stands");
+            assert!(may.zone().contains(button.center()), "resting on it opens the labels");
+            let spoken = format!("{:?}", nav.accessibility(&may));
+            assert!(spoken.contains("New strip"), "named at rest: {spoken}");
+            let t0 = Instant::now();
+            assert!(
+                matches!(
+                    nav.press(&may, button.center(), t0),
+                    Some(Some(StripNavigation::Strip(Command::Create(_))))
+                ),
+                "a press on it makes the strip"
+            );
 
             let two = frame(&tree(), &[(1001, Rect::new(40.0, 60.0, 600.0, 780.0))], 0.0);
             assert!(
@@ -922,7 +1056,7 @@ mod tests {
                 "a strip change shows it"
             );
             assert_eq!(other.ribbon.focused, 1);
-            let covered = StripFrame::of_tree(&tree, CONTENT, (&[], 0.0), true);
+            let covered = StripFrame::of_tree(&tree, CONTENT, (&[], 0.0), true, true);
             assert_eq!(
                 nav.indicator_alpha_at(&covered, t2, false),
                 0.0,
@@ -962,7 +1096,7 @@ mod tests {
                 }))
             );
             assert_eq!(nav.press(&frame, Point::new(640.0, 400.0), t0), None);
-            let covered = StripFrame::of_tree(&tree, CONTENT, (&[], 0.0), true);
+            let covered = StripFrame::of_tree(&tree, CONTENT, (&[], 0.0), true, true);
             assert_eq!(
                 nav.press(&covered, mark, t0),
                 None,

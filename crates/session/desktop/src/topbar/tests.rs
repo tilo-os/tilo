@@ -1059,19 +1059,20 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_unnamed_strip_leaves_the_workspace_pill_alone;
-    // A strip without a name is not named: the pill stands alone.
+    phase an_unnamed_strip_is_called_by_its_place;
+    // A strip without a name is called by the place it stands in, so the bar always says which
+    // strip is shown and where strips are listed and added.
     {
         let mut tree = strips_tree();
         tree.workspaces[0].strips[1].name = String::new();
         let mut bar = TopBarChrome::from_tree(&tree);
         lay_out_and_draw(&mut bar, 1280.0);
-        assert_eq!(bar.strip_name(), None);
+        assert_eq!(bar.strip_name(), Some("Strip 2"));
         assert!(
-            !bar.control_targets()
+            bar.control_targets()
                 .contains(&TopBarChrome::CONTROL_STRIP_NAME.to_string())
         );
-        assert!(bar.ws_strip_rect.is_zero_area());
+        assert!(!bar.ws_strip_rect.is_zero_area());
     }
 
     phase a_wheel_over_the_time_changes_nothing;
@@ -2878,9 +2879,9 @@ fn a_german_bar_names_what_nobody_named_in_german() {
         Some("Arbeitsbereich wechseln, jetzt in Arbeitsbereich")
     );
     assert_eq!(
-        named(TopBarChrome::CONTROL_STRIP_NAME),
-        None,
-        "the shell's own strip keeps no name, so the bar leaves it to the workspace"
+        named(TopBarChrome::CONTROL_STRIP_NAME).as_deref(),
+        Some("Leisten zeigen, gerade Leiste 1"),
+        "the shell's own strip keeps no name, so the bar calls it by its place, in German"
     );
     assert_eq!(
         tilo_desktop_surface::names::strip_named("", 0),

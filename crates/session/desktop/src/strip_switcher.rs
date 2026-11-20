@@ -327,8 +327,15 @@ impl Placement {
         }
         if model.can_add {
             let w = width(Row::NewStrip).min(LABEL_MAX_W);
-            let y0 = bottom + NEW_GAP;
-            let label = Rect::new(x1 - w, y0, x1, y0 + LABEL_H);
+            // Level with the button that stands at the column's foot, and clear of its plate: the
+            // words name the button beside them. Without one (a workspace with no strips yet) the
+            // row follows the last label as it always has.
+            let (right, y0) = ribbon
+                .new_strip_rect()
+                .map_or((x1, bottom + NEW_GAP), |button| {
+                    (button.x0 - LABEL_GAP, button.y0)
+                });
+            let label = Rect::new(right - w, y0, right, y0 + LABEL_H);
             labels.push((Row::NewStrip, label));
             rows.push((
                 Row::NewStrip,
@@ -1757,6 +1764,17 @@ mod tests {
             let last = s.layout().label_rect(Row::Strip(2)).unwrap();
             let new = s.layout().label_rect(Row::NewStrip).unwrap();
             assert!(new.y0 >= last.y1, "New strip is under the last strip");
+            // It stands level with the button at the column's foot, clear of its plate, so the
+            // words name the button the pointer rests on.
+            let button = r.new_strip_rect().expect("a mark to stand under");
+            assert!(
+                (new.y0 - button.y0).abs() < 0.5 && (new.y1 - button.y1).abs() < 0.5,
+                "level with the button: {new:?} vs {button:?}"
+            );
+            assert!(
+                new.x1 <= button.x0,
+                "clear of the button's plate: {new:?} vs {button:?}"
+            );
         }
 
         phase the_labels_are_this_workspaces_strips_and_new_strip_only;
