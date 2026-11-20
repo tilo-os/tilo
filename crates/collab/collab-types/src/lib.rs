@@ -43,6 +43,7 @@
 //! input — trailing bytes are an error, not a silent drop.
 
 pub mod action_authority;
+pub mod actors;
 pub mod app_surface;
 pub mod artifact;
 pub mod canonical;

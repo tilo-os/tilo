@@ -498,7 +498,9 @@ fn normalise(path: &Path) -> PathBuf {
     out
 }
 
+pub mod fields;
 mod file_identity;
+pub mod identity;
 pub use file_identity::DOCUMENT_ID_XATTR;
 
 /// FNV-1a, 64-bit: a fixed algorithm, unlike a library's default hasher, so
