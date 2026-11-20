@@ -1541,6 +1541,8 @@ impl AttachedView {
                 )
             })?;
         let opened = !self.records.is_ready(document);
+        // Opened here from the peer's whole document: what the part holds is that document.
+        let mut opened_from_mutation = false;
         if opened && self.records.try_open_resource(&checkout).is_err() {
             // Kept as the peer sent it, then opened as the view's own are.
             let DocumentMutation::Snapshot(bytes) = mutation else {
@@ -1558,6 +1560,7 @@ impl AttachedView {
             self.records
                 .try_open_resource(&checkout)
                 .map_err(|error| error.to_string())?;
+            opened_from_mutation = true;
         }
         if let DocumentMutation::Incremental(bytes) = mutation
             && !self
@@ -1574,6 +1577,7 @@ impl AttachedView {
             .records
             .with(document, ui_core::automerge::AutoCommit::get_heads)
             .unwrap_or_default();
+        let delivered_now = !self.beside.contains_key(document);
         let sync = self
             .beside
             .entry(document.clone())
@@ -1582,7 +1586,14 @@ impl AttachedView {
             sync.set_aside(&self.records, document)
                 .map_err(|error| set_aside_failed(document, &error))?;
         }
-        let changed = sync.merge(&self.records, &checkout, mutation.clone())?;
+        // A part opened from the very document handed here, and delivered at its heads just
+        // now, holds all of it: merging it again loaded it a second time, a second of a large
+        // tracker's part, for every part a replica takes in after a start.
+        let changed = if opened_from_mutation && delivered_now {
+            true
+        } else {
+            sync.merge(&self.records, &checkout, mutation.clone())?
+        };
         // What the workspace holds of it is here now: nothing founds another.
         self.awaited.borrow_mut().remove(document);
         if from_workspace {
