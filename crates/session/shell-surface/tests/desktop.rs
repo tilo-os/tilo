@@ -106,7 +106,7 @@ fn a_tab_widens_to_the_smallest_size_its_window_keeps() {
     let _settled = ui::motion::testing::settled();
     let (shell, mut policy) = desktop(7, 1.0);
     let outputs = output();
-    // A program that keeps a size, as PuTTY's fixed Configuration dialog does.
+    // A program that keeps a size, as PuTTY's fixed Configuration window does.
     let fixed = WindowInfo {
         min_size: Some((600, 400)),
         ..window(5, "org.example.PuTTY")
