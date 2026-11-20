@@ -56,6 +56,8 @@ chat-call-title = Anruf: { $channel }
 # Karte sie nennen: die Menschen darin, nie die Kennung des Kanals.
 chat-call-people-two = { $first } und { $second }
 # Ein Anruf, dem noch niemand beigetreten ist, wie die Kopfzeile der Karte ihn nennt.
+# What a person without a name reads their own lines under.
+chat-person-you = Du
 chat-call-only-you = Nur du
 chat-call-people-many = { $first }, { $second } und { $count } weitere
 chat-call-open = Anrufunterhaltung öffnen

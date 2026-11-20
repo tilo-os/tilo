@@ -92,10 +92,13 @@ impl ChatApp {
         // name, as everyone else reads it.
         if self.is_me(id) {
             let own = self.display_name(id);
-            if own != id.id() && !own.trim().is_empty() {
-                return own;
+            // A person the workspace has no name for reads their own lines as theirs, as
+            // History names them, never as the placeholder others see for them.
+            if own == id.id() || own.trim().is_empty() || own == crate::identity::unnamed_label(id)
+            {
+                return crate::i18n::t("chat-person-you");
             }
-            return crate::identity::unnamed_label(id);
+            return own;
         }
         if let Some(agent) = self.agent_name(id, None) {
             return agent;

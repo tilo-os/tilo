@@ -163,6 +163,20 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_person_without_a_name_reads_their_own_lines_as_you;
+    {
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = ChatApp::new_ephemeral();
+        let me = app.me.id.clone();
+        app.me.name = crate::identity::unnamed_label(&me);
+        app.users.clear();
+        assert_eq!(
+            app.user_name(&me),
+            "You",
+            "their own lines are theirs, never the placeholder others see"
+        );
+    }
+
     phase your_own_name_is_known_before_the_workspace_has_heard_of_you;
     {
         let mut app = ChatApp::new_ephemeral();

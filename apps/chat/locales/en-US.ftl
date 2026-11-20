@@ -59,6 +59,8 @@ chat-call-title = Call: { $channel }
 # people in it, never the channel's slug.
 chat-call-people-two = { $first } and { $second }
 # A call nobody else has joined yet, as the card's hero names it.
+# What a person without a name reads their own lines under.
+chat-person-you = You
 chat-call-only-you = Just you
 chat-call-people-many = { $first }, { $second } and { $count } others
 chat-call-open = Open call conversation
