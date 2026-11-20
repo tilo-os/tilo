@@ -620,6 +620,22 @@ impl PlayerState {
     /// handoff says where it stood. The handoff lands after the open, so local autoplay
     /// cannot override it.
     pub(crate) fn open_launch(&mut self, launch: &LaunchInput<'_>) {
+        // A video handed over by another app (Camera's latest clip, a file opened from Files)
+        // arrives as its bytes and name, with no path to open.
+        if let Some(file) = launch.file() {
+            let handed = PickedContents {
+                name: file.name().to_owned(),
+                media_type: Some(file.media_type().to_owned()),
+                bytes: file.bytes().to_vec(),
+                location: None,
+            };
+            self.open_error = None;
+            if let Err(error) = self.open_contents(&handed) {
+                tracing::warn!(%error, "video player: could not open the handed video");
+                self.open_error = Some(error);
+            }
+            return;
+        }
         let Some(argument) = launch.argument() else {
             return;
         };

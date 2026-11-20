@@ -40,6 +40,15 @@ impl ResourceApp for VideoPlayerShell {
     const TITLE: &'static str = "Video Player";
     const TITLE_KEY: &'static str = "video-player-app-title";
     const ICON: Option<&'static str> = Some("video-player");
+    /// The videos another app hands over to play: what a browser or the system decoder plays,
+    /// and Camera's Motion-JPEG clips.
+    const OPENS: &'static [&'static str] = &[
+        "video/mp4",
+        "video/webm",
+        "video/x-matroska",
+        "video/quicktime",
+        "video/x-msvideo",
+    ];
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Library>) -> Element {
@@ -246,6 +255,35 @@ mod tests {
         assert!(
             surface_rows.contains("bookmark-current-time"),
             "the playhead's edits are offered: {surface_rows}"
+        );
+    }
+
+    /// Camera hands its latest clip over as bytes and a name, with no path: the window opens
+    /// on it.
+    #[test]
+    fn a_video_handed_over_as_bytes_opens_in_the_window() {
+        let sample = std::path::Path::new(env!("OUT_DIR")).join("h264-aac.mp4");
+        let (file, _) = ui::application::OpenFile::new(
+            "VID_holiday.mp4",
+            "video/mp4",
+            std::fs::read(&sample).unwrap(),
+        )
+        .unwrap();
+        let mut app = TestApp::<VideoPlayerShell>::handed(file).expect("a video is opened");
+        tilo_test_env::wait_until("the handed video shows its first picture", || {
+            app.settle();
+            surface(&mut app, |player| player.player().latest_frame().is_some())
+        });
+        let surface_rows = app.agent_surface().to_string();
+        assert!(
+            surface_rows.contains("video-player.queue.item."),
+            "the handed video is a queue row: {surface_rows}"
+        );
+        assert_eq!(
+            surface(&mut app, |player| player.window_toolbar().location)
+                .map(|location| location.label),
+            Some("VID_holiday.mp4".to_owned()),
+            "the window names the video it plays"
         );
     }
 

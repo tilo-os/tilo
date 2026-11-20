@@ -73,9 +73,11 @@ mime = [
     "video/mp4",
     "video/x-matroska",
     "video/webm",
+    "video/x-msvideo",
 ]
 ext  = [
     "mp4",
     "mkv",
     "webm",
+    "avi",
 ]
