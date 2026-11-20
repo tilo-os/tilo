@@ -438,5 +438,129 @@ else:
                 process.communicate(timeout=HANG_BOUND)
 
 
+class BrowserBoundsAndOrphanProtection(unittest.TestCase):
+    def test_max_lifetime_stops_and_reaps_browser(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ready = root / 'ready'
+            script = '''
+import os, pathlib, sys, time
+pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))
+time.sleep(60)
+'''
+            env = dict(
+                os.environ,
+                TILO_OWNED_BROWSER_MAX_LIFETIME_SECS='0.2',
+                TILO_OWNED_BROWSER_MAX_CONCURRENT='0',
+            )
+            process = subprocess.Popen(
+                [sys.executable, str(REPO / 'tools/web/owned_browser.py'),
+                 sys.executable, '-c', script, str(ready)],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                stdout, stderr = process.communicate(timeout=HANG_BOUND)
+                self.assertEqual(process.returncode, 0, stdout + stderr)
+                self.assertIn('exceeded max lifetime', stderr)
+                if ready.exists():
+                    pid = int(ready.read_text())
+                    self.assertFalse(Path(f'/proc/{pid}').exists(), f'child {pid} not reaped')
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=HANG_BOUND)
+
+    def test_orphaned_caller_stops_and_reaps_browser(self):
+        """A backgrounded driver script whose own parent exits gets reparented
+        to systemd/init; the supervisor detects that reparenting and stops the
+        browser even while the driver script itself stays alive."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            browser_pid_file = root / 'browser.pid'
+            driver_pid_file = root / 'driver.pid'
+            supervisor_done = root / 'supervisor.done'
+            outer = '''
+import os, pathlib, subprocess, sys, time
+root = pathlib.Path(sys.argv[1])
+owned = sys.argv[2]
+driver_code = """
+import os, pathlib, subprocess, sys, time
+root = pathlib.Path(sys.argv[1])
+owned = sys.argv[2]
+(root / 'driver.pid').write_text(str(os.getpid()))
+child_code = "import os, pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)"
+env = dict(os.environ, TILO_OWNED_BROWSER_MAX_CONCURRENT='0', TILO_OWNED_BROWSER_MAX_LIFETIME_SECS='60')
+sup = subprocess.Popen([sys.executable, owned, sys.executable, '-c', child_code, str(root / 'browser.pid')], env=env)
+rc = sup.wait()
+(root / 'supervisor.done').write_text(str(rc))
+"""
+driver = subprocess.Popen([sys.executable, '-c', driver_code, str(root), owned])
+deadline = time.monotonic() + 10
+while not (root / 'browser.pid').exists() and time.monotonic() < deadline:
+    time.sleep(0.02)
+# Exit without stopping the backgrounded driver: it becomes orphaned.
+'''
+            proc = subprocess.run(
+                [sys.executable, '-c', outer, str(root), str(REPO / 'tools/web/owned_browser.py')],
+                capture_output=True, text=True, timeout=HANG_BOUND)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertTrue(browser_pid_file.exists(), 'browser never started')
+            browser_pid = int(browser_pid_file.read_text())
+            deadline = time.monotonic() + HANG_BOUND
+            while not supervisor_done.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            try:
+                self.assertTrue(supervisor_done.exists(), 'supervisor did not stop after caller was orphaned')
+                self.assertEqual(supervisor_done.read_text().strip(), '0')
+                self.assertFalse(Path(f'/proc/{browser_pid}').exists(), f'browser {browser_pid} not reaped')
+            finally:
+                if driver_pid_file.exists():
+                    try:
+                        os.kill(int(driver_pid_file.read_text()), signal.SIGKILL)
+                    except OSError:
+                        pass
+
+    def test_concurrency_cap_serializes_browsers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            permits = root / 'permits'
+            first_started = root / 'first.started'
+            second_started = root / 'second.started'
+            env = dict(
+                os.environ,
+                TILO_OWNED_BROWSER_MAX_CONCURRENT='1',
+                TILO_OWNED_BROWSER_PERMIT_DIR=str(permits),
+                TILO_OWNED_BROWSER_MAX_LIFETIME_SECS='30',
+            )
+            p1 = subprocess.Popen(
+                [sys.executable, str(REPO / 'tools/web/owned_browser.py'),
+                 sys.executable, '-c',
+                 f'import pathlib, time; pathlib.Path({str(first_started)!r}).touch(); time.sleep(60)'],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            p2 = None
+            try:
+                deadline = time.monotonic() + HANG_BOUND
+                while not first_started.exists():
+                    self.assertIsNone(p1.poll())
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.01)
+                p2 = subprocess.Popen(
+                    [sys.executable, str(REPO / 'tools/web/owned_browser.py'),
+                     sys.executable, '-c',
+                     f'import pathlib; pathlib.Path({str(second_started)!r}).touch()'],
+                    env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                time.sleep(0.35)
+                self.assertFalse(second_started.exists(), 'second browser started while permit was held')
+                p1.terminate()
+                p1.communicate(timeout=HANG_BOUND)
+                stdout2, stderr2 = p2.communicate(timeout=HANG_BOUND)
+                self.assertEqual(p2.returncode, 0, stdout2 + stderr2)
+                self.assertTrue(second_started.exists(), 'second browser never ran after permit was released')
+            finally:
+                for p in (p1, p2):
+                    if p is not None and p.poll() is None:
+                        p.kill()
+                        p.communicate(timeout=HANG_BOUND)
+
+
 if __name__ == '__main__':
     unittest.main()

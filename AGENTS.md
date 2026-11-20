@@ -76,16 +76,21 @@ These hold for every app, the shell and the SDK. When a doc or code disagrees, t
 
 ## Run and inspect
 
-- Run Tilo with `cargo headless` (no window; prints how to drive it, `--ready
-  FILE` for scripts), `cargo desktop` (a window on the developer's desktop) or
-  `cargo web` (the web desktop on the local stack); `--help` on each, and
-  `--check` for a smoke test that starts, asks and stops it.
-- Prefer `tilo action`/`tilo-control` resources and actions to pointer
-  automation; inject input only to test input, hit-testing or painting.
+- Tilo is primarily a native desktop/OS. Drive native apps and the desktop
+  headlessly with `cargo headless` (no window; prints how to drive it, `--ready
+  FILE` for scripts) and `tilo` / `tilo-control` resources and actions (`--help`
+  on each, `--check` for a smoke test). Use `cargo desktop` for a window on the
+  developer's desktop.
+- Use `cargo web` and headless Chromium only when changing web/WASM code, never
+  as a substitute for native headless testing. Never leave persistent browser
+  driver servers running; always close browsers on exit with a short timeout.
+- Prefer `tilo` / `tilo-control` resources and actions to pointer automation;
+  inject input only to test input, hit-testing or painting.
 - Images come from `shots` or a disposable headless session, never the user's
   desktop.
 - Check visual changes in more than one theme.
-- Clean up every compositor, runtime directory, container and VM you start.
+- Clean up every compositor, browser, runtime directory, container and VM you
+  start.
 - `tilo device` owns dev VM lifecycle and swaps; no SSH/SCP deployment path.
   `tilo device guide images|kernel|scenarios` for those changes.
 

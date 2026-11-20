@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Keep Chromium's descendants owned until they have all stopped writing."""
 import ctypes
+import fcntl
 import os
 from pathlib import Path
 import shutil
@@ -15,6 +16,16 @@ stopping = False
 # Fixtures that always honour TERM raise it so a loaded host cannot turn
 # their graceful close into an escalation.
 TERM_GRACE = float(os.environ.get('TILO_OWNED_BROWSER_TERM_GRACE_SECS', '2'))
+# Hard upper bound on a supervised browser's life so a forgotten driver script
+# cannot leave SwiftShader Chromium burning CPU/RAM indefinitely. 0 disables.
+MAX_LIFETIME = float(os.environ.get('TILO_OWNED_BROWSER_MAX_LIFETIME_SECS', '600'))
+# Stop the browser if our immediate caller is reparented (orphaned when its own
+# parent agent/shell exits while a backgrounded driver script stays alive).
+FOLLOW_ANCESTOR = os.environ.get('TILO_OWNED_BROWSER_FOLLOW_ANCESTOR', '1') != '0'
+# Cap concurrent headless Chromium instances on a developer machine so multiple
+# agents cannot saturate CPU and RAM with parallel SwiftShader renders. 0 disables.
+_default_max_concurrent = '0' if os.environ.get('CI') else '2'
+MAX_CONCURRENT = int(os.environ.get('TILO_OWNED_BROWSER_MAX_CONCURRENT', _default_max_concurrent))
 
 
 def stop(_number, _frame):
@@ -185,6 +196,56 @@ def caller_gone():
     return os.getppid() == 1 if caller is None else os.getppid() != int(caller)
 
 
+def ppid_of(pid):
+    try:
+        stat = Path(f'/proc/{pid}/stat').read_text()
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return None
+    return int(stat[stat.rindex(')') + 2:].split()[1])
+
+
+def is_reaper(pid):
+    if pid is None or pid <= 1:
+        return True
+    try:
+        comm = Path(f'/proc/{pid}/comm').read_text().strip()
+    except OSError:
+        return False
+    return comm == 'systemd'
+
+
+def acquire_permit(caller_pid, watched_grandparent, deadline):
+    """Acquire one of MAX_CONCURRENT machine-wide flock permits before starting
+    Chromium. Released automatically by the kernel on exit or crash."""
+    if MAX_CONCURRENT <= 0:
+        return None
+    permit_dir = Path(
+        os.environ.get('TILO_OWNED_BROWSER_PERMIT_DIR')
+        or Path(os.environ.get('XDG_RUNTIME_DIR') or '/tmp') / 'tilo-owned-browser-permits'
+    )
+    permit_dir.mkdir(parents=True, exist_ok=True)
+    while not stopping:
+        if caller_gone():
+            return None
+        if watched_grandparent is not None and ppid_of(caller_pid) != watched_grandparent:
+            print(f'owned browser: caller {caller_pid} was orphaned while waiting for a permit',
+                  file=sys.stderr, flush=True)
+            return None
+        if deadline is not None and time.monotonic() >= deadline:
+            print(f'owned browser: exceeded max lifetime ({MAX_LIFETIME:g}s) while waiting for a permit',
+                  file=sys.stderr, flush=True)
+            return None
+        for index in range(MAX_CONCURRENT):
+            fd = os.open(permit_dir / f'permit-{index}.lock', os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fd
+            except BlockingIOError:
+                os.close(fd)
+        time.sleep(0.1)
+    return None
+
+
 def main():
     if len(sys.argv) < 2:
         raise ValueError('supply the owned browser executable and arguments')
@@ -201,16 +262,42 @@ def main():
     # the supervisor takes the caller's death as its own stop request.
     if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
         raise OSError(ctypes.get_errno(), 'cannot follow the caller')
+    caller_pid = os.getppid()
+    grandparent = ppid_of(caller_pid) if FOLLOW_ANCESTOR else None
+    watched_grandparent = None if is_reaper(grandparent) else grandparent
+    started = time.monotonic()
+    deadline = started + MAX_LIFETIME if MAX_LIFETIME > 0 else None
     status = None
-    if caller_gone():
-        print('owned browser: the caller exited before the browser started', file=sys.stderr, flush=True)
-    else:
-        browser = subprocess.Popen(sys.argv[1:])
-        while not stopping and browser.poll() is None:
-            time.sleep(0.02)
-        status = browser.returncode
-        quiesce()
-        browser.wait()  # Record the root's completion after waitpid reaped it.
+    permit_fd = None
+    try:
+        if caller_gone():
+            print('owned browser: the caller exited before the browser started', file=sys.stderr, flush=True)
+        else:
+            permit_fd = acquire_permit(caller_pid, watched_grandparent, deadline)
+            if MAX_CONCURRENT <= 0 or permit_fd is not None:
+                browser = subprocess.Popen(sys.argv[1:])
+                last_ancestor_check = started
+                while not stopping and browser.poll() is None:
+                    now = time.monotonic()
+                    if deadline is not None and now >= deadline:
+                        print(f'owned browser: exceeded max lifetime ({MAX_LIFETIME:g}s), stopping',
+                              file=sys.stderr, flush=True)
+                        break
+                    if now - last_ancestor_check >= 0.2:
+                        last_ancestor_check = now
+                        if caller_gone():
+                            break
+                        if watched_grandparent is not None and ppid_of(caller_pid) != watched_grandparent:
+                            print(f'owned browser: caller {caller_pid} was orphaned (parent {watched_grandparent} exited), stopping',
+                                  file=sys.stderr, flush=True)
+                            break
+                    time.sleep(0.02)
+                status = browser.returncode
+                quiesce()
+                browser.wait()  # Record the root's completion after waitpid reaped it.
+    finally:
+        if permit_fd is not None:
+            os.close(permit_fd)
     if status is None or status == 0:
         # `status` is read before any close request is acted on, so a request
         # that lands while the root's own exit is being recorded describes a
