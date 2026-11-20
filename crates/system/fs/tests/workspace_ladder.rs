@@ -391,24 +391,21 @@ async fn measure_rung(
     report(&rung, "restart_s", restart.as_secs_f64(), "s");
     drop(reopened);
 
-    // A second device joins: it is given the tree's records over the wire,
-    // exactly what the record routes carry, and nothing else.
+    // A second device joins: the record mesh gives a fresh joiner each chunk whole, which is
+    // the tree's state and not the history that built it.
     let source = Endpoint::bind(presets::Minimal).await.unwrap();
     let source_router = Router::builder(source.clone())
         .accept(iroh_blobs::ALPN, store_a.blobs_protocol(None))
         .spawn();
     let mut peer = Namespace::new("rung-peer").unwrap();
     let started = Instant::now();
-    let writes = namespace.document_writes(&BTreeMap::new());
-    let join_records = writes.len() as u64;
-    let records: Vec<(fs_protocol::TreeChunk, Vec<u8>)> = writes
-        .into_iter()
-        .map(|write| (write.chunk, write.changes))
-        .collect();
-    let join_bytes: u64 = records
+    let chunks = namespace.records();
+    let records: Vec<(fs_protocol::TreeChunk, Vec<u8>)> = chunks
         .iter()
-        .map(|(_, changes)| changes.len() as u64)
-        .sum();
+        .filter_map(|chunk| namespace.save_document(*chunk).map(|bytes| (*chunk, bytes)))
+        .collect();
+    let join_records = records.len() as u64;
+    let join_bytes: u64 = records.iter().map(|(_, bytes)| bytes.len() as u64).sum();
     peer.take_documents(records).unwrap();
     let join = started.elapsed();
     report(&rung, "join_records", join_records as f64, "records");
