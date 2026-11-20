@@ -810,7 +810,7 @@ impl Workspaces {
     /// The workspace is not held here, the store refused the write, or the workspace refused a
     /// document's write.
     #[cfg(feature = "apps")]
-    pub(crate) async fn resource_command(
+    pub async fn resource_command(
         &self,
         context: &crate::apps::services::ResourceRequestContext,
         mut command: tilo_resource_store::wire::Command,
@@ -912,6 +912,31 @@ impl Workspaces {
 }
 
 impl Workspaces {
+    /// [`Self::resource_command`] as this device's own person, for an app the device starts
+    /// itself rather than through the broker: the caller is the device the service signs as.
+    ///
+    /// # Errors
+    /// As [`Self::resource_command`], or this service serves no device.
+    #[cfg(feature = "apps")]
+    pub async fn own_resource_command(
+        &self,
+        workspace: &str,
+        app: &str,
+        command: tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        let device = self.member_identity()?;
+        let caller = tilo_actions::remote::Caller::authenticated(
+            device.cert.user_public_key,
+            device.device(),
+        )
+        .in_workspace(workspace);
+        let context =
+            crate::apps::services::ResourceRequestContext::authenticated(app, workspace, caller);
+        self.resource_command(&context, command).await
+    }
+}
+
+impl Workspaces {
     /// Holds `query` open for the app `context` names, in its workspace: its first page, then
     /// each page a write here or a member's change makes different, as this device's person
     /// may read it.
@@ -951,7 +976,12 @@ fn stamp_resource_invoker(command: &mut tilo_resource_store::wire::Command, invo
         | Command::Query(_)
         | Command::Count { .. }
         | Command::Content { .. }
-        | Command::Versions { .. } => {}
+        | Command::Versions { .. }
+        | Command::At { .. }
+        | Command::Grouped { .. }
+        | Command::Removed { .. }
+        | Command::MadeFrom { .. }
+        | Command::Newest { .. } => {}
     }
 }
 

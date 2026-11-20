@@ -19,7 +19,7 @@ use automerge::{Automerge, Change as AmChange, ObjId as ExId, Prop, ReadDoc, Sca
 
 use crate::schema::{Expected, Schema};
 
-pub use collab_types::Stamp;
+pub use collab_types::stamp::{Group, Origin, Stamp};
 
 /// What one change does to one resource.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

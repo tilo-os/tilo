@@ -1094,7 +1094,7 @@ impl Workspaces {
                 if let Ok(mut materials) = self.inner.member.materials.lock() {
                     materials.insert(workspace.workspace_id(), (member.hint, member.continuity));
                 }
-                self.kept_member(workspace).await?
+                Box::pin(self.kept_member(workspace)).await?
             } else {
                 self.serve_direct(&workspace)?;
                 Arc::new(tokio::sync::Mutex::new(workspace))

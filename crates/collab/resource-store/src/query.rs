@@ -80,7 +80,10 @@ pub enum Filter {
 }
 
 impl Filter {
-    pub(crate) fn holds(&self, stored: &Indexed) -> bool {
+    /// Whether the resource as the index holds it passes the filter: what a reader that already
+    /// has a resource checks against a query without asking the store again.
+    #[must_use]
+    pub fn holds(&self, stored: &Indexed) -> bool {
         match self {
             Self::Is(field, value) => stored.scalar(field) == *value,
             Self::Has(field, value) => match stored.fields.get(field) {
