@@ -295,11 +295,11 @@ jobs:
           set -x
           xcode-select -p
           xcrun swift --version
-          ls /Applications
-          ls /Library/Developer/CommandLineTools/Library/Developer/Frameworks || true
-          ls /Library/Developer/CommandLineTools/Developer/Library/Frameworks || true
-          xcrun --find xctest || true
-          mdfind "kMDItemFSName == 'XCTest.framework'" | head -5 || true
+          xcodebuild -version || true
+          find /Library/Developer /Applications -maxdepth 6 -name "XCTest*" 2>/dev/null | head
+          ls /Library/Developer/CommandLineTools/usr/lib/swift/macosx | grep -i test || true
+          ls /Library/Developer/CommandLineTools/SDKs/*/System/Library/Frameworks | grep -i test || true
+          time (cd "$SRC" && dist/apple/build.sh mac) || true
 
       - name: Test the Swift client on macOS
         if: ${{ !cancelled() && steps.apple.outputs.changed == 'true' }}
