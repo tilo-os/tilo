@@ -132,8 +132,10 @@ whole() { # DIR WHAT
     fail "$2: git fsck --full: $(tail -n 5 <<<"$out")"
     return 1
   fi
-  if [[ -n $(git -C "$1" status --porcelain 2>&1) ]]; then
-    fail "$2: git status shows changes after the checkout"
+  local changed
+  changed=$(git -C "$1" status --porcelain 2>&1)
+  if [[ -n $changed ]]; then
+    fail "$2: git status shows $(wc -l <<<"$changed") changes after the checkout: $(head -n 8 <<<"$changed" | tr '\n' ';')"
     return 1
   fi
 }
@@ -149,12 +151,89 @@ answers_again() {
   shown && [[ -n $(holder_pid) ]]
 }
 
+# What the holder is doing when a step stops moving: each thread's stack, twice, a second apart,
+# so a wait that never ends shows where it is.
+holder_stacks() {
+  local holder task
+  holder=$(holder_pid)
+  [[ -n $holder ]] || return 0
+  say "== the holder's threads: name, state, what the kernel has them wait in"
+  for task in /proc/"$holder"/task/*; do
+    printf '%s %s %s %s\n' "${task##*/}" "$(cat "$task/comm" 2>/dev/null)" \
+      "$(awk '/^State:/ {print $2}' "$task/status" 2>/dev/null)" "$(cat "$task/wchan" 2>/dev/null)" >&2
+  done
+  say "== the stacks of the processes waiting in the folder"
+  for task in /proc/[0-9]*; do
+    [[ $(awk '/^State:/ {print $2}' "$task/status" 2>/dev/null) == D ]] || continue
+    say "${task##*/} $(tr '\0' ' ' <"$task/cmdline" 2>/dev/null | cut -c1-120): $(cat "$task/wchan" 2>/dev/null)"
+    cat "$task/stack" 2>/dev/null | head -n 20 >&2 || true
+  done
+  say "== the end of the holder's log"
+  tail -n 40 "$(holder_log)" >&2 2>/dev/null || true
+  command -v eu-stack >/dev/null || return 0
+  say "== the holder's stacks"
+  timeout -s KILL 30 eu-stack -p "$holder" >"$scratch/stuck-stacks.txt" 2>&1 || true
+  grep -E '^TID|^#' "$scratch/stuck-stacks.txt" | grep -vE ' (std|core|alloc)::' | head -n 600 >&2 || true
+}
+# Give a command at most SECONDS: one that takes longer is a stall of the folder, reported
+# with the holder's stacks.
+bounded() { # SECONDS WHAT COMMAND...
+  local limit=$1 what=$2
+  shift 2
+  "$@" &
+  local pid=$! waited=0
+  while kill -0 "$pid" 2>/dev/null && ((waited < limit)); do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    fail "$what did not finish in ${limit}s"
+    holder_stacks
+    pkill -KILL -P "$pid" 2>/dev/null || true
+    kill -KILL "$pid" 2>/dev/null || true
+    return 1
+  fi
+  wait "$pid"
+}
+
 step "a clone into the folder, without its checkout"
-clone_into "$folder/tilo"
+bounded 300 "the clone into the folder" clone_into "$folder/tilo" || exit 1
 step "the whole checkout, timed"
 started=$(date +%s.%N)
 check_out "$folder/tilo" "$logs/progress-whole.txt" &
 checkout=$!
+# With TILO_GIT_STACKS=1, where the holder spends a checkout: its threads' stacks sampled for
+# twenty seconds, summed by their innermost frames of Tilo's own code. Sampling stops the holder
+# each time, so a timed checkout is measured without it.
+if [[ ${TILO_GIT_STACKS:-} == 1 ]] && command -v eu-stack >/dev/null; then
+  (sleep 20; holder=$(holder_pid)
+   for _ in $(seq 80); do echo "=== sample"; eu-stack -p "$holder" 2>/dev/null; sleep 0.25; done >"$scratch/stacks.txt"
+   python3 - "$scratch/stacks.txt" >"$logs/stacks.txt" <<'PY'
+import collections, re, sys
+text = open(sys.argv[1], errors="replace").read()
+busy, waits, threads = collections.Counter(), collections.Counter(), collections.Counter()
+idle = ("epoll_wait", "park_timeout", "Parker", "Condvar::wait", "read_until", "accept", "nanosleep", "clock_nanosleep", "poll", "sigwait")
+for block in re.split(r"\nTID ", text):
+    frames = [m.group(1) for m in re.finditer(r"^#\d+\s+0x[0-9a-f]+\s+(.+)$", block, re.M)]
+    if not frames:
+        continue
+    name = block.split("\n", 1)[0]
+    ours = [f for f in frames if re.search(r"tilo|automerge|redb|fuser|iroh_blobs|fs_protocol|collab|blake3", f)]
+    top = ours[:4]
+    head = " | ".join(f[:110] for f in top) or frames[0][:110]
+    if any(k in frames[0] for k in ("futex", "syscall")) and not any(k in " ".join(frames[:6]) for k in idle):
+        waits[head] += 1
+    elif any(k in " ".join(frames[:4]) for k in idle):
+        continue
+    else:
+        busy[head] += 1
+print("== busy (thread samples by innermost own frames)")
+for k, v in busy.most_common(40): print(f"{v:5} {k}")
+print("== blocked in futex/syscall")
+for k, v in waits.most_common(40): print(f"{v:5} {k}")
+PY
+   cat "$logs/stacks.txt" >&2) &
+fi
 waited=0
 while kill -0 "$checkout" 2>/dev/null && ((waited < measure_for)); do
   sleep 1
@@ -167,6 +246,7 @@ if kill -0 "$checkout" 2>/dev/null; then
   kill "$checkout" 2>/dev/null || true
   whole_ok=0
   fail "the whole checkout did not finish in ${measure_for}s ($(done_of "$logs/progress-whole.txt") of $total files)"
+  holder_stacks
 fi
 wait "$checkout" || { ((whole_ok == 0)) || fail "the whole checkout failed"; whole_ok=0; }
 ended=$(date +%s.%N)
@@ -187,7 +267,25 @@ print(f"{done} {done / (ended - started):.0f} {q1:.0f} {q4:.0f} {ended - started
 EOF
 )
 read -r got rate first_quarter last_quarter took <<<"$rates"
+# What one fsync costs where the holder keeps its state: a closed file's content is made durable
+# with one, so it bounds how many files a second a checkout that writes one file at a time gets.
+fsync_ms=$(python3 - "$scratch/state" <<'PY'
+import os, sys, time
+path = os.path.join(sys.argv[1], "fsync-probe")
+took = []
+with open(path, "wb") as out:
+    for _ in range(50):
+        out.write(b"x" * 4096)
+        started = time.monotonic()
+        os.fsync(out.fileno())
+        took.append(time.monotonic() - started)
+os.remove(path)
+took.sort()
+print(f"{took[len(took) // 2] * 1000:.2f}")
+PY
+)
 {
+  echo "fsync_median_ms: $fsync_ms"
   echo "files: $got of $total in ${took}s"
   echo "files_per_second: $rate"
   echo "first_quarter_files_per_second: $first_quarter"

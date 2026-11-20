@@ -6433,7 +6433,7 @@ run = "bash os/containers/tilo-sh/test-peer-kill-midwrite.sh /target/peer-git-mi
 needs = ["tilo-sh-programs", "lounge-fonts", "tilo-sh-caddy"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
-setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl git-core && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl git-core elfutils && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh-programs", TILO_SH_FONTS = "/target/publish/lounge/fonts", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy" }
 requires = ["arch=x86_64", "/dev/fuse"]
 isolation = "nested"
