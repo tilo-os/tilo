@@ -39,18 +39,8 @@
 #
 # tools/cargo-runner.sh reads this file into its own shell (`source`) and
 # calls the functions below, so a test start is one shell and not a chain of
-# them. A fresh environment starts a program only for what the shell cannot
-# do itself: making the directories, handing them to the test user where
-# there is one, and removing them.
+# them: it makes and removes the environment in this shell.
 set -euo pipefail
-
-case ${BASH_SOURCE[0]} in
-    */*) tilo_test_tools=${BASH_SOURCE[0]%/*} ;;
-    *) tilo_test_tools=. ;;
-esac
-# The tests run as the test user where the run started as root.
-# shellcheck source=tools/as-test-user.sh
-source "$tilo_test_tools/as-test-user.sh"
 
 # Variables that name a desktop session, its display or its services.
 tilo_test_session_vars=(
@@ -150,19 +140,15 @@ tilo_test_environment_enter() {
 
     mkdir -p "$root"/{home,config,data,state,cache,runtime}
     chmod 700 "$root" "$root/runtime"
-    # The tests run as the test user where the run started as root.
-    tilo_test_user_own "$root" "$root"/{home,config,data,state,cache,runtime}
 
     # The environment a command that builds the app it then starts builds in:
     # the caller's, written before this one was set (tools/test-env.sh, or the
-    # entry below). It goes with the fresh HOME, and its reader is the test
-    # user where the job began as root.
+    # entry below). It goes with the fresh HOME.
     if [ -n "${TILO_BUILD_ENVIRONMENT_FILE:-}" ]; then
         build_environment=$TILO_BUILD_ENVIRONMENT_FILE
         unset TILO_BUILD_ENVIRONMENT_FILE
         if cp -- "$build_environment" "$root/build-environment"; then
             rm -f -- "$build_environment"
-            tilo_test_user_own "$root/build-environment"
         fi
     fi
 

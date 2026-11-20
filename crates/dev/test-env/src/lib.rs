@@ -43,7 +43,7 @@ pub use capability::{Capability, Probe, capability_unavailable};
 #[cfg(target_os = "linux")]
 pub use capability::{
     NamedProbe, PROBES, bubblewrap, bubblewrap_overlay, bubblewrap_with_proc, mount_namespace,
-    network_tunnel, user_namespace,
+    network_tunnel, non_root_identity, root_identity, user_namespace,
 };
 #[cfg(unix)]
 pub use capability::{chown_to, switch_identity};

@@ -603,9 +603,11 @@ tilo_test_env::scenario! {
 
     phase provisioning_is_bounded_by_a_root_whose_ancestors_are_unreadable;
     {
-        if rustix::process::getuid().as_raw() == 0 {
-            return;
-        }
+        tilo_test_env::require_capability!(
+            NonRoot,
+            tilo_test_env::non_root_identity(),
+            "execute-only ancestors only refuse an ordinary account"
+        );
         let base = tempfile::tempdir().unwrap();
         let store = fs::canonicalize(base.path()).unwrap().join("store");
         fs::create_dir(&store).unwrap();

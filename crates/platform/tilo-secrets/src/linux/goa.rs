@@ -212,8 +212,3 @@ pub(crate) fn read_goa(
         result
     })
 }
-
-#[cfg(all(test, feature = "native-goa-qualification"))]
-mod native_process;
-#[cfg(all(test, feature = "native-goa-qualification"))]
-mod tests;

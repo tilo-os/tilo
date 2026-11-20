@@ -10,7 +10,6 @@ license.workspace = true
 capture-worker = []
 capture-worker-applications = ["capture-worker"]
 host-media-writer = []
-native-slack-qualification = ["installation", "dep:zbus"]
 native-capture-qualification = ["installation", "flatpak-media-writer", "launcher/native-home-alias-qualification"]
 test-support = ["dep:tilo-install-helpers", "dep:tilo-test-env", "dep:tilo-oauth", "migration-sources/test-support"]
 flatpak-media-writer = ["block-devices/udisks", "dep:zbus"]

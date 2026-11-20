@@ -68,7 +68,6 @@ capture-worker-applications = ["capture-worker", "imager-backend/capture-worker-
 native-capture-qualification = ["installation", "imager-backend/native-capture-qualification"]
 native-current-device-qualification = ["installation"]
 # Explicit isolated original-owner SecretService + pinned public Slack fixture.
-native-slack-qualification = ["installation", "imager-backend/native-slack-qualification"]
 # Host downloads opt into the narrowly elevated raw-media writer. The tapp
 # deliberately omits this feature because its sandbox has no raw-device portal.
 # A host download is the guided installer, so it brings `installation`.
@@ -191,7 +190,6 @@ tilo-install-helpers = { path = "../../crates/system/install-helpers" }
 accounts = { path = "../../crates/system/accounts" }
 account-credentials = { path = "../../crates/system/account-credentials" }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
-zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 url.workspace = true
 crc32fast.workspace = true
 tilo-seal = { path = "../../crates/system/tilo-seal" }

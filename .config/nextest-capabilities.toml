@@ -57,3 +57,49 @@ or test(=the_block_comes_and_goes_with_the_profile_state) \
 or test(=a_caller_other_than_the_seats_shell_is_refused) \
 or test(=a_block_left_by_a_crashed_helper_is_kept_until_reset_at_boot) \
 or test(=a_block_left_by_a_crashed_session_is_taken_over_by_the_next))"""
+
+# The tests that observe what an ordinary account may not read ran as the image's test user
+# before: a root job passed them vacuously. They state that premise and run in the micro-VM
+# checks `identity-accounts` and `identity-accounts-build` (t.toml), under setpriv --reuid=1000.
+[capabilities.NonRoot]
+variable = "TILO_REQUIRE_NONROOT"
+mapped = true
+
+[[capabilities.NonRoot.tests]]
+probe = "non-root-identity"
+filter = """\
+(package(tilo-device-identity) and test(=persist::tests::an_unreachable_device_key_is_an_error_not_a_fresh_machine)) \
+or (package(tilo-files) and test(=provisioning_flushes_every_barrier_and_keeps_what_a_failure_left)) \
+or (package(windows-vm) and test(=owner_status::tests::the_owner_status_summary_reads_state_and_runtime_status_safely)) \
+or (package(tilo-secrets) and (test(=owner_migration::chromium::tests::owner_scope_refuses_files_and_elevation_without_contacting_a_keyring) \
+or test(=owner_migration::goa::tests::goa_credentials_refuse_unbound_queries_and_never_print))) \
+or (package(runtime-portal) and test(=descriptors::tests::a_peer_that_cannot_be_traced_still_hands_over_its_descriptor)) \
+or (package(linux-vm) and test(=hosted::jail::tests::only_a_root_owned_configuration_is_read)) \
+or (package(tilo-identity) and test(=person_files::tests::a_symlinked_or_foreign_identity_directory_is_refused)) \
+or (package(launcher) and (test(=owned_service::capture::root_output::tests::original_output_admission_needs_held_native_ownership) \
+or test(=capture_service::signed_capture_worker_confines_source_and_output_and_reaps_on_cancel)))"""
+
+# The tests that observe what only root may do, for the same reason, in the same checks under
+# the guest's own root. A launcher test that enters a mount namespace of its own is root's too:
+# a user namespace's root cannot bind the host's filesystems, and a job sandbox's
+# capability-dropped root holds no mount privilege.
+[capabilities.Root]
+variable = "TILO_REQUIRE_ROOT"
+mapped = true
+
+[[capabilities.Root.tests]]
+probe = "root-identity"
+filter = """\
+(package(tilo-identity) and (test(=enrolled_transport::fs::tests::explicit_owner_observation_is_read_only_and_preserves_private_admission) \
+or test(=enrolled_transport::fs::tests::enrollment_storage_authority) \
+or test(=person_files::tests::root_writes_into_a_persons_directory_only_as_the_person))) \
+or (package(tilo-files) and test(=native::atomic::directory::retained_foundation_tests::a_held_store_publishes_and_validates_through_the_directory_it_holds)) \
+or (package(launcher) and (test(=system_view::the_view_exposes_exactly_what_per_path_binds_did) \
+or test(=capture_service::signed_original_source_reader_drops_source_groups_only_after_namespace_confinement) \
+or test(=capture_service::mounted_source::signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs) \
+or test(=capture_service::openpgp_native::signed_original_openpgp_capsule_accepts_approved_commit_and_refuses_wrong_key)))"""
+# Publishing an enrolled system is root's alone (`installed_person::root`); the imager's
+# `imager-tests` shards run it as the micro-VM guest's root, and a job elsewhere leaves it out.
+[[capabilities.Root.tests]]
+probe = "root-identity"
+filter = "package(imager) and test(=setup::journey::prepared_media_native::tests::media_preparation_exports_actual_enrolled_device_without_root_backup_fallback)"

@@ -576,15 +576,16 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn explicit_owner_observation_is_read_only_and_preserves_private_admission() {
+        tilo_test_env::require_capability!(
+            Root,
+            tilo_test_env::root_identity(),
+            "an explicit owner observation is only granted to real root"
+        );
         let root = private_root();
         let path = root.path().canonicalize().unwrap();
         let ordinary = Directory::open(&path).unwrap();
         ordinary.publish("record", b"retained-original").unwrap();
         let uid = rustix::process::geteuid().as_raw();
-        if rustix::process::getuid().as_raw() != 0 || uid != 0 {
-            assert!(Directory::observe_owner(File::open(&path).unwrap(), uid).is_err());
-            return;
-        }
         let shared = StorageDirectory::from_file(File::open(&path).unwrap()).unwrap();
         assert!(
             shared
@@ -670,10 +671,17 @@ mod tests {
             .unwrap();
             assert!(namespace.normalize_public_file("device.key").is_err());
             assert!(namespace.normalize_public_directory().is_err());
-            let metadata = std::fs::metadata(&path).unwrap();
-            if metadata.uid() != 0 {
+            if tilo_test_env::root_identity().is_err() {
+                tilo_test_env::require_capability!(
+                    NonRoot,
+                    tilo_test_env::non_root_identity(),
+                    "root-controlled authority needs either real root or an ordinary account"
+                );
                 assert!(Directory::open_public_root(&path).is_err());
                 assert!(Directory::open_system_namespace(&path).is_err());
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777)).unwrap();
+                assert!(Directory::open_public_root(&path).is_err());
+                assert!(namespace.validate().is_err());
             } else {
                 let publisher = Directory::open_system_namespace(&path).unwrap();
                 publisher
@@ -711,10 +719,10 @@ mod tests {
                 assert!(public.child("new", true).is_err());
                 assert!(!path.join("new").exists());
                 assert!(!path.join("lock").exists());
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777)).unwrap();
+                assert!(Directory::open_public_root(&path).is_err());
+                assert!(namespace.validate().is_err());
             }
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777)).unwrap();
-            assert!(Directory::open_public_root(&path).is_err());
-            assert!(namespace.validate().is_err());
         }
 
         phase public_child_namespace_cannot_escape_or_outlive_changed_private_ancestry;

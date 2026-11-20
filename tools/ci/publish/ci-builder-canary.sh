@@ -100,7 +100,7 @@ JS
     # A build directory of its own: the sources, target/ in them included, are read-only in a
     # job, and the browser tests' nextest store lives in the build directory. A new one each run:
     # the scratch directory is shared with whatever else runs on the builder, and a directory
-    # another user left there cannot be written or handed to the test user.
+    # another user left there cannot be written.
     mkdir -p "$scratch"
     CARGO_TARGET_DIR=$(mktemp -d "$scratch/builder-canary-browser-target.XXXXXX")
     export CARGO_TARGET_DIR
