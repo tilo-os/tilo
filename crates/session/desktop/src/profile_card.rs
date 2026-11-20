@@ -2153,17 +2153,30 @@ impl LazyProfileCard {
         }
     }
 
+    /// Whether a card asked to open before its code was in can open now: its code arrived.
+    fn arrived(&self) -> bool {
+        self.opening.is_some() && self.code.is_in()
+    }
+
+    /// Open the card that was asked for before its code was in, now that it is, under `anchor` in
+    /// `viewport`. Whether it opened.
+    fn open_arrived(&mut self, anchor: Rect, viewport: Rect) -> bool {
+        if !self.arrived() {
+            return false;
+        }
+        let Some((model, _, _)) = self.opening.take() else {
+            return false;
+        };
+        if let Some(card) = self.card() {
+            card.toggle(&model, anchor, viewport);
+        }
+        true
+    }
+
     /// Follow the anchor; whether the card moved. A card asked to open before its code was in opens
     /// here once it is.
     pub fn follow_anchor(&mut self, anchor: Rect, viewport: Rect) -> bool {
-        if let Some((model, _, _)) = self.opening.as_ref()
-            && self.code.get().is_some()
-        {
-            let model = model.clone();
-            self.opening = None;
-            if let Some(card) = self.card() {
-                card.toggle(&model, anchor, viewport);
-            }
+        if self.open_arrived(anchor, viewport) {
             return true;
         }
         if let Some((_, placed, in_view)) = self.opening.as_mut() {
@@ -2272,6 +2285,12 @@ impl Widget for LazyProfileCard {
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // A card asked for while its code was on its way opens as the code arrives, where it was
+        // asked to, whether or not the surface showing it moves its anchor: that surface lays it
+        // out again for it ([`Self::take_structure_dirty`]).
+        if let Some((_, anchor, viewport)) = self.opening {
+            self.open_arrived(anchor, viewport);
+        }
         if let Some(card) = self.card.as_mut() {
             return card.build_layout(taffy, theme, map);
         }
@@ -2352,9 +2371,13 @@ impl Widget for LazyProfileCard {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        self.card
+        // The code arrived for a card waiting on it: the card is built on the next layout.
+        let arrived = self.arrived();
+        let card = self
+            .card
             .as_mut()
-            .is_some_and(|card| card.take_structure_dirty())
+            .is_some_and(|card| card.take_structure_dirty());
+        arrived || card
     }
 
     fn traps_focus(&self) -> bool {

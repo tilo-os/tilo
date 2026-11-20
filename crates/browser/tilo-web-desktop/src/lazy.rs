@@ -448,6 +448,24 @@ pub(crate) fn register() {
     prepare_page_drops_after_first_frame();
     prepare_page_search_after_first_frame();
     prepare_say_doing_after_first_frame();
+    prepare_people_after_first_frame();
+}
+
+/// Once the page has drawn its first frame, fetch the people roster and the profile card.
+///
+/// The bar's faces open them, and a press before their code is in stands a quiet "Loading…" panel
+/// where the person asked for someone: the modules go after the first frame, so the faces open
+/// who is here at once. Nothing of them is needed for that frame.
+fn prepare_people_after_first_frame() {
+    let work = Closure::once_into_js(move |_deadline: f64| {
+        if tilo_browser_runtime::first_frame_presented() {
+            let _ = tilo_desktop::people::PEOPLE.get();
+            let _ = tilo_desktop::profile_card::PROFILE_CARD.get();
+        } else {
+            prepare_people_after_first_frame();
+        }
+    });
+    after_idle(SPELLING_POLL_MS, &work);
 }
 
 /// Once the page has drawn its first frame, fetch what a file dropped on the

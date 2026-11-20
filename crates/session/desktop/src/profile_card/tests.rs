@@ -142,6 +142,35 @@ fn a_lazy_card_opens_with_accounts_that_arrived_while_it_loaded() {
     assert!(said.contains("type /link"), "{said}");
 }
 
+/// A surface that stands the card in a place of its own and never moves its anchor (the people
+/// panel, which opens a face's card where its roster stands) still sees the card open once its
+/// code is in: the arrival asks for a layout, and that layout builds the card where it was asked.
+#[test]
+fn a_lazy_card_opens_on_the_layout_after_its_code_arrives() {
+    static CODE: ui::lazy_code::LazyCode<MakeProfileCard> = ui::lazy_code::LazyCode::fetched();
+    ui::i18n::I18nManager::init("en-US");
+    let mut card = LazyProfileCard::with_code(&CODE);
+    let anchor = Rect::new(900.0, 40.0, 1260.0, 40.0);
+    let viewport = Rect::new(0.0, 0.0, 1280.0, 720.0);
+    card.toggle(
+        &ada(false, crate::people::LineSource::Observed),
+        anchor,
+        viewport,
+    );
+    assert!(
+        !card.take_structure_dirty(),
+        "nothing to build while the code is away"
+    );
+    CODE.install(builtin_profile_card());
+    assert!(card.take_structure_dirty(), "its arrival asks for a layout");
+    let mut frame = ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark());
+    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    harness.poll_frame().unwrap();
+    let shown = harness.inspection_json().unwrap();
+    assert!(shown.contains("Ada’s profile"), "{shown}");
+    assert!(shown.contains(r#""name": "Follow""#), "{shown}");
+}
+
 /// Someone else's card asked open while its code is on its way opens saying what is said of them
 /// once it is in, not what was said when it was asked for: the roster hands the waiting card each
 /// change, as it hands an open card.
