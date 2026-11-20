@@ -119,9 +119,10 @@ impl Device {
         Mentions::over(Given {
             person: vec![person.to_owned()],
             store: Some(self.store.clone()),
-            records: Some(
-                Rc::new(Kept::over(self.store.clone(), self.changes.clone())) as Rc<dyn Records>,
-            ),
+            records: Some(Reads::here(Rc::new(Kept::over(
+                self.store.clone(),
+                self.changes.clone(),
+            )))),
             notices: Some(Rc::clone(shown) as Rc<dyn Notices>),
             name: Rc::new(name),
             shown: on_screen,
@@ -811,7 +812,7 @@ fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
     let mentions = Mentions::over(Given {
         person: vec![BEA.to_owned()],
         store: Some(device.store.clone()),
-        records: Some(Rc::clone(&records) as Rc<dyn Records>),
+        records: Some(Reads::here(Rc::clone(&records) as Rc<dyn Records>)),
         notices: Some(Rc::clone(&shown) as Rc<dyn Notices>),
         name: Rc::new(name),
         shown: nothing_shown(),
@@ -893,7 +894,7 @@ fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
     let again = Mentions::over(Given {
         person: vec![BEA.to_owned()],
         store: Some(device.store.clone()),
-        records: Some(Rc::clone(&records) as Rc<dyn Records>),
+        records: Some(Reads::here(Rc::clone(&records) as Rc<dyn Records>)),
         notices: Some(Rc::clone(&shown) as Rc<dyn Notices>),
         name: Rc::new(name),
         shown: nothing_shown(),
@@ -954,7 +955,7 @@ fn a_mention_posted_in_a_chat_part_the_page_follows_is_told() {
     let mentions = Mentions::over(Given {
         person: vec![BEA.to_owned()],
         store: Some(device.store.clone()),
-        records: Some(Rc::clone(&counted) as Rc<dyn Records>),
+        records: Some(Reads::here(Rc::clone(&counted) as Rc<dyn Records>)),
         notices: Some(Rc::clone(&shown) as Rc<dyn Notices>),
         name: Rc::new(name),
         shown: nothing_shown(),
@@ -979,5 +980,91 @@ fn a_mention_posted_in_a_chat_part_the_page_follows_is_told() {
             .as_ref()
             .is_some_and(|place| place.anchor.starts_with("chat.workspace/messages/")),
         "it opens the message: {notice:?}"
+    );
+}
+
+/// What a device's workspace service answers: a read waits until the workspace it is of has
+/// opened.
+#[cfg(target_os = "linux")]
+struct Opening {
+    kept: Kept,
+    open: std::sync::Mutex<bool>,
+    opened: std::sync::Condvar,
+}
+
+#[cfg(target_os = "linux")]
+impl Opening {
+    fn open(&self) {
+        *self.open.lock().unwrap() = true;
+        self.opened.notify_all();
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Records for Opening {
+    fn take_changed(&self) -> Vec<Changed> {
+        self.kept.take_changed()
+    }
+
+    fn document(&self, app: &str, workspace: &str, route: &str) -> Option<AutoCommit> {
+        let open = self.open.lock().unwrap();
+        drop(self.opened.wait_while(open, |open| !*open).unwrap());
+        self.kept.document(app, workspace, route)
+    }
+}
+
+/// A look at a document whose workspace is still opening returns at once and tells nothing yet:
+/// the frame that stepped it is never held up. The mention is told on the pass after the read lands.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_look_at_a_document_still_arriving_returns_at_once_and_tells_it_once_it_lands() {
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::{Duration, Instant};
+
+    let written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
+    let device = Device::holding(&[(NOTES, NOTE, &written)]);
+    let opening = Arc::new(Opening {
+        kept: Kept::over(device.store.clone(), device.changes.clone()),
+        open: Mutex::new(false),
+        opened: std::sync::Condvar::new(),
+    });
+    let (landing, wakes) = mpsc::channel();
+    let landing = Mutex::new(landing);
+    let wake: tilo_service::Wake = Arc::new(move || {
+        let _ = landing.lock().unwrap().send(());
+    });
+    let shown = Rc::new(Shown::default());
+    let mentions = Mentions::over(Given {
+        person: vec![BEA.to_owned()],
+        store: Some(device.store.clone()),
+        records: Some(Reads::apart(Arc::clone(&opening) as _)),
+        notices: Some(Rc::clone(&shown) as Rc<dyn Notices>),
+        name: Rc::new(name),
+        shown: nothing_shown(),
+        wake: Some(wake),
+    });
+
+    let started = Instant::now();
+    mentions.step();
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the step waited {:?} for a document still arriving",
+        started.elapsed()
+    );
+    assert!(
+        shown.up.borrow().is_empty(),
+        "nothing is told before it lands"
+    );
+
+    opening.open();
+    wakes
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the session is woken when the read lands");
+    mentions.step();
+    let up = shown.up.borrow();
+    assert_eq!(up.len(), 1, "{up:?}");
+    assert_eq!(
+        up.values().next().unwrap().title,
+        "Ada mentioned you in ‘Launch plan’"
     );
 }

@@ -10,6 +10,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
+use std::task::Poll;
 
 use durable_store::{DurableStore, StorageKey, WriteOp};
 use ui::automerge::AutoCommit;
@@ -303,7 +304,7 @@ pub struct Given {
     /// Where what was told is kept.
     pub store: Option<Store>,
     /// The records of this device, as the host reads them.
-    pub records: Option<Rc<dyn Records>>,
+    pub records: Option<Reads>,
     /// The person's notifications, as the host shows them.
     pub notices: Option<Rc<dyn Notices>>,
     /// What this host calls a member.
@@ -318,7 +319,7 @@ pub struct Given {
 struct Inner {
     me: BTreeSet<ui::MemberId>,
     store: Option<Store>,
-    records: Option<Rc<dyn Records>>,
+    records: Option<Reads>,
     notices: Option<Rc<dyn Notices>>,
     name: Names,
     shown: OnScreen,
@@ -327,6 +328,8 @@ struct Inner {
     lease: RefCell<Option<durable_store::Lease>>,
     /// The records a change reached since the last look.
     pending: RefCell<BTreeSet<Changed>>,
+    /// What was looked at and whose read has not landed yet.
+    arriving: RefCell<BTreeSet<Changed>>,
     /// The places the person chose and the host has not opened yet.
     chosen: RefCell<Vec<Place>>,
     /// When the records were last looked at.
@@ -346,16 +349,14 @@ impl Mentions {
             shown,
             wake,
         } = given;
+        let me = people(&person);
+        let records = records.map(|reads| reads.started(&me, wake.clone()));
         let mut held = Held::default();
         if let Some(kept) = store.as_ref().and_then(|store| read(store.as_ref())) {
             held.restore(&kept);
         }
         Self(Rc::new(Inner {
-            me: person
-                .into_iter()
-                .filter(|id| !id.is_empty())
-                .map(ui::MemberId::person)
-                .collect(),
+            me,
             store,
             records,
             notices,
@@ -365,6 +366,7 @@ impl Mentions {
             held: RefCell::new(held),
             lease: RefCell::default(),
             pending: RefCell::default(),
+            arriving: RefCell::default(),
             chosen: RefCell::default(),
             looked_at: Cell::default(),
         }))
@@ -376,7 +378,8 @@ impl Mentions {
         self.step_at(ui::time::now());
     }
 
-    /// [`Self::step`] at `now`, as a host's pass reads the clock.
+    /// [`Self::step`] at `now`, as a pass reads the clock. Never waits for a read: what it reads
+    /// is looked at again on the pass after the read lands.
     pub(crate) fn step_at(&self, now: ui::time::Instant) {
         if self.0.notices.is_none() && self.0.records.is_none() {
             return;
@@ -385,80 +388,115 @@ impl Mentions {
         let Some(records) = &self.0.records else {
             return;
         };
-        for record in records.take_changed() {
-            self.0.pending.borrow_mut().insert(record);
+        for changed in records.take_changed() {
+            // Changed again while its read was out: read again, as what lands of the earlier
+            // read is not what it holds now.
+            records.renoted(&changed);
+            self.0
+                .arriving
+                .borrow_mut()
+                .retain(|waiting| route_of(waiting) != route_of(&changed));
+            self.0.pending.borrow_mut().insert(changed);
         }
-        if self.0.pending.borrow().is_empty() {
-            return;
+        let mut looking = std::mem::take(&mut *self.0.arriving.borrow_mut());
+        if !self.0.pending.borrow().is_empty() {
+            let pause = ui::time::Duration::from_millis(LOOK_EVERY_MS);
+            if self
+                .0
+                .looked_at
+                .get()
+                .is_some_and(|then| now.duration_since(then) < pause)
+            {
+                // Looked at on a pass once the pause is over.
+                self.wake();
+            } else {
+                self.0.looked_at.set(Some(now));
+                looking.extend(std::mem::take(&mut *self.0.pending.borrow_mut()));
+            }
         }
-        let pause = ui::time::Duration::from_millis(LOOK_EVERY_MS);
-        if self
-            .0
-            .looked_at
-            .get()
-            .is_some_and(|then| now.duration_since(then) < pause)
-        {
-            // Looked at on a pass once the pause is over.
-            self.wake();
-            return;
-        }
-        self.0.looked_at.set(Some(now));
-        let pending = std::mem::take(&mut *self.0.pending.borrow_mut());
         let mut kept = false;
-        for changed in pending {
-            if let Some(moved) = self.unread(records.as_ref(), &changed) {
-                kept |= moved;
-                continue;
+        for changed in looking {
+            match self.look_at(records, &changed) {
+                Poll::Ready(moved) => kept |= moved,
+                Poll::Pending => {
+                    self.0.arriving.borrow_mut().insert(changed);
+                }
             }
-            let Some(mut doc) = records.document(&changed.app, &changed.workspace, &changed.record)
-            else {
-                continue;
-            };
-            let place = ui::mentions::record_of_part(&changed.record);
-            let tree =
-                place.and_then(|place| records.document(&changed.app, &changed.workspace, place));
-            let place = place.unwrap_or(&changed.record);
-            // The kind of the record a mention opens in: the one its document names, else, for
-            // the app's own record, which names none, the one its app's surface declares first.
-            let kind = if place.is_empty() {
-                ui::app_surface::primary_kind(&changed.app)
-            } else {
-                resource_type(tree.as_ref().unwrap_or(&doc))
+        }
+        if kept {
+            self.keep();
+        }
+    }
+
+    /// Look for the person's mentions in what `changed` names, as far as its read landed: whether
+    /// what is kept moved, or pending while the read is out.
+    fn look_at(&self, reads: &Reads, changed: &Changed) -> Poll<bool> {
+        let key = (changed.app.clone(), changed.record.clone());
+        let ask = {
+            let held = self.0.held.borrow();
+            let seen = held.seen.get(&key);
+            Ask {
+                seen: seen.map(|seen| seen.heads.clone()),
+                told: held.told.get(&key).is_some_and(|told| !told.is_empty()),
+                unknown: changed.replayed && !held.knows(&changed.app, &changed.record),
             }
-            .unwrap_or_default();
-            let mut held = self.0.held.borrow_mut();
-            let key = (changed.app.clone(), changed.record.clone());
-            self.read_where_seen(&mut held, &changed, (place, &kind), &mut doc, tree.as_ref());
-            // What the workspace held before this device followed the record is not news.
-            let quiet = changed.replayed && !held.knows(&changed.app, &changed.record);
-            let told = held.look(
-                &Look {
-                    app: &changed.app,
-                    record: &changed.record,
-                    place,
-                    kind: &kind,
-                    doc: &doc,
-                    tree: tree.as_ref(),
-                    quiet,
-                    // Nobody here can tell what the person holds of what a text refers to: an
-                    // excerpt names no resource, never a title they may not read.
-                    read: &ui::mentions::reading_nothing,
-                    shown: &*self.0.shown,
-                },
-                &self.0.me,
-                &*self.0.name,
-            );
-            let heads = doc.get_heads();
-            if heads.is_empty() {
-                held.seen.remove(&key);
-            } else {
-                held.seen.insert(key, Seen { heads, read: true });
+        };
+        let (mut doc, tree) = match reads.fetch(changed, ask, &self.0.me) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Fetched::Gone | Fetched::Unchanged) => return Poll::Ready(false),
+            Poll::Ready(Fetched::Moved(heads)) => {
+                let mut held = self.0.held.borrow_mut();
+                let read = held.seen.get(&key).is_some_and(|seen| seen.read);
+                held.seen.insert(key, Seen { heads, read });
+                return Poll::Ready(true);
             }
-            drop(held);
-            kept = true;
-            let Some(notices) = &self.0.notices else {
-                continue;
-            };
+            Poll::Ready(Fetched::Before(heads)) => {
+                let mut held = self.0.held.borrow_mut();
+                held.told.entry(key.clone()).or_default();
+                held.seen.insert(key, Seen { heads, read: false });
+                return Poll::Ready(true);
+            }
+            Poll::Ready(Fetched::Whole(whole)) => *whole,
+        };
+        let place = ui::mentions::record_of_part(&changed.record);
+        let place = place.unwrap_or(&changed.record);
+        // The kind of the record a mention opens in: the one its document names, else, for the
+        // app's own record, which names none, the one its app's surface declares first.
+        let kind = if place.is_empty() {
+            ui::app_surface::primary_kind(&changed.app)
+        } else {
+            resource_type(tree.as_ref().unwrap_or(&doc))
+        }
+        .unwrap_or_default();
+        let mut held = self.0.held.borrow_mut();
+        self.read_where_seen(&mut held, changed, (place, &kind), &mut doc, tree.as_ref());
+        // What the workspace held before this device followed the record is not news.
+        let quiet = changed.replayed && !held.knows(&changed.app, &changed.record);
+        let told = held.look(
+            &Look {
+                app: &changed.app,
+                record: &changed.record,
+                place,
+                kind: &kind,
+                doc: &doc,
+                tree: tree.as_ref(),
+                quiet,
+                // Nobody here can tell what the person holds of what a text refers to: an
+                // excerpt names no resource, never a title they may not read.
+                read: &ui::mentions::reading_nothing,
+                shown: &*self.0.shown,
+            },
+            &self.0.me,
+            &*self.0.name,
+        );
+        let heads = doc.get_heads();
+        if heads.is_empty() {
+            held.seen.remove(&key);
+        } else {
+            held.seen.insert(key, Seen { heads, read: true });
+        }
+        drop(held);
+        if let Some(notices) = &self.0.notices {
             for tag in &told.withdraw {
                 notices.withdraw(tag);
             }
@@ -466,9 +504,7 @@ impl Mentions {
                 notices.show(notice);
             }
         }
-        if kept {
-            self.keep();
-        }
+        Poll::Ready(true)
     }
 
     /// Where `changed`'s record was taken as seen up to some heads and never read, read what it
@@ -508,50 +544,6 @@ impl Mentions {
             &self.0.me,
             &*self.0.name,
         );
-    }
-
-    /// Whether `changed` needs no reading of its record, and if so whether what is kept moved:
-    /// `None` when the record must be read whole. A record looked at before is read as what
-    /// changed since, and read whole only when that names the person, or takes something away
-    /// where a mention of them stands; one the workspace held before this device followed it is
-    /// taken as seen where it stands. So a large record's changes cost what they hold.
-    fn unread(&self, records: &dyn Records, changed: &Changed) -> Option<bool> {
-        let key = (changed.app.clone(), changed.record.clone());
-        let mut held = self.0.held.borrow_mut();
-        if let Some(seen) = held.seen.get(&key).cloned() {
-            let (heads, bytes) = match records.since(
-                &changed.app,
-                &changed.workspace,
-                &changed.record,
-                &seen.heads,
-            ) {
-                Since::Unchanged => return Some(false),
-                Since::Whole => return None,
-                Since::Changes { heads, bytes } => (heads, bytes),
-            };
-            let touched = ui::mentions::touched_by(&bytes, &self.0.me)?;
-            let has_told = held.told.get(&key).is_some_and(|told| !told.is_empty());
-            if touched.names || (touched.removes && has_told) || heads.is_empty() {
-                return None;
-            }
-            held.seen.insert(
-                key,
-                Seen {
-                    heads,
-                    read: seen.read,
-                },
-            );
-            return Some(true);
-        }
-        if !changed.replayed || held.knows(&changed.app, &changed.record) {
-            return None;
-        }
-        let heads = records
-            .heads(&changed.app, &changed.workspace, &changed.record)
-            .filter(|heads| !heads.is_empty())?;
-        held.told.entry(key.clone()).or_default();
-        held.seen.insert(key, Seen { heads, read: false });
-        Some(true)
     }
 
     /// Take up the places the person chose from a notice, so the host opens them through its own
@@ -630,6 +622,248 @@ pub(crate) fn member_names(
             .filter(|name| ui::presence::shown_name(name).is_some())
             .unwrap_or_else(|| ui::presence::unnamed_label(who))
     })
+}
+
+/// A document by its workspace, app and route: what one read of it is kept by.
+type Route = (String, String, String);
+
+fn route_of(changed: &Changed) -> Route {
+    (
+        changed.workspace.clone(),
+        changed.app.clone(),
+        changed.record.clone(),
+    )
+}
+
+/// What a look at a document needs read of it, by what the role holds of it.
+#[derive(Clone, Debug)]
+struct Ask {
+    /// The heads it was last looked at, when it was.
+    seen: Option<Vec<automerge::ChangeHash>>,
+    /// Whether a mention in it was told.
+    told: bool,
+    /// It is what the workspace held before this device followed it, and was never looked at.
+    unknown: bool,
+}
+
+/// What was read of a document for a look at it.
+enum Fetched {
+    /// Nothing to read: it is gone, or not held here.
+    Gone,
+    /// It stands where it was last looked at.
+    Unchanged,
+    /// It moved to these heads, and nothing in what changed names the person.
+    Moved(Vec<automerge::ChangeHash>),
+    /// What the workspace held before this device followed it, at these heads: taken as seen
+    /// there, unread.
+    Before(Vec<automerge::ChangeHash>),
+    /// It whole, and the document a mention in it opens in when that is another.
+    Whole(Box<(AutoCommit, Option<AutoCommit>)>),
+}
+
+/// Read what a look at `changed` needs of `from`, as `ask` says. A document looked at before is
+/// read as what changed since, and read whole only when that names the person, or takes
+/// something away where a mention of them stands; one the workspace held before this device
+/// followed it is taken as seen where it stands. So a large document's changes cost what they
+/// hold.
+fn fetch(from: &dyn Records, changed: &Changed, ask: &Ask, me: &BTreeSet<ui::MemberId>) -> Fetched {
+    let (app, workspace, route) = (
+        changed.app.as_str(),
+        changed.workspace.as_str(),
+        changed.record.as_str(),
+    );
+    if let Some(seen) = &ask.seen {
+        match from.since(app, workspace, route, seen) {
+            Since::Unchanged => return Fetched::Unchanged,
+            Since::Whole => {}
+            Since::Changes { heads, bytes } => {
+                let apart = ui::mentions::touched_by(&bytes, me).is_some_and(|touched| {
+                    !(touched.names || (touched.removes && ask.told) || heads.is_empty())
+                });
+                if apart {
+                    return Fetched::Moved(heads);
+                }
+            }
+        }
+    } else if ask.unknown
+        && let Some(heads) = from
+            .heads(app, workspace, route)
+            .filter(|heads| !heads.is_empty())
+    {
+        return Fetched::Before(heads);
+    }
+    let Some(doc) = from.document(app, workspace, route) else {
+        return Fetched::Gone;
+    };
+    let tree =
+        ui::mentions::record_of_part(route).and_then(|place| from.document(app, workspace, place));
+    Fetched::Whole(Box::new((doc, tree)))
+}
+
+/// How the role reads the workspaces' documents: on the thread that steps it where a read
+/// answers at once, as a page's store does, or on a worker of its own where a read may wait on a
+/// workspace still opening, as this device's service does. A frame never waits for one.
+pub struct Reads(Way);
+
+enum Way {
+    Here(Rc<dyn Records>),
+    /// Read on a worker once the role starts it.
+    #[cfg(target_os = "linux")]
+    Apart(crate::platform::records::Source),
+    #[cfg(target_os = "linux")]
+    Behind(Behind),
+}
+
+/// Reads made on a worker, each answered when it lands.
+#[cfg(target_os = "linux")]
+struct Behind {
+    from: crate::platform::records::Source,
+    asks: std::sync::mpsc::Sender<(Changed, u64, Ask)>,
+    landed: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<Route, (u64, Fetched)>>>,
+    /// The read out for each document, by its ticket.
+    out: RefCell<std::collections::HashMap<Route, u64>>,
+    tickets: Cell<u64>,
+}
+
+impl Reads {
+    /// Reads of `from` on the thread that steps the role: where a read answers at once.
+    #[must_use]
+    pub fn here(from: Rc<dyn Records>) -> Self {
+        Self(Way::Here(from))
+    }
+
+    /// Reads of `from` on a worker of their own.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn apart(from: crate::platform::records::Source) -> Self {
+        Self(Way::Apart(from))
+    }
+
+    /// Reads of what this device's workspace service holds, through `reads`, with `changes`
+    /// saying what moved: on a worker, as a read there waits on a workspace still opening.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn of_service(
+        reads: std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
+        changes: crate::platform::records::Changes,
+    ) -> Self {
+        Self::apart(std::sync::Arc::new(crate::platform::records::Held::over(
+            reads, changes,
+        )))
+    }
+
+    /// Start the worker these reads are made on, reading for `me` and waking the session's loop
+    /// through `wake` as each lands.
+    fn started(self, me: &BTreeSet<ui::MemberId>, wake: Option<tilo_service::Wake>) -> Self {
+        #[cfg(target_os = "linux")]
+        if let Way::Apart(from) = self.0 {
+            use std::sync::{Arc, Mutex, PoisonError, mpsc};
+            let (asks, asked) = mpsc::channel::<(Changed, u64, Ask)>();
+            let landed: Arc<Mutex<std::collections::HashMap<Route, (u64, Fetched)>>> =
+                Arc::default();
+            let me = me.clone();
+            let (reading, answers) = (Arc::clone(&from), Arc::clone(&landed));
+            let worker = std::thread::Builder::new()
+                .name("mentions".to_owned())
+                .spawn(move || {
+                    // Ends when the role does.
+                    while let Ok((changed, ticket, ask)) = asked.recv() {
+                        let fetched = fetch(reading.as_ref(), &changed, &ask, &me);
+                        answers
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(route_of(&changed), (ticket, fetched));
+                        if let Some(wake) = &wake {
+                            wake();
+                        }
+                    }
+                });
+            if let Err(error) = worker {
+                tracing::warn!(%error, "the person's mentions are not read");
+            }
+            return Self(Way::Behind(Behind {
+                from,
+                asks,
+                landed,
+                out: RefCell::default(),
+                tickets: Cell::default(),
+            }));
+        }
+        let _ = (me, wake);
+        self
+    }
+
+    fn take_changed(&self) -> Vec<Changed> {
+        match &self.0 {
+            Way::Here(from) => from.take_changed(),
+            #[cfg(target_os = "linux")]
+            Way::Apart(from) => from.take_changed(),
+            #[cfg(target_os = "linux")]
+            Way::Behind(behind) => behind.from.take_changed(),
+        }
+    }
+
+    /// `changed`'s document changed again: a read of it out now reads what it held before.
+    fn renoted(&self, changed: &Changed) {
+        #[cfg(target_os = "linux")]
+        if let Way::Behind(behind) = &self.0 {
+            let route = route_of(changed);
+            behind.out.borrow_mut().remove(&route);
+            behind
+                .landed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&route);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = changed;
+    }
+
+    /// What `ask` reads of `changed`'s document: at once here, or pending until the worker's read
+    /// of it lands.
+    fn fetch(&self, changed: &Changed, ask: Ask, me: &BTreeSet<ui::MemberId>) -> Poll<Fetched> {
+        match &self.0 {
+            Way::Here(from) => Poll::Ready(fetch(from.as_ref(), changed, &ask, me)),
+            #[cfg(target_os = "linux")]
+            Way::Apart(from) => Poll::Ready(fetch(from.as_ref(), changed, &ask, me)),
+            #[cfg(target_os = "linux")]
+            Way::Behind(behind) => {
+                let route = route_of(changed);
+                let mut out = behind.out.borrow_mut();
+                if let Some(ticket) = out.get(&route).copied() {
+                    let landed = behind
+                        .landed
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&route);
+                    return match landed {
+                        Some((at, fetched)) if at == ticket => {
+                            out.remove(&route);
+                            Poll::Ready(fetched)
+                        }
+                        // What landed of a read before it changed again: the one out now answers.
+                        _ => Poll::Pending,
+                    };
+                }
+                let ticket = behind.tickets.get().wrapping_add(1);
+                behind.tickets.set(ticket);
+                if behind.asks.send((changed.clone(), ticket, ask)).is_err() {
+                    // The worker is gone with the session.
+                    return Poll::Ready(Fetched::Gone);
+                }
+                out.insert(route, ticket);
+                Poll::Pending
+            }
+        }
+    }
+}
+
+/// The members `ids` name, without the empty one.
+fn people(ids: &[String]) -> BTreeSet<ui::MemberId> {
+    ids.iter()
+        .filter(|id| !id.is_empty())
+        .map(ui::MemberId::person)
+        .collect()
 }
 
 /// What this device told before it started, as its store kept it.

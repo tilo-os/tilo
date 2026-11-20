@@ -1551,9 +1551,9 @@ impl Session {
                 store: Some(store),
                 // The workspaces' records are this device's service to answer: what their apps
                 // and the person's other devices write lands there, never in this store.
-                records: engine
-                    .as_ref()
-                    .map(|_| Rc::new(Held::over(document_reads.clone(), changes.clone())) as Rc<_>),
+                records: engine.as_ref().map(|_| {
+                    crate::mentions::Reads::of_service(document_reads.clone(), changes.clone())
+                }),
                 notices: Some(crate::notifications::RoleNotices::of(&notifications)),
                 name: crate::mentions::member_names(
                     handle.clone(),
