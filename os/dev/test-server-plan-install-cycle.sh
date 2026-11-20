@@ -124,20 +124,22 @@ owner() {
     TILO_MEM="${TILO_SERVER_CYCLE_OWNER_MEM:-4096}" "$vm" "$@"
 }
 # A command in the owner's private profile on that guest.
+# Every guest command is bounded: a guest that accepts the connection and
+# never answers would otherwise hold the cycle until its own timeout.
 owner_profile() {
-  owner ssh "bash $owner_driver $owner_root $*"
+  TILO_SSH_BOUND="${TILO_SSH_BOUND:-660}" owner ssh "bash $owner_driver $owner_root $*"
 }
 owner_control() {
-  owner ssh "bash $owner_driver $owner_root control $*"
+  TILO_SSH_BOUND="${TILO_SSH_BOUND:-120}" owner ssh "bash $owner_driver $owner_root control $*"
 }
 owner_cmd() {
-  owner ssh "bash $owner_driver $owner_root cmd $(printf '%q ' "$@")"
+  TILO_SSH_BOUND="${TILO_SSH_BOUND:-300}" owner ssh "bash $owner_driver $owner_root cmd $(printf '%q ' "$@")"
 }
 
 wait_server_ssh() {
   local attempts="${1:-180}" i
   for i in $(seq 1 "$attempts"); do
-    server true >/dev/null 2>&1 && return 0
+    TILO_SSH_BOUND=10 server true >/dev/null 2>&1 && return 0
     server_vm status | grep -q '^running' || return 1
     sleep 5
   done
@@ -146,7 +148,7 @@ wait_server_ssh() {
 wait_owner_ssh() {
   local attempts="${1:-180}" i
   for i in $(seq 1 "$attempts"); do
-    owner ssh true >/dev/null 2>&1 && return 0
+    TILO_SSH_BOUND=10 owner ssh true >/dev/null 2>&1 && return 0
     owner status 2>/dev/null | grep -q '^running' || return 1
     sleep 2
   done
@@ -243,7 +245,7 @@ phase=owner
 qemu-img create -f qcow2 -F qcow2 -b "$(cd "$(dirname "$owner_disk")" && pwd)/$(basename "$owner_disk")" \
   "$owner_dir/disk.qcow2" >/dev/null
 owner boot --disk "$owner_dir/disk.qcow2" --2d --no-tpm || die 'the owner device did not start'
-wait_owner_ssh 240 || {
+wait_owner_ssh 120 || {
   owner status >&2 2>&1 || true
   serial_tail owner "$owner_dir"
   die 'the owner device did not accept SSH'
