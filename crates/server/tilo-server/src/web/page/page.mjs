@@ -319,10 +319,20 @@ function start() {
     return {...config.address, show: rest ? decodeURIComponent(rest) : null};
   };
 
+  // An event the page has heard nothing back for shows the page at work,
+  // quietly: the person keeps typing and clicking meanwhile.
+  let working = null;
   const ask = value => {
     if (!link) return;
     unanswered++;
+    working ??= setTimeout(() => { page.dataset.working = ''; }, 300);
     link.send(value).catch(() => {});
+  };
+  const caughtUp = () => {
+    if (unanswered > 0) return;
+    clearTimeout(working);
+    working = null;
+    delete page.dataset.working;
   };
 
   const numberOf = element => Number(element.closest('[data-p]')?.dataset.p);
@@ -441,6 +451,7 @@ function start() {
     if (answer === 'loading') { say('loading'); return; }
     if (answer.changed) { restoring = true; patch(answer.changed); return; }
     unanswered = Math.max(0, unanswered - 1);
+    caughtUp();
     if (answer.shown) show(answer.shown);
     else if (answer.patched) patch(answer.patched);
     else if (answer.refused) {
@@ -535,6 +546,8 @@ function start() {
       }
       link.close();
       link = null;
+      unanswered = 0;
+      caughtUp();
       if (page.querySelector('[data-p]')) {
         // The session ended under an open page: open it again.
         setTimeout(connect, 1000);
