@@ -349,7 +349,7 @@ fn records_of_many_workspaces_share_the_pools_workers_and_outlive_one_that_stops
     }
 }
 
-fn kill(pid: u32) {
+pub(crate) fn kill(pid: u32) {
     let status = std::process::Command::new("kill")
         .args(["-9", &pid.to_string()])
         .status_locked()

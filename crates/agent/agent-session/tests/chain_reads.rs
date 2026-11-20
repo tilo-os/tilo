@@ -248,7 +248,7 @@ fn documents_read_for_content(observed: &[ui::tilo_resource::profiling::Sample])
 }
 
 #[test]
-fn the_content_a_chain_names_is_read_again_only_for_the_parts_that_moved() {
+fn the_content_a_chain_names_is_not_read_again_for_the_workers_own_writes() {
     let mut page = founded();
     let held = held(&mut page).lending(tilo_content::ContentStore::memory());
     let mut filled = 0;
@@ -269,17 +269,12 @@ fn the_content_a_chain_names_is_read_again_only_for_the_parts_that_moved() {
     // Nothing moved: nothing is read again, however much the chain holds.
     let ((), again) = ui::tilo_resource::profiling::observe(|| held.put_held_content().unwrap());
     assert_eq!(documents_read_for_content(&again), 0, "{again:?}");
-    // A post moves the newest part and what else it writes; the full part
-    // before it is not read again: of the document and its two parts, two at
-    // most.
+    // A post the worker made itself names only content it made and holds:
+    // the part it wrote waits unapplied, and nothing is read again for it.
     post(&held, "second of the newest part");
     taken(&held);
     let ((), moved) = ui::tilo_resource::profiling::observe(|| held.put_held_content().unwrap());
-    let read = documents_read_for_content(&moved);
-    assert!(
-        (1..=2).contains(&read),
-        "only what the post moved is read again: {read} of 3"
-    );
+    assert_eq!(documents_read_for_content(&moved), 0, "{moved:?}");
 }
 
 /// Take what the document and its parts changed, as the server does after each

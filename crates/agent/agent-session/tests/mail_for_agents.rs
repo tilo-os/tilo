@@ -374,3 +374,65 @@ fn an_agent_is_offered_adding_an_account_its_person_is_asked_for() {
         "an agent asks its person first"
     );
 }
+
+/// What the worker wrote to the mailbox's messages names content it was given only by reference.
+/// Once that worker is gone, the next one is not handed the content beforehand: it asks for it
+/// as it reads the message, and reads it whole.
+#[test]
+fn a_message_delivered_by_reference_reads_whole_after_its_worker_stopped() {
+    let workspace = ContentStore::memory().sealing();
+    let sent = tilo_mail_parts::fixture::message_with_attachments(
+        "survey@example.test",
+        "Site survey",
+        &[("plan.png", 8 * 1024)],
+    );
+    let original = format!("tilo.content:{}", workspace.put(&sent).unwrap());
+    let agent = ConfinedReplica::open(
+        &AppCatalogue::native(),
+        MAIL,
+        WORKSPACE,
+        &MemberId::agent("assistant"),
+        &ReplicaActor::Agent {
+            person: MemberId::person("maker"),
+            name: String::new(),
+        },
+        Seed::New,
+        false,
+    )
+    .expect("a mailbox is held in a confined worker")
+    .lending(workspace.clone());
+    agent.take_mutation().unwrap().expect("a new mailbox");
+    let beside = messages(&agent);
+    let delivered = step_on(
+        &agent,
+        &beside,
+        "deliver-message",
+        json!({
+            "from": "Grace Hopper <grace@example.net>",
+            "subject": "Site survey",
+            "body": "The files are attached.",
+            "date": "2026-11-03T10:00:00Z",
+            "message_id": "<survey@example.test>",
+            "original": original,
+        }),
+    )
+    .value
+    .expect("a delivery answers with the message it kept");
+    let id = delivered["id"].as_str().unwrap().to_owned();
+    // Taken as the workspace takes each action's changes: the worker's own write waits in the
+    // part's mirror, unapplied.
+    agent.take_mutation().unwrap();
+    agent.take_document_mutations().unwrap();
+
+    crate::worker_isolation::kill(agent.worker_id().unwrap());
+    let exported = step(
+        &agent,
+        "export-content",
+        json!({ "format": "eml", "message": id }),
+    );
+    assert_eq!(
+        produced(&workspace, &exported).into_bytes(),
+        sent,
+        "the new worker exports the message that was sent, whole"
+    );
+}

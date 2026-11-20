@@ -128,6 +128,11 @@ struct Inner {
     /// moved. Reading every value of a chain's parts cost a second for a tracker of a few
     /// thousand issues, before every action, and more with every issue it held.
     named: BTreeMap<Option<DocumentId>, (Vec<automerge::ChangeHash>, BTreeSet<String>)>,
+    /// The parts held beside that took changes from the workspace since they were last read
+    /// for the content they name. A part's own changes, which the worker wrote, wait
+    /// unapplied in its mirror and name only content the worker made and holds; a part is
+    /// applied to be read for content only once others wrote to it.
+    others: BTreeSet<DocumentId>,
 }
 
 /// Whether `document` is one the store asked its workspace for, which this replica may hold
@@ -299,6 +304,7 @@ impl ConfinedReplica {
                 found: None,
                 forms: HashMap::new(),
                 named: BTreeMap::new(),
+                others: BTreeSet::new(),
             }),
         };
         if fresh {
@@ -1176,15 +1182,26 @@ impl ConfinedReplica {
             mirror,
             beside,
             named: read,
+            others,
             ..
         } = &mut *inner;
         read.retain(|document, _| document.as_ref().is_none_or(|id| beside.contains_key(id)));
         let mut named = named_in(read, None, mirror).clone();
         for (id, part) in beside.iter_mut() {
-            let part = part
-                .settled()
-                .map_err(|error| AppError::Merge(error.to_string()))?;
-            named.extend(named_in(read, Some(id.clone()), part).iter().cloned());
+            // What the worker wrote to a part and that waits unapplied names content the worker
+            // made itself: it holds that content, and a new worker is given it again
+            // ([`Self::revive`]) or asks for it ([`Self::gather`]). The part is applied, to be
+            // read whole, only for what others wrote to it.
+            let doc = if others.contains(id) {
+                let settled = part
+                    .settled()
+                    .map_err(|error| AppError::Merge(error.to_string()))?;
+                others.remove(id);
+                &*settled
+            } else {
+                part.unsettled().0
+            };
+            named.extend(named_in(read, Some(id.clone()), doc).iter().cloned());
         }
         let missing: Vec<String> = named
             .into_iter()
@@ -1521,6 +1538,7 @@ impl ConfinedReplica {
             }
             None => return Ok(()),
         };
+        inner.others.insert(document.clone());
         let reply = self.call(
             &mut inner,
             &Request::ApplyDocument {
@@ -1936,9 +1954,9 @@ fn referenced_content(doc: &AutoCommit) -> BTreeSet<String> {
 fn named_in<'a>(
     read: &'a mut BTreeMap<Option<DocumentId>, (Vec<automerge::ChangeHash>, BTreeSet<String>)>,
     document: Option<DocumentId>,
-    doc: &mut AutoCommit,
+    doc: &AutoCommit,
 ) -> &'a BTreeSet<String> {
-    let heads = doc.get_heads();
+    let heads = doc.committed_heads();
     let entry = read.entry(document).or_default();
     if entry.0 != heads || heads.is_empty() {
         *entry = (heads, referenced_content(doc));
