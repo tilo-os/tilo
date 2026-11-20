@@ -236,6 +236,37 @@ composefs_sealed_digest() {
   { sed -n "s/.*is '\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\)'.*/\2/p" "$1" 2>/dev/null || true; } | tail -1
 }
 
+# Seal IMAGE's UKI with the composefs digest `bootc install` will compute for IMAGE, so a
+# single install pass takes exactly IMAGE. `bootc container ukify` and `bootc install`
+# compute different digests for the same image (bootc#2334); the image's own bootc reads
+# the digest install takes from the image's layers in this machine's container storage,
+# the way install reads them. reseal-image.sh then rewrites the UKI in a /boot-only COPY
+# layer, which leaves that digest as it was. An image already sealed with it is kept.
+seal_image_for_install() {
+  local image="$1" id store scratch want had
+  id="$(podman image inspect --format '{{.Id}}' "$image")" || die "$image is not in local container storage"
+  store="$(podman info --format '{{.Store.GraphRoot}}')" || die "podman names no container storage"
+  scratch="$(mktemp -d "${TMPDIR:-/var/tmp}/tilo-composefs-digest.XXXXXX")"
+  # The digest's scratch composefs repository needs a real filesystem: an object
+  # is written with O_TMPFILE, which a container's overlay root does not support.
+  want="$(podman run --rm --privileged --network=none --security-opt label=disable \
+      -v "$store:/var/lib/containers/storage" -v "$scratch:/var/tmp" \
+      --entrypoint /usr/bin/bootc "$id" container compute-composefs-digest-from-storage "$id")" \
+    || { rm -rf "$scratch"; die "could not compute the composefs digest bootc install takes for $image"; }
+  rm -rf "$scratch"
+  [[ "$want" =~ ^[0-9a-f]{128}$ ]] || die "bootc computed no composefs digest for $image: $want"
+  had="$(podman run --rm --pull=never --network=none --entrypoint /bin/sh "$id" -c \
+      'for uki in /boot/EFI/Linux/*.efi; do /usr/libexec/tilo-uki-cmdline show "$uki"; done' \
+    | tr ' ' '\n' | sed -n 's/^composefs=//p')"
+  if [ "$had" = "$want" ]; then
+    msg "the UKI of $image already seals the composefs digest install computes"
+    return 0
+  fi
+  msg "sealing the UKI of $image with the composefs digest install computes, sha512:${want:0:32}…"
+  "$TILO_OS_DIR/dev/reseal-image.sh" "$image" "$want" \
+    || die "could not seal the UKI of $image with its composefs digest"
+}
+
 # `podman run` flags that give files a build container writes to bind mounts this user's
 # ownership. Rootless, --userns=keep-id does it; as root (a build container's root, such as
 # a remote builder's, whose user namespace maps only 65536 ids) there is nothing to keep,

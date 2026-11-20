@@ -269,36 +269,11 @@ if [ "$DEV_LOGIN" = 1 ]; then
   DISK_ARGS+=(--user "tester:${TILO_INSTALLER_DEV_PASSWORD}:wheel")
 fi
 INSTALL_LOG="$(dirname "$TILO_INSTALLER_DISK")/.install.log"
-# The two-pass reseal reads the digest bootc says it wants. Keep the same
-# output in a file this machine's own root holds, because the step's log lives
-# on the check's outputs filesystem and a writer there can fail part-way
-# ("tee: …: Bad file descriptor"), which would otherwise strand the retry.
-INSTALL_OUTPUT="$(mktemp /tmp/tilo-install-output.XXXXXX)"
-trap 'rm -f "$INSTALL_OUTPUT"' EXIT
-if ! "$TILO_OS_DIR/dev/disk-image.sh" "${DISK_ARGS[@]}" 2>&1 | tee "$INSTALL_OUTPUT"; then
-  want="$(composefs_expected_digest "$INSTALL_OUTPUT")"
-  [ -n "$want" ] || want="$(composefs_expected_digest "$INSTALL_LOG")"
-  [ -n "$want" ] || die "the installer disk-image step failed for a reason other than the
-  composefs seal; see the message above and $INSTALL_LOG"
-  had="$(composefs_sealed_digest "$INSTALL_OUTPUT")"
-  [ -n "$had" ] || had="$(composefs_sealed_digest "$INSTALL_LOG")"
-  msg "bootc#2334: the live UKI sealed sha512:${had:0:32}… but install wants sha512:${want:0:32}…"
-  msg "pass 2: rewriting that digest into the live UKI and retrying"
-  "$TILO_OS_DIR/dev/reseal-image.sh" "$TILO_INSTALLER_IMAGE" "$want" \
-    || die "could not rewrite the live installer's sealed composefs digest"
-  : > "$INSTALL_OUTPUT"
-  if ! "$TILO_OS_DIR/dev/disk-image.sh" "${DISK_ARGS[@]}" 2>&1 | tee "$INSTALL_OUTPUT"; then
-    want2="$(composefs_expected_digest "$INSTALL_OUTPUT")"
-    [ -n "$want2" ] || want2="$(composefs_expected_digest "$INSTALL_LOG")"
-    if [ -n "$want2" ] && [ "$want2" != "$want" ]; then
-      die "the digest install expects MOVED between passes (${want:0:16}… -> ${want2:0:16}…),
-  even though only the UKI under /boot changed. Sealing is circular on this bootc
-  version and requires an upstream fix."
-    fi
-    die "the second installer image pass failed too; see above and $INSTALL_LOG"
-  fi
-  msg "live installer seal closed in two passes"
-fi
+# One install pass of exactly the image the medium's provenance names: its live UKI is
+# sealed first with the composefs digest `bootc install` computes for it.
+seal_image_for_install "$TILO_INSTALLER_IMAGE"
+"$TILO_OS_DIR/dev/disk-image.sh" "${DISK_ARGS[@]}" \
+  || die "the installer disk-image step failed; see the message above and $INSTALL_LOG"
 
 # PCR prediction signatures are produced only after the composefs reseal has
 # converged, so both the TPM policy and detached signature cover the exact UKI

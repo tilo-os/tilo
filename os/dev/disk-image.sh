@@ -97,13 +97,12 @@
 #     "Creating object tmpfile: ... Operation not supported (os error 95)" and it
 #     names neither /var/tmp nor overlayfs. `--mount=type=cache,target=/var/tmp`
 #     fixes it; see os/dev/composefs/Containerfile.
-#   * The build has to run TWICE until bootc#2334 is fixed: `bootc container
-#     ukify` and `bootc install` compute different composefs digests for the same
-#     image, so the first install is refused, and the UKI has to be rebuilt
-#     sealing the digest install asked for. The expected value is stable across
-#     that rebuild, so two passes converge. os/dev/composefs/seal.sh is the loop.
-#     When install fails that way, the message below says so and prints the
-#     digest to seal.
+#   * Until bootc#2334 is fixed, `bootc container ukify` and `bootc install`
+#     compute different composefs digests for the same image, and install refuses
+#     a UKI sealing anything but its own value. The callers seal the image with
+#     the digest install computes before installing it (seal_image_for_install in
+#     os/dev/_common.sh). When install fails that way anyway, the message below
+#     says so and prints the digest to seal.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -1034,9 +1033,8 @@ if ! root_podman run "${run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
   if [ -n "$want" ]; then
     die "the UKI's sealed composefs digest is not the one install computed (bootc#2334).
   \`bootc container ukify\` and \`bootc install\` disagree on the digest of the same
-  image, so the image has to be rebuilt with the digest install asked for sealed
-  into the UKI, and installed again. The expected value is stable across that
-  rebuild, so two passes converge (os/dev/composefs/seal.sh automates the loop).
+  image, so the image has to be sealed with the digest install computes before it
+  is installed (seal_image_for_install in os/dev/_common.sh does it).
     seal this digest: sha512:$want
   Full log: $LOG"
   fi

@@ -47,11 +47,11 @@
 #     systemd-stub measures into PCR 11. Two consequences for this script:
 #       - the generation is resolved from the published series
 #         (os/dev/next-generation.sh) rather than defaulted;
-#       - the build runs TWICE when bootc#2334 bites, because `bootc container
-#         ukify` and `bootc install` compute different composefs digests for the
-#         same image. The loop below reads the digest install asked for, rebuilds
-#         the UKI sealing it, and installs again. Only the UKI stage rebuilds — the
-#         rootfs digest is unchanged, which is why two passes converge.
+#       - `bootc container ukify` and `bootc install` compute different
+#         composefs digests for the same image (bootc#2334), so before the
+#         install the UKI is sealed with the digest install computes, read from
+#         the image's layers (seal_image_for_install); the one install pass then
+#         takes exactly the image that is published.
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 warn_slow_podman_storage
 
@@ -623,12 +623,6 @@ build_image() {
     "${TILO_BUILD_CONTEXT:-$TILO_REPO}"
 }
 
-# Rewrite the composefs digest inside the UKI the image already carries, as a layer
-# that touches nothing but /boot. $1 = the digest (no "sha512:" prefix).
-reseal_uki() {
-  "$TILO_OS_DIR/dev/reseal-image.sh" "$TILO_IMAGE" "$1"
-}
-
 _tilo_native_builder_args=()
 if [ -n "${TILO_NATIVE_BUILDER_IMAGE_ID:-}" ]; then
   [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] || die "native builder reuse requires development mode"
@@ -819,58 +813,11 @@ if [ "$TILO_HARDWARE_PROFILE" = orangepi-3b-v2-1 ] || [ -n "${TILO_ROCKCHIP_LOAD
   disk_args+=(--boot-gap 16M --rockchip-loader "$loader")
 fi
 
-# A bootc built from os/Containerfile.bootc-helper closes the seal in this one
-# pass: install rewrites the UKI's stale composefs= digest to the one it computes
-# and prints it, and the same rewrite is then applied to the image.
-if [ -n "${TILO_BOOTC_HELPER:-}" ]; then
-  disk_args+=(--bootc-helper "$TILO_BOOTC_HELPER" --reseal-uki)
-fi
-
-# Pass 1. A sealed image is expected to be refused here: `bootc container ukify`
-# and `bootc install` compute different composefs digests for the same image
-# (bootc#2334), and install will not accept a UKI sealing anything but its own
-# value. disk-image.sh recognises that failure and prints the digest to seal, so
-# the recovery is to rebuild the UKI with it and install again.
-if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}"; then
-  want="$(composefs_expected_digest "$INSTALL_LOG")"
-  [ -n "$want" ] || die "the disk-image step failed for a reason other than the composefs digest
-  seal; see the message above and $INSTALL_LOG"
-  had="$(composefs_sealed_digest "$INSTALL_LOG")"
-  msg "bootc#2334: the UKI sealed sha512:${had:0:32}… but install wants sha512:${want:0:32}…"
-  msg "pass 2: rewriting that digest into the UKI the image already carries"
-  # NOT a rebuild. Rebuilding the UKI does not converge: it produces a new rootfs
-  # layer, so install then computes a third digest, and a fourth — measured here as
-  # 0196…, then 40b1…, then 317b… . reseal-image.sh extracts the existing UKI,
-  # edits its command line, and adds it with COPY. A RUN layer copies up /etc and
-  # changes its directory mtime in Podman, which moves bootc's composefs digest
-  # even when the command edits only /boot. COPY leaves that metadata unchanged.
-  #
-  # Both digests are 128 hex characters, so the edit is length-preserving and the PE
-  # layout is untouched; tilo-uki-cmdline refuses anything else.
-  reseal_uki "$want" || die "could not rewrite the sealed composefs digest"
-  if [ -n "${TILO_RESEALED_DIGEST_FILE:-}" ]; then
-    printf '%s\n' "$want" > "$TILO_RESEALED_DIGEST_FILE"
-  fi
-  if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}"; then
-    want2="$(composefs_expected_digest "$INSTALL_LOG")"
-    if [ -n "$want2" ] && [ "$want2" != "$want" ]; then
-      die "the digest install expects MOVED between passes (${want:0:16}… -> ${want2:0:16}…),
-  even though the only thing that changed was the UKI under /boot. That means the
-  digest is not computed over the rootfs alone, so sealing it is circular by
-  construction and cannot be closed here — it needs the upstream fix for bootc#2334."
-    fi
-    die "the second install pass failed too; see above and $INSTALL_LOG"
-  fi
-  msg "seal closed in two passes (install's expected digest was stable)"
-fi
-resealed="$(sed -n 's/^bootc: resealed UKI composefs digest: \([0-9a-f]\{128\}\)$/\1/p' "$INSTALL_LOG" | tail -n1)"
-if [ -n "$resealed" ]; then
-  msg "bootc#2334: install resealed the UKI to sha512:${resealed:0:32}…; applying it to $TILO_IMAGE"
-  reseal_uki "$resealed" || die "could not rewrite the sealed composefs digest"
-  if [ -n "${TILO_RESEALED_DIGEST_FILE:-}" ]; then
-    printf '%s\n' "$resealed" > "$TILO_RESEALED_DIGEST_FILE"
-  fi
-fi
+# One install pass of exactly this image: its UKI is sealed first with the composefs digest
+# `bootc install` computes for it (os/dev/_common.sh seal_image_for_install).
+seal_image_for_install "$TILO_IMAGE"
+"$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}" \
+  || die "the disk-image step failed; see the message above and $INSTALL_LOG"
 
 # Publish the normal update image with the same authority sidecars as installer
 # media. This runs only after the composefs seal converges; adding files under
