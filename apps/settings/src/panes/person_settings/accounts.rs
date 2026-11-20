@@ -32,7 +32,8 @@ use crate::effects::SettingsEffect;
 use crate::i18n::{t, t_args as translated};
 use crate::resource::Settings;
 use provider_settings_ui::widgets::{
-    El, Item, SettingsSection, error_row, note, page, row, rows, section, value_row,
+    El, Item, SettingsSection, block, error_caption, error_row, note, page, row, rows, section,
+    value_row,
 };
 
 /// Where Apple's page for app-specific passwords is.
@@ -541,7 +542,14 @@ impl AccountsModel {
         if let Some((asked, _)) = &self.asking {
             items.push(note(&Self::asking_note(*asked)));
         } else if let Some(line) = &self.step_error {
-            items.push(error_row(&t("settings-web-accounts-add-title"), line));
+            // Above the step's buttons, where the person who pressed one is
+            // looking: a long step's last rows are below what the window shows.
+            let at = if matches!(self.adding, Adding::Choosing) {
+                items.len()
+            } else {
+                items.len().saturating_sub(1)
+            };
+            items.insert(at, block(error_caption(line)));
         }
         section(&t("settings-web-accounts-add-title"), rows(items))
     }
@@ -1271,6 +1279,47 @@ mod tests {
         assert_eq!(set.account, "ada@example.test");
         assert!(set.services.mail);
         assert!(!set.services.calendar);
+    }
+
+    /// The server's own refusal reaches the person as it was written, and
+    /// the step stays where they can fix what it says.
+    #[test]
+    fn a_refusal_is_shown_in_the_servers_words() {
+        en();
+        let provider = Arc::new(TestProvider::new().answering(|_, request| {
+            if request.target.address.action == person_accounts::WATCH {
+                return ui::tilo_actions::remote::Pending::ready(Ok(
+                    ui::tilo_actions::remote::InvocationReceipt {
+                        invocation: request.invocation,
+                        status: ReceiptStatus::Completed {
+                            output: ui::tilo_actions::ActionOutput {
+                                value: Some(serde_json::to_value(MailAccounts::default()).unwrap()),
+                                ..Default::default()
+                            },
+                        },
+                    },
+                ));
+            }
+            ui::tilo_actions::remote::Pending::ready(Err(
+                ui::tilo_actions::remote::ActionCallError::Refused {
+                    reason: "No mail servers were found for example.test.".into(),
+                },
+            ))
+        }));
+        let mut accounts = model(&provider);
+        accounts.poll();
+        accounts
+            .apply(PersonSettingsEffect::ChooseProvider {
+                provider: "other".into(),
+            })
+            .unwrap();
+        accounts.address.set("ada@example.test".into());
+        accounts.apply(PersonSettingsEffect::FindServers).unwrap();
+        accounts.poll();
+        assert_eq!(
+            accounts.step_error.as_deref(),
+            Some("No mail servers were found for example.test.")
+        );
     }
 
     /// A request that cannot reach the server says so in the person's

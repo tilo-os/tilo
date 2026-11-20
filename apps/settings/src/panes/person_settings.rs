@@ -294,10 +294,15 @@ fn settled(call: &ui::InvocationCall) -> Option<Result<serde_json::Value, String
     }
 }
 
-/// A request that never reached the server, in the person's words: what
-/// the call layer says is for the console, where whoever looks into it
-/// reads why, not for the page.
+/// A request the call layer answered with an error, in the person's words.
+/// The server's own refusal is written for them (no servers found for the
+/// address, a password the provider did not take) and is shown as it is; for
+/// a request that never reached the server, what the call layer says is for
+/// the console, where whoever looks into it reads why, not for the page.
 fn unreached(error: &ActionCallError) -> String {
+    if let ActionCallError::Refused { reason } = error {
+        return reason.clone();
+    }
     tracing::warn!(?error, "settings: a request did not reach the server");
     t("settings-web-accounts-unreachable")
 }
