@@ -47,9 +47,14 @@ def read(path):
         return f.read()
 
 
+def helper(name):
+    """One helper's text."""
+    return read(os.path.join(IMAGE, "helpers", f"{name}.Containerfile"))
+
+
 def helpers():
     """Helper name -> its text, in os/Containerfile's order."""
-    return {h: read(os.path.join(IMAGE, "helpers", f"{h}.Containerfile")) for h in plan()["helpers"]}
+    return {h: helper(h) for h in plan()["helpers"]}
 
 
 def stages(text):
@@ -67,32 +72,46 @@ def references(text):
 def needed_helpers(text, given):
     """The helpers a piece needs, transitively, in order, leaving out stages given as images.
     A reference with a build argument in it (windows-provider-${TILO_WINDOWS_ARCH}-...) is to
-    whichever stage of its helper the argument picks: the whole helper comes along."""
-    hs = helpers()
-    defines = {}
-    for name, t in hs.items():
-        for s in stages(t):
-            defines[s] = name
+    whichever stage of its helper the argument picks: the whole helper comes along.
+
+    A helper is named for the stage it builds, so a reference to that name reads that helper
+    alone; only a reference by build argument reads them all to find the stages it may pick. An action reads no
+    helper it doesn't build, and a change to one is no change to the others' actions."""
+    order = plan()["helpers"]
+    texts, defines = {}, None
+
+    def text_of(name):
+        if name not in texts:
+            texts[name] = helper(name)
+        return texts[name]
+
     want, todo = set(), [text]
     own = set(stages(text))
     while todo:
         t = todo.pop()
+        own |= set(stages(t))
         for ref in references(t):
             if ref in given or ref in own or ref == "scratch":
                 continue
-            if ref in defines:
-                names = [defines[ref]]
-            elif re.fullmatch(r"\$\{[^}]*\}", ref) or "${" not in ref:
-                # An image reference by build argument (${BASE_REF}) or by name: no stage.
+            if re.fullmatch(r"\$\{[^}]*\}", ref):
+                # An image reference by build argument (${BASE_REF}): no stage.
+                continue
+            if ref in order:
+                names = [ref]
+            elif "${" not in ref:
+                # A build context or an image by name: no stage. A helper's other stages are
+                # its own, which only it names.
                 names = []
             else:
+                if defines is None:
+                    defines = {s: h for h in order for s in stages(text_of(h))}
                 pattern = re.sub(r"\\\$\\\{[^}]*\\\}", ".*", re.escape(ref))
                 names = [h for st, h in defines.items() if re.fullmatch(pattern, st)]
             for h in names:
                 if h not in want:
                     want.add(h)
-                    todo.append(hs[h])
-    return [h for h in hs if h in want]
+                    todo.append(text_of(h))
+    return [h for h in order if h in want]
 
 
 def layer(name):
@@ -116,17 +135,16 @@ def action_text(name, given=frozenset()):
     for i in plan().get("image", []):
         if i["name"] == name:
             # An image action builds helper stages: they are its piece, but those given to it.
-            return "".join(helpers()[t] for t in needed_helpers("".join(f"FROM {t}\n" for t in i["targets"]), given))
+            return "".join(helper(t) for t in needed_helpers("".join(f"FROM {t}\n" for t in i["targets"]), given))
     return pieces_text(layer(name))
 
 
 def containerfile(name, given):
     text = action_text(name, given)
     out = [read(os.path.join(IMAGE, "args.Containerfile"))]
-    hs = helpers()
     for h in needed_helpers(text, given):
-        if hs[h] not in text:
-            out.append(hs[h])
+        if helper(h) not in text:
+            out.append(helper(h))
     out.append(text)
     return "\n".join(t.rstrip("\n") + "\n" for t in out)
 
