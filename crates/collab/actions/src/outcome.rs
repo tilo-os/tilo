@@ -45,6 +45,16 @@ impl InvocationId {
     }
 }
 
+/// Read an invocation id a caller keeps in its own words (a page's dialog, a script's file) so
+/// its next ask is the same invocation: the server answers it with what the first did.
+impl std::str::FromStr for InvocationId {
+    type Err = uuid::Error;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(text.trim()).map(Self)
+    }
+}
+
 impl Default for InvocationId {
     fn default() -> Self {
         Self::new()
@@ -248,6 +258,25 @@ mod tests {
     fn outcomes_address_content_exactly_and_redact_terminal_payloads() {
         content_resource_addresses_round_trip_without_guessing();
         effect_receipt_redacts_terminal_payloads();
+        an_invocation_id_is_read_back_as_the_caller_wrote_it();
+    }
+
+    /// A caller that keeps an invocation id of its own (a page's dialog, a script's file) asks
+    /// again under the same one.
+    fn an_invocation_id_is_read_back_as_the_caller_wrote_it() {
+        let invocation = InvocationId::new();
+        let text = invocation.0.to_string();
+        assert_eq!(
+            text.parse::<InvocationId>().expect("its own id reads back"),
+            invocation
+        );
+        assert_eq!(
+            format!(" {text} ")
+                .parse::<InvocationId>()
+                .expect("spaced text reads"),
+            invocation
+        );
+        assert!("not an invocation".parse::<InvocationId>().is_err());
     }
 
     fn content_resource_addresses_round_trip_without_guessing() {

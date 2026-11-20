@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, knownWorkspaces, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStatus, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, freeName, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, knownWorkspaces, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStatus, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {DeviceKeyError} from './device-key.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 import {PAIRING_SAME_PERSON} from './pairing.mjs';
@@ -763,19 +763,43 @@ test('a host\'s certificate names its device key as the list keeps it', () => {
   assert.equal(hostDeviceOf(undefined), null);
 });
 
-test('workspaces that share a name are told apart in the menu, others keep their plain name', () => {
-  const choice = (origin, workspace, name) => ({id: `open-workspace:${origin}/${workspace}`, name, origin, workspace, home: false, unavailable: false});
+test('workspaces that share a name are told apart by a place a person knows, never the address dialled', () => {
+  const choice = (origin, workspace, name, extra = {}) => ({id: `open-workspace:${origin}/${workspace}`, name, origin, workspace, home: false, unavailable: false, ...extra});
   const labels = (choices, current) => workspaceActions(choices, {current}).map(action => action.label);
   // The common case: distinct names, nothing added.
   assert.deepEqual(labels([choice('https://a.example', 'A', 'Acme'), choice('https://b.example', 'B', 'Lounge')], 'Team'), ['Acme', 'Lounge']);
-  // Two Lounges on two hosts, beside a third in front: each says its host.
+  // Two Lounges on two sites, beside a third in front: each says its site.
   assert.deepEqual(labels([choice('https://a.example', 'A', 'Lounge'), choice('https://b.example', 'B', 'Lounge')], 'Lounge'),
     ['Lounge · a.example', 'Lounge · b.example']);
   assert.deepEqual(labels([choice('https://a.example', 'A', 'Lounge')], 'Lounge'), ['Lounge · a.example']);
-  // Two on one host: their workspaces too.
-  const one = [choice('https://a.example', '5e8d4510-aaaa', 'Lounge'), choice('https://a.example', '84c928ed-bbbb', 'Lounge')];
-  assert.deepEqual(labels(one, null), ['Lounge · a.example · 5e8d4510', 'Lounge · a.example · 84c928ed']);
-  assert.equal(workspaceActions(one)[0].title, 'Open Lounge · a.example · 5e8d4510');
+  // Two on one site: the site tells nobody apart, so each says whose it is.
+  const one = [choice('https://a.example', '5e8d4510-aaaa', 'Lounge', {role: 'owner'}),
+    choice('https://a.example', '84c928ed-bbbb', 'Lounge', {role: 'editor'})];
+  assert.deepEqual(labels(one, null), ['Lounge · yours', 'Lounge · editor']);
+  assert.equal(workspaceActions(one)[0].title, 'Open Lounge · yours');
+  // The host's own name, when it gave one, is the place people read: not the
+  // address this browser dialled, and not its port.
+  const hosted = [choice('http://127.0.0.1:37400', 'A', 'Studio', {place: 'tilo.localhost:32520'}),
+    choice('http://127.0.0.1:37400', 'B', 'Studio', {place: 'Annas Mac'})];
+  assert.deepEqual(labels(hosted, null), ['Studio · tilo.localhost', 'Studio · Annas Mac']);
+  // An address names nothing at all: with nothing else to go by, the name is
+  // all the menu says, and no row ever reads as a host and port.
+  const addressed = [choice('http://127.0.0.1:37400', 'A', 'Studio')];
+  assert.deepEqual(labels(addressed, 'Studio'), ['Studio']);
+  for (const action of workspaceActions([...hosted, ...addressed])) {
+    assert.ok(!action.label.includes('127.0.0.1'), action.label);
+    assert.ok(!action.subtitle.includes('127.0.0.1'), action.subtitle);
+  }
+});
+
+test('a workspace asked for under a name the switcher holds is numbered past it', () => {
+  // The shell's own rule, for the workspaces the page makes: two of one name
+  // never stand side by side where a person picks one by its name.
+  assert.equal(freeName('Studio', []), 'Studio');
+  assert.equal(freeName(' Studio ', ['Home']), 'Studio', 'the name as it would be stored decides it');
+  assert.equal(freeName('Studio', ['Home', 'Studio']), 'Studio 2');
+  assert.equal(freeName('Studio', ['Studio', 'Studio 3']), 'Studio 2', 'the first free number, not one past the highest');
+  assert.equal(freeName('Studio', ['Studio', 'Studio 2', 'Studio 3']), 'Studio 4');
 });
 
 test('the person switches between the home and the workspaces they entered, never to the one in front', () => {
@@ -802,7 +826,7 @@ test('the person switches between the home and the workspaces they entered, neve
   // Without a home, the person's own desktop offers every workspace entered.
   assert.equal(workspaceChoices({entered, current: {kind: 'own'}}).length, 4);
   assert.deepEqual(workspaceActions(fromAcme), [
-    {id: 'open-workspace:home', title: 'Open Lounge', label: 'Lounge', source: 'workspaces', subtitle: 'Workspace · workspaces.example'},
+    {id: 'open-workspace:home', title: 'Open Lounge', label: 'Lounge', source: 'workspaces', subtitle: 'Workspace · this site'},
     {id: 'open-workspace:https://globex.example/G', title: 'Open globex.example', label: 'globex.example', source: 'workspaces',
       subtitle: 'Workspace · globex.example · did not open last time'},
     {id: 'open-workspace:https://workspaces.example/TEAM', title: 'Open Team', label: 'Team', source: 'workspaces', subtitle: 'Workspace · workspaces.example'},
@@ -829,13 +853,14 @@ test('the host’s list names the person’s workspaces, and memory says where t
   ];
   const answering = 'https://workspaces.example';
   assert.deepEqual(knownWorkspaces({entered, listed, answering}), [
-    {origin: answering, workspace: 'OWN', name: 'My workspace', hostDevice: '11'.repeat(32), unavailable: false},
-    {origin: 'https://elsewhere.example', workspace: 'AWAY', name: 'Away', hostDevice: '22'.repeat(32), unavailable: false},
-    {origin: answering, workspace: 'LOUNGE', name: 'Lounge', unavailable: false},
+    {origin: answering, workspace: 'OWN', name: 'My workspace', hostDevice: '11'.repeat(32), unavailable: false, place: 'workspaces.example', role: 'owner'},
+    {origin: 'https://elsewhere.example', workspace: 'AWAY', name: 'Away', hostDevice: '22'.repeat(32), unavailable: false, place: 'eu1.example', role: null},
+    {origin: answering, workspace: 'LOUNGE', name: 'Lounge', unavailable: false, place: 'workspaces.example', role: null},
   ]);
   // In the Lounge, neither the home nor the workspace in front is offered back.
   assert.deepEqual(workspaceChoices({home, homeWorkspace: 'LOUNGE', entered, listed, answering,
-    current: {kind: 'workspace', host: answering, workspace: 'LOUNGE'}}).map(choice => choice.name), ['My workspace', 'Away']);
+    current: {kind: 'workspace', host: answering, workspace: 'LOUNGE'}}).map(choice => [choice.name, choice.place, choice.role]),
+  [['My workspace', 'workspaces.example', 'owner'], ['Away', 'eu1.example', null]]);
   // Before the host answers, the switcher is what the browser remembered.
   assert.deepEqual(knownWorkspaces({entered}), entered);
 });

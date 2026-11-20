@@ -135,7 +135,11 @@ function isHomeWorkspace({home, homeWorkspace = null, scope}) {
  * workspace names the host that keeps it: one with no signed `hint` is the host
  * that answered (`answering`, its origin), the rest are reached where this
  * browser reached them before. One entry per workspace, the host's name
- * winning and one it lists no longer marked as not opening.
+ * winning and one it lists no longer marked as not opening. A listing also says
+ * the host's own name (`place`: a site's name, or the label of the person's
+ * computer that keeps it) and the part the person takes in the workspace
+ * (`role`), which is what the switcher tells two workspaces of one name apart
+ * by: never the address this browser dialled.
  */
 export function knownWorkspaces({entered = [], listed = [], answering = null} = {}) {
   const known = entered.map(entry => ({...entry}));
@@ -150,8 +154,10 @@ export function knownWorkspaces({entered = [], listed = [], answering = null} = 
     const origin = here ? answering : (at >= 0 ? known[at].origin : null);
     if (!origin) continue;
     const name = typeof workspace.name === 'string' && workspace.name ? workspace.name : null;
-    if (at >= 0) known[at] = {...known[at], origin: originOf(origin), ...(name ? {name} : {}), unavailable: false};
-    else known.push({origin: originOf(origin), workspace: workspace.workspace, name, unavailable: false});
+    const place = typeof workspace.host?.name === 'string' && workspace.host.name ? workspace.host.name : null;
+    const role = typeof workspace.role === 'string' && workspace.role ? workspace.role : null;
+    if (at >= 0) known[at] = {...known[at], origin: originOf(origin), ...(name ? {name} : {}), place, role, unavailable: false};
+    else known.push({origin: originOf(origin), workspace: workspace.workspace, name, place, role, unavailable: false});
   }
   return known;
 }
@@ -164,8 +170,9 @@ export function knownWorkspaces({entered = [], listed = [], answering = null} = 
  * home's entry, so that workspace is offered once, as the home.
  * Where the person may have a desktop of their own (`own`), it comes first,
  * so a workspace is never a dead end. Each choice is
- * `{id, name, origin, workspace, home, own, unavailable}`; `id` is its host
- * action id.
+ * `{id, name, origin, workspace, home, own, unavailable, place, role}`; `id` is
+ * its host action id, `place` the host's name as people know it and `role` the
+ * part the person takes in it, where the host said either.
  */
 export function workspaceChoices({home = null, homeWorkspace = null, entered = [], listed = [], answering = null, current = null, own = false}) {
   const here = current?.kind === 'workspace' ? current : null;
@@ -173,40 +180,89 @@ export function workspaceChoices({home = null, homeWorkspace = null, entered = [
   const isHome = scope => isHomeWorkspace({home, homeWorkspace, scope});
   const choices = [];
   if (own && current?.kind !== 'own') {
-    choices.push({id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', origin: null, workspace: null, home: false, own: true, unavailable: false});
+    choices.push({id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', origin: null, workspace: null, home: false, own: true, unavailable: false, place: null, role: null});
   }
   if (homeOrigin && !(here && isHome(here))) {
     choices.push({id: `${OPEN_WORKSPACE}home`, name: home.name || new URL(homeOrigin).host, origin: homeOrigin,
-      workspace: home.workspace ?? null, home: true, own: false, unavailable: false});
+      workspace: home.workspace ?? null, home: true, own: false, unavailable: false, place: null, role: null});
   }
   for (const entry of knownWorkspaces({entered, listed, answering})) {
     if (isHome({host: entry.origin, workspace: entry.workspace}) || (here && originOf(here.host) === entry.origin && here.workspace === entry.workspace)) continue;
     choices.push({id: `${OPEN_WORKSPACE}${entry.origin}/${entry.workspace}`, name: entry.name || new URL(entry.origin).host,
-      origin: entry.origin, workspace: entry.workspace, home: false, own: false, unavailable: entry.unavailable});
+      origin: entry.origin, workspace: entry.workspace, home: false, own: false, unavailable: entry.unavailable,
+      place: entry.place ?? null, role: entry.role ?? null});
   }
   return choices;
 }
 
 /**
+ * The name a workspace is made under when the person asks for `name`: the name
+ * itself, or, when it is already taken, numbered past the names `held` (the
+ * switcher's own workspaces, the one in front included) — the rule the shell
+ * gives the workspaces it makes (`workspace_names`), so two workspaces of one
+ * name never stand side by side in the bar and the menu, where a person picks
+ * one by its name.
+ */
+export function freeName(name, held = []) {
+  const wanted = String(name ?? '').trim();
+  const taken = new Set(held.filter(other => typeof other === 'string' && other));
+  if (!taken.has(wanted)) return wanted;
+  for (let number = 2; ; number += 1) {
+    const candidate = `${wanted} ${number}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/** A place as a person reads it: a site's name (`tilo.sh`) or the label of their
+ * computer, without the port or the address this browser dialled — an address
+ * (`127.0.0.1`, `[::1]`, `localhost`) is nobody's name for their workspace. */
+function asPlace(text) {
+  const value = typeof text === 'string' ? text.trim().replace(/:\d+$/, '') : '';
+  if (!value || value === 'localhost' || value.includes(':') || /^[0-9.]+$/.test(value)) return null;
+  return value;
+}
+
+const namedOrigin = origin => {
+  try { return asPlace(new URL(origin).hostname); } catch { return null; }
+};
+
+/** What a workspace is told apart by when another of its person's is named the
+ * same: where the host keeps it, as people know that host (`tilo.sh`, the label
+ * of their computer), else whose it is to the person reading. Never the
+ * address this browser dialled. */
+function placeOf(choice) {
+  return asPlace(choice.place) ?? (choice.home ? 'this site' : namedOrigin(choice.origin));
+}
+
+/** Whose a workspace is, as a person reads it: theirs, or the part they hold. */
+const roleWord = role => ({owner: 'yours', editor: 'editor', commenter: 'commenter',
+  moderator: 'moderator', viewer: 'viewer'}[role] ?? null);
+
+/**
  * The host actions that open `choices` (`workspaceChoices`), for desktop
  * search. The workspace menu lists each by name beside the one in front
- * (named `current`), so two that share a name are told apart: by their
- * host, and where one host holds both, by their workspace too.
+ * (named `current`), so two that share a name are told apart by something a
+ * person knows: the host it is on as people name it, or whose it is to them.
  */
 export function workspaceActions(choices, {current = null} = {}) {
   const names = [current, ...choices.map(choice => choice.name)].filter(Boolean);
   const shared = name => names.filter(other => other === name).length > 1;
+  /** A place that only this one of the same-named workspaces is on: a place
+   * two of them share tells them apart from nobody. */
+  const ownPlace = choice => {
+    const place = placeOf(choice);
+    return place && choices.filter(other => other.name === choice.name && placeOf(other) === place).length === 1 ? place : null;
+  };
   return choices.map(choice => {
     if (choice.own) {
       return {id: choice.id, title: 'Open your desktop', label: choice.name, source: 'workspaces', subtitle: 'Your own desktop, in this browser'};
     }
-    const host = new URL(choice.origin).host;
-    const sameHost = choices.filter(other => other.name === choice.name && other.origin === choice.origin).length > 1;
-    const label = !shared(choice.name) ? choice.name
-      : sameHost && choice.workspace ? `${choice.name} · ${host} · ${choice.workspace.slice(0, 8)}` : `${choice.name} · ${host}`;
+    const place = placeOf(choice);
+    const tell = ownPlace(choice) ?? roleWord(choice.role);
+    const label = !shared(choice.name) || !tell ? choice.name : `${choice.name} · ${tell}`;
     // `label` and `source`: the desktop's workspace menu lists it by name.
-    return {id: choice.id, title: `Open ${label}`, label, source: 'workspaces',
-      subtitle: choice.unavailable ? `Workspace · ${host} · did not open last time` : `Workspace · ${host}`};
+    const about = ['Workspace', place, ...(choice.unavailable ? ['did not open last time'] : [])].filter(Boolean).join(' · ');
+    return {id: choice.id, title: `Open ${label}`, label, source: 'workspaces', subtitle: about};
   });
 }
 

@@ -398,7 +398,10 @@ impl Server {
         if !labels.is_empty() {
             arguments.insert("labels".into(), json!(labels));
         }
-        let (listing, _invitation) = connection.device.own_workspace(arguments).await?;
+        let (listing, _invitation) = connection
+            .device
+            .own_workspace(arguments, tilo_actions::InvocationId::new())
+            .await?;
         connection.let_in();
         Ok(connection.workspace(&listing))
     }

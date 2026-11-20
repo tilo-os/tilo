@@ -94,7 +94,9 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     // A member, not the owner, of a server that keeps its wait list to whoever
     // it lets invite.
     membership: {list: async () => ({name: 'Current', members: []}), mayInvite: async () => false, waitList: async () => { throw new Error('only someone the workspace lets invite lists the wait list'); }},
-    workspaces: {create: async name => ({workspace: 'created', name}), enter: async () => calls.push('enter')},
+    // A machine the person set up places the workspace under the id the page
+    // chose, this device admitted to it in the same call.
+    workspaces: {place: async ({name}) => ({workspace: 'created', name})},
     // The person's workspaces as the host lists them; a fixture says what it
     // answers, and nothing by default.
     personalWorkspaces: async () => [],
@@ -735,7 +737,7 @@ test('creating a workspace stays in the current workspace when pending work cann
   form.children.find(child => child.tag === 'label').children[0].value = 'Created';
   await form.listeners.get('submit')({preventDefault() {}});
   await tick();
-  assert.deepEqual(calls, ['enter', 'flush']);
+  assert.deepEqual(calls, ['flush']);
   assert.equal(chosenWorkspace(), null);
   const failure = document.body.children.at(-1);
   assert.match(failure.children[0].textContent, /not saved yet/);
@@ -751,7 +753,7 @@ test('creating a workspace remembers it and uses the existing save-and-close swi
   form.children.find(child => child.tag === 'label').children[0].value = 'Created';
   await form.listeners.get('submit')({preventDefault() {}});
   await tick();
-  assert.deepEqual(calls, ['enter', 'flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
+  assert.deepEqual(calls, ['flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
   assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, workspace: 'created'});
   assert.equal(enteredWorkspaces().find(entry => entry.workspace === 'created').name, 'Created');
 });

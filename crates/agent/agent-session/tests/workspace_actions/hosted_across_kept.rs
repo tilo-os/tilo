@@ -87,7 +87,7 @@ impl Kept {
             "browser",
         );
         let own = asking
-            .enter_own_workspace("en-US", None, "Bo", |_| false)
+            .enter_own_workspace("en-US", None, "Bo", |_| false, None)
             .await
             .expect("the server makes Bo a workspace of his own and admits his device")
             .workspace;

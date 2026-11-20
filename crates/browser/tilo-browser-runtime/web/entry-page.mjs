@@ -613,7 +613,7 @@ function machineCard({details = {}, run}) {
 /** A form of one line over the page: resolves to what `save(typed)` resolved
  * to, or `null` when cancelled. What `save` throws is said in the form,
  * which stays open. */
-function askLine({label: text, action, save}) {
+function askLine({label: text, action, busy = action, save}) {
   return new Promise(resolve => {
     const form = document.createElement('form');
     form.className = 'tilo-entry-card';
@@ -632,6 +632,7 @@ function askLine({label: text, action, save}) {
       event.preventDefault();
       if (!input.value.trim()) return;
       submit.disabled = true;
+      submit.textContent = busy;
       error.hidden = true;
       try {
         done(await save(input.value.trim()));
@@ -640,6 +641,7 @@ function askLine({label: text, action, save}) {
         error.hidden = false;
       } finally {
         submit.disabled = false;
+        submit.textContent = action;
       }
     });
     cancel.addEventListener('click', () => done(null));
@@ -1559,6 +1561,10 @@ export async function startEntryPage({mode}) {
     // workspace the page is in back to itself.
     const scope = page.router.route.target.scope;
     const here = scope?.kind === 'workspace' ? {...scope, workspace: scope.workspace ?? page.peer?.workspace ?? null} : scope;
+    // The workspaces the switcher offers, as a new one's name is numbered past
+    // them: kept here because the menu's own create action is offered beside
+    // the switcher's list, not inside it.
+    let switchChoices = [];
     // The host that answers at the peer's origin now: workspaces remembered there
     // under another host went with that host's state.
     const hostDevice = page.peer ? hostDeviceOf(page.peer.host?.hostCert) : null;
@@ -1588,6 +1594,7 @@ export async function startEntryPage({mode}) {
         ownOffered = own;
         offered = remembering(() => workspaceChoices({home: page.entry?.home, homeWorkspace: homeWorkspaceOf(page.entry),
           entered: enteredWorkspaces(), listed, answering: page.peer?.origin ?? null, current: here, own})) ?? [];
+        switchChoices = offered;
         hostActions('workspaces').setHostActions(workspaceSwitchActions(offered, {current: workspaceName}));
       };
       offer(false);
@@ -1727,6 +1734,9 @@ export async function startEntryPage({mode}) {
     workspaceActions = hostActions ? createWorkspaceActions({
       peer: page.peer,
       machines: () => (person() ? ownedHosts(person()) : []),
+      // Every name the switcher already holds, the one in front included: a new
+      // workspace is numbered past them rather than sharing one.
+      held: () => [workspaceName, ...switchChoices.map(choice => choice.name)].filter(Boolean),
       lobby: async origin => connectPeer({origin, identity: await rootOfThisPage(page.peer), runtime, displayName, live: false}),
       // The invitation's short link, sealed onto this site's shelf, as the
       // sheet makes it: the site keeps ciphertext it cannot read and the key
@@ -1744,7 +1754,7 @@ export async function startEntryPage({mode}) {
         await openWorkspace({choice: {origin, workspace, name}, page, status});
       },
       ui: {
-        askWorkspaceName: save => askLine({label: 'Name of the new workspace', action: 'Create', save}),
+        askWorkspaceName: save => askLine({label: 'Name of the new workspace', action: 'Create', busy: 'Creating…', save}),
         chooseMachine: origins => card('Create the workspace on', [...origins.map(origin => [new URL(origin).host, origin]), ['Cancel', null]]),
         share: shareCard,
         copy: text => navigator.clipboard.writeText(text).then(() => true, () => false),

@@ -28,6 +28,8 @@
  * Every step is the host's decision: a refusal is said, never worked
  * around.
  */
+import {freeName} from './workspaces.mjs';
+
 export const NEW_WORKSPACE = Object.freeze({id: 'new-workspace', title: 'New workspace',
   subtitle: 'Create a workspace on a machine you set up', source: 'workspace'});
 /** Join a workspace a site lists: the desktop's directory sheet, which the
@@ -65,7 +67,9 @@ export const keepsOwn = peer => Boolean(peer?.workspace) && Boolean(peer?.host?.
 /**
  * The workspace actions of a page whose peer is `peer` (`null` on the
  * person's own desktop). `machines()` lists the origins of the machines
- * this browser set up for the person; `lobby(origin)` connects to one
+ * this browser set up for the person; `held()` the names of the workspaces
+ * the switcher already offers (the one in front included), which a new
+ * workspace's name is numbered past; `lobby(origin)` connects to one
  * without a workspace and resolves to that peer. `inviteLink(invitation)`
  * resolves to the short link the workspace's site keeps the invitation
  * under, `https://<site>/i/<handle>#<key>`; `open({origin, workspace, name,
@@ -80,7 +84,7 @@ export const keepsOwn = peer => Boolean(peer?.workspace) && Boolean(peer?.host?.
  * actions to `perform`.
  */
 export function createWorkspaceActions({
-  peer = null, machines = () => [], lobby, inviteLink, open, ui,
+  peer = null, machines = () => [], held = () => [], lobby, inviteLink, open, ui,
   onError = error => console.warn('workspaces:', error),
 }) {
   let mount;
@@ -108,19 +112,36 @@ export function createWorkspaceActions({
     const choices = own || kept ? [peer.origin] : on ? [on] : machines();
     const origin = choices.length > 1 ? await ui.chooseMachine(choices) : choices[0];
     if (!origin) return;
-    const created = await ui.askWorkspaceName(async name => {
+    // One make per name, sold once: a name the dialog asked for that the server
+    // did not answer for keeps its invocation, so asking again is answered the
+    // workspace it made — never a second one beside it. A name they changed is
+    // a make of its own. A name the switcher already holds is numbered past it
+    // (the shell's own rule), so two workspaces of one name never stand side by
+    // side where a person picks one by its name.
+    const asked = new Map();
+    const making = typed => {
+      if (!asked.has(typed)) {
+        asked.set(typed, {name: freeName(typed, held()), invocation: globalThis.crypto?.randomUUID?.() ?? null,
+          workspace: globalThis.crypto?.randomUUID?.() ?? null});
+      }
+      return asked.get(typed);
+    };
+    const created = await ui.askWorkspaceName(async typed => {
+      const {name, invocation, workspace: id} = making(typed);
       if (kept) {
-        const made = await peer.enterOwnWorkspace({name});
+        const made = await peer.enterOwnWorkspace({name, invocation});
         return {workspace: made.workspace, name: made.name ?? name, hostDevice: hex(peer.host?.hostCert?.device_public_key)};
       }
-      const host = own ? peer : await lobby(origin);
+      const server = own ? peer : await lobby(origin);
       try {
-        const workspace = await host.workspaces.create(name);
-        await host.workspaces.enter(workspace.workspace);
-        // The host that holds it, which the browser remembers it under.
-        return {...workspace, hostDevice: hex(host.host?.hostCert?.device_public_key)};
+        // The workspace is placed under the id this dialog chose, so a press
+        // after no answer reaches the one already made (and this device is
+        // admitted to it), never a second beside it.
+        const workspace = await server.workspaces.place({workspace: id, name});
+        // The machine that holds it, which the browser remembers it under.
+        return {...workspace, name: workspace.name ?? name, hostDevice: hex(server.host?.hostCert?.device_public_key)};
       } finally {
-        if (!own) await host.dispose?.();
+        if (!own) await server.dispose?.();
       }
     });
     if (created) await open({origin, workspace: created.workspace, name: created.name, hostDevice: created.hostDevice});

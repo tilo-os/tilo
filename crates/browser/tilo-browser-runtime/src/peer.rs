@@ -2801,20 +2801,28 @@ impl WasmPeer {
     /// for each `name` ([`Device::enter_own_workspace`]). This very device
     /// redeems the invitation on that session, shown to the workspace's people as `shownAs`,
     /// unless `entered(workspace)` says it is in already. Resolves to the workspace's listing,
-    /// `{workspace, workspace_id, name, generation}` JSON.
+    /// `{workspace, workspace_id, name, generation}` JSON. `invocation` is the caller's own id for
+    /// this make (a UUID the page keeps while its dialog asks again after no answer), so the next
+    /// ask is answered the workspace the first made, never a second one; `null` asks under a fresh
+    /// id.
     ///
     /// # Errors
     ///
     /// Rejects with an `Error` named `DeviceRefusal` whose `code` says how the host refused
     /// ([`DeviceRefusal`]: `unknown_action` for a host that keeps no workspaces of people's own) and
-    /// whose `refusal` is the host's typed refusal where it gave one.
+    /// whose `refusal` is the server's typed refusal where it gave one; a text that is no UUID is
+    /// refused before the server is asked.
     #[wasm_bindgen(js_name = enterOwnWorkspace)]
     pub async fn enter_own_workspace(
         &self,
         name: Option<String>,
         shown_as: String,
         entered: Function,
+        invocation: Option<String>,
     ) -> Result<String, JsValue> {
+        let invocation = invocation
+            .map(|text| text.parse::<tilo_actions::InvocationId>().map_err(js_error))
+            .transpose()?;
         let listing = self
             .device
             .enter_own_workspace(
@@ -2826,6 +2834,7 @@ impl WasmPeer {
                         .call1(&JsValue::NULL, &JsValue::from_str(id))
                         .is_ok_and(|answer| answer.is_truthy())
                 },
+                invocation,
             )
             .await
             .map_err(|refusal| refusal_error(&refusal))?;

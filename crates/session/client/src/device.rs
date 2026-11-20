@@ -30,6 +30,9 @@ use tilo_session_actions::SessionActions;
 const ADMITTING: Wait = Wait::from_secs(20);
 /// How long a workspace's host has to answer an operation of its own.
 const ANSWERING: u32 = 20_000;
+/// How long an operation the server answered [`ActionCallError::Unanswered`] for waits
+/// before it is asked about again, under the same invocation.
+const UNANSWERED_PAUSE: Wait = Wait::from_millis(250);
 /// How long an operation of the host's own that was still running past
 /// [`ANSWERING`] is followed before it is given up on.
 const FINISHING: Wait = Wait::from_secs(120);
@@ -328,7 +331,10 @@ impl Device {
         }
         let mut named = Map::new();
         named.insert("workspace".to_owned(), Value::String(workspace.to_owned()));
-        let asked = match self.own_workspace(named).await {
+        let asked = match self
+            .own_workspace(named, tilo_actions::InvocationId::new())
+            .await
+        {
             Ok((listing, invitation)) if listing.workspace == workspace => {
                 self.redeem(&invitation, shown_as).await?;
                 None
@@ -371,15 +377,19 @@ impl Device {
     }
 
     /// The person's own workspace on the host, and the invitation into it: its `name` makes
-    /// another, or the `workspace` it must be.
+    /// another, or the `workspace` it must be. Asked under `invocation`: the same one answers the
+    /// workspace an earlier ask made, so asking again after no answer makes no second workspace.
     ///
     /// # Errors
     /// The host did not answer, refused, or answered no invitation.
     pub async fn own_workspace(
         &self,
         arguments: Map<String, Value>,
+        invocation: tilo_actions::InvocationId,
     ) -> Result<(WorkspaceListing, Vec<u8>), DeviceRefusal> {
-        let output = self.host_action(CREATE_OWN_WORKSPACE, arguments).await?;
+        let output = self
+            .server_action_as(CREATE_OWN_WORKSPACE, arguments, invocation)
+            .await?;
         let malformed = |why: String| {
             DeviceRefusal::malformed(format!(
                 "The host made no workspace of the person's own: {why}"
@@ -400,7 +410,8 @@ impl Device {
     /// `name` they give). This very device redeems the invitation into it, so the key this session
     /// holds is the one that opens it next. One the person did not name is named in `language`, the
     /// one they read. A workspace `entered` says this device is in already is not redeemed again.
-    /// `shown_as` is the name its members see.
+    /// `shown_as` is the name its members see. `invocation` is the caller's own id for this make,
+    /// kept across its asks (a page's dialog, asked again), or a fresh one.
     ///
     /// # Errors
     /// The host did not answer or refused (typed, as it said), or the workspace did not admit this
@@ -411,6 +422,7 @@ impl Device {
         name: Option<&str>,
         shown_as: &str,
         entered: impl FnOnce(&str) -> bool,
+        invocation: Option<tilo_actions::InvocationId>,
     ) -> Result<WorkspaceListing, DeviceRefusal> {
         let mut arguments = Map::new();
         if let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) {
@@ -418,7 +430,9 @@ impl Device {
         }
         // The host names a workspace the person did not, so it is told the language they read.
         arguments.insert("language".to_owned(), Value::String(language.to_owned()));
-        let (listing, invitation) = self.own_workspace(arguments).await?;
+        let (listing, invitation) = self
+            .own_workspace(arguments, invocation.unwrap_or_default())
+            .await?;
         if !entered(&listing.workspace) {
             self.redeem(&invitation, shown_as)
                 .await
@@ -484,16 +498,32 @@ impl Device {
         action: &str,
         arguments: Map<String, Value>,
     ) -> Result<Value, DeviceRefusal> {
+        self.server_action_as(action, arguments, tilo_actions::InvocationId::new())
+            .await
+    }
+
+    /// [`Self::host_action`], asked under `invocation` when the caller has one of its own: the
+    /// same invocation answers what the server did for it before, so a caller that asks again
+    /// after no answer (a person pressing the same button once more) is answered the workspace
+    /// the first ask made, never a second one.
+    ///
+    /// # Errors
+    /// The server did not answer, refused, or did not finish.
+    pub async fn server_action_as(
+        &self,
+        action: &str,
+        arguments: Map<String, Value>,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<Value, DeviceRefusal> {
         let target = RemoteActionTarget {
             provider: HOST_ACTIONS_PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(HOST_WORKSPACES_RESOURCE, action),
         };
-        self.ask_host(self.workspace_id, target, arguments).await
+        self.ask_server_as(self.workspace_id, target, arguments, invocation)
+            .await
     }
 
-    /// What the server itself answers to `target` with `arguments`, asked in
-    /// `workspace_id` ([`crate::session::HOST_ITSELF`] for none): one of its own operations,
-    /// or the person's account on it, asked as the person whose device this is.
+    /// [`Self::ask_server_as`] under a new invocation of this device's own.
     ///
     /// # Errors
     /// The server did not answer, refused, or did not finish.
@@ -503,26 +533,46 @@ impl Device {
         target: RemoteActionTarget,
         arguments: Map<String, Value>,
     ) -> Result<Value, DeviceRefusal> {
+        self.ask_server_as(
+            workspace_id,
+            target,
+            arguments,
+            tilo_actions::InvocationId::new(),
+        )
+        .await
+    }
+
+    /// What the server itself answers to `target` with `arguments`, asked in
+    /// `workspace_id` ([`crate::session::HOST_ITSELF`] for none): one of its own operations,
+    /// or the person's account on it, asked as the person whose device this is.
+    ///
+    /// # Errors
+    /// The server did not answer, refused, or did not finish.
+    pub async fn ask_server_as(
+        &self,
+        workspace_id: WorkspaceId,
+        target: RemoteActionTarget,
+        arguments: Map<String, Value>,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<Value, DeviceRefusal> {
         let actions = self.actions(workspace_id);
         let caller = self.caller();
-        let receipt = actions
-            .invoke(
-                &caller,
-                InvokeRequest {
-                    on_behalf_of: None,
-                    invocation: tilo_actions::InvocationId::new(),
-                    target,
-                    argument: InvokeArgument::Json(arguments),
-                    context: None,
-                    confirmation: None,
-                    revision: None,
-                    wait_ms: Some(ANSWERING),
-                    appearance: None,
-                },
-            )
-            .await
-            .ok_or_else(|| DeviceRefusal::unanswered("the server did not answer"))?
-            .map_err(|error| DeviceRefusal::of(&error))?;
+        let receipt = receipt_until_answered(
+            &actions,
+            &caller,
+            InvokeRequest {
+                on_behalf_of: None,
+                invocation,
+                target,
+                argument: InvokeArgument::Json(arguments),
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: Some(ANSWERING),
+                appearance: None,
+            },
+        )
+        .await?;
         let unfinished =
             || DeviceRefusal::unanswered("the server did not finish what was asked of it");
         match receipt.status {
@@ -575,6 +625,33 @@ impl Device {
     /// Close the session: it says this device left, and stops.
     pub fn close(&self) {
         self.peer.close();
+    }
+}
+
+/// The server's receipt for `request`, asked again under the same invocation while it answers
+/// [`ActionCallError::Unanswered`]: that answer does not say nothing ran, and the same invocation
+/// is answered by what it did (or does it once if it never arrived). So an operation the server
+/// was still busy with when one answer's wait ran out is waited for, up to the span a running one
+/// is followed ([`FINISHING`]), rather than reported as failed while it carries on.
+async fn receipt_until_answered(
+    actions: &SessionActions,
+    caller: &Caller,
+    request: InvokeRequest,
+) -> Result<tilo_actions::remote::InvocationReceipt, DeviceRefusal> {
+    let now = tilo_clock::now();
+    let until = now.checked_add(FINISHING).unwrap_or(now);
+    loop {
+        let answered = actions
+            .invoke(caller, request.clone())
+            .await
+            .ok_or_else(|| DeviceRefusal::unanswered("the server did not answer"))?;
+        match answered {
+            Ok(receipt) => return Ok(receipt),
+            Err(ActionCallError::Unanswered) if tilo_clock::now() < until => {
+                n0_future::time::sleep(UNANSWERED_PAUSE).await;
+            }
+            Err(error) => return Err(DeviceRefusal::of(&error)),
+        }
     }
 }
 

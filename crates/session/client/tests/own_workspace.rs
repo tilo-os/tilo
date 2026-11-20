@@ -80,7 +80,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // A host that keeps no workspaces of people's own says so in a code the page reads, not in
     // words it would have to match.
     let none = device
-        .enter_own_workspace("en-US", None, "Bob", |_| false)
+        .enter_own_workspace("en-US", None, "Bob", |_| false, None)
         .await
         .unwrap_err();
     assert_eq!(none.code, "unknown_action", "{none:?}");
@@ -97,10 +97,13 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // An id the host never made is refused, not taken as the workspace to make: the host chooses
     // the id of a person's own workspace.
     let unknown = device
-        .own_workspace(Map::from_iter([(
-            "workspace".into(),
-            json!("5c1f2e7a-8b3d-4e6f-9a0b-1c2d3e4f5a6b"),
-        )]))
+        .own_workspace(
+            Map::from_iter([(
+                "workspace".into(),
+                json!("5c1f2e7a-8b3d-4e6f-9a0b-1c2d3e4f5a6b"),
+            )]),
+            tilo_actions::InvocationId::new(),
+        )
         .await
         .unwrap_err();
     assert_eq!(unknown.code, "refused", "{unknown:?}");
@@ -113,10 +116,16 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // admits this very key, and it is Bob's, not the Lounge.
     let asked = Cell::new(0);
     let own = device
-        .enter_own_workspace("en-US", None, "Bob", |_| {
-            asked.set(asked.get() + 1);
-            false
-        })
+        .enter_own_workspace(
+            "en-US",
+            None,
+            "Bob",
+            |_| {
+                asked.set(asked.get() + 1);
+                false
+            },
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(asked.get(), 1);
@@ -224,11 +233,36 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // Asked again, it answers the same workspace; one this device is in already is not redeemed
     // again.
     let again = device
-        .enter_own_workspace("en-US", None, "Bob", |id| id == own.workspace)
+        .enter_own_workspace("en-US", None, "Bob", |id| id == own.workspace, None)
         .await
         .unwrap();
     assert_eq!(again.workspace, own.workspace);
     assert_eq!(again.name, own.name);
+
+    // A make asked again under the invocation its first ask used — a page's dialog
+    // asked once more because the first answer never came — answers the workspace
+    // the first made, never a second one beside it.
+    let once = tilo_actions::InvocationId::new();
+    let asked_twice = Map::from_iter([("name".into(), json!("Twice"))]);
+    let first = device
+        .own_workspace(asked_twice.clone(), once)
+        .await
+        .unwrap();
+    let second = device.own_workspace(asked_twice, once).await.unwrap();
+    assert_eq!(first.0.workspace, second.0.workspace);
+    assert_eq!(first.0.name, "Twice");
+    let named_twice = device
+        .personal_list(
+            &tilo_server_session::workspaces::WorkspaceLabels::new(),
+            None,
+        )
+        .await
+        .unwrap()
+        .workspaces
+        .into_iter()
+        .filter(|listed| listed.name == "Twice")
+        .count();
+    assert_eq!(named_twice, 1, "the second ask made no second workspace");
 
     // Another device of Bob's that holds the Lounge enters the same workspace of his under its
     // own key, never under the tab's.
@@ -264,7 +298,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         "Laptop",
     );
     let theirs = laptop
-        .enter_own_workspace("en-US", None, "Bob", |_| false)
+        .enter_own_workspace("en-US", None, "Bob", |_| false, None)
         .await
         .unwrap();
     assert_eq!(theirs.workspace, own.workspace);
@@ -274,7 +308,10 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     let elsewhere = workspaces.create("Not Bob's").await.unwrap();
     let mut not_his = Map::new();
     not_his.insert("workspace".into(), json!(elsewhere.workspace));
-    let refused = device.own_workspace(not_his).await.unwrap_err();
+    let refused = device
+        .own_workspace(not_his, tilo_actions::InvocationId::new())
+        .await
+        .unwrap_err();
     assert_eq!(refused.code, "refused", "{refused:?}");
     assert!(!refused.message.is_empty());
     assert_ne!(refused.code, DeviceRefusal::UNANSWERED);
@@ -312,7 +349,10 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     );
     // It makes no workspace, and enters no other.
     let made = script
-        .own_workspace(Map::from_iter([("name".into(), json!("More"))]))
+        .own_workspace(
+            Map::from_iter([("name".into(), json!("More"))]),
+            tilo_actions::InvocationId::new(),
+        )
         .await
         .unwrap_err();
     // Its grant names one workspace: making another is the person's to allow,

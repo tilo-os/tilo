@@ -1182,6 +1182,14 @@ async function connect({
       if (typeof name !== 'string' || !name.trim()) throw new TypeError('a workspace needs a name');
       return ask('create', {name: name.trim()});
     },
+    /** A workspace made under `workspace` (a UUID the page chose) and named
+     * `name`, this device admitted to it as its owner: asked again with the
+     * same id it answers the one already made, never a second. */
+    place: ({workspace, name}) => {
+      if (typeof workspace !== 'string' || !workspace) throw new TypeError('a placed workspace needs an id');
+      if (typeof name !== 'string' || !name.trim()) throw new TypeError('a workspace needs a name');
+      return ask('place', {workspace, name: name.trim()});
+    },
     enter: workspace => ask('enter', {workspace}),
   };
   const certifiedPeer = {
@@ -1237,11 +1245,14 @@ async function connect({
      * (the shared device entry, `enterOwnWorkspace` in wasm): made the first
      * time under an id the host chooses, answered again after, another for
      * each `name`. `entered(id)` says this browser is in that workspace already,
-     * so it is not redeemed again. Resolves to the workspace's listing
+     * so it is not redeemed again. `invocation` (a UUID) is the caller's own id
+     * for this make, kept when the same make is asked again after no answer: the
+     * server answers the workspace the first ask made rather than making another.
+     * Resolves to the workspace's listing
      * `{workspace, workspace_id, name}`; rejects with the host's refusal as it
      * typed it (`DeviceRefusal`: `code`, and `refusal` where the host gave one). */
-    enterOwnWorkspace: async ({name = null, entered = () => false} = {}) => JSON.parse(
-      await peer.enterOwnWorkspace(name, fitDisplayName(displayName), entered)),
+    enterOwnWorkspace: async ({name = null, entered = () => false, invocation = null} = {}) => JSON.parse(
+      await peer.enterOwnWorkspace(name, fitDisplayName(displayName), entered, invocation)),
     /** Who is in the workspace, for its owner (`workspaces.rs`): `list()`,
      * `setRole`, `remove`, `cancelInvitation`. */
     get membership() { return membership; },

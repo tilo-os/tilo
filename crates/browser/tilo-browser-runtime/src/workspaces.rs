@@ -209,6 +209,50 @@ fn new_request_id() -> Result<[u8; 32], JsError> {
     Ok(id)
 }
 
+impl WasmPeer {
+    /// The entries the server answers `waitList`, `unlist`, `mailInvite` and `cancel` with: the
+    /// wait list each is about, or the invitations a cancellation comes back with.
+    async fn entries_asked(
+        &self,
+        op: &str,
+        args: &WorkspacesArgs,
+        id: &str,
+    ) -> Result<Value, JsError> {
+        let (request, wanted) = match op {
+            "waitList" => (
+                WorkspacesRequest::WaitList {
+                    workspace: id.to_owned(),
+                },
+                "wait list",
+            ),
+            "unlist" => (
+                WorkspacesRequest::Unlist {
+                    workspace: id.to_owned(),
+                    request_id: named_key(args.request_id.as_ref(), "wait-list entry")?,
+                },
+                "wait list",
+            ),
+            "mailInvite" => (
+                WorkspacesRequest::MailInvite {
+                    workspace: id.to_owned(),
+                    wait_list_entry: named_key(args.request_id.as_ref(), "wait-list entry")?,
+                    link: args.link.clone(),
+                },
+                "wait list",
+            ),
+            _ => (
+                WorkspacesRequest::Cancel {
+                    workspace: id.to_owned(),
+                    request_id: new_request_id()?,
+                    invite_id: named_key(args.invite_id.as_ref(), "invitation")?,
+                },
+                "invitations",
+            ),
+        };
+        entries(self.workspaces_request(request).await?, wanted)
+    }
+}
+
 #[wasm_bindgen]
 impl WasmPeer {
     /// Administer the host's workspaces as this device: `op` names the call and
@@ -231,6 +275,16 @@ impl WasmPeer {
             ),
             "create" => one(self
                 .workspaces_request(WorkspacesRequest::Create {
+                    name: args.name.clone(),
+                })
+                .await?)?,
+            // A workspace made under the id the page chose, as `create` makes one
+            // under an id the server chooses: the same id asked again places the one
+            // already made and admits this device, so a page that asks again after
+            // no answer makes no second workspace.
+            "place" => one(self
+                .workspaces_request(WorkspacesRequest::Place {
+                    workspace: id.clone(),
                     name: args.name.clone(),
                 })
                 .await?)?,
@@ -274,28 +328,9 @@ impl WasmPeer {
                     },
                 )?)
             }
-            "waitList" => entries(
-                self.workspaces_request(WorkspacesRequest::WaitList { workspace: id })
-                    .await?,
-                "wait list",
-            )?,
-            "unlist" => entries(
-                self.workspaces_request(WorkspacesRequest::Unlist {
-                    workspace: id.clone(),
-                    request_id: named_key(args.request_id.as_ref(), "wait-list entry")?,
-                })
-                .await?,
-                "wait list",
-            )?,
-            "mailInvite" => entries(
-                self.workspaces_request(WorkspacesRequest::MailInvite {
-                    workspace: id.clone(),
-                    wait_list_entry: named_key(args.request_id.as_ref(), "wait-list entry")?,
-                    link: args.link.clone(),
-                })
-                .await?,
-                "wait list",
-            )?,
+            "waitList" | "unlist" | "mailInvite" | "cancel" => {
+                self.entries_asked(op, &args, &id).await?
+            }
             "setRole" => one(self
                 .workspaces_request(WorkspacesRequest::SetRole {
                     workspace: id.clone(),
@@ -307,15 +342,6 @@ impl WasmPeer {
             "remove" | "ban" | "unban" => one(self
                 .workspaces_request(args.about_member(op, id.clone())?)
                 .await?)?,
-            "cancel" => entries(
-                self.workspaces_request(WorkspacesRequest::Cancel {
-                    workspace: id.clone(),
-                    request_id: new_request_id()?,
-                    invite_id: named_key(args.invite_id.as_ref(), "invitation")?,
-                })
-                .await?,
-                "invitations",
-            )?,
             other => return Err(js_error(format!("no such request: {other}"))),
         };
         serde_json::to_string(&answer).map_err(js_error)

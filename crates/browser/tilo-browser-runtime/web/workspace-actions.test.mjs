@@ -25,11 +25,14 @@ function desktop() {
   return {shown, banners, mount: {setHostActions: actions => shown.push(actions), offerHostAction: offer => banners.push(offer)}};
 }
 
-/** Ada's page in her workspace on her own machine, as the host answers it. */
-function adasWorkspace({owner = true, letsIn = owner, waitList = []} = {}) {
+/** Ada's page in her workspace on her own machine, as the host answers it. A
+ * host that keeps workspaces of people's own is someone else's, and says so. */
+function adasWorkspace({owner = true, letsIn = owner, waitList = [], keepsOwn = false} = {}) {
   const calls = [];
   return {calls, peer: {
-    origin: 'https://node.example:8443', workspace: WORKSPACE, userPublicKey: ADA, host: {hostCert: {user_public_key: bytes(ADA)}},
+    origin: 'https://node.example:8443', workspace: WORKSPACE, userPublicKey: ADA,
+    host: {hostCert: {user_public_key: bytes(keepsOwn ? 'bb'.repeat(32) : ADA),
+      ...(keepsOwn ? {device_public_key: Array(32).fill(0xcd), capabilities: {can_own_workspaces: true}} : {})}},
     createInvitation: async options => { calls.push(['invite', options]); return 'SIGNED-invitation'; },
     membership: {
       list: async () => {
@@ -98,17 +101,31 @@ test('someone the workspace does not let invite is never offered the wait list',
   assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id]);
 });
 
-test('a new workspace is made on a machine the person set up, and opened', async () => {
-  const origin = 'https://node.example:8443';
-  const calls = [];
-  const lobby = {
+/** A machine of the person's own, as its server answers: a workspace is placed
+ * under the id the page chose, as the page asks, and the same id answers the
+ * one already placed (`place`). */
+function machine(calls, {failOnce = false} = {}) {
+  let fail = failOnce;
+  return {
     host: {hostCert: {device_public_key: Array(32).fill(0xcd)}},
     workspaces: {
-      create: async name => { calls.push(['create', name]); return {workspace: WORKSPACE, name}; },
-      enter: async workspace => { calls.push(['enter', workspace]); return {workspace}; },
+      place: async ({workspace, name}) => {
+        calls.push(['place', workspace, name]);
+        if (fail) {
+          fail = false;
+          throw new Error('the server closed before it answered');
+        }
+        return {workspace, name, generation: 1, members: []};
+      },
     },
     dispose: async () => { calls.push(['dispose']); },
   };
+}
+
+test('a new workspace is made on a machine the person set up, and opened', async () => {
+  const origin = 'https://node.example:8443';
+  const calls = [];
+  const lobby = machine(calls);
   const opened = [];
   const {mount, shown} = desktop();
   const actions = createWorkspaceActions({peer: null, machines: () => [origin],
@@ -118,22 +135,40 @@ test('a new workspace is made on a machine the person set up, and opened', async
   await actions.attach(mount);
   assert.deepEqual(ids(shown.at(-1)), [NEW_WORKSPACE.id, JOIN_WORKSPACE.id]);
   await actions.perform(NEW_WORKSPACE.id);
-  assert.deepEqual(calls, [['lobby', origin], ['create', 'Acme'], ['enter', WORKSPACE], ['dispose']]);
+  assert.equal(calls[0][0], 'lobby');
+  assert.equal(calls[1][0], 'place');
+  assert.equal(calls[1][2], 'Acme', 'the name the person typed');
+  assert.match(calls[1][1], /^[0-9a-f-]{36}$/, 'the page places it under an id of its own');
+  assert.deepEqual(calls[2], ['dispose']);
   // Opened as held by the machine's host, which the browser remembers it under.
-  assert.deepEqual(opened, [{origin, workspace: WORKSPACE, name: 'Acme', hostDevice: 'cd'.repeat(32)}]);
+  assert.deepEqual(opened, [{origin, workspace: calls[1][1], name: 'Acme', hostDevice: 'cd'.repeat(32)}]);
+});
+
+test('a make on the person’s own machine is placed under one id, so a second press places the same one', async () => {
+  const origin = 'https://node.example:8443';
+  const calls = [];
+  const lobby = machine(calls, {failOnce: true});
+  const opened = [];
+  const {mount} = desktop();
+  const actions = createWorkspaceActions({peer: null, machines: () => [origin],
+    lobby: async at => { calls.push(['lobby', at]); return lobby; },
+    open: async where => { opened.push(where); },
+    ui: {askWorkspaceName: async save => {
+      await save('Acme').catch(() => {});
+      return save('Acme');
+    }, fail: async text => assert.fail(text)}});
+  await actions.attach(mount);
+  await actions.perform(NEW_WORKSPACE.id);
+  const placed = calls.filter(([call]) => call === 'place');
+  assert.equal(placed.length, 2);
+  assert.equal(placed[0][1], placed[1][1], 'the same id is placed again, never a second workspace');
+  assert.equal(opened.length, 1);
 });
 
 test('in someone else’s workspace a person with a machine can still make a workspace on it', async () => {
   const origin = 'https://node.example:8443';
   const calls = [];
-  const lobby = {
-    host: {hostCert: {device_public_key: Array(32).fill(0xcd)}},
-    workspaces: {
-      create: async name => { calls.push(['create', name]); return {workspace: WORKSPACE, name}; },
-      enter: async workspace => { calls.push(['enter', workspace]); return {workspace}; },
-    },
-    dispose: async () => { calls.push(['dispose']); },
-  };
+  const lobby = machine(calls);
   // The Lounge: a workspace on a host that is not Ada's.
   const lounge = {origin: 'https://lounge.example', workspace: 'lounge', userPublicKey: ADA,
     host: {hostCert: {user_public_key: bytes('bb'.repeat(32))}}};
@@ -146,7 +181,8 @@ test('in someone else’s workspace a person with a machine can still make a wor
   await actions.attach(mount);
   assert.ok(ids(shown.at(-1)).includes(NEW_WORKSPACE.id));
   await actions.perform(NEW_WORKSPACE.id);
-  assert.deepEqual(calls, [['lobby', origin], ['create', 'Acme'], ['enter', WORKSPACE], ['dispose']]);
+  assert.equal(calls[0][0], 'lobby');
+  assert.equal(calls[1][2], 'Acme');
   assert.equal(opened[0].origin, origin);
 });
 
@@ -169,6 +205,54 @@ test('a person on a host that keeps workspaces of people’s own makes their nex
   await actions.perform(NEW_WORKSPACE.id);
   assert.deepEqual(calls, [['own', 'Studio']]);
   assert.deepEqual(opened, [{origin, workspace: 'studio-workspace', name: 'Studio', hostDevice: 'cd'.repeat(32)}]);
+});
+
+test('a create the server did not answer for is asked again under the same invocation, so the second press makes nothing', async () => {
+  const asked = [];
+  let fail = true;
+  const {peer} = adasWorkspace({owner: false, keepsOwn: true});
+  const lounge = {...peer, enterOwnWorkspace: async ({name, invocation}) => {
+    asked.push([name, invocation]);
+    if (fail) {
+      fail = false;
+      throw Object.assign(new Error('the action\'s provider did not answer in time'),
+        {name: 'DeviceRefusal', code: 'unanswered'});
+    }
+    return {workspace: 'studio-workspace', name};
+  }};
+  const opened = [];
+  const {mount} = desktop();
+  // The dialog stays open after the failure, and the person presses Create again:
+  // the same make, not a second one beside it.
+  const actions = createWorkspaceActions({peer: lounge, machines: () => [],
+    open: async where => { opened.push(where); },
+    ui: {askWorkspaceName: async save => {
+      await save('Studio').catch(() => {});
+      return save('Studio');
+    }, fail: async text => assert.fail(text)}});
+  await actions.attach(mount);
+  await actions.perform(NEW_WORKSPACE.id);
+  assert.equal(asked.length, 2);
+  assert.match(asked[0][1], /^[0-9a-f-]{36}$/, 'the page keeps an invocation of its own for the make');
+  assert.equal(asked[0][1], asked[1][1], 'the second press asks the same make');
+  assert.deepEqual(opened.map(where => where.workspace), ['studio-workspace']);
+});
+
+test('a new workspace is numbered past the names the switcher already holds', async () => {
+  const asked = [];
+  const {peer} = adasWorkspace({owner: false, keepsOwn: true});
+  const lounge = {...peer,
+    enterOwnWorkspace: async ({name}) => { asked.push(name); return {workspace: 'studio-workspace', name}; }};
+  const opened = [];
+  const {mount} = desktop();
+  const actions = createWorkspaceActions({peer: lounge, machines: () => [],
+    held: () => ['Studio', 'Home'],
+    open: async where => { opened.push(where); },
+    ui: {askWorkspaceName: save => save('Studio'), fail: async text => assert.fail(text)}});
+  await actions.attach(mount);
+  await actions.perform(NEW_WORKSPACE.id);
+  assert.deepEqual(asked, ['Studio 2'], 'the name a workspace already holds is numbered past, never shared');
+  assert.equal(opened[0].name, 'Studio 2');
 });
 
 test('an invite link is made when it is pressed for, and never before', async () => {
