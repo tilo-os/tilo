@@ -507,7 +507,8 @@ fn summary(rung: &Rung) {
     eprintln!(
         "ladder: {} MiB ({} nodes): put small {:.1} MiB/s, huge {:.1} MiB/s, persist {:.0} B in {:.3} s, \
          list {:.3} s, join {:.3} s ({} records, {} B), read {:.3} s ({} B fetched), \
-         tree {} B, one change saved in {:.3} s ({} B), restart {:.3} s, first read {:.3} s",
+         tree {} B, first keep {:.3} s, one change saved in {:.3} s ({} B), restart {:.3} s, \
+         first read {:.3} s",
         rung.total_mib,
         rung.nodes,
         mib(rung.small_bytes) / rung.put_small_s,
@@ -521,6 +522,7 @@ fn summary(rung: &Rung) {
         rung.read_s,
         rung.fetched_bytes,
         rung.tree_held_bytes,
+        rung.keep_first_s,
         rung.flush_s,
         rung.flush_bytes,
         rung.restart_s,

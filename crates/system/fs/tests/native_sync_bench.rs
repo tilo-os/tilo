@@ -1227,6 +1227,29 @@ fn a_workspace_of_files_on_a_size_ladder() {
     host_pss_after_fill = pair.host.pss_bytes();
     host_disk_after_fill = disk_bytes(&pair.dir.join("host-cache"));
 
+    // What the writing device itself sees: a person browsing the folder they just filled.
+    let host_flat = list_directory(&m1.join("flat"));
+    let host_root = list_directory(&m1);
+    let host_small = read_range(&m1.join("flat").join("f0000000"), 0, 4096);
+    report(
+        rung.as_str(),
+        "host_flat_entries",
+        host_flat as f64,
+        "entries",
+    );
+    report(
+        rung.as_str(),
+        "host_root_entries",
+        host_root as f64,
+        "entries",
+    );
+    report(
+        rung.as_str(),
+        "host_open_small_ok",
+        f64::from(u8::from(host_small.is_ok())),
+        "1",
+    );
+
     // The second device joins over a filled workspace and is given its tree.
     let (serving, tree) = pair.join_peer();
     report(
@@ -1285,7 +1308,13 @@ fn a_workspace_of_files_on_a_size_ladder() {
     let peer_disk_before_reads = disk_bytes(&pair.dir.join("peer-cache"));
     let small_target = m2.join("flat").join("f0000000");
     let started = Instant::now();
-    let small = read_range(&small_target, 0, 4096).unwrap();
+    let small = read_range(&small_target, 0, 4096).unwrap_or_else(|error| {
+        panic!(
+            "the joining device holds {} of the {} files the writer holds ({error})",
+            list_directory(&m2.join("flat")),
+            host_flat
+        )
+    });
     let open_small = started.elapsed();
     assert_eq!(small.len(), 4096);
     let huge_target = m2.join("huge01.bin");
