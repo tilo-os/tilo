@@ -63,6 +63,9 @@ pub(super) struct Notes {
     /// Whether Sheets runs too, its directory never answering: the answers
     /// it was asked for are held here, unanswered.
     silent: Arc<Mutex<Option<Vec<Unanswered>>>>,
+    /// How long the workspace takes to answer each ask, as one that just started and
+    /// opens the documents a listing reads before it answers.
+    slow: Arc<Mutex<Option<std::time::Duration>>>,
     /// Lines in each of the two pages the Todo note reads in, when it is a
     /// long one: the notebook's read then takes a cursor.
     long: Arc<Mutex<Option<usize>>>,
@@ -166,6 +169,7 @@ impl Notes {
             search_moves: Arc::default(),
             asked: Arc::default(),
             silent: Arc::default(),
+            slow: Arc::default(),
             long: Arc::default(),
             workspace: Arc::new(Mutex::new(Installed::Openable)),
             unreachable: Arc::default(),
@@ -372,13 +376,13 @@ impl Notes {
 
     /// The same Notes, not serving this session yet: every ask is refused as not ready until
     /// [`Self::served`] says the workspace serves it now.
-    fn not_serving(self) -> Self {
+    pub(super) fn not_serving(self) -> Self {
         *self.not_served.lock().unwrap() = Some(Vec::new());
         self
     }
 
     /// The workspace serves this session now: what a waiting call reads as the session moving.
-    fn served(&self) {
+    pub(super) fn served(&self) {
         let waiters = self.not_served.lock().unwrap().take().unwrap_or_default();
         for waiter in waiters {
             waiter.complete(());
@@ -985,88 +989,29 @@ impl Notes {
     }
 }
 
-impl tilo_actions::remote::ResourceSearch for Notes {
-    /// A stand-in for the desktop's one search: the rows the app publishes
-    /// whose names hold the query's words, best first, each as the resource
-    /// it is.
-    fn find(
-        &self,
-        _caller: &Caller,
-        needle: &str,
-    ) -> Pending<Result<Vec<tilo_actions::remote::Found>, ActionCallError>> {
-        let unreachable = self.unreachable.lock().unwrap().clone();
-        if let Some(error) = unreachable {
-            return Pending::ready(Err(error));
-        }
-        let words = page::needle_words(needle);
-        if words.is_empty() {
-            return Pending::ready(Ok(Vec::new()));
-        }
-        let mut found = Vec::new();
-        let rows = self.rows("1");
-        // A row about what another resource holds is about that resource:
-        // the live index lists the notebook's rows, and never both a note
-        // and the body inside it.
-        // A row about what another resource holds (a body published beside
-        // its note) is about that resource: the live index lists the
-        // notebook's rows, and never both a note and the body inside it. An
-        // action is about the resource it acts on, which is the note itself.
-        let owned = |row: &CatalogueRow| {
-            row.action.is_none()
-                && row.resource.kind == "tilo.rich-text"
-                && rows.iter().any(|other| {
-                    other.action.is_some()
-                        && other.resource.id == row.resource.id
-                        && other.resource.kind == row.resource.kind
-                })
-                && rows.iter().any(|owner| {
-                    owner.has_children
-                        && owner.resource.id != row.resource.id
-                        && row
-                            .resource
-                            .id
-                            .contains(owner.resource.id.rsplit(':').next().unwrap_or_default())
-                })
-        };
-        for row in rows.iter().filter(|row| !owned(row)) {
-            // Every word, as the one search reads a query: not the rows matching the most of it.
-            let score = page::word_score(row, &words);
-            if score < words.len() {
-                continue;
-            }
-            found.push((
-                score,
-                tilo_actions::remote::Found {
-                    resource: row.resource.id.clone(),
-                    kind: row.resource.kind.clone(),
-                    label: row.resource.label.clone(),
-                    open: Some(
-                        row.action.as_ref().map_or_else(
-                            || "open".to_owned(),
-                            |action| action.address.action.clone(),
-                        ),
-                    ),
-                    arguments: serde_json::Map::new(),
-                    app: Some(APP.to_owned()),
-                    provider: None,
-                    when: None,
-                },
-            ));
-        }
-        found.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
-        Pending::ready(Ok(found.into_iter().map(|(_, found)| found).collect()))
-    }
-}
-
 impl ActionProvider for Notes {
     fn query(
         &self,
         _caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        let slow = *self.slow.lock().unwrap();
         match self.refused(&query) {
             Some(refused) => Pending::ready(Err(refused)),
-            None => self.answer(&query),
+            None => match slow.filter(|_| query.provider.is_some()) {
+                None => self.answer(&query),
+                Some(taking) => {
+                    let (done, answer) = tilo_actions::remote::pending();
+                    let notes = self.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(taking).await;
+                        if let Some(page) = notes.answer(&query).await {
+                            done.complete(page);
+                        }
+                    });
+                    answer
+                }
+            },
         }
     }
 
@@ -3015,6 +2960,10 @@ mod opening;
 mod outside;
 #[path = "mcp_runs_tests.rs"]
 mod runs;
+#[path = "mcp_agent_search_fixture.rs"]
+mod search_fixture;
+#[path = "mcp_agent_serving_tests.rs"]
+mod serving;
 #[path = "mcp_status_tests.rs"]
 mod status;
 #[path = "mcp_task_program_tests.rs"]
@@ -3033,22 +2982,3 @@ mod written_out;
 #[cfg(test)]
 #[path = "mcp_agent_address_tests.rs"]
 mod address_tests;
-
-/// A workspace that is not serving this session yet is waited for, not answered: a listing
-/// asked while it comes up reads once it serves, and never tells the caller it was not ready.
-#[tokio::test]
-async fn a_listing_waits_for_a_workspace_that_is_not_serving_it_yet() {
-    let notes = Notes::new(true).not_serving();
-    let server = std::sync::Arc::new(agent(&notes));
-    let asking = tokio::spawn({
-        let server = std::sync::Arc::clone(&server);
-        async move { tool(&server, "tilo_ls", json!({"path": "notes"})).await }
-    });
-    // The ask is refused as not ready until the workspace says it serves the session.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    assert!(!asking.is_finished(), "the listing is still waiting");
-    notes.served();
-    let (text, failed) = asking.await.unwrap();
-    assert!(!failed, "{text}");
-    assert!(text.contains("Todo"), "{text}");
-}
