@@ -108,6 +108,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+# shellcheck source=os/scratch-registry.env
+. "$TILO_OS_DIR/scratch-registry.env"
 
 # Root podman runs bootc out of the image, so it holds a copy of it: by default
 # in /var/lib/containers, staged through /var/tmp.
@@ -590,7 +592,7 @@ start_registry() {
   fi
   for port in $(seq "$want" $(( want + 9 ))); do
     podman run -d --name tilo-disk-registry -p "$port:5000" \
-      docker.io/library/registry:2 >/dev/null 2>&1 || {
+      "$SCRATCH_REGISTRY_IMAGE" >/dev/null 2>&1 || {
         podman rm -f tilo-disk-registry >/dev/null 2>&1 || true
         continue
       }
@@ -655,7 +657,7 @@ elif [ "$COMPOSEFS" = yes ]; then
   containers-storage (or one moved across with \`podman save | sudo podman load\`)
   fails with \"Invalid splitstream content type\". The disk step therefore needs a
   registry it can reach over HTTP. Start one and set TILO_DISK_REG_PORT, or install
-  docker.io/library/registry:2 so this can start its own."
+  its image ($SCRATCH_REGISTRY_IMAGE) so this can start its own."
   # The source may be digest-pinned (`registry/owner/tilo@sha256:...`). Splitting
   # at the first colon turns that into the invalid repository `tilo@sha256`.
   # Isolate the final path component first, then remove either digest or tag.

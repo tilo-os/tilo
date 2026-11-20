@@ -9,6 +9,8 @@
 # What a build needs as well (die, the scratch directory, buildah, pinned assets, image digests)
 # is build-lib.sh's, which builds source alone, so they are not keyed on how publishing works.
 . "$(dirname -- "${BASH_SOURCE[0]}")/build-lib.sh"
+# shellcheck source=os/scratch-registry.env
+. "$repo_root/os/scratch-registry.env"
 
 # The channel of this run: `dev` on main, `release` on a tag, `branch` on any other branch, which
 # publishes only its own build under tags that name the branch (`t dispatch --ref BRANCH` of a
@@ -323,7 +325,7 @@ load_for_disk() {
   local layout=$1 repo=$2 port=${TILO_DISK_REG_PORT:-5000} staged
   staged=localhost:$port/$repo:base
   podman rm -f tilo-disk-registry >/dev/null 2>&1 || true
-  podman run -d --name tilo-disk-registry -p "$port:5000" docker.io/library/registry:2 >/dev/null \
+  podman run -d --name tilo-disk-registry -p "$port:5000" "$SCRATCH_REGISTRY_IMAGE" >/dev/null \
     || die "could not start the scratch registry on :$port"
   for _ in $(seq 1 30); do
     curl --connect-timeout 2 --max-time 4 -sf "http://127.0.0.1:$port/v2/" >/dev/null && break

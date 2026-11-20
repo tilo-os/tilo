@@ -507,7 +507,7 @@ cp "$work/older-predictions"/* "$work/mnt/older-predictions/"
 # the tag the server was installed to follow, signed with a key made here for
 # the repository's name, and beside it an image of the repository nobody signed
 # (os/tests/registry_update_check.sh says what the guest does with them).
-podman run -d --name host-assurance-registry -p 127.0.0.1:5050:5000 docker.io/library/registry:2 >/dev/null \
+podman run -d --name host-assurance-registry -p 127.0.0.1:5050:5000 "$SCRATCH_REGISTRY_IMAGE" >/dev/null \
   || die 'cannot start the update registry'
 for _ in $(seq 30); do curl -fs http://127.0.0.1:5050/v2/ >/dev/null && break; sleep 1; done
 printf 'host-assurance\n' > "$work/sigstore.pass"

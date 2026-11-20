@@ -55,7 +55,7 @@ podman image exists "$IMAGE" || die "$IMAGE not built (run build.sh $GEN)"
 if ! podman container exists tilo-cfs-registry 2>/dev/null; then
   msg "starting a registry on :$TILO_CFS_REG_PORT"
   podman run -d --name tilo-cfs-registry \
-    -p "$TILO_CFS_REG_PORT:5000" docker.io/library/registry:2 >/dev/null
+    -p "$TILO_CFS_REG_PORT:5000" "$SCRATCH_REGISTRY_IMAGE" >/dev/null
 elif [ "$(podman inspect -f '{{.State.Running}}' tilo-cfs-registry)" != true ]; then
   podman start tilo-cfs-registry >/dev/null
 fi

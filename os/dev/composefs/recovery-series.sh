@@ -120,7 +120,7 @@ proof_rollback() {
   fi
   if ! podman container exists tilo-cfs-registry 2>/dev/null; then
     podman run -d --name tilo-cfs-registry -p "$TILO_CFS_REG_PORT:5000" \
-      docker.io/library/registry:2 >/dev/null
+      "$SCRATCH_REGISTRY_IMAGE" >/dev/null
   else
     podman start tilo-cfs-registry >/dev/null 2>&1 || true
   fi

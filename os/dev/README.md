@@ -33,7 +33,7 @@ Host needs: rootless `podman`, **passwordless `sudo`** (for the loopback mounts
 `disk-image.sh` needs and for offline journal extraction), `/dev/kvm`, and a GPU
 render node under `/dev/dri` (a Mesa iGPU is strongly preferred for GL — see
 gotchas). The disk-image step also needs a **local registry** it can push to
-(`docker.io/library/registry:2`, started on demand): the composefs backend
+(`os/scratch-registry.env`'s image, started on demand): the composefs backend
 refuses to install from container storage.
 
 If your host has qemu + tools natively, set `TILO_DISTROBOX=""` to skip the box.

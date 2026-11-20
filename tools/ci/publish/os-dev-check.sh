@@ -60,7 +60,7 @@ curl -fsSL --retry 3 -o "$old" "$url"
 
 # The updates, served by a registry on the host, which the guest reaches as 10.0.2.2: this dev
 # image, and the next update, the same image with one file added.
-podman run -d --name tilo-check-registry -p 127.0.0.1::5000 docker.io/library/registry:2 >/dev/null
+podman run -d --name tilo-check-registry -p 127.0.0.1::5000 "$SCRATCH_REGISTRY_IMAGE" >/dev/null
 trap 'podman rm -f tilo-check-registry >/dev/null 2>&1 || true' EXIT
 port=$(podman port tilo-check-registry 5000/tcp | head -n 1)
 port=${port##*:}

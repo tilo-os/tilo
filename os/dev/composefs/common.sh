@@ -7,6 +7,8 @@ set -euo pipefail
 
 _CFS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_CFS_DIR/../_common.sh"
+# shellcheck source=os/scratch-registry.env
+. "$TILO_OS_DIR/scratch-registry.env"
 
 # Scratch dir. NOT under /tmp: that is a 16 GiB tmpfs here, and a 20 GiB disk
 # image on it fails with "Quota exceeded" from whichever command happens to be

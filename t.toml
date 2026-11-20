@@ -4634,10 +4634,11 @@ pointers = { windows-guest-candidate = "/target/windows-compat/windows-guest/gue
 
 [[check]]
 name = "os-dev-image-{arch}"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: it installs from the RPM snapshot rpm-snapshot-ARCH names (image-rpms-ARCH's copy of
+# it) and builds on the Rust toolchain image by digest.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/os/{arch}/compiled-dev"
-needs = ["image-rpms-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "model-catalog-dev-{arch}", "signing-tools"]
+needs = ["image-rpms-{arch}", "rpm-snapshot-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "model-catalog-dev-{arch}", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 requires = ["disk-100g"]
 isolation = "vm"
@@ -4757,9 +4758,10 @@ on = ["dispatch"]
 
 [[check]]
 name = "os-dev-disk-{arch}"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt && bash tools/ci/publish/os-dev-disk.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
+# Pinned: the OS assembler image it runs in carries the install's tools, and the only image it
+# pulls is the scratch registry's, by digest (os/scratch-registry.env).
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+run = "bash tools/ci/publish/os-dev-disk.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
 needs = ["os-dev-image-{arch}", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 requires = ["disk-100g"]
@@ -4785,10 +4787,11 @@ arch = ["x86_64", "aarch64"]
 # moves forward by, and carry this tree's runtimes in their catalog.
 [[check]]
 name = "os-dev-image-lean-{arch}"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: it installs from the RPM snapshot rpm-snapshot-ARCH names (image-rpms-ARCH's copy of
+# it) and builds on the Rust toolchain image by digest.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/os/{arch}/compiled-dev"
-needs = ["image-rpms-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "signing-tools"]
+needs = ["image-rpms-{arch}", "rpm-snapshot-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 env = { TILO_DEV_LOOP = "1" }
 requires = ["disk-100g"]
@@ -4801,9 +4804,10 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "os-dev-disk-lean-{arch}"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt && bash tools/ci/publish/os-dev-disk.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
+# Pinned: the OS assembler image it runs in carries the install's tools, and the only image it
+# pulls is the scratch registry's, by digest (os/scratch-registry.env).
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+run = "bash tools/ci/publish/os-dev-disk.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
 needs = ["os-dev-image-lean-{arch}", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 requires = ["disk-100g"]
@@ -5160,7 +5164,7 @@ name = "os-board-{board}"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/os-image.sh board {board} /target/publish/os-dev/aarch64 /target/publish/os-board/{board}"
-needs = ["image-rpms-aarch64", "os-dev-image-aarch64", "os-assets", "signing-tools"]
+needs = ["image-rpms-aarch64", "rpm-snapshot-aarch64", "os-dev-image-aarch64", "os-assets", "signing-tools"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
@@ -5431,8 +5435,8 @@ arch = ["x86_64", "aarch64"]
 
 # The apps' packing (os/image/layers.toml's payload): the runtime bundle, the browser engine's
 # runtime, the app store and the language packs, which the image layer is given. It resolves the
-# environment runtime the store preinstalls by its digest from the registry, and prepares the font
-# catalog (tools/font-catalog.py, from tilo's package store by the SHA-256 the catalog pins).
+# environment runtime the store preinstalls by its digest from the registry, and prepares the OS
+# font catalog (tools/font-catalog.py, from tilo's package store by the SHA-256 the catalog pins).
 [[check]]
 name = "os-payload-{arch}"
 egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }

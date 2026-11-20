@@ -118,28 +118,28 @@ build_board() {
   rm -rf "$work"
 }
 
-# The frozen RPM snapshot the build installs from, as RPMS_REF: this architecture's published set
-# for this tree's package set, verified as every build verifies it. Only a release tag publishes
-# snapshots, so on main and branches a changed package set has none until a release tag publishes
-# it; the build then installs from the set image-rpms-ARCH built in this run from the same
-# os/Containerfile.rpms, which build-image.sh takes unsigned (TILO_RPMS_TRUST=unsigned) and labels
-# so (org.tilo.rpms.trust), and which nothing signs or publishes.
+# The frozen RPM snapshot the build installs from, as RPMS_REF: the one rpm-snapshot-ARCH named
+# (it verified the published set's signature and provenance), loaded from image-rpms-ARCH's copy
+# under its name so the build pulls nothing, as the OS image's layers take it
+# (os/image/build-layer.sh). Only a release tag publishes snapshots, so on main and branches a
+# changed package set has none until a release tag publishes it; the build then installs from the
+# set image-rpms-ARCH built in this run, which build-image.sh takes unsigned
+# (TILO_RPMS_TRUST=unsigned) and labels so (org.tilo.rpms.trust), and which nothing signs or
+# publishes. Nothing here asks the registry, so the step is served while its inputs are the same.
 rpms_snapshot() {
-  local arch=$1 built=/target/publish/rpms/$1 status=0 id
-  bash os/dev/resolve-rpm-snapshot.sh --exists --arch "$arch" || status=$?
-  case $status in
-    0) RPMS_REF=$(bash os/dev/resolve-rpm-snapshot.sh --arch "$arch") ;;
-    1)
-      [[ -f $built/image.oci.tar ]] || die "no published RPM snapshot for this package set and no image-rpms-$arch in this run"
-      [[ $(archive_digest "$built/image.oci.tar") == "$(cat "$built/digest")" ]] || die "$built/image.oci.tar is not the build"
-      id=$(podman pull -q "oci-archive:$built/image.oci.tar")
-      RPMS_REF=localhost/tilo-rpms:$(bash os/dev/resolve-rpm-snapshot.sh --tag --arch "$arch")-$arch
-      podman tag "$id" "$RPMS_REF"
-      export TILO_RPMS_TRUST=unsigned
-      printf 'no published RPM snapshot for this package set: installing from image-rpms-%s (%s), unsigned\n' \
-        "$arch" "$(cat "$built/digest")" ;;
-    *) die 'could not ask the registry for the published RPM snapshot' ;;
-  esac
+  local arch=$1 built=/target/publish/rpms/$1 id
+  snapshot_for_build "/target/publish/rpm-snapshot/$arch" "$built" "$arch" podman
+  RPMS_REF=$rpms_ref
+  if [[ $rpms_source == "$rpms_ref" ]]; then
+    [[ $(archive_digest "$built/image.oci.tar") == "${RPMS_REF##*@}" ]] \
+      || die "image-rpms-$arch is not the published snapshot $RPMS_REF"
+    id=$(podman pull -q "oci-archive:$built/image.oci.tar")
+    podman tag "$id" registry.tilo.so/tilo/rpms:given
+    [[ $(podman image inspect --format '{{.Digest}}' "$RPMS_REF") == "${RPMS_REF##*@}" ]] \
+      || die "the copy of $RPMS_REF did not load under its digest"
+  else
+    export TILO_RPMS_TRUST=unsigned
+  fi
 }
 
 # The flashable disk of the sealed board image NAME, into DIR/disk.qcow2, never
