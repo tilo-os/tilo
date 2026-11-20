@@ -106,6 +106,7 @@ impl Shared {
             rebuild: Vec::new(),
             search_request: None,
             search_open: false,
+            typed_ahead: super::search::TypedAhead::default(),
             search: Rc::clone(search),
             search_revision: 0,
             search_area: None,

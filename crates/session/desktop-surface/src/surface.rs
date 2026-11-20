@@ -295,6 +295,8 @@ struct Shared {
     rebuild: Vec<TabId>,
     search_request: Option<search::SearchRequest>,
     search_open: bool,
+    /// What the person typed while the search they asked for was not up yet.
+    typed_ahead: search::TypedAhead,
     /// The search palette itself, shared with the host that draws it over the windows
     /// (`DesktopHandle::search_palette`): the shell feeds it what its windows hold and carries out
     /// what is chosen there, while the host above the windows draws it and routes the person's

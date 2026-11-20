@@ -346,6 +346,11 @@ impl Widget for SearchOverlay {
                 self.handle.open_search(Scope::Workspace, None);
                 self.handle.note_search_activity();
                 *ctx.handled = true;
+            } else if self.handle.type_ahead(event) {
+                // Asked for and not up yet: what the person types is the search's from the chord on,
+                // never the window's that had the keyboard.
+                self.handle.note_search_activity();
+                *ctx.handled = true;
             }
             return;
         }

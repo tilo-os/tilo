@@ -1065,6 +1065,14 @@ impl DesktopSearch {
         true
     }
 
+    /// Enter on what the field holds, typed before the search was up to show any of it: the top row
+    /// of its answer is chosen once the search has given one ([`Self::choose_top_of_typed_query`]).
+    pub fn choose_top_when_answered(&mut self) {
+        if self.palette.is_open() {
+            self.choose_top_of_typed_query();
+        }
+    }
+
     /// Hold an Enter pressed on rows of an earlier query until the search has answered the query
     /// the field holds: the search stays open on it, and its top row, which the highlight sits on,
     /// is chosen as the rows come in ([`Self::take_waiting_enter`]).

@@ -168,6 +168,73 @@ fn typing_and_enter_reach_the_palette_not_the_window() {
     );
 }
 
+/// What the person types straight after the chord is the search's, though the palette only opens
+/// on the frame after it: a page hands over the keys it got in one batch, ahead of that frame, and
+/// they become the query rather than reaching the window that had the keyboard.
+#[test]
+fn keys_typed_before_the_palette_is_up_are_its_query() {
+    let tree = layout_tree();
+    let mut session = session(&tree, (1280, 800), None);
+    session.frame();
+    session.search_chord();
+    assert!(
+        !session.handle.search_open(),
+        "the palette opens on the next frame"
+    );
+    session.type_text("notex");
+    session.press(NamedKey::Backspace);
+    session.type_text("s");
+    session.settle_search();
+    assert!(session.handle.search_open(), "the chord opened the palette");
+    assert_eq!(
+        session.handle.search_rows().0,
+        "notes",
+        "what was typed before it was up is the palette's query, Backspace included"
+    );
+}
+
+/// An Enter typed with the rest, before the palette was up, takes the top row of what was typed:
+/// the person who types "notes" and Enter straight after the chord opens Notes.
+#[test]
+fn an_enter_typed_before_the_palette_is_up_takes_the_top_row() {
+    let tree = layout_tree();
+    let mut session = session(&tree, (1280, 800), None);
+    session.frame();
+    session.search_chord();
+    session.type_text("notes");
+    session.press(NamedKey::Enter);
+    session.settle_search();
+    for _ in 0..3 {
+        session.frame();
+    }
+    assert!(
+        !session.handle.search_open(),
+        "the Enter took the top row and search closed"
+    );
+}
+
+/// Escape before the palette is up leaves the search the chord asked for: nothing opens after it.
+#[test]
+fn escape_before_the_palette_is_up_leaves_search() {
+    let tree = layout_tree();
+    let mut session = session(&tree, (1280, 800), None);
+    session.frame();
+    session.search_chord();
+    session.type_text("no");
+    session.press(NamedKey::Escape);
+    for _ in 0..3 {
+        session.frame();
+    }
+    assert!(!session.handle.search_open(), "search never opened");
+    session.search_chord();
+    session.settle_search();
+    assert_eq!(
+        session.handle.search_rows().0,
+        "",
+        "the next search starts empty, not with what was typed into the one left"
+    );
+}
+
 /// A row a reader hears is a row the person can take: activating it by name reaches the card as the
 /// click on it does, and search closes.
 #[test]

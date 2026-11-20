@@ -40,6 +40,7 @@ pub trait DesktopSearchApi {
     fn palette_mut(&mut self) -> &mut dyn Widget;
     fn query_field(&self, key: &[u8; 32]) -> Option<ui::action_palette::QueryField>;
     fn commit_query_text(&mut self, text: &str) -> bool;
+    fn choose_top_when_answered(&mut self);
 }
 
 impl DesktopSearchApi for DesktopSearch {
@@ -126,6 +127,9 @@ impl DesktopSearchApi for DesktopSearch {
     }
     fn commit_query_text(&mut self, text: &str) -> bool {
         Self::palette_mut(self).commit_query_text(text)
+    }
+    fn choose_top_when_answered(&mut self) {
+        Self::choose_top_when_answered(self);
     }
 }
 
@@ -332,6 +336,14 @@ impl LazyDesktopSearch {
         self.search
             .as_ref()
             .map_or(ui::search::Scope::Workspace, |search| search.scope())
+    }
+
+    /// Enter on what the field holds: its top row is chosen once the search has answered it, as an
+    /// Enter typed ahead of the rows is. Nothing while the code is on its way.
+    pub fn choose_top_when_answered(&mut self) {
+        if let Some(search) = self.search.as_mut() {
+            search.choose_top_when_answered();
+        }
     }
 
     /// Choose the shown row `index`, as a person choosing it does.

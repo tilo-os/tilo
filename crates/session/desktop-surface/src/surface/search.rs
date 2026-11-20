@@ -44,6 +44,15 @@ pub(super) enum SearchRequest {
     Again,
 }
 
+/// What the person typed after asking for search and before it was up: the search's, as the keys
+/// typed into it once it is. Its field takes the text when it opens, and an Enter among it chooses
+/// the top row of what that text finds, as an Enter typed ahead of its rows does in an open search.
+#[derive(Debug, Default)]
+pub(super) struct TypedAhead {
+    text: String,
+    enter: bool,
+}
+
 /// The search the windows of strip `strip` asked for: a new-tab control asks which application to
 /// show there, a window's search control (or an app's own search button) asks what that window
 /// shows, narrowed to the app that window has in front.
@@ -419,6 +428,63 @@ impl DesktopHandle {
     pub fn open_search(&self, scope: Scope, query: Option<String>) {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Open { scope, query });
         self.wake();
+    }
+
+    /// Whether the person asked for search and it is not up yet: its request waits for the next
+    /// update pass, or its code is on its way. What they type meanwhile is the search's
+    /// ([`Self::type_ahead`]).
+    fn search_opening(&self) -> bool {
+        let shared = self.shared.borrow();
+        !shared.search_open
+            && (matches!(
+                shared.search_request,
+                Some(SearchRequest::Open { .. } | SearchRequest::Toggle)
+            ) || shared.search.borrow().awaits_code())
+    }
+
+    /// Take `event` for the search the person asked for while it is not up yet
+    /// ([`Self::search_opening`]): what they type goes into its field once it opens, Backspace takes
+    /// back what they typed, Enter chooses the top row of what that finds, and Escape leaves the
+    /// search before it opened. Every key and input method's text is the search's meanwhile, so
+    /// none reaches the window that had the keyboard before they asked; a chord's control
+    /// characters are not text. Whether the search took it.
+    pub fn type_ahead(&self, event: &WindowEvent) -> bool {
+        if !self.search_opening() {
+            return false;
+        }
+        let text = match event {
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                if key.state != ElementState::Pressed {
+                    return true;
+                }
+                match &key.logical_key {
+                    Key::Named(NamedKey::Escape) => {
+                        let mut shared = self.shared.borrow_mut();
+                        shared.search_request = None;
+                        shared.typed_ahead = TypedAhead::default();
+                        shared.search.borrow_mut().close();
+                        return true;
+                    }
+                    Key::Named(NamedKey::Enter) => {
+                        self.shared.borrow_mut().typed_ahead.enter = true;
+                        self.wake();
+                        return true;
+                    }
+                    Key::Named(NamedKey::Backspace) => {
+                        self.shared.borrow_mut().typed_ahead.text.pop();
+                        return true;
+                    }
+                    _ => key.text.as_deref(),
+                }
+            }
+            WindowEvent::Ime(ui::winit::event::Ime::Commit(text)) => Some(text.as_str()),
+            WindowEvent::Ime(_) => None,
+            _ => return false,
+        };
+        if let Some(text) = text.filter(|text| !text.chars().any(char::is_control)) {
+            self.shared.borrow_mut().typed_ahead.text.push_str(text);
+        }
+        true
     }
 
     /// The row the host carried out did not happen, for `why` : search opens again where it stood,
@@ -1176,6 +1242,7 @@ impl DesktopSurface {
             (Some(SearchRequest::Close), true) => self.close_search(),
             (Some(SearchRequest::Close | SearchRequest::Again) | None, _) => {}
         }
+        self.take_up_typed_ahead();
         let choices = std::mem::take(&mut self.shared.borrow_mut().search_asks);
         for (index, argument) in choices {
             let mut search = self.search.borrow_mut();
@@ -1192,6 +1259,23 @@ impl DesktopSurface {
         }
         self.follow_search(doc);
         self.publish_search_rows();
+    }
+
+    /// What the person typed while the search they asked for was not up yet ([`TypedAhead`]) goes
+    /// into it once it is; nothing of it is left over for a search asked for later.
+    fn take_up_typed_ahead(&mut self) {
+        if self.search.borrow().is_open() {
+            let ahead = std::mem::take(&mut self.shared.borrow_mut().typed_ahead);
+            let mut search = self.search.borrow_mut();
+            if !ahead.text.is_empty() && search.commit_query_text(&ahead.text) {
+                self.structure_dirty = true;
+            }
+            if ahead.enter {
+                search.choose_top_when_answered();
+            }
+        } else if !self.search.borrow().awaits_code() {
+            self.shared.borrow_mut().typed_ahead = TypedAhead::default();
+        }
     }
 
     /// Write text committed into the desktop's own field, if the person is still typing into the
