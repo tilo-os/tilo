@@ -448,9 +448,12 @@ impl Workspaces {
         let mut enrolled = 1;
         let state = if let Some(held) = held {
             let mut governed = held.lock().await;
-            if governed.member.is_none() {
-                return Err("this device governs that workspace here".into());
-            }
+            // A disk copied from the machine that serves this workspace kept the workspace as
+            // that machine does, and served it here while no link to the machine reached this
+            // one. The machine serving it answered this device, so this machine holds the
+            // workspace as a member copy of it from now on: what it reads and writes reaches
+            // the workspace, and the copy it kept answers until then.
+            let copied = governed.member.is_none();
             let mut peer = governed.peer().clone();
             take_governance(&mut peer, bootstrap, now)?;
             *governed.peer.lock() = peer;
@@ -459,11 +462,29 @@ impl Workspaces {
                 member.hint = hint.clone();
                 member.continuity = member.continuity.saturating_add(1);
                 enrolled = member.continuity;
+            } else {
+                governed.member = Some(Member {
+                    addr: address.endpoint_addr.clone(),
+                    hint: hint.clone(),
+                    continuity: enrolled,
+                });
+            }
+            if copied {
+                governed.persist()?;
+                self.bind_member(&governed).await?;
+                self.inner.direct.release(workspace);
             }
             if let Err(error) = keep_member(&governed.path, hint) {
                 tracing::warn!(%name, %error, "a member copy's device address was not kept");
             }
             drop(governed);
+            if copied {
+                tracing::info!(
+                    %name,
+                    "this machine was copied from the device that serves the workspace, and \
+                     holds it as a member copy of it from now on"
+                );
+            }
             held
         } else {
             let path = self.inner.dir.join(format!("{name}.workspace"));
@@ -501,7 +522,7 @@ impl Workspaces {
                 .insert(name.clone(), Arc::clone(&state));
             state
         };
-        self.serve_member(&state, device)?;
+        self.serve_member(&state, device).await?;
         if let Ok(mut materials) = self.inner.member.materials.lock() {
             materials.insert(workspace, (hint.clone(), enrolled));
         }
@@ -1121,7 +1142,7 @@ impl Workspaces {
             if state
                 .try_lock()
                 .is_ok_and(|governed| governed.member.is_some())
-                && let Err(error) = self.serve_member(&state, &device)
+                && let Err(error) = self.serve_member(&state, &device).await
             {
                 tracing::warn!(%error, "a member copy is not synced with its device");
             }
@@ -1175,14 +1196,12 @@ impl Workspaces {
 
     /// Sync `governed`, a member copy, with the device serving it, as `device`:
     /// take in what that device sends, and answer it as a member answers.
-    pub(super) fn serve_member(
+    pub(super) async fn serve_member(
         &self,
         state: &Arc<tokio::sync::Mutex<GovernedWorkspace>>,
         device: &MemberDevice,
     ) -> Result<(), String> {
-        let governed = state
-            .try_lock()
-            .map_err(|_| "the workspace is held".to_owned())?;
+        let governed = state.lock().await;
         let member = governed
             .member
             .clone()

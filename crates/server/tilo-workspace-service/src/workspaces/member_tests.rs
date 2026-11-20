@@ -428,3 +428,94 @@ async fn a_member_copies_layout_write_is_read_back_and_survives_a_restart() {
     drop(copies);
     member.shutdown().await;
 }
+
+/// Copy the tree at `from` to `to`, as a machine's disk is copied while it is off.
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+/// A machine copied from the disk of the device serving a workspace keeps the workspace's files
+/// and comes up as a device of its own. It keeps answering the workspace from its copy while its
+/// source serves it, and takes the workspace in as a member copy of the source once the source
+/// admits its device, so what it reads and writes reaches the workspace.
+#[tokio::test]
+async fn a_copied_disk_holds_its_workspace_as_a_member_copy_once_the_source_admits_it() {
+    let source_state = tempfile::tempdir().unwrap();
+    let copy_state = tempfile::tempdir().unwrap();
+    let (serving_key, serving_cert) = governor();
+    let source = test_host(source_state.path(), &serving_key, &serving_cert).await;
+    let created = source
+        .workspaces()
+        .create("Shared")
+        .await
+        .expect("a workspace is created");
+    let branch = device_cert(
+        &SigningKey::from_bytes(&[1; 32]),
+        "laptop branch",
+        DeviceCapabilities::member(),
+    );
+    let issued = source
+        .workspaces()
+        .pre_admit(
+            &serving_cert,
+            PreAdmitRequest {
+                request_id: [31; 32],
+                grant: signed_pre_admission(&created.workspace, &[31; 8]),
+                recipient_user_public_key: Some(branch.1.user_public_key),
+                inviter_name: None,
+            },
+        )
+        .await
+        .expect("the source issues an invitation");
+    let invitation = tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation);
+    copy_dir(source_state.path(), copy_state.path());
+
+    // The copy comes up as a device of its own, as a branched machine does.
+    let copy = test_host(copy_state.path(), &branch.0, &branch.1).await;
+    copy.workspaces().set_member_device(Arc::new(MemberDevice {
+        cert: branch.1,
+        signer: Arc::new(branch.0),
+    }));
+    assert!(
+        copy.workspaces().state(&created.workspace).await.is_some(),
+        "the copy answers the workspace from its copy while its source serves it"
+    );
+    assert!(
+        !copy
+            .workspaces()
+            .is_member(&created.workspace)
+            .await
+            .unwrap(),
+        "and holds it as no member copy until its source admits its device"
+    );
+
+    copy.workspaces()
+        .join_member(&invitation)
+        .await
+        .expect("the source takes the copy's device in");
+    assert!(
+        copy.workspaces()
+            .is_member(&created.workspace)
+            .await
+            .unwrap(),
+        "the copy holds the workspace as a member copy of its source from then on"
+    );
+    let state = copy
+        .workspaces()
+        .state(&created.workspace)
+        .await
+        .expect("the member copy is held");
+    assert_eq!(
+        state.governance().workspace_name().as_deref(),
+        Some("Shared")
+    );
+}

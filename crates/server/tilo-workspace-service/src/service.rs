@@ -1178,7 +1178,10 @@ impl ServiceIdentity {
     ///
     /// The service never signs under the device's key: the device and its
     /// service each write under a key of their own, so neither takes a
-    /// sequence number the other already gave a change.
+    /// sequence number the other already gave a change. A machine copied from
+    /// another serves under a key of its own too: the kept key's certificate
+    /// was issued by the device this one was copied from, which still serves
+    /// with it.
     ///
     /// # Errors
     ///
@@ -1196,7 +1199,15 @@ impl ServiceIdentity {
         let dir = root.join(OWN_KEY_DIR);
         let key_path = dir.join("key.bin");
         let cert_path = dir.join("cert.bin");
-        let key = if key_path.exists() {
+        // A certificate the person's other device issued belongs to the machine this one was
+        // copied from: two machines serving as one key would be one author, giving changes the
+        // same sequence numbers, as two devices holding one key would. The copy serves with a key
+        // of its own from then on.
+        let branched = persist::read_device_cert(&cert_path)
+            .ok()
+            .and_then(|cert| cert.issuer)
+            .is_some_and(|issuer| issuer.device_public_key != device.device_public_key);
+        let key = if key_path.exists() && !branched {
             persist::read_signing_key(&key_path).map_err(|error| fail("key", &error))?
         } else {
             std::fs::create_dir_all(&dir).map_err(|error| fail("key", &error))?;
@@ -1604,6 +1615,40 @@ mod tests {
         assert!(narrows(&list(&["a", "b"]), &list(&["b", "c"])));
         assert!(narrows(&TrustPolicy::AllowAny, &list(&["a"])));
         assert!(!narrows(&TrustPolicy::AllowAny, &TrustPolicy::AllowAny));
+    }
+
+    /// A machine copied from another serves under a key of its own: the key it carries was
+    /// certified by the device it was copied from, which still serves with it, and the same key on
+    /// two machines gives the same changes one sequence number.
+    #[tokio::test]
+    async fn a_machine_copied_from_another_serves_under_a_key_of_its_own() {
+        use ed25519_dalek::SigningKey;
+        use tilo_user_identity::DeviceCapabilities;
+
+        let state = tempfile::tempdir().unwrap();
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let source =
+            crate::workspaces::fixtures::device_cert(&root, "source", DeviceCapabilities::member());
+        let copy =
+            crate::workspaces::fixtures::device_cert(&root, "copy", DeviceCapabilities::member());
+        let first = ServiceIdentity::beside_device(state.path(), &source.1, &source.0)
+            .await
+            .unwrap();
+        let copied = ServiceIdentity::beside_device(state.path(), &copy.1, &copy.0)
+            .await
+            .unwrap();
+        assert_ne!(
+            copied.device_cert.device_public_key, first.device_cert.device_public_key,
+            "the copy serves under a key of its own"
+        );
+        assert!(copied.device_cert.is_of_device(&copy.1.device_public_key));
+        let again = ServiceIdentity::beside_device(state.path(), &copy.1, &copy.0)
+            .await
+            .unwrap();
+        assert_eq!(
+            again.device_cert.device_public_key, copied.device_cert.device_public_key,
+            "the key it chose is the key it keeps"
+        );
     }
 
     #[tokio::test]
