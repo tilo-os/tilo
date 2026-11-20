@@ -87,24 +87,30 @@ mod connected {
     }
 
     impl Reader {
-        /// Never reached: no reader exists.
+        /// Never reached: no reader exists, since [`take`] hands none out here.
         ///
         /// # Errors
         ///
-        /// Never.
+        /// [`io::ErrorKind::Unsupported`], were anything able to call it.
         pub fn read(&mut self) -> io::Result<Option<Vec<u8>>> {
-            match *self {}
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "only a Unix socket carries an app's actions",
+            ))
         }
     }
 
     impl Writer {
-        /// Never reached: no writer exists.
+        /// Never reached: no writer exists, since [`take`] hands none out here.
         ///
         /// # Errors
         ///
-        /// Never.
+        /// [`io::ErrorKind::Unsupported`], were anything able to call it.
         pub fn write(&mut self, _body: &[u8]) -> io::Result<()> {
-            match *self {}
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "only a Unix socket carries an app's actions",
+            ))
         }
     }
 }

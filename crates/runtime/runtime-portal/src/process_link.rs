@@ -458,14 +458,21 @@ pub fn into_raw(descriptor: Descriptor) -> crate::RawFd {
 ///
 /// # Errors
 ///
-/// The descriptor could not be duplicated.
+/// The descriptor could not be duplicated, or [`io::ErrorKind::Unsupported`] where there
+/// are no descriptors: no caller can hold a link to duplicate there.
 pub fn try_clone(link: &Descriptor) -> io::Result<Descriptor> {
     #[cfg(unix)]
     {
         link.try_clone()
     }
     #[cfg(not(unix))]
-    match *link {}
+    {
+        let _ = link;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "only the Linux session links its processes",
+        ))
+    }
 }
 
 /// The link the launcher handed this process, taken once.
