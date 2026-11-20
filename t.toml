@@ -724,6 +724,20 @@ name = "changes"
 run = "base=$(git rev-parse main)\nif [ \"$base\" = \"$(git rev-parse HEAD)\" ]; then base=$(git rev-parse HEAD^); fi\npython3 tools/policy/check_commit_policy.py \"$base\"\npython3 tools/policy/check_interfaces.py against \"$base\"\npython3 tools/policy/check_format_migrations.py against \"$base\"\npython3 tools/policy/check_resource_placement.py against \"$base\"\npython3 tools/policy/check_wire_enums.py against \"$base\"\npython3 tools/perf/tapp_size_ratchet.py check-budget --base \"$base\"\npython3 tools/perf/runtime_size_ratchet.py check-budget --base \"$base\"\npython3 -I tools/web/wasm_size_ratchet.py check-budget --base \"$base\"\n"
 git = true
 
+# The sender against the real OpenDrop receiver it must interoperate with, in a disposable
+# environment: the pinned checkout at the exact GPL-3.0 revision the suite names, its Python
+# dependencies, and the loopback TLS certificates and pins the suite makes itself. Nothing is
+# advertised and no interface is configured; every transfer stays inside the job.
+[[check]]
+name = "airdrop-sender"
+# Clones the pinned checkout from GitHub and installs from PyPI: no fixed host list, and pip
+# installs the newest builds, so the job is never served.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "rm -rf /target/OpenDrop && git clone -q https://github.com/spieglt/OpenDrop /target/OpenDrop && git -C /target/OpenDrop checkout -q 11fe7ba7861093b302bc0637e8cb10adf2d29337 && python3 -I tools/ci/test_airdrop_sender.py --opendrop-checkout /target/OpenDrop"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False libarchive openssl python3-pip && dnf clean all && python3 -m pip install --no-cache-dir libarchive-c zeroconf ifaddr Pillow", egress = { to = ["0.0.0.0/0", "::/0"] } }
+requires = ["arch=x86_64"]
+on = ["dispatch"]
+
 [[check]]
 name = "app-lints"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -6000,6 +6014,35 @@ default = false
 # The Windows compatibility system extension (os/image/layers.toml image `windows-compat`): built
 # like the OS image's own actions, published beside main's dev images for extension-manifests
 # to pin.
+# The PE DLL-load fixtures the Windows capsule's evidence is made from (fixtures/windows-dxvk-load.c),
+# compiled for both Windows architectures with the image's Clang and lld-link against the MinGW
+# import libraries' kernel32 (installed from Fedora's mirrors, so the job is never served). The
+# managed FEX checks run them under Wine; this only proves the fixtures build.
+[[check]]
+name = "windows-dxvk-load"
+# dnf installs the MinGW compilers, whose import libraries the fixtures link against, from Fedora's
+# mirrors: no fixed host list, and the newest builds, so the job is never served.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash os/tests/build-windows-dxvk-load.sh /target/windows-dxvk-load /"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False mingw32-gcc mingw64-gcc && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+requires = ["arch=x86_64"]
+outputs = ["/target/windows-dxvk-load/**"]
+on = ["dispatch"]
+
+# The Windows VM's domain XML, rendered for both architectures by the windows-vm example, against
+# the libvirt release's own complete RelaxNG schema: an element or attribute the shipped libvirt
+# refuses fails here instead of on a person's machine. The schema comes from Fedora's libvirt
+# package, a build that moves with its updates, so the setup is unpinned and the check runs when
+# named.
+[[check]]
+name = "windows-vm-schema"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash os/tests/windows_vm_schema.sh /usr/share/libvirt/schemas/domain.rng"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False libvirt-daemon libxml2 && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+requires = ["arch=x86_64"]
+on = ["dispatch"]
+
 [[check]]
 name = "os-windows-compat-x86_64"
 # Pulls the Windows guest and FEX inputs from registries no fixed list names.
@@ -6515,6 +6558,28 @@ outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/sig
 evidence = ["/target/e2e/state/logs/**"]
 timeout_secs = 1800
 
+# A stranger's way into tilo.sh, end to end, on a whole stack of its own, brought up the way
+# production's manifests bring it up (test-onboarding.sh, one flow of the e2e check's): the wait
+# list and its confirmation mail, the invitation an owner sends from the workspace's wait list, the
+# workspace the link lands them in with the agent setup, the passkey that brings them back on a
+# browser that forgot the site, a second workspace they make, and a visitor with no invitation who
+# still cannot get in. Nested, because the stack's services are sandboxed with bwrap (stack.sh).
+[[check]]
+name = "onboarding"
+# No egress: the entry, the stack and the people's browsers meet on loopback alone.
+run = "bash os/containers/tilo-lounge/test-onboarding.sh /target/publish/web-desktop/bundle /target/onboarding"
+needs = ["lounge-check-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+env = { TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/onboarding/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0" }
+requires = ["arch=x86_64"]
+isolation = "nested"
+outputs = ["/target/onboarding/**"]
+evidence = ["/target/onboarding/state/logs/**"]
+timeout_secs = 1800
+on = ["dispatch"]
+
 # A fresh tilo.sh stack admits a page: the site's own page, in a headless Chromium, reaches the
 # host over the browser's WebTransport and is let into the Lounge through its entry, on a stack
 # brought up fresh from what the checks beside it built (so it compiles nothing). One flow of
@@ -6596,6 +6661,23 @@ requires = ["arch=x86_64"]
 outputs = ["/target/page-notes/**"]
 timeout_secs = 1800
 default = false
+
+# A stranger at the front of a workspace that takes people by invitation, in a real browser, against
+# the Lounge's server (test-wait-list.sh): the wait list is what they see rather than the setup
+# screen, the address they leave is confirmed through the mail the entry sends to a sink this run
+# keeps, and a reload keeps them on the wait list. It is the whole way from the page's refusal
+# through the server's entry, the workspace's wait list and the mail out — one flow of the e2e
+# check's, brought up on its own here with the same programs and bundle.
+[[check]]
+name = "wait-list"
+# No egress: the page, the entry, its mail sink and the security it serves meet on loopback.
+run = "bash os/containers/tilo-lounge/test-wait-list.sh /target/publish/web-desktop/bundle /target/wait-list"
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-desktop-bundle"]
+env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto" }
+requires = ["arch=x86_64"]
+outputs = ["/target/wait-list/**"]
+timeout_secs = 1800
+on = ["dispatch"]
 
 # A page whose app request is held past the time the server waits for it, walked in a headless
 # browser against the Lounge's server (integration/page-reopen.mjs): the site's entry makes the
@@ -6746,6 +6828,19 @@ default = false
 # `lounge-check`), so a check's bring-up compiles nothing. The server and its Discord worker are
 # lounge-check-binaries' (the Lounge's page checks run those); this adds the API server, the fake Discord,
 # the context's bots, surfaces and font catalog.
+# The login wrapper's contract in a disposable container (dist/ci/run-dev-session-test.sh): the
+# session scripts, copied into a digest-pinned Ubuntu image rather than mounted, refuse what a
+# person's session must when run by a non-root account. Docker creates and starts the container, so
+# the check needs a VM of its own; the image is a release the check pulls, at no fixed host list.
+[[check]]
+name = "dev-session-test"
+# Pulls the pinned Ubuntu from Docker Hub, at hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash dist/ci/run-dev-session-test.sh"
+requires = ["arch=x86_64"]
+isolation = "vm"
+on = ["dispatch"]
+
 [[check]]
 name = "tilo-sh-binaries"
 egress = { to = ["code.tilo.so:443"], pinned = true }
