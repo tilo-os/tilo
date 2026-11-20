@@ -194,12 +194,9 @@ pub fn dom_scrolled(id: u64, path: &str, offset: f64) -> Result<bool, JsValue> {
 ///
 /// Rejects a closed mount.
 #[wasm_bindgen]
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "wasm-bindgen hands a list of strings over owned"
-)]
 pub fn dom_pictures(id: u64, paths: Vec<String>, scale: f64) -> Result<JsValue, JsValue> {
-    with_mount(id, |m| {
+    // wasm-bindgen hands the list over owned: the paint takes it.
+    with_mount(id, move |m| {
         Ok(crate::dom_code::DOM_CODE
             .get()
             .map_or(JsValue::NULL, |code| (code.paint)(m, &paths, scale)))
