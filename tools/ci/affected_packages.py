@@ -116,7 +116,7 @@ DESKTOP_CHECK = desktop_check(TOOLS.parent)
 EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
 # Snapshot pins CI publishes and signs (kernel only; RPM snapshots resolve by
 # fingerprint). A pull request that changes only these changes no code:
-# check.yml's `pins` job proves each changed pin is the signed snapshot
+# t's `pins` check proves each changed pin is the signed snapshot
 # published for this source (os/dev/verify-snapshot-pins.sh) instead of the
 # Rust and security suites, which main runs after the merge.
 PIN_FILES = ("os/kernel-snapshot.env",)
@@ -212,9 +212,10 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "os/tests/workflow_dependency_invariants.sh",
         "tools/tests/test_ci_native_mold.py",
     ),
-    ".forgejo/workflows/check.yml": (
-        "tools/tests/test_ci_receipt.sh",
-        "tools/tests/test_ci_test_shard_environment.py",
+    ".forgejo/workflows/resolve-builder.yml": (
+        "tools/tests/test_resolve_ci_builder.py",
+    ),
+    "tools/ci/resolve_builder.py": (
         "tools/tests/test_resolve_ci_builder.py",
     ),
 }
@@ -246,7 +247,7 @@ FILTER_CONFIG_FILES = (
 FEATURE_CONFIG_FILE = ".config/hakari.toml"
 # Vendored crates that carry Tilo patches, with the paths their own tests read.
 # The workspace builds them only as path dependencies, so Cargo selection never
-# runs their tests; check.yml's `vendored` job does
+# runs their tests; t's `vendored` check does
 # (tools/ci/test-vendored-crates.sh) when one of these paths or the runner
 # changes, and ci-nightly.yml runs every one.
 VENDORED_TEST_CRATES = {
@@ -1183,7 +1184,7 @@ def browser_crates(packages: dict[str, dict]) -> set[str]:
     }
 
 
-# Example apps; check.yml's `wasm` job builds the web-capable ones with
+# Example apps; t's `wasm` check builds the web-capable ones with
 # `tilo-app build --platform web` (tools/ci/build-web-examples.sh).
 EXAMPLE_APPS = "examples/apps/"
 # What the web build of an example runs besides the example: a change to any of
@@ -1459,10 +1460,9 @@ def make_plan(
         test_names = sorted(tested & shard_names)
         scoped = [{"package": package, "test": scope.test, "filter": scope.filter}
                   for (package, _), scope in sorted(scoped_tests.items()) if package in shard_names]
-        # check_runner: a pull request runs its own check.yml against this
-        # planner from the merged tree; older branches' check.yml reads it.
-        # Older PR workflows still evaluate optional qualification fields.
-        # Empty strings retain their general fallback without missing lookups.
+        # Nothing schedules from this plan any more: t runs the checks, and
+        # this planner only names what a change reaches. The fields stay for
+        # local runs and readers, empty so a missing lookup never breaks them.
         placement = {"qualified_runner": "", "qualified_builders": "",
                      **qualified_native.placement(root, shard_names, arch)}
         certify = any(Path(packages[name]["manifest_path"]).resolve().parent.parent == root.resolve() / "apps"
@@ -1506,17 +1506,17 @@ def make_plan(
         "pins_required": pin_only,
         "pins": pins if pin_only else [],
         "suites": suites,
-        # Vendored crates whose own tests check.yml's `vendored` job runs.
+        # Vendored crates whose own tests t's `vendored` check runs.
         "vendored_required": bool(vendored),
         "vendored": vendored,
-        # Selected apps with an Android host example; check.yml's `android`
-        # job type-checks them for the Android targets.
+        # Selected apps with an Android host example; t's `android` check
+        # type-checks them for the Android targets.
         "android_required": bool(android),
         "android": android,
-        # Selected browser crates; check.yml's `wasm` job type-checks them for
+        # Selected browser crates; t's `wasm` check type-checks them for
         # wasm32-unknown-unknown, a target no other job builds.
         # Selected examples, or all of them when their web build changed; the
-        # `wasm` job builds the web-capable ones for the web.
+        # `wasm` check builds the web-capable ones for the web.
         "wasm_required": bool(wasm) or bool(web_examples),
         "wasm": wasm,
         "web_examples": web_examples,

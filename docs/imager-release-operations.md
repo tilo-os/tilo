@@ -67,8 +67,8 @@ documents why repository scope, ephemeral registration, and `one-job` belong
 together. Set an orchestration timeout because an ephemeral registration which
 never receives a job does not expire on its own.
 
-Pull requests and unrelated `main` changes retain the affected-package tests
-and release invariants `check.yml` runs on every push. Installer, profile-tool, workspace manifest,
+Pull requests and unrelated `main` changes retain the tests and release
+invariants `t` runs on every head of `main`. Installer, profile-tool, workspace manifest,
 lockfile and release-workflow changes on `main` additionally enter the existing
 native release queue, without reserving runners or dispatching OS builds.
 Manual rehearsals receive no signing lease. Do not put a persistent private key

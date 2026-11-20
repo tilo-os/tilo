@@ -58,7 +58,7 @@ Each check runs commands from this repository. Run them from the checkout on Lin
 | `clippy/<package>`                                      | `cargo clippy --locked --all-targets -p <package>... -- -D warnings`                                                                                                                                                                                                                                          |
 | `android`                                               | `bash tools/ci/install-android-ndk.sh`, then `tools/ci/clippy-android.sh`                                                                                                                                                                                                                                     |
 | `vendored`                                              | `tools/ci/test-vendored-crates.sh [vendor/<crate>...]`: each patched vendored crate's own `cargo test`, from a copy of the workspace lock (`VENDORED_TEST_CRATES` in `package_sets.py`)                                                                                                                       |
-| `web`                                                   | `tools/ci/check-wasm.sh --check` (the page builds)                                                                                                                                                                                                                                                            |
+| `workspace-service-agents`                              | `cargo check --locked -p tilo-workspace-service --features agents --all-targets` |
 | `wasm`, `web-examples`                                  | `tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)`; `tools/ci/build-web-examples.sh example-<name>...` builds the web examples                                                                                                                                                              |
 | `policy`, `fmt`, `deny`, `hakari`, `machete`, `changes` | `tools/policy/run.sh`, `cargo fmt --check`, `cargo deny --workspace check`, `cargo hakari generate --diff && cargo hakari manage-deps --dry-run`, `bash tools/ci/check-unused-dependencies.sh`, and the diff-based checks `changes` lists against `origin/main`                                                |
 | `sdk-policy`                                            | `python3 tools/web/generate_web_desktop.py --check`; portability is `tilo-app check --lint --all` in `lint.yml`                                                                                                                                                        |
@@ -85,25 +85,17 @@ than reverted. `stable` is the release branch: it is moved by hand when a
 release is cut (it requires signed commits), and it is the only ref
 publications build from.
 
-- `check.yml` runs after every push to `main`, one window of commits at a time.
-  Its first job (`tools/ci/push_window.py`, through the Forgejo API) hands the
-  window out, deciding once and in seconds: a run skips its jobs, and its
-  `untested` job ends it as cancelled (never green, since it tested nothing),
-  when an older run holds the window (its commits and this one's are the
-  same next window) or when a newer run holds it (these commits are its
-  business), and otherwise takes the window and cancels the older runs that never
-  started. The run that holds the window keeps it until it finishes, so one
-  window runs at a time and the first push after it opens the next one, at any
-  push rate; waiting for a running window instead left main with no window at all
-  while pushes kept arriving. A run plans from the head of the newest earlier run
-  on main whose window ran (`PLAN_BASE`), falling back to the main commit the
-  push landed on (`github.event.before`) and then to the full workspace, so a
-  cancelled run leaves no commit unmeasured. The CI host controller sweeps the
-  runs that never started when a supersede job dies, so the queue cannot grow
-  back. The `web` job is the exception: it checks the page builds for wasm32 on
-  every push, before and independent of that window, so a break only the web
-  build sees fails the head that introduced it. Its `wasm` job then adds the
-  browser crates and web-capable examples the window selects.
+- `t` runs the checks for every head of `main`: its default checks (the test,
+  clippy, check, suite, policy, `lint-head` and `workspace-service-agents`
+  families) run on each new head in `t.toml`, keyed by the inputs they read, and
+  `t main` names every failing item with the commit that broke it. Checks that
+  cost a lot name `on = ["dispatch", "idle"]` instead: main's newest head runs
+  them when a node is idle.
+- `t`'s `lint-head` check runs the wide lint of every commit on `main`
+  (`tools/ci/pre_push_lint.py --wide`): the changed packages, the packages that
+  name what they changed, and the page's wasm32 target, so a break only the web
+  build sees is named on the head that introduced it. hooks refuse a push
+  inline.
 - `lint.yml` runs for every push: its format, commit-message and unused
   dependency checks check exactly the commits the push added, so no push's run
   stands in for another's.

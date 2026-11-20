@@ -60,10 +60,16 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: Require this exact release commit to be checked on main
+      - name: Require this exact release commit to be on stable
         if: startsWith(github.ref, 'refs/tags/desktop-v')
         shell: bash
-        run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin
+        run: |
+          set -euo pipefail
+          # Distributions publish from stable, the release branch a promotion is
+          # cut through; a tag on a commit stable never reached was never
+          # promoted, whatever it points at.
+          git fetch --no-tags origin +refs/heads/stable:refs/remotes/origin/stable
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/stable
       - name: Validate packaging inputs before allocating native builders
         id: preflight
         shell: bash

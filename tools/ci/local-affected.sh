@@ -18,8 +18,8 @@
 #                  runs every job to its end and summarises)
 #   --split MODE   share a big test set between the x86 and arm builders
 #
-# Selection mirrors .forgejo/workflows/check.yml (tools/ci/affected_packages.py
-# with the shared filters); how it runs (lint and tests at once, each on the
-# builder that compiles it, failed tests first) is tools/ci/local_affected.py's.
+# Selection is tools/ci/affected_packages.py's, the planner t's checks share;
+# how it runs (lint and tests at once, each on the builder that compiles it,
+# failed tests first) is tools/ci/local_affected.py's.
 # tools/ci/test-changed.sh is the same run for a change still being edited.
 exec python3 "$(dirname "$0")/local_affected.py" "$@"

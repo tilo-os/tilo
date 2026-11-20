@@ -1203,7 +1203,7 @@ class SelectorTests(unittest.TestCase):
             self.install_quality_helpers()
             self.install_control_inputs()
             excluded = [
-                ".forgejo/workflows/check.yml",
+                ".forgejo/workflows/build-ci-builder.yml",
                 "os/tests/security-boundaries.sh",
                 "tools/run-security-boundary-invariants.sh",
                 "Cargo.toml",
@@ -1274,7 +1274,7 @@ class SelectorTests(unittest.TestCase):
             self.setUp()
             self.install_builder_recipe()
             for extra in ("leaf/src/lib.rs", "Cargo.lock", ".cargo/config.toml",
-                          "rust-toolchain.toml", ".forgejo/workflows/check.yml"):
+                          "rust-toolchain.toml", ".forgejo/workflows/build-ci-builder.yml"):
                 with self.subTest(extra=extra):
                     plan = ci_select.make_plan(
                         self.metadata, self.root, ["os/Containerfile.builder", extra], 2)
@@ -1328,7 +1328,7 @@ class SelectorTests(unittest.TestCase):
                 self.metadata,
                 self.root,
                 [
-                    ".forgejo/workflows/check.yml",
+                    ".forgejo/workflows/build-ci-builder.yml",
                     "os/tests/imager_ephemeral_runner.sh",
                     "scripts/check-install-contract.py",
                     "tools/ci/runners/imager-ephemeral-linux.sh",
@@ -1357,7 +1357,7 @@ class SelectorTests(unittest.TestCase):
             self.setUp()
             self.install_quality_helpers()
             for source in ci_select.QUALITY_ONLY_HELPERS:
-                for extra in ("tools/unknown.py", ".forgejo/workflows/check.yml",
+                for extra in ("tools/unknown.py", ".forgejo/workflows/build-ci-builder.yml",
                               "os/tests/security-boundaries.sh",
                               "leaf/src/lib.rs", "Cargo.lock", "tools/../tools/ci/affected_packages.py"):
                     with self.subTest(source=source, extra=extra):
@@ -1394,14 +1394,14 @@ class SelectorTests(unittest.TestCase):
             # PR #86's first two checks selected all 140 Rust packages even
             # though every change was CI orchestration or its test.
             changes = [
-                ".forgejo/workflows/check.yml",
+                ".forgejo/workflows/build-ci-builder.yml",
                 "os/Containerfile.builder",
                 "os/tests/test_builder_candidate_workflow.py",
                 "tools/ci/affected_packages.py",
                 "tools/policy/run.sh",
-                "tools/tests/test_ci_receipt.sh",
                 "tools/tests/test_ci_select.py",
-                "tools/tests/test_ci_test_shard_environment.py",
+                "tools/tests/test_ci_measure.py",
+                "tools/tests/test_suites.py",
                 "tools/tests/test_workflow_package_paths.py",
             ]
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
@@ -1414,7 +1414,8 @@ class SelectorTests(unittest.TestCase):
             self.install_quality_helpers()
             self.install_control_inputs()
             changes = [
-                ".forgejo/workflows/check.yml",
+                ".forgejo/workflows/resolve-builder.yml",
+                "tools/ci/resolve_builder.py",
                 "tools/tests/test_resolve_ci_builder.py",
                 "tools/ci/affected_packages.py",
                 "tools/tests/test_ci_select.py",
@@ -1472,7 +1473,7 @@ class SelectorTests(unittest.TestCase):
         with self.subTest(phase='ci control plane mapping stays exact and conservative'):
             self.setUp()
             self.install_control_inputs()
-            source = ".forgejo/workflows/check.yml"
+            source = ".forgejo/workflows/build-ci-builder.yml"
             for extra in (".forgejo/workflows/unknown.yml", "leaf/src/lib.rs",
                           "Cargo.lock", ".cargo/config.toml"):
                 with self.subTest(extra=extra):

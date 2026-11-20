@@ -1,7 +1,7 @@
 name: CI / fast quality
 
-# Clippy over the whole tree runs nightly (ci-nightly.yml); push runs lint the
-# packages a push touches (check.yml). This cheap path runs on every main commit so
+# Clippy over the whole tree runs nightly (ci-nightly.yml); a push's own hook and
+# t's lint-head check lint the packages it touches. This cheap path runs on every main commit so
 # the format, dependency and policy checks of the commit being promoted have a
 # result. Main is not guarded, so a red result here blocks only the promotion.
 #

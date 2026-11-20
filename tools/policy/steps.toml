@@ -366,12 +366,6 @@ run = "bash tools/tests/cargo_shim.sh"
 tests = true
 
 [[step]]
-name = "receipt"
-label = "CI receipt tests"
-run = "bash tools/tests/test_ci_receipt.sh"
-tests = true
-
-[[step]]
 name = "builder-candidate-workflow"
 label = "Builder candidate workflow tests"
 run = "python3 os/tests/test_builder_candidate_workflow.py"

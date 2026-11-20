@@ -92,13 +92,6 @@ class WarningCheckTests(unittest.TestCase):
 class RoutedSitesTests(unittest.TestCase):
     """Each all-target check takes the features from the one helper."""
 
-    def test_the_workflow_check_runs_the_helper(self):
-        workflow = (ROOT / ".forgejo/workflows/check.yml").read_text()
-        step = workflow[workflow.index("- name: Check all targets in shard"):]
-        step = step[:step.index("- name: Check the portable toolkit build")]
-        self.assertIn("bash tools/ci/check-all-targets.sh", step)
-        self.assertNotIn("check --locked --all-targets", step)
-
     def test_the_check_only_lint_path_runs_the_helper(self):
         script = (ROOT / "tools/ci/lint-affected.sh").read_text()
         self.assertIn('bash tools/ci/check-all-targets.sh "$@"', script)

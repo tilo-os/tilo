@@ -7,9 +7,9 @@ name: CI / pre-merge lint
 # pre-push hook ever saw, so without this the first lint of the merged tree runs
 # after it is already main.
 #
-# The other checks read a main push (check.yml, lint.yml). This one reads the
-# merge before it lands, and lints the crates a merge can break that neither
-# side's own run named.
+# t's lint-head check reads a main push. This one reads the merge before it
+# lands, and lints the crates a merge can break that neither side's own run
+# named.
 on:
   pull_request:
   workflow_dispatch:

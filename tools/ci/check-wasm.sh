@@ -8,10 +8,9 @@
 #   tools/ci/check-wasm.sh [--check] [-p <browser crate>]...
 #   CARGO=<any cargo drop-in> tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)
 #
-# `--check` type-checks the same set instead of linting it. check.yml's `web`
-# job runs the page builds on every head of main, where the cheaper verdict is
-# what fits; the lint of every crate stays with the window's `wasm` job and
-# nightly. Warnings still fail a check through the job's
+# `--check` type-checks the same set instead of linting it, the cheaper verdict
+# for a run that only needs to know the page compiles; t's `wasm` check lints
+# it. Warnings still fail a check through the job's
 # CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS.
 #
 # Run it with the browser crates. Not a build: the link and the web runtime's

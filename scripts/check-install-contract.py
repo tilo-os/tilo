@@ -289,7 +289,7 @@ assert "needs: [validate, package]" in signing_job
 assert "dist/rpm/sign-rpms.sh signed-fedora" in signing_job
 assert "vars.TILO_RPM_SIGNING_FINGERPRINT" in signing_job
 validation = session_workflow.split("  validate:\n", 1)[1].split("  package:\n", 1)[0]
-assert 'run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin' in validation
+assert 'git merge-base --is-ancestor "$GITHUB_SHA" origin/stable' in validation
 assert "needs: [validate, package, sign-rpm]" in session_workflow
 rpm_job = (ROOT / "dist/ci/run-package-job.sh").read_text()
 assert "--env TILO_RPM_SIGNING" not in rpm_job

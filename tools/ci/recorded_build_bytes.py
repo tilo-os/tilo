@@ -21,7 +21,7 @@ dependency tree, build-script output and fingerprints. `unrecorded` is the
 upper quartile of the measured packages, given to a package the record does not
 know, the way a new package gets the upper quartile of recorded test seconds.
 
-Measure it the way check.yml builds: that workflow sets
+Measure it the way t builds: its jobs set
 CARGO_PROFILE_DEV_DEBUG=0 and CARGO_PROFILE_TEST_DEBUG=0, so the tree's own
 `line-tables-only` profile builds larger artifacts than CI does. A record from a
 developer build therefore bounds the store from above, which is the direction a

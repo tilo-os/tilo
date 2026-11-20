@@ -5,9 +5,9 @@ name: Build / CI fast images
 # builder resolution). Consumers pin both by digest. Pull requests from this
 # repository and manual dispatches publish candidate tags so the tested digests
 # can be pinned before merge; main publishes source-SHA tags. There is no
-# moving tag. check.yml's builder job runs the named public-trust fixture in
-# ci-control, and lint.yml runs in ci-fast, so pinning a candidate qualifies it
-# in the real pipeline.
+# moving tag. A candidate is qualified by the jobs that run in it: lint.yml and
+# the nightly image builds run in ci-fast, and builder resolution runs in
+# ci-control.
 on:
   pull_request:
     branches: [main]

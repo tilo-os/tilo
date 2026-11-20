@@ -12,8 +12,9 @@ package without an entry gets affected_packages.UNRECORDED_TEST_SECONDS.
 Each RUN is one CI run: a JUnit file, or a directory whose *.xml reports (all
 shards of a check run, or the nightly workspace/visual-goldens/ignored reports)
 are added up. Download the artifacts with `fgj run artifacts N -d NAME` from
-recent main runs of check.yml (nextest-junit-x86_64-*) and ci-nightly.yml
-(nextest-junit-nightly-x86_64), one directory per run. A package's time is the
+recent main runs of ci-nightly.yml (nextest-junit-nightly-x86_64), one
+directory per run; main runs of the retired check.yml jobs used the same shard
+report names (nextest-junit-x86_64-*). A package's time is the
 median over the runs that executed its whole suite; a scoped run that picked
 only a few of its tests (under 90% of the most test cases seen for it) is not
 a sample.

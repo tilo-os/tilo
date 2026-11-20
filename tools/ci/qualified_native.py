@@ -10,14 +10,14 @@ import subprocess
 
 INPUTS = (
     "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
-    ".config/nextest.toml", ".forgejo/workflows/check.yml", "tools/test-env.sh",
+    ".config/nextest.toml", ".forgejo/workflows/ci-nightly.yml", "tools/test-env.sh",
     "tools/test-env-setup.sh",
     "tools/with-test-environment.sh", "tools/with-headless-audio.sh", "tools/cargo-runner.sh",
     ".config/nextest-filters.toml", "tools/ci/nextest_filters.py", "tools/ci/clippy-check.sh",
     "tools/ci/nextest.sh", "tools/ci/package_features.py", "tools/ci/check-all-targets.sh",
     "tools/ci/compiler_inputs.py", "tools/ci/measure.sh", "tools/ci/process_progress.py",
     "tools/ci/cgroup_memory.py", "scripts/ci-run.sh",
-    "tools/ci/prepare-test-shard.sh", "os/dev/assert-native-arch.sh", "tools/font-catalog.py",
+    "os/dev/assert-native-arch.sh", "tools/font-catalog.py",
     ".forgejo/actions/prepare-rust-build/action.yml",
     ".forgejo/actions/restore-cargo-downloads/action.yml",
     ".forgejo/actions/merge-main/action.yml",
@@ -56,8 +56,8 @@ def placement(root: Path, names: set[str], arch: str) -> dict:
         if not head:
             return {}
         workflow = subprocess.check_output(
-            ["git", "show", f"{head}:.forgejo/workflows/check.yml"], cwd=root, stderr=subprocess.DEVNULL)
-        if workflow != (root / ".forgejo/workflows/check.yml").read_bytes():
+            ["git", "show", f"{head}:.forgejo/workflows/ci-nightly.yml"], cwd=root, stderr=subprocess.DEVNULL)
+        if workflow != (root / ".forgejo/workflows/ci-nightly.yml").read_bytes():
             return {}
         if receipt["schema"] == 1 and receipt["input_sha256"] == fingerprint(root):
             return {"qualified_runner": "runner-quality", "qualified_builders": receipt["builders"]}

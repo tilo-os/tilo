@@ -826,6 +826,16 @@ run = "cargo check --locked -p tilo-ui --no-default-features --lib\ncargo check 
 on = ["dispatch", "idle"]
 heavy = true
 
+# A host that runs agents serves no apps to devices: `tilo-server`'s `agents`
+# build links the workspace service with `agents` and `web` alone
+# (crates/server/tilo-server/Cargo.toml). That build and its tests compile, so
+# code behind the `apps` feature cannot slip into what it leaves out. No
+# `unify`: this build's features are the point, so its units are its own.
+[[check]]
+name = "workspace-service-agents"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "cargo check --locked -p tilo-workspace-service --features agents --all-targets\n"
+
 [[check]]
 name = "android"
 egress = { to = ["code.tilo.so:443"], pinned = true }

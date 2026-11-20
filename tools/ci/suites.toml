@@ -6,7 +6,7 @@
 #   * tools/security-boundary-invariants.txt or tools/policy/run.sh, which run
 #     on every applicable change;
 #   * a [[group]] below: a cheap, hermetic suite (no root-only host state, KVM,
-#     built image or network) that check.yml runs whenever
+#     built image or network) that t's `suite-<group>` check runs whenever
 #     a changed path matches one of the group's inputs or the suite itself;
 #   * a [[covered]] entry: exercised by the named, already guarded suite, or,
 #     with `check = "<name>"`, by the named t check, which runs it in its own

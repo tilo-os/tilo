@@ -204,7 +204,6 @@ class NextestPolicyTests(unittest.TestCase):
             for key in tomllib.loads(FILTERS.read_text(encoding="utf-8"))
         }
         consumers = [
-            REPO / ".forgejo" / "workflows" / "check.yml",
             REPO / ".forgejo" / "workflows" / "ci-nightly.yml",
             REPO / "tools" / "ci" / "local_affected.py",
         ]

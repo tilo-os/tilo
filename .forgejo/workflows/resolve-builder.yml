@@ -3,8 +3,7 @@ name: Resolve CI builder
 # The public tilo-builder lookup, once. Callers that only need the immutable
 # image use this job. Signing stays inline in the snapshot workflows: Forgejo
 # does not pass OIDC into a reusable workflow. Callers that do more than
-# resolve (check.yml's trust-context proof, focused-test admission) keep
-# their own job.
+# resolve (a trust-context proof, focused-test admission) keep their own job.
 on:
   workflow_call:
     outputs:

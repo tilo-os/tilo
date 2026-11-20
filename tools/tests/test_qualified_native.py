@@ -18,7 +18,7 @@ class QualifiedNativeTests(unittest.TestCase):
 
     def test_real_input_binding_falls_back_on_builder_workflow_or_source_change(self):
         receipt = json.loads((ROOT / "tools/ci/qualified-native.json").read_text())
-        workflow = (ROOT / ".forgejo/workflows/check.yml").read_bytes()
+        workflow = (ROOT / ".forgejo/workflows/ci-nightly.yml").read_bytes()
         # CI merges newer main inputs before running policy tests. Qualify a
         # bounded copy, then change an actual input: the production fingerprint
         # and admission must agree without assuming main remains frozen.
