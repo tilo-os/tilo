@@ -1358,3 +1358,25 @@ fn each_windows_support_state_hides_what_it_cannot_do() {
         }
     }
 }
+
+/// A person who asks for Windows support from somewhere else (search, an
+/// agent's action) lands on the card that shows the download, so its end is
+/// where they were sent rather than a change they cannot see.
+#[test]
+fn asking_for_windows_support_opens_its_card() {
+    crate::area::replace_in_next_window(|context| {
+        let mut area = UpdatesArea::new(context);
+        area.set_windows_support(needs_install());
+        area.model().borrow_mut().windows_support_runner = Arc::new(|_| Ok(()));
+        area
+    });
+    let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+    app.settle();
+    app.effect(&SettingsEffect::from(UpdatesEffect::InstallWindowsSupport))
+        .expect("the install is accepted");
+    app.settle();
+    let shown = app
+        .with_widget::<crate::window::Inspected, _>(|window| window.selected())
+        .expect("the Settings window is mounted");
+    assert_eq!(shown, crate::categories::Category::Updates);
+}

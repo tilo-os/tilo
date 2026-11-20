@@ -2538,6 +2538,15 @@ pub(crate) fn answer(
     effect: UpdatesEffect,
     cx: &mut ui::framework::EffectCx<crate::resource::Settings>,
 ) -> ui::framework::EffectAnswer {
+    if matches!(
+        effect,
+        UpdatesEffect::InstallWindowsSupport | UpdatesEffect::RemoveWindowsSupport
+    ) {
+        // Its card is where the download is shown and where its end is read;
+        // a person who asked from search lands there instead of on a window
+        // whose change they cannot see.
+        app.request_pane(crate::categories::Category::Updates);
+    }
     let reply = cx.reply();
     crate::panes::updates::area(app)
         .ok_or_else(crate::area::missing)?
