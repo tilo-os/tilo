@@ -19,6 +19,7 @@ pub mod dev_env;
 pub mod egress_proxy;
 #[cfg(target_os = "linux")]
 mod fd;
+#[cfg(target_os = "linux")]
 pub mod gpu;
 pub mod hardening;
 #[cfg(target_os = "linux")]
