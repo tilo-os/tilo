@@ -1367,6 +1367,78 @@ fn copying_a_folder_in_and_restarting() {
     );
 }
 
+/// A person's second computer opens a photo it has never fetched: the bytes
+/// come from the first computer as the open asks for them, at the size a photo
+/// has (`TILO_FS_PHOTO_BYTES`, default 256 KiB) rather than a test's few bytes.
+///
+/// `TILO_FS_PHOTO_FILES` (default 20) sets how many photos are in the folder.
+#[test]
+fn a_photo_the_second_device_never_fetched_opens() {
+    let scenario = "photo";
+    if !ladder_selected(scenario) {
+        return;
+    }
+    let files = env_u64("TILO_FS_PHOTO_FILES", 20);
+    let bytes = env_u64("TILO_FS_PHOTO_BYTES", 262_144);
+    let (store_a, store_b) = match backend() {
+        Backend::Native => {
+            let (a, b) = stores(scenario).expect("the photo pass needs two store volumes");
+            (Some(a), Some(b))
+        }
+        Backend::Fuse => (None, None),
+    };
+    let mut pair = start_pair_joining(store_a.as_deref(), store_b.as_deref(), 0x5a, false, false);
+    let flat = pair.host.mount.join("flat");
+    std::fs::create_dir_all(&flat).unwrap();
+    let mut buf = vec![0_u8; usize::try_from(bytes).unwrap_or(262_144)];
+    for i in 0..files {
+        fill(i, 0, &mut buf);
+        std::fs::write(flat.join(format!("f{i:07}")), &buf).unwrap();
+    }
+    mark("the photos are written through the first computer's mount");
+    let _ = pair.join_peer();
+    let peer_flat = pair.peer_mount().join("flat");
+    // The list comes first, so the open below is a fetch and not a race with
+    // the tree arriving.
+    let deadline = Instant::now() + TIMEOUT;
+    while (list_directory(&peer_flat) as u64) < files {
+        pair.host.alive();
+        pair.peer.as_mut().expect("the peer is serving").alive();
+        assert!(
+            Instant::now() < deadline,
+            "the second computer lists {} of the {files} photos",
+            list_directory(&peer_flat)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let target = peer_flat.join("f0000000");
+    let started = Instant::now();
+    let read = read_range(&target, 0, 4096).unwrap_or_else(|error| {
+        panic!(
+            "the second computer cannot open a photo it never fetched ({error}); it lists {} of \
+             the {files} photos; its log:\n{}\nthe first computer's log:\n{}",
+            list_directory(&peer_flat),
+            pair.peer.as_ref().expect("the peer is serving").dump(),
+            pair.host.dump()
+        );
+    });
+    let open = started.elapsed();
+    fill(0, 0, &mut buf);
+    assert_eq!(read, buf[..4096], "the photo's first bytes are its own");
+    report(
+        &rung_name(scenario, files),
+        "open_s",
+        open.as_secs_f64(),
+        "s",
+    );
+    eprintln!(
+        "photo: the second computer opened one of {files} photos of {bytes} B in {open:?}, \
+         holding {} entries and fetching {:?}",
+        list_directory(&peer_flat),
+        open
+    );
+}
+
 fn rung_name(scenario: &str, files: u64) -> String {
     format!("{scenario}/{files}")
 }
