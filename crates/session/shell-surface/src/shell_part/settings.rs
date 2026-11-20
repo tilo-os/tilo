@@ -56,7 +56,6 @@ impl ShellPart {
         for (param, argument) in declared.params.iter().skip(1).zip(arguments) {
             values.push(Self::case_value(meta, &param.ty, &argument)?);
         }
-        let first = host.next_ticket();
         let outcome = host
             .runtime()
             .invoke_action(host.viewer(), (declared.id.as_str(), values))
@@ -70,51 +69,10 @@ impl ShellPart {
                 return Err(format!("`{action}` is not allowed"));
             }
         }
-        // The runtime committed the record's change under a ticket: the part applies it to the
-        // record its views read, as it does a change a press in the shell made, so the next
-        // turn draws the shell as the action left it. The tickets are taken here rather than
-        // handed to the part's API, since the API's queue is what a press of the shell's own
-        // views answers, and the part answers nothing on the person's behalf outside it.
-        self.apply_committed(&host, first);
+        // The runtime wrote the change to the shell's store: the next turn draws the shell as
+        // the action left it.
         self.again = true;
         Ok(())
-    }
-
-    /// Apply everything the runtime committed since the part last took it — a test's own
-    /// invocations, which no action ran — to the record this part's views read, as a press in
-    /// the shell's views has the part apply what it committed.
-    #[cfg(test)]
-    pub fn apply_committed_for_test(&mut self) {
-        if let Some(host) = self.instance.host() {
-            self.apply_committed(&host, 0);
-        }
-    }
-
-    /// Apply what the runtime committed from `first` on to the record this part's views read,
-    /// and bring the instance up to date with it.
-    fn apply_committed(&mut self, host: &tilolang_tilo::host::Host, first: u64) {
-        let at = std::time::Instant::now();
-        let mut applied = false;
-        for committed in host.take_committed_from(first) {
-            let result = match host.store().take_ticket(committed.ticket) {
-                Some(action) => {
-                    crate::commit::recorded(host, &mut self.record.borrow_mut(), &action)
-                }
-                None => Err(format!("no committed action {}", committed.ticket)),
-            };
-            match result {
-                Ok(()) => applied = true,
-                Err(why) => tracing::error!(why, "a shell action's change could not be applied"),
-            }
-        }
-        if !applied {
-            return;
-        }
-        // The record moved: the part's next turn settles what that started and draws the
-        // shell as the setting left it, as it does a change another part of this shell
-        // committed, since both write the record the parts share.
-        self.record.borrow_mut().commit();
-        self.work.committing = self.work.committing.saturating_add(at.elapsed());
     }
 
     /// The name of the type the root `root` of `meta` is made of: the type it is declared under,

@@ -14,7 +14,6 @@ use tilo_actions::surface::{
     TypeSet, VerbSurface,
 };
 use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
-use tilo_resource::Resource as _;
 use tilolang_runtime::Words;
 use tilolang_runtime::meta::Ty;
 
@@ -25,7 +24,6 @@ use crate::meta::{MetaExt as _, action_kind};
 
 /// The kind of the host's own resource.
 pub const HOST_KIND: &str = "tl.host";
-pub use crate::publish::COMMIT;
 
 /// The storage version of every generated resource.
 pub const VERSION: u32 = 1;
@@ -519,22 +517,8 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
     surfaces
 }
 
-fn host_verb(id: &str, label: &str, kind: ActionKind, params: Vec<ParamSurface>) -> VerbSurface {
-    VerbSurface {
-        id: id.to_owned(),
-        label: label.to_owned(),
-        description: None,
-        kind,
-        destructive: false,
-        incoming_message: false,
-        params,
-        returns: None,
-        writes: vec![RESOURCE_UNIT.to_owned()],
-        field: None,
-    }
-}
-
-/// The surface of the host's own resource: the commit of an action the runtime planned.
+/// The surface of the host's own resource. It declares no verbs: an agent's host effects are
+/// answered by the window that publishes them, never written to a document.
 #[must_use]
 pub fn host_surface() -> Surface {
     Surface {
@@ -543,18 +527,44 @@ pub fn host_surface() -> Surface {
         version: VERSION,
         person: false,
         own: false,
-        verbs: vec![host_verb(
-            COMMIT,
-            "Commit a planned action",
-            ActionKind::Undoable,
-            vec![ParamSurface {
-                name: "ticket".to_owned(),
-                required: true,
-                schema: json!({"type": "integer"}),
-                ty: FieldType::Int,
-                within: None,
-            }],
-        )],
+        verbs: Vec::new(),
+        fields: Vec::new(),
+        types: Vec::new(),
+        shows: Vec::new(),
+    }
+}
+
+/// The surface of each person's own state of an app's windows ([`crate::personal`]): a
+/// member's own resource, which the verbs keeping a slot, a seen mark or the reviewed runs write.
+#[must_use]
+pub fn personal_surface() -> Surface {
+    use crate::personal::{KIND, RUNS, SEEN, VIEW_STATE};
+    let verbs = [
+        (VIEW_STATE, "Keep a view's state"),
+        (SEEN, "Keep what is seen"),
+        (RUNS, "Keep reviewed runs"),
+    ]
+    .into_iter()
+    .map(|(id, label)| VerbSurface {
+        id: id.to_owned(),
+        label: label.to_owned(),
+        description: None,
+        kind: ActionKind::Undoable,
+        destructive: false,
+        incoming_message: false,
+        params: Vec::new(),
+        returns: None,
+        writes: vec![RESOURCE_UNIT.to_owned()],
+        field: None,
+    })
+    .collect();
+    Surface {
+        kind: KIND.to_owned(),
+        label: "Your place in the app".to_owned(),
+        version: VERSION,
+        person: false,
+        own: true,
+        verbs,
         fields: Vec::new(),
         types: Vec::new(),
         shows: Vec::new(),
@@ -584,7 +594,7 @@ pub fn surface_toml_reading(
     reads: &[Meta],
     words: &dyn Words,
 ) -> Result<Vec<u8>, toml::ser::Error> {
-    let mut resources = vec![host_surface(), crate::personal::Personal::surface()];
+    let mut resources = vec![host_surface(), personal_surface()];
     for meta in packages {
         resources.extend(package_surfaces(meta, words));
     }

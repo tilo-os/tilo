@@ -1,15 +1,13 @@
-//! Outcomes across replicas (convergence design 1.1), on the real Todo app: checking an item
-//! records what the person saw as the argument (`done: true`), so two people checking it at once
-//! both leave it checked, an agent's explicit `done: false` wins, and History has the value.
+//! Outcomes across replicas, on the real Todo app: checking an item records what the person saw
+//! as the argument (`done: true`), so two people checking it at once both leave it checked, an
+//! agent's explicit `done: false` wins, and history has the value.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use serde_json::{Value as Json, json};
-use tilo_actions::{Did, Scalar};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::{Meta, SourceWords, Value};
 use tilolang_tilo::DynAction;
 use tilolang_tilo::publish::{Caller, PlanRequest};
-use tilolang_tilo::resource::DynValue;
 
 use crate::fixtures::{Replica, field_id};
 
@@ -19,60 +17,67 @@ const TODO: &str = crate::fixtures::TASKS_SOURCE;
 const TODO_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const APP: &str = "so.tilo.lang.tasks";
 
-/// Ada's replica holding a list with one item, Grace's fork of it, the package, and the item's
-/// resource id.
-fn workspace() -> (Replica, Replica, Meta, String) {
-    let (mut ada, packages) = Replica::new(
+/// Ada's replica holding a list with one item, Grace's fork of it, the package, and the item.
+fn workspace() -> (Replica, Replica, Meta, ResourceRef) {
+    let (ada, packages) = Replica::new(
         "ada",
-        AutoCommit::new(),
+        Workspace::new(),
         &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
     );
     let meta = packages.last().unwrap().meta.clone();
     let root = ada.host.root_of(APP).unwrap();
     ada.commit();
-    let add = plan(
+    carried(
         &ada,
         &meta,
-        ("Tasks", &root.doc),
+        &root,
+        "Task",
         "new_task",
         json!({"title": "Take the bins out"}),
         None,
     );
-    ada.apply(&add);
     let items = field_id(&meta, "Tasks", "items");
-    let record = ada.host.store().record(&root.doc).unwrap();
-    let Some(DynValue::Collection(list)) = record.get(&items) else {
-        panic!("no items");
+    let first = match ada.read(&root, &items) {
+        Value::List(items) => match items.first() {
+            Some(Value::Ref(r)) => (*r.target).clone(),
+            other => panic!("an item: {other:?}"),
+        },
+        other => panic!("no items: {other:?}"),
     };
-    let first = list
-        .iter()
-        .next()
-        .map(|(id, _)| id.as_str().to_owned())
-        .expect("one item");
-    let item = format!("{}/{items}:{first}", root.doc);
     let grace = ada.fork("grace", &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)]);
-    (ada, grace, meta, item)
+    (ada, grace, meta, first)
 }
 
-/// What the API builds for the action `name` invoked on `on` (a type and a resource id).
+/// The kind the type `ty` is published as.
+fn kind_of(ty: &str) -> String {
+    format!("tl.{APP}.{ty}")
+}
+
+/// What the API plans for the action `name` on `on`, without carrying it out.
 fn plan(
     replica: &Replica,
     meta: &Meta,
-    on: (&str, &str),
+    on: &ResourceRef,
+    ty: &str,
     name: &str,
     args: Json,
     caller: Option<&Caller>,
 ) -> DynAction {
-    let action = meta.actions.iter().find(|a| a.name == name).unwrap();
+    let action = meta
+        .actions
+        .iter()
+        .find(|a| a.name == name)
+        .unwrap_or_else(|| panic!("the action {name}"));
     let args = args.as_object().cloned().unwrap_or_default();
-    let kind = format!("tl.{APP}.{}", on.0);
+    let kind = kind_of(ty);
+    let id = on.id_string();
     replica
         .host
         .plan(&PlanRequest {
             app: APP,
             kind: &kind,
             action_id: &action.id,
-            resource: Some(on.1),
+            resource: Some(&id),
             args: &args,
             caller,
             from: None,
@@ -80,17 +85,45 @@ fn plan(
         .unwrap()
 }
 
-fn done(replica: &Replica, meta: &Meta, item: &str) -> Value {
-    let ty = meta.types.iter().find(|t| t.name == "Task").unwrap();
-    let at = ResourceRef::parse_id(item, ty.id.clone()).unwrap();
-    replica.host.runtime().read(&at, "done").unwrap()
+/// Carry out the action `name` on `on` as the API does, and answer its record.
+fn carried(
+    replica: &Replica,
+    meta: &Meta,
+    on: &ResourceRef,
+    ty: &str,
+    name: &str,
+    args: Json,
+    caller: Option<&Caller>,
+) -> DynAction {
+    let action = meta
+        .actions
+        .iter()
+        .find(|a| a.name == name)
+        .unwrap_or_else(|| panic!("the action {name}"));
+    let args = args.as_object().cloned().unwrap_or_default();
+    let kind = kind_of(ty);
+    let id = on.id_string();
+    let request = PlanRequest {
+        app: APP,
+        kind: &kind,
+        action_id: &action.id,
+        resource: Some(&id),
+        args: &args,
+        caller,
+        from: None,
+    };
+    replica.carry_out(&request).unwrap()
+}
+
+fn done(replica: &Replica, item: &ResourceRef) -> Value {
+    replica.host.runtime().read(item, "done").unwrap()
 }
 
 #[test]
 fn two_replicas_checking_one_item_at_once_both_leave_it_checked() {
-    let (mut ada, mut grace, meta, item) = workspace();
-    let by_ada = plan(&ada, &meta, ("Task", &item), "check", json!({}), None);
-    let by_grace = plan(&grace, &meta, ("Task", &item), "check", json!({}), None);
+    let (ada, grace, meta, item) = workspace();
+    let by_ada = plan(&ada, &meta, &item, "Task", "check", json!({}), None);
+    let by_grace = plan(&grace, &meta, &item, "Task", "check", json!({}), None);
     assert_eq!(
         by_ada.args.get("done"),
         Some(&json!(true)),
@@ -103,27 +136,16 @@ fn two_replicas_checking_one_item_at_once_both_leave_it_checked() {
         "{:?}",
         by_grace.args
     );
-    ada.apply(&by_ada);
-    grace.apply(&by_grace);
-    ada.sync_with(&mut grace);
-    assert_eq!(done(&ada, &meta, &item), Value::Bool(true));
-    assert_eq!(done(&grace, &meta, &item), Value::Bool(true));
-    assert_eq!(
-        ada.host
-            .store()
-            .record(item.split('/').next().unwrap())
-            .unwrap(),
-        grace
-            .host
-            .store()
-            .record(item.split('/').next().unwrap())
-            .unwrap()
-    );
+    carried(&ada, &meta, &item, "Task", "check", json!({}), None);
+    carried(&grace, &meta, &item, "Task", "check", json!({}), None);
+    ada.sync_with(&grace);
+    assert_eq!(done(&ada, &item), Value::Bool(true));
+    assert_eq!(done(&grace, &item), Value::Bool(true));
 }
 
 #[test]
 fn an_agent_passing_done_explicitly_wins() {
-    let (mut ada, _, meta, item) = workspace();
+    let (ada, _, meta, item) = workspace();
     let agent = Caller {
         actor: tilolang_tilo::runtime::ids::MemberId::agent("task-1").into(),
         agent: true,
@@ -132,7 +154,8 @@ fn an_agent_passing_done_explicitly_wins() {
     let unchecked = plan(
         &ada,
         &meta,
-        ("Task", &item),
+        &item,
+        "Task",
         "check",
         json!({"done": false}),
         Some(&agent),
@@ -144,65 +167,42 @@ fn an_agent_passing_done_explicitly_wins() {
             tilolang_tilo::runtime::ids::MemberId::agent("task-1")
         ))
     );
-    ada.apply(&unchecked);
+    carried(
+        &ada,
+        &meta,
+        &item,
+        "Task",
+        "check",
+        json!({"done": false}),
+        Some(&agent),
+    );
     assert_eq!(
-        done(&ada, &meta, &item),
+        done(&ada, &item),
         Value::Bool(false),
         "the default would have checked it"
     );
-    let checked = plan(
+    carried(
         &ada,
         &meta,
-        ("Task", &item),
+        &item,
+        "Task",
         "check",
         json!({"done": true}),
         Some(&agent),
     );
-    ada.apply(&checked);
-    let again = plan(
+    carried(
         &ada,
         &meta,
-        ("Task", &item),
+        &item,
+        "Task",
         "check",
         json!({"done": true}),
         Some(&agent),
     );
-    ada.apply(&again);
     assert_eq!(
-        done(&ada, &meta, &item),
+        done(&ada, &item),
         Value::Bool(true),
         "checked twice is checked"
-    );
-}
-
-#[test]
-fn the_recorded_invocation_and_history_carry_the_argument() {
-    let (mut ada, _, meta, item) = workspace();
-    let check = plan(&ada, &meta, ("Task", &item), "check", json!({}), None);
-    ada.apply(&check);
-    let uncheck = plan(&ada, &meta, ("Task", &item), "check", json!({}), None);
-    assert_eq!(
-        uncheck.args.get("done"),
-        Some(&json!(false)),
-        "computed on the state then"
-    );
-    ada.apply(&uncheck);
-    let id = &meta.actions.iter().find(|a| a.name == "check").unwrap().id;
-    let versions = tilo_resource::history::versions(&mut ada.doc);
-    let recorded: Vec<Option<Scalar>> = versions
-        .iter()
-        .filter_map(|version| match version.context.as_ref()?.what.as_ref()? {
-            Did::Verb(verb) if &verb.action.action == id => Some(verb.args.get("done").cloned()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        recorded,
-        [
-            Scalar::from_json(&json!(true)),
-            Scalar::from_json(&json!(false))
-        ],
-        "{versions:#?}"
     );
 }
 

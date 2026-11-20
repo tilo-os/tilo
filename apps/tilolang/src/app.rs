@@ -175,8 +175,8 @@ fn in_process(
         tracing::error!("no package is installed in this runtime");
         return None;
     };
-    // The document is this device's alone: its route only names where it is kept, one per
-    // workspace, whether the profile names its workspace by id or by name (`personal`).
+    // The app's resources are this device's alone: its route only names the workspace they are
+    // kept for, one per workspace, whether the profile names its workspace by id or by name (`personal`).
     let workspace_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, workspace.as_bytes());
     let storage = match files.paths().data().native_path() {
         Ok(data) => Some(data.join("tilolang")),
@@ -196,21 +196,7 @@ fn in_process(
     }
     let route = tilolang_process::route_of(&bundle.meta, workspace_id, me);
     let spec = tilolang_process::hosted::Spec::new(bundle.meta.app.clone(), workspace, 1, me);
-    let kind = tilolang_tilo::meta::MetaExt::resource_type(&bundle.meta);
-    let person = me.to_owned();
-    crate::hosted::HostedWindow::in_process(
-        spec,
-        |kept| {
-            tilolang_tilo::instance::document::InstanceDocument::open_local(
-                route,
-                &kept.documents,
-                person,
-                kind,
-            )
-        },
-        bundle,
-        storage,
-    )
+    crate::hosted::HostedWindow::in_process(spec, route, bundle, storage)
     .inspect_err(|error| tracing::error!(%error, "the app's instance did not start"))
     .ok()
 }

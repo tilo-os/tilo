@@ -2,10 +2,9 @@
 //! "Errors that teach"): `grep`, `find`, the chaining functions, `read`, `describe` and `print`,
 //! over every app the task may read.
 //!
-//! Two workspaces' worth of documents: Tasks and a journal in one, Notes, Chat and Board with their
+//! Two workspaces' worth of apps: Tasks and a journal in one, Notes, Chat and Board with their
 //! scenarios in the other. The task's programs run in a host of the task's own, which reads
-//! each app's document itself as the API hands it over (`task_documents`): no app's host answers
-//! what a program asks.
+//! each app's resources through its host, as the API answers them.
 
 use std::fmt::Write as _;
 use std::rc::Rc;
@@ -75,7 +74,7 @@ fn world() -> World {
         "so.tilo.lang.chat",
         "so.tilo.lang.board",
     ] {
-        let mut other = apps.replica(app);
+        let other = apps.replica(app);
         let package = other.host.package(app).unwrap();
         let scenario = package.meta.scenarios.first().unwrap().action.clone();
         other
@@ -89,7 +88,7 @@ fn world() -> World {
         other.commit();
     }
     let apps = Rc::new(apps);
-    let (task, _api) = apps.document_task();
+    let task = apps.task();
     // The task reads times as they are: what an app wrote just now was changed within any recent window.
     task.set_clock(tilolang_tilo::host::system_time);
     World { task }
@@ -435,84 +434,6 @@ fn a_session_of_the_agents_doc_examples() {
     );
 }
 
-#[test]
-fn a_task_reads_each_document_anew_for_every_program_and_after_changing_it() {
-    let apps = Rc::new(Apps::new(&[&[app!("discussion"), app!("notes")]]));
-    let (task, _api) = apps.document_task();
-    task.set_clock(tilolang_tilo::host::system_time);
-    let notes = "so.tilo.lang.notes";
-    let fetches = || {
-        apps.fetched
-            .borrow()
-            .iter()
-            .filter(|app| *app == notes)
-            .count()
-    };
-    printed(&task.run(
-        r#"find("standup")"#,
-        true,
-        &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
-            "task-1",
-        )),
-    ));
-    printed(&task.run(
-        r#"find("standup")"#,
-        true,
-        &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
-            "task-1",
-        )),
-    ));
-    assert_eq!(
-        fetches(),
-        2,
-        "each program fetches the document it reads again"
-    );
-    // A note the program makes is found by the same program: the document is read again after
-    // the change.
-    let out = printed(&task.run(
-        "let n = notes.new_note(notes.notebook)\nn.title = \"Coffee order\"\nfind(\"coffee\")",
-        true,
-        &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
-            "task-1",
-        )),
-    ));
-    assert!(out.contains("Coffee order"), "{out}");
-}
-
-/// A task reads its own earlier changes in every program after them, while the copy of the
-/// record the API hands over still lags the document's origin.
-#[test]
-fn a_tasks_next_program_reads_what_its_earlier_ones_changed() {
-    let apps = Rc::new(Apps::new(&[&[app!("discussion"), app!("tasks")]]));
-    let (task, _api) = apps.document_task();
-    task.set_clock(tilolang_tilo::host::system_time);
-    apps.lag("so.tilo.lang.tasks");
-    let out = printed(&task.run(
-        "let t = tasks.new_task(tasks.tasks, title: \"Check the launch video\")",
-        true,
-        &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
-            "task-1",
-        )),
-    ));
-    assert!(!out.contains("error"), "{out}");
-    let found = printed(&task.run(
-        "grep(/launch/, in: tasks)",
-        true,
-        &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
-            "task-1",
-        )),
-    ));
-    assert!(found.contains("Check the launch video"), "{found}");
-    let found = printed(&task.run(
-        "find(Task)",
-        true,
-        &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
-            "task-1",
-        )),
-    ));
-    assert!(found.contains("Check the launch video"), "{found}");
-}
-
 /// What changed in the person's notes this week: the notes found by when each last changed,
 /// read from each note's own history, and who changed it then. Nothing about a note's time is
 /// one of its fields, so a program that asks a field for it, or the clock, is taught the filter.
@@ -521,7 +442,7 @@ fn what_changed_in_the_notes_this_week_is_found_by_when_each_last_changed() {
     let apps = Rc::new(Apps::new(&[&[app!("discussion"), app!("notes")]]));
     let clock = Rc::new(std::cell::RefCell::new("2026-10-01T09:00:00Z".to_owned()));
     {
-        let mut notes = apps.replica("so.tilo.lang.notes");
+        let notes = apps.replica("so.tilo.lang.notes");
         let now = Rc::clone(&clock);
         notes.host.set_clock(move || now.borrow().clone());
         let package = notes.host.package("so.tilo.lang.notes").unwrap();
@@ -536,7 +457,7 @@ fn what_changed_in_the_notes_this_week_is_found_by_when_each_last_changed() {
             .unwrap();
         notes.commit();
     }
-    let (task, _api) = apps.document_task();
+    let task = apps.task();
     task.set_clock(tilolang_tilo::host::system_time);
     let run = |source: &str| {
         task.run(

@@ -1,14 +1,10 @@
-//! One action and every action it calls are one action of the workspace: every change of the
-//! run names the one invocation, and a run that fails anywhere leaves nothing of itself in the
-//! document or in what the host would commit.
+//! One action and every action it calls are one run of the workspace: every change of the run
+//! names the one invocation, and a run that fails anywhere leaves nothing of itself in the
+//! store.
 
-use automerge::AutoCommit;
-use collab_types::DocumentMutation;
-use tilo_actions::ActionContext;
 use tilolang_runtime::meta::{FieldKind, Meta};
 use tilolang_runtime::store::{FieldSpec, FieldValue, Store as _};
 use tilolang_runtime::{Actor, Value};
-use tilolang_tilo::action::{DynAction, invocation_id};
 use tilolang_tilo::host::Host;
 
 /// Two actions that call `bump` twice, one of them failing after the calls.
@@ -46,22 +42,16 @@ action boom(t: Tally) {
 
 const APP: &str = "test.nested";
 
-/// A host over a fresh document, running `NESTED`, and the tally it counts.
-fn workspace() -> (Host, AutoCommit, tilolang_tilo::runtime::ResourceRef, Meta) {
-    let mut doc = AutoCommit::new();
+/// A host over a store of its own, running `NESTED`, and the tally it counts.
+fn workspace() -> (Host, tilolang_tilo::runtime::ResourceRef, Meta) {
     let host = Host::new(
-        &doc,
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
     )
     .unwrap();
     let package = host.load_builtin(NESTED, "").unwrap();
     let tally = host.root_of(APP).unwrap();
-    // The root itself is a change of the document, committed before any action runs.
-    for created in host.take_committed() {
-        apply(&host, &mut doc, &created.action);
-    }
-    (host, doc, tally, package.meta)
+    (host, tally, package.meta)
 }
 
 fn run(
@@ -100,89 +90,38 @@ fn value(host: &Host, tally: &tilolang_tilo::runtime::ResourceRef, meta: &Meta) 
     }
 }
 
-/// Apply `action` to `doc` as the document does, in the run it was committed in
-/// ([`tilolang_tilo::instance::document::InstanceDocument`]): its context names the run's
-/// invocation.
-fn apply(host: &Host, doc: &mut AutoCommit, action: &DynAction) {
-    let mut context = ActionContext::for_resource(
-        action.resources().first().copied().unwrap_or("workspace"),
-        &action.kind,
-        &action.kind,
-    );
-    if let Some(run) = &action.authorship.invocation {
-        context = context.with_source_invocation(Some(invocation_id(run)));
-    }
-    tilo_actions::apply_local_with_context(
-        doc,
-        action,
-        action.encode().unwrap(),
-        Some(b"ada"),
-        context,
-    )
-    .unwrap();
-    doc.commit();
-    host.sync_from(doc);
-}
-
 tilo_test_env::scenario! {
     fn a_run_and_its_calls_commit_together_or_not_at_all;
 
-    phase an_action_and_the_actions_it_calls_are_one_commit;
+    phase an_action_and_the_actions_it_calls_are_one_run;
     {
-        let (host, mut doc, tally, meta) = workspace();
+        let (host, tally, meta) = workspace();
         assert!(run(&host, &meta, "twice", &tally));
-        let committed = host.take_committed();
-        assert_eq!(committed.len(), 2, "a change per call");
-        let runs: Vec<Option<String>> = committed
+        // A change per call, each naming the one invocation the run is, and the root's making.
+        let versions = host.store().versions(&tally).unwrap();
+        let calls: Vec<_> = versions
             .iter()
-            .map(|committed| committed.action.authorship.invocation.clone())
+            .filter(|version| version.action != tilolang_runtime::store::CREATE_ACTION)
+            .collect();
+        assert_eq!(calls.len(), 2, "a change per call: {versions:#?}");
+        let runs: Vec<Option<String>> = calls
+            .iter()
+            .map(|version| version.gesture.clone())
             .collect();
         assert_eq!(runs[0], runs[1], "both calls ran in the one action");
-        let run = runs[0].clone().expect("a run names its invocation");
-
-        let before = doc.get_heads();
-        for committed in &committed {
-            apply(&host, &mut doc, &committed.action);
-        }
-        let change = DocumentMutation::Incremental(doc.save_after(&before));
-        let commit = collab_types::WorkspaceCommit::of_mutation(
-            uuid::Uuid::from_u128(1),
-            APP,
-            "tally",
-            &collab_types::CommitAuthor {
-                actor: Some(collab_types::MemberId::person("ada").into()),
-                device: [1; 32],
-            },
-            &change,
-        )
-        .unwrap()
-        .expect("the calls are committed as one action");
-        assert_eq!(commit.parts.len(), 1, "one document, one part");
-        assert_eq!(
-            commit.parts[0].heads,
-            vec![doc.get_heads()[0].0],
-            "the second call is built on the first: both are in it"
-        );
-        assert_eq!(
-            commit.invocation,
-            Some(invocation_id(&run).0),
-            "the commit names the run the changes ran in"
-        );
+        assert!(runs[0].is_some(), "the run names its invocation");
+        assert_eq!(value(&host, &tally, &meta), 2, "both calls counted");
     }
 
     phase a_run_that_fails_after_its_calls_leaves_nothing;
     {
-        let (host, mut doc, tally, meta) = workspace();
-        let before = doc.get_heads();
+        let (host, tally, meta) = workspace();
+        let before = host.store().versions(&tally).unwrap();
         assert!(!run(&host, &meta, "boom", &tally), "the action failed");
-        assert!(
-            host.take_committed().is_empty(),
-            "nothing of a run that failed anywhere is queued to commit"
-        );
         assert_eq!(
-            doc.get_heads(),
+            host.store().versions(&tally).unwrap(),
             before,
-            "and nothing of it is in the document"
+            "nothing of a run that failed anywhere is in the store"
         );
         assert_eq!(value(&host, &tally, &meta), 0);
     }

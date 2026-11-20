@@ -1,17 +1,19 @@
 //! The broker's end of an instance's connections, for the host's tests and examples: a fake in
 //! place of the session's broker that admits the routes a connection joins, keeps what it sends
-//! where the test reads it, relays a change and a presence frame to the connections joined on its
-//! route, and hands each connection the workspace's member list, as the broker does.
+//! where the test reads it, answers its resource commands from the workspace's store, relays a
+//! presence frame to the connections joined on its route, and hands each connection the
+//! workspace's member list, as the broker does.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
 use collab_types::document::ResourceType;
-use collaboration::commit_log::CommitHistory;
 use collaboration::{
     ActionDirectoryRequest, CollabEvent, CollabRequest, DocumentMutation, PeerTransport, RouteSpec,
 };
+use tilo_resource_store::Store;
+use tilo_resource_store::wire::{self, Command, Reply};
 
 /// What a connection sent on its own route, in the order it sent it.
 pub type Sent = Rc<RefCell<Vec<CollabRequest>>>;
@@ -22,9 +24,40 @@ pub type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
 /// What a connection sent on a route other than its own, and on which route.
 pub type Routed = Rc<RefCell<Vec<(RouteSpec, CollabRequest)>>>;
 
-/// The commits a connection made, as a peer's log keeps them: what one undo takes back across
-/// the workspace.
-pub type Actions = Rc<RefCell<Vec<CommitHistory>>>;
+/// A workspace's store, as the broker answers the resource commands of every connection joined
+/// there: one of it per workspace, held in memory.
+#[derive(Default)]
+pub struct Workspace {
+    store: RefCell<Store>,
+}
+
+impl Workspace {
+    /// Carries `command` out, as the workspace's store does for a connection of it.
+    ///
+    /// # Errors
+    /// Why the store refused the write.
+    pub fn command(&self, command: Command) -> Result<Reply, String> {
+        if command.writes() {
+            return match wire::write(&mut self.store.borrow_mut(), command) {
+                Ok(_) => Ok(Reply::Written),
+                Err(refused) => Err(refused.to_string()),
+            };
+        }
+        wire::read(&self.store.borrow(), &command, &|_| true)
+            .ok_or_else(|| "the store answered no read".to_owned())
+    }
+
+    /// The documents the workspace's store holds.
+    #[must_use]
+    pub fn documents(&self) -> Vec<String> {
+        self.store
+            .borrow()
+            .index()
+            .documents()
+            .map(str::to_owned)
+            .collect()
+    }
+}
 
 /// The instance's action directory as the broker holds it: the apps it was offered under, and
 /// what the test asks of it.
@@ -34,17 +67,25 @@ pub struct Directory {
     pub asked: Vec<ActionDirectoryRequest>,
 }
 
-/// The connections of one workspace, as the broker holds them: a change sent on a route reaches
-/// the other connections joined on that route, and every connection is handed the workspace's
-/// member list when it joins and whenever the list changes.
+/// The connections of one workspace, as the broker holds them: the workspace's store every
+/// connection reads and writes, and the workspace's members, people and software, with their
+/// names, which every connection is handed when it joins and whenever the list changes.
 #[derive(Default)]
 pub struct Bus {
     joined: RefCell<Vec<(RouteSpec, String, Inbox)>>,
     /// The workspace's members, people and software, with their names.
     members: RefCell<Vec<(collaboration::MemberId, String)>>,
+    /// The workspace's one store.
+    workspace: Rc<Workspace>,
 }
 
 impl Bus {
+    /// The workspace's store.
+    #[must_use]
+    pub fn workspace(&self) -> Rc<Workspace> {
+        Rc::clone(&self.workspace)
+    }
+
     /// The workspace has the member `who`, named `name`: every connection is told.
     pub fn member(&self, who: collaboration::MemberId, name: &str) {
         {
@@ -117,6 +158,22 @@ impl Bus {
         Ok(())
     }
 
+    /// The workspace's store moved, here or in another window of it: every other connection reads
+    /// what it read of it again, as the session tells each window when another host wrote.
+    fn resources_moved(&self, from: &Inbox) {
+        let joined = self.joined.borrow();
+        let mut told: Vec<&Inbox> = Vec::new();
+        for (_, _, inbox) in joined.iter() {
+            if Rc::ptr_eq(inbox, from) || told.iter().any(|told| Rc::ptr_eq(told, inbox)) {
+                continue;
+            }
+            inbox
+                .borrow_mut()
+                .push_back(CollabEvent::ResourcesArrived { records: Vec::new() });
+            told.push(inbox);
+        }
+    }
+
     /// Delivers the presence frame `key` and `payload`, which `from` said on `route` as
     /// `person`, to the other connections joined on that route.
     fn present(
@@ -167,7 +224,8 @@ pub fn delivered(route: &RouteSpec, mutation: &DocumentMutation) -> Result<Colla
 }
 
 /// The broker's end of one connection: the route it joins, what it sends, what the test delivers
-/// to it, and the bus its changes travel on.
+/// to it, the workspace's store its resource commands are answered from, and the bus its members
+/// and presence travel on.
 pub struct Broker {
     route: RouteSpec,
     person: String,
@@ -175,21 +233,22 @@ pub struct Broker {
     sent: Sent,
     inbox: Inbox,
     routed: Routed,
-    actions: Actions,
     directory: Rc<RefCell<Directory>>,
     routes: Rc<RefCell<Vec<RouteSpec>>>,
     joined: Option<RouteSpec>,
 }
 
 impl Broker {
-    /// A connection to `route`, on a bus of its own: nothing it sends is relayed.
+    /// A connection to `route`, on a bus of its own: nothing it sends is relayed, and the
+    /// workspace's store is that bus's alone.
     #[must_use]
     pub fn new(route: RouteSpec) -> Self {
         Self::on(&Rc::default(), route, "")
     }
 
     /// A connection to `route` on `bus`, whose changes travel as `person`'s: what it sends on a
-    /// route reaches the bus's other connections joined on that route.
+    /// route reaches the bus's other connections joined on that route, and its resource
+    /// commands are answered from the bus's workspace's store.
     #[must_use]
     pub fn on(bus: &Rc<Bus>, route: RouteSpec, person: &str) -> Self {
         Self {
@@ -199,7 +258,6 @@ impl Broker {
             sent: Sent::default(),
             inbox: Inbox::default(),
             routed: Routed::default(),
-            actions: Actions::default(),
             directory: Rc::default(),
             routes: Rc::default(),
             joined: None,
@@ -214,11 +272,10 @@ impl Broker {
         self
     }
 
-    /// Keeps the commits it learns in `actions`, as the test holds them.
+    /// The workspace's store, as the connection's resource commands are answered from.
     #[must_use]
-    pub fn with_actions(mut self, actions: Actions) -> Self {
-        self.actions = actions;
-        self
+    pub fn workspace(&self) -> Rc<Workspace> {
+        self.bus.workspace()
     }
 
     /// What the connection sends, as the test reads it.
@@ -263,13 +320,29 @@ impl PeerTransport for Broker {
                 );
                 self.bus.tell_members(&self.person, &self.inbox);
             }
-            CollabRequest::Document {
-                mutation, commit, ..
-            } => {
-                if let Some(commit) = commit {
-                    self.actions.borrow_mut().push(CommitHistory::of(commit));
-                }
+            CollabRequest::Document { mutation, .. } => {
                 self.bus.relay(&self.route, &self.inbox, mutation)?;
+            }
+            CollabRequest::ResourceCommand {
+                request_id,
+                command,
+            } => {
+                let parsed = serde_json::from_slice(command).map_err(|error| error.to_string());
+                let writes = parsed.as_ref().is_ok_and(Command::writes);
+                let result = parsed
+                    .and_then(|command| self.bus.workspace.command(command))
+                    .and_then(|reply| serde_json::to_vec(&reply).map_err(|error| error.to_string()));
+                // The workspace's store is one, every connection of it: what one wrote, the
+                // others read again.
+                if writes {
+                    self.bus.resources_moved(&self.inbox);
+                }
+                self.inbox
+                    .borrow_mut()
+                    .push_back(CollabEvent::ResourceCommandResult {
+                        request_id: *request_id,
+                        result,
+                    });
             }
             CollabRequest::Presence { key, payload } => {
                 self.bus

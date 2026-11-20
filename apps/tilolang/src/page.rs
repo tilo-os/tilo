@@ -4,7 +4,7 @@
 //! the window's instance runs in a tilolang host. A page has neither: it installs the package
 //! from the address its payload is served at ([`install_package`], `installTilolangPackage` to
 //! the page), which registers the app with the page's runtime under the package's own id, and
-//! the window runs the package's instance itself ([`PageWindow`]), over a workspace record the
+//! the window runs the package's instance itself ([`PageWindow`]), over a store of resources the
 //! page keeps in memory, sending the app window's half of the window ([`AppWindow`]) the same
 //! component patches a host sends over its socket.
 
@@ -22,7 +22,6 @@ use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local;
 use tilolang_tilo::bundle::{Bundle, IDS_FILE, IMPORTS_DIR, WASM_FILE};
 use tilolang_tilo::host::{Host, RootView};
-use tilolang_tilo::instance::memory::MemoryDocument;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use ui::widget::{AppModel, DrawChild as _, ModelPath, Widget};
 use wasm_bindgen::JsCast as _;
@@ -198,13 +197,12 @@ const EXCHANGES: usize = 8;
 pub struct PageWindow {
     view: AppWindow,
     instance: Instance,
-    record: MemoryDocument,
     /// The instance asked for the window to come forward.
     activation: Cell<bool>,
 }
 
 impl PageWindow {
-    /// The window of `bundle` for the person `me`, over a workspace document of its own.
+    /// The window of `bundle` for the person `me`, over a store of its own.
     #[must_use]
     pub fn new(me: &str, bundle: Arc<Bundle>) -> Self {
         let app = bundle.meta.app.clone();
@@ -219,8 +217,9 @@ impl PageWindow {
                 me: me.into(),
                 mode: Mode::Live,
                 device: None,
-                index_dir: None,
-                document_loader: None,
+                store: tilolang_tilo::resources::ResourceStore::new(Rc::new(
+                    tilolang_tilo::resources::LocalPort::in_memory(),
+                )),
                 root: RootView::default(),
                 // What the app hands outside (a post, a mail) stays in the page: it has no
                 // development log to write, and no connector to reach.
@@ -230,8 +229,7 @@ impl PageWindow {
             Rc::new(tilolang_tilo::names::Unnamed),
             Box::new(app_end),
         );
-        let record = MemoryDocument::new(ui::automerge::AutoCommit::new(), me);
-        instance.sync(Some(record.doc()));
+        instance.sync();
         // The page is the document's only replica, and so its origin: the package's roots are made
         // and its migrations run here.
         if let Some(host) = instance.host() {
@@ -257,7 +255,6 @@ impl PageWindow {
         let mut window = Self {
             view: AppWindow::new(Box::new(window_end), Vec::new()),
             instance,
-            record,
             activation: Cell::new(false),
         };
         window.exchange();
@@ -278,10 +275,6 @@ impl PageWindow {
         for _ in 0..EXCHANGES {
             self.view.flush();
             let mut changed = self.instance.update();
-            match self.record.take_in(&mut self.instance, None) {
-                Ok(wrote) => changed |= wrote,
-                Err(error) => tracing::error!(%error, "the document refused a step"),
-            }
             changed |= self.view.receive();
             if self.view.take_activation() {
                 self.activation.set(true);

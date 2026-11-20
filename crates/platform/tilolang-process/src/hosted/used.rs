@@ -1,57 +1,33 @@
 //! Read imported apps through their own packages.
 
 use std::collections::HashSet;
-use tilolang_tilo::MetaExt as _;
-use tilolang_tilo::instance::document::{InstanceDocument, ReadDocument};
+use tilolang_tilo::resources::ResourceStore;
 use tilolang_tilo::used::UsedApp;
 
 use super::{Bundle, Spec};
 
-pub(super) fn workspace_id(spec: &Spec, document: &InstanceDocument) -> uuid::Uuid {
-    match uuid::Uuid::parse_str(&spec.workspace) {
-        Ok(workspace) => workspace,
-        Err(error) => {
-            tracing::warn!(%error, "using the workspace named by the document route");
-            document.route().cluster_id
-        }
-    }
-}
-
-/// Another app the app uses, read from its own document.
+/// Another app the app uses, read through its own package.
 pub(super) struct Used {
-    pub(super) record: ReadDocument,
     pub(super) app: UsedApp,
-    /// Whether the document took in a change its readings have not been read again for.
+    /// Whether the store took in a change its readings have not been read again for.
     pub(super) moved: bool,
 }
 
-/// The other apps `bundle`'s app uses ([`Spec::installed`]), each joined on `document`'s connection
-/// and read through its own package.
-pub(super) fn used_apps(
-    spec: &Spec,
-    bundle: &Bundle,
-    document: &mut InstanceDocument,
-) -> Vec<Used> {
-    let workspace = workspace_id(spec, document);
+/// The other apps `bundle`'s app uses ([`Spec::installed`]), each read from `store` through its
+/// own package.
+pub(super) fn used_apps(spec: &Spec, bundle: &Bundle, store: &ResourceStore) -> Vec<Used> {
     bundle
         .imports
         .iter()
         .filter_map(|import| {
-            let records = spec.installed.get(&import.meta.app)?;
+            spec.installed.get(&import.meta.app)?;
             let packages = packages_of(&bundle.imports, &import.meta);
-            let app = UsedApp::new(&packages, &spec.person)
+            let app = UsedApp::new(store.clone(), &packages, &spec.person)
                 .map_err(|error| {
                     tracing::error!(app = spec.app, used = import.meta.app, %error, "a used app's package did not load");
                 })
                 .ok()?;
-            let route = crate::route_under(&import.meta, records, workspace, &spec.person);
-            let mut read = ReadDocument::join(route, document.manager_mut(), &import.meta.resource_type());
-            read.hold_in(app.host());
-            Some(Used {
-                record: read,
-                app,
-                moved: false,
-            })
+            Some(Used { app, moved: false })
         })
         .collect()
 }

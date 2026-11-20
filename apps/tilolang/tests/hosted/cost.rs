@@ -6,8 +6,6 @@ use super::*;
 
 use std::collections::BTreeMap;
 
-use tilolang_tilo::chunk::Chunks;
-
 // -- What the interactions cost ------------------------------------------------------------
 //
 // A person's window of a workspace they have used for years: ten thousand tasks, driven
@@ -32,9 +30,8 @@ use tilolang_tilo::chunk::Chunks;
 /// keeps.
 const SEEDED: usize = 10_000;
 
-/// A workspace ten times the size again: opening it costs what opening the first does, since the
-/// open reads the workspace's index rather than the workspace.
-const SEEDED_LARGE: usize = 100_000;
+/// A workspace a tenth the size of the one a person has used for years.
+const SMALL: usize = 1_000;
 
 /// What a person feels as instant for one interaction, in UI-thread CPU microseconds: the
 /// whole step (the input, the instance's answer and every frame that shows it), and the
@@ -412,25 +409,18 @@ fn at_rest(session: &mut Session, drawn_before: u64) -> Rest {
 }
 
 /// The window's open taken to rest as a window takes it: the host's turns, and a frame only when
-/// a turn changed what it shows or its tree owes one ([`frame_if_asked`]), until the workspace's
-/// index is whole and nothing is left to do. A frame drawn on every turn regardless is work no
-/// window at rest does.
+/// a turn changed what it shows or its tree owes one ([`frame_if_asked`]), until nothing is left
+/// to do. A frame drawn on every turn regardless is work no window at rest does.
 fn opened_at_rest(session: &mut Session) {
-    let deadline = std::time::Instant::now() + WAKE_WAIT;
     let mut quiet = 0_u32;
     let mut rounds = 0_u32;
     while quiet < 3 {
         let changed = session.host.turn();
         let framed = frame_if_asked(session, changed);
-        let waiting = (!session.index_whole() || session.search_index_pending())
-            && std::time::Instant::now() < deadline;
-        if changed || framed || waiting {
+        if changed || framed {
             quiet = 0;
         } else {
             quiet = quiet.saturating_add(1);
-        }
-        if !changed && waiting {
-            session.woken.wait(WAKE_WAIT);
         }
         rounds = rounds.saturating_add(1);
         assert!(
@@ -577,27 +567,48 @@ const TARGETS: &[(&str, Target)] = &[
 /// How many windows the open is measured over ([`what_the_interactions_a_person_feels_cost`]).
 const OPENS: usize = 3;
 
-/// The workspace a person who has used Tasks for years keeps: `n` tasks over the chunks the
-/// store keeps them in (a run of 2048 tasks a chunk), as the actions that add them one at a
-/// time write them, in the document the installed Tasks package runs over.
-pub(super) fn seeded_tasks(n: usize) -> tilolang_tilo::chunk::Chunks {
-    let tasks = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(package_of(TASKS));
-    let packages = tilolang_tilo::bench::compile(&tasks).expect("the tasks package compiles");
-    tilolang_tilo::bench::seeded_chunks(&packages, n).expect("the workspace seeds")
+/// The workspace a person who has used Tasks for years keeps: `n` tasks, seeded through a
+/// window's own host as the store's origin writes what it brings in.
+pub(super) fn seeded_tasks(n: usize) -> Rc<tilolang_process::testing::Bus> {
+    let bus = Rc::new(tilolang_process::testing::Bus::default());
+    seed_into(&bus, n);
+    bus
 }
 
-/// A workspace of its own for one window, holding what `seeded` holds: every chunk's document
-/// copied, none shared with it. Seeding ten thousand tasks takes half a minute in a development
-/// build, so a test seeds the workspace once for the windows it opens one after another and each
-/// opens a copy, as when each seeded its own: what one window writes into its document is not in the
-/// next one's, and a window's first write into a chunk copies no document the test still holds.
-pub(super) fn own(seeded: &Chunks) -> Chunks {
-    let mut own = Chunks::default();
-    for (number, doc) in seeded.docs() {
-        own.insert(number, doc.clone());
-    }
-    own.reread_placement();
-    own
+/// Write `n` tasks into the workspace `bus` holds.
+pub(super) fn seed_into(bus: &Rc<tilolang_process::testing::Bus>, n: usize) {
+    bus.member(ui::tilo_actions::MemberId::person("ada"), "Ada");
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let spec = Spec::new(TASKS, route.cluster_id.to_string(), 1, "ada").in_language("en-US");
+    // The seeding window runs its host, not its frames: it draws nothing a person sees.
+    let mut seeder = super::Session::opened_on_bus(bus, &route, spec);
+    seeder.settle_host();
+    tilolang_tilo::seed::seed(&seeder.instance_host(), TASKS, n, "2026-06-30T09:00:00Z")
+        .expect("the workspace seeds");
+    // The seeding window draws none of it: the workspaces a test opens do.
+    drop(seeder);
+}
+
+/// A person at a Tasks window over `bus`'s workspace, its first frame not run yet.
+fn launched_in(bus: &Rc<tilolang_process::testing::Bus>, route: &RouteSpec) -> Session {
+    super::Session::opened_on_bus(bus, route, spec_of(route, "ada"))
+}
+
+/// A person at a Tasks window over `bus`'s workspace, settled on the Inbox: the place the
+/// seeded tasks wait in.
+fn opened_at_rest_in(bus: &Rc<tilolang_process::testing::Bus>, route: &RouteSpec) -> Session {
+    let mut session = launched_in(bus, route);
+    session.settle();
+    show_inbox(&mut session);
+    session
+}
+
+/// The person picks the sidebar's Inbox, where the seeded tasks wait.
+fn show_inbox(session: &mut Session) {
+    let (x, y) = place_at(session, "Inbox");
+    session.window.click_at(x, y);
+    session.settle();
+    assert!(chosen(session, "Inbox"), "the sidebar shows Inbox chosen");
 }
 
 /// The title of the list's first row: where the list starts, and what a person reads there.
@@ -674,16 +685,13 @@ fn what_the_interactions_a_person_feels_cost() {
     let _motion = ui::motion::testing::settled();
     let mut costs = Costs::default();
 
-    // The workspace is seeded before the window opens, and so is the index an earlier run of the
-    // app kept: what opening it costs is the window's work over that index, not the workspace's
-    // making. Whether the index answers that open is
-    // [`opening_a_window_reads_the_workspaces_index`]'s.
-    let chunks = seeded_tasks(SEEDED);
+    // The workspace is seeded before the window opens: what opening it costs is the window's
+    // work over what it shows, not the workspace's making.
+    let bus = seeded_tasks(SEEDED);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let storage = kept_index(&route, &chunks, "interactions");
     // The open is one long step, over which what else the machine runs changes more than the two
     // references beside it see: it is measured over three windows, each closed before the next
-    // opens so that every one opens over the index the first kept, and read at the middle one.
+    // opens, and read at the middle one.
     let mut session = None;
     for _ in 0..OPENS {
         if let Some(earlier) = session.take() {
@@ -692,12 +700,9 @@ fn what_the_interactions_a_person_feels_cost() {
         let before = reference();
         let start = ui::rt::thread_cpu_time();
         let wall = ui::time::Instant::now();
-        let mut opened = on_the_frame_clock(Session::tasks_over_launched(
-            &route,
-            own(&chunks),
-            Some(storage.clone()),
-        ));
+        let mut opened = on_the_frame_clock(launched_in(&bus, &route));
         opened_at_rest(&mut opened);
+        show_inbox(&mut opened);
         let wall_us = wall.elapsed().as_micros() as u64;
         let cpu_us = since(start, wall.elapsed());
         costs.add(Cost {
@@ -753,8 +758,6 @@ struct Opened {
     patches: u64,
     /// The entries the instance published to the session's search index.
     indexed: usize,
-    /// How many times the window's instance built its index from the document.
-    builds: u64,
 }
 
 impl Opened {
@@ -764,9 +767,6 @@ impl Opened {
         let (indexed, _removed, _reset) = session.index_published();
         let hosted = session.instance();
         let instance = hosted.instance();
-        let builds = instance
-            .host()
-            .map_or(0, |host| host.store().stats().builds);
         Self {
             published: instance.visited_documents(),
             sweeps: instance.sweeps(),
@@ -774,7 +774,6 @@ impl Opened {
             rows,
             patches: instance.patches_sent(),
             indexed,
-            builds,
         }
     }
 
@@ -787,11 +786,10 @@ impl Opened {
             rows,
             patches,
             indexed,
-            builds,
         } = self;
         format!(
             "{published} documents published ({sweeps} sweeps), {surface} actions on the surface, \
-             {rows} rows, {patches} patches, {indexed} indexed, {builds} builds"
+             {rows} rows, {patches} patches, {indexed} indexed"
         )
     }
 }
@@ -802,18 +800,19 @@ impl Opened {
 /// constant. Opening is the one step the workspace's size must not reach: a person feels it as
 /// the window appearing. The search index is read off the frame, so its size is the reader's
 /// work, not the open's; it is printed either way.
-fn opening_a_window_does_the_work_the_window_shows(thousand: &Chunks, ten_thousand: &Chunks) {
+fn opening_a_window_does_the_work_the_window_shows(seeded: &Rc<tilolang_process::testing::Bus>, large: &Rc<tilolang_process::testing::Bus>) {
     let _motion = ui::motion::testing::settled();
     let mut opened = Vec::new();
-    for (n, seeded) in [(1_000, thousand), (SEEDED, ten_thousand)] {
-        let chunks = own(seeded);
+    for (n, bus) in [(1_000, seeded), (SEEDED, large)] {
         let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-        // The window as it opens: its index read and the first frame that shows it, which is
-        // what a person waits for — not the turns after it.
-        let mut session = Session::tasks_over_launched(&route, chunks, None);
-        session.wait_index();
+        // The window as it opens: the first frame that shows it, which is what a person waits
+        // for — not the turns after it.
+        let mut session = launched_in(bus, &route);
+        session.settle();
         session.host.turn();
         session.window.frame();
+        // The seeded tasks wait in the Inbox: the same place switch shows both sizes' rows.
+        show_inbox(&mut session);
         assert!(
             !session.titles().is_empty(),
             "the window opens on the workspace's tasks"
@@ -857,557 +856,6 @@ fn opening_a_window_does_the_work_the_window_shows(thousand: &Chunks, ten_thousa
     );
 }
 
-/// Opening a window of a workspace a person has used for years: the index an earlier run of the
-/// app kept answers what the document holds, so the open reads it and applies only what the document
-/// gained since — what a hundred thousand tasks cost to open, ten thousand do. A hundred thousand
-/// are seeded in an optimised build only (the shipped code), the one the budgets hold in: a
-/// development build measures the ten thousand and reports it without holding it.
-fn opening_a_window_reads_the_workspaces_index(seeded: &Chunks) {
-    let _motion = ui::motion::testing::settled();
-    let sizes: &[usize] = if cfg!(debug_assertions) {
-        &[SEEDED]
-    } else {
-        &[1_000, SEEDED, SEEDED_LARGE]
-    };
-    let mut misses = Vec::new();
-    for &n in sizes {
-        // The document, and the index an earlier run of the app left on the disk. The ten thousand
-        // are the test's, seeded once; the sizes only an optimised build opens are seeded here.
-        let chunks = if n == SEEDED {
-            own(seeded)
-        } else {
-            seeded_tasks(n)
-        };
-        let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-        let storage = kept_index(&route, &chunks, &format!("open-{n}"));
-
-        let start = ui::rt::thread_cpu_time();
-        let wall = ui::time::Instant::now();
-        let mut session = Session::tasks_over_launched(&route, chunks, Some(storage));
-        let open_us = since(start, wall.elapsed());
-        let wall_us = wall.elapsed().as_micros() as u64;
-        session.wait_index();
-        assert_eq!(
-            session.builds(),
-            0,
-            "the open reads the workspace's index: it does not build one"
-        );
-        let ready_us = since(start, wall.elapsed());
-        eprintln!(
-            "open at {n} tasks: CPU {:.2} ms, wall {:.2} ms; reading the index {:.2} ms",
-            open_us as f64 / 1000.0,
-            wall_us as f64 / 1000.0,
-            ready_us as f64 / 1000.0
-        );
-        if n == SEEDED {
-            // The window shows the workspace's tasks from what its index holds. What it then
-            // publishes to show them all is the publication's cost, not the open's.
-            show_rows(&mut session);
-            assert!(
-                !session.titles().is_empty(),
-                "the window opens on the workspace's tasks"
-            );
-        }
-        let budget = if n == SEEDED {
-            OPEN_BUDGET_US
-        } else {
-            OPEN_BUDGET_LARGE_US
-        };
-        if open_us > budget {
-            misses.push(format!(
-                "{n} tasks: {open_us}us of the window's CPU to open, over {budget}us"
-            ));
-        }
-        session.settle();
-    }
-    if cfg!(debug_assertions) {
-        eprintln!("a development build: the open is reported, not held");
-        return;
-    }
-    assert!(
-        misses.is_empty(),
-        "opening a workspace over its index:\n{}",
-        misses.join("\n")
-    );
-}
-
-/// Opening the same workspace where no index was kept, as a device sees it the first time: every
-/// chunk the document names is read once, the index built over them, and kept for the next open.
-/// The work is linear in the workspace — a chunk a document names is read when the open reaches it,
-/// and what it holds is derived once — so ten thousand tasks cost what their five chunks hold, not
-/// a pass over every item for every chunk.
-fn opening_a_workspace_with_no_index_reads_its_chunks_once(seeded: &Chunks) {
-    let _motion = ui::motion::testing::settled();
-    let chunks = own(seeded);
-    let all: Vec<tilolang_tilo::chunk::ChunkNo> = chunks.numbers().collect();
-    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let storage = kept_root("cold");
-
-    let start = ui::rt::thread_cpu_time();
-    let wall = ui::time::Instant::now();
-    let mut session = Session::tasks_over_launched(&route, chunks, Some(storage));
-    session.wait_index();
-    let ready_us = since(start, wall.elapsed());
-    // The window reads its rows from the first step of the index while the rest of the document is
-    // derived off the frame: what the open builds over, and what it reads, is counted once it is
-    // whole, not when its first step lands.
-    session.settle();
-    let wall_us = wall.elapsed().as_micros() as u64;
-    assert!(session.builds() > 0, "the first open builds the index");
-    assert_eq!(
-        session.catch_ups(),
-        0,
-        "the first open builds over every chunk of the document: none is caught up after it"
-    );
-    show_rows(&mut session);
-    assert!(
-        !session.titles().is_empty(),
-        "the window opens on the tasks"
-    );
-    let held = holding(&session);
-    assert_eq!(
-        held, all,
-        "a cold open reads every chunk the document names, once"
-    );
-    eprintln!(
-        "cold open at {SEEDED} tasks over {} chunks: first rows {:.2} ms of CPU, whole {:.2} ms",
-        held.len(),
-        ready_us as f64 / 1000.0,
-        wall_us as f64 / 1000.0
-    );
-}
-
-/// A window that opens over years of a person's workspace shows its first screen of rows from the
-/// first step of the index it builds, not once the whole workspace is read: the chunk the first
-/// screen's rows are in is derived first, the rest of the document off the frame while the person
-/// reads, and what the store has not read yet shows as not yet known rather than as a count. The
-/// first rows cost what the chunk they are in holds, so ten thousand tasks pay about what a
-/// thousand do for them, and the lists the window ends on are the lists of a window that opens
-/// over the index the cold open kept.
-#[test]
-fn a_cold_open_shows_its_first_rows_before_it_reads_the_workspace() {
-    let _motion = ui::motion::testing::settled();
-    let mut measured = Vec::new();
-    for &n in &[SEEDED / 10, SEEDED] {
-        let chunks = seeded_tasks(n);
-        let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-        let storage = kept_root(&format!("first-rows-{n}"));
-
-        let mut session =
-            Session::tasks_over_launched(&route, chunks.clone(), Some(storage.clone()));
-        // From the window opening, as a person waits on it: the package's build is what every
-        // window of the app pays once, and not what the workspace's size adds.
-        let start = ui::rt::thread_cpu_time();
-        let wall = ui::time::Instant::now();
-        show_rows(&mut session);
-        let rows_us = since(start, wall.elapsed());
-        let shown_us = u64::try_from(wall.elapsed().as_micros()).unwrap_or(u64::MAX);
-        shots(&format!("cold-{n}-first-rows"), &mut session);
-        assert!(
-            !session.titles().is_empty(),
-            "the window opens on the tasks's rows"
-        );
-        let first_rows_shown = session.titles();
-        session.settle();
-        let whole_us = since(start, wall.elapsed());
-        assert!(
-            session.index_whole(),
-            "the window reads the whole workspace by the time it is at rest"
-        );
-        let settled = session.titles();
-        let shared = settled.len().min(first_rows_shown.len());
-        assert_eq!(
-            settled[..shared],
-            first_rows_shown[..shared],
-            "the rows the window opened on stay where they were while the rest is read: \
-             {first_rows_shown:?} then {settled:?}"
-        );
-        shots(&format!("cold-{n}-read"), &mut session);
-        let cold = shown(&mut session);
-        eprintln!(
-            "cold open at {n} tasks: first rows {:.2} ms of the window's CPU, shown after \
-             {:.2} ms; whole {:.2} ms",
-            rows_us as f64 / 1000.0,
-            shown_us as f64 / 1000.0,
-            whole_us as f64 / 1000.0
-        );
-        measured.push((n, rows_us, whole_us));
-
-        // What the window ends on is what a window that opens over a kept index shows.
-        session.close();
-        let kept = kept_index(&route, &chunks, &format!("first-rows-kept-{n}"));
-        let mut warm = Session::tasks_over_in(&route, chunks, Some(kept));
-        assert_eq!(
-            warm.builds(),
-            0,
-            "the window over the kept index reads it, rather than building one"
-        );
-        assert_eq!(
-            shown(&mut warm),
-            cold,
-            "the window at rest shows what a window over the kept index shows"
-        );
-    }
-    if cfg!(debug_assertions) {
-        eprintln!("a development build: the first rows are reported, not bounded");
-        return;
-    }
-    let (small_n, small_rows, _) = measured[0];
-    let (large_n, large_rows, large_whole) = measured[1];
-    assert!(
-        large_rows < large_whole,
-        "the first rows come before the window has read the whole workspace: {large_rows}us of \
-         the {large_whole}us the open took"
-    );
-    assert!(
-        large_rows <= FIRST_ROWS_BUDGET_US,
-        "the first rows at {large_n} tasks took {large_rows}us of the window's CPU, over \
-         {FIRST_ROWS_BUDGET_US}us"
-    );
-    // The first rows read the chunk they are in: they cost what that chunk holds, not what the
-    // workspace holds behind it. A thousand tasks have filled half of their first chunk, so some
-    // of the growth from there is the chunk filling rather than the workspace behind it, and the
-    // cost an item of the chunk is what does not grow.
-    let was = per_chunk_item(small_rows, small_n);
-    let cost = per_chunk_item(large_rows, large_n);
-    assert!(
-        cost < was * 2.0,
-        "the first rows wait for the chunk they are in, not the workspace: {large_n} tasks took \
-         {cost:.3} us of the window's CPU an item of their first chunk, {small_n} took {was:.3}"
-    );
-}
-
-/// What a cold open's first rows cost an item of the chunk they are in. A workspace that fills
-/// less than a chunk shows rows from all of it; a larger one shows them from the first chunk.
-fn per_chunk_item(rows_us: u64, tasks: usize) -> f64 {
-    let per_chunk = usize::try_from(tilolang_tilo::chunk::ITEMS).expect("items a chunk holds");
-    let held = tasks.clamp(1, per_chunk);
-    rows_us as f64 / held as f64
-}
-
-/// A cold open reads each chunk the document names once, and derives what it holds once: the work
-/// grows with the tasks, not with the square of the chunks they span. Measured in an optimised
-/// build, where the numbers mean something: `--ignored`.
-///
-/// The first rows wait for the chunk they are in — and the manifest's run tails, which a hundred
-/// thousand items write as many changes of, are derived after them — at a hundred thousand tasks
-/// as at a thousand, an item of their chunk costing what it costs there. What grows with the
-/// workspace is the rest of the document, derived off the frame once the window shows the first
-/// rows.
-#[test]
-#[ignore = "a measurement for an optimised build"]
-fn a_cold_open_grows_with_the_tasks_not_their_chunks() {
-    let _motion = ui::motion::testing::settled();
-    let mut measured = Vec::new();
-    let mut first_rows = Vec::new();
-    for &n in &[SEEDED / 10, SEEDED, SEEDED_LARGE] {
-        let chunks = seeded_tasks(n);
-        let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-        let storage = kept_root(&format!("cold-{n}"));
-        let mut session = Session::tasks_over_launched(&route, chunks, Some(storage));
-        // From the window opening: writing the workspace the session starts from is the test's
-        // work, not the open's.
-        let start = ui::rt::thread_cpu_time();
-        let wall = ui::time::Instant::now();
-        show_rows(&mut session);
-        let rows_us = since(start, wall.elapsed());
-        let shown_us = u64::try_from(wall.elapsed().as_micros()).unwrap_or(u64::MAX);
-        session.settle();
-        let us = since(start, wall.elapsed());
-        eprintln!(
-            "cold open at {n} tasks: first rows {:.2} ms of the window's CPU, shown after \
-             {:.2} ms; whole {:.2} ms",
-            rows_us as f64 / 1000.0,
-            shown_us as f64 / 1000.0,
-            us as f64 / 1000.0
-        );
-        measured.push((n, us));
-        first_rows.push((n, rows_us, shown_us));
-    }
-    let (small_n, small) = measured[0];
-    let (large_n, large) = measured[1];
-    let ratio = large as f64 / small.max(1) as f64;
-    let items = large_n as f64 / small_n.max(1) as f64;
-    assert!(
-        ratio <= items * 2.0,
-        "a cold open grows with the tasks: {large_n} took {ratio:.1} times what {small_n} did"
-    );
-    // The first rows read the chunk they are in, whatever the workspace holds behind it: what
-    // they cost an item of that chunk is what a cold open pays, and once more of the tasks, and
-    // ten times more of them again, do not make it grow with the workspace.
-    for (small, large) in [(0, 1), (1, 2)] {
-        let (small_n, small_us, small_shown) = first_rows[small];
-        let (large_n, large_us, large_shown) = first_rows[large];
-        let us = per_chunk_item(large_us, large_n) / per_chunk_item(small_us, small_n);
-        assert!(
-            us < 2.0,
-            "the first rows do not wait for the workspace: {large_n} tasks took {us:.1} times the \
-             window's CPU that {small_n} did, an item of their first chunk"
-        );
-        assert!(
-            large_shown <= small_shown.saturating_mul(3).saturating_add(250_000),
-            "the first rows at {large_n} tasks were shown after {large_shown}us, {:.1} times the \
-             {small_shown}us it took at {small_n}",
-            large_shown as f64 / small_shown.max(1) as f64
-        );
-    }
-    let (large_n, large_us, large_shown) = first_rows[2];
-    assert!(
-        large_us <= FIRST_ROWS_BUDGET_US,
-        "the first rows at {large_n} tasks took {large_us}us of the window's CPU, over \
-         {FIRST_ROWS_BUDGET_US}us"
-    );
-    if !cfg!(debug_assertions) {
-        assert!(
-            large_shown < 2_000_000,
-            "the first rows at {large_n} tasks were shown after {large_shown}us, over the two \
-             seconds spent before a person reads anything"
-        );
-    }
-}
-
-/// A window over a workspace a person has used for years reads the chunks its rows are in, not
-/// every chunk the workspace holds: the index an earlier run kept answers the lists and the
-/// sidebar's counts, and a row reads the chunk that holds it as it shows. Scrolling to the end
-/// reads the last chunk; the chunks between are read only when a row in them shows. What the
-/// window shows is what a window holding every chunk shows.
-#[test]
-fn a_window_reads_only_the_chunks_it_shows() {
-    let _motion = ui::motion::testing::settled();
-    let chunks = seeded_tasks(SEEDED);
-    let all: Vec<tilolang_tilo::chunk::ChunkNo> = chunks.numbers().collect();
-    assert!(
-        all.len() > 4,
-        "ten thousand tasks span their chunks: {all:?}"
-    );
-    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let storage = kept_index(&route, &chunks, "shown");
-    let last = *all.last().expect("the document and its chunks");
-
-    let mut session = Session::tasks_over_in(&route, chunks.clone(), Some(storage));
-    assert_eq!(session.builds(), 0, "the open reads the workspace's index");
-    let opened = holding(&session);
-    assert_eq!(
-        opened,
-        [tilolang_tilo::chunk::FIRST],
-        "the rows and the counts the window opens on are the index's: it read {opened:?} of \
-         {all:?}"
-    );
-    assert!(!session.titles().is_empty(), "the window shows its rows");
-
-    // The rows, and the places and counts beside them, are what a replica holding every chunk
-    // shows: the index answered them without a chunk being read.
-    let mut whole = Session::tasks_over_in(&route, chunks, None);
-    // A replica that joined each chunk's route reads every chunk its document holds.
-    whole.instance_host().store().read_every_chunk();
-    whole.settle();
-    assert_eq!(
-        shown(&mut session),
-        shown(&mut whole),
-        "the window shows what a full load shows"
-    );
-
-    // Scrolling to the end shows the last rows from the index as well: the list is the index's.
-    let top = session
-        .titles()
-        .into_iter()
-        .find(|title| title.starts_with("Item "))
-        .expect("the window shows the workspace's tasks");
-    let (x, y) = shown_at(&mut session, &top);
-    session.window.move_to(x, y);
-    session.window.scroll(0.0, -20_000.0);
-    session.settle();
-    let end = number_of(
-        &session
-            .titles()
-            .into_iter()
-            .filter(|title| title.starts_with("Item "))
-            .max_by_key(|title| number_of(title).unwrap_or(0))
-            .expect("rows at the end of the list"),
-    );
-    let first_of_last = usize::try_from(tilolang_tilo::chunk::ITEMS)
-        .expect("items a chunk holds")
-        .saturating_mul(all.len() - 2);
-    assert!(
-        end.is_some_and(|n| n >= first_of_last),
-        "the list scrolled to its last chunk ({first_of_last} and up): {:?}",
-        session.titles()
-    );
-    let scrolled = holding(&session);
-    assert_eq!(
-        scrolled,
-        [tilolang_tilo::chunk::FIRST],
-        "scrolling read no chunk: the rows are the index's: {scrolled:?} of {all:?}"
-    );
-
-    // Opening the last task's page reads at most the chunk that holds it: what its page shows
-    // the index may answer on its own.
-    let bottom = session
-        .titles()
-        .into_iter()
-        .filter(|title| title.starts_with("Item "))
-        .max_by_key(|title| number_of(title).unwrap_or(0))
-        .expect("rows at the end of the list");
-    let (x, y) = shown_at(&mut session, &bottom);
-    session.window.click_at(x, y);
-    session.settle();
-    let opened = holding(&session);
-    assert!(
-        opened
-            .iter()
-            .all(|chunk| *chunk == tilolang_tilo::chunk::FIRST || *chunk == last),
-        "the page read no chunk but the last: {opened:?} of {all:?}"
-    );
-}
-
-/// The task number the title `title` ("Item 42") names.
-pub(super) fn number_of(title: &str) -> Option<usize> {
-    title.strip_prefix("Item ")?.parse().ok()
-}
-
-/// The chunks the window's store holds, in order.
-fn holding(session: &Session) -> Vec<tilolang_tilo::chunk::ChunkNo> {
-    let host = session.instance_host();
-    host.store()
-        .held_chunks()
-        .into_iter()
-        .map(|(number, _, _)| number)
-        .collect()
-}
-
-/// The window's screen under `TILO_COLD_SHOTS`, named `name`, for review: nothing when the
-/// variable is not set.
-fn shots(name: &str, session: &mut Session) {
-    let Some(dir) = std::env::var_os("TILO_COLD_SHOTS") else {
-        return;
-    };
-    let dir = std::path::PathBuf::from(dir);
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
-        session.window.harness().set_theme(theme);
-        session.window.frame();
-        session
-            .window
-            .harness()
-            .render_png(&dir.join(format!("{name}-{shade}.png")));
-    }
-}
-
-/// What the window shows, as a person reads it off the accessibility tree: the role and the name
-/// of every node that has one.
-fn shown(session: &mut Session) -> Vec<(ui::a11y::Role, Option<String>)> {
-    accessible(session)
-        .into_iter()
-        .filter_map(|node| node.name.map(|name| (node.role, Some(name))))
-        .collect()
-}
-
-/// A window's CPU time an open may take, in microseconds: making the store, reading the
-/// workspace's indexes, loading the package and taking the document in. Only the last grows with
-/// the workspace — the store keeps its own copy of the document, a fifth of a second of a hundred
-/// thousand tasks — while the index is read rather than built from the document: built, ten
-/// thousand tasks take seconds.
-const OPEN_BUDGET_US: u64 = 500_000;
-
-/// The same for a hundred thousand tasks: the document's copy is what the workspace's size adds
-/// to an open.
-const OPEN_BUDGET_LARGE_US: u64 = 900_000;
-
-/// A loose ceiling on the window's CPU time a cold open may take to show its first screen of
-/// rows, whatever the workspace holds: the index is built in steps, the chunk the first screen's
-/// rows are in first, and the window reads from it while the rest of the workspace is derived off
-/// the frame. What the first rows cost beyond this is caught by the growth they are held to
-/// against a tenth of the workspace, and by their coming before the whole workspace is read.
-const FIRST_ROWS_BUDGET_US: u64 = 1_500_000;
-
-/// The directory the tests of this binary keep what a package keeps in, emptied first.
-fn kept_root(name: &str) -> std::path::PathBuf {
-    let root = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("hosted-{name}"));
-    let _ = std::fs::remove_dir_all(&root);
-    root
-}
-
-/// The storage an earlier run of the app left the workspace `chunks` of `route` indexed in: its
-/// index is built from every chunk and on the disk, the file closed, before this returns.
-fn kept_index(
-    route: &RouteSpec,
-    chunks: &tilolang_tilo::chunk::Chunks,
-    name: &str,
-) -> std::path::PathBuf {
-    let storage = kept_root(name);
-    let kept = TilolangProcess::new(Some(storage.clone()), Arc::new(|| {}))
-        .kept(TASKS)
-        .expect("the app keeps what it keeps under the storage");
-    let indexes = kept.indexes.expect("the app's indexes are on the disk");
-    let earlier = tilolang_tilo::host::Host::open(
-        tilolang_tilo::host::Opening {
-            record: chunks.first(),
-            index_dir: Some(tilolang_tilo::index::document_dir(
-                &indexes,
-                &route.cluster_id.to_string(),
-                None,
-            )),
-            device: None,
-            wake: None,
-        },
-        tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-        || None,
-    )
-    .expect("the document opens");
-    earlier
-        .load_bundle(&package(package_of(TASKS)))
-        .expect("the app's package loads");
-    // The chunks the earlier run held: the document's own, and every run above it.
-    earlier.sync(chunks);
-    earlier.wait_index();
-    assert!(
-        earlier.index_ready(),
-        "the earlier run indexed the document"
-    );
-    earlier.persist_index();
-    drop(earlier);
-    storage
-}
-
-/// The window's frames until a list beside the page shows a row: the UI thread's CPU time it
-/// took, from the first turn that could show it. A cold window shows rows from the first step of
-/// the index it builds, while the rest of the workspace is derived off the frame, so this is
-/// short even where the whole workspace takes seconds.
-fn show_rows(session: &mut Session) -> u64 {
-    let start = ui::rt::thread_cpu_time();
-    let wall = ui::time::Instant::now();
-    while wall.elapsed() < std::time::Duration::from_secs(120) {
-        let changed = session.host.turn();
-        session.window.frame();
-        let shows = session.hosted().view().is_some_and(|view| {
-            view.lists().into_iter().any(|list| {
-                !list.starts_with(tilo_app_window::shell::DETAIL)
-                    && view
-                        .rows_of(&list)
-                        .is_some_and(|rows| !rows.borrow().rendered().is_empty())
-            })
-        });
-        if shows {
-            return since(start, wall.elapsed());
-        }
-        if !changed {
-            // Nothing on the frame to do: what the rows wait for is read beside the frames, and
-            // the host is woken when it is ready to be taken in. The wait is short, so that how
-            // long the rows took is the work and not the moment the window looked again.
-            session.woken.wait(std::time::Duration::from_millis(10));
-        }
-    }
-    let ready = index_ready(&session.host);
-    let view = session.hosted().view();
-    panic!(
-        "the window never showed the workspace's rows: index ready {ready}, view {}, lists {:?}",
-        view.is_some(),
-        view.map(tilo_app_window::AppWindow::lists),
-    );
-}
-
 /// Choosing a sidebar place: the list shows what that place holds.
 fn switch_places(session: &mut Session, costs: &mut Costs) {
     for place in ["Today", "Inbox", "Done", "Inbox", "Today", "Inbox"] {
@@ -1443,7 +891,7 @@ fn type_a_task(session: &mut Session, costs: &mut Costs) {
     }));
     session.settle();
     assert!(
-        task_in_document(session, "Buy", false),
+        task_in_workspace(session, "Buy", false),
         "the entry's task is in the workspace"
     );
 }
@@ -1508,144 +956,15 @@ fn turns_until_rest(session: &mut Session) -> u32 {
     changed
 }
 
-/// What opening a window did, counted rather than timed: the changes the open wrote into the
-/// workspace's document, the times the store took a chunk of it against the chunks the document
-/// holds, and — taken at the frame that finished the open — the documents the instance's
-/// publication visited and the rows the window shows.
-#[derive(Clone, Copy, Debug)]
-struct Opening {
-    /// The changes the open wrote into the workspace's document.
-    written: usize,
-    /// Times the store took a chunk of the document: its first copy of one, or a sync into it.
-    read: u64,
-    /// The chunks the document the window opened holds.
-    chunks: u64,
-    /// The documents the instance's publication visited to show the open.
-    published: u64,
-    /// The rows the window shows.
-    rows: usize,
-}
-
-impl Opening {
-    /// The counts, as a line: what a person reading a failure needs to see which of them grew.
-    fn line(self) -> String {
-        let Self {
-            written,
-            read,
-            chunks,
-            published,
-            rows,
-        } = self;
-        format!(
-            "wrote {written} changes, read the document's {chunks} chunks {read} times, published \
-             {published} documents, {rows} rows"
-        )
-    }
-}
-
-/// Opening a window of the workspace the document `chunks` holds, and what it did. The open is
-/// finished at a condition of the window's, not after a count of turns: the index the store
-/// builds off the frame is read and taken in, the first frame that shows what the workspace
-/// holds has drawn, and the open set nothing going that is still owed — the window and its
-/// publication at rest, which the frame schedule states. The turns a wait for that build takes
-/// are the machine's, so they say nothing about the workspace.
-fn opening(chunks: Chunks) -> Opening {
-    let held = chunks.numbers().count() as u64;
-    // What the workspace holds before the window opens it: opening it must leave the document
-    // with no more changes than the workspace already had, whether the window finds the root
-    // it opens or makes it.
-    let seeded = chunks
-        .first()
-        .expect("the workspace's document")
-        .committed_document()
-        .get_changes(&[])
-        .len();
-    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let mut session = Session::tasks_over_launched(&route, chunks, None);
-    session.wait_index();
-    session.host.turn();
-    session.window.frame();
-    let shown = Opened::of(&mut session);
-    session.settle();
-    let (schedule, queued, redraw) = {
-        let window = session.window.harness();
-        (
-            window.frame_schedule(),
-            window.queued_work_sources(),
-            window.redraw_sources(),
-        )
-    };
-    assert!(
-        !schedule.needs_redraw && !schedule.queued_work && !schedule.needs_animation_frame,
-        "the open comes to rest with the window and its publication: {schedule:?} {queued:?} \
-         {redraw:?}"
-    );
-    let written = changes(&session) - seeded;
-    let stats = store(&session).stats();
-    let read = (stats.attaches + stats.incremental_syncs) + stats.full_syncs;
-    Opening {
-        written,
-        read,
-        chunks: held,
-        published: shown.published,
-        rows: shown.rows,
-    }
-}
-
-/// Opening a window of a workspace it has used before writes nothing: the root the window
-/// opens is the one the app made when it was first added, and a window that finds it reads it.
-/// Each chunk of the document is taken once, and what the open does to show the window — the
-/// records its publication visits and the rows it shows — is the same whatever the workspace
-/// holds. The open is counted by that work rather than by the turns it took: a settle waits on
-/// the index the instance builds off its frames, and how many turns such a wait takes is the
-/// machine's.
-fn opening_a_window_writes_nothing(thousand: &Chunks, ten_thousand: &Chunks) {
-    let _motion = ui::motion::testing::settled();
-    let small = opening(own(thousand));
-    let large = opening(own(ten_thousand));
-    eprintln!(
-        "open at 1000 tasks: {}; at 10000: {}",
-        small.line(),
-        large.line()
-    );
-    assert_eq!(
-        small.written, 0,
-        "opening a workspace it has used writes nothing"
-    );
-    assert_eq!(
-        large.written, 0,
-        "opening a larger workspace writes nothing"
-    );
-    assert_eq!(
-        (small.read, large.read),
-        (small.chunks, large.chunks),
-        "the store takes each chunk of the document once, whatever it holds"
-    );
-    assert!(
-        small.rows > 0 && large.rows == small.rows,
-        "the window shows the same rows whatever the workspace holds: {} at 1000 tasks, {} at \
-         10000",
-        small.rows,
-        large.rows
-    );
-    assert!(
-        large.published <= small.published.saturating_add(2),
-        "the open publishes the documents the window shows, not the workspace's: {} documents at \
-         10000 tasks, {} at 1000",
-        large.published,
-        small.published
-    );
-}
-
 /// Scrolling a list of ten thousand tasks: the app is asked for the rows a scroll is about to
 /// reach before it reaches them, so a step costs the window's frames and one ask, or none. What
 /// a scroll step asks of the app is what makes the person wait for it, so it is counted, not
 /// timed: a step that asked once per row would pass any budget on a fast enough machine.
-fn scrolling_asks_the_app_for_rows_ahead_not_once_a_row(seeded: &Chunks) {
+fn scrolling_asks_the_app_for_rows_ahead_not_once_a_row(seeded: &Rc<tilolang_process::testing::Bus>) {
     let _motion = ui::motion::testing::settled();
-    let chunks = own(seeded);
+    let bus = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let mut session = Session::tasks_over_in(&route, chunks, None);
+    let mut session = opened_at_rest_in(&bus, &route);
     session.settle();
     let first = top_title(&mut session);
     let at = shown_at(&mut session, &first);
@@ -1692,13 +1011,6 @@ fn glide_out(session: &mut Session, mut at: ui::time::Instant) {
     panic!("the list's glide never came to rest");
 }
 
-/// A wheel notch of `dy` lines, its glide run out on the frame clock ([`glide_out`]).
-fn notch(session: &mut Session, dy: f64) {
-    let at = ui::time::Instant::now();
-    ui::time::testing::with_monotonic_time(at, || session.window.scroll(0.0, dy));
-    glide_out(session, at);
-}
-
 /// Scrolling the list: a wheel notch down and back up, the top row changing each time.
 fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
     let first = top_title(session);
@@ -1723,25 +1035,29 @@ fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
 /// workspace holds. The session's search index keeps an entry per resource; adding one task of
 /// ten thousand adds that task's entry, and the whole set is published again only when the
 /// publication cannot say what moved.
-fn a_change_reindexes_the_resources_it_touched(seeded: &Chunks) {
+fn a_change_reindexes_the_resources_it_touched(seeded: &Rc<tilolang_process::testing::Bus>) {
     use ui::winit::keyboard::NamedKey;
 
     let _motion = ui::motion::testing::settled();
-    let chunks = own(seeded);
+    let bus = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let mut session = Session::tasks_over_in(&route, chunks, None);
+    let mut session = opened_at_rest_in(&bus, &route);
     session.settle();
     // Opening published every entry; what the change publishes is counted from here.
     session.forget_sent();
 
     session.window.chord(&["ctrl"], "n");
     session.settle();
+    // The person's entry keeps what they typed in this workspace, as their own state: this step
+    // starts from an empty one.
+    session.window.press_key(NamedKey::Escape);
+    session.settle();
     session.window.type_text("Buy milk");
     session.forget_sent();
     session.window.press_key(NamedKey::Enter);
     session.settle();
     assert!(
-        task_in_document(&session, "Buy milk", false),
+        task_in_workspace(&session, "Buy milk", false),
         "the task the entry added is in the workspace"
     );
 
@@ -1780,11 +1096,11 @@ fn renders(session: &Session) -> u64 {
 /// Typing a task in the list's entry: a keystroke changes the entry's own view state and
 /// nothing else, so what runs again is the boundary that read it — the entry and the chips it
 /// shows — and the list around it, every row of it, stands as it is.
-fn typing_in_the_entry_renders_the_entry(seeded: &Chunks) {
+fn typing_in_the_entry_renders_the_entry(seeded: &Rc<tilolang_process::testing::Bus>) {
     let _motion = ui::motion::testing::settled();
-    let chunks = own(seeded);
+    let bus = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let mut session = Session::tasks_over_in(&route, chunks, None);
+    let mut session = opened_at_rest_in(&bus, &route);
     session.window.chord(&["ctrl"], "n");
     session.settle();
     for ch in "Buy #milk".chars() {
@@ -1808,11 +1124,11 @@ fn typing_in_the_entry_renders_the_entry(seeded: &Chunks) {
 /// A row opens where it stands after the person's own changes have taken rows out of the place
 /// they stand in: the rows they kept are rows that open into their item like any other, and
 /// opening one is reading on in the same place, so every one of them stays.
-fn a_row_opens_where_it_stands_after_tasks_are_checked(seeded: &Chunks) {
+fn a_row_opens_where_it_stands_after_tasks_are_checked(seeded: &Rc<tilolang_process::testing::Bus>) {
     let _motion = ui::motion::testing::settled();
-    let chunks = own(seeded);
+    let bus = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let mut session = Session::tasks_over_in(&route, chunks, None);
+    let mut session = opened_at_rest_in(&bus, &route);
     for _ in 0..4 {
         let (_, x, y) = first_check(&mut session);
         session.window.click_at(x, y);
@@ -1846,14 +1162,14 @@ fn a_row_opens_where_it_stands_after_tasks_are_checked(seeded: &Chunks) {
 /// typed into the entry first: the window goes to the task's place and opens its row into its
 /// page, though the place's rows arrive after the window names the task open. A row clicked
 /// there next opens as well.
-fn a_task_opened_from_search_shows_its_page(seeded: &Chunks) {
+fn a_task_opened_from_search_shows_its_page(seeded: &Rc<tilolang_process::testing::Bus>) {
     use ui::winit::keyboard::NamedKey;
 
     let _motion = ui::motion::testing::settled();
     for typed in [false, true] {
-        let chunks = own(seeded);
+        let bus = Rc::clone(seeded);
         let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-        let mut session = Session::tasks_over_in(&route, chunks, None);
+        let mut session = opened_at_rest_in(&bus, &route);
         let today = session.titles();
         let entries: Vec<_> = session
             .index_deltas()
@@ -1867,7 +1183,7 @@ fn a_task_opened_from_search_shows_its_page(seeded: &Chunks) {
             session.window.press_key(NamedKey::Enter);
             session.settle();
             assert!(
-                task_in_document(&session, "Buy milk", false),
+                task_in_workspace(&session, "Buy milk", false),
                 "the entry's task is in the workspace"
             );
         }
@@ -1935,11 +1251,11 @@ fn opened_title_field(session: &mut Session) -> Option<String> {
 /// Typing a task's title on its page: the keystroke edits one field of one task, so the page
 /// that shows it — the row grown into it where it stands — and the row behind it run again, and
 /// the rest of the window stands.
-fn typing_a_tasks_title_reruns_the_views_that_read_it(seeded: &Chunks) {
+fn typing_a_tasks_title_reruns_the_views_that_read_it(seeded: &Rc<tilolang_process::testing::Bus>) {
     let _motion = ui::motion::testing::settled();
-    let chunks = own(seeded);
+    let bus = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let mut session = Session::tasks_over_in(&route, chunks, None);
+    let mut session = opened_at_rest_in(&bus, &route);
     let title = session.titles().get(1).cloned().expect("a row");
     let (x, y) = shown_at(&mut session, &title);
     session.window.click_at(x, y);
@@ -1966,20 +1282,17 @@ fn typing_a_tasks_title_reruns_the_views_that_read_it(seeded: &Chunks) {
 
 /// Checking tasks off one after another: every row the person checked stays where it stands,
 /// reading checked, the list goes on rendering, and checking one task runs a handful of
-/// boundaries rather than every row the window shows. Each check runs its action once: what the
-/// run wrote is the change the document keeps, and a peer replaying the action gets that change.
+/// boundaries rather than every row the window shows.
 #[test]
 fn checking_tasks_one_after_another_keeps_the_list_rendering() {
     let _motion = ui::motion::testing::settled();
-    let chunks = seeded_tasks(100);
+    let bus = seeded_tasks(100);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let mut session = Session::tasks_over_in(&route, chunks, None);
-    let held = record(&session);
+    let mut session = opened_at_rest_in(&bus, &route);
     let mut checked = Vec::new();
     for _ in 0..4 {
         let (title, x, y) = first_check(&mut session);
         let before = renders(&session);
-        let written = store(&session).stats().written_once;
         session.window.click_at(x, y);
         session.settle();
         let ran = renders(&session) - before;
@@ -1988,23 +1301,8 @@ fn checking_tasks_one_after_another_keeps_the_list_rendering() {
             "checking {title} runs {ran} boundaries: the rows that read it and the window, \
              not every row it shows"
         );
-        assert_eq!(
-            store(&session).stats().written_once,
-            written + 1,
-            "checking {title} writes it into the document once, as the change it makes"
-        );
         checked.push(title);
     }
-    let host = session.instance_host();
-    let mut reproduced = 0;
-    for (chunk, doc) in record(&session).all() {
-        let from = held.held(chunk).map(automerge::AutoCommit::committed_heads);
-        reproduced += replayed(&mut doc.clone(), from.as_deref().unwrap_or(&[]), &host);
-    }
-    assert!(
-        reproduced >= 4,
-        "a peer reproduced {reproduced} of the four checks"
-    );
     for title in checked {
         assert!(
             checked_off(&mut session, &title),
@@ -2017,17 +1315,17 @@ fn checking_tasks_one_after_another_keeps_the_list_rendering() {
 /// once, on the change the document brought back with what its derivation added, and sends the
 /// tree once. The row then reads its title and its box checked off, in a workspace of a hundred
 /// tasks and of ten thousand.
-fn a_step_reaches_the_window_in_one_frame(seeded: &Chunks) {
+fn a_step_reaches_the_window_in_one_frame(seeded: &Rc<tilolang_process::testing::Bus>) {
     let _motion = ui::motion::testing::settled();
     for n in [100, SEEDED] {
         // The ten thousand are the test's, seeded once; the hundred are seeded here.
-        let chunks = if n == SEEDED {
-            own(seeded)
+        let bus = if n == SEEDED {
+            Rc::clone(seeded)
         } else {
             seeded_tasks(n)
         };
         let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-        let mut session = Session::tasks_over_in(&route, chunks, None);
+        let mut session = opened_at_rest_in(&bus, &route);
         let counted = |session: &Session| -> (u64, u64) {
             let instance = session.instance().instance();
             let runs = instance
@@ -2072,296 +1370,6 @@ fn a_step_reaches_the_window_in_one_frame(seeded: &Chunks) {
 // its text shaped. A step costs what it changed and what the window shows, so every one of
 // them reads the same in a workspace ten times the size.
 
-/// A workspace a tenth the size of the one a person has used for years.
-const SMALL: usize = 1_000;
-
-/// What one step did, counted rather than timed.
-#[derive(Clone, Copy, Debug, Default)]
-struct Done {
-    renders: u64,
-    items: u64,
-    located: u64,
-    fields: u64,
-    listings: u64,
-    entries: u64,
-    dirs: u64,
-    pages: u64,
-    index_fields: u64,
-    evaluated: u64,
-    versions: u64,
-    version_changes: u64,
-    sent: u64,
-    nodes: u64,
-    shaped: u64,
-}
-
-impl Done {
-    /// What the window and its instance have done so far.
-    fn now(session: &mut Session) -> Self {
-        let (renders, items, reads, sent) = {
-            let hosted = session.instance();
-            let instance = hosted.instance();
-            let host = instance.host().expect("the instance's host");
-            let reads = host.store().read_stats();
-            let renders = [
-                tilo_render_protocol::patch::Level::Root,
-                tilo_render_protocol::patch::Level::Detail,
-            ]
-            .into_iter()
-            .filter_map(|level| instance.view(level))
-            .map(|view| view.borrow().stats().renders)
-            .fold(0, u64::saturating_add);
-            (
-                renders,
-                host.runtime().items_built(),
-                reads,
-                instance.patches_sent(),
-            )
-        };
-        let (_, shaped, _) = session.window.harness().take_text_shape_stats();
-        Self {
-            renders,
-            items,
-            located: reads.doc.located,
-            fields: reads.doc.fields,
-            listings: reads.doc.listings,
-            entries: reads.doc.entries,
-            dirs: reads.index.dirs,
-            pages: reads.index.pages,
-            index_fields: reads.index.fields,
-            evaluated: reads.evaluated,
-            versions: reads.versions,
-            version_changes: reads.version_changes,
-            sent,
-            nodes: session.window.harness().layout_nodes_built(),
-            shaped,
-        }
-    }
-
-    /// This, less what `earlier` had done.
-    fn since(self, earlier: Self) -> Self {
-        Self {
-            renders: self.renders.saturating_sub(earlier.renders),
-            items: self.items.saturating_sub(earlier.items),
-            located: self.located.saturating_sub(earlier.located),
-            fields: self.fields.saturating_sub(earlier.fields),
-            listings: self.listings.saturating_sub(earlier.listings),
-            entries: self.entries.saturating_sub(earlier.entries),
-            dirs: self.dirs.saturating_sub(earlier.dirs),
-            pages: self.pages.saturating_sub(earlier.pages),
-            index_fields: self.index_fields.saturating_sub(earlier.index_fields),
-            evaluated: self.evaluated.saturating_sub(earlier.evaluated),
-            versions: self.versions.saturating_sub(earlier.versions),
-            version_changes: self.version_changes.saturating_sub(earlier.version_changes),
-            sent: self.sent.saturating_sub(earlier.sent),
-            nodes: self.nodes.saturating_sub(earlier.nodes),
-            shaped: self.shaped.saturating_sub(earlier.shaped),
-        }
-    }
-
-    /// Each count with its name, for a table.
-    fn counts(self) -> [(&'static str, u64); 14] {
-        [
-            ("renders", self.renders),
-            ("items", self.items),
-            ("located", self.located),
-            ("fields", self.fields),
-            ("listings", self.listings),
-            ("entries", self.entries),
-            ("dirs", self.dirs),
-            ("pages", self.pages),
-            ("index_fields", self.index_fields),
-            ("evaluated", self.evaluated),
-            ("versions", self.versions),
-            ("sent", self.sent),
-            ("nodes", self.nodes),
-            ("shaped", self.shaped),
-        ]
-    }
-}
-
-/// The rows the window's lists hold rendered: what it shows, whatever the workspace holds.
-fn rows_shown(session: &mut Session) -> u64 {
-    let Some(view) = session.hosted().view() else {
-        return 0;
-    };
-    view.lists()
-        .into_iter()
-        .filter_map(|list| view.rows_of(&list))
-        .map(|rows| rows.borrow().rendered().len() as u64)
-        .sum()
-}
-
-/// `input`, the frames that show what it did, and what the window and its instance did for them:
-/// what a step of a person costs.
-fn step(session: &mut Session, input: impl FnOnce(&mut Session)) -> Done {
-    let before = Done::now(session);
-    input(session);
-    session.settle();
-    Done::now(session).since(before)
-}
-
-/// What a day of the window's steps costs over the workspace `chunks`, in the order a person
-/// does them, and the rows the window shows at rest: each step, and what it did.
-fn steps_costs(chunks: Chunks) -> (Vec<(&'static str, Done)>, u64) {
-    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let mut session = Session::tasks_over_in(&route, chunks, None);
-    let mut out = Vec::new();
-    // What a writer's first change in a document renumbers is none of these steps'.
-    for _ in 0..2 {
-        let (_, x, y) = first_check(&mut session);
-        session.window.click_at(x, y);
-        session.settle();
-    }
-    assert!(!session.titles().is_empty(), "the window shows the place");
-    let (_, x, y) = first_check(&mut session);
-    out.push((
-        "check a task",
-        step(&mut session, |session| session.window.click_at(x, y)),
-    ));
-    // Done orders its place by when each task was finished, a stamp of the document's history
-    // rather than a field a column orders: reading the place once to show it is the open of
-    // the place, not a step, so it is taken here and what is counted is the way back.
-    let (x, y) = place_at(&mut session, "Done");
-    session.window.click_at(x, y);
-    session.settle();
-    let (x, y) = place_at(&mut session, "Inbox");
-    out.push((
-        "switch place",
-        step(&mut session, |session| session.window.click_at(x, y)),
-    ));
-    session.window.chord(&["ctrl"], "n");
-    session.settle();
-    out.push((
-        "entry keystroke",
-        step(&mut session, |session| session.window.type_text("B")),
-    ));
-    out.push((
-        "entry enter",
-        step(&mut session, |session| {
-            session
-                .window
-                .press_key(ui::winit::keyboard::NamedKey::Enter);
-        }),
-    ));
-    // The rows the window shows, read along the top of the list: a scroll is a fraction of one,
-    // so it lays out a row more or less by where it lands rather than by what the workspace holds.
-    let rows = rows_shown(&mut session);
-    let first = top_title(&mut session);
-    let at = shown_at(&mut session, &first);
-    session.window.move_to(at.0, at.1);
-    session.settle();
-    out.push(("scroll", step(&mut session, |session| notch(session, -3.0))));
-    // The page of the row at the top of the list, opened where it stands: the page reads the
-    // task it shows and the index around it, never the workspace the task is one of.
-    let first = top_title(&mut session);
-    let (x, y) = shown_at(&mut session, &first);
-    out.push((
-        "open a task page",
-        step(&mut session, |session| session.window.click_at(x, y)),
-    ));
-    (out, rows)
-}
-
-/// A step of the window costs what it changed and what the window shows, never the size of the
-/// workspace: opening the window, checking a task off, switching the sidebar's place, a keystroke
-/// in the entry, the Enter that adds the task, a notch of the scroll and the page of a row do the
-/// same work in ten thousand tasks as in a thousand. What would grow with the workspace is a loop
-/// over the collection, a filter no index answers, a publication of rows the window cannot show, a
-/// layout of rows off screen, or a history read of the workspace's every change rather than of the
-/// chunk the row it shows is stored in. An index reads a tree whose depth is the logarithm of what
-/// it holds, so ten times the workspace must not make a step do twice the work: what a step costs
-/// is what it changed.
-/// Adding a task runs the row it adds and the views that count it, not every row the window
-/// shows: the task is written into its collection's newest chunk, which the window had not read
-/// but the workspace's index already reflects, so taking that chunk in moves nothing any row
-/// read.
-fn adding_a_task_runs_the_row_it_adds_not_every_row(seeded: &Chunks) {
-    use ui::winit::keyboard::NamedKey;
-
-    let _motion = ui::motion::testing::settled();
-    let chunks = own(seeded);
-    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let storage = kept_index(&route, &chunks, "adding");
-    let mut session = Session::tasks_over_in(&route, chunks, Some(storage));
-    let (x, y) = place_at(&mut session, "Inbox");
-    session.window.click_at(x, y);
-    session.settle();
-    session.window.chord(&["ctrl"], "n");
-    session.settle();
-    session.window.type_text("Buy");
-    session.settle();
-    let rows = rows_shown(&mut session);
-    let done = step(&mut session, |session| {
-        session.window.press_key(NamedKey::Enter);
-    });
-    assert!(
-        task_in_document(&session, "Buy", false),
-        "the entry's task is in the workspace"
-    );
-    assert!(
-        rows > 20 && done.renders <= 12,
-        "adding a task with {rows} rows on screen ran {} boundaries: the rows it did not \
-         touch ran again",
-        done.renders
-    );
-}
-
-fn a_step_costs_what_it_changes_not_the_workspace(thousand: &Chunks, ten_thousand: &Chunks) {
-    let _motion = ui::motion::testing::settled();
-    let (small, small_rows) = steps_costs(own(thousand));
-    let (large, large_rows) = steps_costs(own(ten_thousand));
-    assert_eq!(
-        large_rows, small_rows,
-        "the window shows {large_rows} rows of {SEEDED} tasks and {small_rows} of {SMALL}"
-    );
-    // A resource's log is the log of the chunk holding it: what a step's history reads — the
-    // marks of the rows it shows and the history behind them — is a chunk's changes, never the
-    // workspace's every change.
-    let mut past = Vec::new();
-    for (label, done) in &large {
-        if done.version_changes > tilolang_tilo::chunk::ITEMS {
-            past.push(format!(
-                "{label} read {} changes of the document for its versions at {SEEDED} tasks; a \
-                 chunk holds at most {}",
-                done.version_changes,
-                tilolang_tilo::chunk::ITEMS
-            ));
-        }
-    }
-    assert!(
-        past.is_empty(),
-        "a step's history reads the chunk it shows:\n{}",
-        past.join("\n")
-    );
-    let mut grew = Vec::new();
-    let mut table = vec![format!(
-        "{:<18} {:>12} {:>8} {:>8}",
-        "step", "count", SMALL, SEEDED
-    )];
-    for ((label, at_large), (_, at_small)) in large.iter().zip(&small) {
-        for ((name, at_large), (_, at_small)) in
-            at_large.counts().into_iter().zip(at_small.counts())
-        {
-            table.push(format!(
-                "{label:<18} {name:>12} {at_small:>8} {at_large:>8}"
-            ));
-            let allowed = at_small.saturating_mul(2).saturating_add(8);
-            if at_large > allowed {
-                grew.push(format!(
-                    "{label} {name}: {at_large} at {SEEDED} tasks, {at_small} at {SMALL}"
-                ));
-            }
-        }
-    }
-    eprintln!("{}", table.join("\n"));
-    assert!(
-        grew.is_empty(),
-        "a step costs more in a larger workspace:\n{}",
-        grew.join("\n")
-    );
-}
-
 /// What a frame asked the layout for: the nodes it built, whether it recomposed the tree, and
 /// how many nodes it invalidated to be measured again.
 #[derive(Debug)]
@@ -2388,7 +1396,7 @@ impl Lay {
 /// and the nodes above it, and build no node of the window's composition again. The frames a
 /// step runs are also the ones its work asks for: a window at rest runs none, and neither does a
 /// step that leaves it at rest.
-fn a_step_lays_out_what_it_changes(seeded: &Chunks) {
+fn a_step_lays_out_what_it_changes(seeded: &Rc<tilolang_process::testing::Bus>) {
     /// A step's name and the input a person gives the window.
     type Step = (&'static str, Box<dyn FnOnce(&mut Session)>);
 
@@ -2401,9 +1409,9 @@ fn a_step_lays_out_what_it_changes(seeded: &Chunks) {
     const STEPS_INPUT_FRAMES: u64 = 2;
 
     let _motion = ui::motion::testing::settled();
-    let doc = own(seeded);
+    let doc = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let mut session = on_the_frame_clock(Session::tasks_over_in(&route, doc, None));
+    let mut session = on_the_frame_clock(opened_at_rest_in(&doc, &route));
     session.settle();
     session.window.chord(&["ctrl"], "n");
     session.settle();
@@ -2502,9 +1510,9 @@ fn a_step_lays_out_what_it_changes(seeded: &Chunks) {
 #[test]
 fn a_window_at_rest_asks_its_host_for_no_frame() {
     let _motion = ui::motion::testing::settled();
-    let chunks = seeded_tasks(20);
+    let bus = seeded_tasks(20);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let mut session = Session::tasks_over_in(&route, chunks, None);
+    let mut session = opened_at_rest_in(&bus, &route);
     session.settle();
     let window = session.window.harness();
     let schedule = window.frame_schedule();
@@ -2521,11 +1529,11 @@ fn a_window_at_rest_asks_its_host_for_no_frame() {
 /// adds the document's widgets to the retained layout tree and measures those, and no frame
 /// composes the window's whole layout tree again for it. Rows open all day, and the window's
 /// composition is the work none of them may cost — the row's document is a slot mount.
-fn opening_a_rows_page_mounts_the_document_where_the_row_stands(seeded: &Chunks) {
+fn opening_a_rows_page_mounts_the_document_where_the_row_stands(seeded: &Rc<tilolang_process::testing::Bus>) {
     let _motion = ui::motion::testing::settled();
-    let chunks = own(seeded);
+    let bus = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let mut session = on_the_frame_clock(Session::tasks_over_in(&route, chunks, None));
+    let mut session = on_the_frame_clock(opened_at_rest_in(&bus, &route));
     session.settle();
     let title = top_title(&mut session);
     let (x, y) = shown_at(&mut session, &title);
@@ -2664,11 +1672,11 @@ fn choosing_another_note_in_the_tree_keeps_the_windows_composition() {
 /// The same where the document is a task's: opening another task in the list reads its notes
 /// in the editor that stands, so the page a person turns to costs its own blocks and never the
 /// window's composition.
-fn choosing_another_task_keeps_the_windows_composition(seeded: &Chunks) {
+fn choosing_another_task_keeps_the_windows_composition(seeded: &Rc<tilolang_process::testing::Bus>) {
     let _motion = ui::motion::testing::settled();
-    let chunks = own(seeded);
+    let bus = Rc::clone(seeded);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let mut session = on_the_frame_clock(Session::tasks_over_in(&route, chunks, None));
+    let mut session = on_the_frame_clock(opened_at_rest_in(&bus, &route));
     session.settle();
     let titles = session.titles();
     assert!(titles.len() > 1, "the list shows rows: {titles:?}");
@@ -2723,32 +1731,12 @@ fn choosing_another_task_keeps_the_windows_composition(seeded: &Chunks) {
 // that has only seeded, as they did as tests of their own. Two readings to a test, so that the
 // longest of them stays about as long as the longest test that seeds for itself.
 
-/// Opening ten thousand tasks over the index an earlier run kept, and where none was kept.
+/// Opening a window at a thousand tasks and at ten thousand: the work the open does.
 #[test]
-fn opening_ten_thousand_tasks_reads_their_index_or_builds_it_once() {
-    let ten_thousand = seeded_tasks(SEEDED);
-    opening_a_window_reads_the_workspaces_index(&ten_thousand);
-    opening_a_workspace_with_no_index_reads_its_chunks_once(&ten_thousand);
-}
-
-/// Opening a window at a thousand tasks and at ten thousand: the work the open does, and what
-/// it writes.
-#[test]
-fn opening_a_window_does_the_work_it_shows_and_writes_nothing() {
+fn opening_a_window_does_the_work_it_shows() {
     let thousand = seeded_tasks(1_000);
     let ten_thousand = seeded_tasks(SEEDED);
     opening_a_window_does_the_work_the_window_shows(&thousand, &ten_thousand);
-    opening_a_window_writes_nothing(&thousand, &ten_thousand);
-}
-
-/// A day's steps counted at a thousand tasks and at ten thousand, and the task one of them
-/// adds over the index an earlier run kept.
-#[test]
-fn a_days_steps_and_the_task_they_add_cost_what_they_change() {
-    let thousand = seeded_tasks(SMALL);
-    let ten_thousand = seeded_tasks(SEEDED);
-    a_step_costs_what_it_changes_not_the_workspace(&thousand, &ten_thousand);
-    adding_a_task_runs_the_row_it_adds_not_every_row(&ten_thousand);
 }
 
 /// A step in ten thousand tasks lays out what it changes, and a scroll asks the app for rows

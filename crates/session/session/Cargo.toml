@@ -200,6 +200,10 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The apps the session runs itself keep their resources in the workspace's store, whose
+# commands are answered by this device's own workspace service.
+futures = { workspace = true, features = ["executor"] }
+tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" }
 # The toolkit's native half: the winit runner, the host services and the
 # broker transport, which only a desktop host runs.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
@@ -302,9 +306,8 @@ image = { workspace = true, features = ["png"] }
 resvg = { version = "0.47", default-features = false }
 tilo-shell-surface = { path = "../shell-surface" }
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the shell's
-# action vocabulary; and a window's record as an instance opens it (`instance::document`), which
-# the tests that read a program's answer as the person and an agent do.
-tilolang-tilo = { path = "../../platform/tilolang-tilo", features = ["document"] }
+# action vocabulary.
+tilolang-tilo = { path = "../../platform/tilolang-tilo" }
 # The outside origins the session's own services keep records in step with: the mail and
 # YouTube connectors' clients, and the registry that makes an origin's connector reachable
 # (`tilolang_tilo::origin::remote`).
@@ -448,8 +451,8 @@ settings-store = { path = "../../system/settings-store", features = ["watch"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 
 [dev-dependencies]
-# A test writes an app's record as the app's own instance document, as the app does.
-tilolang-tilo = { path = "../../platform/tilolang-tilo", features = ["document"] }
+# A Tasks window in the tests, as the app's process runs one over the workspace's store.
+tilolang-process = { path = "../../platform/tilolang-process" }
 # The page track and window-share tests drive a synchronous web engine.
 tilo-webview = { version = "0.1.0", path = "../../sdk/tilo-webview" }
 pollster.workspace = true

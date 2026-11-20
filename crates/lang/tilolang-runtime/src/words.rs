@@ -38,6 +38,30 @@ pub trait Words {
     }
 }
 
+/// Words shared by more than one runtime: a host opened again over another store speaks as the
+/// one before it did.
+impl<W: Words + ?Sized> Words for std::rc::Rc<W> {
+    fn add(&self, catalogues: &[(String, String)]) {
+        (**self).add(catalogues);
+    }
+
+    fn add_used(&self, catalogues: &[(String, String)]) {
+        (**self).add_used(catalogues);
+    }
+
+    fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
+        (**self).word(key, args, source)
+    }
+
+    fn revision(&self) -> u64 {
+        (**self).revision()
+    }
+
+    fn language(&self) -> String {
+        (**self).language()
+    }
+}
+
 /// The catalogues of one loaded package, `(locale, Fluent text)` each, and which package of the
 /// window they belong to: what the runtime keeps to hand them to the words a host sets later.
 pub type LoadedCatalogues = (WordsRole, Vec<(String, String)>);

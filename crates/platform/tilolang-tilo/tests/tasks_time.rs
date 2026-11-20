@@ -23,7 +23,7 @@ fn moment(r: &Replica, task: &Value, field: &str) -> Option<String> {
 /// for the old moment, on the new one; the day it is due stays.
 #[test]
 fn a_task_made_a_later_time_takes_its_reminder_with_its_moment() {
-    let (mut ada, root) = workspace();
+    let (ada, root) = workspace();
     let made = call(&ada, "new_task", create(&root, "Call mum"));
     call(
         &ada,
@@ -73,7 +73,7 @@ fn a_task_made_a_later_time_takes_its_reminder_with_its_moment() {
 /// a task's moment on a day, never one with none.
 #[test]
 fn a_task_with_no_day_made_a_moment_is_due_on_that_day() {
-    let (mut ada, root) = workspace();
+    let (ada, root) = workspace();
     let made = call(&ada, "new_task", create(&root, "Call mum"));
     ada.commit();
     assert_eq!(read(&ada, &made, "due"), Value::none(), "it names no day");

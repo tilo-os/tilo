@@ -64,6 +64,17 @@ impl ServiceRecords {
 }
 
 impl tilo_actions::remote::ResourceReads for ServiceRecords {
+    /// Every app's resources are in the workspace's one store, whichever service publishes
+    /// them: the broker answers.
+    fn store_read(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::ResourceAddress,
+        read: serde_json::Value,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        self.workspace_reads()?.store_read(caller, address, read)
+    }
+
     fn answer_read(
         self: Arc<Self>,
         caller: &Caller,

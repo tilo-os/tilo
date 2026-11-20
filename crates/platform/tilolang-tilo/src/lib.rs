@@ -3,10 +3,9 @@
 //! The tilolang compiler and runtime know nothing of Tilo. This crate is the boundary to the
 //! platform:
 //!
-//! * [`resource`]: `DynResource`, a tilolang resource as a `tilo_resource` model, so resources live
-//!   in the workspace document and merge by their field kinds;
-//! * [`action`]: `DynAction`, the replayable form of a planned tilolang action, which a peer
-//!   without the wasm module applies;
+//! * [`resources`]: the runtime's store over the device's one resource store, where every
+//!   resource of a tilolang app is kept;
+//! * [`action`]: `DynAction`, the record of an invoked tilolang action;
 //! * [`meta`] and [`surface`]: what the platform derives from package metadata, and the surface
 //!   generated from it;
 //! * [`publish`]: the resources and typed actions published on the action api;
@@ -16,21 +15,11 @@
 pub mod action;
 pub mod authority;
 pub mod background;
-// The bench measures with std's clocks, which a page does not have. It is a tool of the
-// command line, the examples and the tests, and never part of what a browser loads.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod bench;
 pub mod bundle;
 pub mod catalogue;
-pub mod chunk;
-pub mod containers;
-pub mod content;
 pub mod effects;
-pub mod history;
 pub mod host;
-pub mod index;
 pub mod instance;
-pub mod items;
 pub mod members;
 pub mod meta;
 pub mod names;
@@ -42,25 +31,24 @@ pub mod platform_apps;
 pub mod publish;
 pub mod published;
 pub mod reading;
-pub mod reads;
-pub mod resource;
+
+pub mod resources;
 pub mod resource_service;
 pub mod schema;
 pub mod search;
+pub mod seed;
 pub mod sink;
-pub mod store;
 pub mod surface;
 pub mod task;
-pub mod task_documents;
+pub mod task_reads;
 pub mod triggers;
 pub mod upgrade;
 pub mod used;
 pub mod views;
 
-pub use action::{Authorship, DynAction, DynEdit, register_actions};
+pub use action::{Authorship, DynAction, register_actions};
 pub use effects::{HostEffect, OpenEffect, OpenPlan};
 pub use meta::MetaExt;
-pub use resource::{DynResource, DynValue};
 pub use schema::{FieldSchema, MergeKind, TypeSchema};
 /// The compiler, for hosts that build packages from source.
 pub use tilolang;

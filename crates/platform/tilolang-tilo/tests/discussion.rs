@@ -4,7 +4,7 @@
 //! draws the thread leaves out of `std.linked`, and a scenario that comments as the people and
 //! times it names.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::rich::{Reference, RichValue};
 use tilolang_runtime::store::{LinkHow, Store as _};
 use tilolang_runtime::value::ResourceRef;
@@ -109,6 +109,15 @@ fn comments_drawn(tree: &UiNode) -> Vec<RichValue> {
         .collect()
 }
 
+/// The section of a page that draws a thread: the innermost one holding what was said.
+fn thread_drawn(tree: &UiNode) -> &UiNode {
+    tree.of_kind("ui.Section")
+        .into_iter()
+        .filter(|section| !section.of_kind("ui.BlockEditor").is_empty())
+        .min_by_key(|section| section.count())
+        .expect("the page draws a thread")
+}
+
 /// The change mark the host puts on the window's header: how many changes of what it shows the
 /// person has not seen, and who made the newest.
 fn window_mark(view: &mut ViewInstance) -> Option<UiNode> {
@@ -169,7 +178,7 @@ fn tasks_window(ada: &Replica) -> ViewInstance {
 fn workspace() -> Replica {
     let (replica, _) = Replica::new(
         "ada",
-        AutoCommit::new(),
+        Workspace::new(),
         &[
             (DISCUSSION, DISCUSSION_IDS),
             (NOTES, NOTES_IDS),
@@ -210,10 +219,10 @@ fn note_named(r: &Replica, title: &str) -> ResourceRef {
 /// Ada's task, with Bo's comment about it naming her: what a thread under it, and the marks it
 /// leaves, start from.
 fn ada_and_bo_after_a_comment() -> (Replica, Replica, ResourceRef, ResourceRef, String) {
-    let mut ada = workspace();
+    let ada = workspace();
     let task = task_titled(&ada, "Pay rent");
     ada.commit();
-    let mut bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)]);
+    let bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)]);
     let mut asked = RichValue::from_text("Is this the one that pays the whole quarter? ");
     asked.push_reference(
         "Ada",
@@ -230,7 +239,7 @@ fn ada_and_bo_after_a_comment() -> (Replica, Replica, ResourceRef, ResourceRef, 
         vec![all, Value::Rich(asked)],
     ));
     bo.commit();
-    ada.sync_with(&mut bo);
+    ada.sync_with(&bo);
     (ada, bo, task, said, asked_text)
 }
 
@@ -283,7 +292,7 @@ fn a_comment_is_made_from_the_task_it_is_about_and_changes_it() {
 
 #[test]
 fn a_thread_draws_what_was_said_and_is_read_with_what_it_is_about() {
-    let (mut ada, mut bo, task, said, asked_text) = ada_and_bo_after_a_comment();
+    let (ada, bo, task, said, asked_text) = ada_and_bo_after_a_comment();
 
     // The task's page draws the comment under it, with the line saying she has not read it.
     let page = ada.host.open_resource(&task, None).unwrap();
@@ -350,7 +359,7 @@ fn a_thread_draws_what_was_said_and_is_read_with_what_it_is_about() {
         Some(task.id_string()),
         "a reply is made from the task the thread is about"
     );
-    bo.sync_with(&mut ada);
+    bo.sync_with(&ada);
     bo.commit();
     let page = bo.host.open_resource(&task, None).unwrap();
     assert_eq!(
@@ -371,7 +380,7 @@ fn a_thread_draws_what_was_said_and_is_read_with_what_it_is_about() {
 
 #[test]
 fn an_agent_comments_through_the_same_action() {
-    let mut ada = workspace();
+    let ada = workspace();
     let task = task_titled(&ada, "Book the van");
     ada.commit();
 
@@ -422,10 +431,10 @@ tilo_test_env::scenario! {
 
     phase a_comment_under_a_note_draws_in_the_notes_view;
     {
-        let mut ada = workspace();
+        let ada = workspace();
         let plan = note_named(&ada, "Q3 plan");
         ada.commit();
-        let mut bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (NOTES, NOTES_IDS)]);
+        let bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (NOTES, NOTES_IDS)]);
 
         let said = comment(
             &bo,
@@ -434,7 +443,7 @@ tilo_test_env::scenario! {
             "Add the offline editor to the first paragraph.",
         );
         bo.commit();
-        ada.sync_with(&mut bo);
+        ada.sync_with(&bo);
 
         let view = ada.host.open_resource(&plan, None).unwrap();
         assert!(
@@ -495,7 +504,10 @@ tilo_test_env::scenario! {
             ],
             "the task's thread draws them oldest first"
         );
-        let who: Vec<String> = page.tree().of_kind("ui.Avatar")
+        // The page also draws the task's history and what changed since Ada last looked, each
+        // with faces and times of its own; the thread is the section that draws what was said.
+        let thread = thread_drawn(page.tree());
+        let who: Vec<String> = thread.of_kind("ui.Avatar")
             .into_iter()
             .filter_map(|node| match node.props.get("who") {
                 Some(Value::Actor(who)) => Some(who.id().to_owned()),
@@ -507,7 +519,7 @@ tilo_test_env::scenario! {
             ["Ada", "Bo", "Ada"],
             "the thread names who said each thing"
         );
-        let when: Vec<String> = page.tree().of_kind("ui.Time")
+        let when: Vec<String> = thread.of_kind("ui.Time")
             .into_iter()
             .filter_map(|node| match node.props.get("at") {
                 Some(Value::Text(at)) => Some(at.clone()),
@@ -527,7 +539,7 @@ tilo_test_env::scenario! {
 
     phase the_thread_offers_its_own_people_and_follows_nothing_of_what_it_is_about;
     {
-        let (mut ada, task) = a_task_discussed_by_a_scenario();
+        let (ada, task) = a_task_discussed_by_a_scenario();
         let page = ada.host.open_resource(&task, None).unwrap();
         let thread = ada
             .host
@@ -586,7 +598,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_comment_is_about_its_task_so_the_page_does_not_list_it_as_made_from_it() {
-    let mut ada = workspace();
+    let ada = workspace();
     let task = task_titled(&ada, "Pay rent");
     ada.commit();
     let said = comment(&ada, "ada", &task, "Ask Bo about the receipt.");
@@ -667,9 +679,9 @@ fn a_history_entry_says_what_was_done_in_the_apps_words_not_in_its_declaration()
 /// Ada's workspace with Tasks' discussion scenario run in it: the task it answers with, and what
 /// the two people it names said about it.
 fn a_task_discussed_by_a_scenario() -> (Replica, ResourceRef) {
-    let (mut ada, loaded) = Replica::new(
+    let (ada, loaded) = Replica::new(
         "ada",
-        AutoCommit::new(),
+        Workspace::new(),
         &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)],
     );
     ada.host.root_of(DISCUSSION_APP).unwrap();
@@ -719,14 +731,14 @@ fn comments_about(ada: &Replica, task: &ResourceRef) -> Vec<tilolang_runtime::st
 
 #[test]
 fn only_its_author_edits_or_deletes_a_comment() {
-    let mut ada = workspace();
+    let ada = workspace();
     let task = task_titled(&ada, "Pay rent");
     ada.commit();
-    let mut bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)]);
+    let bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)]);
 
     let said = comment(&bo, "bo", &task, "Is this the one that pays the quarter?");
     bo.commit();
-    ada.sync_with(&mut bo);
+    ada.sync_with(&bo);
 
     // Ada may not change what Bo said, and Bo may: what he says is his, as any resource is.
     let refused = ada.host.runtime().invoke_action(
@@ -757,7 +769,7 @@ fn only_its_author_edits_or_deletes_a_comment() {
         ],
     );
     bo.commit();
-    ada.sync_with(&mut bo);
+    ada.sync_with(&bo);
     let versions = ada.host.store().versions(&said).unwrap();
     assert_eq!(versions.len(), 2, "the edit is a version of the comment");
     assert_eq!(versions[1].who, Some(tilolang_tilo::personal::actor("bo")));
@@ -784,7 +796,7 @@ fn only_its_author_edits_or_deletes_a_comment() {
         vec![all, Value::resource(&said)],
     );
     bo.commit();
-    ada.sync_with(&mut bo);
+    ada.sync_with(&bo);
     let mut view = ada.host.open_resource(&task, None).unwrap();
     view.poll_patches().unwrap();
     assert!(

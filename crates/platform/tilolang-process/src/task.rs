@@ -12,10 +12,10 @@
 //! or `{"catalogue": {}}` (answered `{"catalogue": …}`: every installed app's declarations,
 //! [`TaskSession::catalogue`], and each app whose package did not load with what a program
 //! naming it is told, `can't be reached: <why>`);
-//! while the program runs, the host asks `{"document": {app, document}}` for a document it reads
-//! (answered `{"ok": {"document": base64}}`, `{"absent": true}` or `{"err": why}`: the document's
-//! committed content, read-only, which the host reads itself with the app's package,
-//! [`DocumentReads`]), `{"children": {app, resource}}` for the resources a native app lists under
+//! while the program runs, the host asks `{"store": {app, record, command}}` for what it reads of
+//! an app's resources (answered `{"ok": reply}` or `{"err": why}`: the workspace's store's answer
+//! to the read command, decided for the task, which the host reads itself with the app's package,
+//! [`TaskReads`]), `{"children": {app, resource}}` for the resources a native app lists under
 //! one of its own (answered `{"ok": {"rows": [{id, kind, key, name}]}}` or `{"err": why}`: the
 //! app's directory, the document at its top and what it holds under it: a row's `id` names it
 //! under its parent, which is what an invocation addresses, and its `key` is what the app's
@@ -34,7 +34,6 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::rc::Rc;
 
-use base64::Engine as _;
 use runtime_portal::process_link::{App, TaskFds, TaskRequest, decode_apps};
 use serde_json::{Value as Json, json};
 use tilolang_tilo::bundle::Bundle;
@@ -43,7 +42,8 @@ use tilolang_tilo::native::{Calls, Native, NativeReads};
 use tilolang_tilo::runtime::meta::PackageMeta;
 use tilolang_tilo::runtime::value::ResourceRef;
 use tilolang_tilo::task::{Answered, TaskApi, TaskSession, Unreachable};
-use tilolang_tilo::task_documents::{DocumentReads, DocumentSource};
+use tilolang_tilo::resources::Port;
+use tilolang_tilo::task_reads::{StoreSource, TaskReads};
 
 /// How a day or a time of day reads in a sentence a person reads (`person_output`): the
 /// person's formats, from their settings, and their zone's clock. Until a region is installed,
@@ -115,31 +115,52 @@ impl Line {
     }
 }
 
-impl DocumentSource for Line {
-    fn record(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
-        let reply = self.ask(&json!({"record": {"app": app, "record": record}}))?;
-        if reply.get("absent").and_then(Json::as_bool) == Some(true) {
-            return Ok(None);
-        }
-        if let Some(document) = reply.pointer("/ok/document").and_then(Json::as_str) {
-            return base64::engine::general_purpose::STANDARD
-                .decode(document)
-                .map(Some)
-                .map_err(|error| format!("the API sent a document that is not base64: {error}"));
+/// The program connection, as where a task's reads of the store go out.
+struct Lines(Rc<Line>);
+
+impl StoreSource for Lines {
+    fn port(&self, app: &str, record: &str) -> Rc<dyn Port> {
+        Rc::new(StoreLine {
+            line: Rc::clone(&self.0),
+            app: app.to_owned(),
+            record: record.to_owned(),
+        })
+    }
+}
+
+/// The reads of one app's resources, asked of the store through the API as the task.
+struct StoreLine {
+    line: Rc<Line>,
+    app: String,
+    record: String,
+}
+
+impl Port for StoreLine {
+    fn command(
+        &self,
+        command: tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        let command = serde_json::to_value(&command).map_err(|error| error.to_string())?;
+        let reply = self.line.ask(&json!({
+            "store": {"app": self.app, "record": self.record, "command": command},
+        }))?;
+        if let Some(answer) = reply.get("ok") {
+            return serde_json::from_value(answer.clone())
+                .map_err(|error| format!("the API sent a store answer that does not read: {error}"));
         }
         Err(reply.get("err").and_then(Json::as_str).map_or_else(
-            || format!("the API answered a document read with neither ok, absent nor err: {reply}"),
+            || format!("the API answered a store read with neither ok nor err: {reply}"),
             str::to_owned,
         ))
     }
 }
 
-/// What the task's programs reach the workspace through: the documents, read here from what the
-/// api hands over ([`DocumentReads`]), a native app's document, read by the app itself
+/// What the task's programs reach the workspace through: the apps' resources, read here from what
+/// the store answers through the API ([`TaskReads`]), a native app's document, read by the app itself
 /// ([`NativeReads`]), and invocations, which go to the API.
 struct Api {
     line: Rc<Line>,
-    reads: DocumentReads,
+    reads: TaskReads,
     /// The native apps the task reaches, and the document each publishes.
     native: Rc<Native>,
     /// The author of the program running now, as the actions it plans for a preview see their
@@ -227,23 +248,14 @@ impl TaskApi for Api {
             Ok(reply) => reply,
             Err(why) => return Answered::Failed(why),
         };
-        // What the program reads of the app next holds what its change made: the origin says
-        // what it wrote, which goes into the document this program read.
+        // What the program reads of the app next holds what its change made: the store has it,
+        // and the app is read again.
         if let Some(app) = call
             .get("app")
             .and_then(Json::as_str)
             .filter(|app| !self.native.is(app))
         {
-            let wrote = reply.get("change").and_then(Line::change_bytes);
-            let taken = match wrote {
-                Some(Ok(change)) => self.reads.take_in(app, &change),
-                Some(Err(error)) => Err(format!("the origin's change does not read: {error}")),
-                None => Err("no change said".to_owned()),
-            };
-            if let Err(why) = taken {
-                tracing::debug!(app, why, "the program reads the document again");
-                self.reads.forget_app(app);
-            }
+            self.reads.forget_app(app);
         }
         Line::answered(&reply)
     }
@@ -282,29 +294,6 @@ impl Calls for Api {
 }
 
 impl Line {
-    /// The bytes an API's `change` field holds: the document's whole document, as base64 text or,
-    /// for the document a package the session runs itself keeps, as its bytes in JSON.
-    fn change_bytes(change: &Json) -> Option<Result<Vec<u8>, String>> {
-        match change {
-            Json::String(text) => Some(
-                base64::engine::general_purpose::STANDARD
-                    .decode(text)
-                    .map_err(|error| error.to_string()),
-            ),
-            Json::Array(bytes) => Some(
-                bytes
-                    .iter()
-                    .map(|byte| {
-                        byte.as_u64()
-                            .and_then(|byte| u8::try_from(byte).ok())
-                            .ok_or_else(|| "a change is bytes".to_owned())
-                    })
-                    .collect::<Result<Vec<u8>, String>>(),
-            ),
-            _ => None,
-        }
-    }
-
     /// How the API's `reply` to an invocation says it ended.
     fn answered(reply: &Json) -> Answered {
         let why = |key: &str| {
@@ -375,11 +364,11 @@ impl Task {
             reader: RefCell::new(BufReader::new(stream)),
             writer: RefCell::new(writer),
         });
-        let reads = DocumentReads::new(
+        let reads = TaskReads::new(
             &apps.bundles,
             request.documents_under.clone(),
             request.person.as_deref(),
-            Rc::clone(&line) as Rc<dyn DocumentSource>,
+            Rc::new(Lines(Rc::clone(&line))) as Rc<dyn StoreSource>,
         );
         let native = Rc::new(Native::of(&apps.bundles, &apps.native));
         let api = Rc::new(Api {
@@ -439,11 +428,11 @@ impl Task {
         });
         let api = Rc::new(Api {
             line: Rc::clone(&line),
-            reads: DocumentReads::new(
+            reads: TaskReads::new(
                 &[],
                 std::collections::BTreeMap::new(),
                 None,
-                Rc::clone(&line) as Rc<dyn DocumentSource>,
+                Rc::new(Lines(Rc::clone(&line))) as Rc<dyn StoreSource>,
             ),
             native: Rc::new(Native::of(&[], &[])),
             caller: RefCell::new(None),
@@ -785,11 +774,11 @@ mod tests {
         let apps = Rc::new(Native::of(bundles, native));
         let reached = Rc::new(Api {
             line: Rc::clone(&line),
-            reads: DocumentReads::new(
+            reads: TaskReads::new(
                 bundles,
                 std::collections::BTreeMap::new(),
                 None,
-                Rc::clone(&line) as Rc<dyn DocumentSource>,
+                Rc::new(Lines(Rc::clone(&line))) as Rc<dyn StoreSource>,
             ),
             native: Rc::clone(&apps),
             caller: RefCell::new(None),
@@ -860,7 +849,12 @@ mod tests {
                 api.write_all(b"garbage\n").expect("sent");
                 (reader, api)
             });
-            let read = task.line.record("app", "");
+            let read = Lines(Rc::clone(&task.line))
+                .port("app", "")
+                .command(tilo_resource_store::wire::Command::Get {
+                    kind: "tl.so.tilo.lang.counter.Counter".to_owned(),
+                    id: "root".to_owned(),
+                });
             let _ends = asking.join().expect("the API");
             let why = read.expect_err("an unreadable reply fails the read");
             assert!(why.contains("not JSON"), "{why}");

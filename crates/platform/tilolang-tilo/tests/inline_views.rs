@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use automerge::AutoCommit;
+
 use serde_json::json;
 use tilolang::IdsLock;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
@@ -109,9 +109,7 @@ fn workspace(title: &str) -> Workspace {
 
 /// The same host before any reading of the callee's item arrived.
 fn unread_workspace() -> Workspace {
-    let doc = AutoCommit::new();
     let host = Host::new(
-        &doc,
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
     )

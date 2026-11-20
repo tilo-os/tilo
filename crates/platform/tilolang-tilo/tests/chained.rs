@@ -2,7 +2,7 @@
 //! function hands each step what the step before it read, as the same chain split into `let`
 //! steps does.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::{Actor, UiNode, Value};
 
 use crate::fixtures::Replica;
@@ -72,7 +72,7 @@ fn texts(node: &UiNode) -> Vec<String> {
 
 /// The bag seeded with its items: the replica, and the root to open.
 fn seeded() -> (Replica, tilolang_runtime::ResourceRef) {
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(CHAIN, "")]);
+    let (ada, packages) = Replica::new("ada", Workspace::new(), &[(CHAIN, "")]);
     let meta = packages[0].meta.clone();
     let bag = ada.host.root_of(APP).unwrap();
     ada.commit();
@@ -95,7 +95,7 @@ fn seeded() -> (Replica, tilolang_runtime::ResourceRef) {
 
 #[test]
 fn a_chain_reads_what_its_steps_read() {
-    let (mut ada, bag) = seeded();
+    let (ada, bag) = seeded();
     // As the layout's own writes leave it: the items written, not yet indexed.
     let just_written = texts(ada.host.open_resource(&bag, None).unwrap().tree());
     ada.commit();

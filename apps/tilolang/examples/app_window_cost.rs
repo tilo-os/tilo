@@ -51,15 +51,8 @@ impl Publication for Published {
     }
 
     fn pending(&self) -> bool {
-        self.publications.borrow().is_building()
-    }
-
-    fn settle(&self) -> bool {
-        !self
-            .publications
-            .borrow_mut()
-            .settle(&self.host, &self.planner)
-            .is_empty()
+        // Nothing is read off the frame: the store answers every read as it is made.
+        false
     }
 }
 
@@ -129,8 +122,7 @@ fn open(app: &str, platform: &Rc<Packages>, scenario: Option<&str>) -> Open {
             me: "ada".into(),
             mode: Mode::Live,
             device: None,
-            index_dir: None,
-            document_loader: None,
+            store: tilolang_tilo::resources::ResourceStore::in_memory(),
             sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
             root: tilolang_tilo::host::RootView::default(),
         },
@@ -138,15 +130,10 @@ fn open(app: &str, platform: &Rc<Packages>, scenario: Option<&str>) -> Open {
         Rc::new(Alone),
         Box::new(app_end),
     );
-    let record = ui::automerge::AutoCommit::new();
-    instance.sync(Some(&record));
-    // Shown as a still picture: nothing wakes a frame to take in an index built off it.
-    if let Some(host) = instance.host() {
-        host.wait_index();
-    }
+    instance.sync();
     if scenario.is_some() {
         instance.stage(scenario);
-        instance.sync(Some(&record));
+        instance.sync();
     }
     instance.update();
     Open {
@@ -301,7 +288,14 @@ fn main() -> Result<(), String> {
             .map(|count| count.parse().map_err(|_| format!("`{count}` is no count")))
             .collect::<Result<_, _>>()?
     };
-    let packages = tilolang_tilo::bench::compile(&std::path::PathBuf::from(dir))?;
+    let dir = std::path::PathBuf::from(dir);
+    let dirs = tilolang::source::dependency_order(&dir, &[])
+        .map_err(|why| format!("the package's sources resolve: {why}"))?;
+    let packages = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
+        .map_err(|why| format!("the package compiles: {why}"))?
+        .into_iter()
+        .map(|built| built.compiled)
+        .collect::<Vec<_>>();
     let app = packages
         .last()
         .map(|main| main.meta.app.clone())

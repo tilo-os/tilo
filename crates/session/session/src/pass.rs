@@ -79,8 +79,8 @@ impl Session {
         self.read_controls();
         self.shared.feed_agents();
         self.shared.follow_recipients();
-        // The apps' records the services run over are the workspace's, once the session holds it.
-        self.shared.keep_app_records();
+        // The apps' resources the services run over are the workspace's, once the session holds it.
+        self.shared.keep_app_stores();
         let mut services = self.shared.services.borrow_mut();
         // What the records the services keep themselves reference: each record's content, kept in
         // the store of the workspace it stands in and offered on its route, so a device of the
@@ -576,11 +576,6 @@ impl Session {
             self.step(timeout)?;
         }
         self.shared.keep_layout_now();
-        // The shell's own record, written out whole and waited on: the next session starts from
-        // exactly the session choices this one left.
-        if let Some(shell) = &self.shell {
-            shell.flush_record();
-        }
         // Nothing of this session outlives it: an ordered end publishes the lock state the next one
         // recovers, and one that ends any other way keeps the armed record, which recovers locked.
         if let Some(recovery) = self.recovery.take()

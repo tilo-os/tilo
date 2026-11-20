@@ -2,7 +2,7 @@
 //! costs in a running tilolang host (`docs/designs/app-language/app-window.md`, step 2b).
 //!
 //! Opens Notes instances in one host, as the session hands them over: each on its own broker
-//! connection (a broker the example plays), each over a workspace document of its own, each sending its
+//! connection (a broker the example plays) over a workspace store of its own, each sending its
 //! window patches over a `SOCK_SEQPACKET` connection whose far end the example drains, as a
 //! window's process does. It prints
 //!
@@ -29,11 +29,12 @@ use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilo_render_protocol::patch::{self, ToUi, Transport as _};
 use tilolang_process::TilolangProcess;
+use tilolang_process::connection::Connection;
 use tilolang_process::hosted::{Hosted, Spec};
 use tilolang_process::phrases::Phrases;
-use tilolang_process::testing::Broker;
+use tilolang_process::testing::{Broker, Bus};
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::instance::document::InstanceDocument;
+use tilolang_tilo::resources::ResourceStore;
 
 const APP: &str = "so.tilo.lang.notes";
 
@@ -66,9 +67,11 @@ fn status(field: &str) -> u64 {
         .unwrap_or(0)
 }
 
-fn record(index: usize) -> (InstanceDocument, RouteSpec) {
+/// The connection and store of the `index`th instance of the workspace `bus` is its store of.
+fn connected(index: usize, bus: &Rc<Bus>) -> (Connection, RouteSpec) {
     let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
-    let mut manager = CollaborationManager::with_peer_transport(Broker::new(route.clone()));
+    let mut manager =
+        CollaborationManager::with_peer_transport(Broker::on(bus, route.clone(), "ada"));
     manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
@@ -77,10 +80,8 @@ fn record(index: usize) -> (InstanceDocument, RouteSpec) {
         handle: Some(format!("person-{index}")),
     });
     let _ = manager.poll();
-    (
-        InstanceDocument::new(automerge::AutoCommit::new(), manager, route.clone(), "ada"),
-        route,
-    )
+    let connection = Connection::new(manager).expect("the connection joined its route");
+    (connection, route)
 }
 
 /// Hand the host one more instance and run it until its window's first tree arrives. The
@@ -92,14 +93,16 @@ fn open(
     index: usize,
 ) -> (ChannelTransport, Duration) {
     let started = Instant::now();
-    let (record, route) = record(index);
+    let bus = Rc::new(Bus::default());
+    let (connection, route) = connected(index, &bus);
+    let store = ResourceStore::new(Rc::new(connection.port(None)));
     let (ours, theirs) = Channel::pair().unwrap();
-    let kept = host.kept(APP).unwrap();
-    let hosted = Hosted::with_document(
+    let hosted = Hosted::new(
         Spec::new(APP, route.cluster_id.to_string(), index as u64, "ada"),
-        record,
+        connection,
+        store,
+        tilolang_process::hosted::memory_content(),
         Arc::clone(bundle),
-        &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
         phrases,
         host.formats(),
@@ -137,7 +140,7 @@ fn main() {
     };
     let bundle = notes();
     let phrases = Rc::new(Phrases::new("en-US"));
-    let mut host = TilolangProcess::new(None, Arc::new(|| {}));
+    let mut host = TilolangProcess::new(Arc::new(|| {}));
     let mut windows = Vec::new();
     let mut frames = Vec::new();
     let before = status("RssAnon");

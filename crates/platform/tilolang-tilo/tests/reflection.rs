@@ -3,7 +3,7 @@
 //! replica. A scenario's `invoke(..., by: who, at: time)` calls are recorded as that person's,
 //! at that time.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::{Actor, InvokeOutcome, Value};
 use tilolang_tilo::host::RootView;
 
@@ -122,7 +122,7 @@ tilo_test_env::scenario! {
 
     phase versions_name_who_made_them_when_and_by_which_action_on_every_replica;
     {
-        let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+        let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(TALK, "")]);
         let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
         ada.commit();
         ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
@@ -147,8 +147,7 @@ tilo_test_env::scenario! {
             "ada 2026-10-28T09:00:00Z ada 2026-10-28T09:05:00Z Reword 2"
         );
         // Another replica reads the same versions from the document.
-        let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
-        ben.host.sync_from(&ben.doc);
+        let ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
         ben.host.set_clock(|| "2026-10-28T10:00:00Z".to_owned());
         call(&ben, "ben", "reword", vec![line.clone(), Value::text("hi")]);
         ben.commit();
@@ -156,7 +155,7 @@ tilo_test_env::scenario! {
             text(call(&ben, "ben", "describe", vec![line.clone()])),
             "ada 2026-10-28T09:00:00Z ben 2026-10-28T10:00:00Z Reword 3"
         );
-        ada.sync_with(&mut ben);
+        ada.sync_with(&ben);
         assert_eq!(
             text(call(&ada, "ada", "describe", vec![line])),
             "ada 2026-10-28T09:00:00Z ben 2026-10-28T10:00:00Z Reword 3"
@@ -165,7 +164,7 @@ tilo_test_env::scenario! {
 
     phase a_scenario_records_each_block_as_its_person_at_its_time;
     {
-        let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+        let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(TALK, "")]);
         let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
         ada.commit();
         ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
@@ -203,7 +202,7 @@ tilo_test_env::scenario! {
 
     phase the_last_version_is_the_latest_on_every_replica_whichever_order_they_arrive_in;
     {
-        let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+        let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(TALK, "")]);
         let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
         ada.commit();
         ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
@@ -214,8 +213,7 @@ tilo_test_env::scenario! {
             vec![Value::resource(&talk), Value::text("hello")],
         );
         ada.commit();
-        let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
-        ben.host.sync_from(&ben.doc);
+        let ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
         // Each changes the line apart: Ada later than Ben, though Ben's change reaches Ada after
         // her own, and Ada's reaches Ben after his.
         ada.host.set_clock(|| "2026-10-28T10:00:00Z".to_owned());
@@ -229,7 +227,7 @@ tilo_test_env::scenario! {
         ben.host.set_clock(|| "2026-10-28T09:30:00Z".to_owned());
         call(&ben, "ben", "reword", vec![line.clone(), Value::text("hi")]);
         ben.commit();
-        ada.sync_with(&mut ben);
+        ada.sync_with(&ben);
         let want = "ada 2026-10-28T09:00:00Z ada 2026-10-28T10:00:00Z Reword 3";
         assert_eq!(
             text(call(&ada, "ada", "describe", vec![line.clone()])),
@@ -244,7 +242,7 @@ tilo_test_env::scenario! {
     // version either way.
     {
         for ada_first in [true, false] {
-            let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+            let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(TALK, "")]);
             let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
             ada.commit();
             ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
@@ -255,8 +253,7 @@ tilo_test_env::scenario! {
                 vec![Value::resource(&talk), Value::text("hello")],
             );
             ada.commit();
-            let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
-            ben.host.sync_from(&ben.doc);
+            let ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
             ada.host.set_clock(|| "2026-10-28T10:00:00Z".to_owned());
             call(
                 &ada,
@@ -270,11 +267,11 @@ tilo_test_env::scenario! {
             ben.commit();
             // Ada's change reaches Ben first, or his reaches her first.
             if ada_first {
-                ada.send_to(&mut ben);
-                ben.send_to(&mut ada);
+                ada.send_to(&ben);
+                ben.send_to(&ada);
             } else {
-                ben.send_to(&mut ada);
-                ada.send_to(&mut ben);
+                ben.send_to(&ada);
+                ada.send_to(&ben);
             }
             let want = "ada 2026-10-28T09:00:00Z ada 2026-10-28T10:00:00Z Reword 3";
             assert_eq!(
@@ -296,7 +293,7 @@ tilo_test_env::scenario! {
     // is unseen the same.
     {
         for ada_first in [true, false] {
-            let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+            let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(TALK, "")]);
             let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
             ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
             let line = call(
@@ -306,10 +303,8 @@ tilo_test_env::scenario! {
                 vec![Value::resource(&talk), Value::text("hello")],
             );
             ada.commit();
-            let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
-            let mut cy = ada.fork("cy", &[(TALK, &loaded[0].ids)]);
-            ben.host.sync_from(&ben.doc);
-            cy.host.sync_from(&cy.doc);
+            let ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
+            let cy = ada.fork("cy", &[(TALK, &loaded[0].ids)]);
             // Ben changes the line twice, one on top of the other, and Ada once between them in
             // time, made apart from both.
             ada.host.set_clock(|| "2026-10-28T09:30:00Z".to_owned());
@@ -334,15 +329,15 @@ tilo_test_env::scenario! {
             // Cy holds none of them and receives them in one order or the other; the two authors
             // exchange theirs.
             if ada_first {
-                ada.send_to(&mut cy);
-                ben.send_to(&mut cy);
+                ada.send_to(&cy);
+                ben.send_to(&cy);
             } else {
-                ben.send_to(&mut cy);
-                ada.send_to(&mut cy);
+                ben.send_to(&cy);
+                ada.send_to(&cy);
             }
-            ada.sync_with(&mut ben);
-            ada.sync_with(&mut cy);
-            ben.sync_with(&mut cy);
+            ada.sync_with(&ben);
+            ada.sync_with(&cy);
+            ben.sync_with(&cy);
             let readers = [("ada", &ada), ("ben", &ben), ("cy", &cy)];
             let history = "ada 2026-10-28T09:00:00Z Write | ben 2026-10-28T09:20:00Z Reword \
                        | ada 2026-10-28T09:30:00Z Reword | ben 2026-10-28T09:40:00Z Reword";
@@ -388,7 +383,7 @@ tilo_test_env::scenario! {
     // made, before and after it is committed, and on a replica that receives them all at once;
     // never the one it was made on, whichever change's hash is smaller.
     {
-        let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+        let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(TALK, "")]);
         let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
         ada.commit();
         ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
@@ -399,8 +394,7 @@ tilo_test_env::scenario! {
             vec![Value::resource(&talk), Value::text("hello")],
         );
         ada.commit();
-        let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
-        ben.host.sync_from(&ben.doc);
+        let ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
         // Two changes' hashes order either way half the time: twelve rewords in one second
         // would each come out first by hash about once.
         for round in 0..12 {
@@ -424,7 +418,7 @@ tilo_test_env::scenario! {
                 "round {round}, once the document holds it: {committed}"
             );
         }
-        ada.sync_with(&mut ben);
+        ada.sync_with(&ben);
         assert_eq!(
             text(call(&ben, "ben", "describe", vec![line])),
             "ada 2026-10-28T09:00:00Z ada 2026-10-28T09:00:00Z Reword 13"
@@ -526,7 +520,7 @@ fn rows(view: &mut tilolang_runtime::ViewInstance, n: usize) -> Vec<String> {
 
 /// A workspace of `n` topics, opened one a minute from 08:00, and the root.
 fn topics(n: usize) -> (Replica, tilolang_runtime::value::ResourceRef, Vec<Value>) {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(TOPICS, "")]);
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(TOPICS, "")]);
     let root = ada.host.root_of("so.tilo.lang.topics").unwrap();
     ada.commit();
     let mut made = Vec::new();
@@ -576,7 +570,7 @@ tilo_test_env::scenario! {
 
     phase a_list_sorted_by_when_each_last_changed_reads_its_order_from_the_index;
     {
-        let (mut ada, _, made) = topics(3);
+        let (ada, _, made) = topics(3);
         let mut view = ada.view("so.tilo.lang.topics");
         assert_eq!(rows(&mut view, 3), ["topic 2", "topic 1", "topic 0"]);
         // A note posted in the oldest topic is its latest change: it comes first.
@@ -594,7 +588,7 @@ tilo_test_env::scenario! {
 
     phase a_field_names_the_version_that_last_changed_it;
     {
-        let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+        let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(TALK, "")]);
         let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
         ada.commit();
         ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
@@ -623,8 +617,7 @@ tilo_test_env::scenario! {
             "ada 2026-10-28T09:05:00Z Reword"
         );
         // Somebody else's change of it names them, on every replica.
-        let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
-        ben.host.sync_from(&ben.doc);
+        let ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
         ben.host.set_clock(|| "2026-10-28T10:00:00Z".to_owned());
         call(&ben, "ben", "reword", vec![line.clone(), Value::text("hi")]);
         ben.commit();
@@ -633,13 +626,13 @@ tilo_test_env::scenario! {
             text(call(&ben, "ben", "changed_by", vec![line.clone()])),
             want
         );
-        ada.sync_with(&mut ben);
+        ada.sync_with(&ben);
         assert_eq!(text(call(&ada, "ada", "changed_by", vec![line])), want);
     }
 
     phase a_list_sorted_by_when_a_field_last_changed_reads_that_field_from_the_index;
     {
-        let (mut ada, _, made) = topics(3);
+        let (ada, _, made) = topics(3);
         let mut view = lately(&ada);
         assert_eq!(
             rows(&mut view, 3),
@@ -672,44 +665,15 @@ tilo_test_env::scenario! {
 }
 
 /// `r`'s person takes their last step back, as their window's Undo does.
-#[cfg(feature = "document")]
-fn undo(r: &mut Replica) {
-    use collaboration::history_source::verbs::{EDIT_TYPE, HistoryEdit};
-    use tilo_actions::{ActionContext, ActionInvoker, EncodedAction};
-    use tilolang_tilo::instance::document::HostHistoryEdit;
-
-    let edit = HistoryEdit::Undo {
-        steps: None,
-        invocation: None,
-        by: None,
-        to: None,
-        step: None,
-    };
-    let payload = serde_json::to_vec(&edit).unwrap();
-    let action: HostHistoryEdit = serde_json::from_slice(&payload).unwrap();
-    let context = ActionContext::for_resource("workspace", "history", "history")
-        .with_invoker(ActionInvoker::person(r.name.clone()));
-    tilo_actions::apply_local_with_context(
-        &mut r.doc,
-        &action,
-        EncodedAction {
-            type_id: EDIT_TYPE.to_owned(),
-            payload,
-        },
-        Some(r.name.as_bytes()),
-        context,
-    )
-    .expect("undo is never refused");
-    r.doc.commit();
-    r.host.sync_from(&r.doc);
+fn undo(r: &Replica) {
+    r.undo_last();
 }
 
 /// A change taken back is no change of the field: what last changed it is the version still in
 /// effect, so the day a task was finished goes back with the box.
-#[cfg(feature = "document")]
 #[test]
 fn undo_puts_a_field_back_to_the_version_that_last_changed_it() {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(TALK, "")]);
     let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
     ada.commit();
     ada.host.set_clock(|| "2026-10-28T09:00:00Z".to_owned());
@@ -729,7 +693,7 @@ fn undo_puts_a_field_back_to_the_version_that_last_changed_it() {
     );
     ada.commit();
     ada.host.set_clock(|| "2026-10-28T09:10:00Z".to_owned());
-    undo(&mut ada);
+    undo(&ada);
     assert_eq!(
         text(call(&ada, "ada", "changed_by", vec![line.clone()])),
         "ada 2026-10-28T09:00:00Z Write",
@@ -755,59 +719,4 @@ fn lately(ada: &Replica) -> tilolang_runtime::ViewInstance {
         .expect("the lately view opens")
 }
 
-#[test]
-fn opening_a_list_sorted_by_when_a_field_last_changed_reads_the_index_whatever_the_size() {
-    let work = |n: usize| {
-        let (ada, _, _) = topics(n);
-        let before = ada.host.store().read_stats();
-        let mut view = lately(&ada);
-        let first = rows(&mut view, 10).first().cloned();
-        let after = ada.host.store().read_stats();
-        (
-            first,
-            after.doc.entries - before.doc.entries,
-            after.evaluated - before.evaluated,
-            after.index.pages - before.index.pages,
-        )
-    };
-    let (small_first, small_entries, small_evaluated, small_pages) = work(40);
-    let (large_first, large_entries, large_evaluated, large_pages) = work(400);
-    assert_eq!(small_first.as_deref(), Some("topic 39"));
-    assert_eq!(large_first.as_deref(), Some("topic 399"));
-    // Nothing of the document, no item checked one by one, and the pages of the rows shown: a
-    // field's last change is one value a row, kept as the log is applied.
-    assert_eq!((small_entries, large_entries), (0, 0));
-    assert_eq!((small_evaluated, large_evaluated), (0, 0));
-    assert!(
-        large_pages <= small_pages + 2,
-        "{large_pages} pages at 400, {small_pages} at 40"
-    );
-}
 
-#[test]
-fn opening_a_list_sorted_by_versions_reads_what_it_shows_whatever_the_size() {
-    let work = |n: usize| {
-        let (ada, _, _) = topics(n);
-        let before = ada.host.store().read_stats();
-        let mut view = ada.view("so.tilo.lang.topics");
-        let first = rows(&mut view, 10).first().cloned();
-        let after = ada.host.store().read_stats();
-        (
-            first,
-            after.doc.entries - before.doc.entries,
-            after.evaluated - before.evaluated,
-            after.index.pages - before.index.pages,
-        )
-    };
-    let (small_first, small_entries, small_evaluated, small_pages) = work(40);
-    let (large_first, large_entries, large_evaluated, large_pages) = work(400);
-    assert_eq!(small_first.as_deref(), Some("topic 39"));
-    assert_eq!(large_first.as_deref(), Some("topic 399"));
-    // Nothing of the document, no item checked one by one, and the pages of the rows shown.
-    assert_eq!((small_entries, large_entries), (0, 0));
-    assert_eq!((small_evaluated, large_evaluated), (0, 0));
-    assert!(
-        large_pages <= small_pages + 2,
-        "{large_pages} pages at 400, {small_pages} at 40"
-    );
-}

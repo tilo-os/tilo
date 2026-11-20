@@ -625,7 +625,6 @@ pub fn notebook(titles: &[&str]) -> (ResourceService, Vec<String>) {
 /// the id a session acts as on a device that has an identity of its own.
 pub fn notebook_of(person: &str, titles: &[&str]) -> (ResourceService, Vec<String>) {
     let host = Host::new(
-        &tilo_resource::Doc::new(),
         tilo_actions::Actor::from(tilo_actions::MemberId::person(person)),
         || None,
     )

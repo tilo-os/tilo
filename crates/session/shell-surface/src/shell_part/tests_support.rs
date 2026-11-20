@@ -217,19 +217,19 @@ pub(super) fn part_beside(
     first: &ShellPart,
     reading: impl Into<Staged>,
 ) -> (ShellPart, Rc<SessionLink>) {
-    let record = Some(Rc::clone(&first.record));
-    part_at(compiled(), reading, None, (1280, 800), record)
+    let store = first.instance.host().map(|host| host.store().clone());
+    part_at(compiled(), reading, None, (1280, 800), store)
 }
 
 /// A part running `packages` over `reading` on one output `size` logical pixels big, its wells
-/// reporting to `wells`: the first part of its shell, or one over the record `shared` another
+/// reporting to `wells`: the first part of its shell, or one over the store `shared` another
 /// part made.
 fn part_at(
     packages: Vec<Compiled>,
     reading: impl Into<Staged>,
     wells: Option<ui::widget::Wells>,
     size: (u32, u32),
-    shared: Option<Rc<RefCell<tilo_resource::Doc>>>,
+    shared: Option<tilolang_tilo::resources::ResourceStore>,
 ) -> (ShellPart, Rc<SessionLink>) {
     let app = packages
         .last()
@@ -250,7 +250,7 @@ fn part_at(
             person: "Pat",
             link: Rc::clone(&link),
             seed: shared.is_none(),
-            record: shared.unwrap_or_default(),
+            store: shared.unwrap_or_else(tilolang_tilo::resources::ResourceStore::in_memory),
         },
         1.0,
         std::sync::Arc::new(|| {}),

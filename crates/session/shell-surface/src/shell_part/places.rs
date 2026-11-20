@@ -38,12 +38,7 @@ fn click(part: &mut ShellPart, name: &str) {
 
 /// A room's notebook, published as the session publishes it.
 fn notebook() -> (ResourceService, tilolang_tilo::runtime::Meta) {
-    let host = Host::new(
-        &tilo_resource::Doc::new(),
-        Actor::Member(MemberId::person("Pat")),
-        || None,
-    )
-    .unwrap();
+    let host = Host::new(Actor::Member(MemberId::person("Pat")), || None).unwrap();
     host.load_builtin(
         include_str!("../../../../../apps/tl/discussion/app.tl"),
         include_str!("../../../../../apps/tl/discussion/app.ids"),
@@ -449,12 +444,7 @@ struct Room {
 }
 
 fn room() -> Room {
-    let host = Host::new(
-        &tilo_resource::Doc::new(),
-        Actor::Member(MemberId::person("ada")),
-        || None,
-    )
-    .unwrap();
+    let host = Host::new(Actor::Member(MemberId::person("ada")), || None).unwrap();
     let chat = host.load_builtin(CHAT, CHAT_IDS).unwrap();
     host.load_builtin(DISCUSSION, DISCUSSION_IDS).unwrap();
     let tasks = host.load_builtin(TASKS, TASKS_IDS).unwrap();

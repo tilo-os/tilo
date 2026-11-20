@@ -3,7 +3,7 @@
 //! they are asked; a quick add that adds what was typed and nothing for an empty entry; and two
 //! people changing one task at once.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 
 use crate::fixtures::Replica;
@@ -41,7 +41,7 @@ pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
 
 /// Ada's replica of an empty workspace at 10:00 on Thursday 2026-10-29, and the tasks root.
 pub(crate) fn workspace() -> (Replica, Value) {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), PACKAGES);
+    let (ada, _) = Replica::new("ada", Workspace::new(), PACKAGES);
     ada.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
     let root = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
@@ -150,7 +150,7 @@ tilo_test_env::scenario! {
 
     phase a_task_is_made_filed_under_a_project_and_checked_off;
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let task = call(&ada, "new_task", create(&root, "Book a haircut"));
         ada.commit();
         let project = call(&ada, "new_project", vec![root.clone()]);
@@ -202,7 +202,7 @@ tilo_test_env::scenario! {
     phase an_entry_reads_when_it_is_due_in_the_persons_zone;
     {
         // 20:00 UTC on Thursday 2026-10-29 is 05:00 on Friday the 30th in Tokyo.
-        let (mut ada, _) = workspace();
+        let (ada, _) = workspace();
         ada.host.set_clock(|| "2026-10-29T20:00:00Z".to_owned());
         ada.host.set_zone(|| 9 * 3600);
         let mut view = ada.view(APP);
@@ -292,7 +292,7 @@ tilo_test_env::scenario! {
 
     phase an_entry_in_today_reads_the_same_words_as_the_inbox;
     {
-        let (mut ada, _) = workspace();
+        let (ada, _) = workspace();
         ada.host.runtime().set_members(
             vec![
                 tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
@@ -357,7 +357,7 @@ tilo_test_env::scenario! {
 
     phase inbox_today_and_upcoming_are_read_when_they_are_asked;
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let project = call(&ada, "new_project", vec![root.clone()]);
         ada.commit();
         let dated = |title: &str| call(&ada, "new_task", create(&root, title));
@@ -449,7 +449,7 @@ tilo_test_env::scenario! {
     // writes put in the run it is drawn from is in its count before the index holds it as well
     // as after.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         for title in ["Buy oat milk and eggs", "Book a haircut"] {
             call(&ada, "new_task", create(&root, title));
         }
@@ -468,7 +468,7 @@ tilo_test_env::scenario! {
 
     phase a_window_open_over_midnight_moves_what_today_lists_without_the_document_changing;
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let dated = |title: &str| call(&ada, "new_task", create(&root, title));
         let today = dated("Buy oat milk");
         let next = dated("Order a present");
@@ -515,7 +515,7 @@ tilo_test_env::scenario! {
     // project's tasks, the ones it leaves out (done, or a step under a task), or another
     // project's.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let project = call(&ada, "new_project", vec![root.clone()]);
         ada.commit();
         let packing = call(&ada, "new_section", vec![project.clone()]);
@@ -652,7 +652,7 @@ tilo_test_env::scenario! {
     // folding away into the Done group: the list and the task's outline say the same count of a
     // row, so both read "1/3", and they hold the same subtasks in the same order.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         // The task is in a project, whose list is where a step done with under an open task stands
         // under it: the list stands each step under the task it belongs to, and Done holds what is
         // done with.
@@ -760,7 +760,7 @@ fn list_count(view: &ViewInstance) -> Option<i64> {
 /// a task added after it stands there alone, and the one checked off does not come back.
 #[test]
 fn a_task_added_after_the_place_emptied_stands_in_it_alone() {
-    let (mut ada, root) = workspace();
+    let (ada, root) = workspace();
     let mut view = ada.view(APP);
     go_to(&mut view, "Inbox");
     let first = call(&ada, "new_task", create(&root, "Call the landlord"));
@@ -776,11 +776,10 @@ fn a_task_added_after_the_place_emptied_stands_in_it_alone() {
 
 #[test]
 fn two_people_change_one_task_at_once_and_both_changes_stay() {
-    let (mut ada, root) = workspace();
+    let (ada, root) = workspace();
     let task = call(&ada, "new_task", create(&root, "Call the landlord"));
     ada.commit();
-    let mut ben = ada.fork("ben", PACKAGES);
-    ben.host.sync_from(&ben.doc);
+    let ben = ada.fork("ben", PACKAGES);
     // Ada checks it off while Ben files it under a project he just made.
     call(&ada, "check", vec![task.clone()]);
     ada.commit();
@@ -789,7 +788,7 @@ fn two_people_change_one_task_at_once_and_both_changes_stay() {
     call(&ben, "file", vec![task.clone(), project.clone()]);
     call(&ben, "check", vec![task.clone(), Value::Bool(true)]);
     ben.commit();
-    ada.sync_with(&mut ben);
+    ada.sync_with(&ben);
     for r in [&ada, &ben] {
         assert_eq!(read(r, &task, "done"), Value::Bool(true), "{}", r.name);
         assert_eq!(
@@ -859,7 +858,7 @@ pub(crate) fn key_of(view: &ViewInstance, kind: &str, holds: &dyn Fn(&UiNode) ->
 
 #[test]
 fn on_a_projects_board_a_dropped_task_lands_in_its_list_where_it_was_dropped() {
-    let (mut ada, root) = workspace();
+    let (ada, root) = workspace();
     let project = call(&ada, "new_project", vec![root.clone()]);
     ada.commit();
     let doing = call(&ada, "new_section", vec![project.clone()]);
@@ -987,7 +986,7 @@ fn titles(r: &Replica) -> Vec<Value> {
 
 /// A launch post with the subtasks "Outline", "First draft" and "Screenshots".
 fn launch_post() -> (Replica, Value) {
-    let (mut ada, root) = workspace();
+    let (ada, root) = workspace();
     let parent = call(&ada, "new_task", create(&root, "Write the launch post"));
     ada.commit();
     for title in ["Outline", "First draft", "Screenshots"] {
@@ -1021,7 +1020,7 @@ tilo_test_env::scenario! {
     // A drag in a task's outline is the one action that names both the new place and the parent it
     // comes to stand under; a row's checkbox asks the outline to toggle that task.
     {
-        let (mut ada, parent) = launch_post();
+        let (ada, parent) = launch_post();
         let outline = task(&ada, "Outline");
         let shots = task(&ada, "Screenshots");
         let mut view = task_page(&ada, &parent);
@@ -1056,7 +1055,7 @@ tilo_test_env::scenario! {
     phase a_subtask_dropped_inside_another_is_nested;
     // Dropped inside another task's row, a task becomes its subtask, and the outline draws it there.
     {
-        let (mut ada, parent) = launch_post();
+        let (ada, parent) = launch_post();
         let outline = task(&ada, "Outline");
         let draft = task(&ada, "First draft");
         let mut view = task_page(&ada, &parent);
@@ -1098,7 +1097,7 @@ tilo_test_env::scenario! {
     // under having been read, so a step indented under another draws one step in even where it is
     // the only row on screen.
     {
-        let (mut ada, parent) = launch_post();
+        let (ada, parent) = launch_post();
         call(
             &ada,
             "indent",
@@ -1153,7 +1152,7 @@ tilo_test_env::scenario! {
     // The menu's Indent and Outdent are the moves `Ctrl+]` and `Ctrl+[` make: under the task over
     // it, and out beside the one over it.
     {
-        let (mut ada, parent) = launch_post();
+        let (ada, parent) = launch_post();
         let draft = task(&ada, "First draft");
         let shots = task(&ada, "Screenshots");
         // Under the task the list shows over it, which the row's menu carries as the move's place.
@@ -1199,7 +1198,7 @@ tilo_test_env::scenario! {
     // A task is done exactly when everything under it is: checking it off checks off every step
     // under it, however deep, and opening a step opens the tasks it is under while the rest stay.
     {
-        let (mut ada, parent) = launch_post();
+        let (ada, parent) = launch_post();
         let tasks = Value::resource(&ada.host.root_of(APP).unwrap());
         let outline = task(&ada, "Outline");
         call(
@@ -1254,7 +1253,7 @@ tilo_test_env::scenario! {
     // A list row's checkbox asks the app's check, so a press on it takes the tasks under the one
     // it stands for, not the one field the box shows.
     {
-        let (mut ada, parent) = launch_post();
+        let (ada, parent) = launch_post();
         assert_eq!(
             target(&read(&ada, &parent, "project")),
             None,
@@ -1283,7 +1282,7 @@ tilo_test_env::scenario! {
     // A scenario's branch reads its counts and its fold from the tasks it staged, as soon as the
     // document has them: no migration runs after a document.
     {
-        let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), PACKAGES);
+        let (ada, loaded) = Replica::new("ada", Workspace::new(), PACKAGES);
         let scenario = loaded
             .last()
             .unwrap()
@@ -1339,7 +1338,7 @@ tilo_test_env::scenario! {
     // A step names the day it is due only when that is not the day of the task it stands under:
     // the day the page around it already says, the step leaves unsaid.
     {
-        let (mut ada, _) = workspace();
+        let (ada, _) = workspace();
         let scenario = ada
             .host
             .package(APP)
@@ -1521,7 +1520,7 @@ tilo_test_env::scenario! {
     // long as the person stays; leaving the place settles the list. Pressing the box again while
     // the row lingers reopens the task where it stands.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         for title in ["Buy oat milk", "Pay the electricity bill", "Book a haircut"] {
             let made = call(&ada, "new_task", create(&root, title));
             call(
@@ -1576,7 +1575,7 @@ tilo_test_env::scenario! {
     // Filing a task out of the inbox keeps its row in the list, drawn with the project it went
     // to, until the person leaves the view; coming back shows the inbox without it.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let project = call(&ada, "new_project", vec![root.clone()]);
         call(
             &ada,
@@ -1619,7 +1618,7 @@ tilo_test_env::scenario! {
     // A task somebody else completes while the person has it open stays where it stands, drawn
     // checked, until they leave the place: what they read does not vanish from under them.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         for title in ["Buy oat milk", "Pay the electricity bill", "Book a haircut"] {
             let made = call(&ada, "new_task", create(&root, title));
             call(
@@ -1629,8 +1628,7 @@ tilo_test_env::scenario! {
             );
             ada.commit();
         }
-        let mut ben = ada.fork("ben", PACKAGES);
-        ben.host.sync_from(&ben.doc);
+        let ben = ada.fork("ben", PACKAGES);
         let mut view = ada.view(APP);
         go_to(&mut view, "Today");
         assert_eq!(home_list_rows(&mut view).len(), 3);
@@ -1649,7 +1647,7 @@ tilo_test_env::scenario! {
         view.poll_patches().unwrap();
         call(&ben, "check", vec![task(&ben, "Pay the electricity bill")]);
         ben.commit();
-        ada.sync_with(&mut ben);
+        ada.sync_with(&ben);
         let rows = home_list_rows(&mut view);
         assert_eq!(rows.len(), 3, "the open row stayed: {rows:?}");
         let (now, _, drawn) = home_row_of(&mut view, &of);
@@ -1676,7 +1674,7 @@ tilo_test_env::scenario! {
 /// no one to leave the place.
 #[test]
 fn a_peers_completion_takes_its_row_away() {
-    let (mut ada, root) = workspace();
+    let (ada, root) = workspace();
     for title in ["Buy oat milk", "Pay the electricity bill"] {
         let made = call(&ada, "new_task", create(&root, title));
         call(
@@ -1686,22 +1684,20 @@ fn a_peers_completion_takes_its_row_away() {
         );
         ada.commit();
     }
-    let mut ben = ada.fork("ben", PACKAGES);
-    ben.host.sync_from(&ben.doc);
+    let ben = ada.fork("ben", PACKAGES);
     let mut view = ada.view(APP);
     go_to(&mut view, "Today");
     assert_eq!(home_list_rows(&mut view).len(), 2);
     let of = target(&task(&ada, "Pay the electricity bill")).expect("a task");
     call(&ben, "check", vec![task(&ben, "Pay the electricity bill")]);
     ben.commit();
-    ada.sync_with(&mut ben);
+    ada.sync_with(&ben);
     let rows = home_list_rows(&mut view);
     assert_eq!(rows.len(), 1, "the row left: {rows:?}");
     assert!(rows.iter().all(|(_, _, row, _)| *row != of));
 }
 
 /// The assignee a task holds, as its page reads it: who, or nobody.
-#[cfg(feature = "document")]
 fn assignee(r: &Replica, task: &Value) -> Option<String> {
     match read(r, task, "assignee") {
         Value::Opt(Some(held)) => match *held {
@@ -1714,7 +1710,6 @@ fn assignee(r: &Replica, task: &Value) -> Option<String> {
 }
 
 /// The case a task's priority holds, by the case's name.
-#[cfg(feature = "document")]
 fn priority(r: &Replica, task: &Value) -> String {
     match read(r, task, "priority") {
         Value::Enum(case) => case.variant,
@@ -1723,7 +1718,6 @@ fn priority(r: &Replica, task: &Value) -> String {
 }
 
 /// The key of the node bound to `field`.
-#[cfg(feature = "document")]
 pub(crate) fn bound_key(node: &UiNode, field: &str) -> Option<String> {
     if node
         .binding
@@ -1739,7 +1733,6 @@ pub(crate) fn bound_key(node: &UiNode, field: &str) -> Option<String> {
 }
 
 /// Every text the tree shows.
-#[cfg(feature = "document")]
 pub(crate) fn texts(node: &UiNode) -> Vec<String> {
     fn walk(node: &UiNode, out: &mut Vec<String>) {
         if let Some(Value::Text(text)) = node.props.get("label").or_else(|| node.props.get("value"))
@@ -1757,9 +1750,8 @@ pub(crate) fn texts(node: &UiNode) -> Vec<String> {
 
 /// A task made by Ada in a workspace of Ada and Ben, and the page showing it: the list the
 /// assignee's chip opens offers the workspace's members, and the key the page binds it to.
-#[cfg(feature = "document")]
 fn a_task_whose_assignee_the_page_shows() -> (Replica, Value, ViewInstance, String) {
-    let (mut ada, root) = workspace();
+    let (ada, root) = workspace();
     ada.host.runtime().set_members(
         vec![
             tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
@@ -1779,7 +1771,6 @@ fn a_task_whose_assignee_the_page_shows() -> (Replica, Value, ViewInstance, Stri
 }
 
 /// The text a person field hands back for the person `id`: their identity as the runtime sent it.
-#[cfg(feature = "document")]
 fn pick(id: &str) -> Value {
     Value::text(tilolang_tilo::runtime::ids::actor_text(&Actor::from(
         tilolang_tilo::runtime::ids::MemberId::person(id),
@@ -1787,22 +1778,20 @@ fn pick(id: &str) -> Value {
 }
 
 /// The person picks `pick` for the task's assignee in the page's chip, and the page redraws.
-#[cfg(feature = "document")]
-fn pick_the_assignee(ada: &mut Replica, page: &mut ViewInstance, key: &str, pick: &Value) {
+fn pick_the_assignee(ada: &Replica, page: &mut ViewInstance, key: &str, pick: &Value) {
     page.edit(key, pick).unwrap();
     ada.commit();
     page.poll_patches().unwrap();
 }
 
 tilo_test_env::scenario! {
-    #[cfg(feature = "document")]
     fn a_tasks_assignee_priority_and_copy_are_single_fields_and_steps;
 
     phase the_assignee_is_one_person_field_whose_chip_shows_each_pick;
     // A task's assignee is one person field: a chip of who holds it that opens a list of "Me",
     // "No one" and the workspace's people, and shows each pick.
     {
-        let (mut ada, task, mut page, key) = a_task_whose_assignee_the_page_shows();
+        let (ada, task, mut page, key) = a_task_whose_assignee_the_page_shows();
         let node = node_of(page.tree(), &key).expect("the bound node is drawn");
         assert_eq!(
             node.kind, "ui.PersonField",
@@ -1831,16 +1820,16 @@ tilo_test_env::scenario! {
         assert_eq!(assignee(&ada, &task), None, "nobody holds it yet");
 
         // Me, then another member, then nobody, as the person picks each from the list.
-        pick_the_assignee(&mut ada, &mut page, &key, &pick("ada"));
+        pick_the_assignee(&ada, &mut page, &key, &pick("ada"));
         assert_eq!(assignee(&ada, &task), Some("ada".to_owned()));
         assert_eq!(
             page.bound_value(&key),
             Some(Value::some(Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))))),
             "the chip shows the person it is bound to"
         );
-        pick_the_assignee(&mut ada, &mut page, &key, &pick("ben"));
+        pick_the_assignee(&ada, &mut page, &key, &pick("ben"));
         assert_eq!(assignee(&ada, &task), Some("ben".to_owned()));
-        pick_the_assignee(&mut ada, &mut page, &key, &Value::Text(String::new()));
+        pick_the_assignee(&ada, &mut page, &key, &Value::Text(String::new()));
         assert_eq!(assignee(&ada, &task), None, "No one clears it");
         assert_eq!(
             page.bound_value(&key),
@@ -1856,7 +1845,7 @@ tilo_test_env::scenario! {
             shown.join(" ").contains("You unassigned it"),
             "clearing the assignee last, the step says so: {shown:?}"
         );
-        pick_the_assignee(&mut ada, &mut page, &key, &pick("ben"));
+        pick_the_assignee(&ada, &mut page, &key, &pick("ben"));
         let shown = texts(page.tree());
         assert!(
             shown.join(" ").contains("You assigned it to"),
@@ -1872,21 +1861,13 @@ tilo_test_env::scenario! {
     // Picking the person the page shows, another member, and nobody is one change of the task's
     // history each, so one undo takes back one pick.
     {
-        use collaboration::history_source::verbs::HistoryEdit;
-
         let (mut ada, task, mut page, key) = a_task_whose_assignee_the_page_shows();
         for picked in [pick("ada"), pick("ben"), Value::Text(String::new())] {
-            pick_the_assignee(&mut ada, &mut page, &key, &picked);
+            pick_the_assignee(&ada, &mut page, &key, &picked);
         }
         // One undo takes back one pick: the clearing, then Ben, then Me.
         let undo = |r: &mut Replica| {
-            r.history(&HistoryEdit::Undo {
-                steps: None,
-                invocation: None,
-                by: None,
-                to: None,
-                step: None,
-            });
+            r.undo_last();
         };
         undo(&mut ada);
         assert_eq!(
@@ -1909,7 +1890,7 @@ tilo_test_env::scenario! {
     // chip offers every case the type declares in that case's own glyph and tone, and a pick
     // writes the case into the task.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let task = call(&ada, "new_task", create(&root, "Write the launch post"));
         ada.commit();
         let mut page = task_page(&ada, &task);
@@ -2010,9 +1991,7 @@ tilo_test_env::scenario! {
     // Copying a task copies every task under it, level after level, as one step of history: one
     // undo takes the copy and the steps it brought away together.
     {
-        use collaboration::history_source::verbs::HistoryEdit;
-
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let parent = call(&ada, "new_task", create(&root, "Plan the trip"));
         let step = call(
             &ada,
@@ -2055,13 +2034,7 @@ tilo_test_env::scenario! {
             target(&copy),
             "and the first of them under the copy itself"
         );
-        ada.history(&HistoryEdit::Undo {
-            steps: None,
-            invocation: None,
-            by: None,
-            to: None,
-            step: None,
-        });
+        ada.undo_last();
         ada.commit();
         assert_eq!(
             titles(&ada),
@@ -2080,7 +2053,7 @@ tilo_test_env::scenario! {
 /// never taken with a task that was checked off before it existed.
 #[test]
 fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
-    let (mut ada, root) = workspace();
+    let (ada, root) = workspace();
     let parent = call(&ada, "new_task", create(&root, "Write the launch post"));
     ada.commit();
     call(
@@ -2089,8 +2062,7 @@ fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
         vec![root.clone(), parent.clone(), Value::text("Outline")],
     );
     ada.commit();
-    let mut ben = ada.fork("ben", PACKAGES);
-    ben.host.sync_from(&ben.doc);
+    let ben = ada.fork("ben", PACKAGES);
     // Ada checks the task off while Ben, not yet seeing that, puts a step under it.
     call(&ada, "check", vec![parent.clone()]);
     ada.commit();
@@ -2104,7 +2076,7 @@ fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
         ],
     );
     ben.commit();
-    ada.sync_with(&mut ben);
+    ada.sync_with(&ben);
     assert_eq!(
         read(&ada, &parent, "done"),
         Value::Bool(true),
@@ -2139,7 +2111,7 @@ fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
 /// unfolds it again.
 #[test]
 fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
-    let (mut ada, root) = workspace();
+    let (ada, root) = workspace();
     // In a project, whose list folds what is done with under the list: the place where a
     // finished branch stands in the Done tail.
     let project = call(&ada, "new_project", vec![root.clone()]);
@@ -2161,8 +2133,7 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
     }
     let outline = task(&ada, "Outline");
     let screenshots = task(&ada, "Screenshots");
-    let mut ben = ada.fork("ben", PACKAGES);
-    ben.host.sync_from(&ben.doc);
+    let ben = ada.fork("ben", PACKAGES);
     // Each checks one step, neither seeing the other: one step under the task is still open
     // when each writes, so the branch is not finished in either of them.
     call(&ada, "check", vec![outline.clone()]);
@@ -2184,7 +2155,7 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
         "Ada's copy still has a step open under the task"
     );
 
-    ada.sync_with(&mut ben);
+    ada.sync_with(&ben);
     let mut view = ada.view(APP);
     go_to(&mut view, "Website launch");
     let rows = home_rows(&mut view);
@@ -2496,7 +2467,7 @@ tilo_test_env::scenario! {
     // due, who is doing it, and taking it away — and keeps every other command the task takes
     // behind its "More", worded once and in the order the app declares them.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let booked = call(&ada, "new_task", create(&root, "Book a haircut"));
         ada.commit();
         let mut view = ada.view(APP);
@@ -2566,7 +2537,7 @@ tilo_test_env::scenario! {
     // behind its "More" in the order the app declares them, and the page of the task holds them
     // all behind its "…" in that declared order.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let flat = call(&ada, "new_project", vec![root.clone()]);
         let booked = call(&ada, "new_task", create(&root, "Book a haircut"));
         call(
@@ -2616,7 +2587,7 @@ tilo_test_env::scenario! {
     // order it declares them, the view it shows chosen; the commands beside the switch run once and
     // no action is drawn as a switch of its own.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let project = call(&ada, "new_project", vec![root]);
         ada.commit();
         let Value::Ref(at) = &project else {
@@ -2679,7 +2650,7 @@ tilo_test_env::scenario! {
     // day's task before it, and the one under a task it can see is. Running the one offered nests
     // it under the task the person sees over it.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         // What is overdue and what is due today, in the day's place: the list shows the day gone
         // by first, and the time before today stands over today's tasks in the store.
         let van = call(&ada, "new_task", create(&root, "Book the van"));
@@ -2772,7 +2743,7 @@ tilo_test_env::scenario! {
     // task's subtasks "Add a subtask". A control left without a placeholder is announced by the
     // binding's own name, so every one of them says what it is for.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let task = call(&ada, "new_task", create(&root, "Book the van"));
         ada.commit();
         let mut home = ada.view(APP);
@@ -2809,7 +2780,7 @@ tilo_test_env::scenario! {
     // the same keys and the same reasons its row gives them: the row's view places a few of them up
     // front, and neither surface loses one.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let booked = call(&ada, "new_task", create(&root, "Book a haircut"));
         ada.commit();
         let mut home = ada.view(APP);
@@ -2837,7 +2808,7 @@ tilo_test_env::scenario! {
     // Adding a subtask from a menu asks for its title and makes it right under the task, after the
     // steps it already has, named: no task stands unnamed for a person to leave behind.
     {
-        let (mut ada, root) = workspace();
+        let (ada, root) = workspace();
         let parent = call(&ada, "new_task", create(&root, "Write the launch post"));
         call(
             &ada,
@@ -2937,15 +2908,17 @@ tilo_test_env::scenario! {
     {
         let (ada, root) = workspace();
         let made = call(&ada, "new_task", create(&root, "Water the plants"));
-        let _ = ada.host.take_committed();
+        let Value::Ref(item) = &made else {
+            panic!("a task: {made:?}");
+        };
+        let at = (*item.target).clone();
         call(&ada, "check", vec![made]);
-        let kinds: Vec<String> = ada
-            .host
-            .take_committed()
-            .into_iter()
-            .map(|committed| committed.action.kind)
-            .collect();
-        assert_eq!(kinds, ["tl.so.tilo.lang.tasks.Task"], "{kinds:?}");
+        // The change is a version of the task itself, not of the root that holds it: what the
+        // workspace decides is a task's action on a task.
+        let check = crate::fixtures::action_id(&ada.host.package(APP).unwrap().meta, "check");
+        let versions = ada.versions(&at);
+        let last = versions.last().expect("the check is a version of the task");
+        assert_eq!(last.action, check, "{versions:#?}");
     }
 }
 

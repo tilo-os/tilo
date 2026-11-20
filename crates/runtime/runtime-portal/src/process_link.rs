@@ -177,14 +177,6 @@ pub struct InstanceRequest {
     /// the same publisher signed it. The broker admits the instance's connection to that document
     /// only on the same belief.
     pub documents_under: Option<String>,
-    /// The instance applies one change to the document at its origin instead of running a
-    /// window: an agent task's invocation the broker admitted (`docs/designs/app-language/agents.md`,
-    /// "Reading documents outside their app"). The descriptor in the window's place is the change's
-    /// connection: the session writes the [`Change`] on it as one JSON line, and the process runs
-    /// the action's code against the document as it is then, applies what it wrote as the
-    /// invoker's step and answers on it with one JSON line. No window and no instance run.
-    /// `instance` is then the change's own id, never a window's.
-    pub applies_change: bool,
     /// The person's formats (`locale` in their settings): the clock a time of day reads by and the
     /// style a date does, for what the instance writes in a sentence (`t.clock()`, a change's
     /// before and after) and its window shows.
@@ -270,22 +262,6 @@ pub struct TaskFds {
     pub program: Descriptor,
     #[serde(with = "crate::packet::fd")]
     pub apps: Descriptor,
-}
-
-/// One change an instance applies at its origin, written on the change's own connection as one
-/// JSON line ([`InstanceRequest::applies_change`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Change {
-    pub resource: String,
-    pub action: String,
-    /// The arguments, by parameter name, as the caller gave them.
-    #[serde(default)]
-    pub arguments: serde_json::Map<String, serde_json::Value>,
-    pub invoker: serde_json::Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preview: Option<serde_json::Value>,
 }
 
 /// One app a task's programs may name, as the session hands it to the task's process: a tilolang
@@ -569,7 +545,6 @@ mod tests {
             person: "ada".into(),
             module_len: 12,
             documents_under: Some("so.tilo.lang.older-notes".into()),
-            applies_change: true,
             formats: RegionFormats {
                 time: tilo_formats::TimeStyle::H12,
                 ..RegionFormats::default()
