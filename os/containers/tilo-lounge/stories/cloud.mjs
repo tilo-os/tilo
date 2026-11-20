@@ -242,9 +242,11 @@ export const plainPress = async (tab, label) => {
 export const nextcloudSignIn = async (tab, {user, password, beforeGrant = async () => {}}) => {
   await plainShows(tab, 'Log in', 'the server’s connect page', stepLimit(4));
   await plainPress(tab, 'Log in');
-  await waitUntil(tab, 'Boolean(document.querySelector("input[name=user]"))', 'the server’s login form', stepLimit(4));
-  await plainType(tab, 'input[name=user]', user);
-  await plainType(tab, 'input[name=password]', password);
+  // The connect page carries a hidden field named user too: the login form is
+  // there once its password field shows.
+  await waitUntil(tab, 'document.querySelector("input[type=password]")?.offsetParent != null', 'the server’s login form', stepLimit(4));
+  await plainType(tab, 'input[name=user]:not([type=hidden])', user);
+  await plainType(tab, 'input[type=password]', password);
   await plainPress(tab, 'Log in');
   await plainShows(tab, 'Grant access', 'the server asking to grant access', stepLimit(4));
   await beforeGrant();
