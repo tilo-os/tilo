@@ -5,7 +5,7 @@
 //! [`crate::storage`]. A mount is the session desktop ([`crate::desktop`])
 //! unless the page names one application.
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -900,7 +900,7 @@ impl Desktop {
                 .role()
                 .is_none_or(|role| role.includes(tilo_action_policy::Role::Editor));
         let opened = self.handle.set_opens(opens);
-        let runs = in_workspace.then(|| self.shared.opened_by.borrow().clone());
+        let runs = in_workspace.then(|| BTreeMap::clone(&self.shared.opened_by.borrow()));
         let named = self.handle.set_opened_by(runs.unwrap_or_default());
         self.handle.set_holders(holders) | opened | named | named_for
     }
