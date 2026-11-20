@@ -47,7 +47,7 @@ impl ChannelTransport {
 fn wire(error: ChannelError) -> WireError {
     match error {
         ChannelError::Wire(error) => error,
-        ChannelError::Closed => WireError::Malformed("the other side closed the connection"),
+        ChannelError::Closed => WireError::Closed,
         ChannelError::Io(_) => WireError::Malformed("the connection failed"),
     }
 }
@@ -120,6 +120,6 @@ mod tests {
         assert_eq!(window.recv(), Ok(Some(large)));
         assert_eq!(window.recv(), Ok(None));
         drop(app);
-        assert!(window.recv().is_err(), "the app went away");
+        assert_eq!(window.recv(), Err(WireError::Closed), "the app went away");
     }
 }

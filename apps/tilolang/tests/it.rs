@@ -24,6 +24,8 @@ mod history_window;
 mod board;
 #[path = "forms.rs"]
 mod forms;
+#[path = "gallery_close.rs"]
+mod gallery_close;
 #[path = "gallery_frames.rs"]
 mod gallery_frames;
 #[path = "gallery_sidebar.rs"]

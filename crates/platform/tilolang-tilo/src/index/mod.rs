@@ -344,6 +344,8 @@ pub struct Index {
     path: Option<PathBuf>,
     /// The stores holding it ([`Held`]).
     holders: AtomicUsize,
+    /// Whether a commit since the last [`Index::persist`] has not been waited on to reach the disk.
+    unpersisted: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for Index {
@@ -614,6 +616,7 @@ impl Index {
             stats,
             path,
             holders: AtomicUsize::new(0),
+            unpersisted: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -724,18 +727,74 @@ impl Index {
             out
         };
         txn.commit()?;
+        self.unpersisted.store(true, Ordering::Release);
         Ok(out)
     }
 
     /// Wait for the commits so far to reach the disk. The commit keeps redb's map of the file's
     /// free pages with it, so a process killed after it leaves an index the next one opens without
     /// reading the whole file to rebuild that map.
+    /// An index nothing was committed to since it last did waits on nothing. A thread that must
+    /// not wait on storage (a window's frame loop, closing the window) does not: the commit goes on
+    /// a thread of its own, which the process waits for as it ends ([`finish_persisting`]).
     pub fn persist(&self) -> Result<(), IndexError> {
-        let mut txn = self.db.begin_write()?;
-        txn.set_durability(Durability::Immediate)?;
-        txn.set_quick_repair(true);
-        txn.commit()?;
-        Ok(())
+        if !self.unpersisted.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+        #[cfg(feature = "document")]
+        if durable_store::waiting::forbidden() {
+            let db = Arc::clone(&self.db);
+            let unpersisted = Arc::clone(&self.unpersisted);
+            let path = self.path.clone();
+            let persisting = std::thread::Builder::new()
+                .name("tilolang-index-persist".into())
+                .spawn(move || {
+                    if let Err(error) = commit_durably(&db) {
+                        unpersisted.store(true, Ordering::Release);
+                        tracing::warn!(?path, %error, "an index did not reach the disk");
+                    }
+                });
+            match persisting {
+                Ok(thread) => {
+                    PERSISTING
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(thread);
+                    return Ok(());
+                }
+                // No thread to wait on it: this one does.
+                Err(error) => tracing::warn!(%error, "an index is persisted on the frame's thread"),
+            }
+        }
+        let _phase = tilo_resource::profiling::Phase::start("tl.index.persist");
+        let persisted = commit_durably(&self.db);
+        if persisted.is_err() {
+            self.unpersisted.store(true, Ordering::Release);
+        }
+        persisted
+    }
+}
+
+/// Commit what the index holds and wait for it to reach the disk. The commit keeps redb's map of
+/// the file's free pages with it ([`Index::persist`]).
+fn commit_durably(db: &Database) -> Result<(), IndexError> {
+    let mut txn = db.begin_write()?;
+    txn.set_durability(Durability::Immediate)?;
+    txn.set_quick_repair(true);
+    txn.commit()?;
+    Ok(())
+}
+
+/// The indexes being persisted on threads of their own ([`Index::persist`]).
+static PERSISTING: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
+
+/// Wait for every index a window let go of to reach the disk: what a process does as it ends,
+/// after its windows closed without waiting on them.
+pub fn finish_persisting() {
+    let persisting =
+        std::mem::take(&mut *PERSISTING.lock().unwrap_or_else(PoisonError::into_inner));
+    for thread in persisting {
+        let _ = thread.join();
     }
 }
 

@@ -36,6 +36,8 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::from(2);
     }
     ui::launch::run_or_exit(&tilolang_app::launch_spec());
+    // A window closes without waiting on the disk: what it kept reaches it before the process ends.
+    tilolang_tilo::index::finish_persisting();
     std::process::ExitCode::SUCCESS
 }
 

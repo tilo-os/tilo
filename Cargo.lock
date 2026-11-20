@@ -24165,6 +24165,7 @@ version = "0.1.0"
 dependencies = [
  "collab-types",
  "collaboration",
+ "durable-store",
  "jiff",
  "js-sys",
  "libc",

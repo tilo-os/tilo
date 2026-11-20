@@ -77,7 +77,10 @@ struct Watch {
     wake: Arc<Mutex<ui::wake::WakeHandle>>,
     /// Closed when the window goes: the thread stops waiting on the connection, and lets go of
     /// the descriptor it holds, so the instance sees its window close and ends.
-    _stop: std::io::PipeWriter,
+    stop: Option<std::io::PipeWriter>,
+    /// The thread, joined as the window goes: once it is, the window holds nothing of the
+    /// connection, and the instance's next turn finds it closed.
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Watch {
@@ -87,7 +90,7 @@ impl Watch {
         let flag = Arc::clone(&signalled);
         let waking = Arc::clone(&wake);
         let (stopped, stop) = std::io::pipe().ok()?;
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("tilolang-patches".into())
             .spawn(move || {
                 loop {
@@ -142,7 +145,8 @@ impl Watch {
             woke: signalled,
             resume,
             wake,
-            _stop: stop,
+            stop: Some(stop),
+            thread: Some(thread),
         })
     }
 
@@ -167,6 +171,17 @@ impl Watch {
     fn took(&self) {
         if self.woke.swap(false, Ordering::AcqRel) {
             let _ = self.resume.send(());
+        }
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        drop(self.stop.take());
+        // A thread waiting for the window to take what arrived waits no more.
+        let _ = self.resume.send(());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
     }
 }
@@ -298,6 +313,7 @@ type AccessSource = Box<dyn Fn() -> Option<ui::permissions::MemberAccess>>;
 impl InProcess {
     /// The host's turns until it has nothing more to take in now. Whether anything changed.
     fn turn(&mut self) -> bool {
+        let _phase = ui::tilo_resource::profiling::Phase::start("instance.turn");
         if let Some(source) = &self.access {
             let access = source();
             if access != self.told_access {
@@ -340,9 +356,11 @@ impl InProcess {
     /// Close the instance as a session's host does when its window goes: its document is written
     /// to disk.
     fn close(mut self) {
+        let _phase = ui::tilo_resource::profiling::Phase::start("tl.instance.close");
         let began = std::time::Instant::now();
         while !self.host.is_empty() && began.elapsed() < STAGE_WAIT {
             if !self.host.turn() {
+                let _waiting = ui::tilo_resource::profiling::Phase::start("instance.close_wait");
                 self.woken.wait(std::time::Duration::from_millis(50));
             }
         }

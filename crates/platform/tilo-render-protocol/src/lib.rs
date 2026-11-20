@@ -86,6 +86,9 @@ impl LayerId {
 /// Why bytes could not be read as a record, or a record was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WireError {
+    /// The other end let go of the connection: it ended, as a window that closed does.
+    #[error("the other side closed the connection")]
+    Closed,
     #[error("the record ends early")]
     Truncated,
     #[error("a count or offset overflows")]

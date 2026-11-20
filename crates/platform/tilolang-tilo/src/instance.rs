@@ -1432,7 +1432,8 @@ impl Instance {
         loop {
             let batch = match self.transport.recv() {
                 Ok(Some(batch)) => batch,
-                Ok(None) => break,
+                // Nothing more, or the window closed: the instance ends on this turn.
+                Ok(None) | Err(tilo_render_protocol::WireError::Closed) => break,
                 Err(error) => {
                     tracing::warn!(%error, "the window's connection failed");
                     break;
@@ -2542,11 +2543,11 @@ impl Instance {
             self.patches_sent = self.patches_sent.saturating_add(1);
         }
         match ui::encode_batch(&messages) {
-            Ok(batch) => {
-                if let Err(error) = self.transport.send(batch) {
-                    tracing::warn!(%error, "the window's connection failed");
-                }
-            }
+            Ok(batch) => match self.transport.send(batch) {
+                // A window that closed is shown nothing more.
+                Ok(()) | Err(tilo_render_protocol::WireError::Closed) => {}
+                Err(error) => tracing::warn!(%error, "the window's connection failed"),
+            },
             Err(error) => tracing::error!(%error, "a frame's batch did not encode"),
         }
     }
