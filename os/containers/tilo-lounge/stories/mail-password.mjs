@@ -218,7 +218,11 @@ try {
         if (!await pressWidget(ada.tab, id)) fail(`the page offers no ${id} to type in`);
         await story.web.type(ada, value);
       }
-      console.log(`Mail asked for the servers; they were named (${mail.imap}, ${mail.smtp})`);
+      // What the page said when it found nothing: a lookup that came back empty
+      // says so; one whose request did not reach the host says that instead.
+      const said = (await nodesOf(ada.tab)).filter(node => node.role === 'StaticText')
+        .map(node => node.name).filter(line => /found|reached|server/i.test(line));
+      console.log(`Mail asked for the servers, saying: ${JSON.stringify(said)}; they were named (${mail.imap}, ${mail.smtp})`);
     }
     story.measure('servers-found-by-mail', byMail, byMail ? 'Mail found them from the address alone' : 'Mail asked, and they were typed');
     await scrollTo(ada.tab, 'settings.web.accounts.add');
