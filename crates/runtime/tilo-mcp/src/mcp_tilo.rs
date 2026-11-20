@@ -464,13 +464,13 @@ fn action_app(action: &ActionDescriptor, listed: &str) -> String {
 /// What a resource's actions are, in its line of a listing: how many, and how a program calls
 /// the first of them (`3 actions: session.open_search, session.step_focus, …`).
 pub(super) fn actions_note<'a>(
-    actions: &'a [ActionDescriptor],
+    actions: &[&'a ActionDescriptor],
     called: &impl Fn(&'a ActionDescriptor) -> Option<&'a str>,
 ) -> String {
     const NAMED: usize = 3;
     let names: Vec<&str> = actions
         .iter()
-        .filter_map(called)
+        .filter_map(|action| called(action))
         .map(|call| call.split_once('(').map_or(call, |(name, _)| name))
         .take(NAMED.saturating_add(1))
         .collect();

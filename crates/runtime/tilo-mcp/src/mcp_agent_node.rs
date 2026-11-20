@@ -62,13 +62,14 @@ pub(super) fn shared_names(
 /// them apart ([`Node::name_in`]) without reading every other sibling, so a
 /// listing of hundreds names each of its rows at the cost of one.
 pub(super) struct Names<'a> {
-    siblings: &'a [Node],
+    siblings: Vec<&'a Node>,
     /// Each sibling's index by its title, trimmed and lowercased, in order.
     titled: HashMap<String, Vec<usize>>,
 }
 
 impl<'a> Names<'a> {
-    pub(super) fn of(siblings: &'a [Node]) -> Self {
+    pub(super) fn of(siblings: impl IntoIterator<Item = &'a Node>) -> Self {
+        let siblings: Vec<&'a Node> = siblings.into_iter().collect();
         let mut titled: HashMap<String, Vec<usize>> = HashMap::new();
         for (at, node) in siblings.iter().enumerate() {
             titled
@@ -85,7 +86,7 @@ impl<'a> Names<'a> {
             .get(&title.trim().to_ascii_lowercase())
             .into_iter()
             .flatten()
-            .filter_map(|at| self.siblings.get(*at))
+            .filter_map(|at| self.siblings.get(*at).copied())
     }
 
     /// The siblings `name` names first ([`Node::answers_to`] ranks them `0`):

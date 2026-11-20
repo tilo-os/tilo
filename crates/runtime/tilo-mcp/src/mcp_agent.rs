@@ -1846,9 +1846,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                         .iter()
                         .any(|param| param.name.as_ref() == "item")
                 });
-            let mut named: Vec<Node> = children.clone();
-            named.extend(resolved.node.clone());
-            let titled = mcp_agent_node::Names::of(&named);
+            let titled = mcp_agent_node::Names::of(children.iter().chain(&resolved.node));
             let shared = shared_names(&children, &titled);
             entries.resize(first, (String::new(), None));
             for (index, child) in children.iter().enumerate() {
@@ -1878,7 +1876,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 if shared.contains(&name.trim().to_lowercase()) {
                     let _ = write!(line, "  {}", child.id);
                 }
-                let listed: Vec<ActionDescriptor> = child.listed_actions().cloned().collect();
+                let listed: Vec<&ActionDescriptor> = child.listed_actions().collect();
                 if !listed.is_empty() {
                     let called = |action| forms.called(action, &resolved.app_id);
                     let _ = write!(line, "  {}", actions_note(&listed, &called));
@@ -1914,19 +1912,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // the ones it offers, by id. Each is named here; what one takes in full is
         // answered where that one action is asked for.
         let mut kinds = serde_json::Map::new();
+        let mut named_kinds: std::collections::HashSet<(&str, &str)> =
+            std::collections::HashSet::new();
         for child in children
             .iter()
             .skip(offset.saturating_sub(first))
             .take(limit)
         {
-            let kind = forms.kind(&child.kind).unwrap_or(&child.kind).to_owned();
+            let kind = forms.kind(&child.kind).unwrap_or(&child.kind);
             let listed = kinds.entry(kind).or_insert_with(|| json!([]));
             if let Value::Array(listed) = listed {
                 for action in child.listed_actions() {
-                    if !listed
-                        .iter()
-                        .any(|row| row["id"] == action.address.action.as_str())
-                    {
+                    if named_kinds.insert((kind, action.address.action.as_str())) {
                         listed.push(action_named(action));
                     }
                 }
