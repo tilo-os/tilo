@@ -1,4 +1,5 @@
 use super::*;
+use tilo_test_env::SpawnUnderEnvLock;
 
 /// A process table under a temporary `/proc`.
 struct Procs {
@@ -222,7 +223,7 @@ fn an_environment_that_does_not_read_never_holds_up_a_request() {
     std::fs::remove_file(&environ).unwrap();
     let made = std::process::Command::new("mkfifo")
         .arg(&environ)
-        .status()
+        .status_locked()
         .unwrap();
     assert!(made.success());
     let resolver = procs.resolver();

@@ -7,6 +7,7 @@
 use std::path::Path;
 use std::process::Command;
 
+use tilo_test_env::SpawnUnderEnvLock;
 use tilolang_app::app::TlApp;
 use ui::framework::testing::HeadlessApp;
 use ui::tilo_resource::profiling::observe;
@@ -52,7 +53,7 @@ fn start(profile: &Path, kill: bool) -> Start {
     if kill {
         command.env(KILL_ENV, "1");
     }
-    let output = command.output().expect("the gallery starts");
+    let output = command.output_locked().expect("the gallery starts");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let log = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
