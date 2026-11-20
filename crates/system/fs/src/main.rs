@@ -239,6 +239,14 @@ impl Default for BackendArgs {
     }
 }
 
+/// The owner the mount point itself has, shown for every caller of a mount nobody named an
+/// owner for.
+fn mount_point_owner(at: &Path) -> Option<(u32, u32)> {
+    use std::os::unix::fs::MetadataExt as _;
+    let metadata = std::fs::metadata(at).ok()?;
+    Some((metadata.uid(), metadata.gid()))
+}
+
 fn parse_owner(spec: &str) -> Result<(u32, u32)> {
     let (uid, gid) = spec
         .split_once(':')
@@ -2165,11 +2173,16 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     };
     // The local person owns the files on either backend; without one named,
     // FUSE presents each caller as their owner.
-    let owner = backend
+    // Every caller is shown one owner - the mount point's, or the one named - so the kernel can
+    // keep the attributes it was answered: presented per caller, they may never be cached, and
+    // listing a folder asks for each file's attributes again on every listing.
+    let owner = match backend
         .as_ref()
         .and_then(|(args, _)| args.native_owner.as_deref())
-        .map(parse_owner)
-        .transpose()?;
+    {
+        Some(spec) => Some(parse_owner(spec)?),
+        None => mount_point_owner(&mount_point),
+    };
     let fs = fs.with_owner(owner);
     // Watchers on the mount hear of the changes the kernel did not make (a peer's edit) instead of
     // polling. A read-only mount cannot take the signal, so its watchers keep polling.
