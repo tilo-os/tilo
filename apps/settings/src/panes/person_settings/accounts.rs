@@ -548,7 +548,9 @@ impl AccountsModel {
                     format!("settings.web.accounts.provider.{}", provider.key()),
                     provider_name(provider),
                 )
-                .mark(provider_icon(provider))
+                .avatar(provider_name(provider), provider.key())
+                .avatar_glyph(provider_icon(provider))
+                .square()
                 .secondary(t(&format!(
                     "settings-web-accounts-provider-{}-offers",
                     provider.key()
@@ -755,7 +757,9 @@ fn account_rows(cx: &ViewCx<Settings>, account: &MailAccount) -> Vec<Item> {
     );
     let mut items = vec![row(Box::new(
         ListRow::new(format!("settings.web.accounts.{}", account.id), title)
-            .mark(provider_icon(account.provider))
+            .avatar(provider_name(account.provider), account.provider.key())
+            .avatar_glyph(provider_icon(account.provider))
+            .square()
             .secondary(detail)
             .trailing(Box::new(remove) as El),
     ))];
@@ -826,7 +830,9 @@ fn signing_row(cx: &ViewCx<Settings>, signing: &SigningIn) -> Item {
             format!("settings.web.accounts.sign-in.{}", signing.id),
             provider,
         )
-        .mark(provider_icon(signing.provider))
+        .avatar(provider_name(signing.provider), signing.provider.key())
+        .avatar_glyph(provider_icon(signing.provider))
+        .square()
         .secondary(detail)
         .trailing(Box::new(stop) as El),
     ))

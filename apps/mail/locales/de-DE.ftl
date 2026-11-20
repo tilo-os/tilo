@@ -2,8 +2,7 @@
 
 ## Erster Start
 mail-first-run-title = Noch kein E-Mail-Konto
-mail-first-run-hint = Füge in den Einstellungen unter Externe Konten ein E-Mail-Konto hinzu.
-mail-first-run-action = Externe Konten öffnen
+mail-first-run-action = E-Mail-Konto hinzufügen
 
 ## Die leere Nachrichtenliste: was nicht da ist, und das Konto, aus dem die
 ## Post käme, solange keine angekommen ist. { $folder } ist der Ordnername.

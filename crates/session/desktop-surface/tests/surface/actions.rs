@@ -635,7 +635,7 @@ fn mail_before_settings() -> (
     (driver, handle, session, openings, tabs)
 }
 
-/// Mail's "Open External accounts": Settings' `open-link`, asked of the page's session as a link an
+/// Mail's "Add an email account": Settings' `open-link`, asked of the page's session as a link an
 /// app opens is, naming no record because Settings keeps the one.
 fn settings_link() -> ui::tilo_actions::remote::InvokeRequest {
     use ui::tilo_actions::remote::{APPLICATION_OPEN_LINK_ACTION, OPEN_LINK_PARAM};

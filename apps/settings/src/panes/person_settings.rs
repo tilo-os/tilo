@@ -111,6 +111,9 @@ pub(crate) fn answer(
         .find::<AccountsArea>()
         .ok_or_else(crate::area::missing)?;
     area.model().borrow_mut().apply(effect)?;
+    // A step chosen here (a provider, the servers' fields) shows at once,
+    // before any answer from the server comes back.
+    area.shown.set(area.shown.get().wrapping_add(1));
     Ok(Effected::done())
 }
 

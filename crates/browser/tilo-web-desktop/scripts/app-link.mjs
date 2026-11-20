@@ -1,5 +1,5 @@
 // A link into another app goes to the window that already shows what it
-// names. Mail's "Open External accounts" leads to Settings: with Settings
+// names. Mail's "Add an email account" leads to Settings: with Settings
 // open, no second Settings window opens, the open one comes forward and
 // shows External accounts; with none open, the link opens one there.
 //
@@ -88,7 +88,7 @@ async function run() {
   // Mail's own way to its accounts, where it is drawn on screen.
   const link = () => until('Mail offering its link to External accounts', async () => {
     const {width} = await evaluate('(({width}) => ({width}))(tiloMount.canvas.getBoundingClientRect())');
-    return (await nodes()).find(n => n.role === 'Button' && n.name === 'Open External accounts' && n.x >= 0 && n.x + n.w <= width);
+    return (await nodes()).find(n => n.role === 'Button' && n.name === 'Add an email account' && n.x >= 0 && n.x + n.w <= width);
   });
   // The page Settings shows: its title over the pane, on screen.
   const onAccounts = () => until('Settings showing External accounts', async () =>
