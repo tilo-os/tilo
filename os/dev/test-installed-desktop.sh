@@ -180,6 +180,11 @@ done
 # so none of them can mask it.
 "$vm" ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/boot-units-check.sh"
 
+# The recovery story on this booted disk: the repair image is on the ESP, its
+# sealed command line names repair mode and this deployment, the boot loader
+# offers it after every deployment and does not make it the default.
+"$vm" ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo-recovery-boot-check"
+
 # The compositor presented this login's first-use flow on the presenter its
 # GPU allows, within budget. The guest renders with Mesa software Vulkan, so
 # the budgets are a software renderer's; an emulated CPU only proves the
@@ -387,5 +392,13 @@ cat "$touch_log"
 # The image's apps are installed packages: Settings updates from a registry,
 # launches as the new version, and rolls back.
 RUNNER="$vm ssh" "$repo/os/tests/booted_app_update.sh"
+# The store the image ships works on the running system, not only in the files
+# the build wrote: the registry lists the packages, the runtime bundle matches,
+# and what it offers resolves.
+RUNNER="$vm ssh" "$repo/os/tests/booted_app_store.sh"
+# A real Flathub app through the whole Flatpak path of this signed-in desktop:
+# found by search, installed with its runtime, opened, and removed keeping its
+# data and dropping the runtime nothing uses any more.
+RUNNER="$vm ssh" "$repo/os/tests/booted_flatpak_lifecycle.sh"
 printf 'PASS\n' > "$out/verdict.txt"
 note "the installed desktop passed"
