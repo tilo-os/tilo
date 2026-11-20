@@ -213,7 +213,18 @@ fn a_direct_message_is_one_notice_that_names_who_wrote() {
     // Ada writes again. Their conversation reaches Bob's laptop once more with her first message
     // still in it: the second is news, and the first, which he was told of already, is not told a
     // second time by the same look.
+    let sent = Instant::now();
     studio.ada_laptop.chat().send(&bob_key, "did you see?");
+    // A message in a conversation that is already open is news the other person hears in moments,
+    // on every device.
+    wait_for_notices(&studio.bob_laptop, &["did you see?"]);
+    wait_for_notices(&studio.bob_phone, &["did you see?"]);
+    let heard = sent.elapsed();
+    assert!(
+        heard < MESSAGE_HEARD_WITHIN,
+        "Bob is told Ada's second message {heard:?} after she sent it, not within \
+         {MESSAGE_HEARD_WITHIN:?}"
+    );
     studio
         .bob_laptop
         .chat()
@@ -360,6 +371,11 @@ fn wait_for_notice(device: &Device, body: &str) -> Value {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+/// How long a message in an open conversation may take to reach the other person's devices, from
+/// the sender's send to the notice on each of them. A loaded test machine delivers one in about
+/// two seconds; five allows for that and still fails a stalled delivery.
+const MESSAGE_HEARD_WITHIN: Duration = Duration::from_secs(5);
 
 /// Wait until this device's session shows a notice saying each of `bodies`, and answer those
 /// notices.
