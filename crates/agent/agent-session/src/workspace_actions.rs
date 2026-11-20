@@ -1124,7 +1124,11 @@ impl Workspace {
         }
         // Keys the host device holds are handed over as soon as a route needs
         // them: the record acted on at once (fresh every time), and every
-        // route that arrived sealed while the request waited.
+        // route that arrived sealed while the request waited. A resource the
+        // workspace holds none of is not asked for: the change this request
+        // makes founds it and opens its document's group with it
+        // ([`publish::Worker::hand_over`]). Asking anyway would refuse what
+        // the request itself brings, for keys no device can hand yet.
         let mut handed = HashSet::new();
         if let Some(link) = link
             && let Needs::Act { app_id, record } = needs
@@ -1135,7 +1139,10 @@ impl Workspace {
                 cluster_id: workspace,
                 document: record.to_owned(),
             };
-            self.take_host_keys(vec![route], needs, link, &mut handed)?;
+            let held = self.holds(&route);
+            if held {
+                self.take_host_keys(vec![route], needs, link, &mut handed)?;
+            }
         }
         let sealed: Vec<DocumentRoute> = self
             .sealed(workspace_id, needs)
