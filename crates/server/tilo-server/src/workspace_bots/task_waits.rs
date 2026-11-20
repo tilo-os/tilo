@@ -105,8 +105,17 @@ async fn go_on(
             tasks_model::waiting_for(part.issues.iter(), person, automation)
         };
         for issue in waiting {
-            match resume(workspaces, (workspace, document), person, &issue, &cause).await {
-                Ok(()) => told = told.saturating_add(1),
+            match resume(
+                workspaces,
+                (workspace, document),
+                person,
+                automation,
+                &issue,
+                &cause,
+            )
+            .await
+            {
+                Ok(resumed) => told = told.saturating_add(usize::from(resumed)),
                 Err(error) => {
                     tracing::warn!(%workspace, %issue, %error, "a task that waits for an automation is not told to go on");
                 }
@@ -116,15 +125,16 @@ async fn go_on(
     Ok(told)
 }
 
-/// Write Tasks' `resume` on `issue` for `person`: Tasks' own rules still decide, so an issue
-/// that was closed meanwhile, or whose budget is used up, is not told to go on.
+/// Write Tasks' `resume` on `issue` for `person` if it still waits for `automation`.
+/// Tasks' own rules also decide, so an issue whose budget is used up is not told to go on.
 async fn resume(
     workspaces: &Workspaces,
     (workspace, document): (&str, &str),
     person: &str,
+    automation: &str,
     issue: &tilo_resource::Id,
     cause: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let cause = tilo_resource::NonBlank::parse(cause).ok_or("nothing says what lets it go on")?;
     let (person, issue) = (person.to_owned(), issue.clone());
     // The moment it is told is the server's own: what asks the task's agent again is read by it.
@@ -137,6 +147,14 @@ async fn resume(
             TASKS,
             document,
             move |doc| {
+                let current = super::opened::<IssueList>(doc)?;
+                if !current
+                    .issues
+                    .get(&issue)
+                    .is_some_and(|issue| issue.waits_for_automation(&person, automation))
+                {
+                    return Ok(false);
+                }
                 let mut tracker =
                     tilo_resource::Replica::<IssueList>::from_doc(std::mem::take(doc))
                         .as_author(&person)
@@ -144,7 +162,7 @@ async fn resume(
                 tracker.set_now_ms(now_ms);
                 let applied = tracker
                     .apply(IssueList::RESUME.with(issue_list::Resume { issue, cause }))
-                    .map(drop)
+                    .map(|_| true)
                     .map_err(|error| error.to_string());
                 std::mem::swap(doc, tracker.doc_mut());
                 applied
@@ -156,7 +174,7 @@ async fn resume(
 
 #[cfg(test)]
 mod tests {
-    use super::cause_of;
+    use super::*;
 
     #[test]
     fn what_lets_a_task_go_on_is_one_line_of_what_the_automation_hands_over() {
@@ -166,5 +184,112 @@ mod tests {
         );
         assert_eq!(cause_of(" \n "), "the automation it waited for came");
         assert_eq!(cause_of(&"word ".repeat(200)).chars().count(), 400);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[allow(clippy::unwrap_used, reason = "test setup and results must succeed")]
+    async fn an_automation_selected_before_the_wait_changed_cannot_end_the_new_wait() {
+        use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
+
+        let scratch = tempfile::tempdir().unwrap();
+        let (key, cert) = crate::workspaces::fixtures::governor();
+        let server = super::super::tests::bot_server(scratch.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Launch").await.unwrap().workspace;
+        let person = hex::encode(cert.user_public_key);
+        let chain = tasks::issue_list::chain();
+        let part = chain.part(0);
+        let document = part.as_str();
+        let catalogue = AppCatalogue::native();
+        let tracker = super::super::workspace_resource(&catalogue, TASKS);
+        workspaces
+            .prepare_application(&workspace, &cert, &catalogue, TASKS, &tracker)
+            .await
+            .unwrap();
+        let first_part = {
+            let mut page = Replica::open(
+                &catalogue,
+                TASKS,
+                &workspace,
+                &tilo_actions::MemberId::person(&person),
+                ReplicaActor::Owner,
+                if tracker.is_empty() {
+                    Seed::New
+                } else {
+                    Seed::NewAt(collab_types::document::DocumentId::parse(&tracker).unwrap())
+                },
+            )
+            .unwrap();
+            page.invoke(
+                &tilo_actions::api::ActionAddress::new(
+                    collab_types::document::chain_resource_id(&chain),
+                    "create",
+                ),
+                &serde_json::Map::from_iter([
+                    ("title".to_owned(), "Book the venue".into()),
+                    ("assignee".to_owned(), "agent:scout".into()),
+                ]),
+                false,
+            )
+            .unwrap();
+            page.take_document_mutations()
+                .unwrap()
+                .into_iter()
+                .find_map(|(id, mutation)| match mutation {
+                    collab_types::DocumentMutation::Snapshot(bytes) if id == part => Some(bytes),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let issue = workspaces
+            .author_workspace_document(&workspace, &cert, (TASKS, document), |doc| {
+                tilo_automerge::ApplyIncoming::load_incoming(doc, &first_part)
+                    .map_err(|error| error.to_string())?;
+                let mut tracker =
+                    tilo_resource::Replica::<IssueList>::from_doc(std::mem::take(doc))
+                        .as_author(&person)
+                        .in_app(TASKS, "Tasks");
+                let state = tracker.state().unwrap();
+                let issue = state.issues.iter().next().unwrap().0.clone();
+                tracker
+                    .apply(IssueList::WAIT.with(issue_list::Wait {
+                        issue: issue.clone(),
+                        waits: vec![tasks_model::WaitFor {
+                            kind: tasks_model::WaitKind::Reply,
+                            what: "the new venue's answer".to_owned(),
+                            event: Some("new-venue".to_owned()),
+                            ..Default::default()
+                        }],
+                        until_ms: tilo_clock::unix_now_ms_i64().saturating_add(60_000),
+                    }))
+                    .unwrap();
+                std::mem::swap(doc, tracker.doc_mut());
+                Ok(issue)
+            })
+            .await
+            .unwrap();
+
+        let resume_for = |automation| {
+            resume(
+                workspaces,
+                (&workspace, document),
+                &person,
+                automation,
+                &issue,
+                "The venue replied",
+            )
+        };
+        let task_bytes = || workspaces.resource_document(&workspace, TASKS, document);
+        let before = task_bytes().await.unwrap().unwrap();
+        assert!(!resume_for("old-venue").await.unwrap());
+        assert_eq!(task_bytes().await.unwrap().unwrap(), before);
+        assert!(resume_for("new-venue").await.unwrap());
+        let bytes = task_bytes().await.unwrap().unwrap();
+        let mut doc = automerge::AutoCommit::load(&bytes).unwrap();
+        let saved = super::super::opened::<IssueList>(&mut doc).unwrap();
+        let work = saved.issues.get(&issue).unwrap().work.as_ref().unwrap();
+        assert_eq!(work.resumed.as_ref().unwrap().cause, "The venue replied");
+        assert!(!work.waiting());
+        drop(server);
     }
 }

@@ -305,23 +305,28 @@ pub fn waiting_for<'a>(
     person: &str,
     automation: &str,
 ) -> Vec<Id> {
-    if automation.is_empty() {
-        return Vec::new();
-    }
     issues
         .into_iter()
-        .filter(|(_, issue)| {
-            !issue.status.closed()
-                && issue.assigned_agent().is_some()
-                && issue.assigned_by.as_ref().and_then(MemberId::person_id) == Some(person)
-                && issue.work.as_ref().is_some_and(|work| {
-                    work.waiting()
-                        && work
-                            .waits
-                            .iter()
-                            .any(|wait| wait.event.as_deref() == Some(automation))
-                })
-        })
+        .filter(|(_, issue)| issue.waits_for_automation(person, automation))
         .map(|(id, _)| id.clone())
         .collect()
+}
+
+impl Issue {
+    /// Whether this issue currently waits for this automation of the person who gave it to its
+    /// agent. Check this on the current issue before an automation tells it to go on.
+    #[must_use]
+    pub fn waits_for_automation(&self, person: &str, automation: &str) -> bool {
+        !automation.is_empty()
+            && !self.status.closed()
+            && self.assigned_agent().is_some()
+            && self.assigned_by.as_ref().and_then(MemberId::person_id) == Some(person)
+            && self.work.as_ref().is_some_and(|work| {
+                work.waiting()
+                    && work
+                        .waits
+                        .iter()
+                        .any(|wait| wait.event.as_deref() == Some(automation))
+            })
+    }
 }
