@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use fuser::{FileAttr, FileType, Request};
 
-use super::{QuickFS, TTL};
+use super::{QuickFS, TTL, child_path};
 
 impl QuickFS {
     /// `attr` as every answer about a file must give it: sized as a read serves it (a
@@ -53,17 +53,26 @@ impl QuickFS {
         Some((self.live_attr(attr, buf_len), TTL))
     }
     /// The link count to report for a directory: `2` plus one per subdirectory in the view,
-    /// taken from the filtered listing rather than the namespace, so `nlink` and `readdir`
-    /// cannot disagree and a count from the real tree never announces hidden subdirectories.
+    /// counted as `readdir` filters its listing, so `nlink` and `readdir` cannot disagree and a
+    /// count from the real tree never announces hidden subdirectories. Only the subdirectories
+    /// are read: every `lookup` and `getattr` of a folder asks this, and a folder being filled
+    /// with files would otherwise be listed whole for each one.
     pub(super) fn visible_dir_nlink(&self, ino: u64) -> u32 {
-        let subdirs = self.visible_entries(ino).map_or(0, |entries| {
-            entries
-                .iter()
-                .filter(|(_, kind, name)| {
-                    *kind == FileType::Directory && name != "." && name != ".."
-                })
-                .count()
-        });
+        let (names, dir_path) = {
+            let ns = self.ns();
+            (ns.subfolder_names(ino), ns.path_for(ino))
+        };
+        let subdirs = match (names, &self.enforcement) {
+            (None, _) => 0,
+            (Some(names), None) => names.len(),
+            (Some(names), Some((acl, identity))) => match dir_path {
+                Some(dir) if acl.visible(identity, &dir) => names
+                    .iter()
+                    .filter(|name| acl.visible(identity, &child_path(&dir, name.as_bytes())))
+                    .count(),
+                _ => 0,
+            },
+        };
         2u32.saturating_add(u32::try_from(subdirs).unwrap_or(u32::MAX))
     }
 }

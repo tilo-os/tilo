@@ -287,6 +287,38 @@ impl Namespace {
         self.document_index.get(&document_id).cloned()
     }
 
+    /// The names of the folders in the folder `ino` that a listing of it shows, from the
+    /// structural index and the catalogue: no child's node is read, so counting a folder's
+    /// subfolders does not cost every file beside them. A child of a folder that reaches the
+    /// root reaches it too. `None` when `ino` is no folder in the tree.
+    #[must_use]
+    pub fn subfolder_names(&self, ino: u64) -> Option<Vec<fs_protocol::FileNameV1>> {
+        let id = self.ino_to_id.get(&ino)?;
+        if id != ROOT_ID && (self.kind_of(id) != NodeKind::Dir || !self.reaches_root(id)) {
+            return None;
+        }
+        let is_dir = |child: &str| {
+            self.tree
+                .resource_of
+                .get(child)
+                .and_then(|document_id| self.document_index.get(document_id))
+                .filter(|row| row.node_id == child)
+                .map_or_else(|| self.kind_of(child) == NodeKind::Dir, |row| row.is_dir)
+        };
+        Some(
+            self.tree
+                .children
+                .get(id)
+                .into_iter()
+                .flatten()
+                // One per node, as a listing names each: two folders a conflict left under
+                // one name are two.
+                .flat_map(|(name, ids)| ids.iter().filter(|child| is_dir(child)).map(move |_| name))
+                .cloned()
+                .collect(),
+        )
+    }
+
     /// The path a catalogue row's node sits at, derived from where the node is now: computed
     /// for the rows a page shows, never stored per file.
     #[must_use]

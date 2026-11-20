@@ -545,3 +545,34 @@ fn peer_changes(ns: &mut Namespace, rebuild_ms: u128) {
         format!("/dir-007/{}", String::from_utf8_lossy(&winner))
     );
 }
+
+#[test]
+fn a_folder_counts_its_subfolders_without_reading_its_files() {
+    let saved = saved_tree(64);
+    let mut ns = Namespace::from_bytes("a", &saved).unwrap();
+    let dir = ns.lookup(ROOT_INO, "dir").unwrap().ino.0;
+    ns.create_dir(dir, "inner", 1).unwrap();
+    ns.create_dir(dir, "other", 1).unwrap();
+    let listed = |ns: &mut Namespace, ino| -> Vec<FileNameV1> {
+        ns.readdir(ino)
+            .unwrap()
+            .into_iter()
+            .filter(|(_, kind, name)| *kind == FileType::Directory && name != "." && name != "..")
+            .map(|(_, _, name)| name)
+            .collect()
+    };
+
+    let before = ns.node_lookup_count();
+    let at_root = ns.subfolder_names(ROOT_INO).unwrap();
+    let in_dir = ns.subfolder_names(dir).unwrap();
+    let reads = ns.node_lookup_count() - before;
+    assert!(
+        reads <= 2,
+        "counting the subfolders of two folders of 32 files each read {reads} node documents"
+    );
+    assert_eq!(at_root, listed(&mut ns, ROOT_INO));
+    assert_eq!(in_dir, listed(&mut ns, dir));
+    assert_eq!(in_dir.len(), 2);
+    let file = ns.lookup(ROOT_INO, "f1").unwrap().ino.0;
+    assert_eq!(ns.subfolder_names(file), None);
+}
