@@ -619,7 +619,10 @@ impl<M: PlotMarks> Widget for Plot<M> {
                     node.with_action_target(item.target)
                         .with_state(AccessState::new().focusable(true))
                 } else {
-                    node
+                    // A reading keeps its identity by the target it is read at,
+                    // so it is keyed as the legend's toggles beside it are: a
+                    // list mixes no keyed and position-addressed siblings.
+                    node.with_hashed_key(&item.target)
                 }
             })
             .chain(toggles.into_iter().flat_map(|toggles| {
