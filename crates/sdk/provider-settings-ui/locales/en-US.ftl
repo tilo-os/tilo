@@ -297,6 +297,7 @@ models-key-add = Add key
 models-key-remove = Remove key
 models-key-kept = Key added
 models-key-none = Needs a key
+models-key-not-accepted = Key not accepted
 models-key-sent-to = What you and your assistant write is sent to { $provider } to be answered.
 models-key-refused = { $provider } did not accept this key.
 models-unlink = Remove

@@ -162,7 +162,13 @@ impl Kept {
                 Ok(view(&added))
             }
             person_models::SET_KEY => {
-                self.keys.insert(id.clone(), text("key"));
+                // As the server does: a key the provider turns away is not kept.
+                let key = text("key");
+                if ![GOOD_KEY, LISTLESS_KEY].contains(&key.as_str()) {
+                    let name = self.provider(&id)?.name.clone();
+                    return Err(refused(&format!("{name} did not accept this key.")));
+                }
+                self.keys.insert(id.clone(), key);
                 let provider = self.provider(&id)?;
                 provider.configured = true;
                 Ok(view(provider))
@@ -392,6 +398,8 @@ fn a_key_the_provider_refuses_is_asked_for_again() {
     );
     assert_eq!(models.linked(), Some(false));
     assert!(models.key.buffer.lock_recover().is_empty());
+    let shown = said(models.sections(&Unbound));
+    assert!(!shown.contains("Key added"), "{shown}");
 
     // Letting the field go leaves the provider, which still needs its key.
     models.key.answers.answer("anthropic", None);
@@ -403,6 +411,37 @@ fn a_key_the_provider_refuses_is_asked_for_again() {
     type_key(&models, "anthropic", GOOD_KEY);
     settle(&mut models);
     assert_eq!(models.providers()[0].models.len(), 2);
+}
+
+/// A kept key the provider turns away later, once it was taken back there,
+/// is shown as not accepted, never as added.
+#[test]
+fn a_kept_key_the_provider_turns_away_later_is_not_shown_as_added() {
+    en();
+    let (provider, kept) = provider();
+    let mut models = linked_provider(&provider);
+    assert!(said(models.sections(&Unbound)).contains("Key added"));
+
+    kept.lock_recover()
+        .keys
+        .insert("gemini".into(), "sk-taken-back-there".into());
+    models
+        .apply(PersonModelsEffect::AskProviderModels {
+            provider: "gemini".into(),
+        })
+        .unwrap();
+    settle(&mut models);
+    // The page asks for a key again, in the provider's own field.
+    assert_eq!(models.key.provider.as_deref(), Some("gemini"));
+    let asking = said(models.sections(&Unbound));
+    assert!(!asking.contains("Key added"), "{asking}");
+
+    // Let go, the provider says its key was not accepted.
+    models.key.answers.answer("gemini", None);
+    settle(&mut models);
+    let shown = said(models.sections(&Unbound));
+    assert!(shown.contains("Key not accepted"), "{shown}");
+    assert!(!shown.contains("Key added"), "{shown}");
 }
 
 /// A provider that lists no models takes the model's name typed, and that

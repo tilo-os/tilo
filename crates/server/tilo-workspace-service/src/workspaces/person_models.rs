@@ -268,15 +268,15 @@ enum Said {
 /// Keep `setting`'s key for its provider: what [`person_models::SET_KEY`]
 /// and [`person_models::SET_KEY_FROM_ITEM`] do with the key they are handed.
 ///
-/// A key kept already gives way only to one its provider takes. The
-/// provider is asked about the new key first ([`asked_about`]); a key it
-/// turns away, and one it cannot be asked about now, is not kept, and the
-/// kept one stays as it was. The refusal says which key is in use and
-/// carries neither. Where nothing at the provider says of a key the new one
-/// is kept as typed, since nothing else could ever replace a key there.
-///
-/// A first key is kept as typed: no key is lost by it, and the provider's
-/// list of models says of it next ([`refresh_models`]).
+/// The provider is asked about a new key first ([`asked_about`]), and a key
+/// it turns away is never kept: the person is told so, and a key kept
+/// before stays in use. A key kept already also stays when the provider
+/// cannot be asked about the new one now. A first key the provider cannot
+/// be asked about now is kept, since no key is lost by it, and the
+/// provider's list of models says of it once it answers
+/// ([`refresh_models`]). Where nothing at the provider says of a key the
+/// new one is kept as typed, since nothing else could ever replace a key
+/// there. No refusal carries a key.
 pub(super) async fn take_key(
     root: &Path,
     setting: SetKey,
@@ -288,24 +288,27 @@ pub(super) async fn take_key(
         .find(|profile| profile.id == setting.provider)
         .ok_or_else(not_kept)?;
     let kept = ProviderKeys::of(root).get(&profile)?;
+    let replacing = kept.is_some();
     // The kept key typed again replaces nothing and asks nobody. The two
     // are compared by their hashes, which compare in constant time.
-    let replaces = !setting.key.trim().is_empty()
-        && kept.is_some_and(|kept| {
+    let new = !setting.key.trim().is_empty()
+        && kept.is_none_or(|kept| {
             blake3::hash(kept.as_bytes()) != blake3::hash(setting.key.as_bytes())
         });
-    if replaces {
+    if new {
         let name = profile.display_label();
+        let still = if replacing {
+            " The key kept before is still in use."
+        } else {
+            ""
+        };
         match asked_about(&profile, &setting.key, reach).await {
             Said::Takes | Said::Nothing => {}
-            Said::Refuses => {
-                return Err(format!(
-                    "{name} did not accept this key. The key kept before is still in use."
-                ));
-            }
+            Said::NotNow if !replacing => {}
+            Said::Refuses => return Err(format!("{name} did not accept this key.{still}")),
             Said::NotNow => {
                 return Err(format!(
-                    "{name} could not be asked about this key now. The key kept before is still in use."
+                    "{name} could not be asked about this key now.{still}"
                 ));
             }
         }

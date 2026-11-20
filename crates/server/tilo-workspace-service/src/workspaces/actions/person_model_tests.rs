@@ -775,6 +775,63 @@ async fn a_key_the_provider_does_not_take_leaves_the_kept_key_in_use() {
     );
 }
 
+/// A person links a provider and types a first key the provider turns away.
+/// The key is not kept: they are told the provider did not accept it, and
+/// the provider still needs a key, so nothing shows it as added. A first
+/// key the provider gives no answer about is kept, since none is lost by
+/// it. No answer carries a key.
+#[tokio::test]
+async fn a_first_key_the_provider_turns_away_is_not_kept() {
+    const UNKNOWN_KEY: &str = "sk-made-up-and-unknown-there";
+
+    let dir = tempfile::tempdir().unwrap();
+    let (_server, workspaces, workspace_id, service, ada) = served(dir.path()).await;
+    workspaces.call_private_model_addresses(true);
+    let (_stand_in, endpoint) = stand_in(&[]);
+    let added = ask_own(
+        &service,
+        workspace_id,
+        &ada,
+        person_models::ADD_PROVIDER,
+        json!({"name": "Stand-in", "protocol": "open-ai-compatible", "endpoint": endpoint}),
+    )
+    .await
+    .expect("the person adds a provider");
+    let provider = added["id"].as_str().expect("the provider's id").to_owned();
+    let setting = |key: &'static str| {
+        ask_own(
+            &service,
+            workspace_id,
+            &ada,
+            person_models::SET_KEY,
+            json!({"provider": provider, "key": key}),
+        )
+    };
+    let configured = || async {
+        let hers = ask_own(&service, workspace_id, &ada, person_models::LIST, json!({}))
+            .await
+            .unwrap();
+        hers["providers"][0]["configured"].clone()
+    };
+
+    let answered = setting(UNKNOWN_KEY).await;
+    let Err(ActionCallError::Refused { reason }) = &answered else {
+        panic!("a first key the provider turns away was kept: {answered:?}");
+    };
+    assert_eq!(reason, "Stand-in did not accept this key.");
+    assert_eq!(configured().await, json!(false), "it still needs a key");
+
+    let kept = setting(UNANSWERED_KEY)
+        .await
+        .expect("a first key nobody could say of is kept");
+    assert_eq!(kept["configured"], json!(true), "{kept}");
+    carried_nowhere(
+        &[UNKNOWN_KEY, UNANSWERED_KEY],
+        &[reason.clone(), kept.to_string()],
+        "",
+    );
+}
+
 /// A key the provider takes is asked about once, and then it is the key
 /// their model is asked with. The kept key typed again replaces nothing,
 /// and nobody is asked about it. Neither answer carries a key.

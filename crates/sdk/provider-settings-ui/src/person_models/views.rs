@@ -159,10 +159,11 @@ impl PersonModels {
     /// that is typed, or what is known about its models.
     fn provider_rows<B: ModelBindings>(&self, bind: &B, provider: &ProviderView) -> Vec<Item> {
         let id = provider.id.as_str();
-        let state = if provider.configured {
-            t("models-key-kept")
-        } else {
-            t("models-key-none")
+        // A kept key the provider turns away is never shown as added.
+        let state = match (provider.configured, self.problems.get(id)) {
+            (true, Some(ListingProblem::KeyRefused)) => t("models-key-not-accepted"),
+            (true, _) => t("models-key-kept"),
+            (false, _) => t("models-key-none"),
         };
         let key = if provider.configured {
             bind.invoking(
