@@ -22,7 +22,7 @@ pub fn enrolled(person: &[u8; 32], fleet: &DeviceFleet, cert: &DeviceCert) -> bo
             .any(|known| known.device_public_key == cert.device_public_key)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 mod host {
     //! A Linux desktop answers from the identity directory it reads.
 
@@ -72,11 +72,11 @@ mod host {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 pub use host::{authorize, authorize_join};
 
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime};

@@ -13,8 +13,6 @@ use tilo_user_identity::DeviceCert;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod store;
-#[cfg(all(not(unix), not(target_arch = "wasm32")))]
-pub use crate::unsupported_host::registry::IdentityRegistryStore;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use store::DirStamp;
 #[cfg(not(target_arch = "wasm32"))]

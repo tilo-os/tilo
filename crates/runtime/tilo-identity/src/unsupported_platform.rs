@@ -1,8 +1,8 @@
-//! Fail-closed identity enrollment for setup hosts without a local identity provider.
+//! Fail-closed identity enrollment for a platform without a local identity provider.
 //!
-//! The Unix host uses `tilo_identity::store`'s protected identity store. Windows
+//! Unix uses `tilo_identity::store`'s protected identity store. Windows
 //! imager can prepare Wi-Fi and media, but cannot enroll a person until that
-//! store has a Windows implementation. Keep this boundary in the host crate so
+//! store has a Windows implementation. Keep this boundary in this crate so
 //! the imager remains portable and never fabricates an identity.
 
 #![allow(
@@ -21,7 +21,7 @@ use tilo_user_identity::DeviceCert;
 fn unavailable() -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
-        "local identity enrollment is unavailable on this host",
+        "local identity enrollment is unavailable on this machine",
     )
 }
 
@@ -89,26 +89,6 @@ pub mod registry {
 
         pub fn identity_dir(&self) -> &Path {
             &self.identity_dir
-        }
-    }
-}
-
-pub mod device_fleet {
-    use super::*;
-
-    pub struct DeviceFleet {
-        pub certificates: Vec<DeviceCert>,
-    }
-
-    pub struct DeviceFleetStore;
-
-    impl DeviceFleetStore {
-        pub fn at(_identity_dir: impl Into<PathBuf>, _identity_paths: IdentityPaths) -> Self {
-            Self
-        }
-
-        pub fn load(&self, _identity_id: &str) -> io::Result<DeviceFleet> {
-            Err(unavailable())
         }
     }
 }

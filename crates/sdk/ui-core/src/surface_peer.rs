@@ -3,9 +3,9 @@
 //! of their own.
 
 use std::collections::{HashMap, VecDeque};
-use std::os::fd::FromRawFd;
-use std::os::unix::net::UnixStream;
 use std::sync::{Arc, mpsc};
+
+use runtime_portal::surface_actions::{Reader, Writer};
 
 use tilo_actions::remote::{
     CataloguePage, CatalogueQuery, CatalogueRow, RemoteActionFrame, RemoteActionMessage,
@@ -49,9 +49,9 @@ pub fn publish(resources: &[tilo_actions::ResourceSpec]) {
     frame.owed = true;
 }
 
-/// Both directions' framing: one length-prefixed frame per message, as the collaboration
-/// wire frames the same protocol's frames.
-pub const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(64 << 20);
+/// Both directions' framing, as [`runtime_portal::surface_actions`] frames a surface's
+/// messages.
+pub use runtime_portal::surface_actions::FRAMING;
 
 /// The app's end of the connection to its session. Cloneable pieces are not: the reader
 /// thread owns the receiving half.
@@ -77,28 +77,26 @@ impl SurfacePeer {
         // SAFETY: the session wrote this number into the environment of the
         // process it spawned, having put the socket on it before the exec.
         // Whoever started a process cannot reuse the number afterwards.
-        let stream = unsafe { UnixStream::from_raw_fd(number) };
-        Some(Self::of(stream))
+        let (reader, writer) = unsafe { runtime_portal::surface_actions::take(number) }?;
+        Some(Self::of(reader, writer))
     }
 
-    /// A peer on `stream`, one end of a socket to the session.
+    /// A peer on the two halves of a socket to the session.
     #[must_use]
-    pub fn of(stream: UnixStream) -> Self {
+    fn of(reader: Reader, writer: Writer) -> Self {
         let (outgoing, writes) = mpsc::channel();
         let (incoming_sender, incoming) = mpsc::channel();
         let wake: Arc<std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>> = Arc::default();
         // A long-lived protocol client of its own, on threads of its own: it reads
         // whenever the session speaks, and a message waiting must wake the app even when
         // nothing else asks it for a frame.
-        if let Ok(reader) = stream.try_clone() {
-            let reading = Arc::clone(&wake);
-            let _ = tilo_rt::spawn_thread("surface-actions", move || {
-                read_messages(reader, &incoming_sender, &reading);
-            });
-            let _ = tilo_rt::spawn_thread("surface-actions-writes", move || {
-                write_messages(stream, &writes);
-            });
-        }
+        let reading = Arc::clone(&wake);
+        let _ = tilo_rt::spawn_thread("surface-actions", move || {
+            read_messages(reader, &incoming_sender, &reading);
+        });
+        let _ = tilo_rt::spawn_thread("surface-actions-writes", move || {
+            write_messages(writer, &writes);
+        });
         let frame: Arc<std::sync::Mutex<Frame>> = Arc::default();
         *FRAME.lock_recover() = Some(Arc::clone(&frame));
         Self {
@@ -261,12 +259,12 @@ impl PeerTransport for SurfacePeer {
 }
 
 fn read_messages(
-    mut stream: UnixStream,
+    mut reader: Reader,
     incoming: &mpsc::Sender<RemoteActionMessage>,
     wake: &Arc<std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
 ) {
     loop {
-        let Some(body) = FRAMING.read(&mut stream).ok().flatten() else {
+        let Some(body) = reader.read().ok().flatten() else {
             return;
         };
         let Ok(frame) = RemoteActionFrame::decode(&body) else {
@@ -284,21 +282,23 @@ fn read_messages(
     }
 }
 
-fn write_messages(mut stream: UnixStream, outgoing: &mpsc::Receiver<RemoteActionMessage>) {
+fn write_messages(mut writer: Writer, outgoing: &mpsc::Receiver<RemoteActionMessage>) {
     while let Ok(message) = outgoing.recv() {
         let Ok(body) = RemoteActionFrame::new(message).encode() else {
             tracing::warn!("a message to the session did not encode");
             return;
         };
-        if FRAMING.write(&mut stream, &body).is_err() {
+        if writer.write(&body).is_err() {
             return;
         }
     }
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixStream;
     use tilo_actions::ActionAddress;
     use tilo_actions::outcome::InvocationId;
     use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
@@ -306,7 +306,8 @@ mod tests {
     #[test]
     fn a_surface_answers_the_sessions_actions() {
         let (app, session) = UnixStream::pair().expect("a socket");
-        let mut peer = SurfacePeer::of(app);
+        let (app, writing) = runtime_portal::surface_actions::split(app).expect("two halves");
+        let mut peer = SurfacePeer::of(app, writing);
         let mut session = session;
         peer.send(CollabRequest::RemoteAction {
             message: RemoteActionMessage::CatalogueRequest {
@@ -335,7 +336,8 @@ mod tests {
         session
             .set_read_timeout(Some(std::time::Duration::from_secs(10)))
             .expect("a timeout");
-        let mut peer = SurfacePeer::of(app);
+        let (app, writing) = runtime_portal::surface_actions::split(app).expect("two halves");
+        let mut peer = SurfacePeer::of(app, writing);
         let (woken, wake) = mpsc::channel();
         peer.set_wake(Box::new(move || {
             let _ = woken.send(());
@@ -422,7 +424,8 @@ mod tests {
     #[test]
     fn a_surface_joins_its_own_window_and_carries_no_workspace() {
         let (app, _session) = UnixStream::pair().expect("a socket");
-        let mut peer = SurfacePeer::of(app);
+        let (app, writing) = runtime_portal::surface_actions::split(app).expect("two halves");
+        let mut peer = SurfacePeer::of(app, writing);
         let cluster = uuid::Uuid::new_v4();
         peer.send(CollabRequest::Hello {
             app_id: "so.tilo.topbar".into(),

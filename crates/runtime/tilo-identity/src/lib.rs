@@ -51,6 +51,6 @@ pub mod sources;
 pub mod store;
 
 #[cfg(all(not(unix), not(target_arch = "wasm32")))]
-mod unsupported_host;
+mod unsupported_platform;
 #[cfg(all(not(unix), not(target_arch = "wasm32")))]
-pub use unsupported_host::{device_fleet, provisioning, registry};
+pub use unsupported_platform::{provisioning, registry};

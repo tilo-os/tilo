@@ -146,7 +146,7 @@ impl PreparedIdentity {
         &self,
         destination: &Path,
         password: Zeroizing<String>,
-    ) -> io::Result<tilo_identity::store::PortableBackupInfo> {
+    ) -> io::Result<tilo_identity_client::PortableBackupInfo> {
         let _ = (destination, password);
         Err(unsupported())
     }

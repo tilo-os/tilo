@@ -19,7 +19,7 @@ enum ResultValue {
         path: Option<String>,
         photo: Option<tilo_identity_client::ProfilePhoto>,
     },
-    Exported(tilo_identity::store::PortableBackupInfo),
+    Exported(tilo_identity_client::PortableBackupInfo),
     AccountsExported(usize),
     #[cfg(target_os = "linux")]
     SetupExported(imager_backend::setup::portable_transfer::PackageInfo),

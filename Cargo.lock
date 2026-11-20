@@ -23333,7 +23333,6 @@ dependencies = [
  "wgpu-hal",
  "windows 0.62.2",
  "windows-sys 0.61.2",
- "wire-frame",
  "workspace-hack",
  "zeroize",
 ]

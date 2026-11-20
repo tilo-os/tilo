@@ -73,6 +73,17 @@ pub struct IdentityMetadata {
     pub single_device: bool,
 }
 
+/// Non-secret facts about a portable backup that was written and verified.
+///
+/// The identity store writes backups only where it holds the person's
+/// identity; its callers speak of the result by this type everywhere.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PortableBackupInfo {
+    pub group_public_key: [u8; 32],
+    /// Exact number of envelope bytes published at the destination.
+    pub bytes_written: u64,
+}
+
 /// The avatar from the workspace identity service only: no config record,
 /// account name or signing share is read, and an app without a bound
 /// workspace shows none.

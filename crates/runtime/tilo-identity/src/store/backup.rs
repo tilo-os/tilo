@@ -16,6 +16,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use getrandom::{SysRng, rand_core::TryRng as _};
+use tilo_identity_client::PortableBackupInfo;
 use tilo_seal::envelope::{self, Envelope, KeySource};
 use tilo_seal::{Context, Label, PasswordParams};
 use zeroize::{Zeroize, Zeroizing};
@@ -44,14 +45,6 @@ const V2_MAX_MEMORY_KIB: u32 = 1024 * 1024;
 const V2_MAX_ITERATIONS: u32 = 16;
 const V2_MAX_LANES: u32 = 8;
 const MIN_PASSPHRASE_BYTES: usize = 12;
-/// Non-secret facts about a backup that was written and verified.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PortableBackupInfo {
-    pub group_public_key: [u8; 32],
-    /// Exact number of envelope bytes published at the destination.
-    pub bytes_written: u64,
-}
-
 /// Encrypt the identity at `identity_path` into a new portable backup.
 ///
 /// `destination` is created exclusively: an existing path, including a

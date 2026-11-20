@@ -256,7 +256,7 @@ pub trait IdentityKey {
     ) -> Result<SigningRound2Partial, String>;
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 impl IdentityKey for crate::store::SigningIdentity {
     fn person(&self) -> [u8; 32] {
         self.group_public_key()
@@ -656,5 +656,5 @@ impl Gathering {
 }
 
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 mod tests;

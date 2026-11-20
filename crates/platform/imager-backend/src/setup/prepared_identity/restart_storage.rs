@@ -46,7 +46,18 @@ impl RestartStorage {
             Err(error) if error.io_error().kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error.into_io_error()),
         }
+        #[cfg(unix)]
         let file = held.open_append_existing(OsStr::new("draft.lock"), Privacy::OwnerOnly)?;
+        #[cfg(not(unix))]
+        let file = {
+            // The lock is taken on a file this platform's storage handle cannot
+            // open writable; nothing reaches here, since `open` already refused.
+            let _ = (&held, OsStr::new("draft.lock"));
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "installer restart drafts are locked only where their storage is",
+            ));
+        };
         DraftLock::try_exclusive(file).map_err(io::Error::other)
     }
     pub fn read(&self) -> io::Result<Option<Vec<u8>>> {

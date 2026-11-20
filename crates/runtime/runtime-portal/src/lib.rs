@@ -17,6 +17,25 @@ pub mod launch_handoff;
 /// its launch, so it can never reach the broker before it is attested.
 #[cfg(unix)]
 pub mod launch_hold;
+/// A platform without a session to be placed by: nothing registers a launch, so
+/// the variable is never named and waiting on one is refused rather than passed.
+#[cfg(not(unix))]
+pub mod launch_hold {
+    /// The variable a session names for the hold a surface waits on.
+    pub const LAUNCH_REGISTRATION_STDIN_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_STDIN";
+
+    /// A launch registration is a Unix pipe, and this platform has none.
+    ///
+    /// # Errors
+    ///
+    /// Always [`std::io::ErrorKind::Unsupported`].
+    pub fn wait_on_stdin() -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "a launch registration is a Unix pipe, which this platform does not have",
+        ))
+    }
+}
 pub mod local_socket;
 /// The messages that travel over a connected socket: Unix sockets and the
 /// descriptors they carry, so Linux only, like the clients that use it.
@@ -32,6 +51,8 @@ pub mod process_link;
 pub mod request_rendezvous;
 pub mod retained_role;
 pub mod service_socket;
+/// The actions connection a session hands a surface app.
+pub mod surface_actions;
 pub mod tools;
 
 /// The app ↔ runtime interface's one version: what an app and the session

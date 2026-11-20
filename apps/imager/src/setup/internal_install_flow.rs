@@ -956,10 +956,8 @@ impl InternalInstall {
         }
         let profile = super::staging::handoff::profile_from_install(&reviewed.profile)?;
         let authenticated_profile =
-            imager_backend::setup::prepared_setup::PublicInstallProfile::from_draft(
-                &reviewed.profile,
-            )
-            .map_err(|_| refused())?;
+            imager_backend::prepared_setup::PublicInstallProfile::from_draft(&reviewed.profile)
+                .map_err(|_| refused())?;
         if !reviewed.profile.user.password.is_empty()
             || !reviewed.profile.encryption_passphrase.is_empty()
             || reviewed.facts.basis.as_ref() != Some(&reviewed.plan.basis)

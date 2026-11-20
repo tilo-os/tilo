@@ -2028,11 +2028,27 @@ impl SdkConnectSource {
             )),
             SdkConnectSource::Env => runtime_collab::try_connect_until_closed(),
             SdkConnectSource::Fd(fd) => {
-                // SAFETY: the source owns `fd`, a connected Unix socket, and
-                // hands it over here exactly once.
-                let fd =
-                    unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
-                runtime_collab::CollabClient::from_connected_fd(fd)
+                #[cfg(unix)]
+                {
+                    // SAFETY: the source owns `fd`, a connected Unix socket, and
+                    // hands it over here exactly once.
+                    let fd = unsafe {
+                        <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd)
+                    };
+                    runtime_collab::CollabClient::from_connected_fd(fd)
+                }
+                #[cfg(not(unix))]
+                {
+                    // A platform without Unix-domain sockets never hands one down.
+                    let _ = fd;
+                    Err(runtime_portal::NotAvailable::ConnectionFailed(
+                        std::io::Error::new(
+                            std::io::ErrorKind::Unsupported,
+                            "a collaboration service descriptor is a Unix-domain socket, which \
+                             this platform does not have",
+                        ),
+                    ))
+                }
             }
         }
     }
@@ -3355,27 +3371,49 @@ pub struct SessionServices {
 impl SessionServices {
     /// Connect to the session's services at `socket`, as the launch of
     /// `app_id` in `workspace` the session recorded for this process.
+    ///
+    /// # Errors
+    ///
+    /// [`runtime_portal::NotAvailable`] where the socket cannot be reached, and
+    /// `Unsupported` on a platform without the Unix-domain sockets a session's
+    /// services are served on.
     pub fn connect(
         socket: &std::path::Path,
         app_id: &str,
         workspace: &str,
     ) -> Result<Self, runtime_portal::NotAvailable> {
-        let mut stream = tilo_files::native::socket::connect(socket)?;
-        runtime_portal::launch_handoff::write(&mut stream, app_id, workspace)?;
-        let fd = std::os::fd::IntoRawFd::into_raw_fd(stream);
-        let transport = CollaborationManager::spawn_sdk(
-            SdkConnectSource::Fd(fd),
-            Some(SdkJoinIdentity {
-                // A surface joins no workspace: it presents no identity, and the
-                // broker admits it for the launch alone.
-                presentation: Vec::new(),
-                member_kind: "person",
-                signer: harness_document_signer(),
-            }),
-        )?;
-        Ok(Self {
-            _transport: transport,
-        })
+        #[cfg(unix)]
+        {
+            let mut stream = tilo_files::native::socket::connect(socket)?;
+            runtime_portal::launch_handoff::write(&mut stream, app_id, workspace)?;
+            let fd = std::os::fd::IntoRawFd::into_raw_fd(stream);
+            let transport = CollaborationManager::spawn_sdk(
+                SdkConnectSource::Fd(fd),
+                Some(SdkJoinIdentity {
+                    // A surface joins no workspace: it presents no identity, and the
+                    // broker admits it for the launch alone.
+                    presentation: Vec::new(),
+                    member_kind: "person",
+                    signer: harness_document_signer(),
+                }),
+            )?;
+            Ok(Self {
+                _transport: transport,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            // A session serves its windows over Unix-domain sockets; where there
+            // are none, no process is a surface and there is nothing to reach.
+            let _ = (socket, app_id, workspace);
+            Err(runtime_portal::NotAvailable::ConnectionFailed(
+                std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "a session's services are served on a Unix-domain socket, which this platform \
+                     does not have",
+                ),
+            ))
+        }
     }
 }
 

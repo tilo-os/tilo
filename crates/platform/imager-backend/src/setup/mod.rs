@@ -45,6 +45,9 @@ pub mod portable_home_helper;
 pub mod portable_home_import;
 #[cfg(target_os = "linux")]
 pub mod portable_home_media;
+#[cfg(not(target_os = "linux"))]
+#[path = "portable_home_media_absent.rs"]
+pub mod portable_home_media;
 #[cfg(target_os = "linux")]
 pub mod portable_transfer;
 pub use crate::prepared_identity;

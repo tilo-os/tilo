@@ -25,8 +25,8 @@ mod recovery_words;
 mod secure_store;
 
 pub use backup::{
-    PortableBackupInfo, export_portable_backup, import_portable_backup,
-    import_portable_backup_matching, import_portable_backup_with_provider, verify_portable_backup,
+    export_portable_backup, import_portable_backup, import_portable_backup_matching,
+    import_portable_backup_with_provider, verify_portable_backup,
 };
 pub use recovery_words::{
     DEFAULT_AVATAR_COLOR, RECOVERY_WORD_COUNT, RecoveryWordsError, RecoveryWordsProgress,
@@ -38,6 +38,7 @@ pub use recovery_words::{
 pub use secure_store::{
     BrokerFileProvider, FILE_SECRETS_ENV, SecretProvider, file_secrets_requested,
 };
+pub use tilo_identity_client::PortableBackupInfo;
 
 #[cfg(test)]
 use crate::store::test_wire::{read_frame, write_frame};

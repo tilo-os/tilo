@@ -181,7 +181,7 @@ pub use runtime_collab::{SurfaceDelta, SurfacePublication, SurfaceTable};
 pub mod document_content;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
-#[cfg(all(feature = "broker-transport", unix))]
+#[cfg(feature = "broker-transport")]
 pub use broker::SessionServices;
 #[cfg(feature = "broker-transport")]
 pub use broker::{

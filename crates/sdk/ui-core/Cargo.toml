@@ -270,7 +270,6 @@ runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", def
 collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", optional = true }
 tilo-identity-client = { version = "0.1.0", path = "../../runtime/tilo-identity-client", optional = true }
-wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 # The typed id of the app a record set belongs to.
 tilo-app-id.workspace = true
