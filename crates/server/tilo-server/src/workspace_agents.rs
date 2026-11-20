@@ -276,8 +276,17 @@ impl WorkspaceActionProvider {
         self
     }
 
-    fn workspace_caller<'a>(&'a self, person_work: &'a Caller) -> &'a Caller {
-        self.roster_caller.as_ref().unwrap_or(person_work)
+    fn workspace_caller<'a>(&self, person_work: &'a Caller) -> std::borrow::Cow<'a, Caller> {
+        let Some(roster) = &self.roster_caller else {
+            return std::borrow::Cow::Borrowed(person_work);
+        };
+        // MCP owns the turn's execution. Carry that same lease when the
+        // workspace call switches to the roster device.
+        let roster = roster.clone();
+        std::borrow::Cow::Owned(match person_work.execution_lease() {
+            Some(execution) => roster.in_execution(execution),
+            None => roster,
+        })
     }
 
     fn serve(&self, caller: &Caller, message: RemoteActionMessage) -> Pending<RemoteActionMessage> {
@@ -294,11 +303,11 @@ impl WorkspaceActionProvider {
             {
                 self.workspace_caller(caller)
             }
-            _ => caller,
+            _ => std::borrow::Cow::Borrowed(caller),
         };
         let answer = self
             .actions
-            .serve(self.workspace, caller, message)
+            .serve(self.workspace, &caller, message)
             .unwrap_or_else(|| {
                 Pending::ready(RemoteActionMessage::CatalogueResponse {
                     correlation: 0,
@@ -445,7 +454,7 @@ impl ActionProvider for WorkspaceActionProvider {
         self.ended
             .as_ref()
             .and_then(|ended| ended.of(id))
-            .or_else(|| self.actions.observe(self.workspace_caller(caller), id))
+            .or_else(|| self.actions.observe(&self.workspace_caller(caller), id))
             .or_else(|| {
                 self.roster_caller
                     .as_ref()

@@ -905,6 +905,22 @@ impl Workspaces {
         if self.governed_copy(workspace_id).await.is_none() {
             return Err("this workspace is not governed here".into());
         }
+        let (message, receipt) = self
+            .retain_local_document(workspace_id, device.device(), &request)
+            .await?;
+        let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
+        self.absorb(workspace, device.device(), &body).await?;
+        self.carry_to_links(workspace, device.device(), &message);
+        Ok(receipt)
+    }
+
+    /// Order and retain a locally drafted document, using its authenticated writer.
+    pub(super) async fn retain_local_document(
+        &self,
+        workspace_id: WorkspaceId,
+        author: [u8; 32],
+        request: &OwnerCommitRequest,
+    ) -> Result<(NeighbourMsg, OwnerCommitReceipt), String> {
         let CommitOperation::Document {
             app,
             document: record,
@@ -915,12 +931,14 @@ impl Workspaces {
         else {
             return Err("an app writes documents to its workspace".into());
         };
-        if envelope.author.as_bytes() != &device.device() {
+        if envelope.author.as_bytes() != &author
+            || WorkspaceId::parse(&request.workspace) != Some(workspace_id)
+        {
             return Err("the document's signer differs from this device".into());
         }
         let binding = request.binding()?;
         let message = NeighbourMsg::AppDocument {
-            peer: neighbour_wire::peer_handle(&device.device()),
+            peer: neighbour_wire::peer_handle(&author),
             app_id: app.clone(),
             cluster_id: workspace_id.to_string(),
             document_id: record.clone(),
@@ -932,15 +950,16 @@ impl Workspaces {
         let Some((route, retention)) = neighbour_wire::retention(&message, false) else {
             return Err("the write carries no retention route".into());
         };
+        let aggregate_hash = *blake3::hash(&body).as_bytes();
         let order = self
             .inner
             .host
             .records
             .carry(
                 workspace_id,
-                device.device(),
+                author,
                 HostCommit {
-                    body: body.clone(),
+                    body,
                     channel: route,
                     checkpoint: retention == neighbour_wire::Retention::Checkpoint,
                 },
@@ -948,13 +967,14 @@ impl Workspaces {
             .await?
             .durable()
             .await?;
-        self.absorb(workspace, device.device(), &body).await?;
-        self.carry_to_links(workspace, device.device(), &message);
-        Ok(OwnerCommitReceipt {
-            binding,
-            generation: order.clamp(1, u64::MAX),
-            aggregate_hash: *blake3::hash(&body).as_bytes(),
-        })
+        Ok((
+            message,
+            OwnerCommitReceipt {
+                binding,
+                generation: order.max(1),
+                aggregate_hash,
+            },
+        ))
     }
 
     /// Write `command`, this device's own membership change (a lease it

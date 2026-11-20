@@ -318,62 +318,8 @@ impl Store {
             None => self.place(kind, resource.parent.as_deref(), &resource.readers),
         };
         let doc = self.doc(&doc_id)?;
-        let mut tx = doc.transaction();
-        if text_at(&tx, &ROOT, READERS).as_deref() != Some(resource.readers.as_str()) {
-            tx.put(ROOT, READERS, resource.readers.as_str())?;
-        }
-        // Field by field, so two devices changing different fields of one resource both keep
-        // their change.
-        let map = map_in(&mut tx, &ROOT, &held_key(id))?;
-        if text_at(&tx, &map, KIND).as_deref() != Some(kind) {
-            tx.put(&map, KIND, kind)?;
-        }
-        for (key, value) in [(PARENT, &resource.parent), (ORDER, &resource.order)] {
-            match value {
-                Some(value) if text_at(&tx, &map, key).as_ref() != Some(value) => {
-                    tx.put(&map, key, value.as_str())?;
-                }
-                None if tx.get(&map, key)?.is_some() => tx.delete(&map, key)?,
-                Some(_) | None => {}
-            }
-        }
-        let fields = map_in(&mut tx, &map, FIELDS)?;
-        let dropped: Vec<String> = tx
-            .keys(&fields)
-            .filter(|name| !resource.fields.contains_key(name))
-            .collect();
-        for name in dropped {
-            tx.delete(&fields, name.as_str())?;
-        }
-        for (name, cell) in &resource.fields {
-            match cell {
-                Cell::One(value) => {
-                    let held = tx
-                        .get(&fields, name.as_str())?
-                        .map(|(held, _)| value_of(&held));
-                    if held.as_ref() != Some(value) {
-                        tx.put(&fields, name.as_str(), scalar(value))?;
-                    }
-                }
-                Cell::Set(members) => {
-                    let set = map_in(&mut tx, &fields, name)?;
-                    let keys: BTreeSet<String> = members.iter().map(member_key).collect();
-                    let gone: Vec<String> =
-                        tx.keys(&set).filter(|key| !keys.contains(key)).collect();
-                    for key in gone {
-                        tx.delete(&set, key.as_str())?;
-                    }
-                    for key in keys {
-                        if tx.get(&set, key.as_str())?.is_none() {
-                            tx.put(&set, key.as_str(), true)?;
-                        }
-                    }
-                }
-            }
-        }
-        tx.commit_with(CommitOptions::default().with_message(stamp.message()));
-        let change = doc
-            .get_last_local_change()
+        let change = put_fields(doc, kind, id, &resource, stamp)?
+            .or_else(|| doc.get_last_local_change())
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
         let heads = doc.get_heads();
         self.commit(&Commit {
@@ -394,6 +340,50 @@ impl Store {
             change,
         });
         Ok(written)
+    }
+
+    /// Drafts a field update on an existing resource without changing its document or index.
+    /// Its permissions and declared write-set are checked against the actual change.
+    ///
+    /// # Errors
+    /// The resource is missing, its placement changes, or admission refuses the update.
+    pub fn draft_field_update(
+        &mut self,
+        (kind, id): (&str, &str),
+        resource: &Resource,
+        stamp: &Stamp,
+        author: [u8; 32],
+        schema: Option<&Schema>,
+        admit: &dyn Admit,
+    ) -> Result<Option<Written>, String> {
+        let held = self
+            .index
+            .get(kind, id)
+            .ok_or("the resource does not exist")?;
+        let doc = held.doc.clone();
+        if self.index.readers(&doc) != Some(resource.readers.as_str())
+            || held.parent != resource.parent
+            || held.order != resource.order
+        {
+            return Err("an update must preserve the resource's placement and readers".into());
+        }
+        let mut draft = self.doc(&doc).map_err(|error| error.to_string())?.clone();
+        // The hosted device supplies its own author even when the live store last
+        // wrote the document locally.
+        draft.set_actor(automerge::ActorId::from(author.as_slice()));
+        let Some(change) =
+            put_fields(&mut draft, kind, id, resource, stamp).map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+        let received = Received { change, author };
+        self.judge(&doc, &resource.readers, &received, schema, admit)
+            .map_err(|reason| format!("the resource change was refused: {reason:?}"))?;
+        Ok(Some(Written {
+            doc,
+            readers: resource.readers.clone(),
+            change: received.change,
+        }))
     }
 
     /// Removes the resource `id` of `kind`, and with it nothing else: the resources nested in it
@@ -729,7 +719,7 @@ impl Store {
                     continue;
                 }
                 took = true;
-                if let Err(refusal) = self.judge(doc_id, readers, &received, admit) {
+                if let Err(refusal) = self.judge(doc_id, readers, &received, None, admit) {
                     self.refused
                         .entry(doc_id.to_owned())
                         .or_default()
@@ -840,6 +830,7 @@ impl Store {
         doc_id: &str,
         readers: &str,
         received: &Received,
+        schema: Option<&Schema>,
         admit: &dyn Admit,
     ) -> Result<(), Refusal> {
         let doc = self.doc(doc_id).map_err(|_| Refusal::Unplaced)?;
@@ -854,13 +845,13 @@ impl Store {
             return Err(Refusal::Unplaced);
         }
         let index = &self.index;
-        crate::admit::declared(&self.schema, &touched, &writes, &|id| {
-            index.kind_anywhere(id)
-        })
-        .map_err(Refusal::Undeclared)?;
         let stamp = Stamp::of(&received.change);
-        crate::admit::within_verb(&self.schema, &touched, stamp.as_ref())
-            .map_err(Refusal::Undeclared)?;
+        for schema in std::iter::once(&self.schema).chain(schema) {
+            crate::admit::declared(schema, &touched, &writes, &|id| index.kind_anywhere(id))
+                .map_err(Refusal::Undeclared)?;
+            crate::admit::within_verb(schema, &touched, stamp.as_ref())
+                .map_err(Refusal::Undeclared)?;
+        }
         let admitted = admit.admit(&Proposal {
             doc: doc_id,
             readers,
@@ -1213,4 +1204,67 @@ fn read(doc: &Automerge, id: &str) -> Option<(String, Resource)> {
             fields,
         },
     ))
+}
+
+fn put_fields(
+    doc: &mut Automerge,
+    kind: &str,
+    id: &str,
+    resource: &Resource,
+    stamp: &Stamp,
+) -> Result<Option<AmChange>, StoreError> {
+    let mut tx = doc.transaction();
+    if text_at(&tx, &ROOT, READERS).as_deref() != Some(resource.readers.as_str()) {
+        tx.put(ROOT, READERS, resource.readers.as_str())?;
+    }
+    // Field by field, so two devices changing different fields of one resource both keep
+    // their change.
+    let map = map_in(&mut tx, &ROOT, &held_key(id))?;
+    if text_at(&tx, &map, KIND).as_deref() != Some(kind) {
+        tx.put(&map, KIND, kind)?;
+    }
+    for (key, value) in [(PARENT, &resource.parent), (ORDER, &resource.order)] {
+        match value {
+            Some(value) if text_at(&tx, &map, key).as_ref() != Some(value) => {
+                tx.put(&map, key, value.as_str())?;
+            }
+            None if tx.get(&map, key)?.is_some() => tx.delete(&map, key)?,
+            Some(_) | None => {}
+        }
+    }
+    let fields = map_in(&mut tx, &map, FIELDS)?;
+    let dropped: Vec<String> = tx
+        .keys(&fields)
+        .filter(|name| !resource.fields.contains_key(name))
+        .collect();
+    for name in dropped {
+        tx.delete(&fields, name.as_str())?;
+    }
+    for (name, cell) in &resource.fields {
+        match cell {
+            Cell::One(value) => {
+                let held = tx
+                    .get(&fields, name.as_str())?
+                    .map(|(held, _)| value_of(&held));
+                if held.as_ref() != Some(value) {
+                    tx.put(&fields, name.as_str(), scalar(value))?;
+                }
+            }
+            Cell::Set(members) => {
+                let set = map_in(&mut tx, &fields, name)?;
+                let keys: BTreeSet<String> = members.iter().map(member_key).collect();
+                let gone: Vec<String> = tx.keys(&set).filter(|key| !keys.contains(key)).collect();
+                for key in gone {
+                    tx.delete(&set, key.as_str())?;
+                }
+                for key in keys {
+                    if tx.get(&set, key.as_str())?.is_none() {
+                        tx.put(&set, key.as_str(), true)?;
+                    }
+                }
+            }
+        }
+    }
+    let (hash, _) = tx.commit_with(CommitOptions::default().with_message(stamp.message()));
+    Ok(hash.and_then(|_| doc.get_last_local_change()))
 }

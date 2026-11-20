@@ -84,6 +84,14 @@ pub fn package_surface(package: &[u8], app: &str) -> Result<Vec<u8>, Collaborati
             "the package is another app's, not the one the action names",
         ));
     }
+    if tilo_app_package::verify::verify(&package.meta, &[])
+        .manifest()
+        .is_none()
+    {
+        return Err(CollaborationError::new(
+            "the package's signature does not verify",
+        ));
+    }
     let hash = package
         .meta
         .collection
@@ -99,9 +107,14 @@ pub fn package_surface(package: &[u8], app: &str) -> Result<Vec<u8>, Collaborati
 /// Keep `app`'s `surface` where this device decides the receipts of the
 /// changes that name it: the package carries the surface, so what is signed
 /// names it, and the change is decided without asking a member for it.
-fn keep_surface(app: &str, surface: &[u8]) {
+pub(super) fn keep_surface(app: &str, surface: &[u8]) {
     collab_types::app_surface::register_package(app, surface);
-    crate::surfaces::keep(&hex::encode(blake3::hash(surface).as_bytes()), surface);
+    if let Ok((_, canonical)) = collab_types::surface::SurfaceFile::kept(surface) {
+        crate::surfaces::keep(
+            &blake3::hash(canonical.as_bytes()).to_hex(),
+            canonical.as_bytes(),
+        );
+    }
 }
 
 /// The app version's model, compiled from the package's `model.wasm`.

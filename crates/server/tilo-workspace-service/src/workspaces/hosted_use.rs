@@ -1260,7 +1260,7 @@ impl Workspaces {
 /// A device this server placed itself (`placed`) is never that device. It is certified in the
 /// person's name for a window in the workspace's machine, later than any device of their own,
 /// and it is confined to that window: a person with no other device here has none.
-fn person_device_in(
+pub(super) fn person_device_in(
     peer: &super::StatePeer,
     person: &[u8; 32],
     placed: impl Fn(&[u8; 32]) -> bool,

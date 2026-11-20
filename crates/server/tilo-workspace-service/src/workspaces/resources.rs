@@ -22,13 +22,16 @@ use std::time::{Duration, Instant};
 
 use automerge::{Automerge, Change as AmChange, ChangeHash, ROOT, ReadDoc as _};
 use collab_types::is_store_document;
-#[cfg(feature = "apps")]
+#[cfg(any(feature = "apps", feature = "agents"))]
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-#[cfg(feature = "apps")]
+#[cfg(any(feature = "apps", feature = "agents"))]
 use tilo_resource_store::Schema;
 use tilo_resource_store::{Admit, Received, Refusal, Store};
 
 use super::{GovernedWorkspace, Workspaces};
+
+#[cfg(feature = "agents")]
+mod packaged;
 
 /// Where a workspace's store keeps its documents, under the workspace's directory.
 const STORE: &str = "store";
@@ -69,7 +72,7 @@ pub(super) struct Resources {
     unsnapshotted: BTreeSet<String>,
     /// How many surfaces this process had named when the store last declared them
     /// ([`collab_types::app_surface::registered`]).
-    #[cfg(feature = "apps")]
+    #[cfg(any(feature = "apps", feature = "agents"))]
     declared: u64,
     /// The queries apps hold open, by the store's watch of their kind.
     #[cfg(feature = "apps")]
@@ -139,7 +142,7 @@ impl Resources {
             root,
             used,
             unsnapshotted,
-            #[cfg(feature = "apps")]
+            #[cfg(any(feature = "apps", feature = "agents"))]
             declared: 0,
             #[cfg(feature = "apps")]
             opened: BTreeMap::new(),
@@ -474,7 +477,7 @@ impl GovernedWorkspace {
 
     /// The workspace's store, with the types and verbs of every app surface this process knows
     /// declared: what this device's writes and the members' are judged by.
-    #[cfg(feature = "apps")]
+    #[cfg(any(feature = "apps", feature = "agents"))]
     fn store_with_surfaces(&mut self) -> &mut Store {
         let named = collab_types::app_surface::registered();
         if self.resources.declared != named {
@@ -600,72 +603,53 @@ impl GovernedWorkspace {
         for write in &written {
             self.resources.kept(&write.doc, write.change.deps())?;
         }
-        let now = tilo_clock::wall();
         let mut requests = Vec::with_capacity(written.len());
         for write in written {
-            let readers = write.readers.clone();
-            let keys = match self.reader_keys(&readers).await {
-                Some(Ok(keys)) => keys,
-                Some(Err(error)) => return Err(error),
-                None => {
-                    return Err(
-                        "this device holds no keys of the document's readers yet".to_owned()
-                    );
-                }
-            };
-            // The store placed the document; the replica holds it only once a write was followed
-            // there, and a change needs the document it changes.
-            let founding = !self.peer().holds_document(app, &write.doc);
-            let bytes = if founding {
-                self.store_with_surfaces()
-                    .document(&write.doc)
-                    .map(Automerge::save)
-                    .ok_or_else(|| format!("the store holds no document of {}", write.doc))?
-            } else {
-                write.change.raw_bytes().to_vec()
-            };
-            let frame = if founding {
-                collab_types::DocumentMutation::Snapshot(bytes)
-            } else {
-                collab_types::DocumentMutation::Incremental(bytes)
-            }
-            .encode()
-            .map_err(|error| error.to_string())?;
-            let artifact = collab_types::document_artifact_id(app, self.workspace(), &write.doc);
-            let mut seal = |plaintext: &[u8]| {
-                keys.seal_content(
-                    artifact,
-                    collab_types::ContentRetention::of_frame(plaintext),
-                    plaintext,
-                )
-                .map_err(|error| error.to_string())
-            };
-            let mut envelope = self.peer().draft_write(
-                (app, &write.doc),
-                &frame,
-                Some(&mut seal),
-                device.device(),
-                0,
-                now,
-            )?;
-            collab_types::sign_op(&mut envelope, &*device.signer)
-                .map_err(|error| error.to_string())?;
-            let own = self.peer().own_write(app, &write.doc, &device.device());
-            let named = (collab_types::is_store_document(&write.doc)
-                && readers != collab_types::EVERY_MEMBER)
-                .then_some(readers);
-            requests.push(OwnerCommitRequest {
-                workspace: self.workspace().to_owned(),
-                operation: CommitOperation::Document {
-                    app: app.to_owned(),
-                    document: write.doc,
-                    envelope: Box::new(envelope),
-                    own,
-                    readers: named,
-                },
-            });
+            requests.push(self.draft_resource_document(device, app, &write).await?);
         }
         Ok((requests, refused))
+    }
+
+    #[cfg(any(feature = "apps", feature = "agents"))]
+    async fn draft_resource_document(
+        &mut self,
+        device: &super::MemberDevice,
+        app: &str,
+        write: &tilo_resource_store::Written,
+    ) -> Result<OwnerCommitRequest, String> {
+        let keys = self
+            .reader_keys(&write.readers)
+            .await
+            .ok_or("this device holds no keys of the document's readers yet")??;
+        let founding = !self.peer().holds_document(app, &write.doc);
+        let bytes = if founding {
+            self.store_with_surfaces()
+                .document(&write.doc)
+                .map(Automerge::save)
+                .ok_or_else(|| format!("the store holds no document of {}", write.doc))?
+        } else {
+            write.change.raw_bytes().to_vec()
+        };
+        let (mut request, _) = self
+            .draft_document_write(
+                &device.device(),
+                (app, &write.doc),
+                &bytes,
+                founding,
+                Some(&keys),
+                tilo_clock::wall(),
+            )
+            .map_err(|error| error.to_string())?;
+        if let CommitOperation::Document {
+            envelope, readers, ..
+        } = &mut request.operation
+        {
+            collab_types::sign_op(envelope, &*device.signer).map_err(|error| error.to_string())?;
+            if write.readers != collab_types::EVERY_MEMBER {
+                *readers = Some(write.readers.clone());
+            }
+        }
+        Ok(request)
     }
 }
 
@@ -725,6 +709,99 @@ impl Workspaces {
         Ok(permitted.then_some(message))
     }
 
+    /// Commit an existing, staged resource update while the workspace remains held.
+    /// Check the same store and peer admissions that will take the retained frame.
+    #[cfg(any(feature = "apps", feature = "agents"))]
+    async fn commit_resource_update(
+        &self,
+        governed: &mut GovernedWorkspace,
+        device: &super::MemberDevice,
+        app: &str,
+        write: &tilo_resource_store::Written,
+        still_live: impl FnOnce(&GovernedWorkspace) -> bool,
+    ) -> Result<(), String> {
+        use super::sealed_documents::DocumentKeys;
+        use neighbour_wire::NeighbourMsg;
+
+        let document = &write.doc;
+        let author = device.device();
+        let now = tilo_clock::wall();
+        governed.may_start(author, (app, document), now)?;
+        // A staged edit is a delta. The ordinary founding path serializes the
+        // live store, which deliberately does not contain this edit yet.
+        if !governed.peer().holds_document(app, document) {
+            return Err("the workspace has not opened this resource's signed history".into());
+        }
+        let request = governed.draft_resource_document(device, app, write).await?;
+        let CommitOperation::Document {
+            envelope,
+            own,
+            readers,
+            ..
+        } = &request.operation
+        else {
+            return Err("a resource write must name its document".into());
+        };
+        let message = NeighbourMsg::AppDocument {
+            peer: neighbour_wire::peer_handle(&author),
+            app_id: app.to_owned(),
+            cluster_id: governed.workspace().to_owned(),
+            document_id: document.clone(),
+            envelope: envelope.clone(),
+            own: own.clone(),
+            readers: readers.clone(),
+        };
+        let keys = governed
+            .reader_keys(&write.readers)
+            .await
+            .ok_or("this device holds no keys of the document's readers yet")??;
+        let keys = DocumentKeys::of(
+            keys,
+            governed.workspace(),
+            &write.readers,
+            &collab_types::app_document_id(app, document),
+        );
+        let mut candidate = governed.peer().clone();
+        candidate
+            .receive_from(
+                tilo_peer_state::TransportOrigin::RetainedServerDelta(author),
+                message,
+                now,
+            )
+            .map_err(|error| error.to_string())?;
+        let opened = candidate
+            .publication()
+            .opened_document(app, document, &mut keys.open())?
+            .ok_or("the staged resource document could not be opened")?;
+        if !Automerge::load(&opened.document)
+            .map_err(|error| error.to_string())?
+            .has_change(&write.change.hash())
+        {
+            return Err("the staged resource change did not pass document admission".into());
+        }
+        if !still_live(governed) {
+            return Err("the resource writer is no longer authorized".into());
+        }
+        let (message, _) = self
+            .retain_local_document(governed.workspace_id(), author, &request)
+            .await?;
+        if !governed
+            .take_resources(author, (app, document), envelope, readers.as_deref())
+            .await?
+        {
+            return Err("the retained resource change did not reach the store".into());
+        }
+        self.follow_write(
+            governed,
+            author,
+            message.clone(),
+            (app.to_owned(), document.clone()),
+        )
+        .await;
+        self.carry_to_links(governed.workspace(), author, &message);
+        Ok(())
+    }
+
     /// Carries out an app's command on its certified route. A write requires the caller's
     /// matching local signer, and a read returns only what this device's person may read.
     /// A batch the store refused partway commits what it wrote before the refusal.
@@ -780,6 +857,49 @@ impl Workspaces {
         }
         let (requests, refused) = {
             let mut governed = state.lock().await;
+            if let Command::Put {
+                kind,
+                id,
+                resource,
+                stamp,
+            } = &command
+                && governed.member.is_none()
+                && resource.readers == collab_types::EVERY_MEMBER
+                && let Some(document) = governed
+                    .resources
+                    .store_mut()
+                    .index()
+                    .get(kind, id)
+                    .filter(|held| {
+                        held.parent == resource.parent
+                            && held.order == resource.order
+                            && collab_types::store_document_readers(&held.doc)
+                                == Some(collab_types::EVERY_MEMBER)
+                    })
+                    .map(|held| held.doc.clone())
+                && governed.peer().holds_document(context.app_id(), &document)
+            {
+                let admit = |_: &tilo_resource_store::Proposal<'_>| true;
+                let write = governed.store_with_surfaces().draft_field_update(
+                    (kind, id),
+                    resource,
+                    stamp,
+                    device.device(),
+                    None,
+                    &admit,
+                )?;
+                if let Some(write) = write {
+                    self.commit_resource_update(
+                        &mut governed,
+                        &device,
+                        context.app_id(),
+                        &write,
+                        |_| true,
+                    )
+                    .await?;
+                }
+                return Ok(Reply::Written);
+            }
             governed
                 .prepare_resource_write(&device, context.app_id(), command)
                 .await?

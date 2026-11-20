@@ -324,6 +324,7 @@ pub trait AsksInConversation: Send + Sync {
 /// it from the app version's package.
 #[derive(Debug)]
 pub struct PackagedCall<'a> {
+    pub(super) invocation: tilo_actions::InvocationId,
     /// The app's id, as its package and its resources name it.
     pub app: &'a str,
     /// The resource kind the action is for: the app's model serves every
@@ -339,6 +340,14 @@ pub struct PackagedCall<'a> {
     pub arguments: serde_json::Map<String, serde_json::Value>,
     /// The origin clock, milliseconds since the Unix epoch.
     pub now_ms: i64,
+}
+
+impl PackagedCall<'_> {
+    /// The action service's invocation, after the worker claimed it for execution.
+    #[must_use]
+    pub const fn invocation(&self) -> tilo_actions::InvocationId {
+        self.invocation
+    }
 }
 
 /// What an agent working inside a turn wants to do, as its person is asked

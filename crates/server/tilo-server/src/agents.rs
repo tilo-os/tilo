@@ -1092,6 +1092,19 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         caller: &Caller,
         call: PackagedCall<'_>,
     ) -> Result<Option<serde_json::Value>, String> {
+        let workspaces = self
+            .workspaces
+            .as_ref()
+            .ok_or("governed workspaces unavailable")?;
+        if caller.roster_created_at().is_some() {
+            let sessions = self.sessions.as_ref().ok_or("no roster signing sessions")?;
+            return self
+                .runtime
+                .block_on(
+                    workspaces.apply_roster_packaged_action(workspace, sessions, caller, call),
+                )
+                .map(Some);
+        }
         let PackagedCall {
             app,
             kind,
@@ -1100,11 +1113,8 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
             action,
             arguments,
             now_ms,
+            ..
         } = call;
-        let workspaces = self
-            .workspaces
-            .as_ref()
-            .ok_or("governed workspaces unavailable")?;
         // The invocation is the caller's: its person, agent or bot is the
         // change's actor, though the server's own device signs it.
         let member = caller

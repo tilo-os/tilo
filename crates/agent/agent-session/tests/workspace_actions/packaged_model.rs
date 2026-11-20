@@ -58,7 +58,7 @@ fn tasks_model() -> Vec<u8> {
 
 /// The app's package: the model module and the surface file at its payload
 /// root, signed.
-fn package(app: &str, model: &[u8], surface: &[u8]) -> Vec<u8> {
+pub(super) fn package(app: &str, model: &[u8], surface: &[u8]) -> Vec<u8> {
     let scratch = tempfile::tempdir().unwrap();
     let payload = scratch.path().join("payload");
     std::fs::create_dir_all(payload.join("bin")).unwrap();

@@ -174,10 +174,7 @@ impl Workspaces {
         else {
             return Ok(None);
         };
-        let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-        tilo_resource::evolution::migrate::<R>(&mut doc)
-            .map_err(|error| format!("bring the resource up to version {}: {error}", R::VERSION))?;
-        R::read(&doc).map(Some).map_err(|error| error.to_string())
+        read_resource_bytes::<R>(&bytes).map(Some)
     }
 
     /// What the agent `agent` is held to in `workspace`, as the workspace's
@@ -557,3 +554,12 @@ impl Workspaces {
 
 #[cfg(test)]
 pub(super) mod tests;
+
+pub(in crate::workspaces) fn read_resource_bytes<R: tilo_resource::Resource>(
+    bytes: &[u8],
+) -> Result<R::State, String> {
+    let mut doc = automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())?;
+    tilo_resource::evolution::migrate::<R>(&mut doc)
+        .map_err(|error| format!("bring the resource up to version {}: {error}", R::VERSION))?;
+    R::read(&doc).map_err(|error| error.to_string())
+}

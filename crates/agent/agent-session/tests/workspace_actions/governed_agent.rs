@@ -551,8 +551,24 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     hosted.server.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner() {
+#[test]
+fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner() {
+    // Surface resolution is process-wide, as on the server.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "an_existing_roster_agent_joins_after_one_approval_without_a_task_runner",
+        || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(a_hosted_roster_turn());
+        },
+    );
+}
+
+async fn a_hosted_roster_turn() {
     use super::hosted_agent_turns::{
         TASKS, answered_to, does_then_answers, file_issue, make_agent,
     };
@@ -568,6 +584,7 @@ async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner
     let page_device = enrol(&owner, "page", DeviceCapabilities::member());
     let other_device = enrol(&other, "guest", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
+    tilo_server::surfaces::decide_receipt(&state.path().join("server/surfaces"));
     let options = || crate::harness::hosted::Options {
         roster: true,
         ..crate::harness::hosted::Options::offering(
@@ -612,7 +629,7 @@ async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner
             json(&serde_json::json!({
                 "agentId": agent,
                 "workspaces": [workspace.workspace],
-                "apps": [SHEETS, TASKS],
+                "apps": [SHEETS, TASKS, STORE_FIXTURE],
                 "expiresInSecs": 3600,
             })),
         )
@@ -836,11 +853,30 @@ async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
+    let store_route = Box::pin(seed_store_resource(
+        &workspaces,
+        &workspace.workspace,
+        &node,
+        state.path(),
+    ))
+    .await;
+    let mut store_writes = workspaces.document_writes();
+    let edit = |invocation: &str, field: &str, value: &str| {
+        serde_json::json!({
+            "path": "resource-fixture#field-edit",
+            "invocation_id": invocation,
+            "args": {"edit": {"path": [{"item": "card"}, {"field":field}], "op": "set", "value": value}},
+        })
+    };
+    let accepted = tilo_actions::InvocationId::new().0.to_string();
+    let denied = tilo_actions::InvocationId::new().0.to_string();
     let requests = Arc::new(Mutex::new(Vec::new()));
     let model = does_then_answers(
         vec![
             serde_json::json!({"path": "sheets#new-sheet", "args": {"name": "Roster signed"}}),
             serde_json::json!({"path": "notes#create-page", "args": {"title": "Outside the grant"}}),
+            edit(&denied, "protected", "Denied"),
+            edit(&accepted, "title", "Updated"),
         ],
         "I worked on the sheet.",
         Arc::clone(&requests),
@@ -862,6 +898,10 @@ async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner
             refused.1 && refused.0.contains("not_permitted"),
             "{refused:?}"
         );
+        let denied = answered_to(final_request, "call-3");
+        assert!(denied.1 && denied.0.contains("not permitted"), "{denied:?}");
+        let updated = answered_to(final_request, "call-4");
+        assert!(!updated.1, "{updated:?}");
     }
     ended.unwrap();
     assert_ne!(read(&workbook).await.unwrap(), workbook_before);
@@ -870,6 +910,25 @@ async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner
     assert_eq!(signed.len(), 1, "{signed:?}");
     let (count, _) = retained_sealed(&hosted, workspace.workspace_id, &notebook, device).await;
     assert_eq!(count, 0);
+    let mut store_events = 0;
+    while let Ok(write) = store_writes.try_recv() {
+        if write.app == STORE_FIXTURE {
+            store_events += 1;
+        }
+    }
+    assert_eq!(
+        store_events, 1,
+        "only the admitted edit published to the watch"
+    );
+    assert_store_edit(
+        &hosted,
+        state.path(),
+        &store_route,
+        device,
+        agent,
+        &accepted,
+    )
+    .await;
     drop(runner);
 
     // The same roster id can exist in another workspace. An answer for that
@@ -1014,6 +1073,15 @@ async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner
     drop(hosted.web);
     hosted.server.shutdown().await;
     let reopened = crate::harness::hosted::start(&owner, &node, state.path(), options()).await;
+    assert_store_edit(
+        &reopened,
+        state.path(),
+        &store_route,
+        device,
+        agent,
+        &accepted,
+    )
+    .await;
     let restored = roster_write(&reopened, workspace.workspace_id, &workbook, device).await;
     assert_eq!(
         restored, signed,
@@ -1060,6 +1128,237 @@ async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner
     drop(reopened.web);
     reopened.server.shutdown().await;
     endpoint.close().await;
+}
+
+const STORE_FIXTURE: &str = "so.tilo.resource-fixture";
+const STORE_KIND: &str = "fixture.card";
+
+fn store_path(state: &std::path::Path, route: &DocumentRoute) -> std::path::PathBuf {
+    state
+        .join("server/workspaces")
+        .join(&route.cluster_id)
+        .join("store/docs")
+        .join(hex::encode(route.document.as_bytes()))
+}
+
+async fn seed_store_resource(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+    governor: &Device,
+    state: &std::path::Path,
+) -> DocumentRoute {
+    use automerge::transaction::Transactable as _;
+    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+    use tilo_peer_state::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
+
+    let surface = br#"
+[[resources]]
+kind = "fixture.card"
+label = "Cards"
+version = 1
+
+[[resources.fields]]
+path = "title"
+type = "text"
+
+[[resources.fields]]
+path = "protected"
+type = "text"
+unit = true
+
+[[resources.types]]
+name = "fixture.card"
+fields = [{ name = "title", type = "text" }, { name = "protected", type = "text" }]
+
+[[resources.verbs]]
+id = "field-edit"
+kind = "undoable"
+field = "title"
+params = [{ name = "edit", required = true, schema = { type = "object" } }]
+"#;
+    let package = super::packaged_model::package(STORE_FIXTURE, b"\0asm\x01\0\0\0", surface);
+    let file = blake3::hash(&package).to_hex().to_string();
+    let kept = state.join("server/workspaces/app-files").join(workspace);
+    std::fs::create_dir_all(&kept).unwrap();
+    std::fs::write(kept.join(format!("{file}.tapp")), &package).unwrap();
+    let (_, canonical) = collab_types::surface::SurfaceFile::kept(surface).unwrap();
+    workspaces
+        .govern_app(
+            workspace,
+            &governor.cert,
+            [7; 32],
+            WorkspaceMembershipCommand::InstallApp(AppRelease {
+                app: STORE_FIXTURE.into(),
+                version: "1.0.0".into(),
+                surface: blake3::hash(canonical.as_bytes()).to_hex().to_string(),
+                package: file.clone(),
+                publisher: hex::encode(governor.cert.user_public_key),
+                file: Some(file),
+                dev: true,
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        workspaces
+            .installed_package(workspace, STORE_FIXTURE)
+            .await
+            .is_some(),
+        "the action service can load the installed fixture package"
+    );
+    collab_types::app_surface::register_package(STORE_FIXTURE, surface);
+    let route = DocumentRoute {
+        app_id: STORE_FIXTURE.into(),
+        cluster_id: workspace.into(),
+        document: format!("*/{STORE_KIND}#0"),
+    };
+    let mut initial = automerge::AutoCommit::new();
+    initial.put(automerge::ROOT, "w", "*").unwrap();
+    let row = initial
+        .put_object(automerge::ROOT, "r:card", automerge::ObjType::Map)
+        .unwrap();
+    initial.put(&row, "k", STORE_KIND).unwrap();
+    let fields = initial
+        .put_object(&row, "f", automerge::ObjType::Map)
+        .unwrap();
+    initial.put(&fields, "title", "Original").unwrap();
+    initial.put(&fields, "protected", "Kept").unwrap();
+    initial.commit_with(
+        automerge::transaction::CommitOptions::default().with_message(
+            collab_types::Stamp {
+                verb: "field-edit".into(),
+                invocation: "seed".into(),
+                ..Default::default()
+            }
+            .message(),
+        ),
+    );
+    let keys = workspaces
+        .own_route_keys(&route, true)
+        .await
+        .unwrap()
+        .unwrap();
+    let artifact = collab_types::document_artifact_id(STORE_FIXTURE, workspace, &route.document);
+    let frame = collab_types::DocumentMutation::Snapshot(initial.save())
+        .encode()
+        .unwrap();
+    let (_, peer) = workspaces
+        .governed_copy(WorkspaceId::parse(workspace).unwrap())
+        .await
+        .unwrap();
+    let mut envelope = peer
+        .draft_write(
+            (STORE_FIXTURE, &route.document),
+            &frame,
+            Some(&mut |plaintext| {
+                keys.seal_content(
+                    artifact,
+                    collab_types::ContentRetention::Checkpoint,
+                    plaintext,
+                )
+                .map_err(|error| error.to_string())
+            }),
+            governor.cert.device_public_key,
+            0,
+            tilo_clock::wall(),
+        )
+        .unwrap();
+    collab_types::sign_op(&mut envelope, &governor.key).unwrap();
+    workspaces
+        .commit_local_document(
+            workspace,
+            OwnerCommitRequest {
+                workspace: workspace.into(),
+                operation: CommitOperation::Document {
+                    app: STORE_FIXTURE.into(),
+                    document: route.document.clone(),
+                    envelope: Box::new(envelope),
+                    own: None,
+                    readers: None,
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        workspaces
+            .resource_document(workspace, STORE_FIXTURE, &route.document)
+            .await
+            .unwrap()
+            .is_some(),
+        "the server can read the seeded store document"
+    );
+    assert!(
+        store_path(state, &route).exists(),
+        "the fixture was taken into the workspace store"
+    );
+
+    route
+}
+
+async fn assert_store_edit(
+    hosted: &super::Hosted,
+    state: &std::path::Path,
+    route: &DocumentRoute,
+    device: [u8; 32],
+    agent: &str,
+    invocation: &str,
+) {
+    use automerge::ReadDoc as _;
+
+    let workspaces = hosted.server.workspaces().unwrap();
+    let bytes = workspaces
+        .resource_document(&route.cluster_id, &route.app_id, &route.document)
+        .await
+        .unwrap()
+        .unwrap();
+    for bytes in [bytes, std::fs::read(store_path(state, route)).unwrap()] {
+        let mut doc = automerge::AutoCommit::load(&bytes).unwrap();
+        let (_, row) = doc.get(automerge::ROOT, "r:card").unwrap().unwrap();
+        let (_, fields) = doc.get(row, "f").unwrap().unwrap();
+        for (field, expected) in [("title", "Updated"), ("protected", "Kept")] {
+            let (value, _) = doc.get(&fields, field).unwrap().unwrap();
+            assert_eq!(
+                value.as_scalar().and_then(automerge::ScalarValue::as_str),
+                Some(expected)
+            );
+        }
+        let changes = doc.get_changes(&[]);
+        assert_eq!(changes.len(), 2, "seed and one accepted edit");
+        let change = &changes[1];
+        assert_eq!(change.actor_id().to_bytes(), &device);
+        let stamp = collab_types::Stamp::of_message(change.message().unwrap()).unwrap();
+        assert_eq!(stamp.invocation, invocation);
+        assert_eq!(stamp.verb, "field-edit");
+        assert_eq!(stamp.invoker, agent);
+        assert!(!stamp.membership.is_empty());
+    }
+    let envelopes: Vec<_> = hosted
+        .server
+        .workspace_documents()
+        .retained(WorkspaceId::parse(&route.cluster_id).unwrap())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|body| match postcard::from_bytes(&body.body).unwrap() {
+            neighbour_wire::NeighbourMsg::AppDocument {
+                app_id,
+                document_id,
+                envelope,
+                ..
+            } if app_id == route.app_id && document_id == route.document => Some(envelope),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(envelopes.len(), 2, "seed and one retained edit");
+    let edit = envelopes
+        .iter()
+        .find(|envelope| envelope.author.as_bytes() == &device)
+        .unwrap();
+    assert!(edit.encryption.is_some());
+    assert_eq!(edit.claims.len(), 1);
+    collab_types::verify_op(edit).unwrap();
 }
 
 async fn roster_write(

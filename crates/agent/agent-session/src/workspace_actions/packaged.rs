@@ -110,7 +110,18 @@ impl Worker {
         let confirmed = confirms(&descriptor.contract.confirmation, given, |token| {
             self.shared.approvals.take(token, &binding)
         });
-        if !self.serves_as_owner(caller) {
+        if caller.roster_created_at().is_some() {
+            // The store checks the exact item and field under current policy,
+            // while it holds the workspace through admission.
+            if !caller.execution_is_live()
+                || caller.turn().is_none()
+                || target.address.action != ui::tilo_resource::FIELD_EDIT
+                || verb.kind != tilo_actions::ActionKind::Undoable
+                || verb.destructive
+            {
+                return Err(Outcome::Rejected(ActionCallError::NotPermitted));
+            }
+        } else if !self.serves_as_owner(caller) {
             let who = self.bounded(caller).ok_or_else(unknown_action)?;
             if !self.admits_bounded(workspace_id, &who) {
                 return Err(Outcome::Rejected(ActionCallError::NotPermitted));
@@ -144,6 +155,7 @@ impl Worker {
                 workspace_id,
                 caller,
                 PackagedCall {
+                    invocation: request.invocation,
                     app: &route.app_id,
                     kind: &resource.kind,
                     document: &route.document,

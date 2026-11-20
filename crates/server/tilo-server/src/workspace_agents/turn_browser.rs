@@ -142,7 +142,7 @@ impl TurnBrowser {
             if let Some(state) = self
                 .service
                 .actions
-                .observe(self.service.workspace_caller(caller), &invocation)
+                .observe(&self.service.workspace_caller(caller), &invocation)
                 && state.update.is_terminal()
             {
                 return Ok(state.update);
