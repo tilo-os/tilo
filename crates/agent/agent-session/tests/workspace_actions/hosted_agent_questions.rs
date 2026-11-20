@@ -857,7 +857,7 @@ struct Hears(Mutex<Vec<(serde_json::Value, Answered)>>);
 impl Carries for Hears {
     fn carry<'a>(&'a self, ask: &'a KeptAsk, answer: Answered) -> Carried<'a> {
         self.0.lock().unwrap().push((ask.kept.clone(), answer));
-        Box::pin(async { Ok(()) })
+        Box::pin(async { Ok(None) })
     }
 }
 
