@@ -21,9 +21,9 @@ label = "Tracked files reference no internal tracker"
 run = "python3 tools/policy/check_public_references.py"
 
 [[step]]
-name = "integration-test-modules"
-label = "Integration tests are compiled by a test target"
-run = "python3 tools/policy/check_integration_test_modules.py"
+name = "module-reachability"
+label = "Every Rust source is compiled by one of its crate's targets"
+run = "python3 tools/policy/check_module_reachability.py"
 
 [[step]]
 name = "interfaces"

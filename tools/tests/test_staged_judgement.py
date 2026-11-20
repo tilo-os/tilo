@@ -99,7 +99,7 @@ class Case:
     def verdict(self, repository: Repository, staged: bool) -> list[str]:
         """The paths of the files the check reports, relative to the root."""
         module = self.module
-        if self.check == "check_integration_test_modules":
+        if self.check == "check_module_reachability":
             return [entry.split(":", 1)[0] for entry in module.orphans(repository.root, staged)]
         if self.check == "check_app_text_contract":
             found = module.audit(repository.root, staged)[0]
@@ -193,7 +193,7 @@ CASES = (
         },
     ),
     Case(
-        check="check_integration_test_modules",
+        check="check_module_reachability",
         files={
             "Cargo.toml": '[workspace]\nmembers = ["crates/y"]\n',
             "crates/y/Cargo.toml": (
@@ -275,7 +275,7 @@ class StagedJudgementTests(unittest.TestCase):
                 # The same paths, fixed in the working tree and never staged:
                 # the commit still carries what the index holds.
                 clean = {path: "pub fn run() {}\n" for path in case.violation}
-                if case.check == "check_integration_test_modules":
+                if case.check == "check_module_reachability":
                     clean = {"crates/y/tests/orphan.rs": "mod kept;\n"}
                 repository.write(clean)
                 self.assertLessEqual(flagged_paths(case), set(case.verdict(repository, staged=True)))
@@ -376,7 +376,7 @@ class HookWiringTests(unittest.TestCase):
         "check_formats",
         "check_settings_writes",
         "check_swallowed_failures",
-        "check_integration_test_modules",
+        "check_module_reachability",
         "check_too_many_arguments",
         "check_source_file_size",
     )

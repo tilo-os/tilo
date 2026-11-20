@@ -86,7 +86,7 @@ python3 "$root/tools/policy/check_clock_contract.py" --staged
 python3 "$root/tools/policy/check_formats.py" --staged || fail=1
 python3 "$root/tools/policy/check_settings_writes.py" --staged || fail=1
 python3 "$root/tools/policy/check_swallowed_failures.py" --staged || fail=1
-python3 "$root/tools/policy/check_integration_test_modules.py" --staged || fail=1
+python3 "$root/tools/policy/check_module_reachability.py" --staged || fail=1
 python3 "$root/tools/policy/check_too_many_arguments.py" --staged || fail=1
 python3 "$root/tools/policy/check_source_file_size.py" --staged || fail=1
 # The words docs/glossary.md does not use: a commit adds none, and lowers the
