@@ -2541,13 +2541,14 @@ fn a_windows_setup_stays_open_through_an_in_place_restart_and_never_holds_it_up(
         answers[0]["installations"][0]["status"], "installed",
         "{answers:?}"
     );
-    let names: Vec<&str> = answers[0]["applications"]
-        .as_array()
-        .expect("the list")
-        .iter()
-        .filter_map(|application| application["display_name"].as_str())
-        .collect();
-    assert!(names.contains(&"Example"), "what it installed: {answers:?}");
+    assert!(
+        answers[0]["applications"]
+            .as_array()
+            .expect("the list")
+            .iter()
+            .any(|application| application["display_name"] == "Example"),
+        "what it installed: {answers:?}"
+    );
 
     // A logout ends an open setup, without waiting on it.
     let answers = second.manage(&rig, "fourth", &["install"]);
