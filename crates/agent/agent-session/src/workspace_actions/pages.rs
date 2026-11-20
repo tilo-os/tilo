@@ -64,6 +64,19 @@ pub(super) struct Pages {
     next: u64,
 }
 
+impl Pages {
+    /// Who the page `job` is about was opened by: what an act on it, which names the page alone,
+    /// is rendered for.
+    pub(super) fn caller_of<'a>(&'a self, job: &'a PageJob) -> Option<&'a Caller> {
+        match job {
+            PageJob::Open { caller, .. } => Some(&**caller),
+            PageJob::Act { page, .. } | PageJob::Close { page, .. } => {
+                self.held.get(page).map(|held| &held.who.caller)
+            }
+        }
+    }
+}
+
 fn unavailable(error: impl std::fmt::Display) -> PageRefusal {
     PageRefusal::Unavailable(error.to_string())
 }

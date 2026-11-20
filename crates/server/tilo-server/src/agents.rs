@@ -994,6 +994,19 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
             .block_on(workspaces.key_revoked(workspace, caller))
     }
 
+    /// The formats and the zone the person `caller` is, or acts for, keeps on this server: what
+    /// their page told it of Region & Formats and of the browser's zone. A person with only a
+    /// browser has no device that could render their view, so the server renders it as they
+    /// read it.
+    fn region_of(&self, caller: &Caller) -> Option<tilo_agent_session::worker::PersonRegion> {
+        let workspaces = self.workspaces.as_ref()?;
+        let acting = caller.acting();
+        let person = acting.person_id().or_else(|| acting.acted_for_person())?;
+        let person: [u8; 32] = hex::decode(person).ok()?.try_into().ok()?;
+        let (formats, zone) = workspaces.person_region(&person)?;
+        Some(tilo_agent_session::worker::PersonRegion { formats, zone })
+    }
+
     /// The workspace's members as its roster tells a person's page of them: its people, as its
     /// governance names them, and its agents, as their delegations name them and its list of
     /// them does. What a view this device renders for an agent names its rows' authors and

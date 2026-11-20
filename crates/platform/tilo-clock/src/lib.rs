@@ -21,10 +21,23 @@ pub mod local {
     pub struct Zone(platform::Zone);
 
     impl Zone {
-        /// The zone of the device or page this is read on.
+        /// The zone of the device or page this is read on: the one [`install`] handed the thread
+        /// it is read on, where it was handed one.
         #[must_use]
         pub fn here() -> Self {
+            #[cfg(not(target_family = "wasm"))]
+            if let Some(zone) = told::installed() {
+                return zone;
+            }
             Self(platform::Zone::here())
+        }
+
+        /// The zone `name` names, read from its `TZif` `data`: what a process that opens no file
+        /// reads a zone from ([`tzif`]). `None` where the data is not a zone's.
+        #[cfg(not(target_family = "wasm"))]
+        #[must_use]
+        pub fn from_tzif(name: &str, data: &[u8]) -> Option<Self> {
+            jiff::tz::TimeZone::tzif(name, data).ok().map(Self::of)
         }
 
         /// The zone a device's database names, for a test that reads a time somewhere else.
@@ -52,6 +65,133 @@ pub mod local {
         #[must_use]
         pub fn instant_of(&self, local: DateTime) -> Option<Timestamp> {
             self.0.instant_of(local)
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub use told::{install, tzif};
+
+    /// A zone a thread is told rather than reads from its system: a worker that renders a
+    /// view for a person whose clock is elsewhere, and that opens no file once it confined
+    /// itself, is handed the person's zone as its `TZif` data.
+    #[cfg(not(target_family = "wasm"))]
+    mod told {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+        use std::sync::{Arc, Mutex, PoisonError};
+
+        use super::Zone;
+
+        thread_local! {
+            /// The zone [`install`] handed this thread, if any.
+            static INSTALLED: RefCell<Option<Zone>> = const { RefCell::new(None) };
+        }
+
+        /// The zones [`tzif`] read, by name, and the names it found none for.
+        type Read = HashMap<String, Option<Arc<[u8]>>>;
+        static READ: Mutex<Option<Read>> = Mutex::new(None);
+
+        /// Most names [`tzif`] remembers; past it, it reads again rather than grow.
+        const MAX_REMEMBERED: usize = 1_024;
+
+        pub(super) fn installed() -> Option<Zone> {
+            INSTALLED.with(|installed| installed.borrow().clone())
+        }
+
+        /// Read local times in `zone` from now on, on this thread, in place of the system's;
+        /// `None` goes back to the system's. A worker that serves several people at once
+        /// renders each one's views on a thread of its own, so each thread keeps its zone.
+        pub fn install(zone: Option<Zone>) {
+            INSTALLED.with(|installed| *installed.borrow_mut() = zone);
+        }
+
+        /// The `TZif` data of the zone `name` (`Pacific/Auckland`), from the system's zone
+        /// database: what [`Zone::from_tzif`] reads it from in a process that opens no file.
+        /// `None` where `name` is no zone the database holds.
+        #[must_use]
+        pub fn tzif(name: &str) -> Option<Arc<[u8]>> {
+            if !crate::is_zone_name(name) {
+                return None;
+            }
+            let known = READ
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .and_then(|read| read.get(name).cloned());
+            if let Some(known) = known {
+                return known;
+            }
+            let found = databases()
+                .iter()
+                .find_map(|database| std::fs::read(database.join(name)).ok())
+                .filter(|data| Zone::from_tzif(name, data).is_some())
+                .map(Arc::<[u8]>::from);
+            let mut remembered = READ.lock().unwrap_or_else(PoisonError::into_inner);
+            let read = remembered.get_or_insert_with(HashMap::new);
+            if read.len() >= MAX_REMEMBERED {
+                read.clear();
+            }
+            read.insert(name.to_owned(), found.clone());
+            drop(remembered);
+            found
+        }
+
+        /// Where the system keeps its zone database, where jiff looks for it.
+        fn databases() -> Vec<PathBuf> {
+            let mut databases: Vec<PathBuf> = std::env::var_os("TZDIR")
+                .map(PathBuf::from)
+                .filter(|dir| dir.is_absolute())
+                .into_iter()
+                .collect();
+            databases.extend(
+                [
+                    "/usr/share/zoneinfo",
+                    "/usr/share/lib/zoneinfo",
+                    "/etc/zoneinfo",
+                ]
+                .into_iter()
+                .map(PathBuf::from),
+            );
+            databases
+        }
+
+        #[cfg(test)]
+        mod tests {
+            use super::tzif;
+            use crate::is_zone_name;
+
+            #[test]
+            fn only_a_zones_name_is_read() {
+                assert!(is_zone_name("Pacific/Auckland"));
+                assert!(is_zone_name("America/Argentina/Buenos_Aires"));
+                assert!(is_zone_name("Etc/GMT+12"));
+                assert!(is_zone_name("UTC"));
+                assert!(!is_zone_name(""));
+                assert!(!is_zone_name("/etc/passwd"));
+                assert!(!is_zone_name("../../etc/passwd"));
+                assert!(!is_zone_name("Europe/../../x"));
+                assert!(!is_zone_name("Europe//Vienna"));
+                assert!(!is_zone_name("Europe/Vi enna"));
+                assert!(tzif("../../etc/passwd").is_none());
+            }
+
+            /// A zone read from its data reads an instant as the database's zone does.
+            #[test]
+            fn a_zone_read_from_its_data_is_the_databases() {
+                let Some(data) = tzif("Pacific/Auckland") else {
+                    // A system without a zone database has nothing to read.
+                    return;
+                };
+                let zone = super::Zone::from_tzif("Pacific/Auckland", &data).unwrap();
+                let at = jiff::Timestamp::from_second(1_773_583_500).unwrap();
+                assert_eq!(zone.name().as_deref(), Some("Pacific/Auckland"));
+                assert_eq!(
+                    zone.at(at).offset().seconds(),
+                    13 * 3600,
+                    "summer in Auckland"
+                );
+            }
         }
     }
 
@@ -723,6 +863,24 @@ pub fn is_synchronised() -> Option<bool> {
     {
         None
     }
+}
+
+/// Whether `name` names a zone as the time-zone database does (`Pacific/Auckland`, `UTC`), and
+/// so names no file outside the database either.
+#[must_use]
+pub fn is_zone_name(name: &str) -> bool {
+    /// The longest name taken: the database's longest is about 30 bytes.
+    const MAX_NAME: usize = 64;
+    !name.is_empty()
+        && name.len() <= MAX_NAME
+        && name.split('/').all(|part| {
+            !part.is_empty()
+                && part != "."
+                && part != ".."
+                && part.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || "_+-.".contains(character)
+                })
+        })
 }
 
 #[must_use]

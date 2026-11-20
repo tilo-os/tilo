@@ -63,6 +63,7 @@ pub mod person_accounts;
 pub mod person_asking;
 pub mod person_connections;
 pub mod person_events;
+pub mod person_formats;
 pub mod person_initiative;
 pub mod person_models;
 pub mod person_telling;

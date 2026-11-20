@@ -25,6 +25,7 @@ use super::proto::{
     CONTENT_BATCH_BYTES, FRAMING, MAX_CONTENT_ITEM_BYTES, Mode, PROTOCOL_VERSION, ProbeReport,
     Reply, Request, Slot, WireApiError,
 };
+use super::region::Region;
 use crate::apps::{AppCatalogue, Replica, ReplicaActor, Seed};
 use crate::workspace_actions::ViewReadPolicy;
 
@@ -42,11 +43,6 @@ use crate::workspace_actions::ViewReadPolicy;
 /// came, every reply sent with its slot: a request that takes long holds up
 /// its own slot and no other.
 pub(super) fn serve() -> i32 {
-    // The views read here render dates and clocks in the person's formats, as the session's
-    // windows do; the supervisor hands them with the locale, and their zone as `TZ`.
-    ui::format::region::install(super::process::formats_from_env(
-        std::env::var(super::process::FORMATS_ENV).ok().as_deref(),
-    ));
     // SAFETY: descriptor 0 is the socket the supervisor handed this process
     // as stdin; it is taken over here and nothing else in the worker reads
     // stdin.
@@ -88,9 +84,9 @@ pub(super) fn serve() -> i32 {
     ) {
         return 1;
     }
-    let mut slots: HashMap<Slot, std::sync::mpsc::Sender<Request>> = HashMap::new();
+    let mut slots: HashMap<Slot, std::sync::mpsc::Sender<(Region, Request)>> = HashMap::new();
     loop {
-        let (slot, slot_mode, request): (Slot, Mode, Request) =
+        let (slot, slot_mode, rendered_in, request): (Slot, Mode, Region, Request) =
             match FRAMING.read_value(&mut &replies.socket) {
                 Ok(Some(request)) => request,
                 // The supervisor went away or spoke garbage: nothing left to do.
@@ -125,7 +121,7 @@ pub(super) fn serve() -> i32 {
                         }
                     }
                 }
-                .send(request);
+                .send((rendered_in, request));
                 if sent.is_err() && !answer(slot, &Reply::Failed("the slot has ended".into())) {
                     return 0;
                 }
@@ -163,8 +159,8 @@ fn open_slot(
     catalogue: &AppCatalogue,
     text: Option<ui::TextRenderer>,
     replies: &Replies,
-) -> Result<std::sync::mpsc::Sender<Request>, String> {
-    let (sender, requests) = std::sync::mpsc::channel::<Request>();
+) -> Result<std::sync::mpsc::Sender<(Region, Request)>, String> {
+    let (sender, requests) = std::sync::mpsc::channel::<(Region, Request)>();
     let catalogue = catalogue.clone();
     let replies = Arc::clone(replies);
     std::thread::Builder::new()
@@ -172,7 +168,10 @@ fn open_slot(
         .stack_size(super::WORKER_STACK)
         .spawn(move || {
             let mut held = Held::new(mode, catalogue, text);
-            for request in requests {
+            let mut region = super::region::Installed::default();
+            for (rendered_in, request) in requests {
+                // What it renders shows dates and clocks as the person it is for reads them.
+                region.install(rendered_in);
                 // The app's code finds the slot's content store wherever it
                 // runs, in or out of its view's own scope.
                 let reply = {

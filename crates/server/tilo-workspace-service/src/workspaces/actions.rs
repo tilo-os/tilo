@@ -60,7 +60,8 @@ use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_GOVERNANCE_KIND,
     WORKSPACE_GOVERNANCE_PROVIDER, mcp_server, person_accounts, person_asking, person_connections,
-    person_models, person_telling, person_vault, server_account, workspace_governance_resource,
+    person_formats, person_models, person_telling, person_vault, server_account,
+    workspace_governance_resource,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
@@ -1427,9 +1428,10 @@ impl Workspaces {
             // nothing of it is read back, and no agent asks.
             // The same holds for what their agents no longer ask them, in
             // the same store: read and taken back by the person alone, and
-            // written by no request.
+            // written by no request. The formats and zone the person reads dates in
+            // are theirs alone too.
             #[cfg(not(target_arch = "wasm32"))]
-            (person_vault::PROVIDER | person_asking::PROVIDER, _) => {
+            (person_vault::PROVIDER | person_asking::PROVIDER | person_formats::PROVIDER, _) => {
                 self.person_alone_invoke(workspace_id, caller, certificate, request)
                     .await
             }
@@ -2787,7 +2789,7 @@ pub(super) const LEARNED: &str = "tilo.learned";
 pub(super) const SKILLS: &str = "tilo.skills";
 
 /// The providers a server that governs workspaces answers itself.
-const PROVIDERS: [&str; 11] = [
+const PROVIDERS: [&str; 12] = [
     WORKSPACE_GOVERNANCE_PROVIDER,
     HOST_ACTIONS_PROVIDER,
     mcp_server::PROVIDER,
@@ -2807,6 +2809,8 @@ const PROVIDERS: [&str; 11] = [
     LEARNED,
     // How kinds of work are done for the person: their skills.
     SKILLS,
+    // The formats and the zone the person reads dates in.
+    person_formats::PROVIDER,
 ];
 
 /// What a server that governs workspaces answers remote actions addressed to it

@@ -22,6 +22,10 @@ static REVISION: AtomicU64 = AtomicU64::new(0);
 /// until the next [`refresh`].
 #[must_use]
 pub fn current() -> RegionFormats {
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(formats) = HERE.with(|here| here.borrow().0) {
+        return formats;
+    }
     if let Some(formats) = *CURRENT.read_recover() {
         return formats;
     }
@@ -46,6 +50,36 @@ pub fn install(formats: RegionFormats) -> bool {
         REVISION.fetch_add(1, Ordering::AcqRel);
     }
     !first
+}
+
+#[cfg(not(target_family = "wasm"))]
+std::thread_local! {
+    /// The formats and the zone, by its name, [`install_here`] handed this thread: none for the
+    /// person's own.
+    static HERE: std::cell::RefCell<(Option<RegionFormats>, Option<String>)> =
+        const { std::cell::RefCell::new((None, None)) };
+}
+
+/// Read dates on this thread in `formats` and local times in `zone` from now on, in place of
+/// the person's own and the device's: a worker that renders views for several people at once
+/// renders each one's on a thread of its own, in their formats and on their clock
+/// ([`tilo_clock::local::install`]). `None` goes back to the person's and the device's. Changes
+/// the [`revision`], as new formats do, and answers `true`, when either differs from the
+/// thread's.
+#[cfg(not(target_family = "wasm"))]
+pub fn install_here(formats: Option<RegionFormats>, zone: Option<crate::clock::Zone>) -> bool {
+    let next = (formats, zone.as_ref().and_then(crate::clock::Zone::name));
+    tilo_clock::local::install(zone);
+    let changed = HERE.with(|here| {
+        let mut here = here.borrow_mut();
+        let changed = *here != next;
+        *here = next;
+        changed
+    });
+    if changed {
+        REVISION.fetch_add(1, Ordering::AcqRel);
+    }
+    changed
 }
 
 /// Changes whenever the person's formats change.

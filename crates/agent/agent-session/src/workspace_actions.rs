@@ -103,6 +103,7 @@ mod share;
 mod terminal;
 mod timing;
 mod tree_put;
+pub use crate::worker::PersonRegion;
 pub(super) use arguments::invoke_arguments;
 pub use content::MAX_PUT_BYTES;
 pub use host_actions::HostActions;
@@ -1786,6 +1787,8 @@ impl Worker {
         reason = "one arm per kind of request, read together: a dozen tiny methods hide the map"
     )]
     fn take(&mut self, queued: Instant, job: Job) {
+        // What it renders for its caller shows their dates and clocks as their own windows do.
+        let _region = crate::worker::region::scope(self.region_for(&job));
         {
             match job {
                 Job::Feedback {
@@ -1932,6 +1935,22 @@ impl Worker {
         // What a job that answers no invocation wrote (a run it records), or
         // what a failed one wrote before it failed, is logged once saved.
         self.watch_handed();
+    }
+
+    /// The region the views `job` renders are in: that of the person its caller is or acts
+    /// for, where this device keeps one for them ([`WorkspaceDocumentsLink::region_of`]).
+    fn region_for(&self, job: &Job) -> Option<PersonRegion> {
+        let link = self.shared.link.get()?;
+        let caller = match job {
+            Job::Invoke { invocation, .. } => self
+                .log()
+                .entries
+                .get(invocation)
+                .map(|entry| entry.caller.clone()),
+            Job::Page(page) => self.pages.caller_of(page).cloned(),
+            other => other.caller().cloned(),
+        }?;
+        link.region_of(&caller)
     }
 
     fn log(&self) -> std::sync::MutexGuard<'_, InvocationLog> {

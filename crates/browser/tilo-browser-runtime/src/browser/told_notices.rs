@@ -16,7 +16,8 @@ use tilo_actions::remote::person_telling::{
     self, Acknowledge, BY_OPENED, Kind, ListAfter, MAX_LIST_WAIT_MS, Told, ToldList,
 };
 use tilo_actions::remote::{
-    Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark, settle_with,
+    Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget, UpdateMark,
+    settle_with,
 };
 use tilo_desktop_surface::DesktopHandle;
 use tilo_service::notice::{Place, TAGS};
@@ -59,6 +60,9 @@ pub(crate) fn follow(peer: Option<u32>, workspace: &str, person: &str, shell: &D
         return;
     }
     FOLLOWED.with_borrow_mut(|followed| followed.push(key.clone()));
+    // The same server renders the person's views where no device of theirs does: it is told
+    // the formats and the zone they read dates in.
+    super::person_formats::follow(peer, id, workspace, person);
     // What a notice opens comes back through the page's notices.
     let _ = crate::host_services::notices();
     let (workspace, person, shell) = (workspace.to_owned(), person.to_owned(), shell.clone());
@@ -71,7 +75,8 @@ pub(crate) fn follow(peer: Option<u32>, workspace: &str, person: &str, shell: &D
                 wait_ms: (!first).then_some(MAX_LIST_WAIT_MS),
                 device: String::new(),
             };
-            let Some(list) = ask::<ToldList>(&api, &caller, person_telling::LIST, &asked).await
+            let Some(list) =
+                ask::<ToldList>(&api, &caller, telling(person_telling::LIST), &asked).await
             else {
                 sleep_ms(retry).await;
                 retry = retry.saturating_mul(2).min(RETRY_MAX_MS);
@@ -106,7 +111,9 @@ pub(crate) fn opened(place: &Place) {
         by: BY_OPENED.to_owned(),
     };
     wasm_bindgen_futures::spawn_local(async move {
-        let _ = ask::<serde_json::Value>(&api, &caller, person_telling::ACKNOWLEDGE, &opened).await;
+        let _ =
+            ask::<serde_json::Value>(&api, &caller, telling(person_telling::ACKNOWLEDGE), &opened)
+                .await;
     });
 }
 
@@ -182,11 +189,17 @@ fn show(
     });
 }
 
-/// Ask the person's log `action` with `argument`, as the person, and read what it answers.
-async fn ask<T: serde::de::DeserializeOwned>(
+/// The person's log's `action`.
+fn telling(action: &str) -> RemoteActionTarget {
+    person_telling::target(person_telling::TOLD, action)
+}
+
+/// Ask what the server keeps for the person `target` with `argument`, as the person, and read
+/// what it answers.
+pub(super) async fn ask<T: serde::de::DeserializeOwned>(
     api: &SessionActions,
     caller: &Caller,
-    action: &str,
+    target: RemoteActionTarget,
     argument: &impl serde::Serialize,
 ) -> Option<T> {
     let serde_json::Value::Object(argument) = serde_json::to_value(argument).ok()? else {
@@ -195,7 +208,7 @@ async fn ask<T: serde::de::DeserializeOwned>(
     let invocation = tilo_actions::InvocationId::new();
     let request = InvokeRequest {
         invocation,
-        target: person_telling::target(person_telling::TOLD, action),
+        target,
         argument: InvokeArgument::Json(argument),
         context: None,
         confirmation: None,

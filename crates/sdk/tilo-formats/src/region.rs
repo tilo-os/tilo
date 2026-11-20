@@ -191,4 +191,51 @@ impl RegionFormats {
             first_day: take(&mut section, "first_day_of_week").unwrap_or_default(),
         }
     }
+
+    /// The formats as the `locale` settings section keeps them, which [`Self::from_section`]
+    /// reads back: a number style not chosen yet is `null`, so writing the keys over a section
+    /// that held one leaves the language's convention.
+    #[must_use]
+    pub fn to_section(&self) -> serde_json::Map<String, serde_json::Value> {
+        let value = |value: serde_json::Result<serde_json::Value>| value.unwrap_or_default();
+        serde_json::Map::from_iter([
+            (
+                "date_format".to_owned(),
+                value(serde_json::to_value(self.date)),
+            ),
+            (
+                "time_format".to_owned(),
+                value(serde_json::to_value(self.time)),
+            ),
+            (
+                "number_style".to_owned(),
+                value(serde_json::to_value(self.number)),
+            ),
+            (
+                "first_day_of_week".to_owned(),
+                value(serde_json::to_value(self.first_day)),
+            ),
+        ])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_formats_read_back_from_the_section_they_write() {
+        let formats = RegionFormats {
+            date: DateStyle::Eu,
+            time: TimeStyle::H24,
+            number: Some(NumberStyle::DecimalComma),
+            first_day: FirstDayOfWeek::Sunday,
+        };
+        let section = formats.to_section();
+        assert_eq!(section["date_format"], "EU");
+        assert_eq!(section["time_format"], "H24");
+        assert_eq!(RegionFormats::from_section(section), formats);
+        let unchosen = RegionFormats::default();
+        assert_eq!(RegionFormats::from_section(unchosen.to_section()), unchosen);
+    }
 }

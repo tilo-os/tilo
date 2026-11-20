@@ -35,7 +35,7 @@ pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 12;
+pub(crate) const PROTOCOL_VERSION: u32 = 13;
 
 /// What a worker is started to do, and what each of its slots does. The
 /// process's mode decides what it prepares before it confines itself (a
@@ -81,8 +81,9 @@ impl Mode {
 /// slot holds is never handed to a request for another.
 pub(crate) type Slot = u64;
 
-/// The supervisor's requests, each sent as `(Slot, Mode, Request)`: the
-/// slot it is for and what that slot does. Each reply comes back as
+/// The supervisor's requests, each sent as `(Slot, Mode, Region, Request)`: the
+/// slot it is for, what that slot does, and the region of the person whose views it
+/// renders ([`super::region`]). Each reply comes back as
 /// `(Slot, Reply)`, a slot's in the order it was asked; [`Request::Close`] is
 /// not answered.
 #[derive(Debug, Serialize, Deserialize)]

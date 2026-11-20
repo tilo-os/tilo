@@ -26,6 +26,11 @@ async fn view(server: &McpServer<SessionActions>) -> String {
 /// The person's Files founds the workspace's tree with the folder `name` in it, and publishes
 /// it as their page does: the tree's own document and the chunk the folder went into.
 fn person_keeps_a_folder(page: &Browser, name: &str, author: &str) {
+    person_keeps_a_folder_from(page, name, (1_000, author));
+}
+
+/// [`person_keeps_a_folder`], the folder last changed at `changed_ms` since the Unix epoch.
+fn person_keeps_a_folder_from(page: &Browser, name: &str, (changed_ms, author): (u64, &str)) {
     let owners = ui::resource::ResourceOwners::portable(
         ui::portable_storage::PortableStorage::new("files-window-view", "page-device")
             .expect("a page keeps its documents"),
@@ -56,7 +61,7 @@ fn person_keeps_a_folder(page: &Browser, name: &str, author: &str) {
         fs_protocol::tree::ROOT_ID,
         name,
         fs_protocol::tree::Placing::Folder,
-        (1_000, author),
+        (changed_ms, author),
     )
     .expect("the folder is placed");
     chunk
@@ -166,4 +171,120 @@ async fn an_agents_view_of_files_lists_the_folder_the_persons_files_hold() {
         assert!(std::time::Instant::now() < deadline, "{lines}");
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
+}
+
+/// The person's page tells the workspace's server `action` of their formats with `argument`,
+/// as the page does once it is in the workspace, and the server answers it.
+async fn page_tells(
+    page: &Browser,
+    server: [u8; 32],
+    person: &str,
+    action: &str,
+    argument: serde_json::Value,
+) {
+    use tilo_actions::remote::{ReceiptStatus, UpdateMark};
+    let api = SessionActions::new(&page.peer, page.workspace, server);
+    let caller =
+        tilo_actions::remote::Caller::local_person(person.to_owned()).in_workspace(WORKSPACE);
+    let serde_json::Value::Object(argument) = argument else {
+        panic!("an argument is an object");
+    };
+    let invocation = InvocationId::new();
+    let request = InvokeRequest {
+        invocation,
+        target: tilo_actions::remote::person_formats::target(action),
+        argument: InvokeArgument::Json(argument),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    let mut receipt = tilo_test_env::within("the server answers", api.invoke(&caller, request))
+        .await
+        .expect("the page's session answers")
+        .expect("the server takes it");
+    let until = tilo_test_env::hang_deadline();
+    let mut seen = UpdateMark::Accepted;
+    while matches!(receipt.status, ReceiptStatus::Accepted) {
+        let state = tilo_actions::remote::settle_with(&api, &caller, invocation, Some(seen), until)
+            .await
+            .flatten()
+            .expect("the server settles it");
+        seen = UpdateMark::of(&state.update);
+        receipt = state.receipt();
+    }
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "{action}: {receipt:?}"
+    );
+}
+
+/// An agent reads a file's time in the Files window the server renders for it as its person
+/// reads it on their page: on their clock and in their browser's zone, not the server's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agents_view_of_files_reads_times_on_the_persons_clock_in_their_zone() {
+    const ZONE: &str = "Pacific/Auckland";
+    let Ok(auckland) = jiff::tz::TimeZone::get(ZONE) else {
+        // A system without a zone database renders every zone as UTC.
+        return;
+    };
+    let state = crate::support::scratch_dir();
+    let (hosted, person, server, page) = agent_viewing_files(state.path()).await;
+    // Her page, in a browser in Auckland, tells the server the clock she chose in Region &
+    // Formats and where her browser is.
+    page_tells(
+        &page,
+        hosted.device,
+        &person,
+        tilo_actions::remote::person_formats::SET,
+        json!({"formats": {"time_format": "H24"}}),
+    )
+    .await;
+    page_tells(
+        &page,
+        hosted.device,
+        &person,
+        tilo_actions::remote::person_formats::BROWSER_ZONE,
+        json!({"zone": ZONE}),
+    )
+    .await;
+    // The folder last changed at 14:05 on 15 March 2026, UTC.
+    let changed = jiff::Timestamp::from_second(1_773_583_500).unwrap();
+    person_keeps_a_folder_from(
+        &page,
+        FOLDER,
+        (u64::try_from(changed.as_millisecond()).unwrap(), &person),
+    );
+    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+
+    // What her page shows for it: the time on a 24-hour clock, in Auckland.
+    let hers = ui::format::region::RegionFormats {
+        time: ui::clock::TimeStyle::H24,
+        ..ui::format::region::RegionFormats::default()
+    };
+    let on_her_page =
+        ui::format::Formats::with(hers).timestamp(changed.to_zoned(auckland).datetime());
+    let on_the_server = ui::format::Formats::with(hers)
+        .timestamp(changed.to_zoned(jiff::tz::TimeZone::UTC).datetime());
+    assert_ne!(on_her_page, on_the_server, "the zones read it apart");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let lines = loop {
+        let lines = view(&server).await;
+        if lines.contains(FOLDER) {
+            break lines;
+        }
+        assert!(std::time::Instant::now() < deadline, "{lines}");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    assert!(
+        lines.contains(&on_her_page),
+        "the agent reads {on_her_page:?}, as her page shows it: {lines}"
+    );
+    assert!(
+        !lines.contains(&on_the_server),
+        "never the server's {on_the_server:?}: {lines}"
+    );
 }

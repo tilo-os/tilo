@@ -3449,6 +3449,7 @@ mod live_layout;
 mod live_signals;
 mod pacing;
 mod page_exports;
+mod person_formats;
 pub(crate) mod presence;
 mod publication;
 mod scale;

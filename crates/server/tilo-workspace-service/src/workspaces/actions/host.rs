@@ -1298,6 +1298,8 @@ mod calendar_tests;
 #[cfg(test)]
 mod connections_tests;
 #[cfg(test)]
+mod formats_tests;
+#[cfg(test)]
 mod kept_asks_tests;
 #[cfg(test)]
 mod mail_assistant_tests;

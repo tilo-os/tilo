@@ -61,6 +61,7 @@ mod confine;
 mod process;
 pub(crate) mod proto;
 mod read;
+pub(crate) mod region;
 mod replica;
 mod serve;
 
@@ -68,6 +69,7 @@ pub(crate) use process::Lease;
 pub use process::{affinity, pool_size, running, set_affinity};
 pub use proto::{PageAction, ProbeReport};
 pub(crate) use read::{ConfinedRead, ConfinedTitles, ConfinedViews};
+pub use region::PersonRegion;
 pub use replica::ConfinedReplica;
 pub(crate) use replica::{Invoked, Operation};
 

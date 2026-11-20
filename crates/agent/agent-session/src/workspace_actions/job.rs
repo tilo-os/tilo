@@ -191,6 +191,31 @@ impl Job {
         }
     }
 
+    /// Who asked for the job, where it names them itself: an invocation is named by its id
+    /// alone, and a page acted on by its number ([`Worker::region_for`]).
+    pub(super) const fn caller(&self) -> Option<&Caller> {
+        match self {
+            Self::Feedback { caller, .. }
+            | Self::Catalogue { caller, .. }
+            | Self::Content { caller, .. }
+            | Self::ContentGet { caller, .. }
+            | Self::ContentLink { caller, .. }
+            | Self::ReadDocument { caller, .. }
+            | Self::Search { caller, .. }
+            | Self::Changes { caller, .. }
+            | Self::Changed { caller, .. }
+            | Self::Invocations { caller, .. }
+            | Self::Arrived { caller, .. } => Some(caller),
+            Self::Page(job) => job.caller(),
+            Self::Invoke { .. }
+            | Self::Ran(_)
+            | Self::Joined(_)
+            | Self::Called(_)
+            | Self::Forget(_)
+            | Self::Rename(..) => None,
+        }
+    }
+
     /// The workspace whose documents the job reads or changes.
     pub(super) const fn workspace(&self) -> Option<WorkspaceId> {
         match self {

@@ -135,6 +135,13 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     fn members(&self, _workspace: &str) -> Vec<(ui::permissions::MemberId, String)> {
         Vec::new()
     }
+    /// The formats and the zone the person `caller` is, or acts for, reads dates in, where
+    /// this device keeps them for its people: a view rendered for the caller shows their dates
+    /// and clocks as their own windows do. `None` renders in this device's own, which on a
+    /// person's own device are theirs.
+    fn region_of(&self, _caller: &Caller) -> Option<crate::worker::PersonRegion> {
+        None
+    }
     /// The agent `caller` is, which a person's own device handed its session to, works in
     /// `workspace`: the server adds it to the workspace's list of its agents where that list
     /// does not name it yet, and answers the bound the list keeps for it, which narrows

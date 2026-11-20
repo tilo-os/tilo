@@ -64,7 +64,6 @@ const PASSED_ENV: &[&str] = &[
     "LC_ALL",
     "LC_CTYPE",
     "LC_MESSAGES",
-    "TZ",
     "HOME",
     "XDG_DATA_HOME",
     "XDG_DATA_DIRS",
@@ -82,38 +81,6 @@ enum CallError {
     Stopped(String),
     /// The worker is alive and still working on the request.
     Slow,
-}
-
-/// The variable the supervisor hands a worker the person's formats in: the app's views render
-/// dates and clocks as the session's windows do, so an agent reads what the person sees.
-pub(crate) const FORMATS_ENV: &str = "TILO_APP_FORMATS";
-
-/// The person's formats, as their session reads them: what an app worker renders dates and
-/// clocks in. `None` where they cannot be written, which leaves the worker's defaults.
-fn formats_env() -> Option<String> {
-    serde_json::to_string(&ui::format::region::current()).ok()
-}
-
-/// The formats a worker reads from `value` ([`FORMATS_ENV`]), or the defaults when the
-/// supervisor wrote none.
-pub(crate) fn formats_from_env(value: Option<&str>) -> ui::format::region::RegionFormats {
-    value
-        .and_then(|value| serde_json::from_str(value).ok())
-        .unwrap_or_default()
-}
-
-/// The environment a supervisor gives a worker so its views render as the person sees them:
-/// their formats, and the zone their clock is in. The supervisor's own variables never travel,
-/// so the zone is named here even where it came from the system.
-fn person_env() -> Vec<(&'static str, String)> {
-    let mut env = Vec::with_capacity(2);
-    if let Some(formats) = formats_env() {
-        env.push((FORMATS_ENV, formats));
-    }
-    if let Some(zone) = tilo_clock::local_zone_name() {
-        env.push(("TZ", zone));
-    }
-    env
 }
 
 /// One running worker. Dropping it ends the process.
@@ -154,9 +121,6 @@ impl Process {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
             }
-        }
-        for (key, value) in person_env() {
-            command.env(key, value);
         }
         // The catalog this host verified: the worker lays its views' text out
         // before it confines itself, and has no build directory above it.
@@ -269,10 +233,15 @@ impl Process {
         "the app worker stopped".into()
     }
 
-    /// Send `request` to `slot` without waiting for an answer.
+    /// Send `request` to `slot` without waiting for an answer. The views it renders are in the
+    /// region of the person this thread renders for ([`super::region`]).
     fn send(&self, slot: Slot, mode: Mode, request: &Request) -> Result<(), String> {
+        let region = super::region::wire();
         FRAMING
-            .write_value(&mut *self.writer.lock_recover(), &(slot, mode, request))
+            .write_value(
+                &mut *self.writer.lock_recover(),
+                &(slot, mode, region, request),
+            )
             .map_err(|error| format!("the app worker stopped: {error}"))
     }
 
@@ -688,40 +657,6 @@ impl Drop for Lease {
 mod tests {
     use super::*;
     use std::time::Instant;
-
-    /// A worker renders dates and clocks in the formats its supervisor hands it, and in the
-    /// zone the supervisor names: an agent's view then reads as the person's own window does.
-    #[test]
-    fn a_worker_renders_the_sessions_formats_and_zone() {
-        let before = ui::format::region::current();
-        ui::format::region::install(ui::format::region::RegionFormats {
-            time: ui::clock::TimeStyle::H24,
-            ..before
-        });
-
-        let env = person_env();
-        let formats = env
-            .iter()
-            .find(|(key, _)| *key == FORMATS_ENV)
-            .map(|(_, value)| value.as_str());
-        ui::format::region::install(formats_from_env(formats));
-        assert_eq!(
-            ui::format::time(ui::format::Time::new(14, 5, 0, 0).unwrap()),
-            "14:05",
-            "the session's clock reached the worker"
-        );
-
-        let zone = tilo_clock::local_zone_name();
-        assert_eq!(
-            env.iter()
-                .find(|(key, _)| *key == "TZ")
-                .map(|(_, zone)| zone.clone()),
-            zone,
-            "the worker's clock is the session's zone"
-        );
-
-        ui::format::region::install(before);
-    }
 
     /// A pool member of the test's own: the tests running beside it in this
     /// process lease from the shared pool, never from this one.

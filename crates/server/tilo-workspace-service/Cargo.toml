@@ -145,6 +145,8 @@ tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host",
 # is kept as, and the verbs that change it.
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-workspace-agent = { path = "../../platform/tilo-workspace-agent" }
+# A person's region and formats, kept as the `locale` settings section reads them.
+tilo-formats = { path = "../../sdk/tilo-formats" }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"], optional = true }

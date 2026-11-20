@@ -104,6 +104,10 @@ mod writes;
 // workspace runs: a page has no mail connection and no vault of its own.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod person_learned;
+// The person's region and formats and their zone: what a view rendered here for them shows
+// dates in.
+#[cfg(not(target_arch = "wasm32"))]
+mod person_formats;
 #[cfg(not(target_arch = "wasm32"))]
 mod person_models;
 pub use person_models::OpenAiSignIn;
