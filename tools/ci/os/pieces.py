@@ -112,16 +112,16 @@ def pieces_text(layer_entry):
                      for p in piece_names(layer_entry))
 
 
-def action_text(name):
+def action_text(name, given=frozenset()):
     for i in plan().get("image", []):
         if i["name"] == name:
-            # An image action builds helper stages: they are its piece.
-            return "".join(helpers()[t] for t in needed_helpers("".join(f"FROM {t}\n" for t in i["targets"]), set()))
+            # An image action builds helper stages: they are its piece, but those given to it.
+            return "".join(helpers()[t] for t in needed_helpers("".join(f"FROM {t}\n" for t in i["targets"]), given))
     return pieces_text(layer(name))
 
 
 def containerfile(name, given):
-    text = action_text(name)
+    text = action_text(name, given)
     out = [read(os.path.join(IMAGE, "args.Containerfile"))]
     hs = helpers()
     for h in needed_helpers(text, given):

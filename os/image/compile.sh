@@ -6,7 +6,7 @@
 # build compiles: this runs as an ordinary build action, with the compiler
 # cache, warm build directories and keys every other build of the workspace has.
 #
-# usage: compile.sh OUT | --dev OUT | --chromium OUT
+# usage: compile.sh OUT | --dev OUT | --chromium OUT | --apps FROM OUT
 #   CARGO_TARGET_DIR   the build directory (default target/)
 #   TILO_RUST_LTO      thin (published images) or off (integration and development)
 #   TILO_WITH_BROWSER  1 to build the browser's engine host, 0 not to
@@ -84,7 +84,27 @@ if [[ ${1:-} == --dev ]]; then
   os/scripts/verify-elf-hardening.sh "$out"
   exit 0
 fi
-out=${1:?usage: compile.sh OUT | --dev OUT}
+# --apps: of a compiled tree FROM, what the apps and their runtimes are packed from (the payload
+# action of os/image/layers.toml): the thin apps, the runtime and its engines, the app models,
+# the prebuilt apps and the packing tools, copied into OUT. A step of its own that t never
+# caches, so the payload is keyed by these files' bytes rather than by the compile's key: a
+# change that relinks only system programs leaves them as they were, and the payload is served.
+if [[ ${1:-} == --apps ]]; then
+  from=${2:?usage: compile.sh --apps FROM OUT} out=${3:?usage: compile.sh --apps FROM OUT}
+  rm -rf "$out"
+  mkdir -p "$out"
+  files=(libruntime_dylib.so tilo-runtime-account-capability runtime-engines
+         tilo-runtime-bundle tilo-app-package tilo-install tilo-cli-shim)
+  [[ ! -f $from/runtime-engines ]] || mapfile -t -O "${#files[@]}" files < "$from/runtime-engines"
+  for f in "${files[@]}" runtime-bundle-publisher.hex thin-apps app-models prebuilt-apps prebuilt-runtime; do
+    [[ -e $from/$f ]] || continue
+    cp -a "$from/$f" "$out/"
+  done
+  for f in "$from"/libstd-*.so; do [[ ! -e $f ]] || cp -a "$f" "$out/"; done
+  for f in "${files[@]}"; do [[ -e $out/$f ]] || { echo "compile.sh --apps: $from has no $f" >&2; exit 1; }; done
+  exit 0
+fi
+out=${1:?usage: compile.sh OUT | --dev OUT | --apps FROM OUT}
 src=$(pwd)
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
@@ -472,4 +492,13 @@ os/scripts/verify-elf-hardening.sh "$out" \
     && { [ "${TILO_PREBUILT_APPS}" = 1 ] \
          || os/scripts/verify-elf-hardening.sh "$out"/thin-apps; } \
     && os/scripts/verify-elf-hardening.sh "$out"/libruntime_dylib.so "$out"/tilo-runtime-account-capability \
-         $(sed "s|^|$out/|" "$out/runtime-engines")
+         $(sed "s|^|$out/|" "$out/runtime-engines") \
+    || exit
+
+# Every file's digest, which the stage that installs the tree's programs copies before it
+# bind-mounts the tree (os/image/helpers/component-files.Containerfile): buildah keys that step by
+# its instruction and the layer below, not by what it mounts, so a kept build would install an
+# earlier tree without it.
+build_phase digests
+(cd "$out" && find . -type f ! -name sha256sums -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$scratch/sha256sums"
+mv "$scratch/sha256sums" "$out/sha256sums"

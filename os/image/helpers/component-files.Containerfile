@@ -3,10 +3,11 @@
 # stage applies it: every file of every image layer is installed under
 # /image/<layer>/, and each overlay below copies its layer as one tree. Dev
 # sysext layers are assembled by the same installer from the same entries, so
-# the image and a dev layer cannot place a binary differently. Only /out is
-# read, which a restored native builder payload provides as well. The manifest's
+# the image and a dev layer cannot place a binary differently. Only the compiled
+# tree (os/image/compile.sh's OUT, the `compiled` build context) is read, not the
+# apps' packing: the programs are installed without waiting for it. The manifest's
 # `direct` files (baked runtime, app store) are copied by the rootfs stage from
-# the builder itself, since the build writes them at their final paths.
+# the payload, since the packing writes them at their final paths.
 # tools/policy/check_component_manifest.py fails when a build output is copied
 # into the image outside this path.
 FROM ${BASE_REF} AS component-files
@@ -34,12 +35,10 @@ COPY os/usr/lib/systemd/system/tilo-node-server@.service \
     /tilo-components/usr/lib/systemd/system/
 # Buildah keys a RUN by its instruction and the layer below, not by what a bind mount from
 # another stage holds, so this RUN would be served from an earlier build's cache however the
-# compiled components changed. Copying the payload's runtime publisher key first keys it:
-# the payload's builder signs with a key it generates, so that key is new whenever the
-# payload is built again.
-COPY --from=native-builder-payload /out/runtime-bundle-publisher.hex /tilo-payload-keys/
+# compiled components changed. Copying the digest of every file of the tree first keys it.
+COPY --from=compiled /sha256sums /tilo-payload-keys/compiled.sha256sums
 RUN --network=none \
-    --mount=type=bind,from=native-builder-payload,source=/out,target=/out,ro \
+    --mount=type=bind,from=compiled,source=/,target=/out,ro \
     --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     TILO_GITHUB_ASSET_CACHE=/tilo-assets python3 /tilo-components/install-components.py \
       --manifest /tilo-components/components.toml \

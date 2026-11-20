@@ -128,12 +128,18 @@ done
 storage_conf=$target/storage.conf
 printf '[storage]\ndriver = "overlay"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n[storage.options.overlay]\nmountopt = "nodev"\n' > "$storage_conf"
 # The image actions and the layers, bottom first (os/image/layers.toml); an extension's
-# image is no part of the OS image and is left to its own checks.
-read -r images layers < <(python3 -I -c '
+# image is no part of the OS image and is left to its own checks. The image actions given
+# something (the payload, given the compiled tree's apps) run after the compile.
+read -r images packed layers < <(python3 -I -c '
 import tomllib
 plan = tomllib.load(open("os/image/layers.toml", "rb"))
-print(",".join(i["name"] for i in plan.get("image", []) if not i.get("extension")), ",".join(l["name"] for l in plan["layer"]))')
-images=${images//,/ } layers=${layers//,/ }
+images = [i for i in plan.get("image", []) if not i.get("extension")]
+print(",".join(i["name"] for i in images if not i.get("given")) or "-",
+      ",".join(i["name"] for i in images if i.get("given")) or "-",
+      ",".join(l["name"] for l in plan["layer"]))')
+images=${images//,/ } packed=${packed//,/ } layers=${layers//,/ }
+[[ $images != - ]] || images=''
+[[ $packed != - ]] || packed=
 say() { printf 'build-os: %s\n' "$*" >&2; }
 # A step: run it, or with --dry-run print what would run.
 step() {
@@ -276,6 +282,14 @@ build_os_image() {
   compile compile/target "bash os/image/compile.sh /target/os/$arch/compiled"
   say "the browser's engine, apart from the compiled tree"
   compile chromium/target "bash os/image/compile.sh --chromium /target/os/$arch/chromium"
+  say "the images given the compiled tree: $packed"
+  script="set -e -o pipefail
+    bash os/image/compile.sh --apps /target/os/$arch/compiled /target/os/$arch/compiled-apps"
+  for name in $packed; do
+    script+="
+    bash os/image/build-layer.sh image $name $arch /target/os/$arch/$name"
+  done
+  assembler "$script"
   say "the layers and the composed image"
   script="set -e -o pipefail"
   for layer in $layers; do

@@ -48,15 +48,16 @@ class BuildOsTests(unittest.TestCase):
             f"bash tools/ci/publish/rpm-snapshot-ref.sh {ARCH} /target/publish/rpm-snapshot/{ARCH}",
             f"bash os/image/build-layer.sh base {ARCH} /target/os/{ARCH}/base",
         ]
-        commands += [
-            f"bash os/image/build-layer.sh image {image['name']} {ARCH} /target/os/{ARCH}/{image['name']}"
-            for image in plan["image"]
-            if not image.get("extension")
-        ]
+        images = [image for image in plan["image"] if not image.get("extension")]
+        image = "bash os/image/build-layer.sh image {name} %s /target/os/%s/{name}" % (ARCH, ARCH)
+        commands += [image.format(name=i["name"]) for i in images if not i.get("given")]
         commands += [
             f"bash os/image/compile.sh /target/os/{ARCH}/compiled",
             f"bash os/image/compile.sh --chromium /target/os/{ARCH}/chromium",
+            f"bash os/image/compile.sh --apps /target/os/{ARCH}/compiled /target/os/{ARCH}/compiled-apps",
         ]
+        # The images given the compiled tree (the apps' packing) after the compile.
+        commands += [image.format(name=i["name"]) for i in images if i.get("given")]
         commands += [
             f"bash os/image/build-layer.sh layer {layer['name']} {ARCH} /target/os/{ARCH}/layers/{layer['name']}"
             for layer in plan["layer"]

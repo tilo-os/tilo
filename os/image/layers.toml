@@ -36,6 +36,18 @@ name = "tools"
 targets = ["image-tool-stages", "uki-tools"]
 
 [[image]]
+# The apps and their runtimes, packed from the compiled tree's apps (`compiled-apps`, which
+# os/image/compile.sh --apps takes out of it): the runtime bundle, the browser engine's runtime,
+# the app store and the language packs. An action of its own, keyed by those files' bytes and not
+# by the compile's, so a change that relinks only system programs is served its packing from t's
+# cache instead of packing every app again; the image layer is given its targets. `release`: a
+# release packs its own, from its own compile.
+name = "payload"
+targets = ["native-builder-payload", "runtime-image-payload"]
+given = ["builder:builder-base", "compiled-apps"]
+release = true
+
+[[image]]
 # The Windows compatibility system extension (tilo-windows-compat.raw and the descriptor
 # its packer prints): no layer of the image, but downloaded by a device when its owner first
 # asks for Windows apps (os/usr/share/tilo/system-extensions/README.md). Only the
@@ -51,7 +63,9 @@ extension = true
 # previous layer's target), unless it is made over nothing (`scratch`). `given`
 # are stages given as images of other actions: `<image>:<target>` of an image
 # above, `<layer>:<stage>` for the image of every layer up to that one (or a stage
-# it saves beside its layers, `also`), and `compiled`, the compiled tree.
+# it saves beside its layers, `also`), `compiled`, the compiled tree, and
+# `compiled-apps`, what of it the apps are packed from. An image action takes
+# `given` too.
 # `release` layers differ in a release image (the registry owner's key, thin LTO), which
 # builds them, and every layer above one, again (os/image/build-layer.sh); `board` layers
 # differ in a board's (its firmware, device tree and update origin), and so does every layer
@@ -90,6 +104,6 @@ board = true
 name = "image"
 pieces = ["binaries", "rootfs", "boot"]
 target = "final"
-given = ["builder:builder-base", "tools:image-tool-stages", "tools:uki-tools", "compiled"]
+given = ["tools:image-tool-stages", "tools:uki-tools", "compiled", "payload:native-builder-payload", "payload:runtime-image-payload"]
 release = true
 board = true

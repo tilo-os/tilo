@@ -25,8 +25,10 @@
 # them all in one step), as their checks' outputs:
 #   base/oci                     the base
 #   builder/<target>/oci         the OS builder;  tools/<target>/oci  the side builds
+#   payload/<target>/oci         the apps' packing, a release's in release-payload/
 #   compiled/                    the compiled tree (os/image/compile.sh); a release's in
-#                                compiled-release/
+#                                compiled-release/; what of it the apps are packed from in
+#                                compiled-apps/ (compiled-release-apps/)
 #   chromium/                    the browser's engine, for a compiled tree without it
 #   layers/<layer>/              the fragment of the layers that layer action added; a
 #                                release's own layers in release-layers/<layer>/, a board
@@ -100,6 +102,15 @@ for kind in ("layer", "image"):
 
 board_layer() {
   [[ -n $board && $(layer_field "$1" board) == true ]]
+}
+
+# Where image action NAME left its targets: a release's own where it differs in one (`release`).
+image_dir() {
+  if [[ $flavour == release && $(layer_field "$1" release) == true ]]; then
+    echo "$os/release-$1"
+  else
+    echo "$os/$1"
+  fi
 }
 
 fragment_dir() {
@@ -203,9 +214,10 @@ import sys
 sys.path.insert(0, "tools/ci/os")
 import pieces
 name = sys.argv[1]
-layer = pieces.layer(name)
-given = {g.split(":", 1)[1] for g in layer.get("given", []) if g != "compiled"}
-if not layer.get("scratch"):
+image = next((i for i in pieces.plan().get("image", []) if i["name"] == name), None)
+action = image or pieces.layer(name)
+given = {g.split(":", 1)[1] for g in action.get("given", []) if ":" in g}
+if not image and not action.get("scratch"):
     given.add(pieces.parent(name))
 refs = pieces.references(pieces.containerfile(name, given))
 sys.exit(0 if refs & {"rpms", "${RPMS_REF}"} else 1)
@@ -358,37 +370,19 @@ oci_arch() {
   esac
 }
 
-cmd_image() {
-  local name=$1 target
-  guest_devices
-  build_env
-  # The stages FROM ${BASE_REF} build on the base as its layout has it, not pulled again.
-  podman tag "$(load "$os/base/oci")" localhost/tilo-base:pinned
-  layer_args+=(--build-arg BASE_REF=localhost/tilo-base:pinned)
-  for target in $(layer_field "$name" targets); do
-    image=localhost/tilo-image:$name-$target
-    build_target "$name" "$target" ""
-    rm -rf "$out/$target"
-    mkdir -p "$out/$target"
-    podman push -q --compression-format gzip --force-compression "$image" "oci:$out/$target/oci:tilo"
-    printf '%s: %s\n' "$target" "$(podman image inspect --format '{{.Digest}}' "$image")"
-  done
-}
-
-cmd_layer() {
-  local name=$1 target piece parent given="" entry stage what id inputs built also
-  target=$(layer_field "$name" target)
-  piece=$(layer_field "$name" piece)
-  guest_devices
-  reads_rpms "$name" || rpms_read=0
-  build_env
-  if board_layer "$name"; then board_env; fi
-  phase load-given
-  # What the piece is given as images: other actions' images, and compositions of layers.
-  for entry in $(layer_field "$name" given); do
+# What action NAME's piece is given as images (other actions' images, and compositions of
+# layers), as build contexts in layer_args, their stages in `given`; and the compiled tree.
+given=""
+load_given() {
+  local entry what stage id frags
+  for entry in $(layer_field "$1" given); do
     case $entry in
-      compiled)
-        export TILO_COMPILED=$os/$compiled
+      compiled | compiled-apps)
+        if [[ $entry == compiled ]]; then
+          export TILO_COMPILED=$os/$compiled
+        else
+          export TILO_COMPILED=$os/$compiled-apps
+        fi
         # A compile that keeps its build directory leaves the browser's engine to its own
         # check (os-chromium-ARCH), which this action needs then.
         if [[ ! -d $TILO_COMPILED/chromium-engine && -d $os/chromium/chromium-engine ]]; then
@@ -397,8 +391,8 @@ cmd_layer() {
         continue ;;
       *:*) what=${entry%%:*} stage=${entry#*:} ;;
     esac
-    if [[ -d $os/$what/$stage/oci ]]; then
-      id=$(load "$os/$what/$stage/oci")
+    if [[ -d $(image_dir "$what")/$stage/oci ]]; then
+      id=$(load "$(image_dir "$what")/$stage/oci")
     elif [[ -d $(fragment_dir "$what")/also/$stage/oci ]]; then
       id=$(load "$(fragment_dir "$what")/also/$stage/oci")
     else
@@ -408,6 +402,37 @@ cmd_layer() {
     layer_args+=(--build-context "$stage=container-image://$id")
     given+=$stage,
   done
+}
+
+cmd_image() {
+  local name=$1 target
+  guest_devices
+  reads_rpms "$name" || rpms_read=0
+  build_env
+  load_given "$name"
+  # The stages FROM ${BASE_REF} build on the base as its layout has it, not pulled again.
+  podman tag "$(load "$os/base/oci")" localhost/tilo-base:pinned
+  layer_args+=(--build-arg BASE_REF=localhost/tilo-base:pinned)
+  for target in $(layer_field "$name" targets); do
+    image=localhost/tilo-image:$name-$target
+    build_target "$name" "$target" "$given"
+    rm -rf "$out/$target"
+    mkdir -p "$out/$target"
+    podman push -q --compression-format gzip --force-compression "$image" "oci:$out/$target/oci:tilo"
+    printf '%s: %s\n' "$target" "$(podman image inspect --format '{{.Digest}}' "$image")"
+  done
+}
+
+cmd_layer() {
+  local name=$1 target piece parent id inputs built also
+  target=$(layer_field "$name" target)
+  piece=$(layer_field "$name" piece)
+  guest_devices
+  reads_rpms "$name" || rpms_read=0
+  build_env
+  if board_layer "$name"; then board_env; fi
+  phase load-given
+  load_given "$name"
   # What it builds over: every layer below it, as one image under the name its piece
   # builds FROM. The bottom piece builds FROM ${BASE_REF}: the base, loaded from its layout.
   phase load-below

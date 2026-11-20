@@ -5384,13 +5384,68 @@ outputs = ["/target/os/x86_64/layers/trust/**"]
 timeout_secs = 7200
 default = false
 
+# What of the compiled tree the apps are packed from (os/image/compile.sh --apps), as a step t
+# never serves from its cache: the payload that needs it is then keyed by these files' bytes, not
+# by the compile's key, so a commit that relinks only system programs (a server crate's) keeps the
+# payload's key, and the packing of every app is served instead of done again.
+[[check]]
+name = "os-compiled-apps-{arch}"
+run = "bash os/image/compile.sh --apps /target/os/{arch}/compiled /target/os/{arch}/compiled-apps"
+needs = ["os-compile-{arch}"]
+outputs = ["/target/os/{arch}/compiled-apps/**"]
+cache = false
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "os-compiled-apps-release-{arch}"
+run = "bash os/image/compile.sh --apps /target/os/{arch}/compiled-release /target/os/{arch}/compiled-release-apps"
+needs = ["os-compile-release-{arch}"]
+outputs = ["/target/os/{arch}/compiled-release-apps/**"]
+cache = false
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# The apps' packing (os/image/layers.toml's payload): the runtime bundle, the browser engine's
+# runtime, the app store and the language packs, which the image layer is given. It resolves the
+# environment runtime the store preinstalls by its digest from the registry, and prepares the font
+# catalog (tools/font-catalog.py, from tilo's package store by the SHA-256 the catalog pins).
+[[check]]
+name = "os-payload-{arch}"
+egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+run = "bash os/image/build-layer.sh image payload {arch} /target/os/{arch}/payload"
+needs = ["os-base-{arch}", "os-assets", "signing-tools", "image-rpms-{arch}", "rpm-snapshot-{arch}", "os-builder-{arch}", "os-compiled-apps-{arch}", "os-chromium-{arch}"]
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+requires = ["arch={arch}", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/os/{arch}/payload/**"]
+timeout_secs = 7200
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "os-payload-release-{arch}"
+egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+run = "bash os/image/build-layer.sh image payload {arch} /target/os/{arch}/release-payload"
+needs = ["os-base-{arch}", "os-assets", "signing-tools", "image-rpms-{arch}", "rpm-snapshot-{arch}", "os-builder-{arch}", "os-compiled-apps-release-{arch}", "os-chromium-{arch}"]
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+env = { TILO_OS_FLAVOUR = "release" }
+requires = ["arch={arch}", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/os/{arch}/release-payload/**"]
+timeout_secs = 7200
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
 [[check]]
 name = "os-layer-image-x86_64"
-# The image layer prepares the font catalog too (tools/font-catalog.py, from tilo's package
-# store by the SHA-256 the catalog pins).
-egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image x86_64 /target/os/x86_64/layers/image"
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-x86_64", "os-builder-x86_64", "os-tools-x86_64", "os-compile-x86_64", "os-chromium-x86_64"]
+needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-x86_64", "os-tools-x86_64", "os-compile-x86_64", "os-payload-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
@@ -5427,11 +5482,9 @@ default = false
 
 [[check]]
 name = "os-layer-image-release-x86_64"
-# The image layer prepares the font catalog too (tools/font-catalog.py, from tilo's package
-# store by the SHA-256 the catalog pins).
-egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image x86_64 /target/os/x86_64/release-layers/image"
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-release-x86_64", "os-builder-x86_64", "os-tools-x86_64", "os-compile-release-x86_64", "os-chromium-x86_64"]
+needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-release-x86_64", "os-tools-x86_64", "os-compile-release-x86_64", "os-payload-release-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 env = { TILO_OS_FLAVOUR = "release" }
 requires = ["arch=x86_64", "disk-100g"]
@@ -5613,11 +5666,9 @@ default = false
 
 [[check]]
 name = "os-layer-image-aarch64"
-# The image layer prepares the font catalog too (tools/font-catalog.py, from tilo's package
-# store by the SHA-256 the catalog pins).
-egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image aarch64 /target/os/aarch64/layers/image"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-aarch64", "os-builder-aarch64", "os-tools-aarch64", "os-compile-aarch64", "os-chromium-aarch64"]
+needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-aarch64", "os-tools-aarch64", "os-compile-aarch64", "os-payload-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
@@ -5654,11 +5705,9 @@ default = false
 
 [[check]]
 name = "os-layer-image-release-aarch64"
-# The image layer prepares the font catalog too (tools/font-catalog.py, from tilo's package
-# store by the SHA-256 the catalog pins).
-egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image aarch64 /target/os/aarch64/release-layers/image"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-release-aarch64", "os-builder-aarch64", "os-tools-aarch64", "os-compile-release-aarch64", "os-chromium-aarch64"]
+needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-release-aarch64", "os-tools-aarch64", "os-compile-release-aarch64", "os-payload-release-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 env = { TILO_OS_FLAVOUR = "release" }
 requires = ["arch=arm64", "disk-100g"]
@@ -5731,11 +5780,9 @@ default = false
 
 [[check]]
 name = "os-layer-image-release-lenovo-83ed"
-# The image layer prepares the font catalog too (tools/font-catalog.py, from tilo's package
-# store by the SHA-256 the catalog pins).
-egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image aarch64 /target/os/aarch64/board-layers/lenovo-83ed/image"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-layer-system-release-lenovo-83ed", "os-layer-trust-release-lenovo-83ed", "os-builder-aarch64", "os-tools-aarch64", "os-compile-release-aarch64", "os-chromium-aarch64"]
+needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-layer-system-release-lenovo-83ed", "os-layer-trust-release-lenovo-83ed", "os-tools-aarch64", "os-compile-release-aarch64", "os-payload-release-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 env = { TILO_OS_FLAVOUR = "release", TILO_OS_BOARD = "lenovo-83ed" }
 requires = ["arch=arm64", "disk-100g"]
