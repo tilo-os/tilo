@@ -148,7 +148,7 @@ mod tests {
             "revision": "revision", "resource": "document", "action": "edit",
             "argument": "text", "original_heads": vec![[0u8; 32]],
             "mutation_hashes": vec![[1u8; 32]], "group": null,
-            "encoded": {"type_id": "test.edit", "payload": b"{}".to_vec()},
+            "encoded": {"type_id": "test.edit", "payload": "{}"},
             "context": null,
             "ownership": null
         })
@@ -173,7 +173,7 @@ mod tests {
                     "version" => serde_json::json!(2),
                     "original_heads" | "mutation_hashes" => serde_json::json!([]),
                     "encoded" => {
-                        serde_json::json!({"type_id": "test.edit", "payload": b"null".to_vec()})
+                        serde_json::json!({"type_id": "test.edit", "payload": "null"})
                     }
                     "ownership" => serde_json::json!({
                         "root": vec![1; 32], "device": vec![2; 32], "agent": null,
@@ -205,7 +205,7 @@ mod tests {
                     "version" => serde_json::json!(1),
                     "original_heads" | "mutation_hashes" => serde_json::json!([]),
                     "encoded" => serde_json::json!({
-                        "payload": b"{ \"z\": 1, \"a\": 2 }".to_vec(),
+                        "payload": "{ \"z\": 1, \"a\": 2 }",
                         "type_id": "test.other"
                     }),
                     "context" => serde_json::json!(
@@ -268,7 +268,7 @@ mod tests {
             };
             value["context"] = serde_json::to_value(&context).unwrap();
             // Formatting is part of the executor input; never normalize the bytes.
-            value["encoded"]["payload"] = serde_json::json!(b"{ \"value\": 1 }".to_vec());
+            value["encoded"]["payload"] = serde_json::json!("{ \"value\": 1 }");
             let decoded = Request::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
             assert!(decoded.mutation_hashes.is_empty());
             assert_eq!(decoded.context, Some(context));
@@ -281,7 +281,7 @@ mod tests {
             value.as_object_mut().unwrap().remove("encoded");
             assert!(Request::decode(&serde_json::to_vec(&value).unwrap()).is_err());
             value = report();
-            value["encoded"]["payload"] = serde_json::json!(b"arbitrary bytes".to_vec());
+            value["encoded"]["payload"] = serde_json::json!("arbitrary bytes");
             assert!(Request::decode(&serde_json::to_vec(&value).unwrap()).is_err());
             value = report();
             value["encoded"]["type_id"] = serde_json::json!("");

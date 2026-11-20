@@ -1809,7 +1809,9 @@ async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
 
     workspaces.call_private_model_addresses(true);
     let hers = links_a_provider(&host, workspace_id, &ada, &adding, "sk-ada").await;
-    assert_eq!(fake.drain_requests().len(), 1);
+    // Once to ask whether it takes the key before it is kept, once to list
+    // its models.
+    assert_eq!(fake.drain_requests().len(), 2);
 
     workspaces.call_private_model_addresses(false);
     let uncalled = ask_own(
