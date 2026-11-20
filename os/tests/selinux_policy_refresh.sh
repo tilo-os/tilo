@@ -93,8 +93,8 @@ grep -qx 'WantedBy=sysinit.target' "$unit" || fail "the unit is not part of sysi
 grep -qx 'ConditionPathExists=/usr/share/tilo/selinux/tilo-base.cil' "$unit" \
   || fail "the unit does not wait for the image's module"
 grep -qx 'SuccessExitStatus=1' "$unit" || fail "a refused install would fail the start"
-grep -Fq 'Before=sysinit.target fs.service systemd-sysext.service' "$unit" \
-  || fail "the module is not in place before fs.service and the extension merge"
+grep -Fq 'Before=sysinit.target fs.service' "$unit" \
+  || fail "the module is not in place before fs.service and the rest of sysinit"
 grep -q '^ProtectKernelTunables=yes' "$unit" \
   && fail "the unit hides the selinuxfs its policy load writes"
 for image in os/image/system.Containerfile os/Containerfile; do

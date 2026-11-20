@@ -11,7 +11,7 @@ DefaultDependencies=no
 ConditionPathExists=/usr/share/tilo/selinux/tilo-base.cil
 ConditionPathExists=/sys/fs/selinux/policy
 After=local-fs.target
-Before=sysinit.target fs.service systemd-sysext.service
+Before=sysinit.target fs.service
 Conflicts=shutdown.target
 Before=shutdown.target
 
