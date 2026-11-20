@@ -231,6 +231,13 @@ if [ "${TILO_SESSION_HOLD:-0}" = 1 ] \
   printf '%s\n' "$runs" >"$TILO_SESSION_TEST_LOG.holding"
   while :; do sleep 1; done
 fi
+if [ "${TILO_SESSION_IGNORE_TERM:-0}" = 1 ]; then
+  # A compositor stuck so badly that it cannot end its own login: every stop signal is
+  # ignored, as a loop parked with its ending flag unread would be.
+  trap '' TERM HUP INT
+  printf '1\n' >"$TILO_SESSION_TEST_LOG.ignoring"
+  while :; do sleep 1; done
+fi
 if [ "${TILO_SESSION_HOLD_PIPE:-0}" = 1 ]; then
   sleep 30 &
   printf '%s\n' "$!" >"$TILO_SESSION_TEST_LOG.holder"
@@ -565,6 +572,53 @@ kill -TERM "$session_pid"
 wait "$session_pid" || [ "$?" = 143 ]
 grep -Fqx 'native-session-term' "$log"
 [ "$(grep -Fc 'systemctl --user stop tilo-graphical-session.target' "$log")" = 1 ]
+
+# A compositor that cannot be stopped must not hold the login, and with it this
+# device's workspace service: the service's invocation journal admits one writer, so
+# a login that will not end keeps the next login from opening it. The wrapper ends
+# the compositor once its bound is spent, so the login ends and its private runtime
+# directory goes with it. The bound is staged short here; the shipped one is longer
+# than the compositor's own watchdog and ordered teardown.
+: >"$log"
+rm -f "$log.ignoring"
+short_stop_wrapper="$tmp/tilo-session-short-stop"
+tilo_stage_script "$wrapper" "$short_stop_wrapper" \
+  SYSTEMCTL="$fake_systemctl" \
+  DBUS_UPDATE="$fake_dbus_update" \
+  COMPOSITOR_BIN="$fake_native" \
+  IMAGE_FLAVOUR="$tmp/no-image-flavour" \
+  FLIGHT_RECORDER="$TILO_FLIGHT_RECORDER" \
+  EXIT_WAIT_TENTHS=10
+XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_IGNORE_TERM=1 \
+  "$short_stop_wrapper" --backend drm >"$tmp/short-stop-stdout" 2>"$tmp/short-stop-stderr" &
+session_pid=$!
+for _ in $(seq 1 500); do
+  [ -s "$log.ignoring" ] && break
+  sleep 0.02
+done
+[ -s "$log.ignoring" ] || { echo 'the ignoring compositor never started' >&2; exit 1; }
+stopped_at=$(date +%s)
+kill -TERM "$session_pid"
+set +e
+wait "$session_pid"
+status=$?
+set -e
+[ "$status" = 143 ] || { echo "a login with an unkillable compositor ended with $status" >&2; exit 1; }
+# The wrapper does not wait for a compositor that will not stop.
+[ "$(( $(date +%s) - stopped_at ))" -lt 10 ] || {
+  echo 'the wrapper waited for a compositor that ignored every stop signal' >&2
+  exit 1
+}
+# The wrapper's own word goes where the desktop's output goes — the login's saved
+# output and its stdout — because it says so while that output is redirected: it
+# says the compositor was ended.
+grep -Fq 'the desktop did not stop in 1 s; ending it' "$tmp/short-stop-stdout" || {
+  echo 'the wrapper did not say it ended a compositor that ignored the stop' >&2
+  cat "$tmp/short-stop-stdout" >&2
+  cat "$tmp/short-stop-stderr" >&2
+  exit 1
+}
+[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 
 # A desktop restart (SIGUSR1) stops the compositor and starts it again in the
 # same login: the target is started once and stopped once, at the end. The

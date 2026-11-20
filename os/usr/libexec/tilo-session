@@ -37,6 +37,14 @@ readonly SLEEP=/usr/bin/sleep
 readonly FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder
 readonly SESSION_TARGET=tilo-graphical-session.target
 readonly IMAGE_FLAVOUR=/usr/lib/tilo/image-flavour
+# How long a compositor that was asked to stop gets before this wrapper ends it
+# for it, in tenths of a second. A compositor that finds its own loop hung ends it
+# within its watchdog's bound (about 30 s, the record of the hang included), and an
+# ordered teardown may flush the person's layout for up to 10 s: a compositor still
+# running after this is not coming back. Ending it here matters because the login
+# holds this device's workspace service, whose invocation journal admits one writer:
+# a login that will not end keeps that writer, and the next login cannot open it.
+readonly EXIT_WAIT_TENTHS=450
 
 # The desktop uses Mesa too. The greeter's separate cage process cannot pass
 # its LLVM CPU workaround through greetd into this authenticated session.
@@ -184,11 +192,37 @@ cleanup_logout_channel() {
   fi
 }
 
+# Whether `pid` is still at work: a process that exited but was not reaped yet is a
+# zombie, and a zombie has nothing left to put away.
+process_running() {
+  local stat state
+  [ -r "/proc/$1/stat" ] || return 1
+  stat=$(<"/proc/$1/stat") || return 1
+  # The state follows the parenthesised command name, which may hold spaces.
+  state=${stat##*) }
+  state=${state%% *}
+  [ -n "$state" ] && [ "$state" != Z ]
+}
+
 terminate_session() {
-  local signal="$1" status="$2"
+  local signal="$1" status="$2" tenths=0
   trap - HUP INT TERM
   if [ -n "$shell_pid" ] && kill -0 "$shell_pid" 2>/dev/null; then
     kill "-$signal" "$shell_pid" 2>/dev/null || true
+    # A compositor that does not end this login ends here: the login must not hold
+    # the workspace service's invocation journal against the next one.
+    while process_running "$shell_pid"; do
+      if [ "$tenths" -ge "$EXIT_WAIT_TENTHS" ]; then
+        # Said where the desktop's own output goes (the run is redirected into the
+        # flight record), and best effort: nothing here may keep the ending short.
+        printf 'tilo-session: the desktop did not stop in %s s; ending it\n' \
+          "$((EXIT_WAIT_TENTHS / 10))" >&2 || true
+        kill -KILL "$shell_pid" 2>/dev/null || true
+        break
+      fi
+      "$SLEEP" 0.1
+      tenths=$((tenths + 1))
+    done
     wait "$shell_pid" 2>/dev/null || true
   fi
   exit "$status"
