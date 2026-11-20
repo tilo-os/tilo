@@ -82,7 +82,11 @@ else
   bad 'a boot lacks the console channel, login can type before the greeter accepts input, or unlock secrets must travel on argv'
 fi
 
-[ "$(grep -Fc 'id=tilo-install-target,serial=tilo-install-target' "$vm")" -ge 3 ] \
+# Three ways attach the target: the installer's blank target, a boot's first --attach (which names
+# it through id and serial variables), and boot-target. Each must name the same id and serial.
+target_pairs=$(grep -Fc 'id=tilo-install-target,serial=tilo-install-target' "$vm" || true)
+target_attach=$(grep -Fc 'then id=tilo-install-target; serial=tilo-install-target' "$vm" || true)
+[ $((target_pairs + target_attach)) -ge 3 ] \
   && ok 'the target keeps one stable serial through attach, install and reboot' \
   || bad 'the target disk serial changes across the install cycle'
 
