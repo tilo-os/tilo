@@ -1112,7 +1112,7 @@ impl Panel {
         let windows = (self.notes)();
         let mut tree = self.handle.read(Clone::clone);
         (self.here)(&mut tree);
-        let rows = roster_rows(&tree);
+        let mut rows = roster_rows(&tree);
         let workspace = tree.active_workspace().map_or_else(
             || tilo_desktop_surface::names::workspace(""),
             |workspace| tilo_desktop_surface::names::workspace(&workspace.name),
@@ -1131,7 +1131,7 @@ impl Panel {
             .collect();
         // Each person's screen, its windows named with what they show where this session holds that
         // record, else with the app's name.
-        let screens = match (self.sync.as_ref(), front) {
+        let screens = match (self.sync.as_ref(), front.clone()) {
             (Some(sync), Some(workspace)) => sync
                 .members(&workspace)
                 .into_iter()
@@ -1148,6 +1148,20 @@ impl Panel {
                 .collect(),
             _ => Vec::new(),
         };
+        // Whom each person here follows, as their presence says: "Following you" on the row of
+        // someone following this person, "Following Ada" on someone else's.
+        if let (Some(sync), Some(workspace)) = (self.sync.as_ref(), front.as_deref()) {
+            let pairs: Vec<(String, String)> = sync
+                .members(workspace)
+                .into_iter()
+                .filter_map(|member| Some((member.publisher, member.following?)))
+                .collect();
+            tilo_desktop::people::note_following(
+                &mut rows,
+                &pairs,
+                Some(&sync.publisher().to_string()),
+            );
+        }
         shown.rows = rows;
         shown.screens = screens;
         shown.workspace = workspace;
