@@ -221,5 +221,14 @@ mod tests {
             .unwrap(),
             r#"{"patched":[{"id":2,"html":"<p data-p=\"2\">x</p>"}]}"#
         );
+        // A page that was shown again is answered with what its script reads
+        // to redraw quietly (`answer.refused.reopened`), never as an error.
+        assert_eq!(
+            serde_json::to_string(&PageAnswer::Refused(PageRefusal::Reopened {
+                request: "stall".into(),
+            }))
+            .unwrap(),
+            r#"{"refused":{"reopened":{"request":"stall"}}}"#
+        );
     }
 }
