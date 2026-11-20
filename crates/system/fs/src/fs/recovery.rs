@@ -33,18 +33,7 @@ impl QuickFS {
                 .path
                 .as_deref()
                 .and_then(|path| self.hydrator.scoped_workspace(path));
-            let target = {
-                let ns = self.ns();
-                entry
-                    .document_id
-                    .and_then(|document_id| ns.ino_for_document_id(document_id))
-                    .filter(|ino| ns.getattr(*ino).is_some())
-                    .filter(|ino| {
-                        ns.path_for(*ino)
-                            .and_then(|path| self.hydrator.scoped_workspace(&path))
-                            == workspace
-                    })
-            };
+            let target = self.recovery_target(entry.document_id, workspace);
             if let Some(ino) = target
                 && self.ns().hash_for(ino) == entry.base()
                 && self.check_access(ino, Access::Write).is_ok()
@@ -81,18 +70,7 @@ impl QuickFS {
                     continue;
                 }
             }
-            let location = if let Some(ino) = target {
-                let mut ns = self.ns();
-                let name = ns.file_name_for(ino).map(|name| name.as_bytes().to_vec());
-                ns.parent_ino(ino).zip(name)
-            } else {
-                entry.path.as_deref().and_then(|path| {
-                    let (dir, name) = path.rsplit_once('/')?;
-                    let dir = if dir.is_empty() { "/" } else { dir };
-                    let parent = self.ns().resolve_path_ino(dir)?;
-                    Some((parent, name.as_bytes().to_vec()))
-                })
-            };
+            let location = self.recovery_location(target, entry.path.as_deref());
             if workspace.is_some() && location.is_none() {
                 continue;
             }
@@ -137,5 +115,31 @@ impl QuickFS {
             }
         }
         placed
+    }
+
+    fn recovery_target(
+        &self,
+        document: Option<fs_protocol::FileDocumentId>,
+        workspace: Option<collab_types::WorkspaceId>,
+    ) -> Option<u64> {
+        let ns = self.ns();
+        let ino = ns.ino_for_document_id(document?)?;
+        ns.getattr(ino)?;
+        let scope = ns
+            .path_for(ino)
+            .and_then(|path| self.hydrator.scoped_workspace(&path));
+        (scope == workspace).then_some(ino)
+    }
+
+    fn recovery_location(&self, target: Option<u64>, path: Option<&str>) -> Option<(u64, Vec<u8>)> {
+        if let Some(ino) = target {
+            let mut ns = self.ns();
+            let name = ns.file_name_for(ino)?.as_bytes().to_vec();
+            return ns.parent_ino(ino).map(|parent| (parent, name));
+        }
+        let (directory, name) = path?.rsplit_once('/')?;
+        let directory = if directory.is_empty() { "/" } else { directory };
+        let parent = self.ns().resolve_path_ino(directory)?;
+        Some((parent, name.as_bytes().to_vec()))
     }
 }

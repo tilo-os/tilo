@@ -1,4 +1,7 @@
-use super::*;
+use automerge::{AutoCommit, ReadDoc};
+use durable_store::DurableStore;
+
+use super::{DocumentCheckout, ResourceOpenError, ResourceStore, portable, validate_identity};
 
 impl ResourceStore {
     /// Read a local document for recovery without taking a writer or asking a peer for it.

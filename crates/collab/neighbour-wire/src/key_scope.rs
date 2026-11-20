@@ -185,26 +185,35 @@ mod tests {
     fn document_requests_route_to_the_workspace_and_keep_separate_checkpoints() {
         let workspace = WorkspaceId::from_u128(1);
         let device = collab_types::Ed25519PublicKey::from_bytes([42; 32]);
-        let request = |document: &str| {
+        let fields = |document: &str| {
             let scope = KeyScope::Document {
                 workspace,
                 app: "tilo.notes".to_owned(),
                 document: document.to_owned(),
                 readers: None,
             };
-            crate::NeighbourMsg::MlsAccessRequest {
-                workspace: scope.to_string(),
-                request: Box::new(collab_types::MlsAccessRequestV1::unsigned(
+            (
+                scope.to_string(),
+                Box::new(collab_types::MlsAccessRequestV1::unsigned(
                     scope.group(),
                     device,
                     vec![1, 2],
                     100,
                 )),
-                delivery: 0,
-            }
+            )
         };
-        let first = request("first");
-        let second = request("second");
+        let (first_scope, first_request) = fields("first");
+        let (second_scope, second_request) = fields("second");
+        let first = crate::NeighbourMsg::MlsAccessRequest {
+            workspace: first_scope,
+            request: first_request.clone(),
+            delivery: 0,
+        };
+        let second = crate::NeighbourMsg::MlsAccessRequest {
+            workspace: second_scope.clone(),
+            request: second_request,
+            delivery: 0,
+        };
         assert_eq!(
             first.governance_workspace(),
             Some(workspace.to_string().as_str())
@@ -213,15 +222,9 @@ mod tests {
             crate::retention(&first, false).unwrap(),
             crate::retention(&second, false).unwrap()
         );
-        let crate::NeighbourMsg::MlsAccessRequest { request, .. } = first else {
-            unreachable!("the fixture is an access request");
-        };
-        let crate::NeighbourMsg::MlsAccessRequest { workspace, .. } = second else {
-            unreachable!("the fixture is an access request");
-        };
         let wrong_scope = crate::NeighbourMsg::MlsAccessRequest {
-            workspace,
-            request,
+            workspace: second_scope,
+            request: first_request,
             delivery: 0,
         };
         assert_eq!(crate::retention(&wrong_scope, false), None);
