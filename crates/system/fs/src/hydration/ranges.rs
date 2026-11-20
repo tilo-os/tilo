@@ -751,6 +751,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_photo_sized_file_arrives_from_a_peer_chunk_by_chunk() {
+        // A quarter of a megabyte is a photo: too big for the single chunk a
+        // test file is, small enough to stay loose blobs rather than the
+        // area. Its manifest and several chunks travel, and the first chunk
+        // alone must arrive for the open that reads its head.
+        let data = pseudo(256 * 1024, 21);
+        let (hydrator, id, server_store, _router) = pair(&data).await;
+        let manifest = server_store.manifest(id).await.unwrap();
+        assert!(!content::is_file_backed(&manifest));
+        assert!(manifest.chunks().len() > 1, "several chunks");
+        let head = hydrator.read(id, 0, 4096).await.unwrap();
+        assert_eq!(head, &data[..4096]);
+        let all = hydrator.read(id, 0, data.len() as u64).await.unwrap();
+        assert_eq!(all, data);
+    }
+
+    #[tokio::test]
     async fn ranges_of_a_large_file_arrive_verified_and_resume() {
         let data = pseudo(6 * 1024 * 1024 + 123, 7);
         let (hydrator, id, server_store, _router) = pair(&data).await;

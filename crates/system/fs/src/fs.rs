@@ -48,6 +48,10 @@ use fs_protocol::projection::{
 use fs_protocol::{AvailabilityPolicy, Residency, TransferPhase};
 
 const TTL: Duration = Duration::from_secs(10);
+/// Entries whose attributes one `readdirplus` pass reads while holding the namespace: a reply
+/// page is at most a few hundred entries, so a pass covers the page without holding the lock
+/// for a whole folder.
+const ATTRIBUTES_PER_PASS: usize = 256;
 // The pinned-hydration worker wakes for everything that can change its plan: a local
 // publish, any namespace change (remote applies included), an ACL replacement, a
 // change to what the availability registry says it acts on, and the earliest retry
@@ -480,18 +484,15 @@ impl AclVisibleDocumentIndex {
 }
 
 pub mod activity;
+mod attributes;
+mod listing;
 pub mod native_ops;
 mod unavailable;
 mod write_stage;
+use listing::{ReaddirCache, note_request};
 use tilo_lock::MutexRecover as _;
 use write_stage::{MissingRanges, SharedStage, StagedRead};
 pub use write_stage::{Stage, WriteStage};
-
-/// A directory listing as the mount's identity sees it, with the revision it was taken at.
-struct ReaddirCache {
-    key: (u64, u64, String),
-    entries: Vec<(u64, FileType, fs_protocol::FileNameV1)>,
-}
 
 pub struct QuickFS {
     pub namespace: Arc<Mutex<Namespace>>,
@@ -1380,24 +1381,6 @@ impl QuickFS {
         Ok(self.live_attr(view.attr, buf_len))
     }
 
-    /// `attr` as every answer about a file must give it: sized as a read serves it (a
-    /// write stage's length) and a directory's visible link count. `lookup`, `getattr` and
-    /// `readdirplus` all answer through here, because the kernel sets the file size from
-    /// each of them: a `lookup` that answered another size than `getattr` let the path walk
-    /// of an `open` shrink the size under a mapping sized by the `stat` before it, and git's
-    /// index refresh died with SIGBUS reading the mapping.
-    fn live_attr(&self, mut attr: FileAttr, staged_len: Option<u64>) -> FileAttr {
-        let ino = attr.ino.0;
-        if let Some(len) = staged_len {
-            attr.size = len;
-            attr.blocks = len.div_ceil(512);
-        }
-        if attr.kind == FileType::Directory {
-            attr.nlink = self.visible_dir_nlink(ino);
-        }
-        attr
-    }
-
     /// What a FUSE `lookup` answers for `name` in `parent`: the entry's attributes and
     /// TTL, or `None` when there is no such entry in the caller's view.
     fn lookup_entry(&self, parent: u64, name: &[u8]) -> Option<(FileAttr, Duration)> {
@@ -1662,25 +1645,6 @@ impl QuickFS {
         self
     }
 
-    fn presented_to(&self, req: &Request, mut attr: FileAttr) -> FileAttr {
-        let (uid, gid) = self.owner.unwrap_or_else(|| (req.uid(), req.gid()));
-        attr.uid = uid;
-        attr.gid = gid;
-        attr
-    }
-
-    /// How long the kernel may keep attributes answered for `ttl`. The kernel keeps one
-    /// answer per inode for every caller, so attributes presented as the caller's are never
-    /// kept: another account would be shown the previous caller as owner. With the person
-    /// named, every caller gets the same answer, kept as long as any.
-    fn attr_ttl(&self, ttl: Duration) -> Duration {
-        if self.owner.is_some() {
-            ttl
-        } else {
-            Duration::ZERO
-        }
-    }
-
     /// Offer kernel passthrough for read-only opens of fully local files, with backing
     /// files under `dir`. Takes effect only when the kernel negotiates it at `init`.
     #[must_use]
@@ -1692,12 +1656,6 @@ impl QuickFS {
             backing: Mutex::new(HashMap::new()),
         });
         self
-    }
-
-    fn presented_attr(&self, ino: u64) -> Option<(fuser::FileAttr, Duration)> {
-        let buf_len = self.staged_len(ino);
-        let attr = self.ns().getattr(ino)?;
-        Some((self.live_attr(attr, buf_len), TTL))
     }
 
     fn payload_not_resident(&self, ino: u64) -> bool {
@@ -3030,48 +2988,6 @@ impl QuickFS {
         }
     }
 
-    /// The entries of `ino` that belong in the view, as `readdir` would report them; `None`
-    /// when `ino` is not a directory in the view. `.` and `..` always survive.
-    fn visible_entries(&self, ino: u64) -> Option<Vec<(u64, FileType, fs_protocol::FileNameV1)>> {
-        let (entries, dir_path, revision) = {
-            let mut ns = self.ns();
-            (
-                ns.readdir(ino),
-                ns.path_for(ino),
-                ns.indexed_document_revision().to_owned(),
-            )
-        };
-        let entries = entries?;
-        let Some((acl, identity)) = &self.enforcement else {
-            return Some(entries);
-        };
-        // A listing is good while nothing in the tree or the ACL changed: a folder's pages then
-        // pay for it once, not once per page.
-        let key = (ino, acl.revision(), revision);
-        if let Some(cached) = self.readdir_cache.lock_recover().as_ref()
-            && cached.key == key
-        {
-            return Some(cached.entries.clone());
-        }
-        let dir_path = dir_path?;
-        if !acl.visible(identity, &dir_path) {
-            return None;
-        }
-        let visible: Vec<_> = entries
-            .into_iter()
-            .filter(|(_, _, name)| {
-                name == "."
-                    || name == ".."
-                    || acl.visible(identity, &child_path(&dir_path, name.as_bytes()))
-            })
-            .collect();
-        self.readdir_cache.lock_recover().replace(ReaddirCache {
-            key,
-            entries: visible.clone(),
-        });
-        Some(visible)
-    }
-
     /// Hand what an authorised open of `ino` predicts to the predictive worker, after the open
     /// is answered, so prediction never delays it.
     fn predict_after_open(&self, ino: u64) {
@@ -3161,21 +3077,6 @@ impl QuickFS {
                 Some((ns.hash_for(candidate)?, attr.size))
             })
             .collect()
-    }
-
-    /// The link count to report for a directory: `2` plus one per subdirectory in the view,
-    /// taken from the filtered listing rather than the namespace, so `nlink` and `readdir`
-    /// cannot disagree and a count from the real tree never announces hidden subdirectories.
-    fn visible_dir_nlink(&self, ino: u64) -> u32 {
-        let subdirs = self.visible_entries(ino).map_or(0, |entries| {
-            entries
-                .iter()
-                .filter(|(_, kind, name)| {
-                    *kind == FileType::Directory && name != "." && name != ".."
-                })
-                .count()
-        });
-        2u32.saturating_add(u32::try_from(subdirs).unwrap_or(u32::MAX))
     }
 
     /// The check every "make a new name in this directory" operation runs (`create`, `mkdir`,
@@ -4135,6 +4036,7 @@ impl Filesystem for QuickFS {
     /// return the same `ENOENT`.
     fn lookup(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let _answering = self.activity.begin();
+        note_request("lookup");
         match self.lookup_entry(parent.0, name.as_bytes()) {
             Some((attr, ttl)) => {
                 let attr = self.presented_to(req, attr);
@@ -4146,6 +4048,7 @@ impl Filesystem for QuickFS {
 
     fn getattr(&self, req: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
         let _answering = self.activity.begin();
+        note_request("getattr");
         match self.attr_for_request(ino.0, fh.map(|fh| fh.0)) {
             Ok(attr) => reply.attr(&self.attr_ttl(TTL), &self.presented_to(req, attr)),
             Err(e) => reply.error(to_errno(e)),
@@ -4161,6 +4064,7 @@ impl Filesystem for QuickFS {
         mut reply: ReplyDirectory,
     ) {
         let _answering = self.activity.begin();
+        note_request("readdir");
         // Entries outside the view simply aren't in the directory; offsets
         // below index what the app can see, so paging never has a gap.
         if !self.ino_in_view(ino.0) {
@@ -4201,6 +4105,7 @@ impl Filesystem for QuickFS {
         mut reply: ReplyDirectoryPlus,
     ) {
         let _answering = self.activity.begin();
+        note_request("readdirplus");
         if !self.ino_in_view(ino.0) {
             reply.error(to_errno(ENOENT));
             return;
@@ -4210,22 +4115,39 @@ impl Filesystem for QuickFS {
             return;
         };
         let skip = usize::try_from(offset).unwrap_or(usize::MAX);
-        for (i, (e_ino, _, name)) in entries.into_iter().enumerate().skip(skip) {
-            let Some((attr, ttl)) = self.presented_attr(e_ino) else {
-                continue;
-            };
-            let attr = self.presented_to(req, attr);
-            let ttl = self.attr_ttl(ttl);
-            let next_offset = u64::try_from(i).unwrap_or(u64::MAX).saturating_add(1);
-            if reply.add(
-                INodeNo(e_ino),
-                next_offset,
-                OsStr::from_bytes(name.as_bytes()),
-                &ttl,
-                &attr,
-                Generation(0),
-            ) {
+        // Each page's attributes are read in one namespace pass over the entries it answers,
+        // so a folder of a thousand answers pays a handful of locks rather than a thousand.
+        let mut remaining = entries.into_iter().enumerate().skip(skip);
+        'pages: loop {
+            let page: Vec<(usize, (u64, FileType, fs_protocol::FileNameV1))> =
+                remaining.by_ref().take(ATTRIBUTES_PER_PASS).collect();
+            if page.is_empty() {
                 break;
+            }
+            let attrs: Vec<Option<FileAttr>> = {
+                let ns = self.ns();
+                page.iter()
+                    .map(|(_, (e_ino, _, _))| ns.getattr(*e_ino))
+                    .collect()
+            };
+            for ((i, (e_ino, _, name)), attr) in page.into_iter().zip(attrs) {
+                let Some(attr) = attr else {
+                    continue;
+                };
+                let attr = self.live_attr(attr, self.staged_len(e_ino));
+                let attr = self.presented_to(req, attr);
+                let ttl = self.attr_ttl(TTL);
+                let next_offset = u64::try_from(i).unwrap_or(u64::MAX).saturating_add(1);
+                if reply.add(
+                    INodeNo(e_ino),
+                    next_offset,
+                    OsStr::from_bytes(name.as_bytes()),
+                    &ttl,
+                    &attr,
+                    Generation(0),
+                ) {
+                    break 'pages;
+                }
             }
         }
         reply.ok();
@@ -4237,6 +4159,7 @@ impl Filesystem for QuickFS {
 
     fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let _answering = self.activity.begin();
+        note_request("open");
         let _writer = if matches!(flags.acc_mode(), OpenAccMode::O_RDONLY) {
             None
         } else {
@@ -4318,6 +4241,7 @@ impl Filesystem for QuickFS {
         reply: ReplyData,
     ) {
         let _answering = self.activity.begin();
+        note_request("read");
         match self.plan_read(ino.0, fh.0, offset, size) {
             ReadPlan::Error(e) => reply.error(to_errno(e)),
             ReadPlan::Buffered(buffered) => self.reply_buffered(ino.0, buffered, reply),
