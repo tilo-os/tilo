@@ -2449,7 +2449,7 @@ name = "fs-workspace-scale"
 # The daemon pass mounts FUSE and has one device join another over iroh; the
 # ladder's content stays inside the step's own target directory.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "script=$(cat <<'SCALE'\nexport TILO_FS_LADDER_RUNGS_MIB=${TILO_FS_LADDER_RUNGS_MIB:-10240,40960}\nbash tools/ci/fs-workspace-scale.sh all\nSCALE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+run = "script=$(cat <<'SCALE'\nexport TILO_FS_LADDER_RUNGS_MIB=${TILO_FS_LADDER_RUNGS_MIB:-10240,20480}\nbash tools/ci/fs-workspace-scale.sh all\nSCALE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "disk-100g"]
 isolation = "nested"

@@ -45,7 +45,11 @@ daemons() {
     bash scripts/ci-fuse-preflight.sh
     export TILO_FS_SYNC_BENCH=1 TILO_FS_BENCH_BACKEND=fuse TILO_FS_BENCH_ONLY=ladder
     export TILO_FS_BENCH_DIR=${TILO_FS_BENCH_DIR:-$target/fs-scale-daemons}
-    cargo test --locked -p tilo-fs --test it \
+    # A device's work is what ships, and a debug daemon writes files an order of
+    # magnitude slower; the small-file count stays modest because one fsync per
+    # file, not the disk, is what bounds it today.
+    export TILO_FS_LADDER_SMALL_FILES=${TILO_FS_LADDER_SMALL_FILES:-1000}
+    cargo test --release --locked -p tilo-fs --test it \
         native_sync_bench::a_workspace_of_files_on_a_size_ladder \
         -- --nocapture --test-threads=1
 }
