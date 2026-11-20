@@ -2191,8 +2191,6 @@ up_native() {
   # at the server, whose home relay is that TLS origin, so the host is given the
   # authority that signed it — which this makes. The host starts before the
   # server, which reads where to place a workspace once, when it starts.
-  [[ -z ${discord:-} ]] || start_native_discord
-  [[ -z ${fake_oauth:-} ]] || start_native_fake_oauth
   start_mail
   # Before the TLS and the bundle, so its certificate is trusted by the server
   # that signs a mail account in.
@@ -2200,6 +2198,8 @@ up_native() {
   start_native_tls
   trust_bundle
   # After the trust bundle, which every service reads.
+  [[ -z ${discord:-} ]] || start_native_discord
+  [[ -z ${fake_oauth:-} ]] || start_native_fake_oauth
   [[ ${TILO_SH_FAKE_MODELS:-0} != 1 ]] || start_native_models
   say "tls up ($((SECONDS - phase))s)"
   phase=$SECONDS
