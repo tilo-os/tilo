@@ -88,6 +88,12 @@ command = ["bash", "tools/test-env-setup.sh", "pam-module"]
 [scripts.setup.property-cases]
 command = ["bash", "tools/test-env-setup.sh", "property-cases"]
 
+# The sizes the agent session's ignored throughput test runs at (tools/test-env-setup.sh,
+# `throughput`). A family's `env` would carry them into the build of every unit, so another
+# family's run of the same package would share no build with this one.
+[scripts.setup.throughput]
+command = ["bash", "tools/test-env-setup.sh", "throughput"]
+
 [[profile.deep.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
 filter = "all()"
@@ -334,6 +340,14 @@ filter = "package(tilo-agent-session)"
 setup = "video-render"
 
 [[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-agent-session) and test(workspace_actions::throughput::)"
+setup = "throughput"
+
+# pam-tilo's tests load the module as libpam does: the cdylib, which no test binary links, so Cargo
+# builds none for them. The setup builds it and hands the tests its path. In every profile: a run
+# outside CI loads the module the same way.
+[[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(pam-tilo)"
 setup = "pam-module"

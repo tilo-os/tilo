@@ -1507,7 +1507,8 @@ wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests", "--run-ignored", "only", "-E", "test(=workspace_actions::throughput::a_workspace_takes_records_and_files_at_the_same_speed_however_full)"]
 unify = "workspace-unify"
 packages = ["tilo-agent-session"]
-env = { TILO_THROUGHPUT_SIZES = "0,200", TILO_THROUGHPUT_SINGLES = "10", TILO_THROUGHPUT_BULK = "200", TILO_THROUGHPUT_FILES = "20", TILO_THROUGHPUT_LARGE_MB = "16" }
+# The sizes it runs at are the ci profile's `throughput` setup step, not this family's environment:
+# there they would key every build script's and proc macro's cache entry by them.
 
 [[check]]
 name = "security-isolation-{part}"

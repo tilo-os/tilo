@@ -311,10 +311,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                 f"the {profile} profile builds the page bundle its page tests run against",
             )
         # pam-tilo's tests load the module as libpam does, and no test binary links a cdylib:
-        # the harness builds it first, in every profile, and hands the tests its path.
+        # the run's setup builds it first, in every profile, and hands the tests its path.
         module = scripts.pop("pam-module")
-        self.assertEqual(module["command"], ["bash", "tools/build-sibling-binaries.sh",
-                                             "pam-tilo:pam_tilo"])
+        self.assertEqual(module["command"], ["bash", "tools/test-env-setup.sh", "pam-module"])
         def rules(profile: str, setup: str) -> list[dict]:
             return [rule for rule in config["profile"][profile]["scripts"]
                     if rule["setup"] == setup]
@@ -338,7 +337,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "ntfs-fixtures": ["ntfs"], "as-root": ["root"],
                                  "swtpm": ["swtpm"], "pdf-sandbox": ["pdf-sandbox"],
                                  "video-render": ["video-render"],
-                                 "pam-module": ["pam-module"],
+                                 "throughput": ["throughput"],
                                  "property-cases": ["property-cases"]})
         for script in scripts.values():
             self.assertEqual(script["command"][:2], ["bash", "tools/test-env-setup.sh"])
@@ -384,7 +383,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "package(tilo-pdf) or package(pdf-viewer) or "
                                  "package(tilo-thumbnail)": "pdf-sandbox",
                                  "package(tilo-agent-session)": "video-render",
-                                 "package(pam-tilo)": "pam-module"})
+                                 "package(tilo-agent-session) and "
+                                 "test(workspace_actions::throughput::)": "throughput"})
 
     def test_the_deep_profile_gives_its_tests_more_property_cases(self) -> None:
         # t.toml's `test-deep` tests its packages with more proptest cases, through a profile of
