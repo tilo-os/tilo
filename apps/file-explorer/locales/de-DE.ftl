@@ -358,7 +358,6 @@ files-menu-run-shortcut = Kurzbefehl ausführen
 files-shortcut-running = „{ $shortcut }“ wird gestartet …
 files-shortcut-started = „{ $shortcut }“ läuft
 files-shortcut-failed = „{ $shortcut }“ wurde nicht ausgeführt: { $reason }
-files-action-send-nearby-device = An { $device } senden
 files-nearby-send-to-device = An { $device } senden
 files-nearby-select-one = Wähle eine Datei oder einen Ordner zum Senden aus.
 files-nearby-loading-devices = Deine Geräte werden gesucht …

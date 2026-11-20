@@ -359,7 +359,6 @@ files-menu-run-shortcut = Run shortcut
 files-shortcut-running = Running “{ $shortcut }”…
 files-shortcut-started = “{ $shortcut }” is running
 files-shortcut-failed = “{ $shortcut }” didn't run: { $reason }
-files-action-send-nearby-device = Send to { $device }
 files-nearby-send-to-device = Send to { $device }
 files-nearby-select-one = Select one file or folder to send.
 files-nearby-loading-devices = Looking for your devices…

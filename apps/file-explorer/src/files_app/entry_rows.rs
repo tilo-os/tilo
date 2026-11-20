@@ -193,19 +193,20 @@ fn entry_bindings(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) ->
             .bind(FilesEffect::CUT, [("entry", id())])
             .bind(FilesEffect::PROPERTIES, [("entry", id())])
             .bind(FilesEffect::HISTORY, [("entry", id())])
-            .bind(FilesEffect::COPY_TO, [("entry", id())])
-            .bind(FilesEffect::SEND_NEARBY, [("entry", id())]);
+            .bind(FilesEffect::COPY_TO, [("entry", id())]);
         if importable_under(&entry.path, &context.import_mounts) {
             bindings = bindings.bind(FilesEffect::IMPORT_ONCE, [("entry", id())]);
         }
         if facts.airdrop_file {
             bindings = bindings.bind(FilesEffect::SEND_AIR_DROP, [("entry", id())]);
         }
-        // Every device near this window is one offer, its target chosen from
-        // those online now.
-        if !context.nearby.is_empty() {
-            bindings = bindings.bind(FilesEffect::SEND_TO, [("entry", id())]);
-        }
+        // Sending to a nearby device is one offer: its target chosen from the
+        // devices online now, or, with none of them near, the picker that says so.
+        bindings = if context.nearby.is_empty() {
+            bindings.bind(FilesEffect::SEND_NEARBY, [("entry", id())])
+        } else {
+            bindings.bind(FilesEffect::SEND_TO, [("entry", id())])
+        };
     }
     if let Some(availability) = entry.availability.as_ref() {
         bindings = bindings.bind(FilesEffect::AVAILABILITY, [("entry", id())]);
@@ -268,6 +269,30 @@ fn entry_presentation(facts: &EntryRowFacts, entry: &Entry) -> Option<ResourcePr
         })
 }
 
+/// Sending `id` to a nearby device, as its row offers it: each device online now
+/// a choice read by its name, or, with none of them near, the picker greyed
+/// with why.
+fn send_nearby_status(context: &RowContext, id: &str) -> EffectStatus {
+    if context.nearby.is_empty() {
+        return EffectStatus::unavailable(
+            FilesEffect::SEND_NEARBY,
+            "no-nearby-device",
+            t("files-nearby-no-devices"),
+        )
+        .with_label(t("files-menu-send-nearby"))
+        .on(id);
+    }
+    EffectStatus::labelled(FilesEffect::SEND_TO, t("files-menu-send-nearby"))
+        .with_labelled_param_choices(
+            "target",
+            context
+                .nearby
+                .iter()
+                .map(|target| (hex::encode(target.handle.as_bytes()), target.label.clone())),
+        )
+        .on(id)
+}
+
 /// What each effect `entry` offers says on its row now: the words this entry
 /// is opened, read, kept or sent by, the apps that open it, the devices
 /// nearby, and what a conversion or an absent byte stream means here.
@@ -323,9 +348,7 @@ pub(super) fn entry_row_status(
         statuses.push(status);
     }
     if !context.trash {
-        statuses.push(
-            EffectStatus::labelled(FilesEffect::SEND_NEARBY, t("files-menu-send-nearby")).on(id),
-        );
+        statuses.push(send_nearby_status(context, id));
         if facts.airdrop_file {
             statuses.push(
                 EffectStatus::labelled(FilesEffect::SEND_AIR_DROP, t("files-action-send-airdrop"))
@@ -336,24 +359,6 @@ pub(super) fn entry_row_status(
                         serde_json::json!({"minLength": 1, "maxLength": 64}),
                     )
                     .with_param_schema("port", serde_json::json!({"minimum": 1, "maximum": 65535}))
-                    .on(id),
-            );
-        }
-        if !context.nearby.is_empty() {
-            statuses.push(
-                EffectStatus::labelled(FilesEffect::SEND_TO, t("files-menu-send-nearby"))
-                    .with_labelled_param_choices(
-                        "target",
-                        context.nearby.iter().map(|target| {
-                            (
-                                hex::encode(target.handle.as_bytes()),
-                                t_args(
-                                    "files-action-send-nearby-device",
-                                    &[arg("device", target.label.clone())],
-                                ),
-                            )
-                        }),
-                    )
                     .on(id),
             );
         }

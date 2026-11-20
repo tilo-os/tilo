@@ -2970,6 +2970,82 @@ mod command_path_tests {
         (w, cfg)
     }
 
+    /// A file offers sending to a nearby device once: greyed, saying why, while none is near, and
+    /// with each device online as a choice, read by its name, once one is.
+    #[test]
+    #[cfg(unix)]
+    fn a_file_offers_sending_nearby_once() {
+        use ui::collaboration::{
+            CollabEvent, CollabRequest, NearbyTargetHandle, NearbyTransferCommand,
+            NearbyTransferReply, NearbyTransferSnapshot, NearbyTransferTarget,
+        };
+        use ui::tilo_actions::api::spec_of;
+        let (widget, config) = hermetic();
+        let source = config.path().join("report.txt");
+        std::fs::write(&source, b"to send").unwrap();
+        widget.state().navigate(config.path().to_path_buf());
+        let document = automerge::AutoCommit::new();
+        let entry = crate::search_provider::entry_resource_id(&source);
+
+        let resources = crate::files_app::published::tree(&widget, &document);
+        let picker = spec_of(&resources, &entry, "send-nearby").expect("one offer with none near");
+        assert_eq!(picker.label, t("files-menu-send-nearby"));
+        assert!(matches!(
+            &picker.contract.availability,
+            ui::tilo_actions::Availability::Unavailable { reason, .. }
+                if *reason == t("files-nearby-no-devices")
+        ));
+        assert!(spec_of(&resources, &entry, "send-to").is_none());
+
+        widget
+            .state()
+            .nearby_send
+            .handle_event(&CollabEvent::NearbyTransferChanged);
+        let request_id = widget
+            .state()
+            .nearby_send
+            .take_requests()
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::NearbyTransferCommand {
+                    request_id,
+                    command: NearbyTransferCommand::Snapshot,
+                } => Some(*request_id),
+                _ => None,
+            })
+            .unwrap();
+        let handle = NearbyTargetHandle::from_issued_bytes([7; 16]);
+        widget
+            .state()
+            .nearby_send
+            .handle_event(&CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Ok(NearbyTransferReply::Snapshot {
+                    snapshot: NearbyTransferSnapshot {
+                        targets: vec![NearbyTransferTarget {
+                            handle,
+                            label: "Kitchen tablet".into(),
+                            online: true,
+                        }],
+                        ..NearbyTransferSnapshot::default()
+                    },
+                }),
+            });
+        let resources = crate::files_app::published::tree(&widget, &document);
+        assert!(spec_of(&resources, &entry, "send-nearby").is_none());
+        let send = spec_of(&resources, &entry, "send-to").expect("one offer with a device near");
+        assert_eq!(send.label, t("files-menu-send-nearby"));
+        let target = send
+            .params()
+            .iter()
+            .find(|param| &*param.name == "target")
+            .unwrap();
+        assert_eq!(
+            target.choice_label(&hex::encode([7u8; 16])),
+            Some("Kitchen tablet")
+        );
+    }
+
     #[test]
     #[cfg(unix)]
     fn airdrop_file_action_requires_host_availability_and_cannot_submit_trust() {
