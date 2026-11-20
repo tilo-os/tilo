@@ -44,6 +44,7 @@ UNTYPED | so.tilo.mail | mail.mailbox | drafts.*.sender
 UNTYPED | so.tilo.mail | mail.mailbox | outbox
 UNTYPED | so.tilo.mail | mail.mailbox | server
 UNTYPED | so.tilo.mail | mail.messages | held.*.original
+UNTYPED | so.tilo.mail | mail.messages | held.*.parts.*.pieces
 UNTYPED | so.tilo.mail | tilo.accounts | accounts.*.config
 UNTYPED | so.tilo.maps | maps.offline-areas | devices
 UNTYPED | so.tilo.maps | maps.workspace | recents
