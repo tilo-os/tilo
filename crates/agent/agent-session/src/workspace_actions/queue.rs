@@ -24,10 +24,11 @@
 //! The same holds among an agent's own requests: a listing is several reads one after another,
 //! and an import's next write started between two of them held the next page for the whole
 //! write, so `tilo ls` during an import waited for one write per page. For [`READ_PAUSE`] after
-//! an agent's read was served, no agent's write is started while nothing else waits: the
-//! listing's next page finds the thread free, and waits for no write that began after its
-//! first page. A write that waited [`AGENT_TURN`] goes in any case, so reads that keep coming
-//! never hold writes back for good.
+//! an agent's read was served, no agent's write that came since is started while nothing else
+//! waits: the listing's next page finds the thread free. A write that already waited
+//! [`READ_PAUSE`] goes before the next read, so a listing that keeps reading holds each write
+//! for one pause at most, never for a turn: held until [`AGENT_TURN`], every write of an import
+//! beside a listing that kept going took two seconds, in an empty tracker as in a full one.
 //!
 //! An agent is never stopped for good: a person whose page asks again and
 //! again would otherwise hold every agent off for as long as it stays open.
@@ -153,11 +154,11 @@ impl Queue {
     }
 
     /// Until when the agent's write at `at` waits for the next read of a listing whose last
-    /// page was just served ([`READ_PAUSE`]): never a read, nor a write that waited its longest
-    /// ([`AGENT_TURN`]).
+    /// page was just served ([`READ_PAUSE`]): never a read, nor a write that already waited a
+    /// pause.
     fn reading_until(&self, at: usize) -> Option<Instant> {
         let (queued, job) = self.agents.get(at)?;
-        if job.urgency() == Urgency::Read || queued.elapsed() >= AGENT_TURN || self.closed {
+        if job.urgency() == Urgency::Read || queued.elapsed() >= READ_PAUSE || self.closed {
             return None;
         }
         self.agent_read?
