@@ -131,6 +131,7 @@ async fn beside_an_import() {
 
     // The key lists beside it.
     let mut rounds: Vec<Vec<(&str, Duration)>> = Vec::with_capacity(ROUNDS);
+    let mut during_rounds: Vec<usize> = Vec::with_capacity(ROUNDS);
     for round in 0..ROUNDS {
         let before = written.load(Ordering::Relaxed);
         let mut took = Vec::new();
@@ -150,13 +151,23 @@ async fn beside_an_import() {
         let during = written.load(Ordering::Relaxed) - before;
         eprintln!("round {round}: {took:?}, {during} messages written meanwhile");
         rounds.push(took);
+        during_rounds.push(during);
     }
     stop.store(true, Ordering::Relaxed);
     let page = import.await.unwrap();
     page.durable().await;
     let written = written.load(Ordering::Relaxed);
     eprintln!("{written} messages written in all");
-    assert!(written > 100, "the import wrote all along: {written}");
+    // The import writes one message after another as fast as it can, so how many it wrote in
+    // all measures how long the rounds took, not whether it kept up: the same test wrote 90-99
+    // across eight rounds on a faster machine and 126 when the rounds ran longer. What the
+    // listings were beside is an import that never stopped: every round found it writing.
+    for (round, during) in during_rounds.iter().enumerate() {
+        assert!(
+            *during > 0,
+            "the import wrote nothing while round {round} listed: {during_rounds:?}"
+        );
+    }
 
     for (round, took) in rounds.iter().enumerate() {
         for (call, elapsed) in took {
