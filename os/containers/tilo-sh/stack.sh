@@ -349,13 +349,14 @@ remote_capable() {
 }
 
 # The drop-in's own switch to run one call on the builder that builds rather
-# than hand it to another one, where a drop-in has one. Asked once; a drop-in
+# than hand it to another one, where a drop-in has one. Asked once, of exec
+# itself: a drop-in may know the switch and still refuse it on exec, and one
 # without it runs the call where it builds anyway.
 builder_flags() {
   if [[ -z ${builder_flags_set:-} ]]; then
     builder_flags=()
     builder_flags_set=1
-    $cargo --on-builder --version >/dev/null 2>&1 && builder_flags=(--on-builder)
+    if $cargo --on-builder exec --help >/dev/null 2>&1; then builder_flags=(--on-builder); fi
   fi
 }
 
