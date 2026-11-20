@@ -22251,6 +22251,7 @@ dependencies = [
  "tilo-identity-client",
  "tilo-live",
  "tilo-lock",
+ "tilo-mail-parts",
  "tilo-mcp",
  "tilo-model-gateway",
  "tilo-moderation",

@@ -173,3 +173,30 @@ Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-pri
         "café and a long line that wraps here\r\nnext = line\r\n"
     );
 }
+
+/// A server streaming a part's file is told its encoding by name, never the
+/// message: the decoder it makes from that name decodes the same file.
+#[test]
+fn a_decoder_made_from_its_encodings_name_decodes_the_same_file() {
+    let size = 300 * 1024 + 1;
+    let message = message_with_attachments("named@example.net", "Scan", &[("scan.pdf", size)]);
+    let split = split(&message);
+    let part = &split.apart[0];
+    let of_part = Decoder::of_part(&split.rest, part.at).unwrap();
+    assert_eq!(of_part.encoding(), "base64");
+    let mut decoder = Decoder::named(of_part.encoding()).unwrap();
+    let mut file = Vec::new();
+    for piece in part.body.chunks(4099) {
+        file.extend(decoder.push(piece).unwrap());
+    }
+    file.extend(decoder.finish().unwrap());
+    assert!(
+        file == attachment_bytes("scan.pdf", size),
+        "{} bytes",
+        file.len()
+    );
+    for name in ["base64", "quoted-printable", "binary"] {
+        assert_eq!(Decoder::named(name).unwrap().encoding(), name);
+    }
+    assert!(Decoder::named("uuencode").is_none());
+}

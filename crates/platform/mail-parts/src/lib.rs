@@ -192,6 +192,36 @@ impl Decoder {
         })
     }
 
+    /// The decoder of a body in the transfer encoding `name` (`base64`,
+    /// `quoted-printable` or `binary`, as [`Self::encoding`] names it); `None`
+    /// for any other name.
+    #[must_use]
+    pub fn named(name: &str) -> Option<Self> {
+        use mail_parser::Encoding;
+        let encoding = match name {
+            "base64" => Encoding::Base64,
+            "quoted-printable" => Encoding::QuotedPrintable,
+            "binary" => Encoding::None,
+            _ => return None,
+        };
+        Some(Self {
+            encoding,
+            carry: Vec::new(),
+        })
+    }
+
+    /// The name of the transfer encoding it decodes, which [`Self::named`]
+    /// takes back: what a server that streams the part's file is told to decode.
+    #[must_use]
+    pub const fn encoding(&self) -> &'static str {
+        use mail_parser::Encoding;
+        match self.encoding {
+            Encoding::Base64 => "base64",
+            Encoding::QuotedPrintable => "quoted-printable",
+            Encoding::None => "binary",
+        }
+    }
+
     /// The bytes `piece`, the next of the body, decodes to so far. `None` for bytes that are
     /// not in the part's encoding.
     pub fn push(&mut self, piece: &[u8]) -> Option<Vec<u8>> {

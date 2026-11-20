@@ -693,3 +693,40 @@ fn a_message_lists_its_attachments_before_its_original_is_here() {
         "{read}"
     );
 }
+
+/// Where the page carries files out, saving an attachment kept apart names
+/// the pieces it came in and their encoding, never its bytes: decoded in
+/// order, they are the file.
+#[test]
+fn saving_an_attachment_kept_apart_names_the_pieces_it_came_in() {
+    use tilo_mail_parts::fixture::{attachment_bytes, message_with_attachments};
+    let size = 3 * 1024 * 1024 + 7;
+    let message = message_with_attachments("link@example.net", "Scan", &[("scan.pdf", size)]);
+    let mut app = TestApp::<MailShell>::new().unwrap();
+    let id = deliver_apart(&mut app, &message)["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    app.settle();
+    let store = app.content();
+    let ask = app
+        .with_surface(|mail: &mut crate::app::MailApp| mail.state().attachment_link(&id, 0, &store))
+        .unwrap()
+        .expect("an attachment kept apart is saved from its pieces");
+    assert!(ask.check().is_ok(), "{ask:?}");
+    assert_eq!(ask.name, "scan.pdf");
+    let file = &ask.files[0];
+    let encoded = file.encoded.as_ref().unwrap();
+    assert_eq!(encoded.size, size as u64);
+    let mut decoder = tilo_mail_parts::Decoder::named(&encoded.encoding).unwrap();
+    let mut bytes = Vec::new();
+    for piece in &encoded.pieces {
+        bytes.extend(decoder.push(&app.content().read(piece).unwrap()).unwrap());
+    }
+    bytes.extend(decoder.finish().unwrap());
+    assert!(
+        bytes == attachment_bytes("scan.pdf", size),
+        "{} bytes",
+        bytes.len()
+    );
+}

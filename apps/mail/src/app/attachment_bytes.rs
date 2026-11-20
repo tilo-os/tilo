@@ -93,6 +93,51 @@ impl Mailroom {
         ))
     }
 
+    /// What saving attachment `index` of `message` streams from the
+    /// workspace's server, where the page carries files out
+    /// ([`ui::carry_out`]): an attachment kept apart from a held message, as
+    /// the pieces it came in, which the server decodes as it serves them. So
+    /// a file of any size saves without its bytes passing through here.
+    /// `None` for one read here ([`Self::attachment_to_save`]). `store` is
+    /// the mailbox's content, where the message itself is read.
+    pub(crate) fn attachment_link(
+        &self,
+        message: &str,
+        index: usize,
+        store: &tilo_content::ContentStore,
+    ) -> Option<ui::tilo_actions::remote::ContentLinkAsk> {
+        self.attachment_available(message, index).ok()?;
+        let message_id = message.parse::<MessageId>().ok()?;
+        let filename = {
+            let shared = self.shared.borrow();
+            let attachment = shared.mailbox.get(message_id)?.attachments.get(index)?;
+            if !attachment.content.is_empty() || !attachment.apart {
+                return None;
+            }
+            attachment.filename.clone()
+        };
+        let encoded = {
+            let shared = self.shared.borrow();
+            shared
+                .chain
+                .as_ref()?
+                .parts()
+                .iter()
+                .rev()
+                .find_map(|(_, part)| part.held_attachment_pieces(message, index, store))?
+        };
+        let name = MailApp::attachment_save_name(&filename);
+        Some(ui::tilo_actions::remote::ContentLinkAsk {
+            files: vec![ui::tilo_actions::remote::ContentLinkFile {
+                path: name.clone(),
+                hash: tilo_content::content_address(encoded.pieces.first()?)?,
+                encoded: Some(encoded),
+            }],
+            name,
+            zip: false,
+        })
+    }
+
     /// Attachment `index` of `message` whole, and the name to save it under.
     pub(crate) fn attachment_to_save(
         &self,

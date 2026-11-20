@@ -1,6 +1,6 @@
 use std::io::Read as _;
 
-use tilo_actions::remote::{ContentLinkAsk, ContentLinkFile};
+use tilo_actions::remote::{ContentLinkAsk, ContentLinkFile, EncodedFile};
 use tilo_content::ContentStore;
 
 use super::{ContentLinks, ROUTE, Refusal, Sink, prepare, stream};
@@ -55,6 +55,7 @@ fn file(path: &str, hash: &str) -> ContentLinkFile {
     ContentLinkFile {
         path: path.into(),
         hash: hash.into(),
+        encoded: None,
     }
 }
 
@@ -166,4 +167,49 @@ fn a_link_is_found_by_its_token_alone() {
         super::disposition("naïve \"q\".md"),
         "attachment; filename=\"na_ve _q_.md\"; filename*=UTF-8''na%C3%AFve%20%22q%22.md"
     );
+}
+
+/// A message's attachment, named as the pieces the message carried it in:
+/// the link serves the file they decode to, a buffer at a time, and a body
+/// that decodes to other than the size it was named with ends short.
+#[test]
+fn a_link_serves_an_attachment_decoded_from_the_pieces_its_message_carried() {
+    use tilo_mail_parts::fixture::{attachment_bytes, message_with_attachments};
+    let store = ContentStore::memory();
+    let size = 2 * 1024 * 1024 + 3;
+    let message = message_with_attachments("scan@example.net", "Scan", &[("scan.pdf", size)]);
+    let split = tilo_mail_parts::split(&message);
+    let part = &split.apart[0];
+    let pieces: Vec<String> = part
+        .pieces()
+        .map(|piece| store.put(piece).unwrap())
+        .collect();
+    let encoding = tilo_mail_parts::Decoder::of_part(&split.rest, part.at)
+        .unwrap()
+        .encoding()
+        .to_owned();
+    let ask = |size: u64| ContentLinkAsk {
+        name: "scan.pdf".into(),
+        files: vec![ContentLinkFile {
+            path: "scan.pdf".into(),
+            hash: pieces[0].clone(),
+            encoded: Some(EncodedFile {
+                pieces: pieces.clone(),
+                encoding: encoding.clone(),
+                size,
+            }),
+        }],
+        zip: false,
+    };
+    let whole = ask(size as u64);
+    assert!(whole.check().is_ok());
+    assert_eq!(served(&store, &whole), attachment_bytes("scan.pdf", size));
+
+    for wrong in [size as u64 - 1, size as u64 + 1] {
+        let streaming = prepare(&store, &ask(wrong)).unwrap();
+        assert!(
+            stream(&store, &streaming, &mut Kept::default()).is_err(),
+            "named {wrong} bytes"
+        );
+    }
 }

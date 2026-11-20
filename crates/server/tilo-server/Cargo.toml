@@ -75,6 +75,7 @@ path = "src/approve.rs"
 #   peers without any external service.
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-mail-parts = { path = "../../platform/mail-parts" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock", features = ["local"] }
@@ -306,6 +307,7 @@ getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tilo-mail-parts = { path = "../../platform/mail-parts", features = ["fixture"] }
 # The live session a workspace's session publishes on, as the hosted Browser
 # tests open one to prove an environment whose session is on it is here.
 tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"] }

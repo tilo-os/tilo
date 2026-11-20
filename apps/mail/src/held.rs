@@ -293,6 +293,35 @@ impl HeldMessage {
         Some((HeldReader::new(store, stretches, Some(decoder))?, part.size))
     }
 
+    /// The pieces the file attachment `index` was kept apart in, and the
+    /// transfer encoding they are in: `None` for an attachment kept in the
+    /// message, or one with a piece kept in the document rather than the store.
+    fn attachment_pieces(
+        &self,
+        index: usize,
+        store: &tilo_content::ContentStore,
+    ) -> Option<ui::tilo_actions::remote::EncodedFile> {
+        let rest = self.original.as_ref()?.read(store)?;
+        let parsed = mail_parser::MessageParser::default().parse(&rest)?;
+        let at = u64::from(parsed.attachments().nth(index)?.offset_body);
+        let part = self.parts.iter().find(|part| part.at == at)?;
+        let encoding = tilo_mail_parts::Decoder::of_part(&rest, at)?.encoding();
+        let pieces = part
+            .pieces
+            .iter()
+            .map(|piece| {
+                piece
+                    .reference()
+                    .filter(|kept| tilo_content::valid_reference(kept))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(ui::tilo_actions::remote::EncodedFile {
+            pieces,
+            encoding: encoding.to_owned(),
+            size: part.size,
+        })
+    }
+
     /// The message as it was sent, parsed as fetched mail is, in `folder`:
     /// its words and the parts shown in place put back, each attachment kept
     /// apart named by its size and read from its part when it is opened.
@@ -923,6 +952,20 @@ impl MessageStates {
     ) -> Option<(HeldReader, u64)> {
         let (_, held) = self.held_message(item)?;
         held.attachment_body(index, store)
+    }
+
+    /// The file attachment `index` of the held message `item` holds, as
+    /// the pieces its message carried it in: for a server that decodes them as
+    /// it serves the file, so it is never read or kept whole here. `None`
+    /// for one kept in the message itself, or while its message is not here.
+    pub(crate) fn held_attachment_pieces(
+        &self,
+        item: &str,
+        index: usize,
+        store: &tilo_content::ContentStore,
+    ) -> Option<ui::tilo_actions::remote::EncodedFile> {
+        let (_, held) = self.held_message(item)?;
+        held.attachment_pieces(index, store)
     }
 
     /// The conversation of a held message about `subject` (its reply and

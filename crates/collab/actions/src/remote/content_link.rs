@@ -40,8 +40,37 @@ pub struct ContentLinkFile {
     /// to one file, its name.
     pub path: String,
     /// The hash of its content in the workspace's store, as a Files node
-    /// names it: the whole file, or the manifest of its chunks.
+    /// names it: the whole file, or the manifest of its chunks. For a file
+    /// kept [`encoded`](Self::encoded), its first piece's.
     pub hash: String,
+    /// The file is not one content but a body as a message carried it:
+    /// pieces in a transfer encoding, which the provider decodes as it
+    /// serves them. So an attachment saves straight from the message it came
+    /// in, without being decoded and kept a second time first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoded: Option<EncodedFile>,
+}
+
+/// A file kept as a message's body: its pieces and how they decode.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EncodedFile {
+    /// The references the store keeps the body's pieces under, in order
+    /// (sealed ones with their key).
+    pub pieces: Vec<String>,
+    /// The transfer encoding they are in: `base64`, `quoted-printable` or
+    /// `binary`.
+    pub encoding: String,
+    /// The size of the file once decoded.
+    pub size: u64,
+}
+
+/// The transfer encodings an [`EncodedFile`] may name.
+pub const TRANSFER_ENCODINGS: [&str; 3] = ["base64", "quoted-printable", "binary"];
+
+/// Whether `hash` is a content hash a link may name: 64 hex digits.
+fn is_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// What a link is asked for.
@@ -87,9 +116,26 @@ impl ContentLinkAsk {
             if !safe {
                 return Err(format!("{:?} is no path in a zip", file.path));
             }
-            let hex = file.hash.len() == 64 && file.hash.bytes().all(|b| b.is_ascii_hexdigit());
-            if !hex {
+            if !is_hash(&file.hash) {
                 return Err(format!("{:?} is no content hash", file.hash));
+            }
+            if let Some(encoded) = &file.encoded {
+                let first = encoded.pieces.first().map(String::as_str);
+                if first.and_then(tilo_content::content_address).as_deref()
+                    != Some(file.hash.as_str())
+                {
+                    return Err(format!("{:?} names its first piece as its hash", file.path));
+                }
+                if let Some(bad) = encoded
+                    .pieces
+                    .iter()
+                    .find(|piece| !tilo_content::valid_reference(piece))
+                {
+                    return Err(format!("{bad:?} is no content reference"));
+                }
+                if !TRANSFER_ENCODINGS.contains(&encoded.encoding.as_str()) {
+                    return Err(format!("{:?} is no transfer encoding", encoded.encoding));
+                }
             }
         }
         Ok(())
@@ -116,6 +162,7 @@ mod tests {
         ContentLinkFile {
             path: path.into(),
             hash: "ab".repeat(32),
+            encoded: None,
         }
     }
 
@@ -163,9 +210,39 @@ mod tests {
             files: vec![ContentLinkFile {
                 path: "a".into(),
                 hash: "tilo.content:xyz".into(),
+                encoded: None,
             }],
             ..folder
         };
         assert!(not_a_hash.check().is_err());
+
+        let encoded = |pieces: Vec<String>, encoding: &str| ContentLinkAsk {
+            name: "scan.pdf".into(),
+            files: vec![ContentLinkFile {
+                path: "scan.pdf".into(),
+                hash: "ab".repeat(32),
+                encoded: Some(EncodedFile {
+                    pieces,
+                    encoding: encoding.into(),
+                    size: 10,
+                }),
+            }],
+            zip: false,
+        };
+        let pieces = vec!["ab".repeat(32), "cd".repeat(32)];
+        assert!(encoded(pieces.clone(), "base64").check().is_ok());
+        assert!(
+            encoded(pieces, "uuencode").check().is_err(),
+            "an encoding no provider decodes"
+        );
+        assert!(
+            encoded(vec!["cd".repeat(32)], "base64").check().is_err(),
+            "its hash is its first piece"
+        );
+        assert!(
+            encoded(vec!["ab".repeat(32), "piece".into()], "binary")
+                .check()
+                .is_err()
+        );
     }
 }

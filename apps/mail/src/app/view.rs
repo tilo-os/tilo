@@ -285,6 +285,19 @@ fn answer_effect(
         _ => {}
     }
     if let MailEffect::Save { message, index } = &effect {
+        // Where the page carries files out of the workspace (a browser), a
+        // file kept apart from its message streams from the server straight to
+        // the person's disk, never through the page.
+        if ui::carry_out::available()
+            && let Some(store) = ui::tilo_resource::content::current()
+            && let Some(ask) = mailroom.borrow().attachment_link(message, *index, &store)
+        {
+            // The browser's Save dialog and its download are what the
+            // person watches; the page tells them when one fails.
+            if ui::carry_out::save(ask) {
+                return Ok(Effected::done());
+            }
+        }
         let (name, bytes) = mailroom
             .borrow()
             .attachment_to_save(message, *index)
