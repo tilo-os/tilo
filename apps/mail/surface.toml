@@ -306,6 +306,7 @@ fields = [
   { path = "held.*.conversation", type = "text" },
   { path = "held.*.original", type = { option = "any" } },
   { path = "held.*.parts", type = { list = { named = "HeldPart" } } },
+  { path = "held.*.attachments", type = { list = { named = "HeldAttachment" } } },
 ]
 
 [[resources.verbs]]
@@ -378,7 +379,16 @@ params = [
   { name = "message_id", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "original", type = { option = "any" }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] }] } },
   { name = "parts", type = { list = { named = "DeliveredPart" } }, required = false, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { at = { type = "integer", minimum = 0 }, pieces = { type = "array", items = { oneOf = [{ type = "array", items = { type = "integer", maximum = 255, minimum = 0 } }, { type = "string", content = true, pattern = "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$" }, { type = "string", pattern = "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$" }, { type = "object", properties = { inline = { type = "array" } } }, { type = "null" }] } }, size = { type = "integer", minimum = 0 } }, required = ["at", "size", "pieces"] } } },
+  { name = "attachments", type = { list = { named = "DeliveredAttachment" } }, required = false, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { filename = { type = "string" }, media_type = { type = ["string", "null"] }, size = { type = "integer", minimum = 0 } }, required = ["filename", "size"] } } },
   { name = "answers", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.types]]
+name = "DeliveredAttachment"
+fields = [
+  { name = "filename", type = "text" },
+  { name = "media_type", type = { option = "text" } },
+  { name = "size", type = "int" },
 ]
 
 [[resources.types]]
@@ -405,6 +415,7 @@ fields = [
   { name = "message_id", type = { option = "text" } },
   { name = "original", type = { option = "any" } },
   { name = "parts", type = { list = { named = "DeliveredPart" } } },
+  { name = "attachments", type = { list = { named = "DeliveredAttachment" } } },
   { name = "answers", type = { option = "text" } },
 ]
 
@@ -451,6 +462,14 @@ cases = [
 ]
 
 [[resources.types]]
+name = "HeldAttachment"
+fields = [
+  { name = "filename", type = "text" },
+  { name = "media_type", type = "text" },
+  { name = "size", type = "int" },
+]
+
+[[resources.types]]
 name = "HeldMessage"
 fields = [
   { name = "message_id", type = "text" },
@@ -464,6 +483,7 @@ fields = [
   { name = "conversation", type = "text" },
   { name = "original", type = { option = "any" } },
   { name = "parts", type = { list = { named = "HeldPart" } } },
+  { name = "attachments", type = { list = { named = "HeldAttachment" } } },
 ]
 
 [[resources.types]]
