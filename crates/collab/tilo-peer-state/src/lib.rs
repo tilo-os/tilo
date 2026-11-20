@@ -87,7 +87,7 @@ pub use state::{
     MembershipError, MergedDocument, Missing, NativePublicationCut, NotAdmitted, OpenedDocument,
     OpenedHistory, OpenedWrite, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance,
     PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut,
-    PeerPersonal, PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut,
+    PeerPersonal, PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, StoredOpening,
     PersonalStore, ReceiveOutcome, RequestedBot, Reseal, RowError, SETTINGS_KIND, SealCheckpoint,
     SeedDocument, SeedState, Shortfall, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
     WIFI_KIND, WORKSPACE_KEEPING_DEVICES_KEY, WORKSPACES_KIND, committed_document_revision,

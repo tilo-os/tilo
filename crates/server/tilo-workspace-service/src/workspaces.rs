@@ -1281,7 +1281,7 @@ impl Workspaces {
                 jobs,
                 workspaces,
                 readings: readings::Readings::default(),
-                own_opened: reads::OwnOpened::default(),
+                own_opened: reads::OwnOpened::stored_in(dir.clone()),
                 calls: Arc::default(),
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,

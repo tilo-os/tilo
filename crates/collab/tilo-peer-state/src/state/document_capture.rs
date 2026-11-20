@@ -197,6 +197,124 @@ impl KeptDocument {
         self.0 = None;
     }
 
+    /// What is kept, for its reader to store and take up again after it starts anew
+    /// ([`StatePeer::kept_again`]): the record saved whole, and where in its history the writes
+    /// it was opened from end. `None` while what was opened since it was last stored is little
+    /// beside what it holds ([`STORED_AFTER`]), or while a write is still arriving in segments
+    /// or waits for a change: what is kept then is not one point of the history.
+    ///
+    /// Opening a large record's sealed history merges every write of it, seconds for a part of
+    /// a tracker of thousands of issues, and a reader that starts anew opened every record it
+    /// reads so again. What this stores loads in a fraction of that.
+    pub fn unstored(&mut self) -> Option<StoredOpening> {
+        let opened = self.0.as_ref()?;
+        let little = opened.stored.is_some_and(|stored| {
+            opened.size.saturating_sub(stored) < (stored / STORED_AFTER).max(STORED_AT_LEAST)
+        });
+        if little
+            || !opened.transfers.is_empty()
+            || !opened.stuck.is_empty()
+            || !opened.waiting.is_empty()
+        {
+            return None;
+        }
+        let bytes = self.capture(usize::MAX)?.ok()?;
+        let opened = self.0.as_mut()?;
+        opened.stored = Some(opened.size);
+        Some(StoredOpening {
+            count: opened.count,
+            last: opened.last,
+            snapshot: opened.snapshot.as_ref().map(snapshot_digest),
+            size: opened.size,
+            heads: opened
+                .document
+                .committed_document()
+                .get_heads()
+                .iter()
+                .map(|head| head.0)
+                .collect(),
+            bytes,
+        })
+    }
+}
+
+/// What is stored of a record is stored again once what was opened since comes to this share of
+/// what it held then ([`KeptDocument::unstored`]): a record written over and over (the part an
+/// import writes into) is stored every few writes, not on each, and what a start opens beyond
+/// what was stored stays a share of it.
+const STORED_AFTER: usize = 4;
+
+/// ... or to this many bytes, for a record holding little.
+const STORED_AT_LEAST: usize = 64 * 1024;
+
+/// A sealed record as a reader opened it, stored to be taken up again once it starts anew
+/// ([`KeptDocument::unstored`], [`StatePeer::kept_again`]). What it holds is plaintext the
+/// reader's keys opened: its reader stores it sealed under those keys, never in the clear.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StoredOpening {
+    /// How many writes of the history were opened.
+    count: usize,
+    /// The signature of the last of them.
+    last: Option<collab_types::Signature>,
+    /// The digest of the covered snapshot they were merged onto.
+    snapshot: Option<[u8; 32]>,
+    /// The bytes opened, counted against a read's maximum.
+    size: usize,
+    /// The heads the record stands at.
+    heads: Vec<[u8; 32]>,
+    /// The record saved whole.
+    #[serde(with = "serde_bytes")]
+    bytes: Vec<u8>,
+}
+
+fn snapshot_digest(snapshot: &super::AcceptedCheckpoint) -> [u8; 32] {
+    *blake3::hash(&snapshot.0.bytes).as_bytes()
+}
+
+impl StatePeer {
+    /// `stored`, what a reader stored of `app`'s `record` ([`KeptDocument::unstored`]), kept
+    /// again for its next read when the record's history still continues it: the same covered
+    /// snapshot, and the write opened last where it was. That read opens only the writes sealed
+    /// after it. `None` for a history that was compacted or replaced since, or a record not held.
+    ///
+    /// Whether the reader may read the record is decided by the read, as for anything kept.
+    #[must_use]
+    pub fn kept_again(&self, (app, record): (&str, &str), stored: StoredOpening) -> Option<KeptDocument> {
+        let document = self.core.documents.get(&Route {
+            app: app.into(),
+            record: record.into(),
+        })?;
+        if !document.encryption_required
+            || document.covered_snapshot.as_ref().map(snapshot_digest) != stored.snapshot
+            || document.sealed.len() < stored.count
+            || stored.count.checked_sub(1).is_some_and(|last| {
+                document.sealed.iter().nth(last).map(|op| &op.signature) != stored.last.as_ref()
+            })
+        {
+            return None;
+        }
+        let mut loaded = tilo_automerge::shared::load(&stored.bytes).ok()?;
+        let heads = loaded.get_heads();
+        if heads.iter().map(|head| head.0).collect::<Vec<_>>() != stored.heads {
+            return None;
+        }
+        Some(KeptDocument(Some(Opened {
+            snapshot: document.covered_snapshot.clone(),
+            count: stored.count,
+            last: stored.last,
+            size: stored.size,
+            transfers: crate::document_frame::Transfers::default(),
+            document: loaded,
+            captured: Some((stored.bytes, heads)),
+            stuck: Vec::new(),
+            waiting: Vec::new(),
+            stored: Some(stored.size),
+        })))
+    }
+}
+
+impl KeptDocument {
+
     /// The kept record captured whole, at most `maximum` bytes: the bytes the last capture made
     /// (the document saved whole) with the changes since appended, rather than the document
     /// saved again. `None` when nothing is kept.
@@ -258,6 +376,9 @@ struct Opened {
     /// wait for a change a write not opened yet may carry: merged with the writes the next read
     /// opens.
     waiting: Vec<(usize, collab_types::DocumentMutation)>,
+    /// How many bytes of the history were opened when it was last stored
+    /// ([`KeptDocument::unstored`]).
+    stored: Option<usize>,
 }
 
 impl Opened {
@@ -492,6 +613,7 @@ fn open_history<'a>(
             captured: None,
             stuck: Vec::new(),
             waiting: Vec::new(),
+            stored: None,
             document: match &document.covered_snapshot {
                 Some(base) => base
                     .decoded()
