@@ -28833,6 +28833,7 @@ dependencies = [
  "example-tree-browser",
  "example-virtual-list",
  "fake-discord",
+ "fake-model-providers",
  "fallible-iterator 0.2.0",
  "fallible-iterator 0.3.0",
  "fallible-streaming-iterator",
