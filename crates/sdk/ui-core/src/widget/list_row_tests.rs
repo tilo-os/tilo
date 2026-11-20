@@ -2288,3 +2288,46 @@ fn a_tree_rows_second_line_stands_at_the_compacts_double_height() {
         "a line under the name stands at the compact row's two-line height"
     );
 }
+
+/// A person double-clicks a file or a contact by habit: what opens opens once, while a row
+/// that changes something counts each click.
+#[test]
+fn a_double_click_opens_once_and_changes_twice() {
+    let counted = |row: fn(Rc<Cell<u32>>) -> ListRow| {
+        let hits = Rc::new(Cell::new(0));
+        let rows: Element = Box::new(
+            Column::new()
+                .with_no_padding()
+                .push(Box::new(row(Rc::clone(&hits)))),
+        );
+        let mut harness = FrameHarness::new(crate::State::new(), rows, (400, 200));
+        let [x, y, w, h] = find(&harness.inspection().root, "ListRow")
+            .expect("row laid out")
+            .rect;
+        harness.double_click_at(x + w / 2.0, y + h / 2.0);
+        let double = hits.get();
+        // Two clicks apart in time, or in place, are two clicks.
+        crate::gesture::with_capture_multi_click_interval(
+            crate::time::Duration::from_millis(0),
+            || harness.click_at(x + w / 2.0, y + h / 2.0),
+        );
+        harness.double_click_at(x + 10.0, y + h / 2.0);
+        harness.double_click_at(x + w - 10.0, y + h / 2.0);
+        (double, hits.get())
+    };
+    let opened = counted(|hits| {
+        ListRow::new("file-plan", "plan.csv").on_view(move || hits.set(hits.get() + 1))
+    });
+    assert_eq!(
+        opened,
+        (1, 4),
+        "a double-click opens once; clicks apart open each"
+    );
+    let changed =
+        counted(|hits| ListRow::new("count", "Count").on_effect(move || hits.set(hits.get() + 1)));
+    assert_eq!(
+        changed,
+        (2, 7),
+        "a row that changes something counts every click"
+    );
+}

@@ -468,7 +468,8 @@ std::thread_local! {
     };
 }
 
-const MULTI_CLICK_DIST: f64 = 4.0;
+/// How far apart two presses may land and still count as one multi-click.
+pub(crate) const MULTI_CLICK_DIST: f64 = 4.0;
 
 /// The current multi-click window.
 pub fn multi_click_interval() -> Duration {

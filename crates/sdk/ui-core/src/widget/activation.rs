@@ -174,6 +174,16 @@ pub(crate) struct Activation {
     pub(crate) state: Interaction,
     held: HeldPress,
     cursor: Point,
+    /// It opens or shows something (a view operation), which a double-click asks for once.
+    opens: bool,
+}
+
+std::thread_local! {
+    /// The control the pointer last clicked, when and where: a click on it again within the
+    /// multi-click window at the same place is the rest of a double-click, never a second open.
+    /// Kept apart from the control, which a view may build afresh between the two clicks.
+    static LAST_CLICK: std::cell::RefCell<Option<(String, crate::time::Instant, Point)>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 impl Activation {
@@ -192,12 +202,14 @@ impl Activation {
         self.on_activate = Some(f);
         self.action = None;
         self.native = None;
+        self.opens = false;
     }
 
     pub(crate) fn set_action(&mut self, binding: tilo_actions::ActionBinding<()>) {
         self.action = Some(ActionEmitter::new(binding));
         self.on_activate = None;
         self.native = None;
+        self.opens = false;
     }
 
     pub(crate) fn set_native(
@@ -209,6 +221,7 @@ impl Activation {
         let (native, binding) = NativeControl::new(&self.id, label, kind, handler);
         self.set_action(binding);
         self.native = Some(native);
+        self.opens = kind == tilo_actions::OperationKind::View;
     }
 
     pub(crate) fn set_event(&mut self, event: crate::component::Event, label: &str) {
@@ -326,7 +339,7 @@ impl Activation {
                     ElementState::Released => {
                         let release = self.release(rect, inside);
                         *ctx.handled |= release.ended();
-                        if release == Release::Click(()) {
+                        if release == Release::Click(()) && !self.repeats_last_click() {
                             self.activate();
                         }
                     }
@@ -336,6 +349,23 @@ impl Activation {
             _ => {}
         }
         before != self.state
+    }
+
+    /// Note a pointer click, and whether it only repeats the one before: a double-click on
+    /// something that opens (a file in a list, a contact) opens it once, as a person who
+    /// double-clicks by habit means. A control that changes something counts every click.
+    fn repeats_last_click(&self) -> bool {
+        let now = crate::time::now();
+        LAST_CLICK.with_borrow_mut(|last| {
+            let repeats = self.opens
+                && last.as_ref().is_some_and(|(id, at, place)| {
+                    *id == self.id
+                        && now.duration_since(*at) < crate::gesture::multi_click_interval()
+                        && place.distance(self.cursor) < crate::gesture::MULTI_CLICK_DIST
+                });
+            *last = Some((self.id.clone(), now, self.cursor));
+            repeats
+        })
     }
 
     pub(crate) fn press(&mut self, rect: Rect) {
