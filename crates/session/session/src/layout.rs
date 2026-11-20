@@ -1208,13 +1208,17 @@ impl Layouts {
     /// step waits for the workspace to hold it, and the session shows what the person arranged
     /// until then. Whether anything changed.
     fn owed(&self, workspace_id: WorkspaceId, workspace: &mut Workspace) -> bool {
-        let Some(owed) = self.held(&(workspace_id, Route::layout()), |held| {
+        let Some(mut owed) = self.held(&(workspace_id, Route::layout()), |held| {
             held.pending_steps
                 .last()
                 .map(|step| step.changed.workspace.clone())
         }) else {
             return false;
         };
+        // A window of the person's own is their view's to place, never the layout's: the step
+        // keeps the shell this device showed, and laying its windows in would put one back in the
+        // workspace the person moved it from.
+        tilo_desktop_model::personal::leave_out_of(&mut owed);
         if owed.strips == workspace.strips && owed.layout == workspace.layout {
             return false;
         }
@@ -1380,7 +1384,15 @@ impl Layouts {
             let mut alone = tree.clone();
             read.applied(&mut alone, workspace_id);
             let view = self.held(&key, |held| {
-                let view = read.over(&here, held.seen.as_ref());
+                let mut view = read.over(&here, held.seen.as_ref());
+                // A change of the person's this device could not write is what they see until
+                // the workspace holds it, as [`Self::owed`] shows a layout step: a window it moved
+                // is not laid back where the older document has it.
+                if let Some(pending) = held.pending_view.last() {
+                    view.own.retain(|tab, _| {
+                        here.own.contains_key(tab) || pending.changed.own.contains_key(tab)
+                    });
+                }
                 held.seen = Some(PersonView::of(&alone, workspace_id));
                 held.read = true;
                 held.unreadable = false;

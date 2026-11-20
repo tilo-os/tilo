@@ -426,6 +426,13 @@ pub(crate) mod testing {
             since: Option<&[[u8; 32]]>,
         ) -> Result<tilo_peer_state::workspace_documents::DocumentRead, String> {
             use tilo_peer_state::workspace_documents::DocumentRead;
+            let held = tilo_desktop_model::WorkspaceId::parse(workspace)
+                .is_some_and(|workspace| self.0.holds(workspace));
+            // A workspace that holds nothing of a document answers that, as the service does: a
+            // read of it is no empty document.
+            if held && !self.holds(workspace, app, resource) {
+                return Ok(DocumentRead::Absent);
+            }
             match self.0.record_update(workspace, app, resource, since)? {
                 crate::engine::ResourceReading::Captured {
                     revision,
@@ -457,7 +464,14 @@ pub(crate) mod testing {
         }
 
         fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
+            // What this device wrote of the document and the copy has not taken in yet is held
+            // here too, as the service holds a write it took.
             self.0.holds_resource(workspace, app, resource)
+                || self.0.held_writes().lock().keys().any(|route| {
+                    route.cluster_id == workspace
+                        && route.app_id == app
+                        && route.document == resource
+                })
         }
 
         fn workspaces(&self) -> Vec<String> {
@@ -569,6 +583,11 @@ pub(crate) mod testing {
                 .expect("search's records, taken once")
         }
 
+        /// The engine this device keeps its workspaces in.
+        pub(crate) fn engine(&self) -> &Arc<Engine> {
+            &self.engine
+        }
+
         /// `app`'s index of `workspace` names `rows` (id, kind, name) and nothing else, written as
         /// its windows write it and taken by the workspace.
         pub(crate) fn name(&self, app: &str, workspace: &str, rows: &[(&str, &str, Option<&str>)]) {
@@ -641,13 +660,39 @@ pub(crate) mod testing {
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod tests {
-    use super::testing::Device;
+    use super::testing::{Device, EngineDocuments};
     use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 
     const NOTES: &str = ui::apps::NOTES;
     const KITCHEN: &str = "6d1c1f36-0000-4000-8000-000000000001";
     const STUDIO: &str = "6d1c1f36-0000-4000-8000-000000000002";
     const NOTE: &str = "tab:00000000000000a1";
+
+    /// A document the workspace holds nothing of reads as absent, as its service answers for one
+    /// it holds nothing of: never as an empty document, which a read takes for the one the
+    /// workspace keeps.
+    #[test]
+    fn a_document_the_workspace_holds_nothing_of_reads_as_absent() {
+        use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DocumentRead};
+
+        let device = Device::holding(&[KITCHEN]);
+        let reads = EngineDocuments(std::sync::Arc::clone(device.engine()));
+        assert!(
+            matches!(
+                reads.read(KITCHEN, NOTES, "", None),
+                Ok(DocumentRead::Absent)
+            ),
+            "no one wrote the app's own document yet"
+        );
+        device.name(NOTES, KITCHEN, &[(NOTE, "document", Some("Groceries"))]);
+        assert!(
+            matches!(
+                reads.read(KITCHEN, NOTES, "", None),
+                Ok(DocumentRead::Whole { .. })
+            ),
+            "the document the workspace holds reads whole"
+        );
+    }
 
     /// A record one workspace's app names is found from another workspace under the name of the
     /// workspace holding it, and brought here is named in this workspace's index: what the app's

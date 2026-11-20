@@ -1315,6 +1315,263 @@ fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
     );
 }
 
+/// A window of the person's own a session moved to another workspace just before it ended is in
+/// the workspace they put it in when the next session opens, never back in the one it left: what
+/// the session could not write is shown over the older document until the look after writes it.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the session that wrote the view, the one that moved the window, and the one after"
+)]
+fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
+    use ed25519_dalek::SigningKey;
+    use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+
+    use crate::engine::Engine;
+
+    let state = tempfile::tempdir().expect("a state directory");
+    let root = SigningKey::from_bytes(&[0x80; 32]);
+    let key = SigningKey::from_bytes(&[0x81; 32]);
+    let signing = key.clone();
+    let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
+    let engine = Arc::new(
+        Engine::open(
+            tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key),
+            Some(state.path()),
+            std::iter::empty(),
+            crate::platform::membership_check::of_this_session(),
+        )
+        .expect("this device's engine opens"),
+    );
+    let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
+    let person = hex::encode(cert.user_public_key);
+    let home = tilo_peer_state::owner::testing::founded(engine.owner(), &cert, &signing)
+        .expect("the first workspace is founded");
+    let studio = tilo_peer_state::owner::testing::founded(engine.owner(), &cert, &signing)
+        .expect("the second workspace is founded");
+    for workspace in [home, studio] {
+        engine.bind(workspace);
+        let keys = key_group::KeyGroup::create(
+            workspace,
+            key_group::MemberKey::generate("owner").expect("a member key"),
+        )
+        .expect("the workspace's group")
+        .content_keys()
+        .expect("the workspace's keys");
+        engine.hand_keys(workspace, keys);
+    }
+
+    // The window of the app of the person's own, and a window of a workspace's behind it.
+    let mut ids = tilo_desktop_model::IdMinter::new(salt);
+    let (home_strip, home_group, chat, settings) = (ids.mint(), ids.mint(), ids.mint(), ids.mint());
+    let (studio_strip, studio_group, notes) = (ids.mint(), ids.mint(), ids.mint());
+    let window = |id: u64, title: &str, app: &str| Tab {
+        id,
+        title: title.to_owned(),
+        tile: TileContent::LocalApp {
+            app_id: app.to_owned(),
+            label: title.to_owned(),
+            note: String::new(),
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    let mut home_layout = Workspace::new(home, "Home");
+    home_layout.strips = vec![Strip {
+        id: StripId(home_strip),
+        name: "Main".to_owned(),
+        window_groups: vec![WindowGroup {
+            id: home_group,
+            tabs: vec![
+                window(chat, "Chat", "so.tilo.chat"),
+                window(settings, "Settings", "so.tilo.settings"),
+            ],
+            active_tab: settings,
+            width: WindowWidth::Wide,
+            maximized: false,
+            focus_history: Vec::new(),
+        }],
+    }];
+    let mut studio_layout = Workspace::new(studio, "Studio");
+    studio_layout.strips = vec![Strip {
+        id: StripId(studio_strip),
+        name: "Main".to_owned(),
+        window_groups: vec![WindowGroup {
+            id: studio_group,
+            tabs: vec![window(notes, "Notes", "so.tilo.notes")],
+            active_tab: notes,
+            width: WindowWidth::Wide,
+            maximized: false,
+            focus_history: Vec::new(),
+        }],
+    }];
+    let mut layout = Layout {
+        workspaces: vec![home_layout, studio_layout],
+        active: home,
+        salt,
+        ..Layout::default()
+    };
+    layout.active_strip.insert(home, StripId(home_strip));
+    layout.set_active_group(StripId(home_strip), home_group);
+
+    let notes_seen = Arc::new(crate::continuations::Continuations::default());
+    // The session before: the person shows the window in the first workspace, and the session
+    // writes its view of both workspaces and the layout of each.
+    {
+        let (wake, _heard) = woken();
+        let before = Layouts::new(
+            Arc::clone(&notes_seen),
+            wake,
+            person.clone(),
+            Some(state.path()),
+        );
+        attach_through_engine(&before, &engine);
+        let mut shown = layout.clone();
+        before.follow(&engine, "", &mut shown);
+        before.capture(&engine, &shown);
+        before.finish_writes(&engine, &shown, std::time::Duration::from_secs(30));
+        shown.active = studio;
+        before.capture(&engine, &shown);
+        before.finish_writes(&engine, &shown, std::time::Duration::from_secs(30));
+    }
+
+    // A session opens, moves the window of the person's own to the other workspace, and ends
+    // before its service can take either the view or the layout.
+    let hold = Arc::new(Hold::default());
+    {
+        let (wake, _heard) = woken();
+        let before = Layouts::new(
+            Arc::clone(&notes_seen),
+            wake,
+            person.clone(),
+            Some(state.path()),
+        );
+        let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> =
+            Arc::new(HeldWrites {
+                hold: Arc::clone(&hold),
+                person: person.clone(),
+            });
+        let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = Arc::new(
+            crate::records::testing::EngineDocuments(Arc::clone(&engine)),
+        );
+        before.attach(&engine, &reads, &writes);
+        let mut shown = Layout {
+            workspaces: vec![
+                Workspace::new(home, "Home"),
+                Workspace::new(studio, "Studio"),
+            ],
+            active: home,
+            salt,
+            ..Layout::default()
+        };
+        before.follow(&engine, "", &mut shown);
+        assert_eq!(
+            windows_of(&shown.workspaces[0]),
+            BTreeSet::from([chat, settings]),
+            "the document shows the windows of the workspace"
+        );
+        let moved = shown
+            .remove_tab(settings)
+            .expect("the window this shell shows");
+        let strip = shown.workspaces[1]
+            .strips
+            .first_mut()
+            .expect("the other workspace's strip");
+        let group = strip
+            .window_groups
+            .first_mut()
+            .expect("the other workspace's group");
+        group.tabs.push(moved.tab);
+        group.active_tab = settings;
+        hold.hold();
+        before.finish_writes(&engine, &shown, std::time::Duration::from_millis(1));
+        let pending_own = |workspace: WorkspaceId| {
+            before.held(&(workspace, Route::view(&person)), |held| {
+                held.pending_view
+                    .last()
+                    .map(|step| step.changed.own.keys().copied().collect::<Vec<_>>())
+            })
+        };
+        assert_eq!(
+            pending_own(studio),
+            Some(vec![settings]),
+            "the view, the moved window with it, waits for the session after"
+        );
+        assert!(
+            before.held(&(studio, Route::layout()), |held| {
+                !held.pending_steps.is_empty()
+            }),
+            "and so does the other workspace's layout"
+        );
+    }
+    tilo_durable_writer::global().flush();
+    hold.open();
+
+    // The session after opens on the workspaces and shows the window where the person put it.
+    let (wake, _heard) = woken();
+    let next = Layouts::new(notes_seen, wake, person.clone(), Some(state.path()));
+    attach_through_engine(&next, &engine);
+    let mut reopened = Layout {
+        workspaces: vec![
+            Workspace::new(home, "Home"),
+            Workspace::new(studio, "Studio"),
+        ],
+        active: home,
+        salt,
+        ..Layout::default()
+    };
+    next.follow(&engine, "", &mut reopened);
+    assert_eq!(
+        windows_of(&reopened.workspaces[0]),
+        BTreeSet::from([chat]),
+        "the window is not back in the workspace it left"
+    );
+    assert_eq!(
+        windows_of(&reopened.workspaces[1]),
+        BTreeSet::from([notes, settings]),
+        "it is where the person put it"
+    );
+    let waits = |workspace: WorkspaceId| {
+        next.held(&(workspace, Route::view(&person)), |held| {
+            !held.pending_view.is_empty()
+        })
+    };
+    assert!(
+        waits(studio),
+        "the view still waits for the look that writes it"
+    );
+
+    // The look after writes it, and both workspaces' views hold the window where it is.
+    next.capture(&engine, &reopened);
+    next.finish_writes(&engine, &reopened, std::time::Duration::from_secs(30));
+    assert!(
+        !waits(studio) && !waits(home),
+        "nothing of the view waits any more"
+    );
+    next.follow(&engine, "", &mut reopened);
+    let written = |workspace: WorkspaceId| {
+        let kept = next
+            .held(&(workspace, Route::view(&person)), |held| held.kept.clone())
+            .expect("the view this device wrote");
+        PersonView::read(&kept)
+            .own
+            .keys()
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        written(home),
+        Vec::<u64>::new(),
+        "the workspace it left holds no window of the person's own"
+    );
+    assert_eq!(
+        written(studio),
+        vec![settings],
+        "the workspace it went to holds it"
+    );
+}
+
 /// A login reads a workspace's saved layout before the workspace's keys reach the session: the
 /// layout is not read yet, so the restore waits for it and no look writes the empty shell over it;
 /// once the keys arrive the next look lays its windows out.

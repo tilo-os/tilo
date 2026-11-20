@@ -50,6 +50,29 @@ pub fn personal_tabs(tree: &Layout) -> Vec<crate::TabId> {
         .collect()
 }
 
+/// `workspace` without the windows of the person's own: what a workspace's shared layout holds.
+pub fn leave_out_of(workspace: &mut crate::Workspace) {
+    let personal: Vec<crate::TabId> = workspace
+        .tabs()
+        .filter(|tab| tab.is_personal())
+        .map(|tab| tab.id)
+        .collect();
+    if personal.is_empty() {
+        return;
+    }
+    // The windows go as one is closed, so a group left empty goes with them.
+    let mut alone = Layout {
+        workspaces: vec![workspace.clone()],
+        ..Layout::default()
+    };
+    for tab in personal {
+        alone.remove_tab(tab);
+    }
+    if let Some(left) = alone.workspaces.pop() {
+        *workspace = left;
+    }
+}
+
 /// `desktop` as a workspace shares it: without its personal windows, nor the
 /// record, maker or agent run noted for them.
 pub fn leave_out(desktop: &mut SharedDesktop) {
@@ -138,6 +161,19 @@ mod tests {
             );
             assert_eq!(shared.records, vec![(1, String::new())]);
             assert!(!shared.authors.contains_key(&2));
+        }
+
+        phase one_workspace_leaves_out_the_same_windows_and_their_group;
+        {
+            let mut workspace = desktop().tree.workspaces.remove(0);
+            leave_out_of(&mut workspace);
+            let left: Vec<u64> = workspace.tabs().map(|tab| tab.id).collect();
+            assert_eq!(left, vec![1], "the chat stays, the settings window goes");
+            assert_eq!(
+                workspace.strips[0].window_groups.len(),
+                1,
+                "its group goes with it"
+            );
         }
     }
 }
