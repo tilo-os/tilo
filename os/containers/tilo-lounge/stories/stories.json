@@ -1,18 +1,19 @@
 {
-  "about": "The user stories: what a person sets out to do with Tilo, in their words, and the steps they take. `driver` names the page driver that walks a story as that person; a story with none is listed as not yet automated, and `needs` says what walking it still takes. `stack: false` marks a story walked without a tilo.sh stack of its own; `admission` is what that stack's entry admits (`open` unless the story asks for production's `invite`), `mailStandIn` starts the stack's stand-in mail server, and `privateNetwork` gives the stack a network namespace of its own, where the low ports a provider publishes on may be bound. `credentials` marks a story that cannot run without an outside account.",
+  "about": "The user stories: what a person sets out to do with Tilo, in their words, and the steps they take. `walk` says how a story is walked: `shell` in Tilo shells, each person a headless Tilo session of their own (shell/story.py); `page` on the web page, each person a fresh browser profile (recorder.mjs); `mount` through the workspace's mounted folders. `driver` names the program that walks a story as that person; a story with none is listed as not yet automated, and `needs` says what walking it still takes. `stack: false` marks a page story walked without a tilo.sh stack of its own; `admission` is what that stack's entry admits (`open` unless the story asks for production's `invite`), `mailStandIn` starts the stack's stand-in mail server, and `privateNetwork` gives the stack a network namespace of its own, where the low ports a provider publishes on may be bound. `credentials` marks a story that cannot run without an outside account.",
   "stories": [
     {
       "id": "invite-live",
       "title": "Make a workspace, invite someone, and work together live",
-      "intent": "Ada makes a new workspace and invites Grace. Grace opens the invitation in a browser that has never seen Tilo and joins. Each sees the other in their people list within about two seconds. Grace follows Ada, and what Ada types in a note shows on Grace's screen within about a second.",
-      "driver": "invite-live.mjs",
+      "intent": "Ada makes a new workspace and invites Grace. Grace opens the invitation in Tilo on a computer that has never seen it, and joins. Each sees the other in their people list within about two seconds. Grace follows Ada, and what Ada types in a note shows on Grace's screen within about a second.",
+      "walk": "shell",
+      "driver": "shell/invite-live.py",
       "steps": [
         "Ada opens Tilo",
         "Ada opens Tilo again",
         "Ada gives their name",
         "Ada makes a new workspace, “Garden club”",
         "Ada makes an invitation link",
-        "Grace opens the invitation in a fresh browser",
+        "Grace opens the invitation on her computer",
         "Grace joins Garden club",
         "Ada and Grace see each other in their people lists",
         "Grace follows Ada",
@@ -25,6 +26,7 @@
       "id": "invited-activity",
       "title": "See what invited people are doing",
       "intent": "A person who invited others sees who is here and what each is working on, follows one of them live, and a mention they write reaches the person it names.",
+      "walk": "page",
       "driver": "invited-activity.mjs",
       "steps": [
         "Ada invites Grace and Lin into a workspace",
@@ -39,6 +41,7 @@
       "id": "wait-list-sign-up",
       "title": "Sign up from the wait list and arrive in your own workspace",
       "intent": "A stranger at an invitation-only Tilo puts their address on the wait list, confirms it from the mail, is invited, and lands in a workspace of their own.",
+      "walk": "page",
       "steps": [
         "A stranger opens Tilo and leaves their address on the wait list",
         "They confirm it from the mail",
@@ -54,6 +57,7 @@
       "id": "desktop-easy",
       "title": "The desktop is easy to use",
       "intent": "Someone new to Tilo adds a strip, switches workspaces and finds their settings without being told how.",
+      "walk": "page",
       "driver": "desktop-easy.mjs",
       "steps": [
         "A newcomer opens their workspace",
@@ -66,6 +70,7 @@
       "id": "files-in",
       "title": "Bring files in and open them",
       "intent": "A person brings their files into a workspace by dropping them on the page, through the workspace folder after `tilo login`, and with the `tilo` command, then opens each one.",
+      "walk": "page",
       "driver": "files-in.mjs",
       "steps": [
         "Ada opens Tilo",
@@ -80,7 +85,8 @@
       "id": "agent-mcp",
       "title": "Connect an agent over MCP and have it do real work",
       "intent": "A person connects their agent to a workspace over MCP. The agent writes a file, adds a Tasks issue, writes a note and posts in Chat, all shown under the agent's name, and when it asks a question the person sees it and answers.",
-      "driver": "agent-mcp.mjs",
+      "walk": "shell",
+      "driver": "shell/agent-mcp.py",
       "steps": [
         "Ada opens Tilo",
         "Ada opens Files to watch her agent work",
@@ -97,6 +103,7 @@
       "id": "second-device",
       "title": "Pair a phone and keep working on both",
       "intent": "Ada works in Tilo on her laptop's browser and pairs her phone's browser to herself with Pair a new device. Both then show the same workspace: a Chat message or Tasks issue written on either shows on the other within about two seconds, and the phone still shows them after it opens Tilo again.",
+      "walk": "page",
       "driver": "second-device.mjs",
       "steps": [
         "Ada opens Tilo on her laptop",
@@ -116,6 +123,7 @@
       "id": "mail-password",
       "title": "Connect a mail account with an email and password",
       "intent": "A person connects their mail account with only their address and password, then reads, searches and sends mail.",
+      "walk": "page",
       "steps": [
         "Ada opens Mail and enters their address and password",
         "Mail finds the server by itself and connects",
@@ -131,6 +139,7 @@
       "id": "calendar-invite",
       "title": "Connect a calendar and create and invite an event",
       "intent": "A person connects their calendar, creates an event and invites someone, who receives the invitation.",
+      "walk": "page",
       "steps": [
         "Ada connects their calendar",
         "Ada creates an event",
@@ -143,6 +152,7 @@
       "id": "nextcloud-files",
       "title": "Sign in with Nextcloud and bring files over",
       "intent": "A person who keeps their files in Nextcloud signs in with it, and their files sync into or are migrated to their workspace.",
+      "walk": "page",
       "steps": [
         "Ada chooses Nextcloud and signs in",
         "Ada picks the folders to bring",
@@ -155,6 +165,7 @@
       "id": "microsoft-mail-onedrive",
       "title": "Sign in with Microsoft for mail and OneDrive",
       "intent": "A person signs in with their Microsoft account, and their Outlook mail and OneDrive files show in their workspace.",
+      "walk": "page",
       "steps": [
         "Ada chooses Microsoft and signs in",
         "Ada's Outlook mail shows in Mail",
@@ -167,6 +178,7 @@
       "id": "big-folder",
       "title": "Copy a big folder in, and it is all there everywhere",
       "intent": "Ada copies a large folder into their workspace through its mounted folder: a photo library of many small files and a few long videos. The folder lists at once, a second computer joins and shows the workspace in seconds without fetching it all, a photo and a video open there at once, the first computer restarts in seconds, and every file is still there and as copied on both.",
+      "walk": "mount",
       "driver": "big-folder.mjs",
       "stack": false,
       "steps": [
@@ -184,6 +196,7 @@
       "id": "large-workspace",
       "title": "A large workspace stays fast",
       "intent": "A workspace with years of files, notes and tasks opens, lists, searches and syncs as fast as an empty one.",
+      "walk": "page",
       "steps": [
         "Ada opens a workspace with 50,000 files and 10,000 notes",
         "Ada lists a folder of 5,000 files",
@@ -196,6 +209,7 @@
       "id": "notes-on-the-web",
       "title": "Notes on the web, page by page",
       "intent": "A person opens a workspace's Notes at its own web address, writes a note, sees it persist through a reload, and moves between the list and the note with the browser's back and forward.",
+      "walk": "page",
       "steps": [
         "Ada opens Notes at its web address",
         "Ada creates a note",

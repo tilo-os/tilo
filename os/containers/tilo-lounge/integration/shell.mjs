@@ -338,38 +338,6 @@ export const openMarks = tab => tab.evaluate(`(() => {
     presentMs: Math.round(watch.shownAt - watch.pressedAt),
     frames: watch.framesShown - watch.framesAtKey});
 })()`).then(JSON.parse);
-// A press that brings up a text field, timed in the page: from the press's
-// pointerdown to the first frame whose published tree holds a text field. A
-// time taken around `click` would count the wait it ends with, which no
-// person waits through.
-export const watchTextField = tab => tab.evaluate(`(() => {
-  const mount = globalThis.tiloMount;
-  const host = mount?.canvas?.parentElement;
-  if (!host) return false;
-  const watch = globalThis.__tiloField = {pressedAt: null, shownAt: null};
-  addEventListener('pointerdown', () => { watch.pressedAt ??= performance.now(); }, {capture: true, once: true});
-  const observer = new MutationObserver(() => watch.read());
-  watch.read = () => {
-    if (watch.pressedAt === null || watch.shownAt !== null) return;
-    if (JSON.stringify(mount.state()?.semantics ?? null).includes('MultilineTextInput')) {
-      watch.shownAt = performance.now();
-      observer.disconnect();
-    }
-  };
-  observer.observe(host, {attributes: true, attributeFilter: ['data-frames']});
-  return true;
-})()`);
-// What [`watchTextField`] saw: `ok: false` when it saw no press or no field,
-// never a number.
-export const textFieldMarks = tab => tab.evaluate(`(() => {
-  const watch = globalThis.__tiloField;
-  watch?.read?.();
-  globalThis.__tiloField = undefined;
-  if (!watch || watch.pressedAt === null || watch.shownAt === null) {
-    return JSON.stringify({ok: false, pressed: watch?.pressedAt != null});
-  }
-  return JSON.stringify({ok: true, ms: Math.round(watch.shownAt - watch.pressedAt)});
-})()`).then(JSON.parse);
 // People who come back to the site: a browser new to it opens on the first
 // screen (set up with an agent, or skip to one's own desktop), which these
 // people have been past already, so their page opens the Lounge itself.

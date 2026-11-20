@@ -6780,7 +6780,38 @@ outputs = ["/target/user-stories/{story}/index.html", "/target/user-stories/{sto
 evidence = ["/target/user-stories/{story}/index.html", "/target/user-stories/{story}/{story}/**"]
 timeout_secs = 1800
 [check.matrix]
-story = ["invite-live", "wait-list-sign-up", "mail-password", "agent-mcp", "invited-activity", "desktop-easy", "second-device"]
+story = ["wait-list-sign-up", "mail-password", "invited-activity", "desktop-easy", "second-device"]
+
+# The user stories walked in Tilo shells (stories.json's `"walk": "shell"`): each person a headless
+# Tilo session of their own, on the session the nested-session check built with the tree's apps, on
+# scratch homes (stories/shell/story.py). Each step is driven through the shell's own actions,
+# pointer and keys, decided by reading the shells' own state, timed against its budget and
+# snapshotted; each person's snapshots become their video. The page and recording:
+# `t outputs user-stories-shell/<story> --to DIR`, DIR/<story>/index.html. No secret is needed: the
+# judge looks only where the check holds ANTHROPIC_API_KEY, and a story whose steps pass is
+# otherwise "passed, not judged", never red for that alone.
+[[check]]
+name = "user-stories-shell/{story}"
+on = ["schedule:0 6 * * *", "dispatch", "idle"]
+# The pinned assets the test environment fetches, and the judge's model where it has a key.
+egress = { to = ["code.tilo.so:443", "api.anthropic.com:443"] }
+run = "bash tools/test-env.sh bash os/containers/tilo-lounge/test-user-stories.sh /target/user-stories-shell/{story} {story}"
+needs = ["nested-session"]
+# ffmpeg encodes each person's video. Not pinned: dnf installs the newest builds Fedora's updates
+# repository holds, and pip the newest Anthropic SDK, from hosts no fixed list names.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False ffmpeg-free python3-pip && dnf clean all && python3 -m pip install --no-cache-dir anthropic", egress = { to = ["0.0.0.0/0", "::/0"] } }
+# The session's apps read no NTFS image, whose set takes a minute to build.
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
+requires = ["arch=x86_64"]
+isolation = "vm"
+cache = false
+# The story's page, its snapshots, videos and verdict, and each session's log. A red story keeps
+# them too: the recording is what says why.
+outputs = ["/target/user-stories-shell/{story}/index.html", "/target/user-stories-shell/{story}/{story}/**"]
+evidence = ["/target/user-stories-shell/{story}/index.html", "/target/user-stories-shell/{story}/{story}/**"]
+timeout_secs = 2400
+[check.matrix]
+story = ["invite-live", "agent-mcp"]
 
 # The user stories whose people meet a server of their own: a Nextcloud that
 # serves a person's files over WebDAV and their calendar over CalDAV. Each

@@ -1,25 +1,31 @@
 #!/usr/bin/env bash
-# The user stories (stories/stories.json), walked as the people in them would:
-# each on a fresh tilo.sh stack of its own (tilo-sh/stack.sh, production's
-# entrypoints and environment over the programs t built, as test-e2e.sh brings
-# it up), its people in fresh browser profiles, every step recorded, timed and
-# held to its budget (stories/recorder.mjs). Then a first-time user's verdict on
-# each recording (stories/judge.py, a model with no knowledge of the code), and
-# one page of every story, green or red (stories/page.py).
+# The user stories (stories/stories.json), walked as the people in them would.
+# A story says how it is walked (`walk`): in Tilo shells (`shell`: each person a
+# headless Tilo session of their own, stories/shell/story.py), on the web page
+# (`page`: each story on a fresh tilo.sh stack of its own, tilo-sh/stack.sh,
+# production's entrypoints and environment over the programs t built, as
+# test-e2e.sh brings it up, its people in fresh browser profiles,
+# stories/recorder.mjs), or through the workspace's mounted folders (`mount`).
+# Every step is recorded, timed and held to its budget. Then a first-time user's
+# verdict on each recording (stories/judge.py, a model with no knowledge of the
+# code), and one page of every story, green or red (stories/page.py).
 #
 # usage: test-user-stories.sh WORK [STORY…]
 # STORY names the stories to walk (default: every one with a driver). WORK
 # keeps each story's recording in WORK/<story>/ (story.json, judge.json, the
-# step screenshots, each person's video, a failing step's console and the
-# services' log) with the stack's logs in WORK/<story>/logs/, and the page in
-# WORK/index.html, every link in it relative to WORK.
+# step screenshots, each person's video, a failing step's evidence) with a
+# stack's logs in WORK/<story>/logs/, and the page in WORK/index.html, every
+# link in it relative to WORK.
 #
-# Needs node, chromium, curl, bwrap, ffmpeg (the videos), the stack's
-# environment (TILO_SH_PROGRAMS, TILO_SH_LOUNGE, TILO_SH_SITE, TILO_SH_CADDY
-# naming what t built), TILO_CLI_BIN, and ANTHROPIC_API_KEY and the anthropic
-# Python package for the judge (without them a story whose steps pass is
-# "passed, not judged": never green, and not red for that alone). A story marked `"stack": false` needs none of the stack's,
-# only what its driver says it does. Exits non-zero when any story walked is red.
+# A shell story needs the session build TILO_NESTED_SESSION_BUILD names
+# (dist/dev/nested-session-build.sh's) and ffmpeg for the videos. A page story
+# needs node, chromium, curl, bwrap, ffmpeg, the stack's environment
+# (TILO_SH_PROGRAMS, TILO_SH_LOUNGE, TILO_SH_SITE, TILO_SH_CADDY naming what t
+# built) and TILO_CLI_BIN. A story marked `"stack": false` needs none of the
+# stack's, only what its driver says it does. The judge needs ANTHROPIC_API_KEY
+# and the anthropic Python package: without them a story whose steps pass is
+# "passed, not judged", never green, and never red for that alone. Exits
+# non-zero when any story walked is red.
 set -euo pipefail
 usage='usage: test-user-stories.sh WORK [STORY…]'
 lounge_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -37,8 +43,10 @@ for story in "${asked[@]}"; do
 done
 
 mkdir -p "$work"
-# Whether a story is walked on a stack of its own (all are, but those marked `"stack": false`).
-on_stack() { python3 -I -c 'import json, sys; sys.exit(0 if next(s for s in json.load(open(sys.argv[1]))["stories"] if s["id"] == sys.argv[2]).get("stack", True) else 1)' "$stories/stories.json" "$1"; }
+# How a story is walked: `shell`, `page` or `mount`.
+walk_of() { python3 -I -c 'import json, sys; print(next(s for s in json.load(open(sys.argv[1]))["stories"] if s["id"] == sys.argv[2])["walk"])' "$stories/stories.json" "$1"; }
+# Whether a story is walked on a stack of its own: every page story but those marked `"stack": false`.
+on_stack() { python3 -I -c 'import json, sys; s = next(s for s in json.load(open(sys.argv[1]))["stories"] if s["id"] == sys.argv[2]); sys.exit(0 if s["walk"] == "page" and s.get("stack", True) else 1)' "$stories/stories.json" "$1"; }
 stacked=0
 for story in "${asked[@]}"; do on_stack "$story" && stacked=1; done
 # The pages draw through WebGPU in software on a node with no GPU, as
@@ -148,7 +156,13 @@ for story in "${asked[@]}"; do
   driver=$(python3 -I -c 'import json, sys; print(next(s["driver"] for s in json.load(open(sys.argv[1]))["stories"] if s["id"] == sys.argv[2]))' "$stories/stories.json" "$story")
   { read -r TILO_SH_ADMISSION; read -r TILO_SH_MAIL_STAND_IN; read -r private_network; } < <(stacks_for_story "$story")
   export TILO_SH_ADMISSION TILO_SH_MAIL_STAND_IN private_network
-  if ! on_stack "$story"; then
+  if [[ $(walk_of "$story") == shell ]]; then
+    # Each person a headless Tilo session of their own, on a scratch home under the story's
+    # directory; what a person reads the story by is kept, the sessions' installed state is not.
+    status=0
+    PYTHONDONTWRITEBYTECODE=1 python3 "$stories/$driver" "$out" 2>&1 | tee "$out/driver.log" || status=$?
+    rm -rf "$out/people"/*/state
+  elif ! on_stack "$story"; then
     # A story with no stack walks what it drives itself (its driver says what).
     status=0
     node "$stories/$driver" "" "$out" 2>&1 | tee "$out/driver.log" || status=$?

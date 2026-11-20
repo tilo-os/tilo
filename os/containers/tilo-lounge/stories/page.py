@@ -115,7 +115,8 @@ def story_section(entry: dict, base: str | None, story: dict | None, judged: dic
         if evidence:
             parts.append('<p class="evidence">' + " · ".join(
                 f'<a href="{link(path)}">{esc(name)}</a>' for name, path in
-                [("the pages’ console", evidence.get("console")), ("the services’ log", evidence.get("server"))] if path) + "</p>")
+                [("the pages’ console", evidence.get("console")), ("the services’ log", evidence.get("server")),
+                 ("the shells’ state", evidence.get("shells")), ("the sessions’ logs", evidence.get("sessions"))] if path) + "</p>")
         parts.append("</div>")
 
     if story.get("videos"):
@@ -307,7 +308,7 @@ def build(run_dir: pathlib.Path, extra: list[pathlib.Path]) -> str:
 <main>
 <header>
 <h1>Tilo user stories</h1>
-<p class="lede">What people set out to do with Tilo, walked end to end in real browsers on a fresh stack, each step timed against its budget, and the recording shown to a model playing a first-time user who has never seen the code. This page is the work list, not the verdict: a story is green only when it finished, every step within its budget, and the model found nothing to reject, and even green is only as good as the recording looks to a person watching it. A story nobody drives yet is never green. Run {esc(when)}{' on ' + esc(revision[:12]) if revision else ''}.</p>
+<p class="lede">What people set out to do with Tilo, walked end to end: in Tilo shells, each person a headless Tilo session of their own, or on the web page in fresh browsers on a fresh stack, each step timed against its budget, and the recording shown to a model playing a first-time user who has never seen the code. This page is the work list, not the verdict: a story is green only when it finished, every step within its budget, and the model found nothing to reject, and even green is only as good as the recording looks to a person watching it. A story nobody drives yet is never green. Run {esc(when)}{' on ' + esc(revision[:12]) if revision else ''}.</p>
 </header>
 <nav class="tally">{tally}</nav>
 {''.join(ordered)}
