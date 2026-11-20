@@ -208,6 +208,7 @@ impl ResourceApp for WindowsShell {
 mod tests {
     use super::*;
     use crate::provider::CompatibilityProvider;
+    use ui::a11y::Action as AccessibilityAction;
     use ui::prelude::TestApp;
     use ui::tilo_resource::Replica;
 
@@ -360,6 +361,27 @@ mod tests {
         );
         assert!(app.undo());
         assert_eq!(app.state().route("adobe-reader"), Some(Route::Vm));
+    }
+
+    /// A route choice is the control's own field edit: choosing it changes how the app opens in
+    /// the interaction that made it, not in a pass of the window's model after the click.
+    #[test]
+    fn a_route_choice_is_the_controls_own_change() {
+        let mut app =
+            ui::prelude::TestApp::<crate::resource::WindowsShell>::capture(Some("detail")).unwrap();
+        let first = crate::provider::SampleProvider::new().catalogue().apps[0]
+            .id
+            .clone();
+        app.harness()
+            .perform_named("windows-route:segment:1", &AccessibilityAction::Activate)
+            .expect("the shown app's route choice");
+        assert_eq!(
+            app.state().route(&first),
+            Some(Route::Proton),
+            "the choice is submitted by the control that made it, in that interaction"
+        );
+        app.settle();
+        assert_eq!(app.state().route(&first), Some(Route::Proton));
     }
 
     /// The window's effects join the manager: installing, importing an ISO.

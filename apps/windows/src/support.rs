@@ -23,6 +23,27 @@ pub(crate) const fn route_needs_support(route: Route) -> bool {
     }
 }
 
+/// The button that turns an app's route back to the catalogue's recommendation: it submits the
+/// reset itself, in the interaction that pressed it, as the route strip submits its choice.
+pub(crate) fn use_recommendation(
+    dispatcher: Option<ui::framework::Dispatcher<crate::resource::Windows>>,
+    intents: Intents,
+    app_id: String,
+) -> Button {
+    let routes = crate::resource::Windows::paths().routes;
+    Button::new(
+        "windows-use-recommendation",
+        &strings::t("windows-use-recommendation"),
+    )
+    .role(ButtonRole::Plain)
+    .on_effect(move || {
+        if let Some(dispatcher) = &dispatcher {
+            dispatcher.submit(routes.remove(app_id.as_str()));
+        }
+        intents.push(Intent::ResetRoute);
+    })
+}
+
 /// Windows support on this device, as the manager sees and installs it.
 pub(crate) struct WindowsSupport {
     readiness: Readiness,
