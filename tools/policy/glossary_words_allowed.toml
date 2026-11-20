@@ -1995,3 +1995,8 @@ paths = ["crates/agent/agent-session/tests/*"]
 reason = "A run of a run-length encoding: equal values side by side in one of Automerge's columns, as the vendored crate's work count names it."
 words = ["run"]
 paths = ["crates/doc/tilo-automerge/tests/new_text.rs"]
+
+[[allow]]
+reason = "The sign-in end-to-end harness's shell object, whose `run` sends one command to the live installer's root shell."
+words = ["run"]
+paths = ["tools/ci/signin_e2e.py"]

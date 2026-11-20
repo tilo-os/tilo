@@ -178,6 +178,35 @@ MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824
 
 log()  { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
+
+# Wall-clock time per install phase, as `TILO_INSTALL_TIMING phase=NAME
+# seconds=S` lines when each phase ends and one summary line at the end. The
+# phase names are stable so logs from different installs compare; nothing in a
+# timing line is secret.
+PHASE=""
+PHASE_STARTED_US=0
+INSTALL_STARTED_US=0
+TIMING_SUMMARY=""
+seconds_since() {
+  local now="${EPOCHREALTIME//[.,]/}" elapsed
+  elapsed=$((now - $1))
+  printf '%d.%d' $((elapsed / 1000000)) $(((elapsed % 1000000) / 100000))
+}
+phase() {
+  local now="${EPOCHREALTIME//[.,]/}" took
+  if [ -n "$PHASE" ]; then
+    took="$(seconds_since "$PHASE_STARTED_US")"
+    log "TILO_INSTALL_TIMING phase=$PHASE seconds=$took"
+    TIMING_SUMMARY="$TIMING_SUMMARY $PHASE=$took"
+  fi
+  [ "$INSTALL_STARTED_US" -ne 0 ] || INSTALL_STARTED_US="$now"
+  PHASE="$1"
+  PHASE_STARTED_US="$now"
+}
+timing_summary() {
+  phase ""
+  log "TILO_INSTALL_TIMING summary${TIMING_SUMMARY} total=$(seconds_since "$INSTALL_STARTED_US")"
+}
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 # The shared immutable-image resolver above enforces the production repository
@@ -308,6 +337,8 @@ fi
 if [ -z "${TILO_INSTALL_TRANSIENT:-}" ]; then
   die "systemd-run is required for the enforced installer backend"
 fi
+
+phase preflight
 
 # Only the transient backend owns this lock. The greeter launcher re-execs
 # through systemd first and must neither access root-private state nor hold
@@ -1258,6 +1289,7 @@ log "  update ref  : $TILO_TARGET_IMGREF"
 # must install the independently signed target variant on its selected ESP.
 promote_target_uki() {
   local esp="$1" TARGET_UKI TARGET_VARIANT
+  phase promote-uki
   local -a target_digests installed_digests
   # CI development targets may use a board UKI or a generic split kernel.
   # Project the installed target UKI
@@ -1398,6 +1430,7 @@ use_encrypted_copy_scratch() {
     || die "/var/tmp is not the reviewed encrypted scratch directory"
 }
 copy_booted_image() {
+  phase image-storage
   if [ "$OFFLINE_TARGET" -ne 0 ]; then
     step "Importing the selected offline Tilo target"
     LOCAL_IMG="$(/usr/libexec/tilo-installer-offline-target import)" \
@@ -1440,6 +1473,7 @@ copy_booted_image() {
 OFFLINE_TARGET=0
 if [ -e /var/lib/tilo-installer/target-oci ] \
     || [ -L /var/lib/tilo-installer/target-oci ]; then
+  phase verify-target
   /usr/libexec/tilo-installer-offline-target verify >/dev/null \
     || die "preloaded signed target failed verification"
   offline_facts="$(/usr/libexec/tilo-installer-offline-target receipt)" \
@@ -1470,6 +1504,7 @@ ENC_LUKS=""
 ENC_KEYFILE=""
 STORE_PART=""
 if [ "$ENCRYPT" -eq 1 ]; then
+  phase prepare-disk
   if [ "$ALONGSIDE" -eq 1 ]; then
     step "Preparing encrypted Tilo root on $ROOT_PARTITION (existing OS partitions are preserved)"
   else
@@ -1568,6 +1603,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
   # /etc on that same mount. tilo-disk-encrypt finish unmounts and closes the
   # volume immediately afterwards, so the step bootc would have performed buys
   # nothing here.
+  phase bootc-install
   step "Installing Tilo into the encrypted root"
   podman run --rm --privileged --pid=host --ipc=host \
     -v /var/lib/containers:/var/lib/containers \
@@ -1589,6 +1625,7 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
   copy_booted_image
   validate_alongside
   mark_alongside_tilo_root
+  phase bootc-install
   step "Formatting only $ROOT_PARTITION for Tilo; preserving every other partition"
   case "$FILESYSTEM" in
     btrfs) mkfs.btrfs -f -L root "$ROOT_PARTITION" >/dev/null ;;
@@ -1620,6 +1657,7 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
   BOOT_ESP_ROOT="$ALONGSIDE_MNT/boot/efi"
 else
   copy_booted_image
+  phase bootc-install
   step "Installing Tilo onto $DISK (this ERASES the disk; unencrypted)"
   podman run --rm --privileged --pid=host --ipc=host \
     -v /var/lib/containers:/var/lib/containers \
@@ -1668,6 +1706,7 @@ udevadm settle 2>/dev/null || true
 # measured Tilo artifact and this machine's PCR7 state. tilo-disk-encrypt aborts rather than leaving a volume
 # whose only factor is one the user cannot reproduce.
 if [ "$ENCRYPT" -eq 1 ]; then
+  phase enrol-factors
   step "Enrolling disk-encryption factors"
   ENROL_ARGS=()
   [ "$WANT_FIDO2" -eq 1 ] && ENROL_ARGS+=(--fido2)
@@ -1730,6 +1769,7 @@ fi
 udevadm settle 2>/dev/null || true
 
 # --- 3. seed the user account ------------------------------------------------
+phase configure
 HASH=""
 if [ "$SERVER_DESTINATION" -eq 1 ]; then
   unset PASSWORD
@@ -2572,8 +2612,11 @@ if [ "$INSTALL_PLAN" -eq 1 ]; then
     || die "the staged plan carried no enrollment token"
   [ -n "$DEPLOY_ETC" ] && [ -d "$DEPLOY_ETC/tilo" ] \
     || die "the installed system's /etc was not found for the enrollment token"
+  phase plan-network
   apply_plan_network
+  phase enroll
   enrol_planned_server
+  phase sibling
   enrol_planned_sibling
   rm -f /etc/tilo/enrollment-token.txt
   # The key reached the person's devices with the enrollment: this machine
@@ -2581,6 +2624,7 @@ if [ "$INSTALL_PLAN" -eq 1 ]; then
   [ -z "${PLAN_RECOVERY_KEY_FILE:-}" ] \
     || { shred -u "$PLAN_RECOVERY_KEY_FILE" 2>/dev/null || rm -f "$PLAN_RECOVERY_KEY_FILE"; }
 fi
+phase finish
 sync
 if [ "$ENCRYPT" -eq 1 ]; then
   # Drops the throwaway install key slot (only once another factor exists),
@@ -2631,6 +2675,7 @@ if [ -n "$VM_INSTALL_PROOF" ]; then
     || die "VM install proof could not reach its dedicated virtio port"
 fi
 if [ "$INTERNAL_MODE" -eq 1 ]; then
+  phase firmware
   step "Pointing the next restart at the installed Tilo"
   TARGET_ESP_PARTNUM="$(lsblk -dno PARTN "$EFI_PARTITION" 2>/dev/null | tr -d '[:space:]')"
   if ! "$STAGING_HANDOFF" firmware-finalize --handoff "$INTERNAL_HANDOFF" \
@@ -2638,10 +2683,12 @@ if [ "$INTERNAL_MODE" -eq 1 ]; then
       --target-esp-partition-number "${TARGET_ESP_PARTNUM:-0}" --loader "$TARGET_LOADER" 2>&1; then
     log "warning: the firmware was not fully updated; if the existing system starts instead of Tilo, choose Tilo in the firmware boot menu"
   fi
+  timing_summary
   step "Install complete — restart to finish setting up Tilo."
   exit 0
 fi
 
+timing_summary
 step "Install complete — you can reboot into Tilo now."
 log "Remove the installer medium before rebooting."
 exit 0
