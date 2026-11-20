@@ -2837,6 +2837,15 @@ remote_shell() {
   ( cd "$repo" && RCARGO_T=0 "$cargo" exec -- env "${envs[@]}" bash -c "$1" )
 }
 
+# Whether the build container runs on this machine in this machine's network (same kernel, same
+# network namespace), as it does for a checkout on the build server itself.
+builder_shares_loopback() {
+  local here there
+  here="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null) $(readlink /proc/self/ns/net 2>/dev/null)"
+  there=$(cd "$repo" && RCARGO_T=0 "$cargo" exec -- sh -c 'echo "$(cat /proc/sys/kernel/random/boot_id) $(readlink /proc/self/ns/net)"' 2>/dev/null | tail -n 1) || return 1
+  [[ $here == "$there" ]]
+}
+
 # start_supervisor ARGS…: the stack on the build server as one long-running
 # program, which is what keeps its ports served here and its memory admitted
 # there while it runs. The stack's own bring-up comes first, so the process is
@@ -2853,10 +2862,13 @@ start_supervisor() {
   start=$(printf '%q ' "$@")
   # The server sandboxes what it runs (bubblewrap): on t the program's job must be one that may
   # start sandboxes of its own, as rcargo's build container always may.
-  local nested=()
+  local nested=() forward=(--forward "$(forward_tcp)" --forward "udp:$(forward_udp)")
   [[ $(basename -- "$cargo") != t ]] || nested=(--nested)
+  # Run from the build server itself, the build container is in this machine's network: its
+  # ports are this machine's already, and a forward would take them before the stack could.
+  if builder_shares_loopback; then forward=(); fi
   ( cd "$repo" && setsid env "TILO_SH_STATE=$remote_state" RCARGO_T=0 "$cargo" exec "${nested[@]}" \
-      --forward "$(forward_tcp)" --forward "udp:$(forward_udp)" \
+      "${forward[@]}" \
       -- env "${envs[@]}" bash -c "exec python3 $(printf '%q' "$control") serve --port $(printf '%q' "$control_port") --token $(printf '%q' "$stack_token") --repo . --self $(printf '%q' "$self") -- $start" ) \
     >> "$state/logs/remote.log" 2>&1 < /dev/null 9>&- &
   printf '%s\n' "$!" > "$state/supervisor.pid"
