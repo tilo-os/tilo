@@ -1,0 +1,32 @@
+# Prebuilt system-extension payloads the feed must never offer again.
+#
+# A payload is immutable once published, so a bad one is taken out of the feed
+# instead: sysext_image.py writes its part `unsupported`, with the reason below,
+# and the next publication of that base's manifest replaces the offered entry.
+# The payload file itself stays where it is; no device is told to fetch it.
+#
+# Every entry was read back from the published image: the root and /usr inodes
+# carry no security.selinux extended attribute. Merged over /usr, such an image
+# leaves /usr, /usr/lib and /usr/share unlabelled, which keeps every new login
+# out and stops the next start in systemd-tmpfiles-setup.
+schema = 1
+
+[[payload]]
+sha256 = "ac14045733b59f72545daf556fce5f5388d2a91b724f0a75cf3bbc7f2be736c5"
+reason = "Not offered for this version of Tilo: the published Windows compatibility image was built without the SELinux labels that merging it needs."
+
+[[payload]]
+sha256 = "56717954c7f34ff7fd93f5c78e761a2283c65dbc1fea81f6cdc84a41bb06741a"
+reason = "Not offered for this version of Tilo: the published Windows compatibility image was built without the SELinux labels that merging it needs."
+
+[[payload]]
+sha256 = "eb250fc8393b0190c1fd3b6717581f522b2d4b3797330e5a9a6a1279aca9eec5"
+reason = "Not offered for this version of Tilo: the published Windows compatibility image was built without the SELinux labels that merging it needs."
+
+[[payload]]
+sha256 = "ffc01ddf3a7db853fc9ce44ab07b8f2b3e5dd454993a702d90b0b272c4f59c71"
+reason = "Not offered for this version of Tilo: the published Windows compatibility image was built without the SELinux labels that merging it needs."
+
+[[payload]]
+sha256 = "94423bae72ba2e5c91e30fe7ba29f1eca909370d08d22b95a116525c81f3a5ba"
+reason = "Not offered for this version of Tilo: the published Windows compatibility image was built without the SELinux labels that merging it needs."

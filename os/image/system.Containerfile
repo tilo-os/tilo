@@ -763,6 +763,7 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
     systemctl enable tilo-network-start.service && \
     systemctl enable tilo-extension-activate.service tilo-extension-refresh.timer && \
     systemctl enable tilo-extension-trial.service tilo-extension-booted.service && \
+    systemctl enable tilo-extension-quarantine.service && \
     systemctl enable tilo-selinux-policy.service && \
     systemctl enable tilo-sandbox-view.service tilo-sandbox-view.path && \
     systemctl enable tilo-runtime-resident.service && \

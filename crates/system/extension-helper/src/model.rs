@@ -112,8 +112,8 @@ pub fn parse_command(argv: &[String]) -> Result<(String, String)> {
         return Ok(("activate".to_owned(), String::new()));
     }
     if let Some(phase) = argument.strip_prefix("boot:") {
-        if !matches!(phase, "start" | "done") {
-            return Err(Error::pack("boot takes start or done"));
+        if !matches!(phase, "start" | "done" | "quarantine") {
+            return Err(Error::pack("boot takes start, done or quarantine"));
         }
         return Ok(("boot".to_owned(), phase.to_owned()));
     }

@@ -262,6 +262,19 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_kept_image_that_would_change_usr_is_taken_out_before_the_merge;
+    {
+        let unit = read("os/usr/lib/systemd/system/tilo-extension-quarantine.service");
+        assert!(unit.contains("ExecStart=/usr/libexec/tilo-extension boot:quarantine\n"));
+        assert!(unit.contains("DefaultDependencies=no\n"));
+        assert!(unit.contains(
+            "Before=systemd-sysext.service tilo-extension-activate.service sysinit.target\n"
+        ));
+        assert!(unit.contains("ConditionDirectoryNotEmpty=/var/lib/extensions\n"));
+        let image = read("os/Containerfile");
+        assert!(image.contains("systemctl enable tilo-extension-quarantine.service"));
+    }
+
     phase manifests_verify_only_against_the_extension_key;
     {
         assert_eq!(
@@ -1690,6 +1703,42 @@ tilo_test_env::scenario! {
                 .unwrap()
                 .ends_with(": /usr is labelled system_u:object_r:unlabeled_t:s0")
         );
+    }
+
+    phase a_bad_image_kept_by_an_earlier_version_is_taken_out_at_the_next_start;
+    {
+        let machine = raw_machine();
+        publish_raw(&machine, &raw_image(), None);
+        assert_eq!(machine.run_on("install", RAW_ID), 0, "an earlier version accepted it");
+        assert_eq!(fs::read(raw_live(&machine)).unwrap(), raw_image());
+        let mut image = support::sound_image();
+        for entry in image.image.values_mut() {
+            entry.label = Some("system_u:object_r:unlabeled_t:s0".to_owned());
+        }
+        *machine.host.image.borrow_mut() = Some(image);
+        assert_eq!(boot(&machine, "quarantine"), 0);
+        assert!(!raw_live(&machine).exists(), "the merge would have left /usr unlabelled");
+        assert!(!machine.layout.desired(RAW_ID).exists());
+        assert!(!machine.layout.trial(RAW_ID).exists());
+        assert_eq!(machine.run("activate"), 0);
+        assert!(!raw_live(&machine).exists(), "and its downloads are gone with it");
+        let status = raw_status(&machine);
+        assert_eq!((status["state"].clone(), status["parts"].clone()), (json!("failed"), json!({RAW_PART: "off"})));
+        assert!(status["last_error"]
+            .as_str()
+            .unwrap()
+            .starts_with("Turned off: merging it would damage the system: "));
+    }
+
+    phase a_sound_image_kept_from_an_earlier_start_is_left_alone;
+    {
+        let machine = raw_machine();
+        publish_raw(&machine, &raw_image(), None);
+        assert_eq!(machine.run_on("install", RAW_ID), 0);
+        assert_eq!(boot(&machine, "quarantine"), 0);
+        assert_eq!(fs::read(raw_live(&machine)).unwrap(), raw_image());
+        assert!(machine.layout.desired(RAW_ID).exists());
+        assert_eq!(raw_status(&machine)["state"], "installed");
     }
 
     phase a_start_that_does_not_finish_turns_a_new_extension_off;

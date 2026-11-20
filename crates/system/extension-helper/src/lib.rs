@@ -10,8 +10,10 @@
 //! manifest is published. The manifest pins every artifact by URL, length and
 //! SHA-256 and names the exact base it was resolved for, and the subcommands
 //! are `install:<id>`, `remove:<id>`, `refresh:<id>`, `refresh:all`,
-//! `status:<id>`, `activate`, `boot:start` and `boot:done` (turning off an
-//! extension a start did not finish with) and the `live:` commands ([`live`]).
+//! `status:<id>`, `activate`, `boot:start`, `boot:done` and `boot:quarantine`
+//! (turning off an extension a start did not finish with, or a prebuilt image
+//! already in the search path that would change `/usr`) and the `live:`
+//! commands ([`live`]).
 
 mod host;
 pub mod image;

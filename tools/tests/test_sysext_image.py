@@ -56,15 +56,49 @@ class SysextManifest(unittest.TestCase):
         value["parts"][0]["artifacts"].append(dict(value["parts"][0]["artifacts"][0]))
         self.assertTrue(any("exactly one artifact" in p for p in resolve.check_manifest(value)))
 
+    def test_a_withdrawn_payload_is_offered_as_unsupported(self):
+        reason = "Not offered for this version of Tilo: it has no SELinux labels."
+        value = manifest(withdrawn={"a" * 64: reason})
+        self.assertEqual(resolve.check_manifest(value), [])
+        (part,) = value["parts"]
+        self.assertEqual((part["state"], part["message"], part["artifacts"]),
+                         ("unsupported", reason, []))
+        self.assertNotIn(URL, json.dumps(value), "a withdrawn payload is not named to devices")
+
+    def test_another_payloads_withdrawal_leaves_this_one_offered(self):
+        value = manifest(withdrawn={"d" * 64: "withdrawn"})
+        self.assertEqual(value["parts"][0]["state"], "available")
+
+    def test_the_shipped_withdrawals_are_readable(self):
+        withdrawn = sysext_image.withdrawn_payloads()
+        self.assertIn("56717954c7f34ff7fd93f5c78e761a2283c65dbc1fea81f6cdc84a41bb06741a",
+                      withdrawn)
+        self.assertTrue(all(reason for reason in withdrawn.values()))
+
+    def test_a_malformed_withdrawal_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "withdrawn.toml"
+            path.write_text('schema = 1\n[[payload]]\nsha256 = "nope"\nreason = "x"\n')
+            with self.assertRaises(resolve.ResolveError):
+                sysext_image.withdrawn_payloads(path)
+
     def test_command_line_writes_a_manifest_resolve_check_accepts(self):
         with tempfile.TemporaryDirectory() as tmp:
             descriptor = Path(tmp) / "descriptor.json"
             descriptor.write_text(json.dumps(DESCRIPTOR))
+            withdrawn = Path(tmp) / "withdrawn.toml"
+            withdrawn.write_text('schema = 1\n[[payload]]\nsha256 = "' + "a" * 64
+                                 + '"\nreason = "withdrawn for this test"\n')
             out = Path(tmp) / "windows-compat.json"
-            subprocess.run([sys.executable, "-I", str(REPO / "tools/extensions/sysext_image.py"), "manifest",
-                            "--id", "windows-compat", "--descriptor", str(descriptor), "--url", URL,
-                            "--fingerprint", "c" * 64, "--image", IMAGE, "--arch", "aarch64",
-                            "--out", str(out)], check=True)
+            command = [sys.executable, "-I", str(REPO / "tools/extensions/sysext_image.py"), "manifest",
+                       "--id", "windows-compat", "--descriptor", str(descriptor), "--url", URL,
+                       "--fingerprint", "c" * 64, "--image", IMAGE, "--arch", "aarch64",
+                       "--withdrawn", str(withdrawn), "--out", str(out)]
+            subprocess.check_call(command)
+            self.assertEqual(json.loads(out.read_text())["parts"][0]["state"], "unsupported")
+            command.remove("--withdrawn")
+            command.remove(str(withdrawn))
+            subprocess.check_call(command)
             checked = subprocess.run([sys.executable, "-I", str(REPO / "tools/extensions/resolve.py"),
                                       "check", str(out)], check=True, capture_output=True, text=True)
             self.assertTrue(checked.stdout.startswith("windows-compat aarch64 " + "c" * 64))

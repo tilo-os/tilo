@@ -84,6 +84,15 @@ print(d["size"], d["sha256"], d["file"])' "$descriptor") || die "$descriptor is 
 [[ $(stat -c %s "$raw") == "$size" ]] || die "$file is not the $size bytes its descriptor pins"
 [[ $(sha256sum "$raw" | cut -d' ' -f1) == "$sha256" ]] || die "$file does not have the SHA-256 its descriptor pins"
 
+# Merging puts the image's directories in place of /usr's, so one without SELinux
+# labels leaves /usr, /usr/lib and /usr/share unlabelled: every new login hangs and
+# the next start stops in systemd-tmpfiles-setup. The build checks its image; this
+# re-reads the bytes about to be offered and refuses them instead of trusting it.
+command -v debugfs >/dev/null \
+  || dnf install -y --setopt=install_weak_deps=False e2fsprogs >/dev/null
+python3 -I "$repo_root/os/dev/sysext-image.py" check "$raw" \
+  || die "$file would change /usr when merged (os/dev/sysext-image.py names what)"
+
 package=https://code.tilo.so/api/packages/tilo/generic/tilo-windows-compat-image
 export TILO_PACKAGE_TOKEN=$TILO_PACKAGES_TOKEN
 uploads=$work/uploads.tsv

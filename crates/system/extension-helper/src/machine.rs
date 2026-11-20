@@ -1718,13 +1718,67 @@ fn remove(layout: &Layout, ident: &str) -> Result<()> {
 const TRIAL_FAILED: &str =
     "Turned off: this computer did not finish starting with it. Install it again to try once more.";
 
+/// Take an extension whose prebuilt image would change `/usr` out of the sysext
+/// search path before anything merges it, and turn it off.
+///
+/// A version that refuses such an image at install keeps machines from getting
+/// one; one already merged by an older version would keep the computer from
+/// starting. This reads the images the search path holds now, so the start that
+/// first brings this version up skips it instead.
+fn quarantine(host: &dyn Host, layout: &Layout, ident: &str) -> Result<()> {
+    let catalogue = load_catalogue(layout, ident)?;
+    let extensions = layout.extensions();
+    let mut why = None;
+    for name in &catalogue.parts {
+        let image = extensions.join(format!("{name}.raw"));
+        if !image.is_file() {
+            continue;
+        }
+        match host.inspect_image(&image) {
+            Ok(inspection) => {
+                if let Some(reason) = crate::image::refusal(&inspection) {
+                    why = Some(reason);
+                    break;
+                }
+            }
+            Err(error) => eprintln!("tilo-extension: {ident}: {error}"),
+        }
+    }
+    let Some(why) = why else {
+        return Ok(());
+    };
+    let _lock = locked(layout, ident)?;
+    for name in &catalogue.parts {
+        live_remove(layout, name)?;
+    }
+    remove(layout, ident)?;
+    Status::new(layout, ident).write(changes([
+        ("state", json!("failed")),
+        ("parts", off(&catalogue)),
+        (
+            "last_error",
+            json!(format!(
+                "Turned off: merging it would damage the system: {why}"
+            )),
+        ),
+    ]))?;
+    remove_if_present(&layout.trial(ident))?;
+    eprintln!("tilo-extension: {ident}: {why}; turned off");
+    Ok(())
+}
+
 /// The safeguard for an extension that breaks the start: `start` comes before
 /// systemd-sysext merges anything, `done` once a start reached the graphical
 /// target. A change still on trial from a start that never finished is taken
 /// out of the search path and turned off, so a bad extension costs one failed
-/// start.
-fn boot(layout: &Layout, phase: &str) -> Result<()> {
+/// start. `quarantine` comes before the same merge and takes out a prebuilt
+/// image already in the search path that would change `/usr`.
+fn boot(host: &dyn Host, layout: &Layout, phase: &str) -> Result<()> {
     for ident in catalogue_ids(layout)? {
+        if phase == "quarantine" {
+            quarantine(host, layout, &ident)?;
+            continue;
+        }
         let trial = layout.trial(&ident);
         let Ok(state) = fs::read_to_string(&trial) else {
             continue;
@@ -1792,7 +1846,7 @@ pub fn main(host: &dyn Host, layout: &Layout, argv: &[String]) -> i32 {
     }
     rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o022));
     if verb == "boot" {
-        return match boot(layout, &ident) {
+        return match boot(host, layout, &ident) {
             Ok(()) => 0,
             Err(error) => {
                 eprintln!("tilo-extension: boot {ident}: {error}");

@@ -14,6 +14,11 @@ through the same `resolve.py check`, signing (publish.sh, the extension-manifest
 KMS key) and device verification (crates/system/extension-helper) as an
 RPM-assembled extension; only the assembly differs: the device links the
 verified image into /var/lib/extensions instead of unpacking packages.
+
+A payload listed in withdrawn.toml is never pinned: its part is published
+`unsupported` with the reason, which is how an offered payload that would damage
+a machine (merged over /usr without the SELinux labels the base has) is taken out
+of the feed. The descriptor stays; only what devices are offered changes.
 """
 
 from __future__ import annotations
@@ -23,17 +28,37 @@ import datetime
 import json
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import resolve  # noqa: E402
 
 PART_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+WITHDRAWN = Path(__file__).resolve().with_name("withdrawn.toml")
+
+
+def withdrawn_payloads(path: Path = WITHDRAWN) -> dict[str, str]:
+    """SHA-256 -> reason for every payload the feed must not offer."""
+    if not path.is_file():
+        raise resolve.ResolveError(f"{path}: no list of withdrawn payloads")
+    data = tomllib.loads(path.read_text())
+    if data.get("schema") != 1:
+        raise resolve.ResolveError(f"{path}: unsupported schema")
+    found = {}
+    for entry in data.get("payload", []):
+        sha256 = entry.get("sha256", "")
+        reason = entry.get("reason", "")
+        if not resolve.HEX64.fullmatch(sha256) or not reason:
+            raise resolve.ResolveError(f"{path}: every withdrawn payload names a sha256 and a reason")
+        found[sha256] = reason
+    return found
 
 
 def build_manifest(*, ident: str, descriptor: dict, url: str, fingerprint: str, image: str,
                    arch: str, os_id: str, version_id: str, publisher: str, license_text: str,
-                   now: datetime.datetime | None = None) -> dict:
+                   now: datetime.datetime | None = None,
+                   withdrawn: dict[str, str] | None = None) -> dict:
     part = descriptor.get("part")
     if not isinstance(part, str) or not PART_RE.fullmatch(part):
         raise resolve.ResolveError("the descriptor names no valid part")
@@ -47,6 +72,15 @@ def build_manifest(*, ident: str, descriptor: dict, url: str, fingerprint: str, 
     if not isinstance(sha256, str) or not resolve.HEX64.fullmatch(sha256):
         raise resolve.ResolveError("the descriptor has no sha256")
     moment = (now or datetime.datetime.now(datetime.timezone.utc)).replace(microsecond=0)
+    reason = (withdrawn or {}).get(sha256)
+    artifacts = [] if reason else [{
+        "package": f"{part}.raw",
+        "urls": [url],
+        "size": size,
+        "sha256": sha256,
+        "publisher": publisher,
+        "license": license_text,
+    }]
     manifest = {
         "type": resolve.MANIFEST_TYPE,
         "schema": resolve.MANIFEST_SCHEMA,
@@ -63,17 +97,10 @@ def build_manifest(*, ident: str, descriptor: dict, url: str, fingerprint: str, 
         "parts": [{
             "name": part,
             "format": resolve.RAW_FORMAT,
-            "state": "available",
-            "message": "",
+            "state": "unsupported" if reason else "available",
+            "message": reason or "",
             "requires_base": {},
-            "artifacts": [{
-                "package": f"{part}.raw",
-                "urls": [url],
-                "size": size,
-                "sha256": sha256,
-                "publisher": publisher,
-                "license": license_text,
-            }],
+            "artifacts": artifacts,
         }],
     }
     problems = resolve.check_manifest(manifest)
@@ -95,13 +122,16 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--version-id", default="44")
     parser.add_argument("--publisher", default="Tilo")
     parser.add_argument("--license", default="Contents carry their own licenses under /usr/share/licenses")
+    parser.add_argument("--withdrawn", type=Path, default=WITHDRAWN,
+                        help="payloads the feed must not offer (default: withdrawn.toml beside this file)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         manifest = build_manifest(
             ident=args.id, descriptor=json.loads(args.descriptor.read_text()), url=args.url,
             fingerprint=args.fingerprint, image=args.image, arch=args.arch, os_id=args.os_id,
-            version_id=args.version_id, publisher=args.publisher, license_text=args.license)
+            version_id=args.version_id, publisher=args.publisher, license_text=args.license,
+            withdrawn=withdrawn_payloads(args.withdrawn))
     except (resolve.ResolveError, OSError, ValueError) as error:
         print(f"sysext_image: {error}", file=sys.stderr)
         return 1

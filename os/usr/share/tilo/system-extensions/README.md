@@ -308,6 +308,12 @@ target. A start that finds the mark still at `booting` takes the extension's
 parts out of the search path, removes its downloads and reports it failed
 ("Turned off: this computer did not finish starting with it").
 
+`tilo-extension-quarantine.service` comes at the same point in the start, before
+anything merges, and reads every prebuilt image the search path holds: one that
+would change `/usr` is taken out the same way. A machine that merged a payload
+an earlier version accepted — one built without the labels `image.rs` now
+requires — therefore still finishes starting with a version that refuses it.
+
 The default path works without it. The compatibility planner refuses a launch
 with `WindowsSupportNotInstalled`, which tells the person to turn on
 Windows apps in Settings (the action behind it is
@@ -340,7 +346,10 @@ administrator start only `install`, `remove` and `refresh` instances; it
 downloads into the state above and then starts the activation),
 `tilo-extension-activate.service` (every boot on which an extension is on or
 still has parts to unmerge, offline, before the greeter, and after every
-change; it has no mount namespace of its own, so the merge is the host's), `tilo-extension-refresh.timer` (after boot, daily, and
+change; it has no mount namespace of its own, so the merge is the host's),
+`tilo-extension-quarantine.service` (before systemd-sysext, on every boot where
+the search path holds something, to take out a prebuilt image that would change
+`/usr`), `tilo-extension-refresh.timer` (after boot, daily, and
 on every update check), and NetworkManager's `90-tilo-extension` (an opt-in
 made offline installs once the device is online).
 

@@ -1,0 +1,23 @@
+[Unit]
+Description=Take a Tilo extension image that would damage /usr out of the merge
+Documentation=file:///usr/share/tilo/system-extensions/README.md
+# systemd-sysext merges whatever image the search path holds before anything can
+# check it on a development image, and a prebuilt image merged from /var is the
+# one the sealed image keeps too. An image built without SELinux labels leaves
+# /usr, /usr/lib and /usr/share unlabelled and keeps every login out. This unit
+# reads the prebuilt images the search path holds now, before systemd-sysext
+# merges anything, and takes out one that would change /usr, so a start that
+# brings up a version refusing such an image still finishes.
+DefaultDependencies=no
+After=local-fs.target
+Before=systemd-sysext.service tilo-extension-activate.service sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
+ConditionDirectoryNotEmpty=/var/lib/extensions
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-extension boot:quarantine
+
+[Install]
+WantedBy=sysinit.target
