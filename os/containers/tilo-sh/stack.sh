@@ -2482,7 +2482,7 @@ down() {
   local name
   # Both kinds: the native processes, and the image mode's containers and
   # VM host.
-  for name in web releases api server tls discord; do
+  for name in web releases api server tls discord fake-oauth; do
     stop_native "$name"
   done
   if vm_host_running; then
