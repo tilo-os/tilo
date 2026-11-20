@@ -189,9 +189,12 @@ try {
     await openOther(grace.tab, 'Grace’s');
     await pressWhen(grace.tab, 'Follow Ada', 'Follow Ada in Grace’s people panel');
     await shows(grace.tab, 'Following Ada', 'Grace’s page saying they follow Ada', stepLimit(2));
-    // Ada sees who follows them where they see who is here: Grace's row says so.
-    await openOther(ada.tab, 'Ada’s');
-    await says(ada.tab, 'Following you', 'Ada’s page saying Grace follows them', stepLimit(2));
+    // Following shows Grace where Ada is, and nothing Ada did not open: no search over it.
+    if (await grace.tab.evaluate('globalThis.tiloMount?.state()?.searchOpen === true').catch(() => false)) {
+      fail('following Ada opened a search on Grace’s screen');
+    }
+    // Ada sees it without looking for it: Grace's face in Ada's bar wears the eye, and says so.
+    await says(ada.tab, 'Following you', 'Ada’s bar saying Grace follows them', stepLimit(2));
   });
 
   await story.step('Ada opens Notes and starts a note', async () => {
