@@ -92,6 +92,8 @@ const typeInto = async (one, id, text, tries = 3) => {
     const node = (await nodesOf(one.tab)).find(node => node.id === id);
     if (!node) fail(`the page offers no ${id} to press`);
     if (!await pressWidget(one.tab, id)) fail(`the ${id} is not where a person can press it`);
+    // What the field held is replaced, as a person selects it and types over it.
+    await key(one.tab, 'a', chord);
     await story.web.type(one, text);
     value = (await nodesOf(one.tab)).find(node => node.id === id)?.value ?? '';
     if (value === text) return;
