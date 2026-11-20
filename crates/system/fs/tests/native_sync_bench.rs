@@ -1188,7 +1188,25 @@ fn a_workspace_of_files_on_a_size_ladder() {
         };
         std::fs::create_dir_all(&dir).unwrap();
         fill(i, 0, &mut buf);
-        std::fs::write(dir.join(format!("f{i:07}")), &buf).unwrap();
+        let path = dir.join(format!("f{i:07}"));
+        std::fs::write(&path, &buf).unwrap();
+        // A file written and acknowledged is readable at once, or the write was lost where the
+        // application could not see it.
+        if i % 25 == 0 {
+            match std::fs::read(&path) {
+                Ok(read) if read == buf => {}
+                Ok(read) => eprintln!(
+                    "{}: readable right after writing, with {} B instead of {}",
+                    path.display(),
+                    read.len(),
+                    buf.len()
+                ),
+                Err(error) => eprintln!(
+                    "{}: not readable right after writing it: {error}",
+                    path.display()
+                ),
+            }
+        }
         small_written = small_written.saturating_add(small_bytes);
         if small_written >= small_total {
             break;
