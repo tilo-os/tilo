@@ -31,7 +31,7 @@ fn open(root: &Path) -> State {
         store: WorkspaceStore::open(root, workspace(), false).unwrap(),
         doc: None,
         sequence: None,
-        reserved: 0,
+        reserved: crate::persistence::Reservation::default(),
         replays: replay::Replays::default(),
         retention_scratch: None,
         retention_candidates: Vec::new(),
@@ -141,6 +141,37 @@ fn a_delta_commit_costs_its_record_barriers_only() {
     }
     assert_eq!(crate::store::thread_fsyncs() - before, 0);
     assert_eq!(retained_edits(&state.store), (0..10).collect::<Vec<_>>());
+}
+
+/// A steadily committing workspace never syncs its reservation on the
+/// owner's thread after the first: the next bound is written ahead, on a
+/// thread of its own, so no commit waits for a sync of the disk.
+#[test]
+fn the_reservation_is_renewed_ahead_off_the_committing_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = open(dir.path());
+    let now = 1_800_000_000_000_000_000;
+    state.next_sequence_at(now).unwrap();
+    let before = crate::store::thread_fsyncs();
+    // A sequence a second at a time, across three reservations.
+    let step = 1_000_000_000;
+    let mut last = 0;
+    for tick in 1..=3 * SEQUENCE_RESERVATION_NS / step {
+        last = state.next_sequence_at(now + tick * step).unwrap();
+        // The renewal started half a reservation early has landed long
+        // before the bound is reached, as it does on a disk that syncs
+        // within seconds.
+        state.reserved.settle(true);
+    }
+    assert_eq!(
+        crate::store::thread_fsyncs() - before,
+        0,
+        "a commit synced the reservation on the owner's thread"
+    );
+    let file = state.store.root().join("state-sequence");
+    drop(state);
+    let held = u64::from_le_bytes(std::fs::read(file).unwrap().try_into().unwrap());
+    assert!(held > last, "{held} does not reserve past {last}");
 }
 
 #[test]

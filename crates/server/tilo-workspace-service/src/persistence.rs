@@ -340,12 +340,82 @@ pub struct Persistence {
     #[cfg(test)]
     replay_admission_hook: Option<Arc<dyn Fn() + Send + Sync>>,
 }
+/// The sequence bound `state-sequence` holds ([`State::next_sequence`]).
+#[derive(Default)]
+pub(crate) struct Reservation {
+    /// The bound the file durably holds; 0 until this owner wrote one.
+    durable: u64,
+    /// The next bound, being written on a thread of its own.
+    renewing: Option<(u64, std::thread::JoinHandle<std::io::Result<()>>)>,
+}
+
+impl Reservation {
+    /// Take up a renewal that finished; with `wait`, wait for one still
+    /// being written. One that failed is left for the owner to write
+    /// itself, which reports what failed.
+    fn settle(&mut self, wait: bool) {
+        let Some((bound, writing)) = self.renewing.take() else {
+            return;
+        };
+        if !wait && !writing.is_finished() {
+            self.renewing = Some((bound, writing));
+            return;
+        }
+        match writing.join() {
+            Ok(Ok(())) => self.durable = self.durable.max(bound),
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "the state sequence's next reservation was not written");
+            }
+            Err(_) => tracing::warn!("the state sequence's reservation writer panicked"),
+        }
+    }
+
+    /// Write `bound` to `path` on a thread of its own, unless a renewal is
+    /// being written already. A thread that cannot start leaves the owner
+    /// to write the bound itself once it needs it.
+    fn renew(&mut self, path: std::path::PathBuf, root: &std::path::Path, bound: u64) {
+        if self.renewing.is_some() {
+            return;
+        }
+        let root = root.to_owned();
+        let spawned = std::thread::Builder::new()
+            .name("state-sequence".into())
+            .spawn(move || write_reservation(&path, &root, bound));
+        if let Ok(writing) = spawned {
+            self.renewing = Some((bound, writing));
+        }
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        // An owner ends once what it was writing is written.
+        self.settle(true);
+    }
+}
+
+/// Make `bound` the reservation `path` durably holds.
+fn write_reservation(
+    path: &std::path::Path,
+    root: &std::path::Path,
+    bound: u64,
+) -> std::io::Result<()> {
+    crate::store::atomic_write(path, &bound.to_le_bytes())?;
+    // Apple's fsync leaves the drive's cache unflushed; std's
+    // `sync_all` there is F_FULLFSYNC (as `retained::durable_write`).
+    #[cfg(target_vendor = "apple")]
+    crate::store::fsync(&std::fs::File::open(root)?)?;
+    #[cfg(not(target_vendor = "apple"))]
+    let _ = root;
+    Ok(())
+}
+
 pub struct State {
     pub(crate) store: WorkspaceStore,
     pub(crate) doc: Option<automerge::AutoCommit>,
     sequence: Option<u64>,
-    /// The bound `state-sequence` holds; 0 until this owner wrote one.
-    reserved: u64,
+    /// The bound `state-sequence` holds, and its renewal ahead of need.
+    reserved: Reservation,
     replays: replay::Replays,
     pub(crate) retention_scratch: Option<std::path::PathBuf>,
     pub(crate) retention_candidates: Vec<(std::path::PathBuf, std::path::PathBuf)>,
@@ -398,14 +468,26 @@ impl State {
         // Reserve before any data publication, including across restart. The
         // file holds a bound past every sequence handed out, so a burst of
         // commits syncs it once per reservation instead of once per commit.
-        if next > self.reserved {
+        // The next bound is written ahead, on a thread of its own, once half
+        // of the reservation is spent: that sync waits for whatever else the
+        // disk is flushing (seconds while a large checkpoint is staged), and
+        // every commit of the workspace waited behind it when it was made
+        // here. A commit waits for it only when it would pass the bound.
+        self.reserved.settle(false);
+        if next > self.reserved.durable {
+            self.reserved.settle(true);
+        }
+        if next > self.reserved.durable {
             let reserved = next.saturating_add(SEQUENCE_RESERVATION_NS);
-            crate::store::atomic_write(&path, &reserved.to_le_bytes())?;
-            // Apple's fsync leaves the drive's cache unflushed; std's
-            // `sync_all` there is F_FULLFSYNC (as `retained::durable_write`).
-            #[cfg(target_vendor = "apple")]
-            crate::store::fsync(&std::fs::File::open(self.store.root())?)?;
-            self.reserved = reserved;
+            write_reservation(&path, self.store.root(), reserved)?;
+            self.reserved.durable = reserved;
+        }
+        if self.reserved.durable.saturating_sub(next) < SEQUENCE_RESERVATION_NS / 2 {
+            self.reserved.renew(
+                path,
+                self.store.root(),
+                next.saturating_add(SEQUENCE_RESERVATION_NS),
+            );
         }
         self.sequence = Some(next);
         Ok(next)
@@ -506,7 +588,7 @@ fn start(
         store: runtime.store.clone(),
         doc: runtime.doc.take(),
         sequence: None,
-        reserved: 0,
+        reserved: Reservation::default(),
         replays: replay::Replays::default(),
         retention_scratch: None,
         retention_candidates: Vec::new(),
@@ -1655,7 +1737,7 @@ mod tests {
             store: WorkspaceStore::open(root, WorkspaceId::from_u128(7), false).unwrap(),
             doc: None,
             sequence: None,
-            reserved: 0,
+            reserved: Reservation::default(),
             replays: replay::Replays::default(),
             retention_scratch: None,
             retention_candidates: Vec::new(),
