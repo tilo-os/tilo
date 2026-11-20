@@ -1348,8 +1348,10 @@ impl Layouts {
                 // written until a look reads it.
                 failed => {
                     let waiting = matches!(failed, Err(NotRead::Waiting));
-                    let absent =
-                        !waiting && failed.is_err() && self.nothing_written(workspace_id, &route);
+                    // A document the service holds nothing of reads as absent, whether it says so
+                    // or answers nothing: the view here is written over no view at all. One this
+                    // look cannot read yet is waited for, never written.
+                    let absent = !waiting && self.nothing_written(workspace_id, &route);
                     self.held(&key, |held| {
                         held.read = !waiting;
                         held.unreadable = !absent;
@@ -1515,17 +1517,21 @@ impl Layouts {
         // A layout the workspace holds is laid out here before this device writes it: what the
         // layout shows before then is not what the person made of it, and one this device cannot
         // read yet (its keys are on their way) is never written over. A copy this device wrote is
-        // what its next write is made on, with the workspace's merged in.
+        // what its next write is made on, with the workspace's merged in. A document the look read
+        // as nothing may still be the workspace's: the service's copy is loaded as the store opens,
+        // and its shell written over it meanwhile would take back every window it holds.
         if !holds
-            && (read.waiting || reached.is_some() && self.held(&key, |held| held.folded.is_none()))
+            && (read.waiting
+                || (reached.is_some() || self.holds_layout(workspace_id))
+                    && self.held(&key, |held| held.folded.is_none()))
         {
             self.unwritten(
                 workspace_id,
                 Some("the workspace's layout is not read here yet"),
             );
-            if kept_back {
-                self.remember(&key, workspace, acted, person);
-            }
+            // What this session shows before it read the layout is not a change of the person's:
+            // the shell it opens with is not their step, and writing it would take back the
+            // windows the workspace holds. The look after the read writes what they do change.
             return false;
         }
         // A record nobody wrote yet is founded by the first layout with a strip in it: a device with
@@ -2124,12 +2130,19 @@ impl Layouts {
                 continue;
             }
             let key = (workspace_id, route.clone());
-            // What the person changed here, over what the record holds.
+            // What the person changed here, over what the record holds. A session ending writes the
+            // view as the person has it here: there is no look after this one to write what they
+            // changed, and what only this device decides — the widths they chose and what they made
+            // large — is theirs to keep.
             let here = PersonView::of(tree, workspace.id());
-            let view = self.held(&key, |held| match (&held.written, &held.seen) {
-                (Some(Written::View(read)), Some(seen)) => read.over(&here, Some(seen)),
-                _ => here.clone(),
-            });
+            let view = if now {
+                here.clone()
+            } else {
+                self.held(&key, |held| match (&held.written, &held.seen) {
+                    (Some(Written::View(read)), Some(seen)) => read.over(&here, Some(seen)),
+                    _ => here.clone(),
+                })
+            };
             let Viewed::Steps(steps) = self.view_steps(&key, &view, now) else {
                 continue;
             };
@@ -2726,6 +2739,14 @@ impl Layouts {
                 .any(|held| held == &workspace_id.to_string())
                 && !reads.holds(&workspace_id.to_string(), route.app, &route.document)
         })
+    }
+
+    /// Whether this device's service holds anything of the layout of `workspace_id`: the
+    /// workspace's own copy that a session which has not read it yet is not written over.
+    fn holds_layout(&self, workspace_id: WorkspaceId) -> bool {
+        let route = Route::layout();
+        self.reads()
+            .is_some_and(|reads| reads.holds(&workspace_id.to_string(), route.app, &route.document))
     }
 }
 

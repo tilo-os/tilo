@@ -1752,6 +1752,24 @@ impl DesktopPolicy {
         held.values().flatten().any(|held| held.tab == Some(tab))
     }
 
+    /// The tab a launch of `app` holds whose window has not come yet: the place the window it
+    /// started takes, when the tab its window was left in arrived after the launch.
+    #[must_use]
+    pub fn launch_tab_of(&self, app: &str) -> Option<TabId> {
+        let held = self.held.borrow();
+        held.iter()
+            .filter(|(asked, _)| app_ids_match(asked, app))
+            .find_map(|(_, queue)| queue.iter().find_map(|held| held.tab))
+    }
+
+    /// Whether a launch of `app` holds a place for a window that has not come, its tab made or
+    /// not: one the shell has not made yet takes a while to show where the window lands.
+    #[must_use]
+    pub fn holds_launch_of(&self, app: &str) -> bool {
+        let held = self.held.borrow();
+        held.keys().any(|asked| app_ids_match(asked, app))
+    }
+
     /// Bring the tab `tab` forward and focus it, on the next update pass: what
     /// a launch of an app whose window is there, or on its way in this tab,
     /// does instead of starting it again. False when the shell holds no such

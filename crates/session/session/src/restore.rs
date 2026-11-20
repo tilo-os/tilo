@@ -345,10 +345,44 @@ impl Restore {
                 self.held.push(saved);
                 continue;
             }
+            // The person opened this app before this session read the layout: the window the
+            // launch started takes the tab its window was left in, and it is not asked for again.
+            if self.take_over_launch(desktop, &saved) {
+                return;
+            }
             if self.open(desktop, apps, saved) {
                 return;
             }
         }
+    }
+
+    /// The window a launch of `saved`'s app started takes the tab its window was left in, rather
+    /// than a second window being asked for: the person opened the app before this session read
+    /// the layout. Whether the saved tab waits for that window now.
+    fn take_over_launch(&mut self, desktop: &ShellDesktop, saved: &Saved) -> bool {
+        let launched = desktop.with_policy(|policy| policy.launch_tab_of(&saved.app));
+        let theirs = launched.filter(|tab| {
+            *tab != saved.tab
+                && desktop.with_policy(|policy| policy.waits_for_window(*tab))
+                && same_workspace(desktop, *tab, saved.tab)
+        });
+        // A launch whose tab the shell has not made yet holds a place all the same.
+        let unplaced =
+            launched.is_none() && desktop.with_policy(|policy| policy.holds_launch_of(&saved.app));
+        if theirs.is_none() && !unplaced {
+            return false;
+        }
+        match theirs {
+            Some(theirs) => desktop.with_policy(|policy| policy.release_tab(theirs)),
+            None => desktop.with_policy(|policy| policy.release_held(&saved.app)),
+        }
+        desktop.with_policy(|policy| policy.adopt(&saved.app, saved.tab, None));
+        self.opening = Some(Opening {
+            tab: saved.tab,
+            name: saved.name.clone(),
+            asked: Instant::now(),
+        });
+        true
     }
 
     /// Give each window of an app that stayed running through an in-place restart the saved tab
@@ -767,6 +801,12 @@ fn workspace_holding<T>(
                 .map(of)
         })
     })
+}
+
+/// Whether the tabs `a` and `b` stand in the same workspace.
+fn same_workspace(desktop: &ShellDesktop, a: TabId, b: TabId) -> bool {
+    let held = |tab: TabId| workspace_holding(desktop, tab, tilo_desktop_model::Workspace::id);
+    matches!((held(a), held(b)), (Some(a), Some(b)) if a == b)
 }
 
 /// The windows of the workspaces of `tree` that `wanted` names, each waiting for its app to open
