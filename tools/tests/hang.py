@@ -9,4 +9,4 @@ import os
 
 HANG_BOUND_ENV = "TILO_TEST_HANG_BOUND_SECS"
 
-HANG_BOUND = float(int(os.environ.get(HANG_BOUND_ENV, "120").strip()))
+HANG_BOUND = float(int(os.environ.get(HANG_BOUND_ENV, "300").strip()))

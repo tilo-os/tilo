@@ -161,14 +161,50 @@ pub struct HeadlessBackend {
     outputs: Vec<HeadlessOutput>,
 }
 
+/// The process's one EGL display. Making it loads the driver — on a software rasterizer about
+/// four fifths of a second — so every headless backend in the process composites on the same
+/// one instead of paying for it again, and a caller may make it ahead of time
+/// ([`warm_display`]).
+fn display() -> Result<EGLDisplay, BackendError> {
+    static DISPLAY: std::sync::OnceLock<Result<EGLDisplay, String>> = std::sync::OnceLock::new();
+    DISPLAY
+        .get_or_init(|| {
+            // SAFETY: making the display only initialises EGL; nothing is made current, and the
+            // display lives as long as the process does.
+            unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }.map_err(|error| format!("{error:?}"))
+        })
+        .clone()
+        .map_err(|why| failed("EGL display", why))
+}
+
+/// Make the process's EGL display now, on this thread: a session warms it beside its own build so
+/// the driver's load overlaps it, and [`HeadlessBackend::new`] then finds it already made.
+pub fn warm_display() {
+    let _ = display();
+}
+
+/// `build` (a headless session's own construction), with the process's EGL display made on a
+/// thread beside it: the driver's load is the longest single piece of a session's start, and
+/// nothing the session builds before its compositor needs the display.
+pub fn beside_the_build<T, E>(build: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+    let warming = std::thread::Builder::new()
+        .name("egl-warm".into())
+        .spawn(warm_display)
+        .ok();
+    let outcome = build();
+    if let Some(handle) = warming {
+        let _ = handle.join();
+    }
+    outcome
+}
+
 impl HeadlessBackend {
     /// A backend with no outputs yet.
     pub fn new(state: &mut State) -> Result<Self, BackendError> {
-        // SAFETY: this backend makes the process's EGL display and context,
-        // and both live only in it; no other EGL client creates or
-        // terminates either.
-        let display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }
-            .map_err(|error| failed("EGL display", error))?;
+        // SAFETY: the display is the process's one, made here or by
+        // [`warm_display`] on the step before, and it lives only in this
+        // process; no other EGL client creates or terminates it.
+        let display = display()?;
         // The GPU the display renders on: clients are told to allocate their dma-bufs there, so the
         // buffers they hand over are the ones this renderer imports. A machine with no GPU (a
         // software rasterizer) has no node, and its clients render through shared memory.

@@ -39,9 +39,12 @@ use tilo_lock::MutexRecover as _;
 /// debugger or to fail faster while bisecting a hang.
 pub const HANG_BOUND_ENV: &str = "TILO_TEST_HANG_BOUND_SECS";
 
-/// The bound when [`HANG_BOUND_ENV`] is unset. Nextest reports a test as slow after a minute and
-/// kills it after four, so a hang still fails with the helper's message rather than the runner's.
-pub const DEFAULT_HANG_BOUND: Duration = Duration::from_secs(120);
+/// The bound when [`HANG_BOUND_ENV`] is unset. It only has to catch a test that stopped: nextest
+/// reports one as slow after thirty seconds of the ci profile and kills it after sixteen of those,
+/// so the helper's message still comes first. Five minutes, because a machine running the whole
+/// suite is shared with every other check on it, and a test that starts a desktop there can spend
+/// two minutes merely getting its first frame — one that is progressing must not be called hung.
+pub const DEFAULT_HANG_BOUND: Duration = Duration::from_secs(300);
 
 const POLL_MIN: Duration = Duration::from_millis(1);
 const POLL_MAX: Duration = Duration::from_millis(20);

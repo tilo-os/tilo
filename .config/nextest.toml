@@ -3,8 +3,9 @@
 experimental = ["setup-scripts"]
 
 [profile.default]
-# Report and terminate hung tests.
-slow-timeout = { period = "60s", terminate-after = 4 }
+# Report and terminate hung tests. Six periods, so the test-env hang bound (five minutes) fails a
+# stopped test with its own message first.
+slow-timeout = { period = "60s", terminate-after = 6 }
 failure-output = "immediate-final"
 fail-fast = false
 

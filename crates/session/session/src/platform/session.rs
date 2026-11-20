@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use tilo_actions::remote::InvokeArgument;
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
+use tilo_compositor::backend::headless::beside_the_build;
 use tilo_compositor::{
     Compositor, DisplayConfig, Error, LoopTurns, NestedConfig, OutputConfig, WindowPolicy,
 };
@@ -1953,12 +1954,11 @@ impl Session {
     /// # Errors
     /// The compositor or an output did not start.
     pub fn headless(options: Options, outputs: &[OutputConfig]) -> Result<Self, crate::Error> {
-        let mut session = Self::new(options, Compositor::headless)?;
+        let mut session = beside_the_build(|| Self::new(options, Compositor::headless))?;
         for output in outputs {
             session.compositor.add_output(output)?;
         }
-        session.warm()?;
-        Ok(session)
+        session.warm().map_err(Into::into).map(|()| session)
     }
 
     /// A session on a bare TTY.
