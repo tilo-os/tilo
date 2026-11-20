@@ -117,54 +117,9 @@ const BOUND_PREFIX: &str = "tilo-ui-bound:v1:";
 /// Pages of installed apps read at most: a page holds 256.
 const INSTALLED_PAGES: usize = 4;
 
-#[derive(Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LsArgs {
-    path: Option<String>,
-    kind: Option<String>,
-    limit: Option<usize>,
-    cursor: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReadArgs {
-    path: String,
-    cursor: Option<String>,
-    max_chars: Option<usize>,
-    /// A record read (`record:<app>:<id>`) joins the record's chain of parts.
-    #[serde(default)]
-    parts: bool,
-    /// A document read waits for the next write past this revision.
-    after: Option<String>,
-}
-
-#[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-struct DoStep {
-    path: String,
-    #[serde(default)]
-    args: serde_json::Map<String, Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DoArgs {
-    path: Option<String>,
-    #[serde(default)]
-    args: serde_json::Map<String, Value>,
-    calls: Option<Vec<DoStep>>,
-    wait_ms: Option<u64>,
-    invocation_id: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FindArgs {
-    query: String,
-    app: Option<String>,
-    limit: Option<usize>,
-}
+#[path = "mcp_agent_arguments.rs"]
+mod arguments;
+use arguments::{DoArgs, FindArgs, LsArgs, ReadArgs};
 
 /// What an agent tool answers: the text and whether it reports a failure.
 /// How running one action by its path went.
