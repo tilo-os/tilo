@@ -273,10 +273,9 @@ try {
       {name: SHEET, app: 'so.tilo.sheets', words: 'rent'},
     ];
     for (const file of files) {
-      // Files in front, where its rows are what a press reaches.
-      await pressWhen(ada.tab, 'Files', 'the Files window');
-      await pressWhen(ada.tab, file.name, `the row for ${file.name} in Files`);
-      await key(ada.tab, 'Enter');
+      // Searched for by its name and opened from the palette: what a person
+      // does when they know what they are after.
+      await search(ada.tab, adaKeys, file.name, file.name, null, {mayStayUp: true});
       const opened = `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(file.app)})`;
       await until(ada.tab, opened, `${file.name} opening in ${file.app}`, stepLimit(4));
       if (file.words) await shows(ada.tab, file.words, `${file.name} shown in its window`, stepLimit(4));

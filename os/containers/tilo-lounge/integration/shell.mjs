@@ -371,7 +371,7 @@ export const searcher = ({until, failed, dump}) => {
   // answer are the previous query's. So Enter waits for the shell to have answered
   // *this* query, and for the row asked for to be the first one under the
   // palette's heading, which is where the highlight sits.
-  const search = async (tab, command, query, row, opens = null, {focus = true} = {}) => {
+  const search = async (tab, command, query, row, opens = null, {focus = true, mayStayUp = false} = {}) => {
     const began = Date.now();
     const framesFrom = await presented(tab);
     // What the shell said of itself on every frame from here to the answer: a
@@ -476,7 +476,16 @@ export const searcher = ({until, failed, dump}) => {
     if (opens) await armOpen(tab, opens);
     await key(tab, 'Enter');
     const pressed = Date.now();
-    await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, stepLimit(4));
+    // A shell that keeps its search up after what it opened has arrived
+    // leaves the person to close it: a person presses Escape, and goes on.
+    const closed = await tab.waitFor('!globalThis.tiloMount?.state()?.searchOpen', {timeout: mayStayUp ? 5000 : stepLimit(4)})
+      .catch(() => false);
+    if (!closed && mayStayUp) {
+      await key(tab, 'Escape');
+      await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, stepLimit(2));
+    } else if (!closed) {
+      await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, stepLimit(4));
+    }
     // Where a search's time went, in the parts a person's search has: the chord,
     // the text typed, the shell answering the query, the rows it offers, Enter,
     // and what the search waited for after it (the app's window, arriving), with
