@@ -60,19 +60,14 @@ impl AppActions for PageActions {
                 code: "unknown_application".into(),
                 reason: "That row names no app this page opens".into(),
             })?;
-        if !self.showing(&app) {
-            self.handle
-                .dispatch(ChromeEffect::OpenApp {
-                    app: app.clone(),
-                    beside: None,
-                    background: None,
-                    float: None,
-                })
-                .map_err(|reason| ApiError::Unavailable {
-                    code: "application_unavailable".into(),
-                    reason,
-                })?;
-        }
+        // The action lands in the app's window, which comes into view to show what it did: the
+        // shown strip's window of it, else a new one.
+        self.handle
+            .dispatch(ChromeEffect::ShowApp { app: app.clone() })
+            .map_err(|reason| ApiError::Unavailable {
+                code: "application_unavailable".into(),
+                reason,
+            })?;
         self.reveals.ask(Reveal {
             app,
             // The app's own record: the window it has of this workspace.
@@ -171,14 +166,6 @@ impl PageActions {
                 code: "application_unavailable".into(),
                 reason,
             })
-    }
-}
-
-impl PageActions {
-    /// Whether a window of `app` stands on the shell.
-    fn showing(&self, app: &str) -> bool {
-        self.handle
-            .read(|tree| tilo_desktop_surface::navigation::window_of_app(tree, app).is_some())
     }
 }
 
