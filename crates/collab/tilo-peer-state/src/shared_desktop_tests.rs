@@ -1,6 +1,7 @@
 //! A member's write of the workspace's shared desktop is decided by what it does
-//! to what someone else made: closing, moving or renaming a window another
-//! person opened needs the workspace's moderation grant. The same write is what
+//! to what someone else made: the workspace's windows are every member's to close
+//! and move, and closing or renaming a strip someone else made needs the
+//! workspace's moderation grant. The same write is what
 //! the workspace's other devices then draw: a page one device opens arrives over
 //! the peer replication and stands on another device's shell, with what the first
 //! device changed about it afterwards.
@@ -238,9 +239,9 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_editor_closes_their_own_window_but_not_someone_elses;
-    // An editor opens and closes their own window, and may not close the
-    // owner's.
+    phase an_editor_closes_any_window_but_renames_no_strip_someone_else_made;
+    // The workspace's windows are every member's: an editor opens a window, closes their own and
+    // the owner's. The strip is not theirs, so they may not rename it.
     {
         let (mut peer, owner, key, guest) = workspace_with(Role::Editor);
         let person = hex::encode(guest.user_public_key);
@@ -248,24 +249,33 @@ tilo_test_env::scenario! {
         receive(&mut peer, &guest, opened).expect("an editor opens a window");
         assert_eq!(windows(&peer), [1, 2]);
 
-        let closes_owners = write(&peer, &key, &person, 2, &desktop(&[(2, &person)]));
-        let refused = receive(&mut peer, &guest, closes_owners).unwrap_err();
-        assert!(refused.contains("may not close 1"), "{refused}");
-        assert_eq!(windows(&peer), [1, 2], "refused, the desktop is as it was");
+        let mut renames = desktop(&[(1, &owner), (2, &person)]);
+        renames.tree.workspaces[0].strips[0].name = "Mine".into();
+        let renames = write(&peer, &key, &person, 2, &renames);
+        let refused = receive(&mut peer, &guest, renames).unwrap_err();
+        assert!(refused.contains("may not rename 10"), "{refused}");
+        assert_eq!(strip_names(&peer), ["Workspace"], "refused, the desktop is as it was");
 
         let closes_own = write(&peer, &key, &person, 3, &desktop(&[(1, &owner)]));
         receive(&mut peer, &guest, closes_own).expect("an editor closes their own window");
         assert_eq!(windows(&peer), [1]);
+
+        let closes_owners = write(&peer, &key, &person, 4, &desktop(&[]));
+        receive(&mut peer, &guest, closes_owners).expect("an editor closes the owner's window");
+        assert!(windows(&peer).is_empty());
     }
 
     phase a_moderator_closes_someone_elses_window;
-    // A moderator closes anyone's window.
+    // A moderator closes anyone's window and renames a strip someone else made.
     {
         let (mut peer, _, key, guest) = workspace_with(Role::Moderator);
         let person = hex::encode(guest.user_public_key);
-        let closes_owners = write(&peer, &key, &person, 1, &desktop(&[]));
-        receive(&mut peer, &guest, closes_owners).expect("a moderator closes any window");
+        let mut clears = desktop(&[]);
+        clears.tree.workspaces[0].strips[0].name = "Renamed".into();
+        let clears = write(&peer, &key, &person, 1, &clears);
+        receive(&mut peer, &guest, clears).expect("a moderator closes any window");
         assert!(windows(&peer).is_empty());
+        assert_eq!(strip_names(&peer), ["Renamed"]);
     }
 
     phase another_devices_page_reaches_the_shell_and_its_rename_follows;
@@ -352,6 +362,18 @@ fn windows(peer: &StatePeer) -> Vec<u64> {
         .flat_map(|strip| &strip.window_groups)
         .flat_map(|group| &group.tabs)
         .map(|tab| tab.id)
+        .collect()
+}
+
+fn strip_names(peer: &StatePeer) -> Vec<String> {
+    let doc = AutoCommit::load(&peer.document(DESKTOP_APP, DESKTOP_DOCUMENT).unwrap()).unwrap();
+    shared_resource::read(&doc, None)
+        .unwrap()
+        .tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .map(|strip| strip.name.clone())
         .collect()
 }
 

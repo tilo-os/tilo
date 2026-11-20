@@ -1,7 +1,7 @@
-//! A workspace's shared desktop through a real server: guests close and move the
-//! windows they opened, never someone else's, and a moderator the workspace
-//! made closes anyone's. A refused write is neither kept nor forwarded, and
-//! a page committing one is told.
+//! A workspace's shared desktop through a real server: its members close and
+//! move any of its windows, whoever opened them, but rename no strip someone
+//! else made, which a moderator the workspace made does. A refused write is
+//! neither kept nor forwarded, and a page committing one is told.
 
 use std::time::Duration;
 
@@ -61,6 +61,12 @@ fn desktop(windows: &[(u64, u64, String)]) -> SharedDesktop {
     }
 }
 
+/// `desktop` with its strip named `name`.
+fn named(mut desktop: SharedDesktop, name: &str) -> SharedDesktop {
+    name.clone_into(&mut desktop.tree.workspaces[0].strips[0].name);
+    desktop
+}
+
 /// The person id a workspace knows `user` by.
 fn person(user: &TestUser) -> String {
     hex::encode(user.user_pk)
@@ -87,6 +93,28 @@ async fn windows(server: &Server, workspace: &str) -> Vec<(u64, u64)> {
         .iter()
         .flat_map(|g| g.tabs.iter().map(move |t| (t.id, g.id)))
         .collect()
+}
+
+/// The name of the strip on the workspace's desktop as its governor follows it.
+async fn strip_name(server: &Server, workspace: &str) -> Option<String> {
+    let bytes = server
+        .workspaces()
+        .unwrap()
+        .resource_document(workspace, DESKTOP_APP, DESKTOP_DOCUMENT)
+        .await
+        .unwrap()?;
+    let doc = AutoCommit::load(&bytes).unwrap();
+    let desktop = shared_resource::read(&doc, None)?;
+    Some(desktop.tree.workspaces[0].strips[0].name.clone())
+}
+
+async fn wait_for_strip_name(server: &Server, workspace: &str, want: &str) {
+    tilo_test_env::within(format!("the workspace's strip is named {want}"), async {
+        while strip_name(server, workspace).await.as_deref() != Some(want) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
 }
 
 async fn wait_for_windows(server: &Server, workspace: &str, want: &[(u64, u64)]) {
@@ -297,7 +325,7 @@ async fn admit(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
+async fn members_close_and_move_any_window_and_only_a_moderator_renames_the_strip() {
     let alice = TestUser::fresh("Alice");
     let ada = TestUser::fresh("Ada");
     let ben = TestUser::fresh("Ben");
@@ -434,24 +462,16 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         .unwrap();
     wait_for_windows(&server, &hosted.workspace, &[(1, 100), (2, 200)]).await;
 
-    // Ada may not close Ben's window, nor move it into hers.
-    let closes = ada_page
-        .write(&server, &desktop(&[(1, 100, a.clone())]))
-        .await;
-    let refused = commit(&ada_client, &ada_browser, workspace, &closes)
+    // The strip is the workspace's, not Ada's: she may not rename it.
+    let renames = ada_page.write(&server, &named(both.clone(), "Ada's")).await;
+    let refused = commit(&ada_client, &ada_browser, workspace, &renames)
         .await
         .unwrap_err();
-    assert!(refused.contains("may not close"), "{refused}");
-    let into_hers = desktop(&[(1, 100, a.clone()), (2, 100, b.clone())]);
-    let moves = ada_page.write(&server, &into_hers).await;
-    let refused = commit(&ada_client, &ada_browser, workspace, &moves)
-        .await
-        .unwrap_err();
-    assert!(refused.contains("may not move"), "{refused}");
+    assert!(refused.contains("may not rename"), "{refused}");
     // Nor through a write large enough to travel in segments: they go on as
     // they come, and the last one, which completes it, is refused, so none
     // of it applies anywhere.
-    let mut huge = desktop(&[(1, 100, a.clone())]);
+    let mut huge = named(both.clone(), "Ada's");
     huge.tree.workspaces[0].strips[0].window_groups[0].tabs[0].title =
         (0..400_000u32).fold(String::new(), |mut title, n| {
             use std::fmt::Write as _;
@@ -469,51 +489,60 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     let refused = commit(&ada_client, &ada_browser, workspace, last)
         .await
         .unwrap_err();
-    assert!(refused.contains("may not close"), "{refused}");
+    assert!(refused.contains("may not rename"), "{refused}");
     // Nor may Cy, through a native session's plain delta: it is dropped,
     // and his next write, which is his to make, lands without it.
     let cy_session = session(&server, &cy_laptop, workspace).await;
     crate::common::wait_until_subscribed(&server, workspace, &cy_laptop.device_pubkey()).await;
-    // Both over the same desktop: had the workspace kept the close, Ada's
-    // window would be gone beside Cy's new one.
+    // Both over the same desktop: had the workspace kept the rename, the
+    // strip would be renamed beside Cy's new window.
     let three = desktop(&[
         (1, 100, a.clone()),
         (2, 200, b.clone()),
         (3, 300, person(&cy)),
     ]);
     let cy_opens = cy_page.write(&server, &three).await;
-    let cy_closes = cy_page
-        .write(&server, &desktop(&[(2, 200, b.clone())]))
-        .await;
-    publish(&cy_session, &cy_closes);
+    let cy_renames = cy_page.write(&server, &named(both.clone(), "Cy's")).await;
+    publish(&cy_session, &cy_renames);
     publish(&cy_session, &cy_opens);
     wait_for_windows(&server, &hosted.workspace, &[(1, 100), (2, 200), (3, 300)]).await;
+    assert_eq!(
+        strip_name(&server, &hosted.workspace).await.as_deref(),
+        Some("Lounge")
+    );
     let cy_closes_his = cy_page.write(&server, &both).await;
     publish(&cy_session, &cy_closes_his);
     wait_for_windows(&server, &hosted.workspace, &[(1, 100), (2, 200)]).await;
-    // She may move her own window past his.
-    let reordered = desktop(&[(2, 200, b.clone()), (1, 100, a.clone())]);
-    let hers = ada_page.write(&server, &reordered).await;
-    commit(&ada_client, &ada_browser, workspace, &hers)
+
+    // The workspace's windows are every member's: Ada moves Ben's window
+    // into hers, and closes it.
+    let into_hers = desktop(&[(1, 100, a.clone()), (2, 100, b.clone())]);
+    let moves = ada_page.write(&server, &into_hers).await;
+    commit(&ada_client, &ada_browser, workspace, &moves)
         .await
         .unwrap();
-    wait_for_windows(&server, &hosted.workspace, &[(2, 200), (1, 100)]).await;
-
-    // Ben closes his own window.
-    let closes = ben_page
+    wait_for_windows(&server, &hosted.workspace, &[(1, 100), (2, 100)]).await;
+    let closes = ada_page
         .write(&server, &desktop(&[(1, 100, a.clone())]))
         .await;
-    commit(&ben_client, &ben_browser, workspace, &closes)
+    commit(&ada_client, &ada_browser, workspace, &closes)
         .await
         .unwrap();
     wait_for_windows(&server, &hosted.workspace, &[(1, 100)]).await;
 
-    // Mo moderates the workspace: he closes Ada's.
-    let clears = mo_page.write(&server, &desktop(&[])).await;
-    commit(&mo_client, &mo_browser, workspace, &clears)
+    // Ben closes Ada's.
+    let closes = ben_page.write(&server, &desktop(&[])).await;
+    commit(&ben_client, &ben_browser, workspace, &closes)
         .await
         .unwrap();
     wait_for_windows(&server, &hosted.workspace, &[]).await;
+
+    // Mo moderates the workspace: he renames its strip.
+    let renames = mo_page.write(&server, &named(desktop(&[]), "Mo's")).await;
+    commit(&mo_client, &mo_browser, workspace, &renames)
+        .await
+        .unwrap();
+    wait_for_strip_name(&server, &hosted.workspace, "Mo's").await;
     server.shutdown().await;
 }
 
