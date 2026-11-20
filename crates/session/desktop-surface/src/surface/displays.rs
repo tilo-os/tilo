@@ -655,19 +655,15 @@ impl DesktopSurface {
             if shared.tree.is_partitioned() {
                 // Each frame keeps the displays' strips as they are, which counts as a change of
                 // the tree only when one moved.
-                let before = shared.tree.outputs.clone();
                 let shown = self.shown;
                 shared.tree.edit_when(|tree| {
-                    tree.outputs.place_unhomed(&tree.workspaces);
-                    if let Some(strip_id) = shown
-                        && let Some(group) = tree.active_group_for(strip_id)
-                    {
-                        tree.outputs.note_focus(strip_id, group);
-                    }
+                    let placed = tree.outputs.place_unhomed(&tree.workspaces);
+                    let focused = shown
+                        .and_then(|strip_id| Some((strip_id, tree.active_group_for(strip_id)?)))
+                        .is_some_and(|(strip_id, group)| tree.outputs.note_focus(strip_id, group));
                     // Every display keeps the strip it shows; one never told takes the active
                     // strip, and the focused display follows it.
-                    tree.note_shown_strip();
-                    tree.outputs != before
+                    placed | focused | tree.note_shown_strip()
                 });
                 let tree = &shared.tree;
                 let displays = tree.outputs.displays.clone();

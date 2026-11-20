@@ -254,16 +254,16 @@ impl ChromeSource for PageChrome {
         answer(&requester)
     }
 
-    fn with_authors<R>(&self, answer: impl FnOnce(&mut Authors) -> R) -> R {
-        // Asking whether a command may go reads the authors through here too: only what changed
-        // them counts as a change of the desktop.
-        let mut authors = (**self.authorship.authors.borrow()).clone();
-        let answered = answer(&mut authors);
-        let mut held = self.authorship.authors.borrow_mut();
-        if authors != **held {
-            held.set(authors);
-        }
-        answered
+    fn with_authors<R>(&self, answer: impl FnOnce(&Authors) -> R) -> R {
+        answer(&self.authorship.authors.borrow())
+    }
+
+    fn note_strip_maker(&self, strip: tilo_desktop_model::StripId, person: String) {
+        self.authorship
+            .authors
+            .borrow_mut()
+            .edit()
+            .insert(strip.0, person);
     }
 
     /// This page's person as everyone here sees them: their name (numbered when someone else

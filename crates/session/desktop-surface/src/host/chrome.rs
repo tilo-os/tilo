@@ -481,7 +481,9 @@ pub trait ChromeSource {
     /// Ask `answer` what this person may change here, as this host knows their requester.
     fn with_requester<R>(&self, answer: impl FnOnce(&Requester<'_>) -> R) -> R;
     /// Ask `answer` who made each strip and opened each window here.
-    fn with_authors<R>(&self, answer: impl FnOnce(&mut Authors) -> R) -> R;
+    fn with_authors<R>(&self, answer: impl FnOnce(&Authors) -> R) -> R;
+    /// Keep `person` as the one who made `strip`.
+    fn note_strip_maker(&self, strip: StripId, person: String);
     /// The person's own avatar: their name, colour and identity.
     fn own_chip(&self) -> OwnChip;
     /// The notifications waiting here, and whether the bell is silenced.
@@ -733,9 +735,8 @@ impl<S: ChromeSource + ?Sized> DesktopRules for HostChrome<S> {
     }
 
     fn made_strip(&self, strip: StripId) {
-        self.source.with_authors(|authors| {
-            authors.insert(strip.0, self.source.person().to_owned());
-        });
+        self.source
+            .note_strip_maker(strip, self.source.person().to_owned());
     }
 
     fn workspace_host(&self) -> Option<String> {

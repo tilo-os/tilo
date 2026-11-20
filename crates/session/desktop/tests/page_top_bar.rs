@@ -53,8 +53,12 @@ impl ChromeSource for Page {
         })
     }
 
-    fn with_authors<R>(&self, answer: impl FnOnce(&mut Authors) -> R) -> R {
-        answer(&mut self.authors.borrow_mut())
+    fn with_authors<R>(&self, answer: impl FnOnce(&Authors) -> R) -> R {
+        answer(&self.authors.borrow())
+    }
+
+    fn note_strip_maker(&self, strip: tilo_desktop_model::StripId, person: String) {
+        self.authors.borrow_mut().insert(strip.0, person);
     }
 
     fn own_chip(&self) -> OwnChip {
