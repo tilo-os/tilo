@@ -1835,7 +1835,7 @@ reason = "needs a built Arch package"
 
 [[unrequired]]
 suite = "dist/ci/run-dev-session-test.sh"
-reason = "needs Docker to create and start a container, and pulls its digest-pinned Ubuntu from Docker Hub, so it runs in a VM of its own; the dev-session-test check does that on dispatch. The release workflow runs it on macOS's runners too"
+reason = "needs Docker to create and start a container, and pulls its digest-pinned Ubuntu from Docker Hub, so it runs in a VM of its own; the dev-session-test check does that on dispatch. release-desktop.yml's quality runner runs it too"
 check = "dev-session-test"
 workflow = "release-desktop.yml"
 
