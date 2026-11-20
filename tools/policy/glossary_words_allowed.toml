@@ -1890,3 +1890,9 @@ paths = ["os/containers/tilo-sh/stack.sh"]
 reason = "Chat's channels, which the glossary keeps: the one Chat's post action writes a message to."
 words = ["channel"]
 paths = ["tools/ci/stack-upgrade/workspace_data.py"]
+
+[[allow]]
+reason = "The document index projections' own `record` and `records` fields (fs-protocol), which apps read from a mount's extended attributes."
+words = ["record"]
+identifiers = ["record", "records"]
+paths = ["crates/system/fs/src/fs/tests.rs"]

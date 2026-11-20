@@ -527,6 +527,8 @@ pub struct QuickFS {
     document_index_cursors: Mutex<HashMap<String, DocumentIndexCursor>>,
     document_index_initial_cursors: Mutex<HashMap<(String, String, u64), String>>,
     acl_visible_document_index: Arc<Mutex<Option<Arc<AclVisibleDocumentIndex>>>>,
+    /// Asks the refresh worker to rebuild the retained view: a reader found it behind the tree.
+    document_index_wanted: Arc<tokio::sync::Notify>,
     /// The last directory listing served, and the revision it was taken at: one `readdir` is
     /// many requests, and building the folder again for each of its pages costs the folder on
     /// every page.
@@ -609,6 +611,7 @@ impl QuickFS {
             document_index_cursors: Mutex::new(HashMap::new()),
             document_index_initial_cursors: Mutex::new(HashMap::new()),
             acl_visible_document_index: Arc::new(Mutex::new(None)),
+            document_index_wanted: Arc::new(tokio::sync::Notify::new()),
             readdir_cache: Mutex::new(None),
             rich_metadata: Mutex::new(HashMap::new()),
             enforcement: None,
@@ -1868,8 +1871,13 @@ impl QuickFS {
     ) {
         let namespace = Arc::clone(&self.namespace);
         let retained = Arc::downgrade(&self.acl_visible_document_index);
+        let wanted = Arc::clone(&self.document_index_wanted);
         drop(self.hydrator.runtime_handle.spawn(async move {
-            while generations.changed().await.is_ok() {
+            loop {
+                tokio::select! {
+                    changed = generations.changed() => if changed.is_err() { break },
+                    () = wanted.notified() => {}
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                 while generations.has_changed().unwrap_or(false) {
                     let _ = generations.borrow_and_update();
@@ -2184,22 +2192,32 @@ impl QuickFS {
         hasher.finalize().to_hex().to_string()
     }
 
-    /// Return a retained projection by cheap shared reference. Serving an xattr
-    /// deliberately never rebuilds it: a remote replay whose refresh notification has not
-    /// arrived is transiently unavailable rather than a corpus walk.
+    /// Return a retained projection by cheap shared reference. Serving an xattr never rebuilds
+    /// it, and neither does a change of the tree: rebuilding copies the whole catalogue, so a
+    /// copy of many files that rebuilt it for each would cost the folder's size per file. A
+    /// view taken before the tree last changed is still a whole, coherent catalogue under the
+    /// current ACL: it is served, and the refresh worker is asked for the current one, which
+    /// the next request sees. A view of an older ACL is never served: its verdicts may show
+    /// what is hidden now.
     fn acl_visible_document_index(&self) -> Option<Arc<AclVisibleDocumentIndex>> {
         let source_revision = self.document_catalog_revision();
         let acl_revision = self
             .enforcement
             .as_ref()
             .map_or(0, |(acl, _)| acl.revision());
-        self.acl_visible_document_index
+        let index = self
+            .acl_visible_document_index
             .lock_recover()
             .as_ref()
-            .filter(|index| {
-                index.source_revision == source_revision && index.acl_revision == acl_revision
-            })
-            .cloned()
+            .filter(|index| index.acl_revision == acl_revision)
+            .cloned();
+        if index
+            .as_ref()
+            .is_none_or(|index| index.source_revision != source_revision)
+        {
+            self.document_index_wanted.notify_one();
+        }
+        index
     }
 
     /// Rebuild the retained authority view under one coherent Namespace lock. Call only
@@ -2297,7 +2315,7 @@ impl QuickFS {
             .map(|record| (record.document_id, record))
             .collect();
         let index = Arc::new(AclVisibleDocumentIndex {
-            source_revision: source_revision.clone(),
+            source_revision,
             acl_revision,
             revision,
             records,
@@ -2306,20 +2324,10 @@ impl QuickFS {
             #[cfg(test)]
             acl_evaluations,
         });
-        // Do not publish a coherent but old snapshot if a concurrent mutation landed after
-        // releasing the namespace lock above. Its notification builds the next generation.
-        let current_source = {
-            let namespace = namespace.lock_recover();
-            Self::document_catalog_revision_from_index(
-                namespace.indexed_document_revision(),
-                acl_revision,
-            )
-        };
-        // Nor one whose verdicts may mix two ACL generations: the revision bump has its own
-        // refresh coming.
-        if current_source != source_revision
-            || enforcement.map_or(0, |(acl, _)| acl.revision()) != acl_revision
-        {
+        // A view a change of the tree overtook while it was built is still whole, and newer
+        // than the one it replaces; one whose verdicts may mix two ACL generations is not: the
+        // revision bump has its own refresh coming.
+        if enforcement.map_or(0, |(acl, _)| acl.revision()) != acl_revision {
             return;
         }
         let mut retained = retained.lock_recover();
@@ -2488,7 +2496,13 @@ impl QuickFS {
 
     fn document_index_by_id_v2(&self, document_id: fs_protocol::FileDocumentId) -> Option<Vec<u8>> {
         let index = self.acl_visible_document_index()?;
-        let entry = index.by_id.get(&document_id)?.clone();
+        // One document is looked up in the tree itself when the view is behind it: a file made
+        // a moment ago is found by its id at once.
+        let entry = if index.source_revision == self.document_catalog_revision() {
+            index.by_id.get(&document_id)?.clone()
+        } else {
+            self.visible_document(document_id)?
+        };
         let projection = fs_protocol::projection::DocumentIndexExactV2 {
             schema_version: DOCUMENT_INDEX_V2_VERSION,
             revision: index.revision.clone(),
@@ -2497,6 +2511,20 @@ impl QuickFS {
         projection.validate().ok()?;
         let bytes = serde_json::to_vec(&projection).ok()?;
         (bytes.len() <= fs_protocol::projection::MAX_DOCUMENT_INDEX_PAGE_BYTES).then_some(bytes)
+    }
+
+    /// The catalogue row of `document_id` as the tree has it now, if the ACL shows it.
+    fn visible_document(&self, id: fs_protocol::FileDocumentId) -> Option<DocumentIndexEntryV1> {
+        let ns = self.ns();
+        let (is_dir, path) = ns
+            .indexed_document(id)
+            .and_then(|entry| Some((entry.is_dir, ns.path_for_document(&entry)?)))?;
+        drop(ns);
+        self.in_view(&path).then_some(DocumentIndexEntryV1 {
+            document_id: id,
+            path,
+            is_dir,
+        })
     }
 
     /// Read a bounded immutable version for an app-native history preview. Never changes
@@ -3139,12 +3167,6 @@ impl QuickFS {
     }
 
     fn announce(&self) {
-        if self.enforcement.is_some() {
-            // Local structural changes already updated the Namespace record index. Refresh the
-            // retained ACL projection before advertising the mutation, so a pager's next poll
-            // observes a visible addition without a request-time scan.
-            self.refresh_acl_visible_document_index();
-        }
         self.wake_pinned_hydration();
     }
 

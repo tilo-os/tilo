@@ -1511,6 +1511,56 @@ mod predictive_tests {
     }
 
     #[tokio::test]
+    async fn writes_through_the_mount_leave_the_catalogue_to_its_readers() {
+        const ME: [u8; 32] = [0xA9; 32];
+        let (namespace, fs) = fixture().await;
+        let mut policy = WorkspaceAcl::new();
+        policy.grant_read(ME, "/");
+        let fs = fs.with_acl(AclHandle::new(policy), ME);
+        let before: fs_protocol::projection::DocumentIndexManifestV3 =
+            serde_json::from_slice(&fs.document_index_manifest_v3().unwrap()).unwrap();
+        let page_reads = namespace.lock_recover().document_index_page_read_count();
+
+        let mut made = Vec::new();
+        for n in 0..20 {
+            let ino = fs
+                .create_empty_file(ROOT_INO, format!("photo-{n}.jpg"))
+                .unwrap();
+            fs.publish();
+            made.push(namespace.lock_recover().document_id_for(ino).unwrap());
+        }
+        assert_eq!(
+            namespace.lock_recover().document_index_page_read_count(),
+            page_reads,
+            "a file made through the mount must not copy the whole catalogue"
+        );
+        let found: fs_protocol::projection::DocumentIndexExactV2 =
+            serde_json::from_slice(&fs.document_index_by_id_v2(made[19]).unwrap()).unwrap();
+        assert_eq!(found.record.path, "/photo-19.jpg");
+
+        let mut current = None;
+        for _ in 0..200 {
+            let manifest: fs_protocol::projection::DocumentIndexManifestV3 =
+                serde_json::from_slice(&fs.document_index_manifest_v3().unwrap()).unwrap();
+            if manifest.revision != before.revision {
+                current = Some(manifest);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let current = current.expect("a reader gets the current catalogue once it asked for it");
+        let page: fs_protocol::projection::DocumentIndexPageV3 = serde_json::from_slice(
+            &fs.document_index_page_v3(&current.revision, &current.initial_cursor)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            made.iter()
+                .all(|id| page.records.iter().any(|row| row.document_id == *id))
+        );
+    }
+
+    #[tokio::test]
     async fn v3_record_catalog_hides_denied_rows_and_fails_closed_on_revoke() {
         {
             const ME: [u8; 32] = [0xA4; 32];
