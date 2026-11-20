@@ -60,6 +60,29 @@ class SetupNeutralTests(unittest.TestCase):
         self.assertEqual(checker.line_violations("docs/notes/superpowers/x.md"), [])
         self.assertEqual(checker.line_violations("/.super" + "powers/", ignore_file=True), [])
 
+    def test_only_the_remote_stacks_exec_switch_passes(self) -> None:
+        switch = f"{WRAPPER.upper()}_T=0"
+        call = f'( cd "$repo" && {switch} "$cargo" exec -- bash "$self" down )'
+        self.assertEqual(checker.line_violations(call, exec_switch=True), [])
+        # Not where the exception does not reach.
+        self.assertTrue(checker.line_violations(call))
+        # A comment about the switch is not the switch.
+        note = f"# {switch} keeps the call in the drop-in's container"
+        self.assertTrue(checker.line_violations(note, exec_switch=True))
+        # Nor is another name that merely ends like it.
+        other = f'( cd "$repo" && SOME_{switch} "$cargo" exec )'
+        self.assertTrue(checker.line_violations(other, exec_switch=True))
+
+    def test_the_exec_switch_is_allowed_in_the_stack_alone(self) -> None:
+        line = f'( cd "$repo" && {WRAPPER.upper()}_T=0 "$cargo" exec -- true )\n'
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "script.sh"
+            path.write_text(line, encoding="utf-8")
+            allowed = checker.file_violations(path, "os/containers/tilo-sh/stack.sh")
+            elsewhere = checker.file_violations(path, "os/containers/other/script.sh")
+        self.assertEqual(allowed, [])
+        self.assertEqual(len(elsewhere), 1)
+
     def test_tracked_text_files_are_scanned(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

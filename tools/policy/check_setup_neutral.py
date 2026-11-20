@@ -10,6 +10,12 @@ text files may not name:
   `C:\\Users\\`: examples use a placeholder home such as `/var/home/you`,
   `/Users/you` or `C:\\Users\\you`;
 * a private scratch directory that only exists in one checkout.
+
+One exception: the remote-stack script sets a routing drop-in's own opt-out
+switch (`EXEC_SWITCH`) for the commands that must act in the container the
+drop-in built in. The switch is the drop-in's interface, and no generic one
+exists for `exec`; the exception covers that assignment alone, in that file,
+and every other mention still fails.
 """
 
 from __future__ import annotations
@@ -24,6 +30,11 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 # Split so this file does not name what it rejects.
 WRAPPER = re.compile(r"(?<![A-Za-z0-9])r" r"cargo", re.IGNORECASE)
+# A routing drop-in's opt-out for one call, which the remote stack must set:
+# split like WRAPPER, and only where it is passed straight to the drop-in.
+# Allowed only in `EXEC_SWITCH_FILES`, and nowhere else.
+EXEC_SWITCH = re.compile(r"(?<![A-Za-z0-9_])R" r"CARGO_T=\S+\s+\"\$cargo\"(\s|$)")
+EXEC_SWITCH_FILES = frozenset({"os/containers/tilo-sh/stack.sh"})
 HOME = re.compile(r"/var/home/([A-Za-z0-9._-]+)")
 PLACEHOLDER_HOMES = frozenset({"you", "user", "dev", "tilo", "account", "alice", "bob"})
 # `/Users/...`, `C:\Users\...`, `C:/Users/...` and MSYS2's `/c/Users/...`; the
@@ -58,9 +69,13 @@ class Violation:
         return f"{self.path}:{self.line}: {self.reason}"
 
 
-def line_violations(text: str, ignore_file: bool = False) -> list[str]:
+def line_violations(
+    text: str, ignore_file: bool = False, exec_switch: bool = False
+) -> list[str]:
     reasons = []
-    if WRAPPER.search(text):
+    # The remote stack's own opt-out for a drop-in's routed `exec` is the one
+    # mention that passes; see the module docstring.
+    if WRAPPER.search(text) and not (exec_switch and EXEC_SWITCH.search(text)):
         reasons.append("names a private cargo wrapper; say 'any cargo drop-in' or $CARGO")
     for match in HOME.finditer(text):
         if match.group(1) not in PLACEHOLDER_HOMES:
@@ -88,7 +103,11 @@ def file_violations(path: Path, shown: str) -> list[Violation]:
         Violation(shown, number, reason)
         for number, line in enumerate(text.splitlines(), 1)
         if REFERENCE_HINT.search(line)
-        for reason in line_violations(line, ignore_file=path.name == ".gitignore")
+        for reason in line_violations(
+            line,
+            ignore_file=path.name == ".gitignore",
+            exec_switch=shown in EXEC_SWITCH_FILES,
+        )
     ]
 
 

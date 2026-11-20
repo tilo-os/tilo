@@ -2784,9 +2784,9 @@ remote_env() {
 #
 # A remote stack lives in the container its cargo drop-in builds in, and these commands have to act
 # there: a drop-in that routes other work elsewhere (exec handed to a builder) is asked for these
-# on the builder itself, since that other place holds neither the stack nor its state. `RCARGO_T`
-# is rcargo's own switch for that, and means nothing to another drop-in; rcargo's `--on-builder`
-# is a cargo subcommand's and is refused before `exec`, so nothing passes it here.
+# in its own container, since that other place holds neither the stack nor its state. The opt-out
+# below is the drop-in's own switch for one call; it means nothing to another drop-in, which runs
+# the call where it builds anyway, and a drop-in's cargo-subcommand switch is not passed here.
 remote_cmd() {
   if [[ $mode == remote ]] && control_ready; then
     control_cmd "$@"
@@ -2828,7 +2828,7 @@ start_supervisor() {
 
 # Whether the held program answers on its control port here, through the forward: a stack on a
 # builder that keeps a job's state to itself is acted on this way, and one on a builder whose
-# container outlives the program (rcargo) the older way.
+# container outlives the program the older way.
 control_ready() {
   (exec 3<>"/dev/tcp/127.0.0.1/$control_port") >/dev/null 2>&1
 }
