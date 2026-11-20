@@ -119,13 +119,12 @@ export const pressContaining = async (tab, text, what) => {
   return name;
 };
 
-/** Settings, opened the way search offers every app, then External accounts
- * on it. The shell's own card opens it too, but a press there lands where the
+/** Settings, opened the way search offers every app, then its Accounts page.
+ * The shell's own card opens Settings too, but a press there lands where the
  * bar last laid the avatar out, which a workspace's first frames move. */
 export const openExternalAccounts = async (tab, command, search) => {
   await search(tab, command, 'settings', 'Settings');
-  await pressWhen(tab, 'External accounts', 'External accounts in Settings', stepLimit(6))
-    .catch(() => pressContaining(tab, 'External accounts', 'External accounts in Settings'));
+  await pressWhen(tab, 'Accounts', 'Accounts in Settings', stepLimit(6));
   await shows(tab, 'Add an account', 'the accounts page offering a provider', stepLimit(6));
 };
 
