@@ -22,7 +22,7 @@ enforces the budgets in these places:
   meet a target yet. The budgets are those of the commit the newest release
   was built from, since the registry serves that release until the next one
   publishes.
-- **`lint.yml`** runs `check-budget`, a text check. A budget or ceiling
+- **t's `changes` check** runs `check-budget`, a text check. A budget or ceiling
   may only grow by what a raise file new in the same change adds. The budgeted
   apps must be exactly the default collection, so an app added to `apps/`
   brings its budget. A new app may start at the 6 MB max target until it is

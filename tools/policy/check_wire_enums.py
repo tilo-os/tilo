@@ -15,7 +15,7 @@ longer lead it in the same order. New variants go at the end.
 Three things run it, which is what keeps a removal from landing:
 
 ``staged``, in the pre-commit hook: the tree being committed against HEAD's.
-``check_commit_policy.py``, in the lint job, on every new commit of a change,
+``check_commit_policy.py``, in t's ``changes`` check, on every new commit of a change,
 each one against its parents' exact blobs: the check a ``--no-verify`` commit
 still meets.
 ``against BASE`` by hand, when a variant was removed some commits back and

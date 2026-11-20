@@ -61,7 +61,7 @@ Each check runs commands from this repository. Run them from the checkout on Lin
 | `workspace-service-agents`                              | `cargo check --locked -p tilo-workspace-service --features agents --all-targets` |
 | `wasm`, `web-examples`                                  | `tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)`; `tools/ci/build-web-examples.sh example-<name>...` builds the web examples                                                                                                                                                              |
 | `policy`, `fmt`, `deny`, `hakari`, `machete`, `changes` | `tools/policy/run.sh`, `cargo fmt --check`, `cargo deny --workspace check`, `cargo hakari generate --diff && cargo hakari manage-deps --dry-run`, `bash tools/ci/check-unused-dependencies.sh`, and the diff-based checks `changes` lists against `origin/main`                                                |
-| `sdk-policy`                                            | `python3 tools/web/generate_web_desktop.py --check`; portability is `tilo-app check --lint --all` in `lint.yml`                                                                                                                                                        |
+| `sdk-policy`                                            | `python3 tools/web/generate_web_desktop.py --check`; portability is `tilo-app check --lint --all` in the `app-lints` check (on `idle` and `dispatch`)                                                                                                                                                        |
 | `sdk-linux`                                             | `cargo build -p tilo-app-cli --bin tilo-app`, then `target/debug/tilo-app build --target linux apps/calculator` and `target/debug/tilo-app package --target linux apps/calculator --output calculator.tapp`                                                                                                   |
 | `sdk-web`                                               | `target/debug/tilo-app build --target web --bundle desktop apps/calculator`; `node --test crates/platform/*/web/*.test.mjs`                                                                                                                                                                                   |
 | `sdk-web-size`                                          | main's newest head with spare room (`on = ["idle"]`): `target/debug/tilo-app build --target web --bundle desktop --release apps/calculator`, then `python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle`.                                                                                                       |
@@ -96,9 +96,9 @@ publications build from.
   name what they changed, and the page's wasm32 target, so a break only the web
   build sees is named on the head that introduced it. A push's own hook refuses
   that lint before it leaves.
-- `lint.yml` runs for every push: its format, commit-message and unused
-  dependency checks check exactly the commits the push added, so no push's run
-  stands in for another's.
+- `changes` and `lint-head` read the commits a push added, and the whole-tree
+  checks (`fmt`, `hakari`, `lockfile`, `deny`, `machete`, `policy/{step}`) run
+  on the same head, so no push's run stands in for another's.
 - Release and artifact workflows (`release-*.yml`, `build-*.yml`) trigger on a
   push to `stable` or on a version tag, never on `main`. `ci-nightly.yml` runs
   the full suite on both native architectures as the coverage backstop, and the

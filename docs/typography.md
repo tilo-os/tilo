@@ -107,8 +107,8 @@ Text widgets take a role the same way: `TextInput`, `Autocomplete`,
 `CodeEditor` is `Code`.
 
 Every application crate is kept behind this public boundary by
-`tools/policy/check_app_text_contract.py`, which runs in the fast lint workflow and
-the pre-commit hook. Applications may compose `Text`, the shared input/editor
+`tools/policy/check_app_text_contract.py`, which runs as a t policy check on
+every new head of main and in the pre-commit hook. Applications may compose `Text`, the shared input/editor
 widgets, `RichTextLayout`, or `TextRenderer` for a custom-painted
 surface. They may not depend on the private shaping crates, instantiate a
 second font system, emit raw Vello glyphs, or repeat the product font-family

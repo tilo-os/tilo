@@ -3,7 +3,8 @@
 # One engine, two scopes:
 #   * `tilo-app check --lint` (crates/dev/tilo-app-cli/src/portability.rs,
 #     which embeds this file) reports each site to the app developer;
-#   * `tilo-app check --lint --all` (the repository check, run by lint.yml)
+#   * `tilo-app check --lint --all` (the repository check, run by t's
+#     `app-lints` check)
 #     counts findings per package and rule against the shrink-only baseline
 #     tools/policy/app_portability_baseline.toml.
 #

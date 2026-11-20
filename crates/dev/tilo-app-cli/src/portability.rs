@@ -2,7 +2,8 @@
 //! behind those APIs lives in Tilo's platform crates.
 //!
 //! The rules come from `tools/policy/app_portability_rules.toml`, the table
-//! `tilo-app check --lint --all` (the repository check, run by `lint.yml`)
+//! `tilo-app check --lint --all` (the repository check, run by t's
+//! `app-lints` check on `idle` and `dispatch`)
 //! counts against its baseline. The lint reads an app's shipped Rust sources
 //! (the module tree reachable from its library and binary roots, minus
 //! `#[cfg(test)]` items) and its Cargo manifest, and reports every site with
