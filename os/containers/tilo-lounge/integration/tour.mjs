@@ -352,6 +352,22 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
       await tab.waitFor('!!globalThis.tiloMount?.state()?.frames', {timeout: 180_000}).catch(() => {});
       await quiet(4000);
       await shoot('own-workspace');
+      // Someone alone in a workspace of their own is offered their agent: the card shows the
+      // setup a person pastes into it, the same one Console's Connect and search lead to.
+      await step('agent-card', async () => {
+        if (!await press(n => n.startsWith('Connect an agent'))) {
+          console.log('  no agent card on the empty shell');
+          return;
+        }
+        await tab.waitFor(`[...document.querySelectorAll('.tilo-entry-card')].length > 0`, {timeout: 60_000});
+        await quiet();
+        await shoot('agent-card');
+        await tab.evaluate(`for (const card of document.querySelectorAll('.tilo-entry-card')) {
+          const close = [...card.querySelectorAll('button')].find(b => /^(Close|Done)$/.test(b.textContent.trim()));
+          if (close) close.click(); else card.remove();
+        }`).catch(() => {});
+        await quiet(300);
+      });
       agent = mcp();
       await agent.start();
       await agent.call('tilo_ls', {});
@@ -408,6 +424,26 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     return;
   }
   await step('search-empty', async () => { await search(''); await shoot('search-open'); await key('Escape'); await quiet(500); });
+  // Connecting an agent is one thing to find: however many places offer it, typing it lists one row.
+  await step('search-connect', async () => {
+    await search('connect');
+    await opened(false);
+    const shown = JSON.parse(await card());
+    const rows = (shown.card?.rows ?? []).filter(row => /connect an agent/i.test(row.title ?? ''));
+    if (rows.length !== 1) report.problems.push(`${name}: “connect” lists ${rows.length} rows that connect an agent`);
+    await shoot('search-connect');
+    await key('Escape'); await quiet(500);
+  });
+  // Console's Connect, on a page: where the server keeps no agent grants for the person, it offers
+  // the setup their agent pastes, never an error.
+  await step('console-connect', async () => {
+    await search('console', 1); await quiet();
+    if (!await press('Connect')) throw new Error('no Connect in Console');
+    await quiet(1500);
+    await shoot('console-connect');
+    const said = JSON.stringify(await names());
+    if (/no such action is offered/i.test(said)) report.problems.push(`${name}: Console's Connect says no such action is offered`);
+  });
   for (const app of everyday.filter(app => pageHas(app))) {
     await step(`open-${app}`, async () => {
       await search(app.toLowerCase());
