@@ -90,6 +90,28 @@ pub trait ResourceReads: Send + Sync {
             reason: RESOURCE_READS_UNAVAILABLE.into(),
         })
     }
+
+    /// The device's store's answer to `read`, a read command of the store's wire (a resource, a
+    /// page of a query, a count, a content), asked of the resources the app `app` keeps in
+    /// `address`'s workspace as `caller` may read them now, decided as [`Self::read`] is. The command
+    /// and its answer travel as JSON, so a reader of resources needs no store of its own.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::read`]; [`ActionCallError::InvalidRequest`] for a command that writes or does
+    /// not parse. A provider whose resources are in no store answers
+    /// [`ActionCallError::Unavailable`].
+    fn store_read(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+        read: serde_json::Value,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        let _ = (caller, address, read);
+        Err(ActionCallError::Unavailable {
+            reason: RESOURCE_READS_UNAVAILABLE.into(),
+        })
+    }
 }
 
 /// Copies of records already in hand, by id, read as they are: what a reader planning with what

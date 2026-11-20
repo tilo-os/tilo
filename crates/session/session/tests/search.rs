@@ -2080,3 +2080,23 @@ fn connecting_an_agent_is_one_row() {
         "one row connects an agent: {found:?}"
     );
 }
+
+/// The row search put first acts on the first Enter once the search is over: "show tasks" finds
+/// Calendar's Show tasks, which nobody moved to, and Enter invokes it.
+#[test]
+fn enter_on_the_row_search_put_first_acts_at_once() {
+    let _settled = ui::motion::testing::settled();
+    let asked = Rc::new(Asked::default());
+    let mut session = crate::common::headless(Options {
+        lists: closed_calendar(),
+        apps: Some(Rc::clone(&asked) as Rc<dyn AppActions>),
+        collab: false,
+        ..Options::default()
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+    search_for(&mut session, "show tasks");
+    assert!(titled(&session, "Show tasks").is_some());
+    crate::common::key(&mut session, crate::common::KEY_ENTER);
+    until(&mut session, |_| !asked.invoked.borrow().is_empty());
+    assert_eq!(asked.invoked.borrow()[0].0.address.action, "show-tasks");
+}

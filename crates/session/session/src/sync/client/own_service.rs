@@ -137,6 +137,14 @@ struct DeviceGroupKeys {
 }
 
 impl GroupKeys for DeviceGroupKeys {
+    fn named_readers(
+        &self,
+        workspace: collab_types::WorkspaceId,
+        document: &str,
+    ) -> Option<String> {
+        self.keys.get()?.named_readers(workspace, document)
+    }
+
     fn group_keys<'a>(
         &'a self,
         workspace: &'a str,

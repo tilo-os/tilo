@@ -113,6 +113,9 @@ pub enum StoreError {
     /// A stored frame is not one a store keeps.
     #[error("frame: {0}")]
     Refused(#[from] Refusal),
+    /// The store's frames were kept by a later build, in a layout this one does not read.
+    #[error("the store's frames are version {0}; this build reads up to {FRAMES_VERSION}")]
+    Newer(u32),
 }
 
 /// The frames retired from a store: what a compacting pass removed and what
@@ -184,6 +187,10 @@ impl Store {
     /// nothing half-written, so such a file came from outside.
     pub fn open(root: impl Into<PathBuf>, appetite: Appetite) -> Result<Self, StoreError> {
         let root = root.into();
+        let kept = frames_version(&root)?;
+        if kept > FRAMES_VERSION {
+            return Err(StoreError::Newer(kept));
+        }
         fs::create_dir_all(root.join(WORKSPACES))?;
         let store = Self {
             root,
@@ -193,7 +200,13 @@ impl Store {
                 workspaces: BTreeMap::new(),
             }),
         };
-        let (frames, holders) = (store.stored()?, store.stored_holders()?);
+        let (frames, holders) = (store.stored(kept)?, store.stored_holders()?);
+        if kept < FRAMES_VERSION || !store.root.join(FRAMES_VERSION_FILE).is_file() {
+            tilo_files::native::atomic::write(
+                &store.root.join(FRAMES_VERSION_FILE),
+                FRAMES_VERSION.to_string().as_bytes(),
+            )?;
+        }
         {
             let mut held = store.held.lock_recover();
             for (workspace, frame, bytes) in frames {
@@ -579,8 +592,9 @@ impl Store {
         Ok(found)
     }
 
-    /// Every stored frame, as [`Store::open`] reads it.
-    fn stored(&self) -> Result<Vec<(WorkspaceId, Frame, u64)>, StoreError> {
+    /// Every stored frame, as [`Store::open`] reads it, each written again as this build writes
+    /// it when the store kept it as version `kept` of its frames, before [`FRAMES_VERSION`].
+    fn stored(&self, kept: u32) -> Result<Vec<(WorkspaceId, Frame, u64)>, StoreError> {
         let mut found = Vec::new();
         for workspace in directories(&self.root.join(WORKSPACES))? {
             let Some(workspace) = workspace
@@ -595,12 +609,17 @@ impl Store {
                     for file in files(&author)? {
                         let bytes = fs::read(&file)?;
                         let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                        let message: NeighbourMsg = match postcard::from_bytes(&bytes) {
+                        let message = match frame_of_version(&bytes, kept) {
                             Ok(message) => message,
                             Err(error) => {
                                 tracing::warn!(path = %file.display(), %error, "a stored frame does not decode; it stays on disk and is not served");
                                 continue;
                             }
+                        };
+                        let len = if kept < FRAMES_VERSION {
+                            written_as_today(&file, &bytes, &message).unwrap_or(len)
+                        } else {
+                            len
                         };
                         match Frame::of(&message) {
                             Ok(frame) => found.push((workspace, frame, len)),
@@ -624,6 +643,34 @@ impl Store {
         let path = frame_path(&self.root, workspace, lineage, entry.seq, entry.retention);
         let bytes = fs::read(&path)?;
         Ok(postcard::from_bytes(&bytes)?)
+    }
+}
+
+/// The frame `bytes` hold, kept as version `kept` of a store's frames ([`FRAMES_VERSION`]).
+/// Version 1 kept a document write ending before the reader set version 2 ends it with
+/// ([`NeighbourMsg::from_kept`]).
+fn frame_of_version(bytes: &[u8], kept: u32) -> Result<NeighbourMsg, postcard::Error> {
+    if kept < 2 {
+        NeighbourMsg::from_kept(bytes)
+    } else {
+        postcard::from_bytes(bytes)
+    }
+}
+
+/// The frame `message`, read from `bytes` at `file`, written again as this build writes it when
+/// it was kept in an earlier layout ([`frame_of_version`]). Answers the length kept, or `None`
+/// when the file was not written again (it is served as it reads either way).
+fn written_as_today(file: &Path, bytes: &[u8], message: &NeighbourMsg) -> Option<u64> {
+    let today = postcard::to_allocvec(message).ok()?;
+    if today == bytes {
+        return None;
+    }
+    match tilo_files::native::atomic::write(file, &today) {
+        Ok(()) => u64::try_from(today.len()).ok(),
+        Err(error) => {
+            tracing::warn!(path = %file.display(), %error, "a frame kept in an earlier layout was not written again; it is served as it reads");
+            None
+        }
     }
 }
 
@@ -704,6 +751,36 @@ pub fn author_of(message: &NeighbourMsg) -> Option<[u8; 32]> {
 }
 
 const WORKSPACES: &str = "workspaces";
+
+/// The layout of the frames a store keeps, one postcard [`NeighbourMsg`] per file. Version 1 kept
+/// a document write without the reader set it is sealed for, which version 2 ends it with
+/// ([`NeighbourMsg::AppDocument`]); a store opening frames of version 1 writes each again as
+/// version 2 ([`written_as_today`]) before it records the version it keeps.
+pub(crate) const FRAMES_VERSION: u32 = 2;
+/// Where a store records the version of the frames it keeps: no file is version 1, kept before
+/// a store recorded one.
+const FRAMES_VERSION_FILE: &str = "frames-version";
+
+/// The version of the frames kept at `root` ([`FRAMES_VERSION`]): the one recorded there, version
+/// 1 when frames were kept before a store recorded one, today's for a store that keeps none yet.
+fn frames_version(root: &Path) -> Result<u32, StoreError> {
+    match fs::read_to_string(root.join(FRAMES_VERSION_FILE)) {
+        Ok(text) => text.trim().parse().map_err(|_| {
+            StoreError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{FRAMES_VERSION_FILE} holds {text:?}, not a version"),
+            ))
+        }),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if directories(&root.join(WORKSPACES))?.is_empty() {
+                Ok(FRAMES_VERSION)
+            } else {
+                Ok(1)
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
+}
 /// Where the store keeps what each device said it holds, per workspace.
 const HOLDERS: &str = "holders";
 

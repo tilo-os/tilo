@@ -31,7 +31,7 @@ version = "crates/collab/tilo-peer-state/src/state/durable.rs:DURABLE_VERSION"
 
 [[format]]
 name = "peer store frames"
-version = "none"
+version = "crates/collab/tilo-peer-state/src/store.rs:FRAMES_VERSION"
 
 [[layout]]
 format = "peer durable state"
@@ -62,8 +62,9 @@ types = [
 
 [[layout]]
 format = "peer store frames"
+version = 2
 digest = "ebed316e3cbea33c"
-what = """the frames a store device keeps for its workspaces: one postcard NeighbourMsg per file in a store's workspaces directory, named by workspace, resource and author, with no version of its own"""
+what = """the frames a store device keeps for its workspaces: one postcard NeighbourMsg per file in a store's workspaces directory, named by workspace, resource and author, under the version its frames-version file records (version 1, kept before that file, ended a document write before its reader set)"""
 types = [
   "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
 ]

@@ -282,13 +282,28 @@ pub fn open_frame(
     };
     let decrypted_payload = match envelope.encryption {
         Some(metadata) => {
-            collab_types::validate_document_payload_route(
+            if collab_types::sealed_before_reader_sets(
                 &route.app_id,
                 &route.cluster_id,
                 &route.document,
                 &envelope,
-            )
-            .map_err(|error| DocumentError::Payload(error.to_string()))?;
+            ) {
+                collab_types::validate_payload_sealed_before_reader_sets(
+                    &route.app_id,
+                    &route.cluster_id,
+                    &route.document,
+                    &envelope,
+                )
+                .map_err(|error| DocumentError::Payload(error.to_string()))?;
+            } else {
+                collab_types::validate_document_payload_route(
+                    &route.app_id,
+                    &route.cluster_id,
+                    &route.document,
+                    &envelope,
+                )
+                .map_err(|error| DocumentError::Payload(error.to_string()))?;
+            }
             let keys =
                 keys.ok_or_else(|| DocumentError::Payload("route has no content key".into()))?;
             // A key holder's compaction of the record's sealed history

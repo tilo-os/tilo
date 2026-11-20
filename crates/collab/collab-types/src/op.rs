@@ -43,6 +43,8 @@ const MAX_ENCODED_DOCUMENT_MUTATION_BYTES: usize = DOCUMENT_MUTATION_V2_PREFIX.l
     + crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES / 1024
     + 16;
 const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"tilo-document-attestation-v1\0";
+/// The domain of [`artifact_sealed_before_reader_sets`].
+const ARTIFACT_BEFORE_READER_SETS_DOMAIN: &[u8] = b"tilo-document-artifact-v1\0";
 
 /// Meaning of a signed document payload. Keeping this tag inside
 /// [`SignedOp::payload`] makes snapshot-vs-incremental part of the bytes the
@@ -227,21 +229,70 @@ pub fn document_artifact_id(app_id: &str, workspace_id: &str, document_id: &str)
     }
 }
 
-/// Accept the former artifact derivation when replaying a signed document version.
-fn matches_document_artifact(
-    artifact: ArtifactId,
-    app: &str,
-    workspace: &str,
-    document: &str,
+/// The artifact a write of `document_id` of `app_id` in `workspace_id` named before reader sets
+/// ([`crate::readers`]), when the workspace's one key group sealed every document's content
+/// for this id.
+///
+/// It names no write made since. It is kept because what a workspace's members wrote then is
+/// signed over it: a replica takes such a write as the history it is
+/// ([`validate_payload_sealed_before_reader_sets`]), and the first device holding the workspace's
+/// keys to open the workspace opens it under this id and seals its content again under
+/// [`document_artifact_id`] as its own write, keeping the original beside the document as its
+/// author signed it.
+#[must_use]
+pub fn artifact_sealed_before_reader_sets(
+    app_id: &str,
+    workspace_id: &str,
+    document_id: &str,
+) -> ArtifactId {
+    ArtifactId(derived_document_uuid(
+        ARTIFACT_BEFORE_READER_SETS_DOMAIN,
+        app_id,
+        workspace_id,
+        document_id,
+    ))
+}
+
+/// Whether `op` is a sealed write of `document_id` of `app_id` in `workspace_id` made before
+/// reader sets ([`artifact_sealed_before_reader_sets`]): bound to the document under the former
+/// artifact, and its content sealed. A write in the clear names its document under the artifact
+/// of today, so nothing else of a workspace written then is taken as such.
+#[must_use]
+pub fn sealed_before_reader_sets(
+    app_id: &str,
+    workspace_id: &str,
+    document_id: &str,
+    op: &SignedOp,
 ) -> bool {
-    artifact == document_artifact_id(app, workspace, document)
-        || artifact
-            == ArtifactId(derived_document_uuid(
-                b"tilo-document-artifact-v1\0",
-                app,
-                workspace,
-                document,
-            ))
+    op.encryption.is_some()
+        && op.artifact != document_artifact_id(app_id, workspace_id, document_id)
+        && op.artifact == artifact_sealed_before_reader_sets(app_id, workspace_id, document_id)
+        && op.attestation_id == document_attestation_id(app_id, workspace_id, document_id)
+}
+
+/// Validate a sealed write made before reader sets as [`validate_whole_document_payload_route`]
+/// validates one made since: bound to its document under
+/// [`artifact_sealed_before_reader_sets`], its ciphertext not empty.
+///
+/// # Errors
+///
+/// [`DocumentMutationError::RouteMismatch`] for a write that is not such a write of this
+/// document.
+pub fn validate_payload_sealed_before_reader_sets(
+    app_id: &str,
+    workspace_id: &str,
+    document_id: &str,
+    op: &SignedOp,
+) -> Result<WholeDocumentPayload, DocumentMutationError> {
+    match op.encryption {
+        Some(meta)
+            if !op.payload.is_empty()
+                && sealed_before_reader_sets(app_id, workspace_id, document_id, op) =>
+        {
+            Ok(WholeDocumentPayload::Encrypted { epoch: meta.epoch })
+        }
+        _ => Err(DocumentMutationError::RouteMismatch),
+    }
 }
 
 static LAST_UNORDERED_DOCUMENT_SEQUENCE: std::sync::atomic::AtomicU64 =
@@ -336,7 +387,7 @@ pub fn validate_document_payload_route(
     document_id: &str,
     op: &SignedOp,
 ) -> Result<RoutedDocumentPayload, DocumentMutationError> {
-    if !matches_document_artifact(op.artifact, app_id, workspace_id, document_id)
+    if op.artifact != document_artifact_id(app_id, workspace_id, document_id)
         || op.attestation_id != document_attestation_id(app_id, workspace_id, document_id)
     {
         return Err(DocumentMutationError::RouteMismatch);
@@ -374,7 +425,7 @@ pub fn validate_whole_document_payload_route(
     document_id: &str,
     op: &SignedOp,
 ) -> Result<WholeDocumentPayload, DocumentMutationError> {
-    if !matches_document_artifact(op.artifact, app_id, workspace_id, document_id)
+    if op.artifact != document_artifact_id(app_id, workspace_id, document_id)
         || op.attestation_id != document_attestation_id(app_id, workspace_id, document_id)
     {
         return Err(DocumentMutationError::RouteMismatch);
@@ -1238,44 +1289,63 @@ mod tests {
             );
         }
 
-        phase earlier_document_artifacts_keep_their_exact_route;
+        phase a_write_sealed_before_reader_sets_is_known_by_the_artifact_it_named;
         {
-            let (app, workspace, record) = ("notes", "workspace", "meeting");
-            let artifact = ArtifactId(derived_document_uuid(
-                b"tilo-document-artifact-v1\0",
-                app,
-                workspace,
-                record,
-            ));
-            let op = SignedOp::new_unsigned_with_encryption(
-                vec![0xde, 0xad, 0xbe, 0xef],
-                artifact,
-                Ed25519PublicKey::from_bytes([7; 32]),
-                document_attestation_id(app, workspace, record),
-                OpKind::Change,
-                SystemTime::UNIX_EPOCH,
-                1,
-                EncryptionMetadata::mls_application(4),
+            // The ids that build's writes named, as it derived them.
+            assert_eq!(
+                artifact_sealed_before_reader_sets("so.tilo.notes", "workspace-a", "note-b")
+                    .0
+                    .to_string(),
+                "83dfd05d-57e8-8b27-a8da-ee7f8a9278d4"
             );
             assert_eq!(
-                validate_document_payload_route(app, workspace, record, &op),
-                Ok(RoutedDocumentPayload::Encrypted { epoch: 4 })
+                artifact_sealed_before_reader_sets("dev.tilo.notes", "workspace-a", "note-b")
+                    .0
+                    .to_string(),
+                "71ee3ff5-69ab-8d1a-9dc8-ef0c63e0eacc"
             );
+            let (app, workspace, note) = ("notes", "workspace", "meeting");
+            let sealed = |artifact| {
+                SignedOp::new_unsigned_with_encryption(
+                    vec![0xde, 0xad],
+                    artifact,
+                    Ed25519PublicKey::from_bytes([7; 32]),
+                    document_attestation_id(app, workspace, note),
+                    OpKind::Change,
+                    SystemTime::UNIX_EPOCH,
+                    1,
+                    EncryptionMetadata::content_key(3, ContentRetention::Delta),
+                )
+            };
+            let former = sealed(artifact_sealed_before_reader_sets(app, workspace, note));
+            assert!(sealed_before_reader_sets(app, workspace, note, &former));
             assert_eq!(
-                validate_document_payload_route(app, workspace, "other", &op),
+                validate_payload_sealed_before_reader_sets(app, workspace, note, &former),
+                Ok(WholeDocumentPayload::Encrypted { epoch: 3 })
+            );
+            // It is no write of today's, nor of another document.
+            assert_eq!(
+                validate_whole_document_payload_route(app, workspace, note, &former),
                 Err(DocumentMutationError::RouteMismatch)
             );
+            assert!(!sealed_before_reader_sets(app, workspace, "other", &former));
+            let current = sealed(document_artifact_id(app, workspace, note));
+            assert!(!sealed_before_reader_sets(app, workspace, note, &current));
+            // Nothing in the clear was ever sealed.
+            let mut clear = former;
+            clear.encryption = None;
+            assert!(!sealed_before_reader_sets(app, workspace, note, &clear));
         }
 
         phase encrypted_document_route_rejects_empty_ciphertext;
         {
-            let (app, workspace, record) = ("notes", "workspace", "record");
+            let (app, workspace, note) = ("notes", "workspace", "note");
             let build = |payload| {
                 SignedOp::new_unsigned_with_encryption(
                     payload,
-                    document_artifact_id(app, workspace, record),
+                    document_artifact_id(app, workspace, note),
                     Ed25519PublicKey::from_bytes([8; 32]),
-                    document_attestation_id(app, workspace, record),
+                    document_attestation_id(app, workspace, note),
                     OpKind::Change,
                     SystemTime::UNIX_EPOCH,
                     1,
@@ -1284,7 +1354,7 @@ mod tests {
             };
             let empty = build(Vec::new());
             assert_eq!(
-                validate_document_payload_route(app, workspace, record, &empty),
+                validate_document_payload_route(app, workspace, note, &empty),
                 Err(DocumentMutationError::RouteMismatch)
             );
         }

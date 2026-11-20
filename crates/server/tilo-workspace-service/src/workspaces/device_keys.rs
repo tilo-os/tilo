@@ -25,6 +25,15 @@ pub type GroupKeysAnswerFuture<'a> = Pin<Box<dyn Future<Output = GroupKeysAnswer
 
 /// The group keys of the device a workspace service runs on, asked of it.
 pub trait GroupKeys: Send + Sync + 'static {
+    /// The reader list bound to a document's registered key group, if held here.
+    fn named_readers(
+        &self,
+        _workspace: collab_types::WorkspaceId,
+        _document: &str,
+    ) -> Option<String> {
+        None
+    }
+
     /// The content keys of the group of `readers` in `workspace`
     /// ([`collab_types::reader_group`]: [`collab_types::EVERY_MEMBER`] is the
     /// workspace's own), opening the group when it has none yet and `create`.

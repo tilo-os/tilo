@@ -196,7 +196,7 @@ impl Workspaces {
             super::session_carry::ServerHistory::of(retained.iter().filter_map(|retained| {
                 tilo_failure::ignored!(
                     "a retained body that does not decode is one recall reports, and holds no write",
-                    postcard::from_bytes::<NeighbourMsg>(&retained.body).ok()
+                    NeighbourMsg::from_kept(&retained.body).ok()
                 )
             }));
         let mut cursors = Vec::new();
@@ -348,7 +348,7 @@ impl Workspaces {
         let (mut changed, mut again) = (false, false);
         for retained in retained {
             let own = retained.author == self.inner.host.cert.device_public_key;
-            let message: neighbour_wire::NeighbourMsg = match postcard::from_bytes(&retained.body) {
+            let message = match neighbour_wire::NeighbourMsg::from_kept(&retained.body) {
                 Ok(message) => message,
                 // Not all the server's device retains under its key is a
                 // write to a document.
@@ -410,6 +410,69 @@ impl Workspaces {
         // Each further replay needs something new to land, so it ends.
         if again {
             self.replay_soon(workspace.workspace().to_owned());
+        }
+    }
+
+    /// Found every document of `workspace` that `retained` holds a write of
+    /// and this server holds none of, from the document's first retained write
+    /// ([`Self::absorb`]): the copy of a document the server was admitted to a
+    /// channel of after its members started writing it has to start
+    /// somewhere, and its later writes build on the first. A document found
+    /// first from a later write would refuse that one for the changes it
+    /// lacks, and never be founded.
+    #[cfg(any(feature = "agents", feature = "web"))]
+    pub(super) async fn found_retained(
+        &self,
+        workspace: &str,
+        state: &tokio::sync::Mutex<GovernedWorkspace>,
+        retained: &[crate::workspace_documents::RetainedBody],
+    ) {
+        let mut first: std::collections::BTreeMap<
+            (String, String),
+            &crate::workspace_documents::RetainedBody,
+        > = std::collections::BTreeMap::new();
+        for retained in retained {
+            // What the server's own device wrote the governor holds already, or
+            // took in as it came ([`Self::recall_retained`]).
+            let server = &self.inner.host;
+            if retained.author == server.cert.device_public_key {
+                continue;
+            }
+            let Ok(neighbour_wire::NeighbourMsg::AppDocument {
+                app_id,
+                document_id,
+                envelope,
+                ..
+            }) = neighbour_wire::NeighbourMsg::from_kept(&retained.body)
+            else {
+                continue;
+            };
+            // A document the server may read in the clear was founded when its
+            // first write was handed to the governor: only a sealed one waits
+            // for the group to admit this server's device.
+            if envelope.encryption.is_none() {
+                continue;
+            }
+            first.entry((app_id, document_id)).or_insert(retained);
+        }
+        if first.is_empty() {
+            return;
+        }
+        let missing: Vec<_> = {
+            let workspace = state.lock().await;
+            first
+                .into_iter()
+                .filter(|((app, document), _)| !workspace.peer().holds_document(app, document))
+                .map(|(_, retained)| retained)
+                .collect()
+        };
+        for retained in missing {
+            if let Err(error) = self
+                .absorb_kept(workspace, retained.author, &retained.body)
+                .await
+            {
+                tracing::warn!(%workspace, %error, "governed workspace did not found a document its members wrote");
+            }
         }
     }
 }

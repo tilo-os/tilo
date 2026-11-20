@@ -5,8 +5,31 @@ use super::{DocumentAdmission, err, sealed_compaction, sealed_within_bounds};
 pub(super) fn restore(
     core: &mut PeerCore,
     route: &super::Route,
-    ops: Vec<collab_types::SignedOp>,
+    mut ops: Vec<collab_types::SignedOp>,
 ) -> Result<(), String> {
+    let before_reader_sets =
+        |op: &collab_types::SignedOp| route.sealed_before_reader_sets(&core.workspace, op);
+    // The originals of writes sealed before reader sets whose content a key holder sealed again
+    // lead the entry, ahead of the compaction that took their place
+    // ([`super::backend::PeerDocument::fold_sealed`]). Writes sealed then that no compaction of
+    // today's follows are history still to be sealed again, and stay in it.
+    let originals = ops.iter().take_while(|op| before_reader_sets(op)).count();
+    let resealed: Vec<collab_types::SignedOp> = match ops.get(originals) {
+        Some(next)
+            if originals > 0
+                && next.kind == collab_types::OpKind::Compaction
+                && !before_reader_sets(next) =>
+        {
+            ops.drain(..originals).collect()
+        }
+        _ => Vec::new(),
+    };
+    for original in &resealed {
+        collab_types::verify_op(original).map_err(err)?;
+        route
+            .validate_sealed_before_reader_sets(&core.workspace, original)
+            .map_err(err)?;
+    }
     // The compaction set leads the history; the writes after it have their own bound.
     let set = ops
         .iter()
@@ -27,17 +50,24 @@ pub(super) fn restore(
         .documents
         .get(route)
         .ok_or("sealed history for a record this state does not hold")?;
-    if !document.encryption_required || !document.sealed.is_empty() {
+    if !document.encryption_required || document.keeps_sealed() {
         return Err("sealed history for a record that is not encrypted".into());
     }
     for op in &ops {
         collab_types::verify_op(op).map_err(err)?;
-        let payload = collab_types::validate_whole_document_payload_route(
-            &route.app,
-            &core.workspace,
-            &route.record,
-            op,
-        )
+        // A write sealed before reader sets is history as its author signed it, under the
+        // artifact its document had then: a key holder opens it as it is, and seals its content
+        // again under the document's own scope.
+        let payload = if before_reader_sets(op) {
+            route.validate_sealed_before_reader_sets(&core.workspace, op)
+        } else {
+            collab_types::validate_whole_document_payload_route(
+                &route.app,
+                &core.workspace,
+                &route.record,
+                op,
+            )
+        }
         .map_err(err)?;
         if !matches!(
             payload,
@@ -68,7 +98,7 @@ pub(super) fn restore(
     }
     sealed_compaction::check_stored(&ops, &document.channel.last_seq_per_author)?;
     if let Some(document) = core.documents.get_mut(route) {
-        document.restore_sealed(ops.into())?;
+        document.restore_sealed(ops.into(), resealed.into())?;
     }
     Ok(())
 }

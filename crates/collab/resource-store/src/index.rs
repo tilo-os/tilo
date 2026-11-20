@@ -42,16 +42,30 @@ impl Indexed {
             .unwrap_or(Value::Null)
     }
 
-    /// Where the resource stands in `sort`: what it sorts by, then its place.
+    /// Where the resource stands in `sort`: what it sorts by, then its place. A field it does
+    /// not hold sorts as [`Value::Null`], as a filter reads it; a set is no order.
     fn key(&self, sort: &Sort) -> Option<(Value, Value)> {
         match sort {
             Sort::Position => Some((position(self), Value::Null)),
             Sort::Field(field) if field == PARENT => Some((self.scalar(PARENT), position(self))),
             Sort::Field(field) => {
-                let value = self.fields.get(field).and_then(Cell::one)?.clone();
+                let value = match self.fields.get(field) {
+                    Some(Cell::Set(_)) => return None,
+                    Some(cell) => cell.one()?.clone(),
+                    None => Value::Null,
+                };
                 Some((value, position(self)))
             }
         }
+    }
+
+    /// Whether the resource holds nothing in the scalar field `field`: it is listed under
+    /// [`Value::Null`] there.
+    fn lacks(&self, field: &str) -> bool {
+        if field == PARENT {
+            return self.parent.is_none();
+        }
+        !self.fields.contains_key(field)
     }
 
     /// Each value the resource is listed under in the index of `field`.
@@ -171,6 +185,28 @@ impl Table {
                 self.sets.insert(field.clone());
             }
         }
+        // A field no resource held until now: those that do not hold it are listed under
+        // nothing there, so an order by it or a filter for nothing in it reads them all.
+        let first_held: Vec<String> = stored
+            .indexed()
+            .map(|(field, _)| field)
+            .filter(|field| !self.by_field.contains_key(*field) && !self.sets.contains(*field))
+            .map(str::to_owned)
+            .collect();
+        for field in first_held {
+            let mut entries = Ranked::default();
+            for (other, row) in &self.rows {
+                if other != id && row.lacks(&field) {
+                    entries.insert((Value::Null, position(row), other.clone()));
+                }
+            }
+            self.by_field.insert(field, entries);
+        }
+        for field in self.lacked(&stored) {
+            if let Some(entries) = self.by_field.get_mut(&field) {
+                entries.insert((Value::Null, place.clone(), id.to_owned()));
+            }
+        }
         for (field, value) in stored.indexed() {
             let counted = self
                 .counts
@@ -194,9 +230,16 @@ impl Table {
             return false;
         };
         let place = position(stored);
+        let lacked = self.lacked(stored);
         let mut key = (place.clone(), Value::Null, id.to_owned());
         self.by_position.remove(&key);
         key.1 = place;
+        for field in lacked {
+            if let Some(entries) = self.by_field.get_mut(&field) {
+                key.0 = Value::Null;
+                entries.remove(&key);
+            }
+        }
         for (field, value) in stored.indexed() {
             if let Some(counts) = self.counts.get_mut(field)
                 && let Some(counted) = counts.get_mut(&value)
@@ -212,6 +255,15 @@ impl Table {
             }
         }
         true
+    }
+
+    /// The scalar fields other resources of the table hold and `stored` does not.
+    fn lacked(&self, stored: &Indexed) -> Vec<String> {
+        self.by_field
+            .keys()
+            .filter(|field| !self.sets.contains(*field) && stored.lacks(field))
+            .cloned()
+            .collect()
     }
 
     fn remove(&mut self, id: &str) {

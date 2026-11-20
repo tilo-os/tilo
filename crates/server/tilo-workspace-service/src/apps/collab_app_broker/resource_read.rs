@@ -258,6 +258,50 @@ impl ResourceReads for BrokerDocumentReads {
         read_resource(state, (person, workspace), address, revalidate)
     }
 
+    fn store_read(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+        read: serde_json::Value,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        let invalid = |reason: String| ActionCallError::InvalidRequest { reason };
+        let state = self
+            .state
+            .upgrade()
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: "the broker stopped".into(),
+            })?;
+        let Some((_, workspace)) = reader(caller) else {
+            return Err(ActionCallError::Refused {
+                reason: RESOURCE_READS_FOR_AGENTS.into(),
+            });
+        };
+        let command: tilo_resource_store::wire::Command = serde_json::from_value(read)
+            .map_err(|error| invalid(format!("not a store command: {error}")))?;
+        // A reader reads: what it changes goes through the app's actions, decided there.
+        if command.writes() {
+            return Err(invalid("a read of resources writes nothing".into()));
+        }
+        state.may_read_document(caller, workspace, address)?;
+        let resources =
+            state
+                .services
+                .resources
+                .clone()
+                .ok_or_else(|| ActionCallError::Unavailable {
+                    reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
+                })?;
+        let context = crate::apps::services::ResourceRequestContext::authenticated(
+            address.app.clone(),
+            workspace,
+            caller.clone(),
+        );
+        // The store answers under the workspace's lock, which no reactor is needed to take.
+        let reply = futures::executor::block_on(resources.command(&context, command))
+            .map_err(|reason| ActionCallError::Unavailable { reason })?;
+        serde_json::to_value(reply).map_err(|error| invalid(error.to_string()))
+    }
+
     fn watch(
         &self,
         caller: &Caller,

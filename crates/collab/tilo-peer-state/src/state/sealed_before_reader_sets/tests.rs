@@ -1,0 +1,240 @@
+//! A sealed document as the build before reader sets kept it, opened by this one.
+//!
+//! The bytes beside this file are what that build (f7ca66db910) wrote: `durable.hex`, the durable
+//! state of a workspace's keyless server holding document `test.app`/`tab:1`, sealed under the
+//! workspace's keys (`keys.hex`), with three writes: the owner's device `device(1, 2)` set
+//! `title` and `owner-note` (its writes 3 and 4) and the editor's `device(110, 111)` set
+//! `editor-note` (its write 1). `frame.hex` is the editor's write as that build's store kept it,
+//! at the path [`FRAME_PATH`] under the store's root. Every write names its document under the
+//! artifact of then ([`collab_types::artifact_sealed_before_reader_sets`]).
+
+use super::sealed_compaction_tests::{APP, RECORD as DOC, device, open};
+use super::*;
+use collab_types::ContentRetention;
+use key_group::ContentKeys;
+
+const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const FRAME_PATH: &str = "workspaces/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/1cfb749f6f313023861df11be00978118e738b9dd2711185ccdecb266818441e/c86d01ad8b2fb694b22ff60e3c9d9e7ed90db5604772b74450d40913b9a9cbaf/0000000000000001.d";
+const WRITTEN: [(&str, &str); 3] = [
+    ("title", "Before the update"),
+    ("owner-note", "written by the owner"),
+    ("editor-note", "written by the editor"),
+];
+
+fn kept(hex: &str) -> Vec<u8> {
+    hex::decode(hex.split_whitespace().collect::<String>()).expect("hex")
+}
+
+fn now() -> SystemTime {
+    SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(2000))
+        .unwrap()
+}
+
+/// The server's state, opened by this build.
+fn opened() -> StatePeer {
+    StatePeer::restore(
+        &kept(include_str!("durable.hex")),
+        WORKSPACE,
+        device(1, 2).1,
+        vec![],
+        RevocationList::new(),
+        now(),
+    )
+    .expect("a state written before reader sets opens")
+}
+
+fn keys() -> ContentKeys {
+    ContentKeys::from_bytes(&kept(include_str!("keys.hex"))).unwrap()
+}
+
+/// What `peer`'s document reads as, opened with the workspace's keys.
+fn read(peer: &StatePeer) -> AutoCommit {
+    let keys = keys();
+    let opened = peer
+        .publication()
+        .opened_document(APP, DOC, &mut |op| open(&keys, op))
+        .unwrap()
+        .expect("the document is held");
+    assert!(opened.unmerged.is_empty(), "{:?}", opened.unmerged);
+    AutoCommit::load(&opened.document).unwrap()
+}
+
+fn assert_reads_everything(peer: &StatePeer) {
+    let document = read(peer);
+    for (key, value) in WRITTEN {
+        let held = document
+            .get(ROOT, key)
+            .unwrap()
+            .and_then(|(value, _)| value.into_string().ok());
+        assert_eq!(held.as_deref(), Some(value), "{key}");
+    }
+}
+
+/// `peer`'s document's history sealed again under the document's own scope by `converter`, a device
+/// holding the workspace's keys, as its compaction: signed by it alone.
+fn reseal(peer: &mut StatePeer, converter: &SigningKey) {
+    let keys = keys();
+    let artifact = collab_types::document_artifact_id(APP, WORKSPACE, DOC);
+    let mut ops = peer
+        .publication()
+        .draft_sealed_compaction(
+            (APP, DOC),
+            None,
+            &mut |op| open(&keys, op),
+            &mut |frame| {
+                keys.seal_content(artifact, ContentRetention::of_frame(frame), frame)
+                    .map_err(|error| error.to_string())
+            },
+            converter.verifying_key().to_bytes(),
+            now(),
+        )
+        .unwrap();
+    for op in &mut ops {
+        collab_types::sign_op(op, converter).unwrap();
+    }
+    peer.publication_mut()
+        .admit_sealed_compaction(APP, DOC, ops, now())
+        .unwrap();
+}
+
+tilo_test_env::scenario! {
+    fn a_document_sealed_before_reader_sets_is_sealed_again_and_keeps_its_originals;
+
+    phase it_opens_with_every_write_its_authors_signed;
+    {
+        let peer = opened();
+        let history = peer.publication().sealed_history(APP, DOC);
+        assert_eq!(history.len(), 3);
+        for write in &history {
+            collab_types::verify_op(write).unwrap();
+            assert!(collab_types::sealed_before_reader_sets(APP, WORKSPACE, DOC, write));
+        }
+        assert!(peer.publication().awaiting_reseal(APP, DOC));
+        assert_eq!(
+            peer.publication().sealed_to_compact(),
+            vec![(APP.to_owned(), DOC.to_owned())],
+            "a key holder seals it again at once"
+        );
+        // A key holder reads it as it is, before anything is sealed again.
+        assert_reads_everything(&peer);
+    }
+
+    phase a_replica_without_the_keys_waits_for_the_owners_device;
+    {
+        let peer = opened();
+        let waiting = peer
+            .publication()
+            .waiting_for_update(APP, DOC)
+            .expect("the document waits");
+        assert_eq!(
+            waiting.to_string(),
+            match &waiting.device {
+                Some(device) => format!("waiting for {device} to update this workspace"),
+                None => "waiting for the workspace owner's device to update this workspace".into(),
+            }
+        );
+        // Its writes are held, not refused: nothing of the document is gone.
+        assert_eq!(peer.publication().sealed_history(APP, DOC).len(), 3);
+        // A replica that opens nothing reads none of it, and says what it waits for.
+        let mut shut = |_: &SignedOp| Err::<Vec<u8>, String>("no keys here".into());
+        assert!(
+            peer.publication()
+                .opened_document(APP, DOC, &mut shut)
+                .map_or(true, |opened| opened.is_none_or(|opened| !opened.unmerged.is_empty()))
+        );
+    }
+
+    phase the_first_key_holder_seals_it_again_signing_only_as_itself;
+    {
+        let mut peer = opened();
+        let originals = peer.publication().sealed_history(APP, DOC);
+        let (converter, _) = device(1, 3);
+        reseal(&mut peer, &converter);
+
+        assert!(!peer.publication().awaiting_reseal(APP, DOC));
+        assert!(peer.publication().waiting_for_update(APP, DOC).is_none());
+        let history = peer.publication().sealed_history(APP, DOC);
+        let converter_key = collab_types::Ed25519PublicKey::from_bytes(
+            converter.verifying_key().to_bytes(),
+        );
+        for write in &history {
+            assert_eq!(write.author, converter_key, "the converter signs as itself alone");
+            assert_eq!(
+                write.artifact,
+                collab_types::document_artifact_id(APP, WORKSPACE, DOC)
+            );
+            collab_types::verify_op(write).unwrap();
+        }
+        assert_reads_everything(&peer);
+
+        // The originals stay beside the document, each as its author signed it.
+        let kept = peer.publication().resealed_originals(APP, DOC);
+        assert_eq!(kept, originals);
+        for original in &kept {
+            collab_types::verify_op(original).unwrap();
+        }
+        let editor = collab_types::Ed25519PublicKey::from_bytes(
+            device(110, 111).0.verifying_key().to_bytes(),
+        );
+        assert!(kept.iter().any(|original| original.author == editor));
+
+        // And so they stay when the state is kept and opened again.
+        let again = StatePeer::restore(
+            &peer.durable().unwrap(),
+            WORKSPACE,
+            device(1, 2).1,
+            vec![],
+            RevocationList::new(),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(again.publication().resealed_originals(APP, DOC), originals);
+        assert_eq!(again.publication().sealed_history(APP, DOC), history);
+        assert!(!again.publication().awaiting_reseal(APP, DOC));
+        assert_reads_everything(&again);
+        // What it digests is what it keeps, the originals among it.
+        assert_eq!(
+            again.durable_hash().unwrap(),
+            again.durable_hash_of_kept_parts().unwrap()
+        );
+    }
+
+    phase a_frame_its_store_kept_is_served_and_kept_as_today;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(FRAME_PATH);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let bytes = kept(include_str!("frame.hex"));
+        std::fs::write(&path, &bytes).unwrap();
+        let store = crate::store::Store::open(root.path(), crate::store::Appetite::StoreAll)
+            .unwrap();
+        let workspace = crate::join::WorkspaceId::parse(WORKSPACE).unwrap();
+        let replay = store
+            .replay(workspace, &[], crate::store::Budget::default())
+            .unwrap();
+        assert_eq!(replay.frames.len(), 1, "the frame is served");
+        let NeighbourMsg::AppDocument {
+            envelope, readers, ..
+        } = &replay.frames[0]
+        else {
+            panic!("a document write")
+        };
+        assert_eq!(*readers, None);
+        collab_types::verify_op(envelope).unwrap();
+        assert!(collab_types::sealed_before_reader_sets(APP, WORKSPACE, DOC, envelope));
+        // Kept again in today's layout: the envelope's bytes are the same.
+        let today = std::fs::read(&path).unwrap();
+        assert_eq!(today, postcard::to_allocvec(&replay.frames[0]).unwrap());
+        assert_eq!(today.get(..bytes.len()), Some(bytes.as_slice()));
+        // And the store says which layout it keeps now: opened again, nothing is written.
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("frames-version")).unwrap(),
+            crate::store::FRAMES_VERSION.to_string()
+        );
+        drop(store);
+        let again = crate::store::Store::open(root.path(), crate::store::Appetite::StoreAll)
+            .unwrap();
+        assert_eq!(again.bytes(), u64::try_from(today.len()).unwrap());
+    }
+}

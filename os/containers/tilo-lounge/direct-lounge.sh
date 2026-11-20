@@ -43,7 +43,12 @@ run_lounge() {
   # `LOUNGE_ADMISSION` is the entry: `open` (the check's own Lounge) or
   # `invite`, which keeps a wait list (`LOUNGE_WAIT_LIST_MAX`, and the mail
   # settings a test names for its sink).
+  # `LOUNGE_LOG` is the filter the server and its app workers log by, for a
+  # check that needs to read why one did or did not do something: the server
+  # reads `TILO_SERVER_LOG` and a worker `RUST_LOG`, both in the same syntax.
   env -i HOME="$lounge_home" PATH="$lounge_bin:/usr/bin:/bin" \
+    ${LOUNGE_LOG:+RUST_LOG="$LOUNGE_LOG"} \
+    ${LOUNGE_LOG:+TILO_SERVER_LOG="$LOUNGE_LOG"} \
     TILO_SOURCE_REVISION=direct-lounge \
     TILO_SECRETS_DIR="$lounge_volume/secrets" \
     TILO_WORKSPACES_STATE="$lounge_volume" \

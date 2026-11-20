@@ -18,14 +18,22 @@ trap stop_lounge EXIT
 start_lounge "$bundle" "$work"
 # With TILO_CLI_BIN the newcomer sets Tilo up through an agent running it. The bundle's own app
 # list tells the tour which apps this page can open.
+toured=0
 TILO_BUNDLE=$bundle node "$here/integration/tour.mjs" "$site_origin" "$server_origin" "$work/tour" \
   ${TILO_CLI_BIN:+"$TILO_CLI_BIN" "$work/site.ca.crt"} \
-  || lounge_fail 'the tour stopped'
-# The pictures, in the log as well: a reviewer reads them from `t log page-tour`
-# where downloading the outputs is not at hand.
-if [[ ${TILO_TOUR_IN_LOG:-0} == 1 ]]; then
+  || toured=$?
+if (( toured != 0 )); then
+  echo 'FAIL: the tour stopped' >&2
+  [[ ! -s ${log:-} ]] || { echo '--- the Lounge said:' >&2; tail -40 "$log" >&2; }
+fi
+# The pictures, in the log as well and last in it: a reviewer reads them from
+# `t log page-tour`, which keeps a log's end, where downloading the outputs is not
+# at hand. A tour that found problems keeps them too: a failed check stores no
+# outputs, and the screens of what went wrong are the ones a reviewer needs.
+if [[ ${TILO_TOUR_IN_LOG:-0} == 1 && -d $work/tour ]]; then
   echo '--- tour.tar.gz.b64'
   tar -C "$work/tour" -czf - --exclude="*.json" . | base64 -w 4000
   echo
   echo '--- end'
 fi
+exit "$toured"

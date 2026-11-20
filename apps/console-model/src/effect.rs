@@ -19,7 +19,10 @@ pub enum ConsoleEffect {
         #[param("The agent's client, by the name it goes by")]
         agent: String,
     },
-    #[effect(view, presence)]
+    /// Console's Connect place. A person reaches it from the shell's own "Connect an agent or
+    /// computer" and the empty shell's agent card, which open it: offered to people too, search
+    /// would list connecting an agent twice.
+    #[effect(view, presence, audience = "agents")]
     ViewConnect,
     #[effect(kind = "outside", on = Agent)]
     StopAgent {

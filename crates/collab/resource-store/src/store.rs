@@ -109,6 +109,13 @@ pub struct Resource {
     pub fields: BTreeMap<String, Cell>,
 }
 
+/// Where a removed resource was: the document it was last in, and its parent then.
+#[derive(Clone, Debug)]
+struct Removed {
+    doc: String,
+    parent: Option<String>,
+}
+
 /// The documents of one owner (a parent, or one kind's top-level resources) of one reader set:
 /// how many there are and how many resources the newest holds.
 #[derive(Clone, Copy, Debug, Default)]
@@ -150,6 +157,22 @@ pub struct Store {
     refused: HashMap<String, BTreeSet<ChangeHash>>,
     /// Per document, changes received before the ones they are built on.
     waiting: HashMap<String, Vec<Received>>,
+    /// Each resource removed since the store started, by kind and id: the document it was last
+    /// in, where its history is read now that the index holds it no more, and the resource it
+    /// was nested in.
+    removed: HashMap<(String, String), Removed>,
+    /// The resources removed from each parent, by kind and id.
+    removed_under: HashMap<String, BTreeSet<(String, String)>>,
+    /// The documents the resources nested in each parent are placed in, by the parent.
+    nested_in: HashMap<String, BTreeSet<String>>,
+    /// Per group of invocations ([`Stamp::group`]), the documents a change of it is in: what
+    /// reading the group's changes reads, rather than every document.
+    groups: HashMap<String, BTreeSet<String>>,
+    /// Per resource something was made from ([`Stamp::from`]), the documents a change stamped
+    /// as made from it is in.
+    made_from: HashMap<String, BTreeSet<String>>,
+    /// Per document, the versions of each resource in it, read as far as its changes go.
+    touches: std::sync::Mutex<HashMap<String, crate::history::Touches>>,
 }
 
 impl Store {
@@ -242,11 +265,91 @@ impl Store {
         std::mem::take(&mut self.changed)
     }
 
+    /// Notes that the resource `id` of `kind`, nested in `parent`, was removed from `doc`.
+    fn note_removed(&mut self, kind: &str, id: &str, doc: &str, parent: Option<String>) {
+        let key = (kind.to_owned(), id.to_owned());
+        if let Some(parent) = &parent {
+            self.removed_under
+                .entry(parent.clone())
+                .or_default()
+                .insert(key.clone());
+        }
+        let earlier = self.removed.insert(
+            key.clone(),
+            Removed {
+                doc: doc.to_owned(),
+                parent,
+            },
+        );
+        if let Some(parent) = earlier.and_then(|earlier| earlier.parent)
+            && self.removed.get(&key).and_then(|now| now.parent.as_ref()) != Some(&parent)
+            && let Some(under) = self.removed_under.get_mut(&parent)
+        {
+            under.remove(&key);
+        }
+    }
+
+    /// The resource `id` of `kind` is held again: it is no longer a removed one.
+    fn unremove(&mut self, kind: &str, id: &str) {
+        let key = (kind.to_owned(), id.to_owned());
+        if let Some(parent) = self.removed.remove(&key).and_then(|removed| removed.parent)
+            && let Some(under) = self.removed_under.get_mut(&parent)
+        {
+            under.remove(&key);
+        }
+    }
+
+    /// The ids of the resources of `kind` removed since the store started, nested in `parent`
+    /// when it names one, whose readers `may_read` admits.
+    #[must_use]
+    pub fn removed(
+        &self,
+        kind: &str,
+        parent: Option<&str>,
+        may_read: &dyn Fn(&str) -> bool,
+    ) -> Vec<String> {
+        let readable = |key: &(String, String)| {
+            self.removed
+                .get(key)
+                .and_then(|removed| self.index.readers(&removed.doc))
+                .is_some_and(may_read)
+        };
+        let mut ids: Vec<String> = match parent {
+            Some(parent) => self
+                .removed_under
+                .get(parent)
+                .into_iter()
+                .flatten()
+                .filter(|key| key.0 == kind && readable(key))
+                .map(|(_, id)| id.clone())
+                .collect(),
+            None => self
+                .removed
+                .keys()
+                .filter(|key| key.0 == kind && readable(key))
+                .map(|(_, id)| id.clone())
+                .collect(),
+        };
+        ids.sort();
+        ids
+    }
+
     /// Hands `commit` to the index and notes the watches it concerns.
     fn commit(&mut self, commit: &Commit<'_>) {
         for change in commit.changes {
             let kind = match change {
-                Change::Put { kind, .. } | Change::Remove { kind, .. } => kind,
+                Change::Put { kind, id, .. } => {
+                    self.unremove(kind, id);
+                    kind
+                }
+                Change::Remove { kind, id } => {
+                    let parent = self
+                        .index
+                        .get(kind, id)
+                        .and_then(|held| held.parent.clone());
+                    self.note_removed(kind, id, commit.doc, parent);
+                    kind
+                }
             };
             for (id, watched) in &self.watches {
                 if watched == kind {
@@ -284,11 +387,15 @@ impl Store {
             filled.held = 0;
         }
         filled.held = filled.held.saturating_add(1);
-        format!(
+        let doc = format!(
             "{}/{owner}#{}",
             collab_types::reader_set_name(readers),
             filled.newest
-        )
+        );
+        if parent.is_some() {
+            self.nested_in.entry(owner).or_default().insert(doc.clone());
+        }
+        doc
     }
 
     /// Writes `resource` as the resource `id` of `kind`: a new one into the document the store
@@ -318,9 +425,8 @@ impl Store {
             None => self.place(kind, resource.parent.as_deref(), &resource.readers),
         };
         let doc = self.doc(&doc_id)?;
-        let change = put_fields(doc, kind, id, &resource, stamp)?
-            .or_else(|| doc.get_last_local_change())
-            .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
+        // A put of what the document holds already changes nothing, and writes nothing.
+        let change = put_fields(doc, kind, id, &resource, stamp)?;
         let heads = doc.get_heads();
         self.commit(&Commit {
             doc: &doc_id,
@@ -334,6 +440,10 @@ impl Store {
                 fields: resource.fields,
             }],
         });
+        let Some(change) = change else {
+            return Ok(written);
+        };
+        self.note_group(&doc_id, stamp);
         written.push(Written {
             doc: doc_id,
             readers: resource.readers,
@@ -417,6 +527,7 @@ impl Store {
                 id: id.to_owned(),
             }],
         });
+        self.note_group(&doc_id, stamp);
         Ok(Written {
             doc: doc_id,
             readers,
@@ -434,7 +545,10 @@ impl Store {
     /// # Errors
     /// When a document cannot be read, or refuses the change.
     pub fn undo(&mut self, invocation: &str, stamp: &Stamp) -> Result<Vec<Written>, StoreError> {
-        let docs: Vec<String> = self.index.documents().map(str::to_owned).collect();
+        // The resources first, then their contents: a resource the undo puts back holds its
+        // content again, and the content of one it removes goes with it.
+        let mut docs: Vec<String> = self.index.documents().map(str::to_owned).collect();
+        docs.sort_by_key(|doc| crate::admit::content_resource(doc).is_some());
         let mut written = Vec::new();
         for doc_id in docs {
             let readers = self.index.readers(&doc_id).unwrap_or_default().to_owned();
@@ -447,6 +561,9 @@ impl Store {
             let was = doc.fork_at(&span.before)?;
             let became = doc.fork_at(&span.after)?;
             if let Some((kind, id)) = crate::admit::content_resource(&doc_id) {
+                if self.index.get(&kind, &id).is_none() {
+                    continue;
+                }
                 let (was_map, became_map) = (
                     ReadDoc::hydrate(&was, &ROOT, None)?,
                     ReadDoc::hydrate(&became, &ROOT, None)?,
@@ -608,6 +725,7 @@ impl Store {
             heads: &heads,
             changes: &[],
         });
+        self.note_group(&doc_id, stamp);
         Ok((
             answer,
             Some(Written {
@@ -654,6 +772,8 @@ impl Store {
         let copied = new
             .get_last_local_change()
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
+        self.note_group(&old_id, stamp);
+        self.note_group(&new_id, stamp);
         Ok(vec![
             Written {
                 doc: old_id,
@@ -759,18 +879,73 @@ impl Store {
     /// not in memory has none.
     #[must_use]
     pub fn versions(&self, kind: &str, id: &str) -> Vec<crate::history::Version> {
+        let mut touches = self
+            .touches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.versions_unlocked(&mut touches, kind, id)
+    }
+
+    /// [`Self::versions`], with the cache of what each document's changes touched at hand.
+    fn versions_unlocked(
+        &self,
+        touches: &mut HashMap<String, crate::history::Touches>,
+        kind: &str,
+        id: &str,
+    ) -> Vec<crate::history::Version> {
         let mut versions = Vec::new();
-        for doc in self.version_documents(kind, id) {
-            if let Some(document) = self.docs.get(&doc) {
-                versions.extend(crate::history::of(document, &doc, id));
+        let Some((held, readers)) = self.placed(kind, id) else {
+            return versions;
+        };
+        if let Some(doc) = self.docs.get(&held) {
+            versions.extend(touches.entry(held.clone()).or_default().of(doc, &held, id));
+        }
+        let content = content_id(&readers, kind, id);
+        if let Some(doc) = self.docs.get(&content) {
+            versions.extend(
+                touches
+                    .entry(content.clone())
+                    .or_default()
+                    .of(doc, &content, id),
+            );
+        }
+        // A change that made or removed a resource nested in it is a version of it too: what a
+        // collection of it holds changed.
+        let none = BTreeSet::new();
+        let removed_here = self.removed_under.get(id).unwrap_or(&none);
+        for doc_id in self.nested_in.get(id).into_iter().flatten() {
+            if let Some(doc) = self.docs.get(doc_id) {
+                versions.extend(touches.entry(doc_id.clone()).or_default().nested(
+                    doc,
+                    doc_id,
+                    id,
+                    removed_here,
+                ));
             }
         }
-        versions.sort_by_key(|version| version.op);
+        // Each document's changes in its own order, and the documents' interleaved by when their
+        // writer wrote them.
+        versions.sort_by_key(|version| {
+            (
+                version.stamp.as_ref().map_or(0, |stamp| stamp.moment),
+                version.op,
+            )
+        });
+        // Where a removed resource stood, which its removal says.
+        if let Some(removed) = self.removed.get(&(kind.to_owned(), id.to_owned()))
+            && let Some(last) = versions
+                .iter_mut()
+                .rev()
+                .find(|version| version.kind == crate::history::VersionKind::Removed)
+        {
+            last.parent.clone_from(&removed.parent);
+        }
         versions
     }
 
-    /// The resource's versions, including documents evicted or indexed from snapshots. The
-    /// caller checks the resource's readers before asking for its history.
+    /// The resource's versions, including documents evicted or indexed from snapshots: each is
+    /// read back from the source first. The caller checks the resource's readers before asking
+    /// for its history.
     ///
     /// # Errors
     /// A saved document does not decode.
@@ -779,22 +954,347 @@ impl Store {
         kind: &str,
         id: &str,
     ) -> Result<Vec<crate::history::Version>, StoreError> {
-        let mut versions = Vec::new();
-        for doc in self.version_documents(kind, id) {
-            if let Some(document) = self.docs.get(&doc) {
-                versions.extend(crate::history::of(document, &doc, id));
-            } else if let Some(bytes) = self.source.as_mut().and_then(|source| source(&doc)) {
-                versions.extend(crate::history::of(&Automerge::load(&bytes)?, &doc, id));
-            }
+        let mut wanted: Vec<String> = Vec::new();
+        if let Some((held, readers)) = self.placed(kind, id) {
+            wanted.push(content_id(&readers, kind, id));
+            wanted.push(held);
         }
-        versions.sort_by_key(|version| version.op);
-        Ok(versions)
+        wanted.extend(self.nested_in.get(id).into_iter().flatten().cloned());
+        for doc in wanted {
+            self.existing(&doc)?;
+        }
+        Ok(self.versions(kind, id))
     }
 
-    fn version_documents(&self, kind: &str, id: &str) -> impl Iterator<Item = String> + use<> {
-        let resource = self.index.get(kind, id).map(|held| held.doc.clone());
-        let content = self.content_of(kind, id).ok().map(|(content, _)| content);
-        resource.into_iter().chain(content)
+    /// The newest version of each resource `within` names (it, and every resource whose id is
+    /// under it, `within/…`, held or removed) whose readers `may_read` admits, of at most `limit`
+    /// of them, most recent first, and whether there are more: what a window's catch-up lists
+    /// and its mark counts. Each document is read once, as far as its changes go, rather than
+    /// the history of every resource in it.
+    #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one walk over the documents, then the page it found, read in one pass"
+    )]
+    pub fn newest(
+        &self,
+        within: &str,
+        limit: usize,
+        may_read: &dyn Fn(&str) -> bool,
+    ) -> (Vec<(String, String, crate::history::Version)>, bool) {
+        let prefix = format!("{within}/");
+        let under = |id: &str| id == within || id.starts_with(&prefix);
+        let order = |version: &crate::history::Version| {
+            (
+                version.stamp.as_ref().map_or(0, |stamp| stamp.moment),
+                version.op,
+            )
+        };
+        let mut newest: Vec<(String, String, crate::history::Version)> = Vec::new();
+        let mut touches = self
+            .touches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Each resource's newest version, borrowed while the documents are walked: only the
+        // page read is copied.
+        let mut found: Vec<((u64, u64), String, String, String)> = Vec::new();
+        for doc_id in self.index.documents() {
+            let Some(readers) = self
+                .index
+                .readers(doc_id)
+                .filter(|readers| may_read(readers))
+            else {
+                continue;
+            };
+            let Some(doc) = self.docs.get(doc_id) else {
+                continue;
+            };
+            let held: Vec<(&str, &str)> = self
+                .index
+                .held(doc_id)
+                .filter(|(_, id)| under(id) && *id != within)
+                .collect();
+            if self.index.held(doc_id).any(|(_, id)| id == within) {
+                for (kind, id) in self.index.held(doc_id).filter(|(_, id)| *id == within) {
+                    if let Some(last) = self.versions_unlocked(&mut touches, kind, id).pop() {
+                        newest.push((kind.to_owned(), id.to_owned(), last));
+                    }
+                }
+            }
+            if held.is_empty() {
+                continue;
+            }
+            let lasts = touches
+                .entry(doc_id.to_owned())
+                .or_default()
+                .lasts(doc, doc_id);
+            for (kind, id) in &held {
+                if let Some(last) = lasts.get(*id).and_then(|versions| versions.last()) {
+                    found.push((
+                        order(last),
+                        (*kind).to_owned(),
+                        (*id).to_owned(),
+                        doc_id.to_owned(),
+                    ));
+                }
+            }
+            // What was written in a resource's content, in a document of its own.
+            for (kind, id) in held {
+                let content = content_id(readers, kind, id);
+                let Some(doc) = self.docs.get(&content) else {
+                    continue;
+                };
+                let written = touches
+                    .entry(content.clone())
+                    .or_default()
+                    .lasts(doc, &content)
+                    .get(id)
+                    .and_then(|versions| versions.last())
+                    .map(order);
+                if let Some(written) = written {
+                    found.push((written, kind.to_owned(), id.to_owned(), content));
+                }
+            }
+        }
+        // The newest of each resource, most recent first, a page of them.
+        found.sort_by_key(|found| std::cmp::Reverse(found.0));
+        let mut seen = BTreeSet::new();
+        for (_, kind, id, doc_id) in found {
+            if newest.len() > limit {
+                break;
+            }
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let last = touches
+                .get(&doc_id)
+                .and_then(|held| held.versions_of(&id))
+                .and_then(|versions| versions.last().cloned());
+            if let Some(last) = last {
+                newest.push((kind, id, last));
+            }
+        }
+        // A removed resource's history stays readable, by whoever could read it.
+        for (kind, id) in self.removed.keys() {
+            if !under(id)
+                || !self
+                    .readers_of(kind, id)
+                    .is_some_and(|readers| may_read(&readers))
+            {
+                continue;
+            }
+            if let Some(last) = self.versions_unlocked(&mut touches, kind, id).pop() {
+                newest.push((kind.clone(), id.clone(), last));
+            }
+        }
+        drop(touches);
+        newest.sort_by_key(|(_, _, version)| std::cmp::Reverse(order(version)));
+        let more = newest.len() > limit;
+        newest.truncate(limit);
+        (newest, more)
+    }
+
+    /// Every version stamped as a step of the group `group` ([`Stamp::group`]), of every
+    /// resource it touched, by kind and id: what a review of that work lists. Reads only the
+    /// documents a change of the group is in.
+    #[must_use]
+    pub fn grouped(&self, group: &str) -> Vec<(String, String, crate::history::Version)> {
+        let mut out = self.stamped(self.groups.get(group), &|stamp| {
+            stamp.group.as_ref().is_some_and(|held| held.id == group)
+        });
+        // A resource made in or removed from another changed that one too: its collection.
+        let mut holders: Vec<(String, String, crate::history::Version)> = Vec::new();
+        for (kind, id, version) in &out {
+            let made = match version.kind {
+                crate::history::VersionKind::Made => true,
+                crate::history::VersionKind::Removed => false,
+                crate::history::VersionKind::Changed => continue,
+            };
+            if version.content {
+                continue;
+            }
+            let key = (kind.clone(), id.clone());
+            let parent = match self.index.get(kind, id) {
+                Some(held) => held.parent.clone(),
+                None => self
+                    .removed
+                    .get(&key)
+                    .and_then(|removed| removed.parent.clone()),
+            };
+            let Some(parent) = parent else {
+                continue;
+            };
+            let parent_kind = self.index.kind_anywhere(&parent).or_else(|| {
+                self.removed
+                    .keys()
+                    .find(|(_, held)| *held == parent)
+                    .map(|(kind, _)| kind.clone())
+            });
+            let Some(parent_kind) = parent_kind else {
+                continue;
+            };
+            let nested = crate::history::Nested {
+                kind: kind.clone(),
+                id: id.clone(),
+                made,
+            };
+            if let Some((_, _, held)) = holders.iter_mut().find(|(_, held, held_version)| {
+                *held == parent && held_version.change == version.change
+            }) {
+                held.nested.push(nested);
+                continue;
+            }
+            holders.push((
+                parent_kind,
+                parent,
+                crate::history::Version {
+                    stamp: version.stamp.clone(),
+                    kind: crate::history::VersionKind::Changed,
+                    fields: Vec::new(),
+                    content: false,
+                    change: version.change.clone(),
+                    op: version.op,
+                    parent: None,
+                    nested: vec![nested],
+                },
+            ));
+        }
+        out.extend(holders);
+        out
+    }
+
+    /// Every resource made by a change stamped as made from the resource `id`
+    /// ([`Stamp::from`]), by kind and id: what was made from it, wherever it was placed.
+    #[must_use]
+    pub fn made_from(&self, id: &str) -> Vec<(String, String)> {
+        let mut made: Vec<(String, String, crate::history::Version)> = self
+            .stamped(self.made_from.get(id), &|stamp| {
+                stamp.from.as_ref().is_some_and(|from| from.id == id)
+            })
+            .into_iter()
+            .filter(|(_, _, version)| version.kind == crate::history::VersionKind::Made)
+            .collect();
+        // In the order they were made.
+        made.sort_by(|(_, _, a), (_, _, b)| {
+            let at = |version: &crate::history::Version| {
+                version
+                    .stamp
+                    .as_ref()
+                    .map(|stamp| stamp.at.clone())
+                    .unwrap_or_default()
+            };
+            at(a).cmp(&at(b)).then(a.op.cmp(&b.op))
+        });
+        let mut out: Vec<(String, String)> = Vec::with_capacity(made.len());
+        for (kind, id, _) in made {
+            if !out.iter().any(|(_, held)| *held == id) {
+                out.push((kind, id));
+            }
+        }
+        out
+    }
+
+    /// The versions the changes stamped as `stamped` admits made, of every resource they
+    /// touched, by kind and id, reading only the documents `docs`.
+    fn stamped(
+        &self,
+        docs: Option<&BTreeSet<String>>,
+        stamped: &dyn Fn(&Stamp) -> bool,
+    ) -> Vec<(String, String, crate::history::Version)> {
+        let mut out = Vec::new();
+        for doc_id in docs.into_iter().flatten() {
+            let Some(doc) = self.docs.get(doc_id) else {
+                continue;
+            };
+            let content = crate::admit::content_resource(doc_id);
+            for (version, id) in crate::history::stamped(doc, doc_id, stamped) {
+                let kind = match &content {
+                    Some((kind, _)) => Some(kind.clone()),
+                    None => self.index.kind_of(&id, doc_id).or_else(|| {
+                        self.removed
+                            .iter()
+                            .find(|((_, held), removed)| *held == id && removed.doc == *doc_id)
+                            .map(|((kind, _), _)| kind.clone())
+                    }),
+                };
+                if let Some(kind) = kind {
+                    out.push((kind, id, version));
+                }
+            }
+        }
+        out
+    }
+
+    /// The resource `id` of `kind` as it stood just before the invocation that made the change
+    /// `change` (its hash, in hex), or just after it with `after`: its indexed fields and its
+    /// content then. One invocation may change both of a resource's documents, so each is read
+    /// before its first change of that invocation, or after its last; a document the
+    /// invocation did not change reads as it stands. What a resource's history reads a step's
+    /// fields from. `None` where the change is not a hash, or the resource's documents are not
+    /// in memory.
+    #[must_use]
+    pub fn at_change(
+        &self,
+        kind: &str,
+        id: &str,
+        change: &str,
+        after: bool,
+    ) -> Option<(Option<Indexed>, Option<serde_json::Value>)> {
+        let hash: automerge::ChangeHash = change.parse().ok()?;
+        let (index_doc, readers) = self.placed(kind, id)?;
+        let content_doc = content_id(&readers, kind, id);
+        let held = self.docs.get(&index_doc)?;
+        let content = self.docs.get(&content_doc);
+        let invocation = held
+            .get_change_by_hash(&hash)
+            .or_else(|| content.and_then(|doc| doc.get_change_by_hash(&hash)))
+            .and_then(|change| Stamp::of(&change))
+            .map(|stamp| stamp.invocation)?;
+        // Each document as it stood before the invocation's first change of the resource, or
+        // after its last: read at those heads, the rest of what the document holds unread.
+        let mut touches = self
+            .touches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut heads_of = |doc: &Automerge, doc_id: &str| -> Option<Vec<automerge::ChangeHash>> {
+            let versions = touches
+                .entry(doc_id.to_owned())
+                .or_default()
+                .of(doc, doc_id, id);
+            let mut own = versions.iter().filter(|version| {
+                version
+                    .stamp
+                    .as_ref()
+                    .is_some_and(|stamp| stamp.invocation == invocation)
+            });
+            let first = own.next()?;
+            let last = own.next_back().unwrap_or(first);
+            if after {
+                Some(vec![last.change.parse().ok()?])
+            } else {
+                let first: automerge::ChangeHash = first.change.parse().ok()?;
+                Some(doc.get_change_by_hash(&first)?.deps().to_vec())
+            }
+        };
+        let index_heads = heads_of(held, &index_doc);
+        let content_heads = content.and_then(|doc| heads_of(doc, &content_doc));
+        drop(touches);
+        let indexed = read_as_of(held, index_heads.as_deref(), id)
+            .filter(|(held_kind, _)| held_kind == kind)
+            .map(|(_, resource)| Indexed {
+                doc: index_doc,
+                parent: resource.parent,
+                order: resource.order,
+                fields: resource.fields,
+            });
+        let content = content.and_then(|doc| {
+            let look = crate::wire::AsOf {
+                doc,
+                heads: content_heads.as_deref(),
+            };
+            (look.length(&ROOT) > 0).then(|| look.json(&ROOT))
+        });
+        Some((indexed, content))
     }
 
     /// The types and verbs declared so far: what a peer's change is checked against.
@@ -868,6 +1368,9 @@ impl Store {
 
     /// Applies `change`, admitted, to `doc_id`, and indexes the resources it touched.
     fn apply(&mut self, doc_id: &str, readers: &str, change: AmChange) -> Result<(), StoreError> {
+        if let Some(stamp) = Stamp::of(&change) {
+            self.note_group(doc_id, &stamp);
+        }
         let doc = self.doc(doc_id)?;
         let mut log = PatchLog::active();
         doc.apply_changes_log_patches(vec![change], &mut log)?;
@@ -959,6 +1462,10 @@ impl Store {
         else {
             return;
         };
+        self.nested_in
+            .entry(owner.to_owned())
+            .or_default()
+            .insert(doc.to_owned());
         let filled = self
             .filled
             .entry((readers.to_owned(), owner.to_owned()))
@@ -977,9 +1484,70 @@ impl Store {
     pub fn load(&mut self, doc_id: &str, bytes: &[u8]) -> Result<(), StoreError> {
         let doc = Automerge::load(bytes)?;
         let readers = text_at(&doc, &ROOT, READERS).unwrap_or_default();
+        for change in doc.get_changes(&[]) {
+            if let Some(stamp) = Stamp::of(&change) {
+                self.note_group(doc_id, &stamp);
+            }
+        }
+        // What it held before and holds no more was removed: its history stays readable.
+        let held: Vec<(String, String, Option<String>)> = self
+            .index
+            .held(doc_id)
+            .map(|(kind, id)| {
+                let parent = self
+                    .index
+                    .get(kind, id)
+                    .and_then(|held| held.parent.clone());
+                (kind.to_owned(), id.to_owned(), parent)
+            })
+            .collect();
         self.index.forget(doc_id);
         self.docs.insert(doc_id.to_owned(), doc);
-        self.index_resources(doc_id, &readers, None)
+        self.index_resources(doc_id, &readers, None)?;
+        for (kind, id, parent) in held {
+            if self.index.get(&kind, &id).is_none() {
+                self.note_removed(&kind, &id, doc_id, parent);
+            }
+        }
+        Ok(())
+    }
+
+    /// Notes that `doc` holds a change stamped `stamp`, when the stamp names a group.
+    fn note_group(&mut self, doc: &str, stamp: &Stamp) {
+        if let Some(group) = &stamp.group {
+            self.groups
+                .entry(group.id.clone())
+                .or_default()
+                .insert(doc.to_owned());
+        }
+        if let Some(from) = &stamp.from {
+            self.made_from
+                .entry(from.id.clone())
+                .or_default()
+                .insert(doc.to_owned());
+        }
+    }
+
+    /// The document that holds the resource `id` of `kind`, or held it last when it was
+    /// removed, and its reader set.
+    fn placed(&self, kind: &str, id: &str) -> Option<(String, String)> {
+        let doc = match self.index.get(kind, id) {
+            Some(held) => held.doc.clone(),
+            None => self
+                .removed
+                .get(&(kind.to_owned(), id.to_owned()))?
+                .doc
+                .clone(),
+        };
+        let readers = self.index.readers(&doc)?.to_owned();
+        Some((doc, readers))
+    }
+
+    /// The reader set of the resource `id` of `kind`, held now or removed: what a read of its
+    /// history is admitted by.
+    #[must_use]
+    pub fn readers_of(&self, kind: &str, id: &str) -> Option<String> {
+        self.placed(kind, id).map(|(_, readers)| readers)
     }
 
     /// What the index holds of `doc`, as bytes [`Self::restore`] takes back: what a start reads
@@ -1191,19 +1759,36 @@ fn held_key(id: &str) -> String {
 }
 
 fn read(doc: &Automerge, id: &str) -> Option<(String, Resource)> {
-    let (AmValue::Object(ObjType::Map), map) = doc.get(ROOT, held_key(id)).ok()?? else {
+    read_as_of(doc, None, id)
+}
+
+/// [`read`] as the document stood at `heads`, or as it stands with none.
+fn read_as_of(
+    doc: &Automerge,
+    heads: Option<&[automerge::ChangeHash]>,
+    id: &str,
+) -> Option<(String, Resource)> {
+    let look = crate::wire::AsOf { doc, heads };
+    let (AmValue::Object(ObjType::Map), map) = look.get(&ROOT, held_key(id))? else {
         return None;
     };
-    let kind = text_at(doc, &map, KIND)?;
+    let text = |key: &str| match look.get(&map, key)? {
+        (AmValue::Scalar(scalar), _) => match scalar.as_ref() {
+            ScalarValue::Str(text) => Some(text.to_string()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let kind = text(KIND)?;
     let mut fields = BTreeMap::new();
-    if let Some((AmValue::Object(ObjType::Map), held)) = doc.get(&map, FIELDS).ok().flatten() {
-        for name in doc.keys(&held) {
-            let Some((value, obj)) = doc.get(&held, name.as_str()).ok().flatten() else {
+    if let Some((AmValue::Object(ObjType::Map), held)) = look.get(&map, FIELDS) {
+        for name in look.keys(&held) {
+            let Some((value, obj)) = look.get(&held, name.as_str()) else {
                 continue;
             };
             let cell = match value {
                 AmValue::Object(ObjType::Map) => {
-                    Cell::Set(doc.keys(&obj).map(Value::Text).collect())
+                    Cell::Set(look.keys(&obj).into_iter().map(Value::Text).collect())
                 }
                 value => Cell::One(value_of(&value)),
             };
@@ -1214,8 +1799,8 @@ fn read(doc: &Automerge, id: &str) -> Option<(String, Resource)> {
         kind,
         Resource {
             readers: String::new(),
-            parent: text_at(doc, &map, PARENT),
-            order: text_at(doc, &map, ORDER),
+            parent: text(PARENT),
+            order: text(ORDER),
             fields,
         },
     ))

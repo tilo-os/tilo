@@ -664,7 +664,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "widerrufen",
         ],
         resource_types: &[],
-        offers: "console.view\t\tshow-everything\tShow all sessions\t\tundoable\tdocument\t0\t\t\t\nconsole.view\t\tview-connect\tConnect an agent\t\tread\tview\t0\t\t\t\n",
+        offers: "console.view\t\tshow-everything\tShow all sessions\t\tundoable\tdocument\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.contacts",

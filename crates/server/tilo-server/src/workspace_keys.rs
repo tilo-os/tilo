@@ -182,6 +182,14 @@ impl Drop for KeyService {
 struct Keys(KeyProvider);
 
 impl GroupKeys for Keys {
+    fn named_readers(
+        &self,
+        workspace: collab_types::WorkspaceId,
+        document: &str,
+    ) -> Option<String> {
+        self.0.get()?.named_readers(workspace, document)
+    }
+
     fn group_keys<'a>(
         &'a self,
         workspace: &'a str,

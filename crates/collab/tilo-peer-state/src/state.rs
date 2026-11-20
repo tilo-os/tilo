@@ -119,7 +119,7 @@ mod sealed_history;
 mod unsent_bases;
 pub use sealed_compaction::{
     HeldDocument, MergedDocument, OpenedDocument, OpenedHistory, OpenedWrite, SealCheckpoint,
-    UnmergedReason, UnmergedWrite,
+    UnmergedReason, UnmergedWrite, WaitingForUpdate,
 };
 /// The peer's own subjects: how a replica is built and who joins it, the
 /// authority a device holds there, the records it keeps, what it takes in and
@@ -244,6 +244,41 @@ pub enum TransportOrigin {
 pub(crate) struct Route {
     app: String,
     record: String,
+}
+
+impl Route {
+    /// The route of `document` of `app`.
+    fn of(app: &str, document: &str) -> Self {
+        Self {
+            app: app.into(),
+            record: document.into(),
+        }
+    }
+
+    /// The route as `(app, document)`.
+    fn named(&self) -> (String, String) {
+        (self.app.clone(), self.record.clone())
+    }
+
+    /// Whether `op` is a write of this route sealed before reader sets
+    /// ([`collab_types::sealed_before_reader_sets`]).
+    fn sealed_before_reader_sets(&self, workspace: &str, op: &SignedOp) -> bool {
+        collab_types::sealed_before_reader_sets(&self.app, workspace, &self.record, op)
+    }
+
+    /// [`collab_types::validate_payload_sealed_before_reader_sets`] of `op` on this route.
+    fn validate_sealed_before_reader_sets(
+        &self,
+        workspace: &str,
+        op: &SignedOp,
+    ) -> Result<collab_types::WholeDocumentPayload, collab_types::DocumentMutationError> {
+        collab_types::validate_payload_sealed_before_reader_sets(
+            &self.app,
+            workspace,
+            &self.record,
+            op,
+        )
+    }
 }
 // Documents a durable hash took again: those changed since it was last taken.
 #[cfg(test)]
@@ -601,6 +636,9 @@ mod removal_tests;
 #[cfg(test)]
 #[path = "state/roster_beside_governance_tests.rs"]
 mod roster_beside_governance_tests;
+#[cfg(test)]
+#[path = "state/sealed_before_reader_sets/tests.rs"]
+mod sealed_before_reader_sets_tests;
 #[cfg(test)]
 #[path = "state/sealed_compaction_tests.rs"]
 mod sealed_compaction_tests;

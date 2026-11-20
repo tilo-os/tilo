@@ -35,8 +35,8 @@ mod undo;
 mod value;
 pub mod wire;
 
-pub use admit::{Admit, Proposal, Received, Refusal, Stamp, Touch, Touched};
-pub use history::{Version, VersionKind};
+pub use admit::{Admit, Group, Origin, Proposal, Received, Refusal, Stamp, Touch, Touched};
+pub use history::{Nested, Version, VersionKind};
 pub use index::{Change, Commit, CommitHook, Index, Indexed, PARENT};
 pub use query::{Absent, Cursor, Filter, Order, Page, Query, Sort};
 pub use schema::{Expected, FIELD_EDIT, Field, FieldKind, Schema, Type, Verb, Writes};
