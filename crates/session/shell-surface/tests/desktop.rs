@@ -102,6 +102,64 @@ fn windows_open_side_by_side_where_their_tabs_are_laid_out() {
 }
 
 #[test]
+fn a_tab_widens_to_the_smallest_size_its_window_keeps() {
+    let _settled = ui::motion::testing::settled();
+    let (shell, mut policy) = desktop(7, 1.0);
+    let outputs = output();
+    // A program that keeps a size, as PuTTY's fixed Configuration dialog does.
+    let fixed = WindowInfo {
+        min_size: Some((600, 400)),
+        ..window(5, "org.example.PuTTY")
+    };
+    let size = policy
+        .initial_size(&fixed, &outputs)
+        .expect("a tab to fill");
+    let at = policy.place(&fixed, size, &outputs);
+    // The person narrows the window's tab under the width the program keeps.
+    let group = shell
+        .with_policy(|policy| {
+            let tab = policy.tab_of(5)?;
+            policy.handle().read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.strips)
+                    .flat_map(|strip| &strip.window_groups)
+                    .find(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
+                    .map(|group| group.id)
+            })
+        })
+        .expect("the window's tab");
+    shell.with_policy(|policy| {
+        policy
+            .handle()
+            .dispatch(tilo_desktop_surface::navigation::ChromeEffect::SetWidth {
+                group: group.to_string(),
+                permille: Some(300),
+                preset: None,
+            })
+            .expect("a narrow share");
+    });
+    let mapped = [(fixed.clone(), LayoutRect::new(at, size.into()))];
+    let arranged = policy.arrange(&mapped, &outputs).expect("a placement");
+    let placed = arranged
+        .iter()
+        .find(|placed| placed.id == 5)
+        .expect("placed");
+    let (width, _height) = placed.size.expect("the tab's size");
+    assert!(
+        width >= 600,
+        "the tab is at least as wide as the program keeps, and the strip scrolls: {placed:?}"
+    );
+    let again = policy.arrange(&mapped, &outputs).expect("a placement");
+    let placed = again.iter().find(|placed| placed.id == 5).expect("placed");
+    assert_eq!(
+        placed.size.expect("the tab's size").0,
+        width,
+        "the tab stays where it was widened to"
+    );
+}
+
+#[test]
 fn a_window_waits_in_its_place_until_it_shows_a_buffer() {
     let _settled = ui::motion::testing::settled();
     let (host, mut policy) = desktop(7, 1.0);

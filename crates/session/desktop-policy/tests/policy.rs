@@ -1334,6 +1334,119 @@ fn a_kept_window_of_a_dialogs_shape_takes_back_its_tab() {
     );
 }
 
+/// A window that keeps a smallest size is never cut off by a tab narrower than it: a
+/// fixed-size dialog — `PuTTY`'s Configuration is 456 px wide — takes a tab at least that wide,
+/// and the strip scrolls to it. This is the same after an in-place restart, when the window
+/// comes back into the tab it stood in before whatever share that tab had.
+#[test]
+fn a_fixed_size_window_widens_a_tab_narrower_than_it() {
+    let (mut driver, mut policy) = mount();
+    assert!(policy.set_displays(&[Output {
+        monitor: "only".into(),
+        rect: Rect::new(0.0, 0.0, WIDTH, 800.0),
+        primary: true,
+    }]));
+    map(&mut driver, &mut policy, 1, "org.example.PuTTY");
+    let tab = policy.tab_of(1).expect("a tab");
+    let group = policy
+        .handle()
+        .read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .find(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
+                .map(|group| group.id)
+        })
+        .expect("the tab's window");
+    policy
+        .handle()
+        .dispatch(ChromeEffect::SetWidth {
+            group: group.to_string(),
+            permille: Some(300),
+            preset: None,
+        })
+        .expect("the tab takes a narrow share");
+    settle(&mut driver);
+    let narrow = shown_rect(&policy, 1);
+    assert!(
+        narrow.width() < 456.0,
+        "the tab starts narrower than the dialog: {narrow:?}"
+    );
+
+    assert!(
+        policy.honour_minimum_widths([(1, Some((456, 442)))].into_iter()),
+        "the tab is widened to what the dialog keeps"
+    );
+    settle(&mut driver);
+    let wide = shown_rect(&policy, 1);
+    assert!(wide.width() >= 456.0, "the dialog shows whole: {wide:?}");
+    assert!(
+        wide.width() < WIDTH,
+        "the tab takes what the dialog needs, not the strip: {wide:?}"
+    );
+    assert!(
+        !policy.honour_minimum_widths([(1, Some((456, 442)))].into_iter()),
+        "a tab already wide enough is left as the person set it"
+    );
+    assert!(
+        !policy.honour_minimum_widths([(1, None)].into_iter()),
+        "a window that keeps no size leaves its tab alone"
+    );
+}
+
+/// A window wider than its whole strip still gets the whole strip: the smallest size the
+/// program keeps cannot be met by any share, so the tab is as wide as the strip allows.
+#[test]
+fn a_window_wider_than_the_strip_takes_the_whole_strip() {
+    let (mut driver, mut policy) = mount();
+    assert!(policy.set_displays(&[Output {
+        monitor: "only".into(),
+        rect: Rect::new(0.0, 0.0, WIDTH, 800.0),
+        primary: true,
+    }]));
+    map(&mut driver, &mut policy, 2, "org.example.Wide");
+    assert!(policy.honour_minimum_widths([(2, Some((4000, 600)))].into_iter()));
+    settle(&mut driver);
+    let rect = shown_rect(&policy, 2);
+    assert!(
+        rect.width() > WIDTH,
+        "the tab is as wide as the window keeps, and the strip scrolls: {rect:?}"
+    );
+}
+
+/// Where window `id` stands as of the last layout pass.
+fn shown_rect(policy: &DesktopPolicy, id: u64) -> Rect {
+    let placement = policy.placement();
+    let (_, rect) = placement
+        .shown
+        .iter()
+        .find(|(window, _)| *window == id)
+        .unwrap();
+    *rect
+}
+
+/// A strip narrower than the window's smallest size already gives every window the whole
+/// strip and nothing more: a wider share cannot widen it, so the width is left as it is
+/// rather than asked for again on every pass.
+#[test]
+fn a_strip_narrower_than_the_window_is_left_alone() {
+    let (mut driver, mut policy) = mount();
+    assert!(policy.set_displays(&[Output {
+        monitor: "phone".into(),
+        rect: Rect::new(0.0, 0.0, 360.0, 800.0),
+        primary: true,
+    }]));
+    map(&mut driver, &mut policy, 3, "org.example.Wide");
+    let before = shown_rect(&policy, 3);
+    assert!(
+        !policy.honour_minimum_widths([(3, Some((600, 400)))].into_iter()),
+        "the tab already takes the whole strip"
+    );
+    settle(&mut driver);
+    assert_eq!(shown_rect(&policy, 3), before);
+}
+
 /// Only the windows that stand on a display are in view: a strip lays out every window on it, and
 /// the ones scrolled past stand off the display. What sets an app's tier (and its memory floor) is
 /// this, so an app whose windows are all scrolled away yields to the ones the person sees.

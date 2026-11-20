@@ -1205,6 +1205,15 @@ impl WindowPolicy for StripPolicy {
         for (window, _) in windows {
             self.map(window, outputs);
         }
+        // A tab is never narrower than the smallest width of a window in it: a fixed-size
+        // window shows whole, and the strip scrolls to it.
+        if self.desktop.borrow_mut().policy.honour_minimum_widths(
+            windows
+                .iter()
+                .map(|(window, _)| (window.id, window.min_size)),
+        ) {
+            self.desktop.borrow_mut().host.relayout();
+        }
         let desktop = self.desktop.borrow();
         let placement = desktop.policy.placement();
         let origin = desktop.host.placement().origin;

@@ -19,8 +19,10 @@ use std::rc::Rc;
 
 use tilo_desktop_model::apps::{app_ids_match, shows_a_view};
 use tilo_desktop_model::commands::move_tab_to_workspace;
+use tilo_desktop_model::width::{WIDTH_MAX_PERMILLE, permille_for_px};
 use tilo_desktop_model::{
-    Display, GroupId, IdMinter, Layout, Tab, TabId, TileContent, Workspace, WorkspaceId,
+    Display, GroupId, IdMinter, Layout, Tab, TabId, TileContent, WindowWidth, Workspace,
+    WorkspaceId,
 };
 use tilo_desktop_surface::navigation::{ChromeEffect, LayoutEffect, RouteIds, active_route};
 use tilo_desktop_surface::outcome::{Closed, Outcome};
@@ -962,6 +964,99 @@ impl DesktopPolicy {
             self.carry_launched();
         }
         Ok(())
+    }
+
+    /// Give the tab of each window at least the width its client asks for: a window is never
+    /// cut off by a tab narrower than the smallest size it keeps, so a fixed-size window — a
+    /// setup wizard's, or one kept through a restart — shows whole. The strip scrolls to reach
+    /// it, as it already does for a window wider than a display. `windows` are the windows the
+    /// compositor lists, with the smallest size each client accepts. Answers whether a width
+    /// changed.
+    pub fn honour_minimum_widths(
+        &mut self,
+        windows: impl Iterator<Item = (u64, Option<(i32, i32)>)>,
+    ) -> bool {
+        // What each group's tab has to be at least, by group: the widest smallest width among
+        // the windows in it. Read without copying the desktop, which every layout pass asks.
+        let wanted: Vec<(GroupId, f64, f64)> = self.handle.read(|tree| {
+            let mut wanted: Vec<(GroupId, f64, f64)> = Vec::new();
+            for (window, min) in windows {
+                let Some(min_width) = min.map(|(width, _)| width).filter(|width| *width > 0) else {
+                    continue;
+                };
+                let Some(group) = tab_of(tree, window)
+                    .and_then(|tab| route_of(tree, tab))
+                    .map(|ids| ids.group)
+                else {
+                    continue;
+                };
+                let display = if tree.is_partitioned() {
+                    tree.outputs
+                        .display_of(group)
+                        .and_then(|id| self.displays.iter().find(|display| display.id == id))
+                } else {
+                    self.displays.first()
+                };
+                let Some(display) = display else {
+                    continue;
+                };
+                // The width a group's share is resolved against: the display less the strip's
+                // edge gutters, as the surface lays it out.
+                let usable = (display.width - 2.0 * ui::widget::STRIP_EDGE_GUTTER_PX).max(1.0);
+                let width = f64::from(min_width);
+                match wanted.iter_mut().find(|(other, ..)| *other == group) {
+                    Some((_, least, _)) if *least >= width => {}
+                    Some((_, least, _)) => *least = width,
+                    None => wanted.push((group, width, usable)),
+                }
+            }
+            wanted
+        });
+        if wanted.is_empty() {
+            return false;
+        }
+        let mut tree = self.handle.read(Clone::clone);
+        let mut changed = false;
+        for (group_id, wanted, usable) in wanted {
+            let Some(group) = tree
+                .workspaces
+                .iter_mut()
+                .flat_map(|workspace| &mut workspace.strips)
+                .flat_map(|strip| &mut strip.window_groups)
+                .find(|group| group.id == group_id)
+            else {
+                continue;
+            };
+            let current = group.width.resolve(usable);
+            if current >= wanted {
+                continue;
+            }
+            // Round the share up, never down: the tab is at least the width the client keeps,
+            // or it is a pixel short and the window is cut again. A strip narrower than the
+            // window (a phone's) gives every window the whole strip and no more, so a share it
+            // no longer widens is left as it is rather than asked again every pass.
+            let mut permille = permille_for_px(wanted, usable);
+            let mut width = WindowWidth::Fraction(permille);
+            let mut resolved = width.resolve(usable);
+            while resolved < wanted && permille < WIDTH_MAX_PERMILLE {
+                permille = permille.saturating_add(1);
+                width = WindowWidth::Fraction(permille);
+                let next = width.resolve(usable);
+                if next <= resolved {
+                    break;
+                }
+                resolved = next;
+            }
+            if resolved <= current {
+                continue;
+            }
+            group.width = width;
+            changed = true;
+        }
+        if changed {
+            self.handle.replace_tree(tree);
+        }
+        changed
     }
 
     /// Write down that `window` got a place, once: the session reads these to tell each launch

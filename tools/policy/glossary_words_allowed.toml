@@ -14,6 +14,12 @@ paths = [
 # of. A use of Tilo's own concept never goes here: rename it.
 
 [[allow]]
+reason = "The shell desktop's own field naming the widget surface its views are laid out in; the layout code calls it by that name."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/session/shell-surface/src/desktop.rs"]
+
+[[allow]]
 reason = "The page runtime's existing names for what the browser serves a mounted desktop (its notices, models and services) and what the desktop asks of it."
 words = ["host"]
 identifiers = ["host_services", "HostRequest"]
