@@ -1559,6 +1559,9 @@ mode = "off"
                 kind: crate::manifest::OfferKind::Read,
                 operation: crate::manifest::OfferOperation::View,
                 confirm: false,
+                asks: None,
+                keywords: Vec::new(),
+                icon: None,
             };
             let mut m = minimal_runtime_manifest();
             m.offers = vec![

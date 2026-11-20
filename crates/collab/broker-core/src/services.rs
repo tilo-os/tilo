@@ -209,6 +209,39 @@ pub struct LaunchableApplication {
     /// agent generates for the app before it ever opens.
     pub surface: Option<String>,
 }
+impl LaunchableApplication {
+    /// What `offer`, one of [`Self::offers`], publishes while the app is closed.
+    #[must_use]
+    pub fn offered(
+        &self,
+        offer: &tilo_app_package::manifest::OfferedAction,
+    ) -> tilo_actions::published::PublishedAction {
+        use tilo_app_package::manifest::{OfferKind, OfferOperation};
+        let declared = tilo_actions::published::Offer {
+            resource: &offer.resource,
+            resource_kind: offer.resource_kind(),
+            action: &offer.action,
+            label: &offer.label,
+            description: offer.description.as_deref(),
+            kind: match offer.kind {
+                OfferKind::Read => tilo_actions::ActionKind::Read,
+                OfferKind::Undoable => tilo_actions::ActionKind::Undoable,
+                OfferKind::Outside => tilo_actions::ActionKind::Outside,
+            },
+            operation: match offer.operation {
+                OfferOperation::Document => tilo_actions::OperationKind::Document,
+                OfferOperation::Effect => tilo_actions::OperationKind::Effect,
+                OfferOperation::View => tilo_actions::OperationKind::View,
+            },
+            confirm: offer.confirm,
+            asks: offer.asks.as_deref(),
+            keywords: offer.keywords.iter().map(String::as_str).collect(),
+            icon: offer.icon.as_deref(),
+        };
+        tilo_actions::published::PublishedAction::offered(&declared, &self.display_name)
+    }
+}
+
 /// The application a launcher-authenticated connection belongs to, and its workspace: launch
 /// content is read only through this scope, since holding a hash is not access.
 #[derive(Clone, Debug, PartialEq, Eq)]

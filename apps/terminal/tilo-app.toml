@@ -89,3 +89,123 @@ splash-budget   = 250
 [providers]
 mime = []
 ext  = []
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "terminal.session"
+action = "run"
+label = "Run command"
+kind = "outside"
+operation = "document"
+asks = "command"
+[[offers]]
+resource = "terminal.session"
+action = "stop"
+label = "Stop command"
+operation = "document"
+keywords = ["stop", "cancel", "interrupt", "ctrl c"]
+[[offers]]
+resource = "terminal.session"
+action = "record-target"
+label = "Record where the session runs"
+operation = "document"
+asks = "target"
+[[offers]]
+resource = "terminal.session"
+action = "record-relay-session"
+label = "Record the reattached session"
+operation = "document"
+asks = "session"
+[[offers]]
+resource = "terminal.session"
+action = "claim-pane"
+label = "Claim a pane"
+operation = "document"
+asks = "pane"
+[[offers]]
+resource = "terminal.session"
+action = "inspect-session"
+label = "Inspect session"
+kind = "read"
+[[offers]]
+resource = "terminal.session"
+action = "read-screen"
+label = "Read output"
+kind = "read"
+[[offers]]
+resource = "terminal.session"
+action = "inspect-editor"
+label = "Inspect field"
+kind = "read"
+[[offers]]
+resource = "terminal.session"
+action = "send"
+label = "Send text"
+kind = "outside"
+confirm = true
+asks = "text"
+keywords = ["type text", "enter command"]
+[[offers]]
+resource = "terminal.session"
+action = "interrupt"
+label = "Interrupt process"
+kind = "outside"
+confirm = true
+keywords = ["stop", "cancel", "kill process", "ctrl c"]
+[[offers]]
+resource = "terminal.session"
+action = "clear"
+label = "Clear screen"
+kind = "outside"
+confirm = true
+keywords = ["cls", "clear terminal", "reset screen"]
+[[offers]]
+resource = "terminal.session"
+action = "paste"
+label = "Paste"
+kind = "outside"
+confirm = true
+asks = "text"
+[[offers]]
+resource = "terminal.session"
+action = "paste-primary"
+label = "Paste selection"
+kind = "outside"
+confirm = true
+asks = "text"
+[[offers]]
+resource = "terminal.session"
+action = "open-in"
+label = "Open in…"
+kind = "outside"
+confirm = true
+asks = "target"
+[[offers]]
+resource = "terminal.session"
+action = "create-environment"
+label = "New environment"
+kind = "outside"
+confirm = true
+asks = "name"
+keywords = ["new container", "new sandbox"]
+[[offers]]
+resource = "terminal.session"
+action = "copy-visible"
+label = "Copy visible output"
+kind = "read"
+confirm = true
+keywords = ["copy output", "copy screen"]
+[[offers]]
+resource = "terminal.session"
+action = "copy-selection"
+label = "Copy selected output"
+kind = "read"
+confirm = true
+[[offers]]
+resource = "terminal.session"
+action = "select-all"
+label = "Select all output"
+kind = "read"
+confirm = true

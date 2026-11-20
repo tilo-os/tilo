@@ -109,8 +109,12 @@ fn report_surface(
     // with it, as a verb of the surface.
     let mut declared = PublishedActions::default();
     let mut view = None;
+    let mut offers = Vec::new();
     match built {
-        Ok(mut opened) => declared = published(&mut opened.harness),
+        Ok(mut opened) => {
+            declared = published(&mut opened.harness);
+            offers = offers_of(&opened.harness.resources());
+        }
         Err(error) => view = Some(error.to_string()),
     }
     add_effect_verbs(&mut surface, &declared.rows);
@@ -137,7 +141,93 @@ fn report_surface(
         "views": views,
         "reserved": reserved_action_ids(),
         "view": view,
+        "offers": offers,
     })
+}
+
+/// What the app offers a person while it is closed, as its manifest's
+/// `[[offers]]` declare it: every action of its own its view publishes on an
+/// empty document that reaches people with nothing chosen, and takes nothing
+/// or one line a person writes. A palette finds these by their words, and
+/// choosing one opens the app and carries it out there.
+///
+/// Left out: what the framework publishes on every app (its undo, its
+/// `open`), save the link a scheme the app takes is opened with; what the
+/// shell publishes into the view (its search, its controls); the person's own
+/// documents; and the items of a list, which a closed app has none of.
+fn offers_of(resources: &[tilo_actions::ResourceSpec]) -> Vec<serde_json::Value> {
+    use tilo_actions::{Collects, ConfirmationPolicy, InputSpec};
+
+    let reserved = reserved_action_ids();
+    let mut offers = Vec::new();
+    for action in tilo_actions::api::survey(resources) {
+        let contract = &action.contract;
+        let resource = action.address.resource.as_str();
+        let id = action.address.action.as_str();
+        if !contract.offered_to_people()
+            || !contract.availability.is_available()
+            || (reserved.iter().any(|framework| framework == id)
+                && id != tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION)
+            || resource.starts_with("tilo.")
+            || resource.starts_with("person:")
+            || resource.contains('/')
+        {
+            continue;
+        }
+        // One line a person writes: never an id or a choice they would have to know.
+        let asks = match &action.input {
+            InputSpec::Text {
+                collects: Collects::Words,
+                ..
+            } => action
+                .prompt_param()
+                .filter(|name| {
+                    action.params.iter().any(|param| {
+                        param.name == *name && (param.entry || param.choices.is_empty())
+                    })
+                })
+                .map(str::to_owned),
+            _ => None,
+        };
+        // Anything it needs beyond the one line it asks for is a choice the
+        // app's own view makes: offered there, not while it is closed.
+        if action
+            .params
+            .iter()
+            .any(|param| param.required && Some(param.name.as_ref()) != asks.as_deref())
+        {
+            continue;
+        }
+        let address = action.address.resource.as_str();
+        if offers.iter().any(|offer: &serde_json::Value| {
+            offer["resource"] == address && offer["action"] == action.address.action.as_str()
+        }) {
+            continue;
+        }
+        let mut offer = serde_json::Map::new();
+        offer.insert("resource".into(), address.into());
+        offer.insert("action".into(), action.address.action.as_str().into());
+        offer.insert("label".into(), serde_json::json!(action.action_label));
+        offer.insert("kind".into(), serde_json::json!(contract.kind));
+        offer.insert("operation".into(), action.kind.as_str().into());
+        if action.resource_kind != address {
+            offer.insert("resource-kind".into(), action.resource_kind.clone().into());
+        }
+        if !matches!(contract.confirmation, ConfirmationPolicy::None) {
+            offer.insert("confirm".into(), true.into());
+        }
+        if let Some(asks) = asks {
+            offer.insert("asks".into(), asks.into());
+        }
+        if !action.keywords.is_empty() {
+            offer.insert("keywords".into(), serde_json::json!(action.keywords));
+        }
+        if let Some(icon) = action.icon {
+            offer.insert("icon".into(), serde_json::json!(icon));
+        }
+        offers.push(serde_json::Value::Object(offer));
+    }
+    offers
 }
 
 /// Publish the app's read effects on `surface`: its resource's verbs take

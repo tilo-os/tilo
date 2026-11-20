@@ -74,11 +74,141 @@ ext  = []
 # search's "Search YouTube for …" does.
 schemes = ["tube"]
 
-# A link of a scheme above reaches the app through the `open-link` every app
-# publishes; offered here so a link starts the app when no window of it runs.
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
 [[offers]]
-resource  = "tube.library"
-action    = "open-link"
-label     = "Open link"
-kind      = "read"
+resource = "tube.library"
+action = "show-screen"
+label = "Show a screen"
+kind = "read"
 operation = "view"
+asks = "screen"
+[[offers]]
+resource = "tube.library"
+action = "toggle-sidebar"
+label = "Show or hide navigation"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "tube.library"
+action = "search"
+label = "Search videos"
+kind = "read"
+asks = "query"
+[[offers]]
+resource = "tube.library"
+action = "pair-device"
+label = "Pair with an invitation"
+kind = "outside"
+confirm = true
+asks = "invite"
+[[offers]]
+resource = "tube.library"
+action = "open-link"
+label = "Open link"
+kind = "read"
+operation = "view"
+asks = "link"
+[[offers]]
+resource = "tube.history"
+action = "clear-history"
+label = "Clear watch history"
+kind = "read"
+confirm = true
+[[offers]]
+resource = "tube.setting:autoplay"
+resource-kind = "tube.setting"
+action = "set-preference"
+label = "Set a playback preference"
+kind = "read"
+[[offers]]
+resource = "tube.setting:comments"
+resource-kind = "tube.setting"
+action = "set-preference"
+label = "Set a playback preference"
+kind = "read"
+[[offers]]
+resource = "tube.setting:sponsorblock"
+resource-kind = "tube.setting"
+action = "set-preference"
+label = "Set a playback preference"
+kind = "read"
+[[offers]]
+resource = "tube.setting:dearrow"
+resource-kind = "tube.setting"
+action = "set-preference"
+label = "Set a playback preference"
+kind = "read"
+[[offers]]
+resource = "tube.setting:dearrow-titles"
+resource-kind = "tube.setting"
+action = "set-preference"
+label = "Set a playback preference"
+kind = "read"
+[[offers]]
+resource = "tube.setting:dearrow-thumbnails"
+resource-kind = "tube.setting"
+action = "set-preference"
+label = "Set a playback preference"
+kind = "read"
+[[offers]]
+resource = "tube.setting:dislikes"
+resource-kind = "tube.setting"
+action = "set-preference"
+label = "Set a playback preference"
+kind = "read"
+[[offers]]
+resource = "tube.setting:preferred-quality"
+resource-kind = "tube.setting"
+action = "set-preferred-quality"
+label = "Set preferred quality"
+kind = "read"
+[[offers]]
+resource = "tube.setting:sponsor-category:sponsor"
+resource-kind = "tube.setting"
+action = "set-segment-handling"
+label = "Set segment handling"
+kind = "read"
+[[offers]]
+resource = "tube.setting:sponsor-category:selfpromo"
+resource-kind = "tube.setting"
+action = "set-segment-handling"
+label = "Set segment handling"
+kind = "read"
+[[offers]]
+resource = "tube.setting:sponsor-category:interaction"
+resource-kind = "tube.setting"
+action = "set-segment-handling"
+label = "Set segment handling"
+kind = "read"
+[[offers]]
+resource = "tube.setting:sponsor-category:intro"
+resource-kind = "tube.setting"
+action = "set-segment-handling"
+label = "Set segment handling"
+kind = "read"
+[[offers]]
+resource = "tube.setting:sponsor-category:outro"
+resource-kind = "tube.setting"
+action = "set-segment-handling"
+label = "Set segment handling"
+kind = "read"
+[[offers]]
+resource = "tube.setting:sponsor-category:preview"
+resource-kind = "tube.setting"
+action = "set-segment-handling"
+label = "Set segment handling"
+kind = "read"
+[[offers]]
+resource = "tube.setting:sponsor-category:music_offtopic"
+resource-kind = "tube.setting"
+action = "set-segment-handling"
+label = "Set segment handling"
+kind = "read"
+[[offers]]
+resource = "tube.setting:sponsor-category:filler"
+resource-kind = "tube.setting"
+action = "set-segment-handling"
+label = "Set segment handling"
+kind = "read"

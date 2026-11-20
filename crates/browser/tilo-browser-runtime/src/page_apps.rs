@@ -8,8 +8,8 @@
 
 use std::sync::Arc;
 
-use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
+use tilo_desktop_search::providers::{AppEntry, PublishedActions};
 use tilo_desktop_search::{Held, SearchPreferences};
 use tilo_session::platform::apps::{Apps, Reading};
 
@@ -62,5 +62,14 @@ impl Reading for Shipped {
     /// The store a person gets apps from: a page has none of its own.
     fn catalogue(&self, _workspace: &str) -> Option<Held> {
         None
+    }
+
+    /// What the bundle's apps this page opens offer while closed, as the fleet's manifests declare
+    /// it: the page fetches an app's code only when it first opens, so what it offers before then
+    /// is what its manifest says.
+    fn offered(&self, workspace: &str) -> Vec<PublishedActions> {
+        crate::desktop::web_applications()
+            .filter_map(|app| PublishedActions::offered_by(&app.id, &app.title, workspace))
+            .collect()
     }
 }

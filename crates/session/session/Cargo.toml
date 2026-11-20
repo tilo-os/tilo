@@ -443,6 +443,8 @@ tilo-automerge-isolate.workspace = true
 # Search reads the device's installed apps and the person's choices, and
 # follows the directories its lists name.
 tilo-desktop-search = { path = "../desktop-search", features = ["indexes", "settings", "catalogue"] }
+# What an installed app's signed manifest offers while it is closed, which search finds.
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 

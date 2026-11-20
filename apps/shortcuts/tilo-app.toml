@@ -69,3 +69,79 @@ splash-budget   = 250
 [providers]
 mime = []
 ext  = []
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "shortcuts.workbench"
+action = "draft-proposal"
+label = "Open proposed shortcut"
+operation = "document"
+asks = "shortcut"
+[[offers]]
+resource = "shortcuts.workbench"
+action = "ignore-proposal"
+label = "Ignore the proposal"
+operation = "document"
+asks = "key"
+[[offers]]
+resource = "shortcuts.workbench"
+action = "allow-proposal"
+label = "Offer the proposal again"
+operation = "document"
+asks = "key"
+[[offers]]
+resource = "shortcuts.workbench"
+action = "new-draft"
+label = "New shortcut"
+operation = "document"
+asks = "name"
+[[offers]]
+resource = "shortcuts.workbench"
+action = "draft-shortcut"
+label = "Import a shortcut"
+operation = "document"
+asks = "shortcut"
+[[offers]]
+resource = "shortcuts.workbench"
+action = "open-shortcut"
+label = "Edit a saved shortcut"
+operation = "document"
+asks = "shortcut"
+[[offers]]
+resource = "shortcuts.workbench"
+action = "duplicate-shortcut"
+label = "Duplicate saved shortcut"
+operation = "document"
+asks = "shortcut"
+[[offers]]
+resource = "shortcuts.workbench"
+action = "refresh"
+label = "Reload shortcuts"
+kind = "outside"
+[[offers]]
+resource = "shortcuts.workbench"
+action = "save"
+label = "Save shortcut"
+kind = "outside"
+asks = "draft"
+[[offers]]
+resource = "shortcuts.workbench"
+action = "run"
+label = "Run shortcut"
+kind = "outside"
+asks = "shortcut"
+[[offers]]
+resource = "shortcuts.workbench"
+action = "delete"
+label = "Delete shortcut"
+kind = "outside"
+confirm = true
+asks = "shortcut"
+[[offers]]
+resource = "shortcuts.workbench"
+action = "describe"
+label = "Draft with the agent"
+kind = "outside"
+asks = "description"

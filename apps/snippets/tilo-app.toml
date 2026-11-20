@@ -67,3 +67,25 @@ splash-budget   = 250
 [providers]
 mime = []
 ext  = []
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "snippets.library"
+action = "new-snippet"
+label = "New snippet"
+operation = "document"
+asks = "title"
+[[offers]]
+resource = "snippets.library"
+action = "remove-tag"
+label = "Remove tag"
+operation = "document"
+asks = "tag"
+[[offers]]
+resource = "snippets.library"
+action = "search"
+label = "Search snippets"
+kind = "read"
+operation = "view"

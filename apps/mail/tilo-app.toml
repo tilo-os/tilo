@@ -93,3 +93,99 @@ resources = [
     "mail.message",
     "mail.draft",
 ]
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "mail.mailbox"
+action = "server-applied"
+label = "Server applied the update"
+kind = "outside"
+operation = "document"
+asks = "update"
+[[offers]]
+resource = "mail.mailbox"
+action = "start-draft-body"
+label = "Start the draft body"
+kind = "outside"
+operation = "document"
+asks = "text"
+[[offers]]
+resource = "mail.mailbox"
+action = "save-draft"
+label = "Save draft"
+kind = "outside"
+operation = "document"
+asks = "message"
+[[offers]]
+resource = "mail.mailbox"
+action = "show-draft"
+label = "Show the draft"
+kind = "outside"
+operation = "document"
+asks = "message"
+[[offers]]
+resource = "mail.mailbox"
+action = "discard-draft"
+label = "Discard draft"
+kind = "outside"
+operation = "document"
+confirm = true
+asks = "draft"
+[[offers]]
+resource = "mail.mailbox"
+action = "cancel-send"
+label = "Cancel sending"
+kind = "outside"
+operation = "document"
+asks = "id"
+[[offers]]
+resource = "mail.mailbox"
+action = "compose"
+label = "Compose message"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "mail.mailbox"
+action = "contact-recipients"
+label = "Choose a recipient"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "mail.mailbox"
+action = "account-settings"
+label = "Account settings"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "chain:derived:mail-messages@derived:default@tab:0000000000000000"
+resource-kind = "mail.messages"
+action = "archive"
+label = "Archive"
+asks = "messages"
+[[offers]]
+resource = "chain:derived:mail-messages@derived:default@tab:0000000000000000"
+resource-kind = "mail.messages"
+action = "trash"
+label = "Move to Trash"
+asks = "messages"
+[[offers]]
+resource = "chain:derived:mail-messages@derived:default@tab:0000000000000000"
+resource-kind = "mail.messages"
+action = "purge"
+label = "Delete permanently"
+confirm = true
+asks = "messages"
+[[offers]]
+resource = "chain:derived:mail-messages@derived:default@tab:0000000000000000"
+resource-kind = "mail.messages"
+action = "ingest"
+label = "Add fetched messages"
+asks = "messages"
+[[offers]]
+resource = "chain:derived:mail-messages@derived:default@tab:0000000000000000"
+resource-kind = "mail.messages"
+action = "server-applied"
+label = "Server applied the update"
+asks = "updates"

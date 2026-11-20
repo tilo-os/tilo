@@ -70,3 +70,74 @@ mime = []
 ext  = [
     "typ",
 ]
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "typst-editor.workspace"
+action = "new-file"
+label = "New Typst file"
+operation = "document"
+asks = "name"
+[[offers]]
+resource = "typst-editor.workspace"
+action = "compile"
+label = "Recompile"
+kind = "outside"
+[[offers]]
+resource = "typst-editor.workspace"
+action = "save"
+label = "Save Typst file"
+kind = "outside"
+[[offers]]
+resource = "typst-editor.workspace"
+action = "save-as"
+label = "Save Typst file as…"
+kind = "outside"
+[[offers]]
+resource = "typst-editor.workspace"
+action = "open-file"
+label = "Open Typst file"
+kind = "outside"
+[[offers]]
+resource = "typst-editor.workspace"
+action = "export-pdf"
+label = "Export PDF"
+kind = "outside"
+[[offers]]
+resource = "typst-editor.workspace"
+action = "zoom-out"
+label = "Zoom out"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "typst-editor.workspace"
+action = "zoom-in"
+label = "Zoom in"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "typst-editor.workspace"
+action = "fit-width"
+label = "Fit width"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "typst-editor.workspace"
+action = "problems"
+label = "Problems"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "typst-editor.workspace"
+action = "editor"
+label = "Show editor"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "typst-editor.workspace"
+action = "preview"
+label = "Show preview"
+kind = "read"
+operation = "view"

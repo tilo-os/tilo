@@ -65,11 +65,118 @@ ext  = ["flatpakref", "tapp"]
 # route. The target is a stable package id, never an install command.
 schemes = ["tilo-store"]
 
-# A link of a scheme above reaches the app through the `open-link` every app
-# publishes; offered here so a link starts the app when no window of it runs.
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
 [[offers]]
-resource  = "store.catalog"
-action    = "open-link"
-label     = "Open link"
-kind      = "read"
-operation = "view"
+resource = "store.catalog"
+action = "draft-report"
+label = "Create report draft"
+operation = "document"
+asks = "app_id"
+[[offers]]
+resource = "store.catalog"
+action = "inspect-catalogue"
+label = "Inspect catalogue"
+kind = "read"
+[[offers]]
+resource = "store.catalog"
+action = "refresh"
+label = "Refresh catalogue"
+kind = "outside"
+[[offers]]
+resource = "store.catalog"
+action = "update-all"
+label = "Update all apps"
+kind = "outside"
+[[offers]]
+resource = "store.catalog"
+action = "set-search"
+label = "Search apps"
+kind = "read"
+asks = "query"
+[[offers]]
+resource = "store.catalog"
+action = "show-view"
+label = "Show a Store view"
+kind = "read"
+asks = "view"
+[[offers]]
+resource = "store.catalog"
+action = "show-more"
+label = "Show more apps"
+kind = "read"
+[[offers]]
+resource = "store.catalog"
+action = "block-app"
+label = "Block app"
+kind = "outside"
+asks = "app"
+[[offers]]
+resource = "store.catalog"
+action = "unblock-app"
+label = "Unblock app"
+kind = "outside"
+asks = "app"
+[[offers]]
+resource = "store.catalog"
+action = "set-category"
+label = "Show category"
+kind = "read"
+asks = "category"
+[[offers]]
+resource = "store.catalog"
+action = "clear-filters"
+label = "Clear the search"
+kind = "read"
+[[offers]]
+resource = "store.catalog"
+action = "show-runtime-details"
+label = "Review an app's runtime"
+kind = "read"
+asks = "runtime"
+[[offers]]
+resource = "store.catalog"
+action = "set-technical-details"
+label = "Toggle technical details"
+kind = "read"
+asks = "expanded"
+[[offers]]
+resource = "store.catalog"
+action = "import-package"
+label = "Review a local package"
+kind = "outside"
+[[offers]]
+resource = "store.catalog"
+action = "open-reference"
+label = "Open a Flatpak reference"
+kind = "read"
+[[offers]]
+resource = "store.catalog"
+action = "show-catalogue"
+label = "Back to apps"
+kind = "read"
+[[offers]]
+resource = "store.catalog"
+action = "open-link"
+label = "Open a web page"
+kind = "outside"
+asks = "url"
+[[offers]]
+resource = "store:remotes"
+resource-kind = "store.remote-list"
+action = "show-remotes"
+label = "Show Flatpak remotes"
+kind = "read"
+[[offers]]
+resource = "store:remotes"
+resource-kind = "store.remote-list"
+action = "refresh-remotes"
+label = "Refresh remotes"
+kind = "outside"
+[[offers]]
+resource = "store:moderation"
+resource-kind = "store.moderation"
+action = "show-trust"
+label = "Show trust and moderation"
+kind = "read"

@@ -71,3 +71,12 @@ splash-budget   = 250
 [providers]
 mime = []
 ext  = []
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "backups.workspace"
+action = "setup"
+label = "Set up backups"
+kind = "outside"

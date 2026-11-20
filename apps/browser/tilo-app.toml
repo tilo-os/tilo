@@ -98,11 +98,203 @@ ext  = [
 # it on the search engine the person chose.
 schemes = ["http", "https", "web+search"]
 
-# A link of a scheme above reaches the app through the `open-link` every app
-# publishes; offered here so a link starts the app when no window of it runs.
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
 [[offers]]
-resource  = "browser.application"
-action    = "open-link"
-label     = "Open link"
-kind      = "read"
+resource = "browser.application"
+action = "add-bookmark"
+label = "Bookmark a page"
+operation = "document"
+asks = "url"
+keywords = ["bookmark", "favourite", "favorite", "save page"]
+[[offers]]
+resource = "browser.application"
+action = "forget-site-forms"
+label = "Forget a site’s remembered forms"
+operation = "document"
+asks = "origin"
+keywords = ["remembered forms", "site memory", "forget site"]
+[[offers]]
+resource = "browser.application"
+action = "forget-all-forms"
+label = "Forget all remembered forms"
+operation = "document"
+keywords = ["remembered forms", "site memory", "clear forms"]
+[[offers]]
+resource = "browser.application"
+action = "show-page"
+label = "Show current page"
+kind = "read"
 operation = "view"
+[[offers]]
+resource = "browser.application"
+action = "show-settings"
+label = "Browser settings"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "browser.application"
+action = "edit-address"
+label = "Edit saved address"
+kind = "read"
+operation = "view"
+asks = "profile"
+[[offers]]
+resource = "browser.application"
+action = "delete-address"
+label = "Delete saved address"
+kind = "read"
+operation = "view"
+asks = "profile"
+[[offers]]
+resource = "browser.application"
+action = "open-link"
+label = "Open link"
+kind = "read"
+operation = "view"
+asks = "link"
+[[offers]]
+resource = "browser.page"
+action = "reload"
+label = "Reload"
+kind = "outside"
+[[offers]]
+resource = "browser.page"
+action = "navigate"
+label = "Open address"
+kind = "outside"
+asks = "url"
+[[offers]]
+resource = "browser.page"
+action = "open-tab"
+label = "Open in new tab"
+kind = "outside"
+asks = "url"
+[[offers]]
+resource = "browser.page"
+action = "picture-in-picture"
+label = "Picture in Picture"
+kind = "outside"
+[[offers]]
+resource = "browser.page"
+action = "reader-view"
+label = "Reader view"
+kind = "outside"
+[[offers]]
+resource = "browser.page"
+action = "review-page"
+label = "Review page"
+kind = "outside"
+keywords = ["review form", "check answers", "who filled"]
+[[offers]]
+resource = "browser.page"
+action = "show-page-field"
+label = "Show field on the page"
+kind = "outside"
+asks = "element"
+[[offers]]
+resource = "browser.page"
+action = "zoom-in"
+label = "Zoom in"
+kind = "outside"
+[[offers]]
+resource = "browser.page"
+action = "zoom-out"
+label = "Zoom out"
+kind = "outside"
+[[offers]]
+resource = "browser.page"
+action = "pointer-page"
+label = "Move pointer"
+kind = "outside"
+asks = "steps"
+[[offers]]
+resource = "browser.page"
+action = "bookmark-personal-page"
+label = "Bookmark this page"
+kind = "outside"
+[[offers]]
+resource = "browser.page"
+action = "read-remembered-forms"
+label = "Read this site’s remembered forms"
+kind = "read"
+keywords = ["remembered form", "site memory"]
+[[offers]]
+resource = "browser.page"
+action = "set-site-protection"
+label = "Turn tracker protection off for this site"
+operation = "document"
+keywords = ["ad blocker", "tracking protection", "block trackers", "privacy"]
+[[offers]]
+resource = "browser.session"
+resource-kind = "browser.history-pause"
+action = "toggle-pause"
+label = "Pause history"
+kind = "outside"
+[[offers]]
+resource = "browser.bookmarks"
+action = "show-bookmarks"
+label = "Show bookmarks"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "browser.downloads"
+action = "start-download"
+label = "Download address"
+kind = "outside"
+asks = "url"
+[[offers]]
+resource = "browser.extensions"
+action = "show-extensions"
+label = "Show extensions"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "browser.library"
+action = "show-history"
+label = "Show history"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "browser.library"
+action = "show-bookmarks"
+label = "Show bookmarks"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "browser.library"
+action = "show-downloads"
+label = "Show downloads"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "browser.library"
+action = "show-extensions"
+label = "Show extensions"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "browser.library"
+action = "set-library-filter"
+label = "Filter library"
+kind = "read"
+operation = "view"
+asks = "query"
+[[offers]]
+resource = "browser.settings"
+action = "request-site-data-clear"
+label = "Clear site data"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "browser.settings"
+action = "read-all-remembered-forms"
+label = "Read all remembered forms"
+kind = "read"
+keywords = ["remembered form", "site memory"]
+[[offers]]
+resource = "browser.service-sessions"
+action = "list-service-sessions"
+label = "List accounts"
+kind = "read"

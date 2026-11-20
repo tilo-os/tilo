@@ -86,19 +86,56 @@ splash-budget   = 250
 mime = []
 ext  = []
 
-# Actions Chat offers while it is not running: the action catalogue lists
-# them, and invoking one starts Chat. The running app's published action
-# admits the invocation (a test checks the two agree).
-[[offers]]
-resource  = "chat.workspace"
-action    = "start-call"
-label     = "Start a call"
-kind      = "read"
-operation = "effect"
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
 
 [[offers]]
-resource  = "chat.workspace"
-action    = "start-video-call"
-label     = "Start a video call"
-kind      = "undoable"
-operation = "effect"
+resource = "chat.workspace"
+action = "create-category"
+label = "New category"
+operation = "document"
+asks = "name"
+[[offers]]
+resource = "chat.workspace"
+action = "create-channel"
+label = "New channel"
+operation = "document"
+asks = "name"
+[[offers]]
+resource = "chat.workspace"
+action = "open-agent"
+label = "Open agent conversation"
+kind = "read"
+operation = "view"
+asks = "agent"
+[[offers]]
+resource = "chat.workspace"
+action = "attach-file"
+label = "Attach file"
+kind = "outside"
+asks = "channel"
+[[offers]]
+resource = "chat.workspace"
+action = "share-live-context"
+label = "Share live context"
+kind = "outside"
+[[offers]]
+resource = "chat.workspace"
+action = "stop-sharing-live-context"
+label = "Stop sharing live context"
+kind = "outside"
+[[offers]]
+resource = "chat.workspace"
+action = "start-call"
+label = "Start a call"
+kind = "read"
+[[offers]]
+resource = "chat.workspace"
+action = "start-video-call"
+label = "Start a video call"
+[[offers]]
+resource = "chain:derived:messages@derived:default@tab:0000000000000000"
+resource-kind = "chat.messages"
+action = "carry-counts"
+label = "Carry the counts of the parts before"
+asks = "earlier"

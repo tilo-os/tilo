@@ -138,9 +138,16 @@ def offers(manifest: dict) -> list[dict]:
     return [
         dict(
             resource=offer["resource"],
+            resource_kind=offer.get("resource-kind", ""),
             action=offer["action"],
             label=offer["label"],
             description=offer.get("description", ""),
+            kind=offer.get("kind", "undoable"),
+            operation=offer.get("operation", "effect"),
+            confirm=bool(offer.get("confirm", False)),
+            asks=offer.get("asks", ""),
+            keywords=list(offer.get("keywords", [])),
+            icon=offer.get("icon", ""),
         )
         for offer in manifest.get("offers", [])
         if isinstance(offer, dict) and {"resource", "action", "label"} <= offer.keys()
@@ -205,7 +212,8 @@ def text(value: str) -> str:
 def blob(value: str) -> str:
     """`value` as a Rust string literal, its lines kept one after another."""
     return '"' + (value.replace("\\", "\\\\").replace('"', '\\"')
-                  .replace("\n", "\\n").replace("\t", "\\t")) + '"'
+                  .replace("\n", "\\n").replace("\t", "\\t")
+                  .replace("\x1f", "\\u{1f}")) + '"'
 
 
 def strings(items: list[str]) -> str:
@@ -218,7 +226,7 @@ def render(apps: list[dict], own: list[tuple[str, str]]) -> str:
         "//! `apps/*/surface.toml`, `apps/*/search/*.ftl`, `apps/*/src` and `apps/tl/*/app.tl`.",
         "//! Do not edit; change the sources and run the generator.",
         "",
-        "use super::{FleetAction, FleetApp};",
+        "use super::FleetApp;",
         "",
         "/// `(app, kind)` of each kind an app's members each keep as their own (`[resources] own`).",
         "pub(super) const OWN_KINDS: &[(&str, &str)] = &[",
@@ -256,19 +264,16 @@ def render(apps: list[dict], own: list[tuple[str, str]]) -> str:
         lines.append(f"        keywords: {strings(app['keywords'])},")
         types = ", ".join(f"({text(kind)}, {text(label)})" for kind, label in app["resource_types"])
         lines.append(f"        resource_types: &[{types}],")
-        if app["actions"]:
-            lines.append("        actions: &[")
-            for action in app["actions"]:
-                lines.append(
-                    "            FleetAction {"
-                    f" resource: {text(action['resource'])},"
-                    f" action: {text(action['action'])},"
-                    f" label: {text(action['label'])},"
-                    f" description: {text(action['description'])} }},"
-                )
-            lines.append("        ],")
-        else:
-            lines.append("        actions: &[],")
+        offers = "".join(
+            "\t".join([
+                action["resource"], action["resource_kind"], action["action"], action["label"],
+                action["description"], action["kind"], action["operation"],
+                "1" if action["confirm"] else "0", action["asks"],
+                "\x1f".join(action["keywords"]), action["icon"],
+            ]) + "\n"
+            for action in app["actions"]
+        )
+        lines.append(f"        offers: {blob(offers)},")
         lines.append("    },")
     lines.append("];")
     return "\n".join(lines) + "\n"

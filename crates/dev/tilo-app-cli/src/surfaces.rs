@@ -200,6 +200,9 @@ pub(crate) fn run_surfaces(args: SurfacesArgs) -> Result<Value> {
             let file = tilo_app_cli::surface::write(app, &report.resources)?;
             println!("Wrote {}", file.display());
             written.push(file);
+            if tilo_app_cli::surface::write_offers(app, &report.offers)? {
+                println!("Wrote {}'s offers", app.display());
+            }
         }
         match tilo_app_cli::surface::check_report(
             app,

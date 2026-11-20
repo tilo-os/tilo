@@ -8,8 +8,8 @@
 
 use std::sync::Arc;
 
-use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
+use tilo_desktop_search::providers::{AppEntry, PublishedActions};
 use tilo_desktop_search::{Held, SearchPreferences};
 
 /// The apps a host lists, and what it calls them.
@@ -39,4 +39,7 @@ pub trait Reading: Send + Sync {
     /// The apps a person can get, in `workspace`; `None` where this host has no store to get one
     /// from.
     fn catalogue(&self, workspace: &str) -> Option<Held>;
+    /// What each app installed here offers while it is closed (its manifest's `[[offers]]`), as
+    /// invoked in `workspace`: what search finds of an app before it ever opened.
+    fn offered(&self, workspace: &str) -> Vec<PublishedActions>;
 }

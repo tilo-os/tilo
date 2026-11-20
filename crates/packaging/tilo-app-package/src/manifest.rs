@@ -1075,7 +1075,9 @@ impl Resources {
 /// operation = "view"
 /// ```
 ///
-/// Only actions without parameters are declared here: the running app
+/// `tilo-app surface` writes them from what the app's code publishes on an
+/// empty document: the actions people are offered with nothing chosen that
+/// take nothing, or one line of typed text ([`Self::asks`]). The running app
 /// publishes the full typed contract, and that is what admits an invocation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OfferedAction {
@@ -1098,6 +1100,15 @@ pub struct OfferedAction {
     /// Whether a person confirms the action before it runs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub confirm: bool,
+    /// The parameter one line a person types fills, when it asks for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asks: Option<String>,
+    /// The other words people use for it, which search ranks as it ranks the label.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
+    /// Its picture, by its Lucide name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 impl OfferedAction {
@@ -1428,6 +1439,9 @@ mode = "off"
                         kind: OfferKind::Read,
                         operation: OfferOperation::View,
                         confirm: false,
+                        asks: None,
+                        keywords: Vec::new(),
+                        icon: None,
                     },
                     OfferedAction {
                         resource: "example.list".into(),
@@ -1438,6 +1452,9 @@ mode = "off"
                         kind: OfferKind::Undoable,
                         operation: OfferOperation::Effect,
                         confirm: true,
+                        asks: None,
+                        keywords: Vec::new(),
+                        icon: None,
                     },
                 ]
             );

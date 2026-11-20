@@ -76,3 +76,23 @@ splash-budget   = 250
 [providers]
 mime = []
 ext  = []
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "monitor.processes"
+action = "refresh"
+label = "Refresh processes"
+kind = "read"
+[[offers]]
+resource = "monitor.processes"
+action = "show-tab"
+label = "Show tab"
+kind = "read"
+asks = "tab"
+[[offers]]
+resource = "monitor.processes"
+action = "filter"
+label = "Filter processes"
+kind = "read"

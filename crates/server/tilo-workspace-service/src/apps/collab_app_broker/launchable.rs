@@ -2171,6 +2171,9 @@ mod tests {
             kind,
             operation: tilo_app_package::manifest::OfferOperation::Effect,
             confirm,
+            asks: None,
+            keywords: Vec::new(),
+            icon: None,
         }
     }
 

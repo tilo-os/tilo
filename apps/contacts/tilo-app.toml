@@ -68,3 +68,69 @@ ext  = ["vcf", "vcard"]
 [resources]
 own   = ["tilo.chain-unsent"]
 kinds = ["contacts.book", "tilo.contacts.identities", "contacts.contacts", "tilo.chain-unsent"]
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "contacts.book"
+action = "open-accounts"
+label = "Manage connected accounts"
+kind = "read"
+operation = "view"
+asks = "person"
+[[offers]]
+resource = "contacts.book"
+action = "close-accounts"
+label = "Return to contacts"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "contacts.book"
+action = "select-account-person"
+label = "Choose contact"
+kind = "read"
+operation = "view"
+asks = "value"
+[[offers]]
+resource = "contacts.book"
+action = "cancel-account-review"
+label = "Cancel account change"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "contacts.book"
+action = "open-website"
+label = "Open website"
+kind = "outside"
+asks = "contact"
+[[offers]]
+resource = "contacts.book"
+action = "import-vcard"
+label = "Import vCard"
+kind = "outside"
+[[offers]]
+resource = "contacts.book"
+action = "export-all-vcard"
+label = "Export all contacts"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "contacts.book"
+action = "export-contact"
+label = "Export contact"
+kind = "outside"
+confirm = true
+asks = "contact"
+[[offers]]
+resource = "chain:derived:contacts@derived:default@tab:0000000000000000"
+resource-kind = "contacts.contacts"
+action = "new-contact"
+label = "New contact"
+asks = "name"
+[[offers]]
+resource = "chain:derived:contacts@derived:default@tab:0000000000000000"
+resource-kind = "contacts.contacts"
+action = "add-contacts"
+label = "Add contacts"
+asks = "contacts"

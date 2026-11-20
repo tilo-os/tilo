@@ -85,3 +85,43 @@ mime = [
 ext  = [
     "epub",
 ]
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "ebook.library"
+action = "remove-from-library"
+label = "Remove from library"
+operation = "document"
+confirm = true
+asks = "book"
+[[offers]]
+resource = "ebook.library"
+action = "delete-highlight"
+label = "Delete highlight"
+operation = "document"
+asks = "highlight"
+[[offers]]
+resource = "ebook.library"
+action = "delete-annotation"
+label = "Delete annotation"
+operation = "document"
+asks = "annotation"
+[[offers]]
+resource = "ebook.library"
+action = "delete-scheme"
+label = "Delete scheme"
+operation = "document"
+asks = "scheme"
+[[offers]]
+resource = "ebook.library"
+action = "open-book"
+label = "Open book"
+kind = "outside"
+[[offers]]
+resource = "ebook.library"
+action = "read-chapter"
+label = "Read chapter"
+kind = "read"
+asks = "book"

@@ -293,59 +293,6 @@ fn descriptor(action: &PublishedAction) -> ActionDescriptor {
 /// lists it while the app is closed. Its contract is what the signed
 /// manifest says; once the app runs, its own published action admits the
 /// invocation.
-pub(super) fn offered_action(
-    app: &crate::apps::services::LaunchableApplication,
-    offer: &tilo_app_package::manifest::OfferedAction,
-) -> PublishedAction {
-    use tilo_app_package::manifest::{OfferKind, OfferOperation};
-    let kind = match offer.kind {
-        OfferKind::Read => tilo_actions::ActionKind::Read,
-        OfferKind::Undoable => tilo_actions::ActionKind::Undoable,
-        OfferKind::Outside => tilo_actions::ActionKind::Outside,
-    };
-    let (risk, confirmation) = match (offer.confirm, offer.kind) {
-        (true, _) => (
-            tilo_actions::RiskLevel::Destructive,
-            tilo_actions::ConfirmationPolicy::Confirm,
-        ),
-        (false, OfferKind::Read) => (
-            tilo_actions::RiskLevel::None,
-            tilo_actions::ConfirmationPolicy::None,
-        ),
-        (false, _) => (
-            tilo_actions::RiskLevel::Low,
-            tilo_actions::ConfirmationPolicy::None,
-        ),
-    };
-    PublishedAction {
-        did: None,
-        state: tilo_actions::ActionState::default(),
-        semantic_identity: None,
-        resource: offer.resource.clone(),
-        action: offer.action.clone(),
-        resource_kind: offer.resource_kind().to_owned(),
-        resource_label: app.display_name.clone(),
-        action_label: offer.label.clone(),
-        keywords: Vec::new(),
-        icon: None,
-        description: offer.description.clone(),
-        operation_kind: match offer.operation {
-            OfferOperation::Document => tilo_actions::OperationKind::Document,
-            OfferOperation::Effect => tilo_actions::OperationKind::Effect,
-            OfferOperation::View => tilo_actions::OperationKind::View,
-        },
-        params: Vec::new(),
-        contract: tilo_actions::ActionContract {
-            kind,
-            risk,
-            confirmation,
-            ..tilo_actions::ActionContract::default()
-        },
-        view: None,
-        input: super::PublishedInput::None,
-    }
-}
-
 fn app_open_descriptor(app: &crate::apps::services::LaunchableApplication) -> ActionDescriptor {
     let display_name = &app.display_name;
     let (resource_kind, description) = if app.unconfined {
@@ -1698,7 +1645,7 @@ impl AppBrokerState {
                             offer.action.clone(),
                         ))
                     })
-                    .map(|offer| offered_action(app, offer))
+                    .map(|offer| app.offered(offer))
                     .filter_map(|action| {
                         Self::offered_to(
                             workspace,
@@ -2164,7 +2111,7 @@ impl AppBrokerState {
         app.offers
             .iter()
             .find(|offer| offer.resource == address.resource && offer.action == address.action)
-            .map(|offer| offered_action(app, offer))
+            .map(|offer| app.offered(offer))
     }
 
     /// Hand `request` to the publisher `peer_id` that offers it at `address` now: a job on that

@@ -94,7 +94,82 @@ pub struct PublishedAction {
     pub input: PublishedInput,
 }
 
+/// One action an app offers while it is closed, as its manifest's `[[offers]]` declare it:
+/// what the app's code publishes on an empty document, written there by `tilo-app surface`.
+/// Invoking one launches the app, and the action it then publishes admits the invocation.
+#[derive(Clone, Debug)]
+pub struct Offer<'a> {
+    pub resource: &'a str,
+    pub resource_kind: &'a str,
+    pub action: &'a str,
+    pub label: &'a str,
+    pub description: Option<&'a str>,
+    pub kind: crate::ActionKind,
+    pub operation: OperationKind,
+    /// A person confirms it first.
+    pub confirm: bool,
+    /// The parameter one line a person types fills, when it asks for one.
+    pub asks: Option<&'a str>,
+    pub keywords: Vec<&'a str>,
+    pub icon: Option<&'a str>,
+}
+
 impl PublishedAction {
+    /// What `offer` of the app called `app_name` publishes, as offered while the app is closed.
+    #[must_use]
+    pub fn offered(offer: &Offer<'_>, app_name: &str) -> Self {
+        use crate::{ActionKind, ConfirmationPolicy, RiskLevel};
+        let (risk, confirmation) = match (offer.confirm, offer.kind) {
+            (true, _) => (RiskLevel::Destructive, ConfirmationPolicy::Confirm),
+            (false, ActionKind::Read) => (RiskLevel::None, ConfirmationPolicy::None),
+            (false, _) => (RiskLevel::Low, ConfirmationPolicy::None),
+        };
+        let params: Vec<ActionParam> = offer
+            .asks
+            .map(|name| {
+                let mut param = ActionParam::required("", crate::ParamType::Text, "");
+                param.name = name.to_owned().into();
+                param
+            })
+            .into_iter()
+            .collect();
+        Self {
+            resource: offer.resource.to_owned(),
+            semantic_identity: None,
+            action: offer.action.to_owned(),
+            resource_kind: offer.resource_kind.to_owned(),
+            resource_label: app_name.to_owned(),
+            action_label: offer.label.to_owned(),
+            keywords: offer
+                .keywords
+                .iter()
+                .map(|word| (*word).to_owned())
+                .collect(),
+            did: None,
+            icon: offer.icon.map(str::to_owned),
+            description: offer.description.map(str::to_owned),
+            state: crate::ActionState::default(),
+            operation_kind: offer.operation,
+            input: if params.is_empty() {
+                PublishedInput::None
+            } else {
+                PublishedInput::Text {
+                    prompt: offer.label.to_owned(),
+                    placeholder: String::new(),
+                    wants_content: false,
+                }
+            },
+            params,
+            contract: ActionContract {
+                kind: offer.kind,
+                risk,
+                confirmation,
+                ..ActionContract::default()
+            },
+            view: None,
+        }
+    }
+
     /// Whether this action, read from the app that published it, names a
     /// semantic identity only of its own kind and in bounds.
     pub fn check(&self) -> Result<(), String> {

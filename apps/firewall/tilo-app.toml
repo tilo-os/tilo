@@ -72,3 +72,23 @@ splash-budget   = 250
 [providers]
 mime = []
 ext  = []
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "firewall.config"
+action = "import"
+label = "Import configuration"
+operation = "document"
+asks = "config"
+[[offers]]
+resource = "firewall.config"
+action = "retry"
+label = "Try again"
+kind = "outside"
+[[offers]]
+resource = "firewall.config"
+action = "read-blocked"
+label = "Show dropped traffic"
+kind = "read"

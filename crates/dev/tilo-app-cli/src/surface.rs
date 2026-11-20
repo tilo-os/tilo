@@ -77,6 +77,9 @@ pub struct SurfaceReport {
     /// The ids the framework publishes its own actions under, as the app's
     /// framework reports them.
     pub reserved: Vec<String>,
+    /// What the app offers a person while it is closed: its manifest's
+    /// `[[offers]]`, as the code publishes them ([`write_offers`]).
+    pub offers: Vec<Value>,
 }
 
 /// Whether the app at `app_dir` runs through the framework, whose binary
@@ -130,6 +133,11 @@ pub fn parse_report(output: &str) -> Result<SurfaceReport> {
         effects: strings("effects"),
         views: strings("views"),
         reserved: strings("reserved"),
+        offers: report
+            .get("offers")
+            .and_then(Value::as_array)
+            .map(|offers| offers.iter().map(normalized).collect())
+            .unwrap_or_default(),
     })
 }
 
@@ -1036,6 +1044,7 @@ pub fn write_app(start: &Path, saved: Option<&Path>) -> Result<(PathBuf, Surface
     };
     ensure_view_built(&report, &app_dir)?;
     let path = write(&app_dir, &report.resources)?;
+    write_offers(&app_dir, &report.offers)?;
     sync_resource_kinds(&app_dir)?;
     Ok((path, report))
 }
@@ -1213,13 +1222,133 @@ pub fn check_report(
         Level::Error => crate::contract::source_catalog(app_dir)?,
         Level::Warning => None,
     };
-    Ok(findings(
+    let mut out = findings(
         &app_id(app_dir)?,
         report,
         committed(app_dir)?.as_ref(),
         catalog.as_ref(),
         level,
-    ))
+    );
+    if report.view.is_none() {
+        let manifest = std::fs::read_to_string(app_dir.join(MANIFEST))
+            .with_context(|| format!("reading {}'s manifest", app_dir.display()))?;
+        if with_offers(&manifest, &report.offers) != manifest {
+            out.findings.push(ContractFinding {
+                path: PathBuf::from(MANIFEST),
+                line: 0,
+                level: Level::Error,
+                rule: "surface",
+                message: "the actions the code offers while the app is closed differ from the \
+                          manifest's [[offers]]; write them with `tilo-app surface`"
+                    .to_owned(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// The manifest beside an app's [`FILE`].
+const MANIFEST: &str = "tilo-app.toml";
+
+/// The line above the written `[[offers]]`.
+const OFFERS_HEADER: &str = "# What the app offers a person while it is closed: written by `tilo-app surface` from\n\
+                             # what its code publishes. Invoking one opens the app and invokes it there.\n";
+
+/// Write `offers` as the `[[offers]]` of the manifest in `app_dir`. Answers
+/// whether the manifest changed.
+pub fn write_offers(app_dir: &Path, offers: &[Value]) -> Result<bool> {
+    let path = app_dir.join(MANIFEST);
+    let manifest =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let written = with_offers(&manifest, offers);
+    if written == manifest {
+        return Ok(false);
+    }
+    std::fs::write(&path, written).with_context(|| format!("writing {}", path.display()))?;
+    Ok(true)
+}
+
+/// `manifest` with its `[[offers]]` tables, and the comment above them, replaced by
+/// `offers`, written last. The `open-link` every app publishes is offered only by an app that
+/// takes a scheme (`[providers] schemes`): it is how a link of one starts the app.
+fn with_offers(manifest: &str, offers: &[Value]) -> String {
+    let takes_links = toml::from_str::<toml::Table>(manifest)
+        .ok()
+        .and_then(|table| {
+            let schemes = table.get("providers")?.get("schemes")?.as_array()?;
+            Some(!schemes.is_empty())
+        })
+        .unwrap_or(false);
+    let offers: Vec<&Value> = offers
+        .iter()
+        .filter(|offer| {
+            takes_links
+                || offer.get("action").and_then(Value::as_str)
+                    != Some(tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION)
+        })
+        .collect();
+    let lines: Vec<&str> = manifest.lines().collect();
+    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut in_offer = false;
+    for line in &lines {
+        let header = line.trim_start().starts_with('[');
+        if line.trim() == "[[offers]]" {
+            in_offer = true;
+            // The comment and blank lines just above an offer are about it.
+            while kept
+                .last()
+                .is_some_and(|above| above.trim().is_empty() || above.trim_start().starts_with('#'))
+            {
+                kept.pop();
+            }
+            continue;
+        }
+        if header {
+            in_offer = false;
+        }
+        if !in_offer {
+            kept.push(line);
+        }
+    }
+    while kept.last().is_some_and(|line| line.trim().is_empty()) {
+        kept.pop();
+    }
+    let mut out = kept.join("\n");
+    out.push('\n');
+    if !offers.is_empty() {
+        let _ = write!(out, "\n{OFFERS_HEADER}\n");
+    }
+    // What each says a person reads in the app's own words; a kind and an operation the
+    // manifest takes by default go unsaid.
+    for offer in offers {
+        out.push_str("[[offers]]\n");
+        for key in [
+            "resource",
+            "resource-kind",
+            "action",
+            "label",
+            "kind",
+            "operation",
+            "confirm",
+            "asks",
+            "keywords",
+            "icon",
+        ] {
+            let Some(value) = offer.get(key).filter(|value| {
+                !matches!(
+                    (key, value.as_str()),
+                    ("kind", Some("undoable")) | ("operation", Some("effect"))
+                )
+            }) else {
+                continue;
+            };
+            let Ok(value) = toml::Value::try_from(value) else {
+                continue;
+            };
+            let _ = writeln!(out, "{key} = {value}");
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1303,6 +1432,7 @@ mod tests {
             effects: Vec::new(),
             views: Vec::new(),
             reserved: Vec::new(),
+            offers: Vec::new(),
         }
     }
 

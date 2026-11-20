@@ -442,6 +442,25 @@ impl PublishedActions {
         }
     }
 
+    /// What the fleet's app `app` (called `name`) offers while closed, invoked in `workspace`;
+    /// `None` for an app the fleet does not know or that offers nothing.
+    #[must_use]
+    pub fn offered_by(app: &str, name: &str, workspace: &str) -> Option<Self> {
+        let actions: Vec<_> = app_fleet::metadata(app)?
+            .actions()
+            .map(|offer| {
+                tilo_actions::published::PublishedAction::offered(&fleet_offer(offer), name)
+                    .descriptor(tilo_actions::ExecutionLocus::ClientLocal)
+            })
+            .collect();
+        (!actions.is_empty()).then(|| Self {
+            app: app.to_owned(),
+            workspace: workspace.to_owned(),
+            actions,
+            types: BTreeMap::new(),
+        })
+    }
+
     /// The other words the app is known by, from the registry's metadata
     /// (`app-fleet`): "youtube" for Tube, "channel", "videos". A query naming
     /// one names the app, so "youtube videos of mkbhd" is the video
@@ -451,6 +470,54 @@ impl PublishedActions {
     pub fn keywords(&self) -> &'static [&'static str] {
         app_fleet::metadata(&self.app).map_or(&[], |app| app.keywords)
     }
+}
+
+/// `offer` as the fleet's compiled-in manifests declare it.
+fn fleet_offer(offer: app_fleet::FleetAction) -> tilo_actions::published::Offer<'static> {
+    use tilo_actions::{ActionKind, OperationKind};
+    let given = |text: &'static str| (!text.is_empty()).then_some(text);
+    tilo_actions::published::Offer {
+        resource: offer.resource,
+        resource_kind: given(offer.resource_kind).unwrap_or(offer.resource),
+        action: offer.action,
+        label: offer.label,
+        description: given(offer.description),
+        kind: match offer.kind {
+            "read" => ActionKind::Read,
+            "outside" => ActionKind::Outside,
+            _ => ActionKind::Undoable,
+        },
+        operation: match offer.operation {
+            "document" => OperationKind::Document,
+            "view" => OperationKind::View,
+            _ => OperationKind::Effect,
+        },
+        confirm: offer.confirm,
+        asks: given(offer.asks),
+        keywords: offer.keywords().collect(),
+        icon: given(offer.icon),
+    }
+}
+
+/// The actions installed apps offer while closed, in `workspace`: those of
+/// each app in `offered` that publishes nothing there now. What an app
+/// publishes, live or kept from when it last ran, is what it offers; its
+/// manifest's offers stand in only until it has opened.
+pub fn with_offers(
+    mut published: Vec<PublishedActions>,
+    offered: impl IntoIterator<Item = PublishedActions>,
+) -> Vec<PublishedActions> {
+    let offered: Vec<PublishedActions> = offered
+        .into_iter()
+        .filter(|offers| {
+            !published.iter().any(|live| {
+                live.app == offers.app
+                    && (live.workspace == offers.workspace || offers.workspace.is_empty())
+            })
+        })
+        .collect();
+    published.extend(offered);
+    published
 }
 
 /// What each resource of `resources` and their children is, by resource id,

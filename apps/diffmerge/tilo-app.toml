@@ -70,3 +70,74 @@ splash-budget   = 250
 [providers]
 mime = []
 ext  = []
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "diffmerge.session"
+action = "take-ours"
+label = "Take ours"
+operation = "document"
+asks = "hunk"
+[[offers]]
+resource = "diffmerge.session"
+action = "take-theirs"
+label = "Take theirs"
+operation = "document"
+asks = "hunk"
+[[offers]]
+resource = "diffmerge.session"
+action = "take-both"
+label = "Take both"
+operation = "document"
+asks = "hunk"
+[[offers]]
+resource = "diffmerge.session"
+action = "open-files"
+label = "Open files"
+kind = "outside"
+[[offers]]
+resource = "diffmerge.session"
+action = "save-merged"
+label = "Save merged result"
+kind = "outside"
+[[offers]]
+resource = "diffmerge.session"
+action = "save-merged-as"
+label = "Save merged result as…"
+kind = "outside"
+[[offers]]
+resource = "diffmerge.session"
+action = "compare-folders"
+label = "Compare folders"
+kind = "outside"
+[[offers]]
+resource = "diffmerge.session"
+action = "load-sample"
+label = "Load sample"
+kind = "outside"
+[[offers]]
+resource = "diffmerge.session"
+action = "show-diff"
+label = "Two-way diff"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "diffmerge.session"
+action = "show-merge"
+label = "Three-way merge"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "diffmerge.session"
+action = "previous-change"
+label = "Previous change"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "diffmerge.session"
+action = "next-change"
+label = "Next change"
+kind = "read"
+operation = "view"

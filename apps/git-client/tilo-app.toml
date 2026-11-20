@@ -71,3 +71,96 @@ splash-budget   = 250
 [providers]
 mime = []
 ext  = []
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "git_client.repo"
+action = "store-repository"
+label = "Keep the repository's state"
+operation = "document"
+asks = "shared"
+[[offers]]
+resource = "git_client.repo"
+action = "open-repository"
+label = "Open repository"
+kind = "outside"
+asks = "path"
+[[offers]]
+resource = "git_client.repo"
+action = "choose-repository"
+label = "Choose repository"
+kind = "outside"
+[[offers]]
+resource = "git_client.repo"
+action = "run-approved-check"
+label = "Run approved project check"
+kind = "outside"
+asks = "check_id"
+[[offers]]
+resource = "git_client.repo"
+action = "show-changes"
+label = "Show changes"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "git_client.repo"
+action = "show-history"
+label = "Show history"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "git_client.repo"
+action = "show-branches"
+label = "Show branches and remotes"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "git_client.repo"
+action = "stage-all"
+label = "Stage all changes"
+kind = "outside"
+[[offers]]
+resource = "git_client.repo"
+action = "unstage-all"
+label = "Unstage all changes"
+kind = "outside"
+[[offers]]
+resource = "git_client.repo"
+action = "commit"
+label = "Commit staged changes"
+kind = "outside"
+asks = "message"
+[[offers]]
+resource = "git_client.repo"
+action = "create-branch"
+label = "Create branch"
+kind = "outside"
+asks = "name"
+[[offers]]
+resource = "git_client.repo"
+action = "save-stash"
+label = "Stash working changes"
+kind = "outside"
+asks = "message"
+[[offers]]
+resource = "git_client.repo"
+action = "diff-layout"
+label = "Diff layout: side-by-side"
+kind = "read"
+[[offers]]
+resource = "git_client.repo"
+action = "syntax-highlight"
+label = "Turn off syntax highlighting"
+kind = "read"
+[[offers]]
+resource = "git_client.repo"
+action = "show-whitespace"
+label = "Show whitespace"
+kind = "read"
+[[offers]]
+resource = "git_client.repo"
+action = "wrap-lines"
+label = "Stop wrapping long lines"
+kind = "read"

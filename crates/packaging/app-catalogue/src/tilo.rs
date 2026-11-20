@@ -56,8 +56,7 @@ pub fn entry(app: &CatalogueApp) -> CatalogueEntry {
             .unwrap_or_default(),
         actions: manifest
             .map(|meta| {
-                meta.actions
-                    .iter()
+                meta.actions()
                     .map(|action| CatalogueAction {
                         resource: action.resource.to_owned(),
                         action: action.action.to_owned(),

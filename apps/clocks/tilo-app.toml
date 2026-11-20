@@ -52,11 +52,49 @@ schemes = ["tilo-clocks"]
 mime = []
 ext = []
 
-# A link of a scheme above reaches the app through the `open-link` every app
-# publishes; offered here so a link starts the app when no window of it runs.
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
 [[offers]]
-resource  = "clocks.collection"
-action    = "open-link"
-label     = "Open link"
-kind      = "read"
+resource = "clocks.collection"
+action = "start-stopwatch"
+label = "Start the stopwatch"
+operation = "document"
+[[offers]]
+resource = "clocks.collection"
+action = "pause-stopwatch"
+label = "Pause the stopwatch"
+operation = "document"
+[[offers]]
+resource = "clocks.collection"
+action = "lap"
+label = "Keep a lap"
+operation = "document"
+[[offers]]
+resource = "clocks.collection"
+action = "reset-stopwatch"
+label = "Reset the stopwatch"
+operation = "document"
+[[offers]]
+resource = "clocks.collection"
+action = "show"
+label = "Show a section"
+kind = "read"
+asks = "section"
+[[offers]]
+resource = "clocks.collection"
+action = "dismiss-notice"
+label = "Dismiss notice"
+kind = "read"
+[[offers]]
+resource = "clocks.collection"
+action = "open-link"
+label = "Open link"
+kind = "read"
 operation = "view"
+asks = "link"
+[[offers]]
+resource = "clocks.stopwatch"
+action = "float-stopwatch"
+label = "Float stopwatch"
+kind = "read"

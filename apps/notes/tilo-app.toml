@@ -57,3 +57,35 @@ splash-budget   = 250
 [providers]
 mime = ["text/markdown", "text/x-markdown"]
 ext  = ["md", "markdown"]
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "notes.notebook"
+action = "new-tag"
+label = "New tag"
+operation = "document"
+asks = "name"
+icon = "tag"
+[[offers]]
+resource = "notes.notebook"
+action = "import-markdown-file"
+label = "Import Markdown"
+kind = "outside"
+keywords = ["open markdown", "import md"]
+icon = "download"
+[[offers]]
+resource = "notes.notebook"
+action = "import-notion-export"
+label = "Import Notion export"
+kind = "outside"
+icon = "download"
+[[offers]]
+resource = "chain:derived:pages@derived:default@tab:0000000000000000"
+resource-kind = "notes.pages"
+action = "new-note"
+label = "New note"
+asks = "title"
+keywords = ["new page", "create note", "add note", "memo"]
+icon = "file-plus"

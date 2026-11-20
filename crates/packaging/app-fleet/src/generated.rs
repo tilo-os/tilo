@@ -2,7 +2,7 @@
 //! `apps/*/surface.toml`, `apps/*/search/*.ftl`, `apps/*/src` and `apps/tl/*/app.tl`.
 //! Do not edit; change the sources and run the generator.
 
-use super::{FleetAction, FleetApp};
+use super::FleetApp;
 
 /// `(app, kind)` of each kind an app's members each keep as their own (`[resources] own`).
 pub(super) const OWN_KINDS: &[(&str, &str)] = &[
@@ -346,7 +346,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "protokoll",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "activity.filter\t\tclear-filters\tClear filters\t\tundoable\tdocument\t0\t\t\t\nactivity.filter\t\trefresh-source\tRefresh source\t\toutside\teffect\t0\tkey\t\t\nactivity.filter\t\tremove-source\tRemove source\t\toutside\teffect\t0\tkey\t\t\n",
     },
     FleetApp {
         id: "so.tilo.api-tester",
@@ -369,7 +369,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "api testen",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "api-tester.workspace\t\tnew-request\tNew request\t\tundoable\tdocument\t0\t\t\t\napi-tester.workspace\t\tnew-collection\tNew collection\t\tundoable\tdocument\t0\tname\t\t\napi-tester.workspace\t\tnew-environment\tNew environment\t\tundoable\tdocument\t0\tname\t\t\napi-tester.workspace\t\tsend\tSend request\t\toutside\teffect\t0\t\t\t\napi-tester.workspace\t\tsend-saved\tSend saved request\t\toutside\teffect\t0\trequest\t\t\napi-tester.workspace\t\tcancel-send\tCancel request\t\toutside\teffect\t0\t\t\t\napi-tester.workspace\t\tset-credential\tSet the request's sign-in\t\toutside\teffect\t0\tsecret\t\t\napi-tester.workspace\t\tpick-environment\tChoose environment\t\tread\tview\t0\tchoice\t\t\napi-tester.workspace\t\trename-collection\tRename collection…\t\tread\tview\t0\tcollection\t\t\n",
     },
     FleetApp {
         id: "so.tilo.assistant",
@@ -399,7 +399,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "aufgaben des agenten",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "assistant.window\t\tview-main-chat\tShow the main chat\t\tread\tview\t0\t\t\t\nassistant.window\t\tview-sub-agent\tShow a sub-agent\t\tread\tview\t0\tagent\t\t\nassistant.window\t\tview-supervision\tShow supervision\t\tread\tview\t0\t\t\t\nassistant.window\t\tstart-sub-agent\tStart a sub-agent\t\toutside\teffect\t0\tjob\t\t\nassistant.window\t\topen-model-settings\tOpen the model settings\t\toutside\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.backups",
@@ -427,7 +427,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "backup erstellen",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "backups.workspace\t\tsetup\tSet up backups\t\toutside\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.browser",
@@ -459,12 +459,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("browser.page-record", "Page resource"),
             ("browser.personal-bookmarks", "Personal bookmarks"),
         ],
-        actions: &[FleetAction {
-            resource: "browser.application",
-            action: "open-link",
-            label: "Open link",
-            description: "",
-        }],
+        offers: "browser.application\t\tadd-bookmark\tBookmark a page\t\tundoable\tdocument\t0\turl\tbookmark\u{1f}favourite\u{1f}favorite\u{1f}save page\t\nbrowser.application\t\tforget-site-forms\tForget a site’s remembered forms\t\tundoable\tdocument\t0\torigin\tremembered forms\u{1f}site memory\u{1f}forget site\t\nbrowser.application\t\tforget-all-forms\tForget all remembered forms\t\tundoable\tdocument\t0\t\tremembered forms\u{1f}site memory\u{1f}clear forms\t\nbrowser.application\t\tshow-page\tShow current page\t\tread\tview\t0\t\t\t\nbrowser.application\t\tshow-settings\tBrowser settings\t\tread\tview\t0\t\t\t\nbrowser.application\t\tedit-address\tEdit saved address\t\tread\tview\t0\tprofile\t\t\nbrowser.application\t\tdelete-address\tDelete saved address\t\tread\tview\t0\tprofile\t\t\nbrowser.application\t\topen-link\tOpen link\t\tread\tview\t0\tlink\t\t\nbrowser.page\t\treload\tReload\t\toutside\teffect\t0\t\t\t\nbrowser.page\t\tnavigate\tOpen address\t\toutside\teffect\t0\turl\t\t\nbrowser.page\t\topen-tab\tOpen in new tab\t\toutside\teffect\t0\turl\t\t\nbrowser.page\t\tpicture-in-picture\tPicture in Picture\t\toutside\teffect\t0\t\t\t\nbrowser.page\t\treader-view\tReader view\t\toutside\teffect\t0\t\t\t\nbrowser.page\t\treview-page\tReview page\t\toutside\teffect\t0\t\treview form\u{1f}check answers\u{1f}who filled\t\nbrowser.page\t\tshow-page-field\tShow field on the page\t\toutside\teffect\t0\telement\t\t\nbrowser.page\t\tzoom-in\tZoom in\t\toutside\teffect\t0\t\t\t\nbrowser.page\t\tzoom-out\tZoom out\t\toutside\teffect\t0\t\t\t\nbrowser.page\t\tpointer-page\tMove pointer\t\toutside\teffect\t0\tsteps\t\t\nbrowser.page\t\tbookmark-personal-page\tBookmark this page\t\toutside\teffect\t0\t\t\t\nbrowser.page\t\tread-remembered-forms\tRead this site’s remembered forms\t\tread\teffect\t0\t\tremembered form\u{1f}site memory\t\nbrowser.page\t\tset-site-protection\tTurn tracker protection off for this site\t\tundoable\tdocument\t0\t\tad blocker\u{1f}tracking protection\u{1f}block trackers\u{1f}privacy\t\nbrowser.session\tbrowser.history-pause\ttoggle-pause\tPause history\t\toutside\teffect\t0\t\t\t\nbrowser.bookmarks\t\tshow-bookmarks\tShow bookmarks\t\tread\tview\t0\t\t\t\nbrowser.downloads\t\tstart-download\tDownload address\t\toutside\teffect\t0\turl\t\t\nbrowser.extensions\t\tshow-extensions\tShow extensions\t\tread\tview\t0\t\t\t\nbrowser.library\t\tshow-history\tShow history\t\tread\tview\t0\t\t\t\nbrowser.library\t\tshow-bookmarks\tShow bookmarks\t\tread\tview\t0\t\t\t\nbrowser.library\t\tshow-downloads\tShow downloads\t\tread\tview\t0\t\t\t\nbrowser.library\t\tshow-extensions\tShow extensions\t\tread\tview\t0\t\t\t\nbrowser.library\t\tset-library-filter\tFilter library\t\tread\tview\t0\tquery\t\t\nbrowser.settings\t\trequest-site-data-clear\tClear site data\t\toutside\teffect\t1\t\t\t\nbrowser.settings\t\tread-all-remembered-forms\tRead all remembered forms\t\tread\teffect\t0\t\tremembered form\u{1f}site memory\t\nbrowser.service-sessions\t\tlist-service-sessions\tList accounts\t\tread\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.calculator",
@@ -489,7 +484,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "rechnen",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "calculator.document\t\tclear-history\tClear history\t\tundoable\tdocument\t0\t\t\t\ncalculator.document\t\tadd-function\tAdd curve\t\tundoable\tdocument\t0\tformula\t\t\ncalculator.document\t\tadd-surface\tAdd surface\t\tundoable\tdocument\t0\tformula\t\t\ncalculator.document\t\tshow-calculator\tShow calculator\t\tread\tview\t0\t\t\t\ncalculator.document\t\tshow-graph2d\tShow 2D graph\t\tread\tview\t0\t\t\t\ncalculator.document\t\tshow-graph3d\tShow 3D graph\t\tread\tview\t0\t\t\t\ncalculator.document\t\tshow-convert\tShow unit conversion\t\tread\tview\t0\t\t\t\ncalculator.document\t\tuse-degrees\tUse degrees\t\tread\tview\t0\t\t\t\ncalculator.document\t\tuse-radians\tUse radians\t\tread\tview\t0\t\t\t\ncalculator.document\t\ttoggle-panel\tShow or hide formulas\t\tread\tview\t0\t\t\t\ncalculator.document\t\trecall\tUse calculation\t\tread\tview\t0\texpression\t\t\n",
     },
     FleetApp {
         id: "so.tilo.calendar",
@@ -520,12 +515,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "verabredungen",
         ],
         resource_types: &[],
-        actions: &[FleetAction {
-            resource: "calendar.calendar",
-            action: "show-tasks",
-            label: "Show tasks",
-            description: "",
-        }],
+        offers: "calendar.calendar\t\tnew-event\tNew event\t\tundoable\tdocument\t0\tevent\t\t\ncalendar.calendar\t\tnew-task\tNew task\t\toutside\tdocument\t0\ttask\t\t\ncalendar.calendar\t\tnew-project\tNew task project\t\toutside\tdocument\t0\tname\t\t\ncalendar.calendar\t\timport-ics\tImport ICS\t\toutside\teffect\t0\t\t\t\ncalendar.calendar\t\tcontact-attendees\tInvite from Contacts\t\tread\tview\t0\tevent_id\t\t\ncalendar.calendar\t\tshow-all-calendars\tShow all calendars\t\tread\tview\t0\t\t\t\ncalendar.calendar\t\tshow-month\tShow month\t\tread\tview\t0\t\t\t\ncalendar.calendar\t\tshow-week\tShow week\t\tread\tview\t0\t\t\t\ncalendar.calendar\t\tshow-day\tShow day\t\tread\tview\t0\t\t\t\ncalendar.calendar\t\tshow-agenda\tShow agenda\t\tread\tview\t0\t\t\t\ncalendar.calendar\t\tshow-tasks\tShow tasks\t\tread\tview\t0\t\t\t\ncalendar.calendar\t\tstart-event\tNew event\t\tread\tview\t0\t\tcreate\u{1f}add\u{1f}schedule\u{1f}start\tplus\ncalendar.calendar\t\tstart-task\tNew task\t\tread\tview\t0\t\tcreate\u{1f}add\u{1f}todo\u{1f}start\tplus\ncalendar.collection:local\tcalendar.collection\tset-color\tSet calendar colour\t\toutside\teffect\t0\tcolor\t\t\ncalendar.collection:local\tcalendar.collection\tread-calendar\tRead calendar\t\tread\tview\t0\t\t\t\ncalendar.collection:local\tcalendar.collection\thide-calendar\tHide calendar\t\toutside\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.camera",
@@ -553,7 +543,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "videoaufnahme",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "camera\t\tregister-capture\tOffer the latest capture\t\tundoable\tdocument\t0\tcapture\t\t\ncamera\t\trecord-scan\tRecord scanned code\t\tundoable\tdocument\t0\traw\t\t\ncamera\t\topen-camera\tOpen Camera\t\tread\tview\t0\t\t\t\ncamera\t\topen-scanner\tOpen Scan\t\tread\tview\t0\t\t\t\ncamera\t\topen-document\tOpen Documents\t\tread\tview\t0\t\t\t\ncamera\t\topen-settings\tOpen Settings\t\tread\tview\t0\t\t\t\ncamera\t\tset-grid\tComposition grid\t\tread\teffect\t0\ton\t\t\ncamera\t\tset-level\tLevel guide\t\tread\teffect\t0\ton\t\t\ncamera\t\tset-mirror-front\tMirror front camera\t\toutside\teffect\t0\ton\t\t\ncamera\t\tset-geotag\tTag location\t\toutside\teffect\t0\ton\t\t\ncamera\t\tset-hdr\tHDR\t\toutside\teffect\t0\ton\t\t\ncamera\t\tcrop-page\tCrop page\t\tread\tview\t0\t\t\t\ncamera.capture\t\tretry-camera\tRefresh cameras\t\toutside\teffect\t0\t\t\t\ncamera.capture\t\topen-photos\tOpen Photos\t\toutside\teffect\t0\t\t\t\ncamera.scanner\t\timport-image\tScan an image\t\toutside\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.canvas",
@@ -584,7 +574,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("canvas.artwork", "Artwork"),
             ("canvas.recent-artworks", "Recent artworks"),
         ],
-        actions: &[],
+        offers: "canvas.artwork\t\tpaint\tPaint strokes\t\tundoable\tdocument\t0\tstrokes\t\t\ncanvas.artwork\t\tdraw\tDraw shapes\t\tundoable\tdocument\t0\tmarks\t\t\ncanvas.artwork\t\tedit-marks\tEdit marks\t\tundoable\tdocument\t0\tids\t\t\ncanvas.artwork\t\tremove-marks\tRemove marks\t\tundoable\tdocument\t0\tids\t\t\ncanvas.artwork\t\tadd-layer\tAdd layer\t\tundoable\tdocument\t0\tname\t\t\ncanvas.artwork\t\tedit-layer\tEdit layer\t\tundoable\tdocument\t0\tid\t\t\ncanvas.artwork\t\tremove-layer\tRemove layer\t\tundoable\tdocument\t0\tid\t\t\ncanvas.artwork\t\tset-artwork\tSet artwork\t\tundoable\tdocument\t0\ttitle\t\t\ncanvas.artwork\t\tsave-medium\tSave medium\t\tundoable\tdocument\t0\tmedium\t\t\ncanvas.artwork\t\tremove-medium\tRemove medium\t\tundoable\tdocument\t0\tid\t\t\ncanvas.artwork\t\talign\tAlign marks\t\tundoable\tdocument\t0\tids\t\t\ncanvas.artwork\t\tset-reference\tSet reference\t\tundoable\tdocument\t0\timage\t\t\ncanvas.artwork\t\timport-svg\tImport SVG\t\tundoable\tdocument\t0\tsvg\t\t\ncanvas.artwork\t\topen-picture\tOpen picture\t\tundoable\tdocument\t0\tpath\t\t\ncanvas.artwork\t\tnew-artwork\tNew artwork\t\tundoable\tdocument\t0\ttitle\t\t\ncanvas.artwork\t\topen-artwork\tOpen artwork\t\tundoable\tdocument\t0\tfile\t\t\ncanvas.artwork\t\tselect\tSelect area\t\tundoable\tdocument\t0\trect\t\t\ncanvas.artwork\t\tuse-selection\tUse selection\t\tundoable\tdocument\t0\tdo\t\t\ncanvas.artwork\t\tuse-brush\tUse brush\t\tread\tview\t0\tpreset\t\t\ncanvas.artwork\t\tuse-colour\tUse colour\t\tread\tview\t0\tcolour\t\t\ncanvas.artwork\t\tlook\tLook at artwork\t\tread\teffect\t0\t\t\t\ncanvas.artwork\t\tinspect\tInspect marks\t\tread\tview\t0\t\t\t\ncanvas.artwork\t\tmeasure\tMeasure ink\t\tread\teffect\t0\tids\t\t\ncanvas.artwork\t\tmedia\tList media\t\tread\tview\t0\t\t\t\ncanvas.artwork\t\texport\tExport picture\t\tread\teffect\t0\t\t\t\ncanvas.artwork\t\tcompare-versions\tCompare versions\t\tread\teffect\t0\tfrom\t\t\ncanvas.artwork\t\texport-svg\tExport SVG\t\tread\teffect\t0\t\t\t\ncanvas.artwork\t\tcompare\tCompare with reference\t\tread\teffect\t0\t\t\t\ncanvas.artwork\t\tsave-artwork\tSave artwork\t\tread\teffect\t0\t\t\t\ncanvas.artwork\t\tfind-area\tFind image area\t\tundoable\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.chat",
@@ -605,20 +595,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "nachrichtendienst",
         ],
         resource_types: &[],
-        actions: &[
-            FleetAction {
-                resource: "chat.workspace",
-                action: "start-call",
-                label: "Start a call",
-                description: "",
-            },
-            FleetAction {
-                resource: "chat.workspace",
-                action: "start-video-call",
-                label: "Start a video call",
-                description: "",
-            },
-        ],
+        offers: "chat.workspace\t\tcreate-category\tNew category\t\tundoable\tdocument\t0\tname\t\t\nchat.workspace\t\tcreate-channel\tNew channel\t\tundoable\tdocument\t0\tname\t\t\nchat.workspace\t\topen-agent\tOpen agent conversation\t\tread\tview\t0\tagent\t\t\nchat.workspace\t\tattach-file\tAttach file\t\toutside\teffect\t0\tchannel\t\t\nchat.workspace\t\tshare-live-context\tShare live context\t\toutside\teffect\t0\t\t\t\nchat.workspace\t\tstop-sharing-live-context\tStop sharing live context\t\toutside\teffect\t0\t\t\t\nchat.workspace\t\tstart-call\tStart a call\t\tread\teffect\t0\t\t\t\nchat.workspace\t\tstart-video-call\tStart a video call\t\tundoable\teffect\t0\t\t\t\nchain:derived:messages@derived:default@tab:0000000000000000\tchat.messages\tcarry-counts\tCarry the counts of the parts before\t\tundoable\teffect\t0\tearlier\t\t\n",
     },
     FleetApp {
         id: "so.tilo.chip-design",
@@ -646,7 +623,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "schaltkreis",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "chip_design.project\t\timport-report\tImport analytical report\t\tundoable\tdocument\t0\tjson\t\t\nchip_design.project\t\tremove-report\tRemove report\t\tundoable\tdocument\t0\treport\t\t\nchip_design.project\t\timport-verification\tImport verification receipt\t\tundoable\tdocument\t0\tjson\t\t\nchip_design.project\t\tremove-verification\tRemove verification receipt\t\tundoable\tdocument\t0\treport\t\t\nchip_design.project\t\tremove-node\tRemove operator\t\tundoable\tdocument\t0\tnode\t\t\nchip_design.project\t\timport-file\tImport report\t\toutside\teffect\t0\t\t\t\nchip_design.project\t\toperator-graph\tOpen operator graph\t\tread\tview\t0\t\t\t\nchip_design.project\t\tadd-operator\tAdd operator\t\toutside\teffect\t0\tkind\t\t\nchip_design.project\t\tinspect-operator\tInspect operator\t\tread\tview\t0\t\t\t\nchip_design.project\t\tzoom-graph\tZoom the graph\t\tread\tview\t0\tstep\t\t\nchip_design.project\t\tinspect\tInspect report\t\tread\tview\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.clocks",
@@ -673,12 +650,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "zeit",
         ],
         resource_types: &[],
-        actions: &[FleetAction {
-            resource: "clocks.collection",
-            action: "open-link",
-            label: "Open link",
-            description: "",
-        }],
+        offers: "clocks.collection\t\tstart-stopwatch\tStart the stopwatch\t\tundoable\tdocument\t0\t\t\t\nclocks.collection\t\tpause-stopwatch\tPause the stopwatch\t\tundoable\tdocument\t0\t\t\t\nclocks.collection\t\tlap\tKeep a lap\t\tundoable\tdocument\t0\t\t\t\nclocks.collection\t\treset-stopwatch\tReset the stopwatch\t\tundoable\tdocument\t0\t\t\t\nclocks.collection\t\tshow\tShow a section\t\tread\teffect\t0\tsection\t\t\nclocks.collection\t\tdismiss-notice\tDismiss notice\t\tread\teffect\t0\t\t\t\nclocks.collection\t\topen-link\tOpen link\t\tread\tview\t0\tlink\t\t\nclocks.stopwatch\t\tfloat-stopwatch\tFloat stopwatch\t\tread\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.code-editor",
@@ -704,7 +676,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "editor",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "code_editor.project\t\tnew-file\tNew file\t\tundoable\tdocument\t0\tname\tcreate file\u{1f}add file\u{1f}touch\tfile-plus\ncode_editor.project\t\tnew-folder\tNew folder\t\tundoable\tdocument\t0\tname\tmkdir\u{1f}make directory\u{1f}create folder\tfolder-plus\ncode_editor.project\t\tstop\tStop in terminal\t\tundoable\tdocument\t0\t\tstop\u{1f}cancel\u{1f}interrupt\u{1f}ctrl c\t\ncode_editor.project\t\topen-file\tOpen a file\t\toutside\teffect\t0\t\t\tfolder-open\ncode_editor.project\t\topen-folder\tOpen project folder\t\toutside\teffect\t0\t\topen project\u{1f}open workspace folder\tfolder-open\ncode_editor.project\t\tnew-buffer\tNew file\t\toutside\teffect\t0\t\t\tfile-plus\ncode_editor.project\t\tsave-all\tSave all\t\toutside\teffect\t0\t\t\thard-drive\ncode_editor.project\t\tsearch-project\tSearch project\t\tread\teffect\t0\t\tfind in files\u{1f}grep\u{1f}search all files\tsearch\ncode_editor.project\t\ttoggle-bottom-panel\tToggle bottom panel\t\tread\teffect\t0\t\t\tpanel-bottom\ncode_editor.project\t\tgo-to-problems\tShow problems\t\tread\teffect\t0\t\terrors\u{1f}warnings\u{1f}diagnostics\ttriangle-alert\ncode_editor.project\t\tgo-to-search\tShow search results\t\tread\teffect\t0\t\t\tsearch\ncode_editor.project\t\tgo-to-terminal\tShow terminal\t\tread\teffect\t0\t\tconsole\u{1f}shell\u{1f}command line\tsquare-terminal\ncode_editor.project\t\ttoggle-sidebar\tToggle sidebar\t\tread\teffect\t0\t\t\tpanel-left\ncode_editor.project\t\ttoggle-language-servers\tToggle language servers\t\tread\teffect\t0\t\t\tcode\ncode_editor.project\t\ttoggle-format-on-save\tToggle format on save\t\tread\teffect\t0\t\tauto format\u{1f}format code\u{1f}formatter\twand-sparkles\n",
     },
     FleetApp {
         id: "so.tilo.console",
@@ -733,7 +705,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "widerrufen",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "console.view\t\tshow-everything\tShow all sessions\t\tundoable\tdocument\t0\t\t\t\nconsole.view\t\tview-connect\tConnect an agent\t\tread\tview\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.contacts",
@@ -760,7 +732,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "adressen",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "contacts.book\t\topen-accounts\tManage connected accounts\t\tread\tview\t0\tperson\t\t\ncontacts.book\t\tclose-accounts\tReturn to contacts\t\tread\tview\t0\t\t\t\ncontacts.book\t\tselect-account-person\tChoose contact\t\tread\tview\t0\tvalue\t\t\ncontacts.book\t\tcancel-account-review\tCancel account change\t\tread\tview\t0\t\t\t\ncontacts.book\t\topen-website\tOpen website\t\toutside\teffect\t0\tcontact\t\t\ncontacts.book\t\timport-vcard\tImport vCard\t\toutside\teffect\t0\t\t\t\ncontacts.book\t\texport-all-vcard\tExport all contacts\t\toutside\teffect\t1\t\t\t\ncontacts.book\t\texport-contact\tExport contact\t\toutside\teffect\t1\tcontact\t\t\nchain:derived:contacts@derived:default@tab:0000000000000000\tcontacts.contacts\tnew-contact\tNew contact\t\tundoable\teffect\t0\tname\t\t\nchain:derived:contacts@derived:default@tab:0000000000000000\tcontacts.contacts\tadd-contacts\tAdd contacts\t\tundoable\teffect\t0\tcontacts\t\t\n",
     },
     FleetApp {
         id: "so.tilo.containers",
@@ -781,7 +753,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "abbilder",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "containers.engine\t\tclear-create\tDiscard new container\t\tundoable\tdocument\t0\t\t\t\ncontainers.engine\t\tset-section\tShow section\t\tread\tview\t0\tsection\t\t\ncontainers.engine\t\tset-tab\tShow tab\t\tread\tview\t0\ttab\t\t\n",
     },
     FleetApp {
         id: "so.tilo.db-client",
@@ -805,7 +777,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "datenbanken",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "db-client.workspace\t\tsave-query\tSave query\t\tundoable\tdocument\t0\tname\t\t\ndb-client.workspace\t\tnew-connection\tNew connection\t\tread\tview\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.diffmerge",
@@ -831,7 +803,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "dateien vergleichen",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "diffmerge.session\t\ttake-ours\tTake ours\t\tundoable\tdocument\t0\thunk\t\t\ndiffmerge.session\t\ttake-theirs\tTake theirs\t\tundoable\tdocument\t0\thunk\t\t\ndiffmerge.session\t\ttake-both\tTake both\t\tundoable\tdocument\t0\thunk\t\t\ndiffmerge.session\t\topen-files\tOpen files\t\toutside\teffect\t0\t\t\t\ndiffmerge.session\t\tsave-merged\tSave merged result\t\toutside\teffect\t0\t\t\t\ndiffmerge.session\t\tsave-merged-as\tSave merged result as…\t\toutside\teffect\t0\t\t\t\ndiffmerge.session\t\tcompare-folders\tCompare folders\t\toutside\teffect\t0\t\t\t\ndiffmerge.session\t\tload-sample\tLoad sample\t\toutside\teffect\t0\t\t\t\ndiffmerge.session\t\tshow-diff\tTwo-way diff\t\tread\tview\t0\t\t\t\ndiffmerge.session\t\tshow-merge\tThree-way merge\t\tread\tview\t0\t\t\t\ndiffmerge.session\t\tprevious-change\tPrevious change\t\tread\tview\t0\t\t\t\ndiffmerge.session\t\tnext-change\tNext change\t\tread\tview\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.discord",
@@ -849,7 +821,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "community-server",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "discord.guild\t\tsend\tSend a message\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tedit\tEdit a message\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tdelete\tDelete a message\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\treact\tAdd a reaction\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tunreact\tRemove a reaction\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tstart-thread\tStart a thread\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tcreate-webhook\tCreate a webhook\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tapply-channel\tApply a channel\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tdelete-channel\tDelete a channel\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tarrange-channels\tArrange channels\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tapply-role\tApply a role\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tdelete-role\tDelete a role\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tset-member-roles\tSet member roles\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tkick\tKick a member\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tban\tBan a member\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tunban\tUnban a member\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tset-overwrite\tSet a permission override\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tfetch-asset\tCopy a file from Discord\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tbegin-connect\tStart linking your account\t\tundoable\tdocument\t0\tstate_sha256\t\t\ndiscord.guild\t\tcomplete-link\tLink the offered account\t\tundoable\tdocument\t0\tproof\t\t\ndiscord.guild\t\tset-sign-in\tOffer signing in with Discord\t\tundoable\tdocument\t0\tpage\t\t\ndiscord.guild\t\tanswer-interaction\tAnswer a slash command\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tunlink\tUnlink an account\t\tundoable\tdocument\t0\tdiscord_user\t\t\ndiscord.guild\t\tblock-persona\tBlock a user\t\tundoable\tdocument\t0\tdiscord_user\t\t\ndiscord.guild\t\tunblock-persona\tUnblock a user\t\tundoable\tdocument\t0\tdiscord_user\t\t\ndiscord.guild\t\tfinish-import\tFinish importing a server\t\tundoable\tdocument\t0\ttilo_only\t\t\ndiscord.guild\t\tapply-emoji\tApply an emoji\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\tdelete-emoji\tDelete an emoji\t\toutside\tdocument\t0\top\t\t\ndiscord.guild\t\treport-voice\tReport voice support\t\tundoable\tdocument\t0\tproblem\t\t\ndiscord.guild\t\tconnect-account\tConnect my account\t\tundoable\teffect\t0\t\t\t\ndiscord.guild\t\tlink-offer\tRead a link offer\t\tread\teffect\t0\ttoken\t\t\ndiscord.guild\t\taccept-link\tLink the offered account\t\tundoable\teffect\t0\ttoken\t\t\ndiscord.guild\t\tunlink-mine\tUnlink my account\t\tundoable\teffect\t0\t\t\t\ndiscord.guild\t\tset-bot-token\tSet bot token\t\toutside\teffect\t1\ttoken\t\t\ndiscord.guild\t\tfind-servers\tFind the bot's servers\t\toutside\teffect\t0\ttoken\t\t\n",
     },
     FleetApp {
         id: "so.tilo.disk-usage",
@@ -881,7 +853,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "speicherbelegung",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "disk-usage\t\tchoose\tChoose folder\t\toutside\teffect\t0\t\t\t\ndisk-usage\t\tback\tGo back\t\toutside\teffect\t0\t\t\t\ndisk-usage\t\thome\tShow locations\t\tread\tview\t0\t\t\t\ndisk-usage\t\topen-disks\tOpen Disks\t\toutside\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.disks",
@@ -917,7 +889,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "einbinden",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "disks.system\t\tname-drive\tName drive\t\tundoable\tdocument\t0\tserial\t\t\ndisks.system\t\trescan\tRescan\t\tread\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.ebook",
@@ -949,7 +921,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "e-reader",
         ],
         resource_types: &[("ebook.library", "Books"), ("ebook.files", "Book files")],
-        actions: &[],
+        offers: "ebook.library\t\tremove-from-library\tRemove from library\t\tundoable\tdocument\t1\tbook\t\t\nebook.library\t\tdelete-highlight\tDelete highlight\t\tundoable\tdocument\t0\thighlight\t\t\nebook.library\t\tdelete-annotation\tDelete annotation\t\tundoable\tdocument\t0\tannotation\t\t\nebook.library\t\tdelete-scheme\tDelete scheme\t\tundoable\tdocument\t0\tscheme\t\t\nebook.library\t\topen-book\tOpen book\t\toutside\teffect\t0\t\t\t\nebook.library\t\tread-chapter\tRead chapter\t\tread\teffect\t0\tbook\t\t\n",
     },
     FleetApp {
         id: "so.tilo.feeds",
@@ -972,7 +944,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "rss-feeds",
         ],
         resource_types: &[("feeds.articles", "Articles")],
-        actions: &[],
+        offers: "feeds.library\t\tadd-subscription\tAdd subscription\t\tundoable\tdocument\t0\turl\t\t\nfeeds.library\t\tnew-folder\tNew folder\t\tundoable\tdocument\t0\tname\t\t\nfeeds.library\t\timport-opml\tImport OPML…\t\toutside\teffect\t0\t\t\t\nfeeds.library\t\tnew-folder-form\tNew folder…\t\tread\tview\t0\t\t\t\nfeeds.library\t\texport-opml\tExport OPML…\t\tread\teffect\t0\t\t\t\nfeeds.library\t\treader-text-larger\tIncrease reader text size\t\tread\teffect\t0\t\t\t\nfeeds.library\t\treader-text-smaller\tDecrease reader text size\t\tread\teffect\t0\t\t\t\nchain:derived:articles@derived:default@tab:0000000000000000\tfeeds.articles\tmark-read\tMark articles read\t\tundoable\teffect\t0\tfeed\t\t\n",
     },
     FleetApp {
         id: "so.tilo.file-explorer",
@@ -1005,7 +977,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "durchsuchen",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "files.folder\t\tremove-current-bookmark\tRemove this folder from Favorites\t\tundoable\tdocument\t0\t\t\tx\nfiles.folder\t\tnew-folder-here\tNew folder\t\toutside\tdocument\t0\tname\tmkdir\u{1f}make directory\u{1f}create folder\u{1f}new directory\u{1f}add folder\tfolder-plus\nfiles.folder\t\trefresh\tRefresh\t\tread\teffect\t0\t\treload\u{1f}update folder\trefresh\nfiles.folder\t\tselect-all\tSelect all\t\tread\tview\t0\t\t\tlist-checks\nfiles.folder\t\tgo-to\tGo to folder…\t\tread\tview\t0\tpath\topen path\u{1f}go to path\u{1f}location\u{1f}address bar\tnavigation\nfiles.folder\t\topen-trash\tOpen Trash\t\tread\tview\t0\t\trecycle bin\u{1f}bin\u{1f}deleted files\u{1f}wastebasket\ttrash\nfiles.folder\t\tremove-favorite\tRemove from favorites\t\tread\tview\t0\tpath\t\tx\nfiles.folder\t\tup\tParent folder\t\tread\tview\t0\t\tgo up\u{1f}parent directory\u{1f}up one level\tarrow-up\nfiles.folder\t\trecent\tShow recent files\t\tread\tview\t0\t\trecent files\u{1f}recently opened\u{1f}last opened\tclock\nfiles.folder\t\ttoggle-hidden\tShow hidden files\t\tread\tview\t0\t\tshow hidden files\u{1f}hidden files\u{1f}dotfiles\teye\nfiles.folder\t\tlist\tList view\t\tread\tview\t0\t\tdetails view\u{1f}list view\tlist\nfiles.folder\t\tgrid\tGrid view\t\tread\tview\t0\t\ticon view\u{1f}thumbnails\tlayout-grid\nfiles.folder\t\tsort-name\tSort by name\t\tread\tview\t0\t\t\tarrow-up-down\nfiles.folder\t\tsort-size\tSort by size\t\tread\tview\t0\t\t\tarrow-up-down\nfiles.folder\t\tsort-type\tSort by type\t\tread\tview\t0\t\t\tarrow-up-down\nfiles.folder\t\tsort-modified\tSort by modification date\t\tread\tview\t0\t\t\tarrow-up-down\nfiles.folder\t\tsort-ascending\tSort ascending\t\tread\tview\t0\t\t\tarrow-up\nfiles.folder\t\tsort-descending\tSort descending\t\tread\tview\t0\t\t\tarrow-down\nfiles.folder\t\tzoom-in\tLarger items\t\tread\tview\t0\t\t\tmaximize-2\nfiles.folder\t\tzoom-out\tSmaller items\t\tread\tview\t0\t\t\tminimize-2\nfiles.folder\t\tkeyboard-shortcuts\tKeyboard shortcuts\t\tread\tview\t0\t\t\tkeyboard\nfiles.folder\t\topen-terminal\tOpen terminal here\t\tread\teffect\t0\t\tcommand line\u{1f}shell\u{1f}console\tsquare-terminal\nfiles.tree\t\ttrash\tMove to trash\t\tundoable\teffect\t0\tnode\t\t\nfiles.tree\t\tlist-chunk\tList a part of the tree\t\tundoable\teffect\t0\tchunk\t\t\n",
     },
     FleetApp {
         id: "so.tilo.firewall",
@@ -1034,7 +1006,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "ports blockieren",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "firewall.config\t\timport\tImport configuration\t\tundoable\tdocument\t0\tconfig\t\t\nfirewall.config\t\tretry\tTry again\t\toutside\teffect\t0\t\t\t\nfirewall.config\t\tread-blocked\tShow dropped traffic\t\tread\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.git-client",
@@ -1057,7 +1029,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "repository verwalten",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "git_client.repo\t\tstore-repository\tKeep the repository's state\t\tundoable\tdocument\t0\tshared\t\t\ngit_client.repo\t\topen-repository\tOpen repository\t\toutside\teffect\t0\tpath\t\t\ngit_client.repo\t\tchoose-repository\tChoose repository\t\toutside\teffect\t0\t\t\t\ngit_client.repo\t\trun-approved-check\tRun approved project check\t\toutside\teffect\t0\tcheck_id\t\t\ngit_client.repo\t\tshow-changes\tShow changes\t\tread\tview\t0\t\t\t\ngit_client.repo\t\tshow-history\tShow history\t\tread\tview\t0\t\t\t\ngit_client.repo\t\tshow-branches\tShow branches and remotes\t\tread\tview\t0\t\t\t\ngit_client.repo\t\tstage-all\tStage all changes\t\toutside\teffect\t0\t\t\t\ngit_client.repo\t\tunstage-all\tUnstage all changes\t\toutside\teffect\t0\t\t\t\ngit_client.repo\t\tcommit\tCommit staged changes\t\toutside\teffect\t0\tmessage\t\t\ngit_client.repo\t\tcreate-branch\tCreate branch\t\toutside\teffect\t0\tname\t\t\ngit_client.repo\t\tsave-stash\tStash working changes\t\toutside\teffect\t0\tmessage\t\t\ngit_client.repo\t\tdiff-layout\tDiff layout: side-by-side\t\tread\teffect\t0\t\t\t\ngit_client.repo\t\tsyntax-highlight\tTurn off syntax highlighting\t\tread\teffect\t0\t\t\t\ngit_client.repo\t\tshow-whitespace\tShow whitespace\t\tread\teffect\t0\t\t\t\ngit_client.repo\t\twrap-lines\tStop wrapping long lines\t\tread\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.hex-editor",
@@ -1080,7 +1052,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "bytes bearbeiten",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "hex-editor.document\t\topen-file\tOpen file\t\toutside\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.imager",
@@ -1110,7 +1082,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "image schreiben",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "imager.sources\t\tselect-source\tReview an image to write\t\tundoable\tdocument\t0\tsource\t\t\nimager.sources\t\tset-wifi-psk\tSet Wi-Fi password\t\toutside\teffect\t0\tvalue\t\t\nimager.sources\t\tset-ssh-key\tSet the SSH key for the next write\t\toutside\teffect\t0\tvalue\t\t\nimager.sources\t\tchoose-image\tChoose a disk image\t\toutside\teffect\t0\t\t\t\nimager.sources\t\trescan\tRescan drives\t\tread\teffect\t0\t\t\t\nimager.sources\t\tchoose-prepared-filesystem\tChoose a folder on the installer medium\t\toutside\teffect\t0\t\t\t\nimager.sources\t\tretry-prepared-delivery\tRetry delivering prepared setup\t\toutside\teffect\t0\t\t\t\nimager.sources\t\treview-changed-prepared-files\tReview changed prepared files\t\toutside\teffect\t0\t\t\t\nimager.sources\t\tdeliver-prepared-setup\tDeliver prepared setup\t\toutside\teffect\t0\tmounted_root\t\t\nimager.sources\t\tcancel-prepared-delivery\tCancel prepared setup delivery\t\toutside\teffect\t0\t\t\t\nimager.job\t\tstatus\tShow image-write status\t\tread\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.logs",
@@ -1141,7 +1113,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "logdateien",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "logs.journal\t\tclear-filters\tClear filters\t\tundoable\tdocument\t0\t\t\t\nlogs.journal\t\trefresh\tRefresh journal\t\tread\teffect\t0\t\t\t\nlogs.journal\t\tset-live-tail\tFollow live\t\tread\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.mail",
@@ -1178,7 +1150,7 @@ pub(super) const APPS: &[FleetApp] = &[
             ("mail.copies", "Mail on your devices"),
             ("mail.trusted-senders", "Trusted senders"),
         ],
-        actions: &[],
+        offers: "mail.mailbox\t\tserver-applied\tServer applied the update\t\toutside\tdocument\t0\tupdate\t\t\nmail.mailbox\t\tstart-draft-body\tStart the draft body\t\toutside\tdocument\t0\ttext\t\t\nmail.mailbox\t\tsave-draft\tSave draft\t\toutside\tdocument\t0\tmessage\t\t\nmail.mailbox\t\tshow-draft\tShow the draft\t\toutside\tdocument\t0\tmessage\t\t\nmail.mailbox\t\tdiscard-draft\tDiscard draft\t\toutside\tdocument\t1\tdraft\t\t\nmail.mailbox\t\tcancel-send\tCancel sending\t\toutside\tdocument\t0\tid\t\t\nmail.mailbox\t\tcompose\tCompose message\t\tread\tview\t0\t\t\t\nmail.mailbox\t\tcontact-recipients\tChoose a recipient\t\tread\tview\t0\t\t\t\nmail.mailbox\t\taccount-settings\tAccount settings\t\tread\tview\t0\t\t\t\nchain:derived:mail-messages@derived:default@tab:0000000000000000\tmail.messages\tarchive\tArchive\t\tundoable\teffect\t0\tmessages\t\t\nchain:derived:mail-messages@derived:default@tab:0000000000000000\tmail.messages\ttrash\tMove to Trash\t\tundoable\teffect\t0\tmessages\t\t\nchain:derived:mail-messages@derived:default@tab:0000000000000000\tmail.messages\tpurge\tDelete permanently\t\tundoable\teffect\t1\tmessages\t\t\nchain:derived:mail-messages@derived:default@tab:0000000000000000\tmail.messages\tingest\tAdd fetched messages\t\tundoable\teffect\t0\tmessages\t\t\nchain:derived:mail-messages@derived:default@tab:0000000000000000\tmail.messages\tserver-applied\tServer applied the update\t\tundoable\teffect\t0\tupdates\t\t\n",
     },
     FleetApp {
         id: "so.tilo.maps",
@@ -1211,12 +1183,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "anfahrt",
         ],
         resource_types: &[],
-        actions: &[FleetAction {
-            resource: "maps.workspace",
-            action: "open-link",
-            label: "Open link",
-            description: "",
-        }],
+        offers: "maps.workspace\t\taccept-places\tAccept places\t\tundoable\tdocument\t0\tplaces\t\t\nmaps.workspace\t\tcommit-search\tSearch places\t\tundoable\tdocument\t0\tquery\t\t\nmaps.workspace\t\tclear-recents\tClear recent searches\t\tundoable\tdocument\t0\t\t\t\nmaps.workspace\t\tclear-route\tClear route\t\tundoable\tdocument\t0\t\t\t\nmaps.workspace\t\tclear-transit\tClear transit routes\t\tundoable\tdocument\t0\t\t\t\nmaps.workspace\t\tlocate\tUse my location\t\tread\teffect\t0\t\t\t\nmaps.workspace\t\ttoggle-traffic\tShow traffic\t\tread\teffect\t0\t\t\t\nmaps.workspace\t\tclear-offline-areas\tClear offline areas\t\tread\teffect\t1\t\t\t\nmaps.workspace\t\topen-link\tOpen link\t\tread\tview\t0\tlink\t\t\n",
     },
     FleetApp {
         id: "so.tilo.messages",
@@ -1238,7 +1205,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "nachrichten",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "",
     },
     FleetApp {
         id: "so.tilo.model-providers",
@@ -1259,7 +1226,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "Zugangsdaten",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "model-providers.root\t\tread-providers\tRead model providers\t\toutside\teffect\t0\t\t\t\nmodel-providers.root\t\tlink-provider\tLink a model provider\t\toutside\teffect\t0\tpreset\t\t\nmodel-providers.root\t\tname-other-provider\tName another model provider\t\tread\tview\t0\t\t\t\nmodel-providers.root\t\tlink-other-provider\tLink the provider named\t\toutside\teffect\t0\t\t\t\nmodel-providers.root\t\tenter-provider-key\tEnter an API key\t\tread\tview\t0\tprovider\t\t\nmodel-providers.root\t\tforget-provider-key\tRemove a provider's API key\t\toutside\teffect\t1\tprovider\t\t\nmodel-providers.root\t\tunlink-provider\tRemove a model provider\t\toutside\teffect\t1\tprovider\t\t\nmodel-providers.root\t\task-provider-models\tAsk a provider for its models\t\toutside\teffect\t0\tprovider\t\t\nmodel-providers.root\t\tname-provider-model\tAdd a model by name\t\toutside\teffect\t0\tprovider\t\t\nmodel-providers.root\t\tchoose-work-model\tChoose the model for a kind of work\t\toutside\teffect\t0\twork\t\t\n",
     },
     FleetApp {
         id: "so.tilo.monitor",
@@ -1297,7 +1264,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "systemmonitor",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "monitor.processes\t\trefresh\tRefresh processes\t\tread\teffect\t0\t\t\t\nmonitor.processes\t\tshow-tab\tShow tab\t\tread\teffect\t0\ttab\t\t\nmonitor.processes\t\tfilter\tFilter processes\t\tread\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.music",
@@ -1333,12 +1300,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "lieblingslieder",
         ],
         resource_types: &[],
-        actions: &[FleetAction {
-            resource: "music.library",
-            action: "open-link",
-            label: "Open link",
-            description: "",
-        }],
+        offers: "music.library\t\tcreate-playlist\tCreate playlist\t\tundoable\tdocument\t0\tname\t\t\nmusic.library\t\timport-track\tAdd to library\t\tundoable\tdocument\t0\tsong\t\t\nmusic.library\t\tspotify-account-status\tInspect Spotify account\t\tread\teffect\t0\t\t\t\nmusic.library\t\tsearch\tSearch the catalogue\t\tread\teffect\t0\tquery\t\t\nmusic.library\t\topen-file\tOpen audio file\t\toutside\teffect\t0\t\t\t\nmusic.library\t\tbrowse-genre\tBrowse genre\t\tread\tview\t0\tgenre\t\t\nmusic.library\t\tseek\tSeek\t\toutside\teffect\t0\tposition_ms\t\t\nmusic.library\t\tset-volume\tSet volume\t\toutside\teffect\t0\tvolume\t\t\nmusic.library\t\tqueue-add\tAdd track to queue\t\toutside\teffect\t0\ttrack\t\t\nmusic.library\t\tqueue-remove\tRemove track from queue\t\toutside\teffect\t1\ttrack\t\t\nmusic.library\t\topen-link\tOpen link\t\tread\tview\t0\tlink\t\t\nmusic.player:player\tmusic.player\tplayback-status\tInspect playback\t\tread\teffect\t0\t\t\t\nmusic.player:player\tmusic.player\ttoggle-mute\tToggle mute\t\toutside\teffect\t0\t\t\t\nmusic.player:player\tmusic.player\ttoggle-shuffle\tTurn shuffle on\t\toutside\teffect\t0\t\t\t\nmusic.player:player\tmusic.player\tcycle-repeat\tToggle repeat\t\toutside\teffect\t0\t\t\t\nmusic.recommendation-input:likes\tmusic.recommendation-input\tset-input\tDisable input\t\tundoable\tdocument\t0\t\t\t\nmusic.recommendation-input:saved-albums\tmusic.recommendation-input\tset-input\tDisable input\t\tundoable\tdocument\t0\t\t\t\nmusic.recommendation-input:followed-artists\tmusic.recommendation-input\tset-input\tDisable input\t\tundoable\tdocument\t0\t\t\t\nmusic.source:catalogue\tmusic.source\tsources\tChoose a source\t\toutside\teffect\t0\t\t\t\nmusic.source:catalogue\tmusic.source\tconnect-spotify-library\tUse the Spotify library\t\toutside\teffect\t0\t\t\t\nmusic.source:catalogue\tmusic.source\tconnect-spotify\tConnect Spotify\t\toutside\teffect\t0\t\t\t\nmusic.source:catalogue\tmusic.source\tconnect-spotify-playback\tAuthorize Spotify playback\t\toutside\teffect\t0\t\t\t\nmusic.source:catalogue\tmusic.source\tspotify-devices\tRefresh Spotify devices\t\toutside\teffect\t0\t\t\t\nmusic.source:catalogue\tmusic.source\tspotify-queue\tShow the Spotify queue\t\toutside\teffect\t0\t\t\t\nmusic.source:catalogue\tmusic.source\tspotify-library-more\tLoad more Spotify collections\t\toutside\teffect\t0\t\t\t\nmusic.source:catalogue\tmusic.source\tnew-spotify-playlist\tName a new playlist\t\toutside\teffect\t0\t\t\t\nmusic.source:catalogue\tmusic.source\tdisconnect-spotify\tDisconnect Spotify\t\toutside\teffect\t0\t\t\t\nmusic.source:catalogue\tmusic.source\tbrowse-spotify\tBrowse Spotify\t\toutside\teffect\t0\t\t\t\nmusic.source:catalogue\tmusic.source\tbrowse-you-tube\tBrowse YouTube Music\t\toutside\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.notes",
@@ -1369,7 +1331,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "notizen machen",
         ],
         resource_types: &[("notes.notebook", "Notebook")],
-        actions: &[],
+        offers: "notes.notebook\t\tnew-tag\tNew tag\t\tundoable\tdocument\t0\tname\t\ttag\nnotes.notebook\t\timport-markdown-file\tImport Markdown\t\toutside\teffect\t0\t\topen markdown\u{1f}import md\tdownload\nnotes.notebook\t\timport-notion-export\tImport Notion export\t\toutside\teffect\t0\t\t\tdownload\nchain:derived:pages@derived:default@tab:0000000000000000\tnotes.pages\tnew-note\tNew note\t\tundoable\teffect\t0\ttitle\tnew page\u{1f}create note\u{1f}add note\u{1f}memo\tfile-plus\n",
     },
     FleetApp {
         id: "so.tilo.passwords",
@@ -1404,7 +1366,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "anmeldedaten",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "passwords.vault\t\tshow-access\tShow app access\t\tread\tview\t0\t\t\t\npasswords.vault\t\tadd\tNew item\t\tread\teffect\t0\t\t\t\npasswords.vault\t\tlist-logins\tList logins\t\tread\teffect\t0\t\t\t\npasswords.vault\t\tcopy-identity\tCopy username\t\tread\teffect\t0\titem\t\t\npasswords.vault\t\tcopy-origins\tCopy web addresses\t\tread\teffect\t0\titem\t\t\npasswords.vault\t\thide\tHide secret\t\tread\tview\t0\titem\t\t\npasswords.vault\t\timport\tImport passwords\t\toutside\teffect\t0\t\t\t\npasswords.vault\t\texport\tExport CSV…\t\toutside\teffect\t0\t\t\t\npasswords.vault\t\tfilter\tFilter vault\t\tread\teffect\t0\tfilter\t\t\n",
     },
     FleetApp {
         id: "so.tilo.pdf-viewer",
@@ -1429,7 +1391,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "pdf oeffnen",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "pdf.document\t\tstart-page-plan\tStart page plan\t\tundoable\tdocument\t0\tpages\t\t\npdf.document\t\timport-pages\tImport pages\t\tundoable\tdocument\t0\tpages\t\t\npdf.document\t\tadd-annotation\tAdd annotation\t\tundoable\tdocument\t0\tannotation\t\t\npdf.document\t\tcreate-note\tAdd note\t\tundoable\tdocument\t0\tnote\t\t\npdf.document\t\tadd-note\tAdd note at page top\t\tundoable\tdocument\t0\ttext\t\t\npdf.document\t\tadd-comment\tAdd comment\t\tundoable\tdocument\t0\tcomment\t\t\npdf.document\t\tadd-signature\tSign\t\tundoable\tdocument\t0\tsignature\t\t\npdf.document\t\tadd-typed-signature\tSign with typed name\t\tundoable\tdocument\t0\tsigner\t\t\npdf.document\t\tprevious-page\tPrevious page\t\tread\tview\t0\t\t\t\npdf.document\t\tnext-page\tNext page\t\tread\tview\t0\t\t\t\npdf.document\t\tzoom-in\tZoom in\t\tread\tview\t0\t\t\t\npdf.document\t\tzoom-out\tZoom out\t\tread\tview\t0\t\t\t\npdf.document\t\tfit-page\tFit page\t\tread\tview\t0\t\t\t\npdf.document\t\tfit-width\tFit width\t\tread\tview\t0\t\t\t\npdf.document\t\ttoggle-sidebar\tSidebar\t\tread\tview\t0\t\t\t\npdf.document\t\ttoggle-pages\tPage thumbnails\t\tread\tview\t0\t\t\t\npdf.document\t\tfind\tFind\t\tread\tview\t0\t\t\t\npdf.document\t\tuse-tool\tUse tool\t\tread\tview\t0\ttool\t\t\npdf.document\t\tset-marker-colour\tMarker colour\t\tread\tview\t0\tcolour\t\t\npdf.document\t\tmark-highlight\tHighlight\t\tread\tview\t0\t\t\t\npdf.document\t\tmark-underline\tUnderline\t\tread\tview\t0\t\t\t\npdf.document\t\tmark-strikeout\tStrike through\t\tread\tview\t0\t\t\t\npdf.document\t\tread-text\tRead text\t\tread\teffect\t0\t\t\t\npdf.document\t\tread-form-fields\tRead form fields\t\tread\teffect\t0\t\t\t\npdf.document\t\tlook-page\tShow page\t\tread\teffect\t0\tpage\t\t\npdf.document\t\tselect-text\tSelect text\t\toutside\teffect\t0\t\t\t\npdf.document\t\tselect-all\tSelect all\t\tread\tview\t0\t\t\t\npdf.document\t\tcopy-selection\tCopy selection\t\toutside\teffect\t0\t\t\t\npdf.document\t\topen-pdf\tOpen PDF\t\toutside\teffect\t1\t\t\t\npdf.document\t\tinsert-pages\tInsert pages\t\toutside\teffect\t0\tpath\t\t\npdf.document\t\tsave-as\tSave annotated PDF\t\toutside\teffect\t0\t\t\t\npdf.document\t\tsave-to\tSave annotated PDF to a file\t\toutside\teffect\t1\tpath\t\t\n",
     },
     FleetApp {
         id: "so.tilo.photos",
@@ -1464,7 +1426,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "fotobibliothek",
         ],
         resource_types: &[("photos.library", "Library")],
-        actions: &[],
+        offers: "photos.library\t\timport-photo\tImport photograph\t\tundoable\tdocument\t0\timage\t\t\nphotos.library\t\tremove-person\tRemove person\t\tundoable\tdocument\t0\tperson\t\t\nphotos.library\t\tview-library\tPhoto library\t\tread\tview\t0\t\t\t\nphotos.library\t\tview-album\tOpen album\t\tread\tview\t0\talbum_id\t\t\nphotos.library\t\timport\tImport photograph\t\toutside\teffect\t0\t\t\t\nphotos.library\t\timport-directory\tImport folder\t\toutside\teffect\t0\t\t\t\nphotos.library\t\treindex-directory\tRefresh folder\t\toutside\teffect\t0\tpath\t\t\nphotos.library\t\tcopy\tCopy photograph\t\toutside\teffect\t0\t\t\t\nphotos.library\t\tmake-thumbnails\tMake thumbnails\t\tread\teffect\t0\tphotos\t\t\nphotos.library\t\tsave\tSave photograph\t\toutside\teffect\t0\t\t\t\nphotos.library\t\tanalyze-image\tAnalyze image\t\toutside\teffect\t1\tresource_id\t\t\nphotos.library\t\trotate-shown-left\tRotate left\t\toutside\teffect\t0\t\t\t\nphotos.library\t\trotate-shown-right\tRotate right\t\toutside\teffect\t0\t\t\t\nphotos.library\t\tcrop-shown-to-view\tCrop to view\t\toutside\teffect\t0\t\t\t\nphotos.library\t\treset-shown-edits\tReset edits\t\toutside\teffect\t0\t\t\t\nphotos.library\t\tshare-shown\tCopy link\t\toutside\teffect\t0\t\t\t\nphotos.library\t\tnew-album\tNew album\t\tread\tview\t0\t\t\t\nphotos.library\t\tedit-album\tEdit album\t\tread\tview\t0\t\t\t\nphotos.library\t\tprevious-library-page\tPrevious page\t\tread\tview\t0\t\t\t\nphotos.library\t\tnext-library-page\tNext page\t\tread\tview\t0\t\t\t\nphotos.library\t\tsave-album-draft\tSave album\t\toutside\teffect\t0\t\t\t\nphotos.library\t\tcancel-album-draft\tCancel album editing\t\tread\tview\t0\t\t\t\nphotos.library\t\tdelete-album-draft\tDelete album\t\tread\tview\t0\t\t\t\nphotos.library\t\tconfirm-album-delete\tDelete album and keep photos\t\toutside\teffect\t1\t\t\t\nphotos.library\t\tsave-details\tSave details\t\toutside\teffect\t0\t\t\t\nphotos.library\t\tcancel-details\tCancel editing\t\tread\tview\t0\t\t\t\nphotos.library\t\tshow-details-organize\tOrganize\t\tread\tview\t0\t\t\t\nphotos.library\t\tshow-details-time-and-place\tTime and place\t\tread\tview\t0\t\t\t\nphotos.library\t\tclear-draft-folder\tClear folder\t\tread\tview\t0\t\t\t\nphotos.library\t\tclear-draft-people\tClear people\t\tread\tview\t0\t\t\t\nphotos.library\t\tclear-draft-tags\tClear tags\t\tread\tview\t0\t\t\t\nphotos.library\t\tclear-draft-captured-at\tClear capture time\t\tread\tview\t0\t\t\t\nphotos.library\t\tclear-draft-location\tClear location\t\tread\tview\t0\t\t\t\nphotos.library\t\tplace-draft-on-map\tSet location from map\t\tread\tview\t0\t\t\t\nphotos.library\t\tshow-fewer-photos\tShow fewer photos\t\tread\tview\t0\t\t\t\nphotos.library\t\tshow-more-photos\tShow more photos\t\tread\tview\t0\t\t\t\nphotos.library\t\tprevious-albums-page\tPrevious albums page\t\tread\tview\t0\t\t\t\nphotos.library\t\tnext-albums-page\tNext albums page\t\tread\tview\t0\t\t\t\nphotos.library\t\tprevious-people-page\tPrevious people page\t\tread\tview\t0\t\t\t\nphotos.library\t\tnext-people-page\tNext people page\t\tread\tview\t0\t\t\t\nphotos.library\t\tprevious-places-page\tPrevious places page\t\tread\tview\t0\t\t\t\nphotos.library\t\tnext-places-page\tNext places page\t\tread\tview\t0\t\t\t\nphotos.library\t\tstop-import\tStop import\t\toutside\teffect\t0\t\t\t\nphotos.library\t\tshow-import-details\tImport details\t\tread\tview\t0\t\t\t\nphotos.library\t\tdismiss-import\tDismiss report\t\tread\tview\t0\t\t\t\nphotos.library\t\tpeople-back\tBack to People\t\tread\tview\t0\t\t\t\nphotos.library\t\ttoggle-people-recognition\tPeople recognition\t\toutside\teffect\t0\t\t\t\nphotos.library\t\tcancel-people-scan\tStop People scan\t\toutside\teffect\t0\t\t\t\nphotos.library\t\topen-approved-person\tOpen person\t\tread\tview\t0\tperson\t\t\nphotos.library\t\topen-suggestion\tReview suggestion\t\tread\tview\t0\tcluster\t\t\nphotos.library\t\tbrowse-approved-people\tBrowse people\t\tread\tview\t0\t\t\t\nphotos.library\t\tsave-person-name\tSave name\t\toutside\teffect\t0\t\t\t\nphotos.library\t\tbegin-people-merge\tMerge person\t\tread\tview\t0\t\t\t\nphotos.library\t\tmerge-approved-into\tMerge into another person\t\toutside\teffect\t0\tperson\t\t\nphotos.library\t\tapprove-suggestion\tApprove suggestion\t\toutside\teffect\t0\t\t\t\nphotos.library\t\treject-suggestion\tReject suggestion\t\toutside\teffect\t0\t\t\t\nphotos.library\t\thide-suggestion\tHide suggestion\t\toutside\teffect\t0\t\t\t\nphotos.library\t\trestore-suggestion\tRestore suggestion\t\toutside\teffect\t0\t\t\t\nphotos.library\t\tmerge-suggestion-with\tMerge into a person\t\toutside\teffect\t0\tperson\t\t\nphotos.library\t\ttoggle-hidden-suggestions\tShow hidden suggestions\t\tread\tview\t0\t\t\t\nphotos.library\t\tpeople-page\tPage of suggestions\t\tread\tview\t0\tforward\t\t\nphotos.library\t\tdelete-local-people-data\tDelete People data\t\tread\tview\t0\t\t\t\nphotos.library\t\tconfirm-delete-local-people-data\tDelete local People data\t\toutside\teffect\t1\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.poker",
@@ -1486,7 +1448,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "spieleabend",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "so.tilo.poker.table\t\tsit\tTake a seat\t\tundoable\tdocument\t0\tseat\t\t\nso.tilo.poker.table\t\tleave\tLeave table\t\tundoable\tdocument\t0\t\t\t\nso.tilo.poker.table\t\tdeal\tDeal\t\tundoable\tdocument\t0\t\t\t\nso.tilo.poker.table\t\tfold\tFold\t\tundoable\tdocument\t0\t\t\t\nso.tilo.poker.table\t\tcall\tCall\t\tundoable\tdocument\t0\t\t\t\nso.tilo.poker.table\t\traise\tRaise\t\tundoable\tdocument\t0\tto\t\t\nso.tilo.poker.table\t\tall-in\tAll in\t\tundoable\tdocument\t0\t\t\t\nso.tilo.poker.table\t\tshow\tShow cards\t\tundoable\tdocument\t0\t\t\t\nso.tilo.poker.table\t\tskip\tFold idle player\t\tundoable\tdocument\t0\t\t\t\nso.tilo.poker.table\t\trebuy\tBuy back in\t\tundoable\tdocument\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.print-centre",
@@ -1516,7 +1478,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "scannen",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "print-centre.defaults\t\trefresh\tRefresh printers\t\tread\teffect\t0\t\t\t\nprint-centre.defaults\t\tfind-printers\tFind network printers\t\toutside\teffect\t0\t\t\t\nprint-centre.defaults\t\topen-dashboard\tOpen dashboard\t\tread\tview\t0\t\t\t\nprint-centre.defaults\t\topen-queue\tOpen print queue\t\tread\tview\t0\t\t\t\nprint-centre.defaults\t\topen-history\tOpen print history\t\tread\tview\t0\t\t\t\nprint-centre.defaults\t\trun-diagnostics\tRun printer diagnostics\t\tread\tview\t0\t\t\t\nprint-centre.defaults\t\topen-needs\tOpen what needs a person\t\tread\tview\t0\t\t\t\nprint-centre.defaults\t\tprint-document\tPrint document\t\tread\tview\t0\t\t\t\nprint-centre.defaults\t\tscan-document\tScan document\t\tread\tview\t0\t\t\t\nprint-centre.defaults\t\tnew-scanned-document\tNew scan\t\toutside\teffect\t1\t\t\t\nprint-centre.defaults\t\topen-printer\tOpen printer\t\tread\tview\t0\tprinter\t\t\nprint-centre.defaults\t\tprevious-print-page\tPrevious page\t\tread\tview\t0\t\t\t\nprint-centre.defaults\t\tnext-print-page\tNext page\t\tread\tview\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.publisher",
@@ -1545,7 +1507,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "app einreichen",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "publisher.profile\t\tcreate-key\tCreate key\t\toutside\teffect\t1\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.remote",
@@ -1574,7 +1536,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "verbinden",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "remote.connection-list\t\tshow-connections\tShow connections\t\tread\tview\t0\t\t\t\nremote.connection-list\t\tnew\tNew connection\t\tread\tview\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.scratchpad",
@@ -1601,7 +1563,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "notizblock",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "",
     },
     FleetApp {
         id: "so.tilo.settings",
@@ -1633,12 +1595,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "einstellung",
         ],
         resource_types: &[],
-        actions: &[FleetAction {
-            resource: "settings.root",
-            action: "open-link",
-            label: "Open link",
-            description: "",
-        }],
+        offers: "settings.root\t\tshow-setting\tShow a setting\t\tread\tview\t0\tsetting\t\t\nsettings.root\t\tinspect-appearance\tInspect appearance preferences\t\tread\tview\t0\t\t\t\nsettings.root\t\tchoose-wallpaper\tChoose wallpaper\t\toutside\teffect\t0\t\twallpaper\u{1f}background\u{1f}desktop picture\u{1f}desktop background\t\nsettings.root\t\topen-workspace-defaults\tOpen workspace app defaults\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tset-automatic-time\tSet the time automatically\t\toutside\teffect\t0\ton\t\t\nsettings.root\t\tset-time-zone\tSet the time zone\t\toutside\teffect\t0\tzone\t\t\nsettings.root\t\tchoose-paste-app\tChoose an app to set how it pastes\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tinspect-input-sources\tInspect input sources\t\tread\teffect\t0\t\t\t\nsettings.root\t\tset-active-source\tChoose the active input source\t\toutside\teffect\t0\tsource\t\t\nsettings.root\t\tinspect-keyboard-sources\tInspect keyboard sources\t\tread\teffect\t0\t\t\t\nsettings.root\t\tselect-keyboard-scope\tChoose a keyboard\t\toutside\teffect\t0\tscope\t\t\nsettings.root\t\tselect-configured-source\tChoose a configured source\t\toutside\teffect\t0\tsource\t\t\nsettings.root\t\tset-source-options-visible\tShow or hide source options\t\tread\teffect\t0\tvisible\t\t\nsettings.root\t\tset-source-inspection-visible\tShow or hide key inspection\t\tread\teffect\t0\tvisible\t\t\nsettings.root\t\topen-source-picker\tAdd an input source\t\tread\teffect\t0\t\t\t\nsettings.root\t\tclose-source-picker\tClose the source picker\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tchoose-source-to-add\tPreview an installed source\t\toutside\teffect\t0\tsource\t\t\nsettings.root\t\tconfirm-source-to-add\tAdd the previewed source\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tpreview-layout\tPreview a keyboard layout\t\toutside\teffect\t0\tsource\t\t\nsettings.root\t\tshow-live-keyboard-map\tShow the live keyboard\t\tread\teffect\t0\t\t\t\nsettings.root\t\tset-preview-extra-levels\tShow extra levels\t\toutside\teffect\t0\ton\t\t\nsettings.root\t\tset-preview-level\tChoose a level to inspect\t\toutside\teffect\t0\tlevel\t\t\nsettings.root\t\tinspect-keyboard-key\tInspect a key\t\toutside\teffect\t0\tkey\t\t\nsettings.root\t\tapply-preview\tUse the previewed layout\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tadd-source\tAdd an input source\t\toutside\teffect\t0\tsource\t\t\nsettings.root\t\tmove-source-up\tMove a source up\t\toutside\teffect\t0\tsource\t\t\nsettings.root\t\tmove-source-down\tMove a source down\t\toutside\teffect\t0\tsource\t\t\nsettings.root\t\tremove-source\tRemove an input source\t\toutside\teffect\t0\tsource\t\t\nsettings.root\t\treset-dictionary\tReset the local dictionary\t\toutside\teffect\t0\trevision\t\t\nsettings.root\t\tset-charge-limit\tSet charge limit\t\toutside\teffect\t0\tpercent\t\t\nsettings.root\t\tcheck-for-updates\tCheck for updates\t\toutside\teffect\t0\t\t\t\nsettings.root\t\trestart-to-update\tRestart to update\t\toutside\teffect\t1\t\t\t\nsettings.root\t\treview-rollback\tReview the rollback\t\toutside\teffect\t0\t\t\t\nsettings.root\t\troll-back\tRoll back to the previous system\t\toutside\teffect\t1\t\t\t\nsettings.root\t\trefresh-firmware\tCheck for firmware updates\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tinstall-firmware\tInstall firmware updates\t\toutside\teffect\t1\t\t\t\nsettings.root\t\tinstall-codecs\tInstall media codecs\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tremove-codecs\tRemove media codecs\t\toutside\teffect\t1\t\t\t\nsettings.root\t\trefresh-codecs\tCheck codec support again\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tset-automatic-updates\tUpdate automatically\t\toutside\teffect\t0\ton\t\t\nsettings.root\t\tset-metered-updates\tUpdate on metered networks\t\toutside\teffect\t0\tallowed\t\t\nsettings.root\t\trefresh-disk-unlock\tRefresh disk unlock\t\toutside\teffect\t0\t\t\t\nsettings.root\t\trefresh-drives\tRefresh drives\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tclean-up-caches\tClean up caches\t\toutside\teffect\t1\t\t\t\nsettings.root\t\tfree-synced-files\tFree synced files\t\toutside\teffect\t1\t\t\t\nsettings.root\t\topen-disks\tOpen Disks\t\toutside\teffect\t0\t\t\t\nsettings.root\t\topen-backups\tOpen Backups\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tset-prefetch\tFetch files ahead of time\t\toutside\teffect\t0\ton\t\t\nsettings.root\t\tstorage-summary\tShow what this device holds\t\tread\teffect\t0\t\t\t\nsettings.root\t\tfree-cache\tFree a workspace's cache\t\toutside\teffect\t0\tworkspace\t\t\nsettings.root\t\tback-up-identity\tBack up identity\t\toutside\teffect\t0\t\t\t\nsettings.root\t\topen-problem\tProblem details\t\tread\tview\t0\treport\t\t\nsettings.root\t\topen-workspace-privacy\tOpen workspace privacy\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tforget-secrets\tForget an app's saved secrets\t\toutside\teffect\t0\tapp\t\t\nsettings.root\t\trevoke-device-answer\tTake back an answer the person gave an app about a device of theirs\t\toutside\teffect\t0\tresource\t\t\nsettings.root\t\trefresh-printers\tRefresh printers\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tfind-printers\tFind printers on the network\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tbegin-speaker-setup\tSet up a speaker set\t\tread\tview\t0\t\t\t\nsettings.root\t\tspeaker-setup-back\tBack\t\tread\tview\t0\t\t\t\nsettings.root\t\tcontinue-speaker-setup\tContinue\t\tread\tview\t0\t\t\t\nsettings.root\t\tplay-identify-sound\tPlay the identifying sound\t\tread\tview\t0\t\t\t\nsettings.root\t\tplay-speaker\tPlay a sound on a speaker\t\tread\tview\t0\tspeaker\t\t\nsettings.root\t\tskip-speaker\tSkip this speaker\t\tread\tview\t0\t\t\t\nsettings.root\t\tassign-speaker-role\tSay where the speaker stands\t\tread\tview\t0\trole\t\t\nsettings.root\t\tsave-speaker-set\tSave the speaker set\t\tread\tview\t0\t\t\t\nsettings.root\t\tstart-calibration\tCalibrate the speaker set\t\tread\tview\t0\t\t\t\nsettings.root\t\topen-calibration\tOpen calibration\t\tread\tview\t0\tgroup\t\t\nsettings.root\t\tclose-speaker-setup\tClose speaker setup\t\tread\tview\t0\t\t\t\nsettings.root\t\tset-up-accelerator\tSet up accelerator\t\toutside\teffect\t0\t\t\t\nsettings.root\t\treview-model-download\tShow what the download involves\t\tread\tview\t0\tshow\t\t\nsettings.root\t\tshow-local-model\tShow local model\t\tread\tview\t0\tmodel\t\t\nsettings.root\t\tsearch-hub-models\tSearch Hugging Face\t\tread\teffect\t0\tquery\t\t\nsettings.root\t\tset-hub-format\tChoose the model file format\t\tread\tview\t0\tformat\t\t\nsettings.root\t\tadd-model-file\tAdd model file\t\toutside\teffect\t0\t\t\t\nsettings.root\t\topen-hub-model-page\tOpen model page\t\tread\tview\t0\trepo\t\t\nsettings.root\t\tsave-hub-token\tSave Hugging Face token\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tremove-hub-token\tRemove Hugging Face token\t\toutside\teffect\t1\t\t\t\nsettings.root\t\tsign-in-with-hugging-face\tSign in with Hugging Face\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tsign-in-with-hugging-face-code\tSign in with Hugging Face by code\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tcancel-hugging-face-sign-in\tCancel Hugging Face sign-in\t\tread\tview\t0\t\t\t\nsettings.root\t\trefresh-providers\tRefresh providers\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tadd-provider\tAdd provider\t\toutside\teffect\t0\tpreset\t\t\nsettings.root\t\tset-agent-model\tChoose an agent's model\t\toutside\teffect\t0\tagent\t\t\nsettings.root\t\tset-interaction-model\tChoose the model for an interaction\t\toutside\teffect\t0\tkind\t\t\nsettings.root\t\tadd-google-vertex\tAdd Google Vertex AI\t\tread\tview\t0\t\t\t\nsettings.root\t\tsign-in-with-google\tSign in with Google\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tcancel-sign-in\tCancel sign-in\t\tread\tview\t0\t\t\t\nsettings.root\t\tsign-in-to-provider\tSign in\t\toutside\teffect\t0\tservice\t\t\nsettings.root\t\tadd-google-gemini\tAdd Gemini with Google\t\tread\tview\t0\t\t\t\nsettings.root\t\tchoose-vertex-project\tChoose a Google Cloud project\t\tread\tview\t0\tproject\t\t\nsettings.root\t\tset-work-while-charging\tTake work only while charging\t\toutside\teffect\t0\ton\t\t\nsettings.root\t\tpair-home-server\tPair home server\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tadd-personal-device\tAdd personal device\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tcancel-removal\tCancel\t\tread\tview\t0\t\t\t\nsettings.root\t\tset-output-volume\tSet output volume\t\toutside\teffect\t0\tvolume\tvolume\u{1f}loudness\u{1f}sound level\t\nsettings.root\t\tset-output-muted\tMute or unmute the output\t\toutside\teffect\t0\tmuted\tmute\u{1f}silence\u{1f}sound off\t\nsettings.root\t\tset-input-volume\tSet microphone level\t\toutside\teffect\t0\tvolume\t\t\nsettings.root\t\ttoggle-microphone-test\tTest microphone\t\tread\teffect\t0\t\t\t\nsettings.root\t\tdiscover-thunderbird-accounts\tFind Thunderbird accounts\t\tread\teffect\t0\tprefs\t\t\nsettings.root\t\tpublish-browser-identity\tShare this identity with the browser\t\toutside\teffect\t0\torigin\t\t\nsettings.root\t\tadd-account\tAdd account\t\tread\tview\t0\tkind\t\t\nsettings.root\t\tconnect-google-mail\tContinue with Files and Mail\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tsave-new-password\tSave password\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tcancel-new-password\tClose without saving\t\tread\tview\t0\t\t\t\nsettings.root\t\tlink-service\tLink account\t\toutside\teffect\t0\tapp\t\t\nsettings.root\t\tunlink-service\tUnlink account\t\toutside\teffect\t1\tapp\t\t\nsettings.root\t\taccept-service\tLink offered account\t\toutside\teffect\t0\tapp\t\t\nsettings.root\t\tdecline-service\tTurn down offered account\t\toutside\teffect\t0\tapp\t\t\nsettings.root\t\tset-brightness\tSet brightness\t\toutside\teffect\t0\tbrightness\t\t\nsettings.root\t\tinspect-shared-displays\tInspect shared displays\t\tread\tview\t0\t\t\t\nsettings.root\t\tinspect-display-configuration\tInspect display configuration\t\tread\teffect\t0\t\t\t\nsettings.root\t\tidentify-displays\tIdentify displays\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tapply-display-changes\tApply display changes\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tkeep-display-changes\tKeep display changes\t\toutside\teffect\t0\t\t\t\nsettings.root\t\trevert-display-changes\tRevert display changes\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tinspect-network-state\tInspect network state\t\tread\tview\t0\t\t\t\nsettings.root\t\trefresh-networks\tRefresh networks\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tset-wired\tWired connection\t\toutside\teffect\t0\ton\t\t\nsettings.root\t\tshow-all-networks\tShow all networks\t\tread\tview\t0\t\t\t\nsettings.root\t\tshow-known-networks\tKnown networks\t\tread\tview\t0\t\t\t\nsettings.root\t\tshow-mobile\tMobile\t\tread\tview\t0\t\t\t\nsettings.root\t\tshow-wired\tWired connection settings\t\tread\tview\t0\t\t\t\nsettings.root\t\tshow-data-usage\tData usage\t\tread\tview\t0\t\tdata usage\u{1f}traffic\u{1f}bandwidth\u{1f}network statistics\t\nsettings.root\t\tshow-hidden-network\tOther network\t\tread\tview\t0\t\t\t\nsettings.root\t\tjoin-hidden-network\tJoin other network\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tset-ipv4\tApply IP settings\t\toutside\teffect\t0\tprofile\t\t\nsettings.root\t\trun-diagnostics\tRun network diagnostics\t\toutside\teffect\t0\t\t\t\nsettings.root\t\topen-network-sign-in\tOpen network sign-in\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tshow-hotspot-code\tShare hotspot QR code\t\tread\tview\t0\t\t\t\nsettings.root\t\tshow-hotspot-setup\tHotspot setup\t\tread\tview\t0\t\t\t\nsettings.root\t\task-hotspot-password\tHotspot password\t\tread\tview\t0\t\t\t\nsettings.root\t\tshow-advanced-network-settings\tAdvanced network settings\t\tread\tview\t0\t\t\t\nsettings.root\t\tshow-enterprise-setup\tEnterprise network setup\t\tread\tview\t0\t\t\t\nsettings.root\t\tchoose-ca-certificate\tChoose CA certificate\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tconnect-enterprise-network\tSave and connect\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tshow-vpns\tVPN\t\tread\tview\t0\t\t\t\nsettings.root\t\tshow-add-vpn\tAdd VPN\t\tread\tview\t0\t\t\t\nsettings.root\t\tshow-add-wireguard\tAdd WireGuard tunnel\t\tread\tview\t0\t\t\t\nsettings.root\t\tshow-add-plugin-vpn\tAdd VPN of a plugin's type\t\tread\tview\t0\tservice\t\t\nsettings.root\t\timport-wireguard\tImport WireGuard profile\t\toutside\teffect\t0\t\t\t\nsettings.root\t\timport-openvpn\tImport OpenVPN profile\t\toutside\teffect\t0\t\t\t\nsettings.root\t\timport-vpn-file\tImport from file\t\toutside\teffect\t0\t\t\t\nsettings.root\t\task-wireguard-private-key\tPrivate key\t\tread\tview\t0\t\t\t\nsettings.root\t\tgenerate-wireguard-keys\tGenerate keys\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tcreate-wireguard\tCreate tunnel\t\toutside\teffect\t0\t\t\t\nsettings.root\t\timport-wireguard-config\tImport configuration\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tcreate-plugin-vpn\tCreate VPN\t\toutside\teffect\t0\tservice\t\t\nsettings.root\t\tset-device-vpn-kill-switch\tBlock traffic while the tunnel is down\t\toutside\teffect\t0\ton\t\t\nsettings.root\t\tset-device-exit\tLet my other devices use this device as a VPN\t\toutside\teffect\t0\ton\t\t\nsettings.root\t\tinspect-mobile-state\tInspect mobile state\t\tread\tview\t0\t\t\t\nsettings.root\t\trefresh-mobile\tRefresh mobile data\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tcancel-mobile-form\tCancel\t\tread\tview\t0\t\t\t\nsettings.root\t\tchoose-language\tChoose the desktop language\t\toutside\teffect\t0\tlanguage\t\t\nsettings.root\t\tmanage-billing\tManage billing\t\tread\tview\t0\t\t\t\nsettings.root\t\topen-invoice\tOpen invoice\t\tread\tview\t0\tinvoice\t\t\nsettings.root\t\tshow-connect\tConnect an agent or computer\t\toutside\teffect\t0\t\t\t\nsettings.root\t\tshow-pair-device\tAdd a device\t\toutside\teffect\t0\t\t\t\nsettings.root\t\topen-link\tOpen link\t\tread\tview\t0\tlink\t\t\nsettings.section:network\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:bluetooth\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:devices_sync\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:appearance\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:accessibility\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:notifications\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:default-apps\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:spelling\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:region_formats\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:time_date\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:keyboard_shortcuts\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:displays\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:sound\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:speakers\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:keyboard\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:pointing\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:printers\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:power\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:devices_access\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:users\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:billing\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:external_accounts\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:agent_models\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:permissions\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:storage\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:updates\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.section:about\tsettings.section\topen-pane\tOpen settings pane\t\tread\tview\t0\t\t\t\nsettings.notification-app:chromium-browser\tsettings.notification-app\tset-app-banners\tTurn off notification banners\t\tundoable\teffect\t0\t\t\t\nsettings.notification-app:chromium-browser\tsettings.notification-app\tset-app-previews\tTurn off message previews\t\tundoable\teffect\t0\t\t\t\nsettings.notification-app:chromium-browser\tsettings.notification-app\tset-app-sounds\tTurn off notification sounds\t\tundoable\teffect\t0\t\t\t\nsettings.notification-app:chromium-browser\tsettings.notification-app\tset-app-badges\tTurn off notification badges\t\tundoable\teffect\t0\t\t\t\nsettings.notification-app:chromium-browser\tsettings.notification-app\tset-app-priority\tTurn on priority during focus\t\tundoable\teffect\t0\t\t\t\nsettings.notification-app:chromium-browser\tsettings.notification-app\tset-app-priority-contacts\tTurn on priority contacts during focus\t\tundoable\teffect\t0\t\t\t\nsettings.notification-app:chromium-browser\tsettings.notification-app\tmute-app\tMute notifications for an hour\t\tundoable\teffect\t0\t\t\t\nsettings.notification-app:org.gnome.TextEditor\tsettings.notification-app\tset-app-banners\tTurn off notification banners\t\tundoable\teffect\t0\t\t\t\nsettings.notification-app:org.gnome.TextEditor\tsettings.notification-app\tset-app-previews\tTurn off message previews\t\tundoable\teffect\t0\t\t\t\nsettings.notification-app:org.gnome.TextEditor\tsettings.notification-app\tset-app-sounds\tTurn off notification sounds\t\tundoable\teffect\t0\t\t\t\nsettings.notification-app:org.gnome.TextEditor\tsettings.notification-app\tset-app-badges\tTurn off notification badges\t\tundoable\teffect\t0\t\t\t\nsettings.notification-app:org.gnome.TextEditor\tsettings.notification-app\tset-app-priority\tTurn on priority during focus\t\tundoable\teffect\t0\t\t\t\nsettings.notification-app:org.gnome.TextEditor\tsettings.notification-app\tset-app-priority-contacts\tTurn on priority contacts during focus\t\tundoable\teffect\t0\t\t\t\nsettings.notification-app:org.gnome.TextEditor\tsettings.notification-app\tmute-app\tMute notifications for an hour\t\tundoable\teffect\t0\t\t\t\nsettings.keyboard-map\t\tinspect-keyboard-map\tInspect the keyboard layout map\t\tread\teffect\t0\t\t\t\nsettings:settings.appearance\tsettings.appearance\tchoose-theme\tTheme\t\tundoable\teffect\t0\ttheme\t\t\nsettings:settings.appearance\tsettings.appearance\tset-dark-mode\tDark mode\t\tundoable\teffect\t0\ton\t\t\nsettings:settings.accessibility\tsettings.accessibility\tstep-magnifier\tMagnify\t\tundoable\teffect\t0\tstep\tzoom\u{1f}magnify\u{1f}magnifier\t\nsettings:settings.accessibility\tsettings.accessibility\tset-screen-reader\tScreen reader\t\tundoable\teffect\t0\ton\tnarrator\u{1f}voiceover\u{1f}accessibility\u{1f}read aloud\t\nsettings:settings.input\tsettings.input\tset-key-repeat\tKey repeat\t\tundoable\teffect\t0\trate\t\t\nsettings:settings.input\tsettings.input\tchoose-layout\tKeyboard layout\t\tundoable\teffect\t0\tlayout\t\t\nsettings:settings.input-device\tsettings.input-device\tuse-shared-layouts\tUse the shared layouts\t\tundoable\teffect\t0\tkeyboard\t\t\nsettings:settings.input-device\tsettings.input-device\tset-keyboard-model\tKeyboard model\t\tundoable\teffect\t0\tmodel\t\t\nsettings:settings.input-device\tsettings.input-device\tshow-keyboard-layout\tShow a keyboard layout\t\tundoable\teffect\t0\tlayout\t\t\nsettings:settings.power\tsettings.power\tset-suspend-plugged-in\tSuspend when plugged in\t\tundoable\teffect\t0\tminutes\t\t\nsettings:settings.power\tsettings.power\tset-suspend-on-battery\tSuspend on battery\t\tundoable\teffect\t0\tminutes\t\t\nsettings:settings.updates\tsettings.updates\trecord-automatic-updates\tAutomatic updates\t\tundoable\teffect\t0\ton\t\t\nsettings:settings.updates\tsettings.updates\trecord-update-check\tLast update check\t\tundoable\teffect\t0\tat\t\t\nsettings:settings.notifications\tsettings.notifications\tset-do-not-disturb\tDo not disturb\t\tundoable\teffect\t0\ton\t\t\nsettings:settings.audio\tsettings.audio\tset-mono-output\tMono audio\t\tundoable\teffect\t0\ton\t\t\nsettings:settings.audio\tsettings.audio\tset-echo-cancellation\tEcho cancellation\t\tundoable\teffect\t0\ton\t\t\nsettings:settings.audio-device\tsettings.audio-device\tremember-output-device\tOutput device\t\tundoable\teffect\t0\tdevice\t\t\nsettings:settings.audio-device\tsettings.audio-device\tremember-input-device\tInput device\t\tundoable\teffect\t0\tdevice\t\t\nsettings:settings.display\tsettings.display\tset-automatic-brightness\tAutomatic brightness\t\tundoable\teffect\t0\ton\t\t\nsettings:settings.display\tsettings.display\tset-rotation-lock\tRotation lock\t\tundoable\teffect\t0\tlocked\t\t\nsettings:settings.continuity\tsettings.continuity\tallow-continuity\tAllow Continuity\t\tundoable\teffect\t0\ton\t\t\nsettings:settings.shortcuts\tsettings.shortcuts\treset\tReset shortcuts\t\tundoable\teffect\t0\tshortcuts\t\t\nsettings:settings.shortcuts\tsettings.shortcuts\treset-all\tReset all shortcuts\t\tundoable\teffect\t0\t\t\t\nsettings:settings.shortcuts\tsettings.shortcuts\tset-action-chords\tAction shortcuts\t\tundoable\teffect\t0\tchords\t\t\nsettings:shell-views\tshell-views\treset\tReset a shell view\t\tundoable\teffect\t0\tpart\t\t\nsettings:settings.agent-providers\tsettings.agent-providers\tset-providers\tModel providers\t\tundoable\teffect\t0\tconfig\t\t\nsettings:settings.agent-providers\tsettings.agent-providers\tfollow-local-models\tModels on this device\t\tundoable\teffect\t0\tprofile\t\t\nsettings:settings.hosted-agent-providers\tsettings.hosted-agent-providers\tset-providers\tHosted model providers\t\tundoable\teffect\t0\thosted\t\t\nsettings:settings.display-placement\tsettings.display-placement\tarrange-displays\tArrange displays\t\tundoable\teffect\t0\tplacement\t\t\nsettings:settings.automatic-display\tsettings.automatic-display\tset-automatic-display-input\tAutomatic display input\t\tundoable\teffect\t0\ton\t\t\nsettings:settings.device-vpn\tsettings.device-vpn\tset-kill-switch\tBlock traffic when the tunnel drops\t\tundoable\teffect\t0\ton\t\t\nsettings:settings.device-vpn\tsettings.device-vpn\tstop\tStop routing through this device\t\tundoable\teffect\t0\tdevice\t\t\nsettings:settings.device-vpn\tsettings.device-vpn\trelease-profile\tAllow a VPN profile again\t\tundoable\teffect\t0\tprofile\t\t\nsettings:settings.network-usage\tsettings.network-usage\treset-data-used\tReset data used\t\tundoable\teffect\t0\tconnection\tdata usage\u{1f}cellular data\u{1f}mobile data counter\u{1f}data plan\t\nsettings:settings.network-usage\tsettings.network-usage\tforget-data-used\tForget data usage\t\tundoable\teffect\t0\tconnection\tdata usage history\u{1f}clear network statistics\t\nsettings:settings.mcp-server\tsettings.mcp-server\tset-accept-own-devices\tAccept agents from my other devices\t\tundoable\teffect\t0\ton\t\t\nsettings:settings.mcp-server\tsettings.mcp-server\tset-act-without-asking\tLet them act without asking\t\tundoable\teffect\t0\ton\t\t\n",
     },
     FleetApp {
         id: "so.tilo.sheets",
@@ -1667,7 +1624,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "tabellenblatt",
         ],
         resource_types: &[("sheets.workbook", "Workbook")],
-        actions: &[],
+        offers: "sheets.workbook\t\tnew-sheet\tAdd sheet\t\tundoable\tdocument\t0\tname\t\t\nsheets.workbook\t\tset-title\tName the workbook\t\tundoable\tdocument\t0\ttitle\t\t\nsheets.workbook\t\tinsert-column-chart\tCreate column chart from selection\t\tundoable\tdocument\t0\t\t\t\nsheets.workbook\t\tinsert-line-chart\tCreate line chart from selection\t\tundoable\tdocument\t0\t\t\t\nsheets.workbook\t\tcomment-selection\tComment on selection\t\tundoable\tdocument\t0\ttext\t\t\nsheets.workbook\t\tsum-selection\tSum selection\t\tundoable\tdocument\t0\tseen\t\t\nsheets.workbook\t\tinsert-row-active\tInsert row above\t\tundoable\tdocument\t0\tcount\t\t\nsheets.workbook\t\tdelete-row-active\tDelete row\t\tundoable\tdocument\t0\t\t\t\nsheets.workbook\t\tinsert-column-active\tInsert column left\t\tundoable\tdocument\t0\tcount\t\t\nsheets.workbook\t\tdelete-column-active\tDelete column\t\tundoable\tdocument\t0\t\t\t\nsheets.workbook\t\tformat-currency\tFormat as currency\t\tundoable\tdocument\t0\tseen\t\t\nsheets.workbook\t\tformat-percent\tFormat as percent\t\tundoable\tdocument\t0\tseen\t\t\nsheets.workbook\t\tclear-format\tClear formatting\t\tundoable\tdocument\t0\tseen\t\t\nsheets.workbook\t\timport-csv\tImport CSV\t\toutside\teffect\t0\t\t\t\nsheets.workbook\t\timport-xlsx\tImport Excel workbook\t\toutside\teffect\t0\t\t\t\nsheets.workbook\t\timport-notion\tImport Notion export\t\toutside\teffect\t0\t\t\t\nsheets.workbook\t\timport-ods\tImport OpenDocument spreadsheet\t\toutside\teffect\t0\t\t\t\nsheets.workbook\t\texport-csv\tExport CSV\t\toutside\teffect\t0\t\t\t\nsheets.workbook\t\texport-xlsx\tExport Excel workbook\t\toutside\teffect\t0\t\t\t\nsheets.workbook\t\texport-ods\tExport OpenDocument spreadsheet\t\toutside\teffect\t0\t\t\t\nsheets.workbook\t\texport-xlsx-content\tExport workbook content\t\tread\teffect\t0\t\t\t\nsheets.workbook\t\texport-csv-content\tExport sheet as CSV content\t\tread\teffect\t0\t\t\t\nsheets.workbook\t\tcommands\tOpen command palette\t\tread\tview\t0\t\t\t\nsheets.workbook\t\tgo-to-cell\tGo to cell…\t\tread\tview\t0\treference\t\t\nsheets.workbook\t\ttoggle-formula-view\tToggle formula view\t\tread\tview\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.shortcuts",
@@ -1693,7 +1650,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "automatisieren",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "shortcuts.workbench\t\tdraft-proposal\tOpen proposed shortcut\t\tundoable\tdocument\t0\tshortcut\t\t\nshortcuts.workbench\t\tignore-proposal\tIgnore the proposal\t\tundoable\tdocument\t0\tkey\t\t\nshortcuts.workbench\t\tallow-proposal\tOffer the proposal again\t\tundoable\tdocument\t0\tkey\t\t\nshortcuts.workbench\t\tnew-draft\tNew shortcut\t\tundoable\tdocument\t0\tname\t\t\nshortcuts.workbench\t\tdraft-shortcut\tImport a shortcut\t\tundoable\tdocument\t0\tshortcut\t\t\nshortcuts.workbench\t\topen-shortcut\tEdit a saved shortcut\t\tundoable\tdocument\t0\tshortcut\t\t\nshortcuts.workbench\t\tduplicate-shortcut\tDuplicate saved shortcut\t\tundoable\tdocument\t0\tshortcut\t\t\nshortcuts.workbench\t\trefresh\tReload shortcuts\t\toutside\teffect\t0\t\t\t\nshortcuts.workbench\t\tsave\tSave shortcut\t\toutside\teffect\t0\tdraft\t\t\nshortcuts.workbench\t\trun\tRun shortcut\t\toutside\teffect\t0\tshortcut\t\t\nshortcuts.workbench\t\tdelete\tDelete shortcut\t\toutside\teffect\t1\tshortcut\t\t\nshortcuts.workbench\t\tdescribe\tDraft with the agent\t\toutside\teffect\t0\tdescription\t\t\n",
     },
     FleetApp {
         id: "so.tilo.slides",
@@ -1721,7 +1678,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "foliensatz",
         ],
         resource_types: &[("slides.deck", "Deck")],
-        actions: &[],
+        offers: "slides.deck\t\tadd-slide\tAdd slide\t\tundoable\tdocument\t0\ttitle\t\t\nslides.deck\t\tadd-slides\tAdd slides\t\tundoable\tdocument\t0\tslides\t\t\nslides.deck\t\teditor\tShow editor\t\tread\tview\t0\t\t\t\nslides.deck\t\toverview\tShow slide overview\t\tread\tview\t0\t\t\t\nslides.deck\t\tpresent\tStart presentation\t\tread\tview\t0\t\t\t\nslides.deck\t\tpresent-largest-external\tPresent on largest external display\t\tread\tview\t0\t\t\t\nslides.deck\t\tpresent-primary-external\tPresent on primary external display\t\tread\tview\t0\t\t\t\nslides.deck\t\tend-presentation\tEnd presentation\t\tread\tview\t0\t\t\t\nslides.deck\t\tshow-slide-list\tShow slide list\t\tread\tview\t0\tshown\t\t\nslides.deck\t\tshow-properties\tShow properties\t\tread\tview\t0\tshown\t\t\nslides.deck\t\topen-slide\tOpen slide\t\tread\tview\t0\tslide\t\t\nslides.deck\t\topen-notes\tOpen speaker notes\t\tread\tview\t0\tslide\t\t\nslides.deck\t\tinsert-picture\tInsert picture\t\toutside\teffect\t0\t\t\t\nslides.deck\t\topen-presentation\tOpen presentation\t\toutside\teffect\t1\t\t\t\nslides.deck\t\tsave-as\tSave presentation\t\toutside\teffect\t0\t\t\t\nslides.deck\t\tread-deck\tRead deck as text\t\tread\teffect\t0\t\t\t\nslides.deck\t\texport-pptx-content\tExport presentation as content\t\tread\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.snippets",
@@ -1746,7 +1703,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "codeschnipsel",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "snippets.library\t\tnew-snippet\tNew snippet\t\tundoable\tdocument\t0\ttitle\t\t\nsnippets.library\t\tremove-tag\tRemove tag\t\tundoable\tdocument\t0\ttag\t\t\nsnippets.library\t\tsearch\tSearch snippets\t\tread\tview\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.speed-test",
@@ -1775,7 +1732,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "geschwindigkeit messen",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "speed-test.results\t\tclear\tClear results\t\tundoable\tdocument\t0\t\t\t\nspeed-test.results\t\tstart\tRun speed test\t\toutside\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.store",
@@ -1813,12 +1770,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "programme installieren",
         ],
         resource_types: &[],
-        actions: &[FleetAction {
-            resource: "store.catalog",
-            action: "open-link",
-            label: "Open link",
-            description: "",
-        }],
+        offers: "store.catalog\t\tdraft-report\tCreate report draft\t\tundoable\tdocument\t0\tapp_id\t\t\nstore.catalog\t\tinspect-catalogue\tInspect catalogue\t\tread\teffect\t0\t\t\t\nstore.catalog\t\trefresh\tRefresh catalogue\t\toutside\teffect\t0\t\t\t\nstore.catalog\t\tupdate-all\tUpdate all apps\t\toutside\teffect\t0\t\t\t\nstore.catalog\t\tset-search\tSearch apps\t\tread\teffect\t0\tquery\t\t\nstore.catalog\t\tshow-view\tShow a Store view\t\tread\teffect\t0\tview\t\t\nstore.catalog\t\tshow-more\tShow more apps\t\tread\teffect\t0\t\t\t\nstore.catalog\t\tblock-app\tBlock app\t\toutside\teffect\t0\tapp\t\t\nstore.catalog\t\tunblock-app\tUnblock app\t\toutside\teffect\t0\tapp\t\t\nstore.catalog\t\tset-category\tShow category\t\tread\teffect\t0\tcategory\t\t\nstore.catalog\t\tclear-filters\tClear the search\t\tread\teffect\t0\t\t\t\nstore.catalog\t\tshow-runtime-details\tReview an app's runtime\t\tread\teffect\t0\truntime\t\t\nstore.catalog\t\tset-technical-details\tToggle technical details\t\tread\teffect\t0\texpanded\t\t\nstore.catalog\t\timport-package\tReview a local package\t\toutside\teffect\t0\t\t\t\nstore.catalog\t\topen-reference\tOpen a Flatpak reference\t\tread\teffect\t0\t\t\t\nstore.catalog\t\tshow-catalogue\tBack to apps\t\tread\teffect\t0\t\t\t\nstore.catalog\t\topen-link\tOpen a web page\t\toutside\teffect\t0\turl\t\t\nstore:remotes\tstore.remote-list\tshow-remotes\tShow Flatpak remotes\t\tread\teffect\t0\t\t\t\nstore:remotes\tstore.remote-list\trefresh-remotes\tRefresh remotes\t\toutside\teffect\t0\t\t\t\nstore:moderation\tstore.moderation\tshow-trust\tShow trust and moderation\t\tread\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.tasks",
@@ -1843,7 +1795,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "agentenaufgaben",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "tasks.tracker\t\tcreate-area\tNew project or area\t\tundoable\tdocument\t0\tname\t\t\ntasks.tracker\t\tnew-project\tStart a project\t\tread\teffect\t0\t\t\t\ntasks.tracker\t\tshow-list\tShow the list\t\tread\tview\t0\t\t\t\ntasks.tracker\t\tshow-board\tShow the board\t\tread\tview\t0\t\t\t\ntasks.tracker\t\tshow-thread\tShow the thread\t\tread\tview\t0\t\t\t\nchain:derived:issues@derived:default@tab:0000000000000000\ttasks.issues\tcreate\tNew issue\t\tundoable\teffect\t0\ttitle\t\t\nchain:derived:issues@derived:default@tab:0000000000000000\ttasks.issues\tstart\tStart numbering a part\t\tundoable\teffect\t0\tbefore\t\t\n",
     },
     FleetApp {
         id: "so.tilo.terminal",
@@ -1875,7 +1827,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "shell öffnen",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "terminal.session\t\trun\tRun command\t\toutside\tdocument\t0\tcommand\t\t\nterminal.session\t\tstop\tStop command\t\tundoable\tdocument\t0\t\tstop\u{1f}cancel\u{1f}interrupt\u{1f}ctrl c\t\nterminal.session\t\trecord-target\tRecord where the session runs\t\tundoable\tdocument\t0\ttarget\t\t\nterminal.session\t\trecord-relay-session\tRecord the reattached session\t\tundoable\tdocument\t0\tsession\t\t\nterminal.session\t\tclaim-pane\tClaim a pane\t\tundoable\tdocument\t0\tpane\t\t\nterminal.session\t\tinspect-session\tInspect session\t\tread\teffect\t0\t\t\t\nterminal.session\t\tread-screen\tRead output\t\tread\teffect\t0\t\t\t\nterminal.session\t\tinspect-editor\tInspect field\t\tread\teffect\t0\t\t\t\nterminal.session\t\tsend\tSend text\t\toutside\teffect\t1\ttext\ttype text\u{1f}enter command\t\nterminal.session\t\tinterrupt\tInterrupt process\t\toutside\teffect\t1\t\tstop\u{1f}cancel\u{1f}kill process\u{1f}ctrl c\t\nterminal.session\t\tclear\tClear screen\t\toutside\teffect\t1\t\tcls\u{1f}clear terminal\u{1f}reset screen\t\nterminal.session\t\tpaste\tPaste\t\toutside\teffect\t1\ttext\t\t\nterminal.session\t\tpaste-primary\tPaste selection\t\toutside\teffect\t1\ttext\t\t\nterminal.session\t\topen-in\tOpen in…\t\toutside\teffect\t1\ttarget\t\t\nterminal.session\t\tcreate-environment\tNew environment\t\toutside\teffect\t1\tname\tnew container\u{1f}new sandbox\t\nterminal.session\t\tcopy-visible\tCopy visible output\t\tread\teffect\t1\t\tcopy output\u{1f}copy screen\t\nterminal.session\t\tcopy-selection\tCopy selected output\t\tread\teffect\t1\t\t\t\nterminal.session\t\tselect-all\tSelect all output\t\tread\teffect\t1\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.themes",
@@ -1911,7 +1863,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "farbschema",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "themes.studio\t\tapply-theme\tSet as system theme\t\toutside\teffect\t0\ttheme\t\t\nthemes.studio\t\texport\tExport theme\t\tread\teffect\t0\ttheme\t\t\nthemes.studio\t\timport\tImport theme\t\toutside\teffect\t0\t\t\t\nthemes.studio\t\tduplicate-theme\tDuplicate theme\t\tread\tview\t0\ttheme\t\t\n",
     },
     FleetApp {
         id: "so.tilo.totp",
@@ -1942,7 +1894,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "sicherheitscode",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "totp.vault\t\tadd-account\tAdd account\t\tread\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.tube",
@@ -1974,12 +1926,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "videoportal",
         ],
         resource_types: &[],
-        actions: &[FleetAction {
-            resource: "tube.library",
-            action: "open-link",
-            label: "Open link",
-            description: "",
-        }],
+        offers: "tube.library\t\tshow-screen\tShow a screen\t\tread\tview\t0\tscreen\t\t\ntube.library\t\ttoggle-sidebar\tShow or hide navigation\t\tread\tview\t0\t\t\t\ntube.library\t\tsearch\tSearch videos\t\tread\teffect\t0\tquery\t\t\ntube.library\t\tpair-device\tPair with an invitation\t\toutside\teffect\t1\tinvite\t\t\ntube.library\t\topen-link\tOpen link\t\tread\tview\t0\tlink\t\t\ntube.history\t\tclear-history\tClear watch history\t\tread\teffect\t1\t\t\t\ntube.setting:autoplay\ttube.setting\tset-preference\tSet a playback preference\t\tread\teffect\t0\t\t\t\ntube.setting:comments\ttube.setting\tset-preference\tSet a playback preference\t\tread\teffect\t0\t\t\t\ntube.setting:sponsorblock\ttube.setting\tset-preference\tSet a playback preference\t\tread\teffect\t0\t\t\t\ntube.setting:dearrow\ttube.setting\tset-preference\tSet a playback preference\t\tread\teffect\t0\t\t\t\ntube.setting:dearrow-titles\ttube.setting\tset-preference\tSet a playback preference\t\tread\teffect\t0\t\t\t\ntube.setting:dearrow-thumbnails\ttube.setting\tset-preference\tSet a playback preference\t\tread\teffect\t0\t\t\t\ntube.setting:dislikes\ttube.setting\tset-preference\tSet a playback preference\t\tread\teffect\t0\t\t\t\ntube.setting:preferred-quality\ttube.setting\tset-preferred-quality\tSet preferred quality\t\tread\teffect\t0\t\t\t\ntube.setting:sponsor-category:sponsor\ttube.setting\tset-segment-handling\tSet segment handling\t\tread\teffect\t0\t\t\t\ntube.setting:sponsor-category:selfpromo\ttube.setting\tset-segment-handling\tSet segment handling\t\tread\teffect\t0\t\t\t\ntube.setting:sponsor-category:interaction\ttube.setting\tset-segment-handling\tSet segment handling\t\tread\teffect\t0\t\t\t\ntube.setting:sponsor-category:intro\ttube.setting\tset-segment-handling\tSet segment handling\t\tread\teffect\t0\t\t\t\ntube.setting:sponsor-category:outro\ttube.setting\tset-segment-handling\tSet segment handling\t\tread\teffect\t0\t\t\t\ntube.setting:sponsor-category:preview\ttube.setting\tset-segment-handling\tSet segment handling\t\tread\teffect\t0\t\t\t\ntube.setting:sponsor-category:music_offtopic\ttube.setting\tset-segment-handling\tSet segment handling\t\tread\teffect\t0\t\t\t\ntube.setting:sponsor-category:filler\ttube.setting\tset-segment-handling\tSet segment handling\t\tread\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.typst-editor",
@@ -2007,7 +1954,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "seminararbeit",
         ],
         resource_types: &[("typst-editor.workspace", "Typst workspace")],
-        actions: &[],
+        offers: "typst-editor.workspace\t\tnew-file\tNew Typst file\t\tundoable\tdocument\t0\tname\t\t\ntypst-editor.workspace\t\tcompile\tRecompile\t\toutside\teffect\t0\t\t\t\ntypst-editor.workspace\t\tsave\tSave Typst file\t\toutside\teffect\t0\t\t\t\ntypst-editor.workspace\t\tsave-as\tSave Typst file as…\t\toutside\teffect\t0\t\t\t\ntypst-editor.workspace\t\topen-file\tOpen Typst file\t\toutside\teffect\t0\t\t\t\ntypst-editor.workspace\t\texport-pdf\tExport PDF\t\toutside\teffect\t0\t\t\t\ntypst-editor.workspace\t\tzoom-out\tZoom out\t\tread\tview\t0\t\t\t\ntypst-editor.workspace\t\tzoom-in\tZoom in\t\tread\tview\t0\t\t\t\ntypst-editor.workspace\t\tfit-width\tFit width\t\tread\tview\t0\t\t\t\ntypst-editor.workspace\t\tproblems\tProblems\t\tread\tview\t0\t\t\t\ntypst-editor.workspace\t\teditor\tShow editor\t\tread\tview\t0\t\t\t\ntypst-editor.workspace\t\tpreview\tShow preview\t\tread\tview\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.video-editor",
@@ -2038,7 +1985,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "zusammenschneiden",
         ],
         resource_types: &[("video-editor.project", "Project")],
-        actions: &[],
+        offers: "video-editor.project\t\tset-frame-rate\tSet frame rate\t\tundoable\tdocument\t0\tfps\t\t\nvideo-editor.project\t\tmark-in\tMark in\t\tundoable\tdocument\t0\tat\t\t\nvideo-editor.project\t\tmark-out\tMark out\t\tundoable\tdocument\t0\tat\t\t\nvideo-editor.project\t\tclear-marks\tClear marks\t\tundoable\tdocument\t0\t\t\t\nvideo-editor.project\t\tadd-title\tAdd title\t\tundoable\tdocument\t0\ttext\t\t\nvideo-editor.project\t\tadd-clip\tAdd clip\t\tundoable\tdocument\t0\tmedia\t\t\nvideo-editor.project\t\tplace-two-angles\tPlace two angles\t\tundoable\tdocument\t0\tat\t\t\nvideo-editor.project\t\tunplace-two-angles\tUnplace two angles\t\tundoable\tdocument\t0\tat\t\t\nvideo-editor.project\t\tadd-track\tAdd track\t\tundoable\tdocument\t0\tkind\t\t\nvideo-editor.project\t\tmark-in-here\tMark in at playhead\t\tundoable\tdocument\t0\t\t\t\nvideo-editor.project\t\tmark-out-here\tMark out at playhead\t\tundoable\tdocument\t0\t\t\t\nvideo-editor.project\t\tadd-marker-here\tAdd marker at playhead\t\tundoable\tdocument\t0\tname\t\t\nvideo-editor.project\t\tsplit-here\tSplit clip at playhead\t\tundoable\tdocument\t0\tclip\t\t\nvideo-editor.project\t\ttrim-in-here\tTrim clip start to playhead\t\tundoable\tdocument\t0\tclip\t\t\nvideo-editor.project\t\ttrim-out-here\tTrim clip end to playhead\t\tundoable\tdocument\t0\tclip\t\t\nvideo-editor.project\t\treveal-track\tReveal track\t\tread\tview\t0\ttrack\t\t\nvideo-editor.project\t\treveal-clip\tReveal clip\t\tread\tview\t0\tclip\t\t\nvideo-editor.project\t\treveal-marker\tReveal marker\t\tread\tview\t0\tmarker\t\t\nvideo-editor.project\t\treveal-media\tReveal media\t\tread\tview\t0\tmedia\t\t\nvideo-editor.project\t\timport\tImport media\t\toutside\teffect\t0\t\t\t\nvideo-editor.project\t\topen-project-file\tOpen project file\t\toutside\teffect\t0\t\t\t\nvideo-editor.project\t\texport-project-file\tExport project file\t\toutside\teffect\t0\t\t\t\nvideo-editor.project\t\texport\tExport video\t\toutside\teffect\t0\t\t\t\nvideo-editor.project\t\tshow-export\tShow export settings\t\tread\tview\t0\t\t\t\nvideo-editor.project\t\ttoggle-media\tShow or hide media\t\tread\tview\t0\t\t\t\nvideo-editor.project\t\ttoggle-inspector\tShow or hide the inspector\t\tread\tview\t0\t\t\t\nvideo-editor.project\t\tgo-to-clip\tGo to clip\t\tread\tview\t0\t\t\t\nvideo-editor.project\t\tsplit-selection\tSplit at playhead\t\tundoable\tview\t0\t\t\t\nvideo-editor.project\t\trender-timeline\tRender video\t\tread\teffect\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.video-player",
@@ -2074,7 +2021,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "untertitel",
         ],
         resource_types: &[("video-player.recent", "Recent videos")],
-        actions: &[],
+        offers: "video-player.library\t\tcreate-playlist\tCreate playlist\t\tundoable\tdocument\t0\tname\t\t\nvideo-player.library\t\topen-video\tOpen video\t\tread\teffect\t0\t\t\t\nvideo-player.library\t\tshow-library\tShow library\t\tread\tview\t0\ttab\t\t\nvideo-player.library\t\thide-library\tClose library\t\tread\tview\t0\t\t\t\nvideo-player.library\t\tset-autoplay\tSet autoplay\t\tread\tview\t0\tenabled\t\t\nvideo-player.library\t\tset-loop\tRepeat the video\t\tread\tview\t0\tenabled\t\t\nvideo-player.library\t\ttoggle-fullscreen\tToggle fullscreen\t\tread\tview\t0\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.weather",
@@ -2110,7 +2057,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "unwetter",
         ],
         resource_types: &[],
-        actions: &[],
+        offers: "weather.locations\t\tsave-location\tAdd location\t\tundoable\tdocument\t0\tplace\t\t\n",
     },
     FleetApp {
         id: "so.tilo.windows",
@@ -2139,7 +2086,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "windows-anwendungen",
         ],
         resource_types: &[("windows.manager", "Windows manager")],
-        actions: &[],
+        offers: "windows.manager\t\tinstall\tInstall Windows application\t\toutside\teffect\t1\t\t\t\nwindows.manager\t\timport-iso\tImport Windows ISO\t\toutside\teffect\t1\t\t\t\n",
     },
     FleetApp {
         id: "so.tilo.word-processor",
@@ -2172,6 +2119,6 @@ pub(super) const APPS: &[FleetApp] = &[
             "schreibprogramm",
         ],
         resource_types: &[("word-processor.document", "Document")],
-        actions: &[],
+        offers: "word-processor.document\t\taccept-change\tAccept change\t\tundoable\tdocument\t0\tchange\t\t\nword-processor.document\t\treject-change\tReject change\t\tundoable\tdocument\t0\tchange\t\t\nword-processor.document\t\taccept-all-changes\tAccept all changes\t\tundoable\tdocument\t0\t\t\t\nword-processor.document\t\treject-all-changes\tReject all changes\t\tundoable\tdocument\t0\t\t\t\nword-processor.document\t\tadopt-comments\tKeep imported comments\t\tundoable\tdocument\t0\t\t\t\nword-processor.document\t\tgenerate-toc\tGenerate table of contents\t\tundoable\tdocument\t0\t\t\t\nword-processor.document\t\tread-text\tRead document text\t\tread\teffect\t0\tpageSize\t\t\nword-processor.document\t\topen-document\tOpen document\t\toutside\teffect\t1\t\t\t\nword-processor.document\t\tsave\tSave document\t\toutside\teffect\t1\t\t\t\nword-processor.document\t\tsave-as\tSave document as\t\toutside\teffect\t0\t\t\t\nword-processor.document\t\tsave-to\tSave document to a file\t\toutside\teffect\t1\tpath\t\t\nword-processor.document\t\texport-content\tExport document content\t\tread\teffect\t0\t\t\t\nword-processor.document\t\tfind\tFind in document\t\tread\tview\t0\t\t\t\nword-processor.document\t\tzoom-in\tZoom in\t\tread\tview\t0\t\t\t\nword-processor.document\t\tzoom-out\tZoom out\t\tread\tview\t0\t\t\t\nword-processor.document\t\tzoom-reset\tReset zoom to 100%\t\tread\tview\t0\t\t\t\nword-processor.document\t\tspellcheck\tToggle spellcheck\t\tread\tview\t0\t\t\t\nword-processor.document\t\tmarkup\tToggle review markup\t\tread\tview\t0\t\t\t\nword-processor.document\t\tstyles\tToggle styles panel\t\tread\tview\t0\t\t\t\nword-processor.document\t\truler\tToggle ruler\t\tread\tview\t0\t\t\t\nword-processor.document\t\tselect-all\tSelect all\t\tread\tview\t0\t\t\t\nword-processor.document\t\tapply-named-style\tApply style\t\tundoable\tview\t0\tstyle\t\t\nword-processor.document\t\tinsert-table-here\tInsert table here\t\tundoable\tview\t0\t\t\t\nword-processor.document\t\tinsert-page-break\tInsert page break\t\tundoable\tview\t0\t\t\t\nword-processor.document\t\tset-hyperlink\tSet hyperlink\t\tundoable\tview\t0\ttarget\t\t\nword-processor.document\t\tcomment-selection\tComment on selection\t\tundoable\tview\t0\ttext\t\t\n",
     },
 ];

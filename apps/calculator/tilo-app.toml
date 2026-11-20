@@ -66,3 +66,73 @@ splash-budget   = 250
 [providers]
 mime = []
 ext  = []
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "calculator.document"
+action = "clear-history"
+label = "Clear history"
+operation = "document"
+[[offers]]
+resource = "calculator.document"
+action = "add-function"
+label = "Add curve"
+operation = "document"
+asks = "formula"
+[[offers]]
+resource = "calculator.document"
+action = "add-surface"
+label = "Add surface"
+operation = "document"
+asks = "formula"
+[[offers]]
+resource = "calculator.document"
+action = "show-calculator"
+label = "Show calculator"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "calculator.document"
+action = "show-graph2d"
+label = "Show 2D graph"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "calculator.document"
+action = "show-graph3d"
+label = "Show 3D graph"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "calculator.document"
+action = "show-convert"
+label = "Show unit conversion"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "calculator.document"
+action = "use-degrees"
+label = "Use degrees"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "calculator.document"
+action = "use-radians"
+label = "Use radians"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "calculator.document"
+action = "toggle-panel"
+label = "Show or hide formulas"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "calculator.document"
+action = "recall"
+label = "Use calculation"
+kind = "read"
+operation = "view"
+asks = "expression"

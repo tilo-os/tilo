@@ -130,7 +130,17 @@ struct Sources {
 }
 
 impl Sources {
-    fn new(data: SearchData) -> Self {
+    fn new(mut data: SearchData) -> Self {
+        // An app whose window this desktop draws publishes its actions here, in its resources:
+        // what it offers through the shell besides, kept from before or declared while it was
+        // closed, would be each of them again.
+        let drawn: std::collections::BTreeSet<String> = data
+            .resources
+            .iter()
+            .filter_map(|resource| resource.app_id.clone())
+            .collect();
+        data.published
+            .retain(|published| !drawn.contains(&published.app));
         // The part of the app the search is narrowed to, when it is: one
         // mailbox, one folder.
         let anchor = match &data.scope {

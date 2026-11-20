@@ -51,3 +51,48 @@ invoke = true
 bin = "bin/tasks"
 type = "gui"
 splash-budget = 250
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "tasks.tracker"
+action = "create-area"
+label = "New project or area"
+operation = "document"
+asks = "name"
+[[offers]]
+resource = "tasks.tracker"
+action = "new-project"
+label = "Start a project"
+kind = "read"
+[[offers]]
+resource = "tasks.tracker"
+action = "show-list"
+label = "Show the list"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "tasks.tracker"
+action = "show-board"
+label = "Show the board"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "tasks.tracker"
+action = "show-thread"
+label = "Show the thread"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "chain:derived:issues@derived:default@tab:0000000000000000"
+resource-kind = "tasks.issues"
+action = "create"
+label = "New issue"
+asks = "title"
+[[offers]]
+resource = "chain:derived:issues@derived:default@tab:0000000000000000"
+resource-kind = "tasks.issues"
+action = "start"
+label = "Start numbering a part"
+asks = "before"

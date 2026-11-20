@@ -74,3 +74,66 @@ splash-budget   = 250
 [providers]
 mime = []
 ext  = []
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "imager.sources"
+action = "select-source"
+label = "Review an image to write"
+operation = "document"
+asks = "source"
+[[offers]]
+resource = "imager.sources"
+action = "set-wifi-psk"
+label = "Set Wi-Fi password"
+kind = "outside"
+asks = "value"
+[[offers]]
+resource = "imager.sources"
+action = "set-ssh-key"
+label = "Set the SSH key for the next write"
+kind = "outside"
+asks = "value"
+[[offers]]
+resource = "imager.sources"
+action = "choose-image"
+label = "Choose a disk image"
+kind = "outside"
+[[offers]]
+resource = "imager.sources"
+action = "rescan"
+label = "Rescan drives"
+kind = "read"
+[[offers]]
+resource = "imager.sources"
+action = "choose-prepared-filesystem"
+label = "Choose a folder on the installer medium"
+kind = "outside"
+[[offers]]
+resource = "imager.sources"
+action = "retry-prepared-delivery"
+label = "Retry delivering prepared setup"
+kind = "outside"
+[[offers]]
+resource = "imager.sources"
+action = "review-changed-prepared-files"
+label = "Review changed prepared files"
+kind = "outside"
+[[offers]]
+resource = "imager.sources"
+action = "deliver-prepared-setup"
+label = "Deliver prepared setup"
+kind = "outside"
+asks = "mounted_root"
+[[offers]]
+resource = "imager.sources"
+action = "cancel-prepared-delivery"
+label = "Cancel prepared setup delivery"
+kind = "outside"
+[[offers]]
+resource = "imager.job"
+action = "status"
+label = "Show image-write status"
+kind = "read"

@@ -1945,3 +1945,108 @@ fn the_search_chord_opens_the_search_with_a_window_in_front() {
         search_showing,
     );
 }
+
+/// Calendar installed and never opened here, offering what its manifest says it does while closed.
+fn closed_calendar() -> Lists {
+    let offer = tilo_app_package::manifest::OfferedAction {
+        resource: "calendar.calendar".into(),
+        resource_kind: None,
+        action: "show-tasks".into(),
+        label: "Show tasks".into(),
+        description: None,
+        kind: tilo_app_package::manifest::OfferKind::Read,
+        operation: tilo_app_package::manifest::OfferOperation::View,
+        confirm: false,
+        asks: None,
+        keywords: vec!["to-do list".into()],
+        icon: None,
+    };
+    Lists::fixed(AppLists {
+        launchable: vec![tilo_broker_core::services::LaunchableApplication {
+            package_id: "so.tilo.calendar".into(),
+            display_name: "Calendar".into(),
+            unconfined: false,
+            offers: vec![offer],
+            capabilities: Vec::new(),
+            surface: None,
+        }],
+        ..AppLists::default()
+    })
+}
+
+/// An app installed here that never ran is found by what it offers: "to-do list" finds Calendar's
+/// Show tasks with Calendar closed and nothing it published, and choosing it asks the shell to
+/// open Calendar and carry it out there. Once the app publishes its own
+/// actions, the row is the one it publishes, never both.
+#[test]
+fn search_finds_what_an_installed_app_offers_before_it_ever_ran() {
+    let _settled = ui::motion::testing::settled();
+    let asked = Rc::new(Asked::default());
+    let mut session = crate::common::headless(Options {
+        lists: closed_calendar(),
+        apps: Some(Rc::clone(&asked) as Rc<dyn AppActions>),
+        collab: false,
+        ..Options::default()
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+    let workspace = session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.id().to_string())
+            .expect("a workspace")
+    });
+
+    search_for(&mut session, "to-do list");
+    let row = titled(&session, "Show tasks").unwrap_or_else(|| {
+        panic!(
+            "the closed app's offer answers its words: {:?}",
+            rows(&session)
+                .into_iter()
+                .map(|row| row.label)
+                .collect::<Vec<_>>()
+        )
+    });
+    invoke(
+        &mut session,
+        row.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
+    until(&mut session, |_| !asked.invoked.borrow().is_empty());
+    let (target, _) = asked.invoked.borrow()[0].clone();
+    assert_eq!(
+        target,
+        application_action_target(
+            &workspace,
+            "so.tilo.calendar",
+            "calendar.calendar",
+            "show-tasks"
+        ),
+        "the row invokes Calendar's own action by its address"
+    );
+
+    // Calendar opened and published its actions: those are what search offers of it now.
+    asked.publishing.borrow_mut().push(PublishedActions::of(
+        "so.tilo.calendar",
+        &workspace,
+        &[
+            ResourceSpec::new("calendar.calendar", "calendar.calendar", "Calendar").with_action(
+                tilo_actions::ActionSpec::immediate_encoded(
+                    "show-tasks",
+                    "Show tasks",
+                    tilo_actions::ExecutionLocus::ClientLocal,
+                    tilo_actions::EncodedAction {
+                        type_id: "calendar.show-tasks".into(),
+                        payload: Vec::new(),
+                    },
+                )
+                .with_keywords(["to-do list"]),
+            ),
+        ],
+    ));
+    search_for(&mut session, "show tasks");
+    let found = rows(&session)
+        .into_iter()
+        .filter(|row| row.label == "Show tasks")
+        .count();
+    assert_eq!(found, 1, "what the app published stands in for its offer");
+}

@@ -53,3 +53,84 @@ splash-budget = 250
 [providers]
 mime = []
 ext = []
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "print-centre.defaults"
+action = "refresh"
+label = "Refresh printers"
+kind = "read"
+[[offers]]
+resource = "print-centre.defaults"
+action = "find-printers"
+label = "Find network printers"
+kind = "outside"
+[[offers]]
+resource = "print-centre.defaults"
+action = "open-dashboard"
+label = "Open dashboard"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "print-centre.defaults"
+action = "open-queue"
+label = "Open print queue"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "print-centre.defaults"
+action = "open-history"
+label = "Open print history"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "print-centre.defaults"
+action = "run-diagnostics"
+label = "Run printer diagnostics"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "print-centre.defaults"
+action = "open-needs"
+label = "Open what needs a person"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "print-centre.defaults"
+action = "print-document"
+label = "Print document"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "print-centre.defaults"
+action = "scan-document"
+label = "Scan document"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "print-centre.defaults"
+action = "new-scanned-document"
+label = "New scan"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "print-centre.defaults"
+action = "open-printer"
+label = "Open printer"
+kind = "read"
+operation = "view"
+asks = "printer"
+[[offers]]
+resource = "print-centre.defaults"
+action = "previous-print-page"
+label = "Previous page"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "print-centre.defaults"
+action = "next-print-page"
+label = "Next page"
+kind = "read"
+operation = "view"

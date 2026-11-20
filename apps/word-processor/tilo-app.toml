@@ -93,3 +93,156 @@ ext  = [
     "htm",
     "txt",
 ]
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "word-processor.document"
+action = "accept-change"
+label = "Accept change"
+operation = "document"
+asks = "change"
+[[offers]]
+resource = "word-processor.document"
+action = "reject-change"
+label = "Reject change"
+operation = "document"
+asks = "change"
+[[offers]]
+resource = "word-processor.document"
+action = "accept-all-changes"
+label = "Accept all changes"
+operation = "document"
+[[offers]]
+resource = "word-processor.document"
+action = "reject-all-changes"
+label = "Reject all changes"
+operation = "document"
+[[offers]]
+resource = "word-processor.document"
+action = "adopt-comments"
+label = "Keep imported comments"
+operation = "document"
+[[offers]]
+resource = "word-processor.document"
+action = "generate-toc"
+label = "Generate table of contents"
+operation = "document"
+[[offers]]
+resource = "word-processor.document"
+action = "read-text"
+label = "Read document text"
+kind = "read"
+asks = "pageSize"
+[[offers]]
+resource = "word-processor.document"
+action = "open-document"
+label = "Open document"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "word-processor.document"
+action = "save"
+label = "Save document"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "word-processor.document"
+action = "save-as"
+label = "Save document as"
+kind = "outside"
+[[offers]]
+resource = "word-processor.document"
+action = "save-to"
+label = "Save document to a file"
+kind = "outside"
+confirm = true
+asks = "path"
+[[offers]]
+resource = "word-processor.document"
+action = "export-content"
+label = "Export document content"
+kind = "read"
+[[offers]]
+resource = "word-processor.document"
+action = "find"
+label = "Find in document"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "word-processor.document"
+action = "zoom-in"
+label = "Zoom in"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "word-processor.document"
+action = "zoom-out"
+label = "Zoom out"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "word-processor.document"
+action = "zoom-reset"
+label = "Reset zoom to 100%"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "word-processor.document"
+action = "spellcheck"
+label = "Toggle spellcheck"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "word-processor.document"
+action = "markup"
+label = "Toggle review markup"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "word-processor.document"
+action = "styles"
+label = "Toggle styles panel"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "word-processor.document"
+action = "ruler"
+label = "Toggle ruler"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "word-processor.document"
+action = "select-all"
+label = "Select all"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "word-processor.document"
+action = "apply-named-style"
+label = "Apply style"
+operation = "view"
+asks = "style"
+[[offers]]
+resource = "word-processor.document"
+action = "insert-table-here"
+label = "Insert table here"
+operation = "view"
+[[offers]]
+resource = "word-processor.document"
+action = "insert-page-break"
+label = "Insert page break"
+operation = "view"
+[[offers]]
+resource = "word-processor.document"
+action = "set-hyperlink"
+label = "Set hyperlink"
+operation = "view"
+asks = "target"
+[[offers]]
+resource = "word-processor.document"
+action = "comment-selection"
+label = "Comment on selection"
+operation = "view"
+asks = "text"

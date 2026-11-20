@@ -1699,7 +1699,7 @@ impl TileSource for Tiles {
 }
 
 /// The applications this page offers to open itself: those of the bundle that run on the web.
-fn web_applications() -> impl Iterator<Item = tilo_desktop_search::providers::AppEntry> {
+pub(crate) fn web_applications() -> impl Iterator<Item = tilo_desktop_search::providers::AppEntry> {
     known_applications()
         .into_iter()
         .filter(|(id, _)| tilo_desktop_search::availability::runs_on(id, &["web"]))

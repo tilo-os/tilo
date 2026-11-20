@@ -58,3 +58,58 @@ splash-budget = 250
 [providers]
 mime = []
 ext = []
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "passwords.vault"
+action = "show-access"
+label = "Show app access"
+kind = "read"
+operation = "view"
+[[offers]]
+resource = "passwords.vault"
+action = "add"
+label = "New item"
+kind = "read"
+[[offers]]
+resource = "passwords.vault"
+action = "list-logins"
+label = "List logins"
+kind = "read"
+[[offers]]
+resource = "passwords.vault"
+action = "copy-identity"
+label = "Copy username"
+kind = "read"
+asks = "item"
+[[offers]]
+resource = "passwords.vault"
+action = "copy-origins"
+label = "Copy web addresses"
+kind = "read"
+asks = "item"
+[[offers]]
+resource = "passwords.vault"
+action = "hide"
+label = "Hide secret"
+kind = "read"
+operation = "view"
+asks = "item"
+[[offers]]
+resource = "passwords.vault"
+action = "import"
+label = "Import passwords"
+kind = "outside"
+[[offers]]
+resource = "passwords.vault"
+action = "export"
+label = "Export CSV…"
+kind = "outside"
+[[offers]]
+resource = "passwords.vault"
+action = "filter"
+label = "Filter vault"
+kind = "read"
+asks = "filter"

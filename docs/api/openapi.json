@@ -19966,6 +19966,32 @@
             },
             "type": "array"
           },
+          "attachments": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "filename": {
+                  "type": "string"
+                },
+                "media_type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "filename",
+                "size"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "answers": {
             "type": [
               "string",

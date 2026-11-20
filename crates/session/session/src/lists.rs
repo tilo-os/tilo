@@ -591,6 +591,27 @@ impl crate::platform::apps::Reading for Listed {
             workspace,
         )))
     }
+
+    fn offered(&self, workspace: &str) -> Vec<tilo_desktop_search::providers::PublishedActions> {
+        self.lists
+            .launchable
+            .iter()
+            .filter(|app| !app.unconfined && !app.offers.is_empty())
+            .map(|app| tilo_desktop_search::providers::PublishedActions {
+                app: app.package_id.clone(),
+                workspace: workspace.to_owned(),
+                actions: app
+                    .offers
+                    .iter()
+                    .map(|offer| {
+                        app.offered(offer)
+                            .descriptor(tilo_actions::ExecutionLocus::ClientLocal)
+                    })
+                    .collect(),
+                types: BTreeMap::new(),
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

@@ -141,3 +141,106 @@ ext  = [
     "sv",
     "svh",
 ]
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "code_editor.project"
+action = "new-file"
+label = "New file"
+operation = "document"
+asks = "name"
+keywords = ["create file", "add file", "touch"]
+icon = "file-plus"
+[[offers]]
+resource = "code_editor.project"
+action = "new-folder"
+label = "New folder"
+operation = "document"
+asks = "name"
+keywords = ["mkdir", "make directory", "create folder"]
+icon = "folder-plus"
+[[offers]]
+resource = "code_editor.project"
+action = "stop"
+label = "Stop in terminal"
+operation = "document"
+keywords = ["stop", "cancel", "interrupt", "ctrl c"]
+[[offers]]
+resource = "code_editor.project"
+action = "open-file"
+label = "Open a file"
+kind = "outside"
+icon = "folder-open"
+[[offers]]
+resource = "code_editor.project"
+action = "open-folder"
+label = "Open project folder"
+kind = "outside"
+keywords = ["open project", "open workspace folder"]
+icon = "folder-open"
+[[offers]]
+resource = "code_editor.project"
+action = "new-buffer"
+label = "New file"
+kind = "outside"
+icon = "file-plus"
+[[offers]]
+resource = "code_editor.project"
+action = "save-all"
+label = "Save all"
+kind = "outside"
+icon = "hard-drive"
+[[offers]]
+resource = "code_editor.project"
+action = "search-project"
+label = "Search project"
+kind = "read"
+keywords = ["find in files", "grep", "search all files"]
+icon = "search"
+[[offers]]
+resource = "code_editor.project"
+action = "toggle-bottom-panel"
+label = "Toggle bottom panel"
+kind = "read"
+icon = "panel-bottom"
+[[offers]]
+resource = "code_editor.project"
+action = "go-to-problems"
+label = "Show problems"
+kind = "read"
+keywords = ["errors", "warnings", "diagnostics"]
+icon = "triangle-alert"
+[[offers]]
+resource = "code_editor.project"
+action = "go-to-search"
+label = "Show search results"
+kind = "read"
+icon = "search"
+[[offers]]
+resource = "code_editor.project"
+action = "go-to-terminal"
+label = "Show terminal"
+kind = "read"
+keywords = ["console", "shell", "command line"]
+icon = "square-terminal"
+[[offers]]
+resource = "code_editor.project"
+action = "toggle-sidebar"
+label = "Toggle sidebar"
+kind = "read"
+icon = "panel-left"
+[[offers]]
+resource = "code_editor.project"
+action = "toggle-language-servers"
+label = "Toggle language servers"
+kind = "read"
+icon = "code"
+[[offers]]
+resource = "code_editor.project"
+action = "toggle-format-on-save"
+label = "Toggle format on save"
+kind = "read"
+keywords = ["auto format", "format code", "formatter"]
+icon = "wand-sparkles"

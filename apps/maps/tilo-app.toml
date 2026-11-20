@@ -84,11 +84,56 @@ ext  = []
 # places a query finds, as desktop search's "Search Maps for …" does.
 schemes = ["geo"]
 
-# A link of a scheme above reaches the app through the `open-link` every app
-# publishes; offered here so a link starts the app when no window of it runs.
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
 [[offers]]
-resource  = "maps.workspace"
-action    = "open-link"
-label     = "Open link"
-kind      = "read"
+resource = "maps.workspace"
+action = "accept-places"
+label = "Accept places"
+operation = "document"
+asks = "places"
+[[offers]]
+resource = "maps.workspace"
+action = "commit-search"
+label = "Search places"
+operation = "document"
+asks = "query"
+[[offers]]
+resource = "maps.workspace"
+action = "clear-recents"
+label = "Clear recent searches"
+operation = "document"
+[[offers]]
+resource = "maps.workspace"
+action = "clear-route"
+label = "Clear route"
+operation = "document"
+[[offers]]
+resource = "maps.workspace"
+action = "clear-transit"
+label = "Clear transit routes"
+operation = "document"
+[[offers]]
+resource = "maps.workspace"
+action = "locate"
+label = "Use my location"
+kind = "read"
+[[offers]]
+resource = "maps.workspace"
+action = "toggle-traffic"
+label = "Show traffic"
+kind = "read"
+[[offers]]
+resource = "maps.workspace"
+action = "clear-offline-areas"
+label = "Clear offline areas"
+kind = "read"
+confirm = true
+[[offers]]
+resource = "maps.workspace"
+action = "open-link"
+label = "Open link"
+kind = "read"
 operation = "view"
+asks = "link"

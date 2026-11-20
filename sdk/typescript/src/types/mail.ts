@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@45358b355be6b85c";
+export const SURFACE = "so.tilo.mail@f7f751ba63de3fed";
 
 export interface DraftAttachment {
   content_id: string;
@@ -88,6 +88,12 @@ export interface RetiredCopy {
 /** One of Flags, Move, Remove, SaveDraft: an object whose case the app tags it with. */
 export type ServerUpdate = Record<string, unknown>;
 
+export interface DeliveredAttachment {
+  filename: string;
+  media_type: string | null;
+  size: number;
+}
+
 export interface DeliveredPart {
   at: number;
   size: number;
@@ -108,7 +114,14 @@ export interface Delivery {
   message_id: string | null;
   original: unknown | null;
   parts: DeliveredPart[];
+  attachments: DeliveredAttachment[];
   answers: string | null;
+}
+
+export interface HeldAttachment {
+  filename: string;
+  media_type: string;
+  size: number;
 }
 
 export interface HeldMessage {
@@ -123,6 +136,7 @@ export interface HeldMessage {
   conversation: string;
   original: unknown | null;
   parts: HeldPart[];
+  attachments: HeldAttachment[];
 }
 
 export interface HeldPart {
@@ -507,6 +521,7 @@ export interface Messages extends tilo.Resource {
     message_id?: string;
     original?: unknown;
     parts?: DeliveredPart[];
+    attachments?: DeliveredAttachment[];
     answers?: string;
   }): Promise<unknown>;
 }

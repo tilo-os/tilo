@@ -58,3 +58,19 @@ splash-budget = 250
 [providers]
 mime = ["application/vnd.microsoft.portable-executable", "application/x-msi"]
 ext = ["exe", "msi"]
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "windows.manager"
+action = "install"
+label = "Install Windows application"
+kind = "outside"
+confirm = true
+[[offers]]
+resource = "windows.manager"
+action = "import-iso"
+label = "Import Windows ISO"
+kind = "outside"
+confirm = true

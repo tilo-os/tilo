@@ -86,11 +86,181 @@ mime = [
 ext = ["wav", "wave", "mp3", "flac", "ogg", "oga", "opus", "m4a", "aac", "aif", "aiff", "wma"]
 schemes = ["music"]
 
-# A link of a scheme above reaches the app through the `open-link` every app
-# publishes; offered here so a link starts the app when no window of it runs.
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
 [[offers]]
-resource  = "music.library"
-action    = "open-link"
-label     = "Open link"
-kind      = "read"
+resource = "music.library"
+action = "create-playlist"
+label = "Create playlist"
+operation = "document"
+asks = "name"
+[[offers]]
+resource = "music.library"
+action = "import-track"
+label = "Add to library"
+operation = "document"
+asks = "song"
+[[offers]]
+resource = "music.library"
+action = "spotify-account-status"
+label = "Inspect Spotify account"
+kind = "read"
+[[offers]]
+resource = "music.library"
+action = "search"
+label = "Search the catalogue"
+kind = "read"
+asks = "query"
+[[offers]]
+resource = "music.library"
+action = "open-file"
+label = "Open audio file"
+kind = "outside"
+[[offers]]
+resource = "music.library"
+action = "browse-genre"
+label = "Browse genre"
+kind = "read"
 operation = "view"
+asks = "genre"
+[[offers]]
+resource = "music.library"
+action = "seek"
+label = "Seek"
+kind = "outside"
+asks = "position_ms"
+[[offers]]
+resource = "music.library"
+action = "set-volume"
+label = "Set volume"
+kind = "outside"
+asks = "volume"
+[[offers]]
+resource = "music.library"
+action = "queue-add"
+label = "Add track to queue"
+kind = "outside"
+asks = "track"
+[[offers]]
+resource = "music.library"
+action = "queue-remove"
+label = "Remove track from queue"
+kind = "outside"
+confirm = true
+asks = "track"
+[[offers]]
+resource = "music.library"
+action = "open-link"
+label = "Open link"
+kind = "read"
+operation = "view"
+asks = "link"
+[[offers]]
+resource = "music.player:player"
+resource-kind = "music.player"
+action = "playback-status"
+label = "Inspect playback"
+kind = "read"
+[[offers]]
+resource = "music.player:player"
+resource-kind = "music.player"
+action = "toggle-mute"
+label = "Toggle mute"
+kind = "outside"
+[[offers]]
+resource = "music.player:player"
+resource-kind = "music.player"
+action = "toggle-shuffle"
+label = "Turn shuffle on"
+kind = "outside"
+[[offers]]
+resource = "music.player:player"
+resource-kind = "music.player"
+action = "cycle-repeat"
+label = "Toggle repeat"
+kind = "outside"
+[[offers]]
+resource = "music.recommendation-input:likes"
+resource-kind = "music.recommendation-input"
+action = "set-input"
+label = "Disable input"
+operation = "document"
+[[offers]]
+resource = "music.recommendation-input:saved-albums"
+resource-kind = "music.recommendation-input"
+action = "set-input"
+label = "Disable input"
+operation = "document"
+[[offers]]
+resource = "music.recommendation-input:followed-artists"
+resource-kind = "music.recommendation-input"
+action = "set-input"
+label = "Disable input"
+operation = "document"
+[[offers]]
+resource = "music.source:catalogue"
+resource-kind = "music.source"
+action = "sources"
+label = "Choose a source"
+kind = "outside"
+[[offers]]
+resource = "music.source:catalogue"
+resource-kind = "music.source"
+action = "connect-spotify-library"
+label = "Use the Spotify library"
+kind = "outside"
+[[offers]]
+resource = "music.source:catalogue"
+resource-kind = "music.source"
+action = "connect-spotify"
+label = "Connect Spotify"
+kind = "outside"
+[[offers]]
+resource = "music.source:catalogue"
+resource-kind = "music.source"
+action = "connect-spotify-playback"
+label = "Authorize Spotify playback"
+kind = "outside"
+[[offers]]
+resource = "music.source:catalogue"
+resource-kind = "music.source"
+action = "spotify-devices"
+label = "Refresh Spotify devices"
+kind = "outside"
+[[offers]]
+resource = "music.source:catalogue"
+resource-kind = "music.source"
+action = "spotify-queue"
+label = "Show the Spotify queue"
+kind = "outside"
+[[offers]]
+resource = "music.source:catalogue"
+resource-kind = "music.source"
+action = "spotify-library-more"
+label = "Load more Spotify collections"
+kind = "outside"
+[[offers]]
+resource = "music.source:catalogue"
+resource-kind = "music.source"
+action = "new-spotify-playlist"
+label = "Name a new playlist"
+kind = "outside"
+[[offers]]
+resource = "music.source:catalogue"
+resource-kind = "music.source"
+action = "disconnect-spotify"
+label = "Disconnect Spotify"
+kind = "outside"
+[[offers]]
+resource = "music.source:catalogue"
+resource-kind = "music.source"
+action = "browse-spotify"
+label = "Browse Spotify"
+kind = "outside"
+[[offers]]
+resource = "music.source:catalogue"
+resource-kind = "music.source"
+action = "browse-you-tube"
+label = "Browse YouTube Music"
+kind = "outside"

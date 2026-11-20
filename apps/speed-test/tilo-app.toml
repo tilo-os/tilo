@@ -48,3 +48,17 @@ bin = "bin/speed-test"
 type = "gui"
 splash-segments = ["bin/speed-test[0x0:0x400000]"]
 splash-budget = 250
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "speed-test.results"
+action = "clear"
+label = "Clear results"
+operation = "document"
+[[offers]]
+resource = "speed-test.results"
+action = "start"
+label = "Run speed test"
+kind = "outside"

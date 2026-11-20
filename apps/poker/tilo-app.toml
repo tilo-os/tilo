@@ -39,3 +39,59 @@ splash-budget = 250
 [providers]
 mime = []
 ext = []
+
+# What the app offers a person while it is closed: written by `tilo-app surface` from
+# what its code publishes. Invoking one opens the app and invokes it there.
+
+[[offers]]
+resource = "so.tilo.poker.table"
+action = "sit"
+label = "Take a seat"
+operation = "document"
+asks = "seat"
+[[offers]]
+resource = "so.tilo.poker.table"
+action = "leave"
+label = "Leave table"
+operation = "document"
+[[offers]]
+resource = "so.tilo.poker.table"
+action = "deal"
+label = "Deal"
+operation = "document"
+[[offers]]
+resource = "so.tilo.poker.table"
+action = "fold"
+label = "Fold"
+operation = "document"
+[[offers]]
+resource = "so.tilo.poker.table"
+action = "call"
+label = "Call"
+operation = "document"
+[[offers]]
+resource = "so.tilo.poker.table"
+action = "raise"
+label = "Raise"
+operation = "document"
+asks = "to"
+[[offers]]
+resource = "so.tilo.poker.table"
+action = "all-in"
+label = "All in"
+operation = "document"
+[[offers]]
+resource = "so.tilo.poker.table"
+action = "show"
+label = "Show cards"
+operation = "document"
+[[offers]]
+resource = "so.tilo.poker.table"
+action = "skip"
+label = "Fold idle player"
+operation = "document"
+[[offers]]
+resource = "so.tilo.poker.table"
+action = "rebuy"
+label = "Buy back in"
+operation = "document"

@@ -223,8 +223,19 @@ struct Kept {
     host_apps: Option<Held>,
     content: Option<Held>,
     files: Option<Held>,
-    /// Settings' pages and the store's catalogue, for the workspace they were built for.
-    workspace: Option<(String, Held, Option<Held>)>,
+    /// Settings' pages, the store's catalogue and what the installed apps offer while closed, for
+    /// the workspace they were built for.
+    workspace: Option<ForWorkspace>,
+}
+
+/// What search keeps of one workspace: Settings' pages, the store's catalogue and what the
+/// installed apps offer while closed.
+#[derive(Clone)]
+struct ForWorkspace {
+    workspace: String,
+    settings: Held,
+    catalogue: Option<Held>,
+    offered: Rc<[PublishedActions]>,
 }
 
 /// The programs the person downloaded, as the registry last read them, and the session's published
@@ -605,7 +616,12 @@ impl SessionSearch {
             return self.window_sources(workspace, app);
         }
         let now = ui::time::unix_now();
-        let (settings, catalogue) = self.for_workspace(workspace);
+        let ForWorkspace {
+            settings,
+            catalogue,
+            offered,
+            ..
+        } = self.for_workspace(workspace);
         let kept = self.kept.borrow();
         let names = names(self.apps_lists.clone());
         // Every workspace's places name their workspace when the search is widened; the one in
@@ -670,6 +686,10 @@ impl SessionSearch {
             // one that reaches everywhere offers every workspace's.
             published.extend(apps.published(if scope.everywhere() { "" } else { workspace }));
         }
+        // An installed app never opened here publishes nothing yet: what its manifest offers
+        // while closed stands in, and choosing one opens the app and invokes it there.
+        let published =
+            tilo_desktop_search::providers::with_offers(published, offered.iter().cloned());
         (sources, published)
     }
 
@@ -1163,21 +1183,32 @@ impl SessionSearch {
     /// page's alike, each listing the pages it has ([`settings_store::index::Page::here`]). The
     /// settings the session publishes as actions that change them where they stand are left to
     /// those actions.
-    fn for_workspace(&self, workspace: &str) -> (Held, Option<Held>) {
+    fn for_workspace(&self, workspace: &str) -> ForWorkspace {
         let reading = self.current_reading();
         let mut kept = self.kept.borrow_mut();
-        if let Some((built, settings, catalogue)) = &kept.workspace
-            && built == workspace
+        if let Some(built) = &kept.workspace
+            && built.workspace == workspace
         {
-            return (settings.clone(), catalogue.clone());
+            return built.clone();
         }
         // What a setting people look for by name is set to is an action of its own, published by
         // the settings service under the setting's own resource: those rows are the change, so the
         // page is not offered beside them.
         let settings = Held::new(Settings::of_published(workspace, &self.own.borrow()));
         let catalogue = reading.as_ref().and_then(|read| read.catalogue(workspace));
-        kept.workspace = Some((workspace.to_owned(), settings.clone(), catalogue.clone()));
-        (settings, catalogue)
+        let offered: Rc<[PublishedActions]> = reading
+            .as_ref()
+            .map(|read| read.offered(workspace))
+            .unwrap_or_default()
+            .into();
+        let built = ForWorkspace {
+            workspace: workspace.to_owned(),
+            settings,
+            catalogue,
+            offered,
+        };
+        kept.workspace = Some(built.clone());
+        built
     }
 
     /// Tell the callers of [`Self::perform_answered`] what their actions answered, once settled.

@@ -327,6 +327,9 @@ mod tests {
             kind: OfferKind::default(),
             operation: OfferOperation::View,
             confirm: false,
+            asks: None,
+            keywords: Vec::new(),
+            icon: None,
         };
         let app = |id: &str, offers| tilo_broker_core::services::LaunchableApplication {
             package_id: id.into(),
