@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
-use account_credentials::{CredentialStore, OAuthIssuer, nextcloud};
+use account_credentials::{Capability, CredentialStore, OAuthIssuer, OAuthUse, nextcloud};
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 use tilo_actions::remote::person_accounts::{
@@ -550,9 +550,12 @@ async fn finish(root: &Path, id: &str, person: [u8; 32], query: &str) -> Result<
                 &code,
                 &verifier,
             )
-            .map_err(|error| error.to_string())?
+            .map_err(plain_exchange)?
             .stamp_now();
-        let address = identity_of(&root_owned, issuer, &profile, services, &tokens)?;
+        let address =
+            identity_of(&root_owned, issuer, &profile, services, &tokens).map_err(|_| {
+                "The provider did not confirm which mailbox signed in. Try again".to_string()
+            })?;
         keep_oauth(&root_owned, issuer, &address, services, &tokens, &account)
     })
     .await
@@ -592,8 +595,120 @@ fn declined(reason: &str) -> String {
     if reason == "access_denied" {
         "The sign-in was cancelled on the provider's page".into()
     } else {
-        format!("The provider did not sign in: {reason}")
+        "The provider did not sign you in. Begin it again".into()
     }
+}
+
+/// Why a code exchange failed, in words the person reads: nothing of the
+/// provider's protocol or its answer.
+fn plain_exchange(error: tilo_oauth::OAuthError) -> String {
+    match error {
+        tilo_oauth::OAuthError::InvalidGrant => {
+            "That sign-in link was already used or ran out. Begin it again".to_string()
+        }
+        tilo_oauth::OAuthError::Denied(_) => {
+            "The sign-in was cancelled on the provider's page".to_string()
+        }
+        tilo_oauth::OAuthError::Network(_) | tilo_oauth::OAuthError::Protocol(_) => {
+            "This server could not reach the provider. Try again".to_string()
+        }
+        _ => "The provider did not finish the sign-in. Try again".to_string(),
+    }
+}
+
+/// The person's vault as a reader of a web sign-in's grants: each use of an
+/// issuer is renewed with the web client it was signed in with, never with
+/// another registration.
+pub(super) fn vault_store(root: &Path) -> CredentialStore {
+    let mut store = CredentialStore::for_root(Some(root.to_path_buf()));
+    for issuer in [OAuthIssuer::Google, OAuthIssuer::Microsoft] {
+        let Some(client) = account_credentials::web_client(issuer) else {
+            continue;
+        };
+        let uses = [OAuthUse::mail(issuer), OAuthUse::calendar(issuer)];
+        for use_ in uses {
+            if use_.capability == Capability::Calendar && issuer != OAuthIssuer::Google {
+                continue;
+            }
+            let scopes = account_credentials::web_scopes(
+                issuer,
+                use_.capability == Capability::Mail,
+                use_.capability == Capability::Calendar,
+            );
+            let provider = account_credentials::web_provider(issuer, scopes, &client);
+            let registration = Registration {
+                client_id: client.client_id.clone(),
+                client_secret: client.client_secret.clone(),
+                paste_code_fallback: false,
+                ..Registration::default()
+            };
+            store = store.with_use(use_, provider, registration);
+        }
+    }
+    store
+}
+
+/// Whether `account` signs in with a bearer token instead of a password.
+fn signed_in_with_oauth(account: &accounts::Account) -> bool {
+    let Some(value) = account.config.get("auth") else {
+        return false;
+    };
+    let auth = tilo_failure::ignored!(
+        "settings whose auth method does not read are a password account",
+        serde_json::from_value::<accounts::email::AuthMethod>(value.clone()).ok()
+    );
+    auth.is_some_and(|auth| auth == accounts::email::AuthMethod::OAuth)
+}
+
+/// The issuer a mail account signs in with: what its settings say, or, for
+/// an account kept before that was written, its servers' names.
+fn issuer_for(account: &accounts::Account) -> Result<OAuthIssuer, String> {
+    match account.config.get("provider").and_then(Value::as_str) {
+        Some("google") => return Ok(OAuthIssuer::Google),
+        Some("microsoft") => return Ok(OAuthIssuer::Microsoft),
+        _ => {}
+    }
+    let marked = |domain: &str| {
+        account
+            .config
+            .get("imap_host")
+            .and_then(Value::as_str)
+            .is_some_and(|name| {
+                name.trim().trim_end_matches('.').to_ascii_lowercase() == domain
+                    || name
+                        .trim()
+                        .trim_end_matches('.')
+                        .to_ascii_lowercase()
+                        .ends_with(&format!(".{domain}"))
+            })
+    };
+    if marked("gmail.com") || marked("googlemail.com") {
+        Ok(OAuthIssuer::Google)
+    } else if marked("outlook.com") || marked("office365.com") || marked("office.com") {
+        Ok(OAuthIssuer::Microsoft)
+    } else {
+        Err("That account's provider is not one this server signs in with".into())
+    }
+}
+
+/// The sign-in a mail account reads and sends with: its bearer token, kept
+/// fresh through the one shared renewal path, or its password.
+pub(super) fn mail_secret(
+    root: &Path,
+    account: &accounts::Account,
+) -> Result<accounts::Secret, String> {
+    let vault = super::credentials(root)?;
+    let secret = vault
+        .get_for(account)
+        .ok_or_else(|| "That account has no sign-in yet".to_string())?;
+    if !signed_in_with_oauth(account) {
+        return Ok(secret);
+    }
+    let issuer = issuer_for(account)?;
+    let token = vault_store(root)
+        .oauth_access_token(&account.id, OAuthUse::mail(issuer), false)
+        .map_err(|_| "That account's sign-in needs renewing. Sign in again".to_string())?;
+    Ok(accounts::Secret::password(token.to_string()))
 }
 
 /// Which address the grant belongs to: what the account is kept as, shown

@@ -220,6 +220,59 @@ async fn a_google_sign_in_keeps_the_account_and_its_calendar() {
     assert!(workspaces.accounts_return(&landing.query()).await.is_err());
 }
 
+/// The grant a web sign-in leaves is renewed through that web client, not
+/// the installed app's: a token that ran out is replaced before mail reads
+/// with it.
+#[tokio::test]
+async fn a_grant_renews_through_the_web_client_it_was_signed_in_with() {
+    let fake = tilo_oauth::fake::FakeAuthorizationServer::start();
+    fake.set_identity("ada@gmail.example");
+    fake.set_token_lifetime(0);
+    fake.issue_access_token("access-token-1");
+    fake.require_client_secret("web-secret");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    web_client(&mut env, "GOOGLE", &fake);
+    env.set("TILO_OAUTH_GOOGLE_WEB_CLIENT_SECRET", "web-secret");
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let actions = ServiceWorkspaceActions::new();
+    actions.attach(workspaces.clone());
+    let root = SigningKey::from_bytes(&rand::random());
+    let device = key_of(&root, "studio");
+    let person = root.verifying_key().to_bytes();
+    let page = actions.in_workspace_as(
+        workspaces.create("Mail").await.unwrap().workspace_id,
+        &device,
+    );
+    let landing = Landing::stand();
+    workspaces.accounts_call_back_at(landing.origin.clone());
+    let step: SignInStep = answered(
+        settled(page.invoke(
+            &caller(&device),
+            asking(
+                person_accounts::BEGIN_SIGN_IN,
+                json!({"provider": "google"}),
+            ),
+        ))
+        .await
+        .unwrap(),
+    );
+    tilo_oauth::fake::browse(&step.open).unwrap();
+    workspaces.accounts_return(&landing.query()).await.unwrap();
+
+    let root = workspaces.person_settings_root(&person);
+    let secret = tokio::task::spawn_blocking(move || {
+        crate::workspaces::person_settings::account_secret_for_test(&root, "ada@gmail.example")
+    })
+    .await
+    .expect("the read finishes")
+    .expect("the sign-in mail reads with");
+    assert_eq!(secret.password, "access-token-1");
+    assert!(fake.refreshes() >= 1, "the token was not renewed");
+}
+
 /// Microsoft signs in the same way, and keeps the mailbox the grant names.
 #[tokio::test]
 async fn a_microsoft_sign_in_keeps_the_account_too() {
@@ -420,7 +473,7 @@ fn nextcloud_server(
 #[tokio::test]
 async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
     let completes = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let (responder, _base) = nextcloud_server(completes);
+    let (responder, _base) = nextcloud_server(Arc::clone(&completes));
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();

@@ -754,6 +754,12 @@ pub(crate) fn expire_sign_in(id: &str) {
     sign_in::expire(id);
 }
 
+/// The sign-in a mail account reads with, as the session would be given it.
+#[cfg(test)]
+pub(crate) fn account_secret_for_test(root: &Path, id: &str) -> Result<accounts::Secret, String> {
+    account_with_secret(root, id).map(|(_, secret)| secret)
+}
+
 /// The `provider` a removing action names.
 pub(super) fn provider_argument(request: &InvokeRequest) -> Result<String, ActionCallError> {
     let value: Map<String, Value> = argument(request, "the provider")?;
@@ -995,12 +1001,11 @@ fn account_with_secret(
         .filter(|account| account.type_id.as_str() == accounts::email::TYPE_ID)
         .cloned()
         .ok_or_else(|| "That account is not kept here".to_owned())?;
-    // Its sign-in was typed for the servers it named then, and is joined to
-    // it only while it names those.
-    let vault = credentials(root)?;
-    let secret = vault
-        .get_for(&account)
-        .ok_or_else(|| "That account has no sign-in yet".to_owned())?;
+    // An account a provider signed in on its own page reads with its bearer
+    // token, kept fresh through the one shared renewal path; any other with
+    // the sign-in its vault keeps, while its settings name the servers that
+    // sign-in was typed for.
+    let secret = sign_in::mail_secret(root, &account)?;
     Ok((account, secret))
 }
 
@@ -1396,9 +1401,11 @@ async fn save_staged_draft_with(
 ) -> Result<(), String> {
     let (dir, beginning) = begun_send(root, &keeping.send)?;
     let files = staged_files(&dir, &beginning.files)?;
-    let (account, secret) = account_with_secret(root, &beginning.message.account)?;
+    let account_id = beginning.message.account.clone();
     let (draft, invitation) = (beginning.message, beginning.calendar_ics);
+    let root = root.to_path_buf();
     let outcome = tokio::task::spawn_blocking(move || {
+        let (account, secret) = account_with_secret(&root, &account_id)?;
         session.save_draft(&account, &secret, &draft, &files, invitation.as_deref())
     })
     .await
@@ -1442,10 +1449,13 @@ async fn fetch_with(
     root: &Path,
     asking: FetchMail,
 ) -> Result<FetchedMail, String> {
-    let (account, secret) = account_with_secret(root, &asking.account)?;
-    tokio::task::spawn_blocking(move || session.fetch(&account, &secret, &asking))
-        .await
-        .map_err(|_| "the mail session did not finish".to_string())?
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let (account, secret) = account_with_secret(&root, &asking.account)?;
+        session.fetch(&account, &secret, &asking)
+    })
+    .await
+    .map_err(|_| "the mail session did not finish".to_string())?
 }
 
 /// Read one message of one account as its server holds it.
@@ -1454,10 +1464,13 @@ async fn read_with(
     root: &Path,
     reading: ReadMail,
 ) -> Result<FetchedMessage, String> {
-    let (account, secret) = account_with_secret(root, &reading.account)?;
-    tokio::task::spawn_blocking(move || session.read(&account, &secret, &reading))
-        .await
-        .map_err(|_| "the mail session did not finish".to_string())?
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let (account, secret) = account_with_secret(&root, &reading.account)?;
+        session.read(&account, &secret, &reading)
+    })
+    .await
+    .map_err(|_| "the mail session did not finish".to_string())?
 }
 
 /// Ask one account's server which messages it holds that match.
@@ -1466,10 +1479,13 @@ async fn search_with(
     root: &Path,
     searching: SearchMail,
 ) -> Result<FoundMail, String> {
-    let (account, secret) = account_with_secret(root, &searching.account)?;
-    tokio::task::spawn_blocking(move || session.search(&account, &secret, &searching))
-        .await
-        .map_err(|_| "the mail session did not finish".to_string())?
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let (account, secret) = account_with_secret(&root, &searching.account)?;
+        session.search(&account, &secret, &searching)
+    })
+    .await
+    .map_err(|_| "the mail session did not finish".to_string())?
 }
 
 #[cfg(test)]
@@ -1492,8 +1508,9 @@ async fn send_leaving(
     files: Vec<Attachment>,
     invitation: Option<String>,
 ) -> Result<SentMail, String> {
-    let (account, secret) = account_with_secret(root, &leaving.message().account)?;
+    let root = root.to_path_buf();
     tokio::task::spawn_blocking(move || {
+        let (account, secret) = account_with_secret(&root, &leaving.message().account)?;
         session.send(&account, &secret, &leaving, &files, invitation.as_deref())
     })
     .await
@@ -1501,10 +1518,13 @@ async fn send_leaving(
 }
 
 async fn mark_with(session: Session, root: &Path, marking: MarkMail) -> Result<(), String> {
-    let (account, secret) = account_with_secret(root, &marking.account)?;
-    tokio::task::spawn_blocking(move || session.mark(&account, &secret, &marking))
-        .await
-        .map_err(|_| "the mail session did not finish".to_string())?
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let (account, secret) = account_with_secret(&root, &marking.account)?;
+        session.mark(&account, &secret, &marking)
+    })
+    .await
+    .map_err(|_| "the mail session did not finish".to_string())?
 }
 
 /// The providers the person keeps, their models and what runs where.

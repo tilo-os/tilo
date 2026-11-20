@@ -188,13 +188,17 @@ impl LiveAccountTester {
         // An account the provider signed in on its own page is proved the
         // way it will read and send: its secret is a bearer token, carried
         // by XOAUTH2 to both servers.
-        let oauth = account
-            .config
-            .get("auth")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|auth| {
-                accounts::email::AuthMethod::from_key(auth) == accounts::email::AuthMethod::OAuth
-            });
+        // A setting that does not read is a password account, never one
+        // signed in with a token.
+        let oauth = match account.config.get("auth") {
+            Some(value) => {
+                match serde_json::from_value::<accounts::email::AuthMethod>(value.clone()) {
+                    Ok(auth) => auth == accounts::email::AuthMethod::OAuth,
+                    Err(_) => false,
+                }
+            }
+            None => false,
+        };
         let tls = tilo_net::client_config_with_roots(roots)
             .map(Arc::new)
             .map_err(|_| "could not initialize secure protocol versions".to_string())?;
