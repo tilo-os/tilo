@@ -231,25 +231,31 @@ pub(crate) async fn copy(
     until: Instant,
 ) -> Branched {
     let mut branched = Branched::default();
-    let sources = match engine {
-        Some(engine) if engine.holds(from) && engine.holds(to) => {
-            read_resources(reads, from, &mut branched)
-        }
+    let reads_sources = match engine {
+        Some(engine) if engine.holds(from) && engine.holds(to) => true,
         // The source's records are this device's to read, and the branch holds none: it could not
         // be founded here.
         Some(engine) if engine.holds(from) => {
             branched
                 .missing
                 .push("the branch's records: this device could not found it".to_owned());
-            Sources::new()
+            false
         }
-        _ => Sources::new(),
+        _ => false,
     };
     let founds = engine.filter(|engine| engine.holds(to));
     let can_read = engine
         .filter(|engine| engine.holds(from))
         .map(|engine| engine.document_read_policy(from));
+    let reads = std::sync::Arc::clone(reads);
+    // Read off the session runtime: a task holding the workspace's lock may need that runtime
+    // to finish its write before the read can proceed.
     let copied = tilo_rt::io::run(move || {
+        let sources = if reads_sources {
+            read_resources(&reads, from, &mut branched)
+        } else {
+            Sources::new()
+        };
         let permits = |app: &str, document_id: &str| {
             can_read
                 .as_ref()

@@ -547,6 +547,39 @@ pub struct WorkspaceService {
     workspaces: crate::workspaces::Workspaces,
     actions: Arc<dyn AppActionServer>,
     handlers: Vec<(&'static [u8], Arc<dyn DynProtocolHandler>)>,
+    /// The thread the service makes its writes on, once it made one.
+    writes: std::sync::OnceLock<Option<WritesThread>>,
+}
+
+/// A thread of the service's own that makes its writes: a write holds its workspace's lock while it
+/// waits (for the key service, for the disk), and the threads that asked for it, a broker's loop or
+/// a runtime's workers, may block on that lock to answer a read. A write on a thread nothing else
+/// uses finishes whatever those threads wait for.
+struct WritesThread {
+    runtime: tokio::runtime::Handle,
+    /// Dropped with the service, which ends the thread.
+    _stop: tokio::sync::oneshot::Sender<()>,
+}
+
+impl WritesThread {
+    fn start() -> std::io::Result<Self> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let handle = runtime.handle().clone();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        std::thread::Builder::new()
+            .name("tilo-ws-writes".into())
+            .spawn(move || {
+                runtime.block_on(async {
+                    let _ = stopped.await;
+                });
+            })?;
+        Ok(Self {
+            runtime: handle,
+            _stop: stop,
+        })
+    }
 }
 
 impl std::fmt::Debug for WorkspaceService {
@@ -605,6 +638,7 @@ impl WorkspaceService {
             workspaces,
             actions,
             handlers,
+            writes: std::sync::OnceLock::new(),
         })
     }
 
@@ -652,7 +686,24 @@ impl WorkspaceService {
             workspaces,
             actions,
             handlers,
+            writes: std::sync::OnceLock::new(),
         })
+    }
+
+    /// The runtime the service makes its writes on ([`WritesThread`]), started with the first;
+    /// `None` when no thread could start, and the caller makes the write itself.
+    #[must_use]
+    pub fn writes_runtime(&self) -> Option<tokio::runtime::Handle> {
+        self.writes
+            .get_or_init(|| {
+                WritesThread::start()
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the workspace service's writes thread did not start");
+                    })
+                    .ok()
+            })
+            .as_ref()
+            .map(|writes| writes.runtime.clone())
     }
 
     /// The ALPN handlers to register on the embedder's router: the session,

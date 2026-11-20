@@ -23,21 +23,40 @@ impl ServiceResources {
         Self(service)
     }
 
-    /// The workspaces to answer from, once a service holds any.
-    fn workspaces(&self) -> Option<Workspaces> {
-        Some(self.0.service()?.workspaces().clone())
+    /// The workspaces to answer from, once a service holds any, and the runtime the service makes
+    /// its writes on.
+    fn workspaces(&self) -> (Option<Workspaces>, Option<tokio::runtime::Handle>) {
+        self.0.service().map_or((None, None), |service| {
+            (Some(service.workspaces().clone()), service.writes_runtime())
+        })
+    }
+}
+
+/// `work` done on the service's writes thread, when it has one: a write holds the workspace's lock
+/// while it waits, and the broker's thread that asked may block on that lock to answer a read, so
+/// the write must not need that thread, or any other a read can block, to finish.
+pub(super) async fn on_the_service<T: Send + 'static>(
+    runtime: Option<tokio::runtime::Handle>,
+    work: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
+) -> Result<T, String> {
+    match runtime {
+        Some(runtime) => runtime
+            .spawn(work)
+            .await
+            .map_err(|_| "the workspace service stopped before it answered".to_owned())?,
+        None => work.await,
     }
 }
 
 impl ResourceServices for ServiceResources {
     fn command(&self, context: &ResourceRequestContext, command: Command) -> ResourceAnswer {
         let context = context.clone();
-        let workspaces = self.workspaces();
-        Box::pin(async move {
+        let (workspaces, runtime) = self.workspaces();
+        Box::pin(on_the_service(runtime, async move {
             let workspaces =
                 workspaces.ok_or("this device's workspace service holds no workspaces")?;
             workspaces.resource_command(&context, command).await
-        })
+        }))
     }
 
     fn open(
@@ -46,11 +65,11 @@ impl ResourceServices for ServiceResources {
         query: tilo_resource_store::Query,
     ) -> ResourcePages {
         let context = context.clone();
-        let workspaces = self.workspaces();
-        Box::pin(async move {
+        let (workspaces, runtime) = self.workspaces();
+        Box::pin(on_the_service(runtime, async move {
             let workspaces =
                 workspaces.ok_or("this device's workspace service holds no workspaces")?;
             workspaces.open_resources(&context, query).await
-        })
+        }))
     }
 }

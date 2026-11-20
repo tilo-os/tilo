@@ -95,7 +95,7 @@ tilo_test_env::scenario! {
         // half the page; two cover a seventh of it.
         let composer = region(295, 530, 698, 99);
         let line = region(31, 79, 298, 71);
-        let windows = damage_windows(vec![composer, line]);
+        let windows = damage_windows(&[composer, line]);
         assert_eq!(windows.len(), 2, "{windows:?}");
         assert!(window_pixels(&windows) < 1280 * 800 / 6, "{windows:?}");
         assert!(repaints_alone(
@@ -110,23 +110,20 @@ tilo_test_env::scenario! {
 
     phase regions_close_together_are_one_window;
     {
-        let windows = damage_windows(vec![region(100, 100, 50, 20), region(100, 130, 50, 20)]);
-        assert_eq!(windows.len(), 1, "{windows:?}");
-        assert_eq!(windows[0].regions.len(), 2);
-        assert_eq!(windows[0].window, region(96, 96, 54, 54));
+        let windows = damage_windows(&[region(100, 100, 50, 20), region(100, 130, 50, 20)]);
+        assert_eq!(windows, vec![region(96, 96, 54, 54)]);
     }
 
     phase every_window_starts_at_a_tile_corner_and_holds_its_regions;
     {
-        let regions = vec![region(17, 33, 10, 10), region(700, 500, 40, 9)];
-        for window in damage_windows(regions) {
-            assert_eq!(window.window.x % RASTER_TILE, 0);
-            assert_eq!(window.window.y % RASTER_TILE, 0);
-            for held in &window.regions {
-                assert!(held.x >= window.window.x && held.y >= window.window.y);
-                assert!(held.x + held.width <= window.window.x + window.window.width);
-                assert!(held.y + held.height <= window.window.y + window.window.height);
-            }
+        let regions = [region(17, 33, 10, 10), region(700, 500, 40, 9)];
+        let windows = damage_windows(&regions);
+        for window in &windows {
+            assert_eq!(window.x % RASTER_TILE, 0);
+            assert_eq!(window.y % RASTER_TILE, 0);
+        }
+        for held in regions {
+            assert!(windows.iter().any(|window| contains(*window, held)), "{windows:?}");
         }
     }
 }

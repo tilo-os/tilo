@@ -4,7 +4,9 @@
 //! shell, so they produce the same pixels from the same frame.
 
 use crate::cpu_raster;
-use crate::damage::{FineDamageRect, area, coalesce_regions, pixel_rect};
+#[cfg(feature = "native")]
+use crate::damage::coalesce_regions;
+use crate::damage::{FineDamageRect, area, pixel_rect};
 use crate::offscreen::{
     damage_geometric_capacity_enabled, damage_texture_extent,
     damage_texture_geometric_needs_replacement, damage_texture_geometric_width_extent,
@@ -25,6 +27,7 @@ struct DamageTarget {
 pub(crate) struct DamageCache {
     targets: Vec<DamageTarget>,
     last_region_count: Option<usize>,
+    /// Damage textures grow in geometric buckets ([`DamageCache::geometric`]).
     geometric_capacity: bool,
     coarse_pool_high_water_pixels: u64,
     copy_scratch: crate::scroll_copy::CopyScratch,
@@ -42,32 +45,51 @@ pub const DAMAGE_ONLY_REFUSED: &str =
 /// by region rather than whole: a damage that covers half the target, or whose windows do, is rendered
 /// as one whole frame ([`repaint_damage`]).
 pub(crate) fn repaints_alone(width: u32, height: u32, damage: &[Rect]) -> bool {
-    let full_pixels = u64::from(width).saturating_mul(u64::from(height));
+    damage_plan(width, height, damage).is_some_and(|plan| plan.alone)
+}
+
+/// How a frame's damage is repainted: its regions, the windows they are rendered through, and how
+/// many rectangles the damage named.
+struct DamagePlan {
+    count: usize,
+    regions: Vec<FineDamageRect>,
+    windows: Vec<FineDamageRect>,
+    /// The windows cover less than half the target, so they cost less than the whole frame.
+    alone: bool,
+}
+
+/// [`DamagePlan`] of `damage` on a `width` × `height` target; `None` when the damage covers no
+/// pixel or half the target, which is rendered whole.
+#[inline(never)]
+fn damage_plan(width: u32, height: u32, damage: &[Rect]) -> Option<DamagePlan> {
+    let half = u64::from(width)
+        .saturating_mul(u64::from(height))
+        .saturating_div(2);
     let regions: Vec<FineDamageRect> = damage
         .iter()
         .filter_map(|rect| pixel_rect(*rect, width, height))
         .collect();
-    let damage_pixels = regions
-        .iter()
-        .fold(0u64, |sum, rect| sum.saturating_add(area(*rect)));
-    if damage_pixels == 0 || damage_pixels >= full_pixels.saturating_div(2) {
-        return false;
+    let damage_pixels = window_pixels(&regions);
+    if damage_pixels == 0 || damage_pixels >= half {
+        return None;
     }
-    window_pixels(&damage_windows(coalesce_regions(regions))) < full_pixels.saturating_div(2)
+    let count = regions.len();
+    // The windows hold every region, so regions that overlap are copied out of them as they are:
+    // a pixel copied twice is the same pixel.
+    let windows = damage_windows(&regions);
+    let alone = window_pixels(&windows) < half;
+    Some(DamagePlan {
+        count,
+        regions,
+        windows,
+        alone,
+    })
 }
 
 /// What one more window of damage costs beyond its own pixels, in pixels: each window is a Vello
 /// render of its own over the frame's scene, so two regions close enough are cheaper as one window
 /// than as two.
 const WINDOW_COST_PIXELS: u64 = 128 * 128;
-
-/// One window of a frame's damage: a rectangle from a tile corner, rendered alone, and the regions
-/// copied out of it into place.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DamageWindow {
-    pub(crate) window: FineDamageRect,
-    pub(crate) regions: Vec<FineDamageRect>,
-}
 
 /// `region`'s window: from the tile corner at or before it, so its tiles are the full frame's and
 /// its pixels the same.
@@ -88,57 +110,24 @@ fn tile_window(region: FineDamageRect) -> FineDamageRect {
 /// own, so a change at the top of the screen and one at its bottom repaint two strips rather than
 /// everything between them; windows whose union costs no more than both apart
 /// ([`WINDOW_COST_PIXELS`]) are one. A list too long to group is one window around it all.
-#[allow(
-    clippy::indexing_slicing,
-    reason = "the bounded two-index scan checks i < j < len before every access"
-)]
-pub(crate) fn damage_windows(regions: Vec<FineDamageRect>) -> Vec<DamageWindow> {
-    if regions.len() > 128 {
-        let Some(window) = regions
-            .iter()
-            .copied()
-            .map(tile_window)
-            .reduce(crate::damage::damage_union)
-        else {
-            return Vec::new();
-        };
-        return vec![DamageWindow { window, regions }];
+pub(crate) fn damage_windows(regions: &[FineDamageRect]) -> Vec<FineDamageRect> {
+    let windows: Vec<FineDamageRect> = regions.iter().copied().map(tile_window).collect();
+    if windows.len() > 128 {
+        return Vec::from_iter(windows.into_iter().reduce(crate::damage::damage_union));
     }
-    let mut windows: Vec<DamageWindow> = regions
-        .into_iter()
-        .map(|region| DamageWindow {
-            window: tile_window(region),
-            regions: vec![region],
-        })
-        .collect();
-    let mut changed = true;
-    while changed {
-        changed = false;
-        'scan: for i in 0..windows.len() {
-            for j in i.saturating_add(1)..windows.len() {
-                let union = crate::damage::damage_union(windows[i].window, windows[j].window);
-                if area(union)
-                    <= area(windows[i].window)
-                        .saturating_add(area(windows[j].window))
-                        .saturating_add(WINDOW_COST_PIXELS)
-                {
-                    let merged = windows.swap_remove(j);
-                    windows[i].window = union;
-                    windows[i].regions.extend(merged.regions);
-                    changed = true;
-                    break 'scan;
-                }
-            }
-        }
-    }
-    windows
+    crate::damage::merge_regions(windows, WINDOW_COST_PIXELS)
 }
 
-/// The pixels `windows` render, each counted once per window it is in.
-fn window_pixels(windows: &[DamageWindow]) -> u64 {
+/// The pixels `windows` cover, each counted once per window it is in.
+fn window_pixels(windows: &[FineDamageRect]) -> u64 {
     windows
         .iter()
-        .fold(0u64, |sum, window| sum.saturating_add(area(window.window)))
+        .fold(0u64, |sum, window| sum.saturating_add(area(*window)))
+}
+
+/// Whether `outer` holds every pixel of `inner`.
+fn contains(outer: FineDamageRect, inner: FineDamageRect) -> bool {
+    crate::damage::damage_union(outer, inner) == outer
 }
 
 /// What a host keeps between frames to rasterize them into one retained target: the damage scratch, the
@@ -149,6 +138,14 @@ pub struct RetainedRaster {
     damage_cache: DamageCache,
     backdrop_blur: Option<crate::backdrop::BackdropBlur>,
     cpu: Option<cpu_raster::CpuCanvas>,
+}
+
+impl DamageCache {
+    /// Whether damage textures grow in geometric buckets: always on a page, which reads no
+    /// environment to turn it off, so it carries no other sizing.
+    fn geometric(&self) -> bool {
+        cfg!(target_family = "wasm") || self.geometric_capacity
+    }
 }
 
 impl RetainedRaster {
@@ -376,30 +373,27 @@ pub(crate) fn rasterize_damage(
     damage_cache: &mut DamageCache,
     frame: &FrameContent<'_>,
 ) -> Result<u64, vello::Error> {
+    let mut frame = *frame;
     if !frame.full_redraw && !frame.scroll_copies.is_empty() {
         let mut encoder = device.create_command_encoder(&vello::wgpu::CommandEncoderDescriptor {
             label: Some("ui-native-scroll-copies"),
         });
-        if !crate::scroll_copy::encode_copies(
+        if crate::scroll_copy::encode_copies(
             device,
             &mut encoder,
             retained.texture,
             &mut damage_cache.copy_scratch,
             frame.scroll_copies,
         ) {
-            if damage_cache.damage_only {
-                damage_cache.refused = true;
-                return Ok(0);
-            }
-            let full = FrameContent {
-                full_redraw: true,
-                ..*frame
-            };
-            return repaint_damage((device, queue), retained, renderer, damage_cache, &full);
+            queue.submit([encoder.finish()]);
+        } else if damage_cache.damage_only {
+            damage_cache.refused = true;
+            return Ok(0);
+        } else {
+            frame.full_redraw = true;
         }
-        queue.submit([encoder.finish()]);
     }
-    repaint_damage((device, queue), retained, renderer, damage_cache, frame)
+    repaint_damage((device, queue), retained, renderer, damage_cache, &frame)
 }
 
 #[allow(
@@ -465,26 +459,23 @@ fn repaint_damage(
         return Ok(0);
     }
 
-    let pixel_rects: Vec<FineDamageRect> = damage_regions
-        .iter()
-        .filter_map(|rect| pixel_rect(*rect, width, height))
-        .collect();
-    let damage_pixels = pixel_rects
-        .iter()
-        .fold(0u64, |sum, rect| sum.saturating_add(area(*rect)));
-    let damage_region_count = pixel_rects.len();
     // A large union costs less as one Vello pass and must not retain a second
     // near-window-sized texture. This is both the time and memory bound.
-    if damage_pixels == 0 || damage_pixels >= full_pixels.saturating_div(2) {
+    let Some(DamagePlan {
+        count: damage_region_count,
+        regions,
+        windows,
+        alone,
+    }) = damage_plan(width, height, damage_regions)
+    else {
         return render_full(renderer, damage_cache);
-    }
-
-    let regions = coalesce_regions(pixel_rects);
+    };
     // Vello's sparse fine pass is a second render path the web build would
     // carry for this alone; it repaints through the windows below instead.
     // The native feature is only ever enabled off the web.
     #[cfg(feature = "native")]
     if renderer.sparse_fine_supported() {
+        let regions = coalesce_regions(regions.clone());
         let prefix_width = regions
             .iter()
             .map(|r| r.x.saturating_add(r.width))
@@ -529,35 +520,36 @@ fn repaint_damage(
     // pixels the same: rendered alone, shifted to the target's origin, then copied into place
     // region by region. Regions far apart are windows of their own: one window around both would
     // repaint everything between them.
-    let windows = damage_windows(regions);
-    let raster_pixels = window_pixels(&windows);
-    if raster_pixels >= full_pixels.saturating_div(2) {
+    if !alone {
         return render_full(renderer, damage_cache);
     }
     if damage_cache.last_region_count == Some(0) {
         renderer.trim_pooled_buffers();
     }
     damage_cache.last_region_count = Some(damage_region_count);
-    let largest = windows
-        .iter()
-        .map(|window| area(window.window))
-        .max()
-        .unwrap_or(0);
-    damage_cache.coarse_pool_high_water_pixels =
-        damage_cache.coarse_pool_high_water_pixels.max(largest);
     // One scratch texture every window renders into in turn: as wide and as tall as the widest and
     // the tallest of them.
-    let window_width = windows.iter().map(|w| w.window.width).max().unwrap_or(0);
-    let window_height = windows.iter().map(|w| w.window.height).max().unwrap_or(0);
+    let (largest, window_width, window_height) =
+        windows
+            .iter()
+            .fold((0, 0, 0), |(largest, width, height), window| {
+                (
+                    largest.max(area(*window)),
+                    width.max(window.width),
+                    height.max(window.height),
+                )
+            });
+    damage_cache.coarse_pool_high_water_pixels =
+        damage_cache.coarse_pool_high_water_pixels.max(largest);
     let texture_limit = device.limits().max_texture_dimension_2d;
-    let allocated_width = if damage_cache.geometric_capacity {
+    let allocated_width = if damage_cache.geometric() {
         damage_texture_geometric_width_extent(window_width, width, texture_limit)
     } else {
         damage_texture_extent(window_width, texture_limit)
     };
     let allocated_height = damage_texture_height_extent(window_height, texture_limit);
     let recreate = damage_cache.targets.first().is_none_or(|target| {
-        if damage_cache.geometric_capacity {
+        if damage_cache.geometric() {
             damage_texture_geometric_needs_replacement(
                 target.width,
                 target.height,
@@ -611,7 +603,7 @@ fn repaint_damage(
         .targets
         .first()
         .expect("damage target was inserted above");
-    for DamageWindow { window, regions } in &windows {
+    for window in &windows {
         let (origin_x, origin_y) = (window.x, window.y);
         let shifted;
         let window_scene = if origin_x == 0 && origin_y == 0 {
@@ -644,7 +636,9 @@ fn repaint_damage(
         // queue keeps that order.
         let mut encoder =
             device.create_command_encoder(&vello::wgpu::CommandEncoderDescriptor::default());
-        for region in regions {
+        // A region is copied out of each window that holds it: windows that overlap repaint it
+        // with the same pixels.
+        for region in regions.iter().filter(|region| contains(*window, **region)) {
             encoder.copy_texture_to_texture(
                 vello::wgpu::TexelCopyTextureInfo {
                     texture: &target.texture,
@@ -679,7 +673,7 @@ fn repaint_damage(
         let target = damage_cache.targets.pop().expect("length checked above");
         renderer.invalidate_texture_bindings(&target.view);
     }
-    Ok(raster_pixels)
+    Ok(window_pixels(&windows))
 }
 
 /// Vello's tile edge in pixels: a window rendered from a multiple of it bins its paths into the same

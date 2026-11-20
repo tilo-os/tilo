@@ -2487,10 +2487,9 @@ fn a_member_that_links_after_a_commit_is_handed_the_channels_head() {
 
 include!("reader_group_tests.rs");
 
-/// A thread of the caller's own (a session's main thread, its search index) reads the keys a
-/// device holds with no runtime around it, as a runtime's task does.
-#[test]
-fn the_keys_held_are_read_on_a_thread_without_a_runtime() {
+/// A laptop's key provider holding the keys of a workspace the owner made, with the folders its
+/// devices keep their state in.
+fn laptop_holding_keys() -> (KeyProvider, WorkspaceId, [tempfile::TempDir; 2]) {
     let workspace = Arc::new(Workspace::default());
     let held = WorkspaceId::new();
     let policy = Policy::readers([1, 2]);
@@ -2509,8 +2508,14 @@ fn the_keys_held_are_read_on_a_thread_without_a_runtime() {
         laptop.pump_at(&held_at, now);
         ready_epoch(&laptop.access(held).0).is_some()
     });
+    (keys, held, [owner_dir, laptop_dir])
+}
 
-    let asking = keys;
+/// A thread of the caller's own (a session's main thread, its search index) reads the keys a
+/// device holds with no runtime around it, as a runtime's task does.
+#[test]
+fn the_keys_held_are_read_on_a_thread_without_a_runtime() {
+    let (asking, held, _dirs) = laptop_holding_keys();
     let workspace_name = held.to_string();
     let read = std::thread::spawn(move || {
         pollster::block_on(asking.group_keys(
@@ -2522,6 +2527,37 @@ fn the_keys_held_are_read_on_a_thread_without_a_runtime() {
     })
     .join()
     .expect("a read off any runtime does not panic");
+    assert!(
+        matches!(read, Some(Ok(_))),
+        "the keys held are read: {:?}",
+        read.map(|r| r.map(|_| ()))
+    );
+}
+
+/// On a runtime of one thread the keys held are read at once, never handed off: a caller
+/// holding a workspace's lock while it asks would otherwise let the thread's other tasks go on,
+/// and one blocking the thread on that lock would never let the caller take its answer back.
+#[test]
+fn the_keys_held_are_read_at_once_on_a_runtime_of_one_thread() {
+    let (asking, held, _dirs) = laptop_holding_keys();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let _entered = runtime.enter();
+    let workspace_name = held.to_string();
+    let mut reading = Waiting::new(async move {
+        asking
+            .group_keys(
+                &workspace_name,
+                collab_types::EVERY_MEMBER,
+                false,
+                Duration::from_secs(1),
+            )
+            .await
+    });
+    let read = reading
+        .poll()
+        .expect("the keys held are answered on the first poll");
     assert!(
         matches!(read, Some(Ok(_))),
         "the keys held are read: {:?}",
