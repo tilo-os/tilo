@@ -53,13 +53,13 @@ class Control:
             return False
         return hmac.compare_digest(header[len('Bearer '):], self.token)
 
-    def spawn(self, argv, capture):
+    def spawn(self, argv, capture, timeout=COMMAND_TIMEOUT):
         child = subprocess.Popen(
             ['bash', self.script, *argv], cwd=self.repo, text=True,
             stdout=subprocess.PIPE if capture else None,
             stderr=subprocess.PIPE if capture else None)
         try:
-            out, err = child.communicate(timeout=COMMAND_TIMEOUT)
+            out, err = child.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             child.kill()
             child.communicate()
@@ -69,7 +69,9 @@ class Control:
     def start_stack(self):
         if self.start:
             with self.lock:
-                ended = self.spawn(self.start, capture=False)
+                # The stack's start builds its programs in the job first: the caller bounds the
+                # whole bring-up (stack.sh's TILO_SH_REMOTE_TIMEOUT), and nothing here cuts it.
+                ended = self.spawn(self.start, capture=False, timeout=None)
             if ended is None:
                 self.failed = 124
             elif ended[0].returncode != 0:

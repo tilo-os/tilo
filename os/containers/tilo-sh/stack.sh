@@ -2826,7 +2826,11 @@ start_supervisor() {
   # enter it to act on the stack, and ending the program ends the job.
   control=${self%/*}/control.py
   start=$(printf '%q ' "$@")
-  ( cd "$repo" && setsid env "TILO_SH_STATE=$remote_state" RCARGO_T=0 "$cargo" exec \
+  # The server sandboxes what it runs (bubblewrap): on t the program's job must be one that may
+  # start sandboxes of its own, as rcargo's build container always may.
+  local nested=()
+  [[ $(basename -- "$cargo") != t ]] || nested=(--nested)
+  ( cd "$repo" && setsid env "TILO_SH_STATE=$remote_state" RCARGO_T=0 "$cargo" exec "${nested[@]}" \
       --forward "$(forward_tcp)" --forward "udp:$(forward_udp)" \
       -- env "${envs[@]}" bash -c "exec python3 $(printf '%q' "$control") serve --port $(printf '%q' "$control_port") --token $(printf '%q' "$stack_token") --repo . --self $(printf '%q' "$self") --start $start" ) \
     >> "$state/logs/remote.log" 2>&1 < /dev/null 9>&- &
