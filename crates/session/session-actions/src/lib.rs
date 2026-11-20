@@ -1323,7 +1323,7 @@ impl ActionProvider for SessionActions {
 mod tests {
     use std::sync::Arc;
 
-    use tilo_actions::remote::TestProvider;
+    use tilo_actions::remote::{ContentPutStep, TestProvider};
 
     use super::*;
 
@@ -1442,6 +1442,16 @@ mod tests {
         observed: Mutex<usize>,
         /// How many files each many-files step carried.
         many: Mutex<Vec<usize>>,
+        /// The uploads this device keeps open: the bytes each began with, and the bytes it holds.
+        uploads: Mutex<HashMap<u64, (u64, u64)>>,
+        /// The next upload this device gives an id.
+        next_upload: Mutex<u64>,
+        /// How many pieces of an upload are answered together, once all of them are here: a
+        /// link whose round trip carries the pieces behind the one it answers. `None` answers
+        /// each piece as it comes.
+        answers_together: Mutex<Option<usize>>,
+        /// The answers held for the pieces behind the first one, by correlation.
+        held: Mutex<Vec<(u64, ContentPutAnswer)>>,
         holds: bool,
     }
 
@@ -1455,8 +1465,114 @@ mod tests {
                 wake: Mutex::default(),
                 observed: Mutex::default(),
                 many: Mutex::default(),
+                uploads: Mutex::default(),
+                next_upload: Mutex::default(),
+                answers_together: Mutex::default(),
+                held: Mutex::default(),
                 holds,
             })
+        }
+
+        /// Answer one step of an upload as this device's content store does, or hold it for the
+        /// pieces behind it.
+        fn put_step(&self, correlation: u64, step: ContentPutStep) -> Result<(), ActionCallError> {
+            let refused = |reason: &str| ActionCallError::InvalidRequest {
+                reason: reason.to_owned(),
+            };
+            let append = matches!(&step, ContentPutStep::Append { .. });
+            let answer = match step {
+                ContentPutStep::Many { files } => {
+                    self.many.lock_recover().push(files.len());
+                    ContentPutAnswer::Many {
+                        contents: (0..files.len())
+                            .map(|at| format!("tilo.content:{at}"))
+                            .collect(),
+                    }
+                }
+                ContentPutStep::Begin { size } => {
+                    let upload = {
+                        let mut next = self.next_upload.lock_recover();
+                        *next = next.saturating_add(1);
+                        *next
+                    };
+                    self.uploads.lock_recover().insert(upload, (size, 0));
+                    ContentPutAnswer::Begun { upload }
+                }
+                ContentPutStep::Append {
+                    upload,
+                    offset,
+                    bytes,
+                } => {
+                    let chunk =
+                        hex::decode(bytes).map_err(|_| refused("a piece's bytes must be hex"))?;
+                    let mut uploads = self.uploads.lock_recover();
+                    let (size, written) = uploads
+                        .get(&upload)
+                        .copied()
+                        .ok_or_else(|| refused("no upload is open"))?;
+                    if offset != written {
+                        return Err(refused("a piece does not continue the bytes held"));
+                    }
+                    let end = written.saturating_add(chunk.len() as u64);
+                    if end > size {
+                        return Err(refused("a piece lands past the upload's size"));
+                    }
+                    uploads.insert(upload, (size, end));
+                    drop(uploads);
+                    ContentPutAnswer::Appended { written: end }
+                }
+                ContentPutStep::Progress { upload } => {
+                    let written = {
+                        let uploads = self.uploads.lock_recover();
+                        uploads
+                            .get(&upload)
+                            .map(|(_, written)| *written)
+                            .ok_or_else(|| refused("no upload is open"))?
+                    };
+                    ContentPutAnswer::Appended { written }
+                }
+                ContentPutStep::Finish { upload } => {
+                    let (size, written) = {
+                        let mut uploads = self.uploads.lock_recover();
+                        uploads
+                            .remove(&upload)
+                            .ok_or_else(|| refused("no upload is open"))?
+                    };
+                    if written != size {
+                        return Err(refused("a finish takes a whole upload"));
+                    }
+                    ContentPutAnswer::Finished {
+                        content: format!("tilo.content:{upload}"),
+                    }
+                }
+                ContentPutStep::Have { hashes } => ContentPutAnswer::Have {
+                    present: hashes.iter().map(|_| false).collect(),
+                },
+            };
+            let together = *self.answers_together.lock_recover();
+            let Some(together) = together.filter(|_| append) else {
+                self.answered(correlation, answer);
+                return Ok(());
+            };
+            let answers = {
+                let mut held = self.held.lock_recover();
+                held.push((correlation, answer));
+                if held.len() < together {
+                    return Ok(());
+                }
+                std::mem::take(&mut *held)
+            };
+            for (correlation, answer) in answers {
+                self.answered(correlation, answer);
+            }
+            Ok(())
+        }
+
+        fn answered(&self, correlation: u64, answer: ContentPutAnswer) {
+            self.say(RemoteActionMessage::ContentPutResponse {
+                correlation,
+                result: Ok(answer),
+            });
         }
 
         fn say(&self, message: RemoteActionMessage) {
@@ -1503,25 +1619,16 @@ mod tests {
                     });
                 }
                 // An upload step: a many-files one stores each file and answers its
-                // reference, as the device's own content store does.
+                // reference; an upload's begin, pieces and finish are kept as the device's own
+                // content store keeps them, answers held for the pieces behind where it is told
+                // to answer them together.
                 RemoteActionMessage::ContentPutRequest { correlation, step } => {
-                    let result = match step {
-                        tilo_actions::remote::ContentPutStep::Many { files } => {
-                            self.many.lock_recover().push(files.len());
-                            Ok(ContentPutAnswer::Many {
-                                contents: (0..files.len())
-                                    .map(|at| format!("tilo.content:{at}"))
-                                    .collect(),
-                            })
-                        }
-                        other => Err(ActionCallError::Unavailable {
-                            reason: format!("this device does not answer {other:?}"),
-                        }),
-                    };
-                    self.say(RemoteActionMessage::ContentPutResponse {
-                        correlation,
-                        result,
-                    });
+                    if let Err(error) = self.put_step(correlation, step) {
+                        self.say(RemoteActionMessage::ContentPutResponse {
+                            correlation,
+                            result: Err(error),
+                        });
+                    }
                 }
                 RemoteActionMessage::Observe {
                     invocation,
@@ -1982,6 +2089,36 @@ mod tests {
             *device.many.lock_recover(),
             [MAX_PUT_MANY_FILES, 1],
             "the folder went in steps of at most {MAX_PUT_MANY_FILES} files"
+        );
+    }
+
+    /// A piece of an upload travels to the device before the one ahead of it is answered: a
+    /// device that answers the pieces together, once all of them are here, still takes the whole
+    /// upload. A sender that waited for each piece's answer would never get past the first.
+    #[test]
+    fn an_uploads_pieces_travel_before_any_of_them_is_awaited() {
+        use tilo_actions::remote::MAX_CONTENT_FRAME_BYTES;
+
+        let device = Device::new(InvocationId::new(), false);
+        let actions = SessionActions::new(
+            Arc::clone(&device) as Arc<dyn RemoteSession>,
+            WorkspaceId::from_u128(1),
+            DEVICE,
+        );
+        // Three pieces, answered together once the third is here.
+        *device.answers_together.lock_recover() = Some(3);
+        let bytes = vec![b'x'; 2 * MAX_CONTENT_FRAME_BYTES + 1];
+        let mut put = actions
+            .content_puts()
+            .expect("a device's content puts")
+            .begin(&caller(), bytes.len() as u64)
+            .expect("an upload begins");
+        put.append(0, &bytes).expect("every piece is sent");
+        let content = put.finish().expect("the upload is kept whole");
+        assert!(content.starts_with("tilo.content:"), "{content}");
+        assert!(
+            device.held.lock_recover().is_empty(),
+            "every piece was answered, none left behind"
         );
     }
 }

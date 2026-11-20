@@ -22,6 +22,11 @@ pub const MAX_CONTENT_PUT_CHUNK: usize = 512 * 1024;
 /// receiver holds the early ones and appends them as the gap before them
 /// fills; the `written` an answer carries is the bytes held contiguously from
 /// the start. Eight chunks is as many as a client sends in a group.
+///
+/// The frames a chunk is split into travel the same way
+/// ([`super::ContentPut`]): a session hands a device every frame of an upload
+/// before it waits for the first answer, so an upload costs a round trip per
+/// window of frames, not one per frame.
 pub const MAX_CONTENT_PUT_AHEAD: usize = 8 * MAX_CONTENT_PUT_CHUNK;
 
 /// The most raw bytes one many-files step carries (hex doubles them, staying
@@ -87,7 +92,10 @@ pub trait ContentPut: Send {
     /// The size the upload began with.
     fn size(&self) -> u64;
 
-    /// Bytes accepted so far.
+    /// Bytes accepted so far. An upload that reaches another device over a
+    /// session hands its pieces over without waiting for each answer, so it
+    /// answers the bytes handed over: what a piece may land after, and what
+    /// its finish verifies every piece of.
     fn written(&self) -> u64;
 
     /// Accept `chunk` at `offset`, answering the bytes accepted so far.

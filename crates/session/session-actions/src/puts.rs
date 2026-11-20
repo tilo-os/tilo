@@ -2,13 +2,26 @@
 //! device's session: each [`ContentPut`] step is a
 //! [`ContentPutStep`] the device answers, its bytes split into pieces a
 //! frame carries.
+//!
+//! A piece's bytes are split by [`MAX_CONTENT_FRAME_BYTES`], and the pieces of
+//! an upload travel to the device without waiting, [`FLIGHT_BYTES`] of them at
+//! once: the device applies them in the order they arrive, so what bounds an
+//! upload is the link's bandwidth or the device's disk, not one round trip a
+//! frame.
+
+use std::collections::VecDeque;
 
 use tilo_actions::remote::{
     ActionCallError, Caller, ContentPut, ContentPutAnswer, ContentPutStep, ContentPuts,
-    MAX_CONTENT_FRAME_BYTES, MAX_HAVE_HASHES, MAX_PUT_MANY_BYTES, MAX_PUT_MANY_FILES,
+    MAX_CONTENT_FRAME_BYTES, MAX_HAVE_HASHES, MAX_PUT_MANY_BYTES, MAX_PUT_MANY_FILES, Pending,
 };
 
-use super::SessionActions;
+use super::{Answered, SessionActions, in_time};
+
+/// How many bytes of an upload travel to the device before the oldest piece's
+/// answer is waited for. A frame carries [`MAX_CONTENT_FRAME_BYTES`], which a
+/// link with real latency would otherwise cost a round trip each.
+const FLIGHT_BYTES: usize = 8 * 1024 * 1024;
 
 /// The device's content puts, asked through the session.
 pub(super) struct SessionPuts(pub(super) SessionActions);
@@ -80,7 +93,9 @@ impl ContentPuts for SessionPuts {
                 actions: self.0.clone(),
                 upload,
                 size,
-                written: 0,
+                sent: 0,
+                flight: VecDeque::new(),
+                flight_bytes: 0,
             })),
             other => Err(unexpected(&other)),
         }
@@ -109,7 +124,46 @@ struct SessionPut {
     actions: SessionActions,
     upload: u64,
     size: u64,
-    written: u64,
+    /// Bytes handed to the session, answered or not.
+    sent: u64,
+    /// The pieces on their way to the device, oldest first: where each ends, how
+    /// many bytes it carries, and its answer.
+    flight: VecDeque<(u64, usize, Pending<Answered<ContentPutAnswer>>)>,
+    /// The bytes of the pieces on their way.
+    flight_bytes: usize,
+}
+
+impl SessionPut {
+    /// Take the answers of the pieces on their way, oldest first, until their
+    /// bytes fit within [`FLIGHT_BYTES`] again; or, when `all` is said, until
+    /// every one of them is answered.
+    fn settle(&mut self, all: bool) -> Result<(), ActionCallError> {
+        while self
+            .flight
+            .front()
+            .is_some_and(|_| all || self.flight_bytes > FLIGHT_BYTES)
+        {
+            let Some((end, len, answer)) = self.flight.pop_front() else {
+                break;
+            };
+            self.flight_bytes = self.flight_bytes.saturating_sub(len);
+            match in_time(answer).unwrap_or(Err(ActionCallError::Unanswered))? {
+                ContentPutAnswer::Appended { written } => {
+                    // Pieces travel in the order they are sent, so the device
+                    // holds every byte of this one when it answers.
+                    if written < end {
+                        return Err(ActionCallError::Unavailable {
+                            reason: format!(
+                                "the workspace holds {written} of the {end} bytes sent"
+                            ),
+                        });
+                    }
+                }
+                other => return Err(unexpected(&other)),
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ContentPut for SessionPut {
@@ -118,29 +172,39 @@ impl ContentPut for SessionPut {
     }
 
     fn written(&self) -> u64 {
-        self.written
+        // What was sent: the pieces on their way hold the bytes just as the ones
+        // the device answered do, and only the upload's finish needs to know
+        // that every one of them was taken.
+        self.sent
     }
 
     fn append(&mut self, offset: u64, chunk: &[u8]) -> Result<u64, ActionCallError> {
-        if offset != self.written {
+        if offset != self.sent {
             return Err(ActionCallError::InvalidRequest {
                 reason: format!(
                     "the upload has {} bytes: append at offset {}",
-                    self.written, self.written
+                    self.sent, self.sent
                 ),
             });
         }
         for piece in chunk.chunks(MAX_CONTENT_FRAME_BYTES) {
-            let step = ContentPutStep::append(self.upload, self.written, piece);
-            match self.actions.put_step_waited(step)? {
-                ContentPutAnswer::Appended { written } => self.written = written,
-                other => return Err(unexpected(&other)),
-            }
+            let end = self
+                .sent
+                .saturating_add(u64::try_from(piece.len()).unwrap_or(u64::MAX));
+            let step = ContentPutStep::append(self.upload, self.sent, piece);
+            self.flight
+                .push_back((end, piece.len(), self.actions.put_step(step)));
+            self.flight_bytes = self.flight_bytes.saturating_add(piece.len());
+            self.sent = end;
+            // The oldest pieces are waited for only once the window is full, so
+            // a link carries all of them at once.
+            self.settle(false)?;
         }
-        Ok(self.written)
+        Ok(self.sent)
     }
 
-    fn finish(self: Box<Self>) -> Result<String, ActionCallError> {
+    fn finish(mut self: Box<Self>) -> Result<String, ActionCallError> {
+        self.settle(true)?;
         match self.actions.put_step_waited(ContentPutStep::Finish {
             upload: self.upload,
         })? {
