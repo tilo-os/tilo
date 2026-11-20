@@ -1177,7 +1177,7 @@ fn copying_a_folder_in_and_restarting() {
     let copy = started.elapsed();
     assert!(copied.success(), "cp -r into the mount failed: {copied:?}");
 
-    let check = |root: &Path| -> (u64, u64) {
+    let mut check = |root: &Path| -> (u64, u64) {
         let (mut missing, mut wrong) = (0_u64, 0_u64);
         for i in 0..files {
             let path = root.join("in").join(folder(i)).join(name(i));
