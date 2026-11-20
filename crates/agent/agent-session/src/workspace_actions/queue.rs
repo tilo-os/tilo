@@ -35,6 +35,12 @@
 //! Once an agent's request has waited [`AGENT_TURN`] since an agent last had a
 //! turn, the next request served is an agent's, so a person waits for at most
 //! one agent request in each [`AGENT_TURN`] and the agents always go on.
+//!
+//! A request that waited off the thread for an operation of its workspace going on there
+//! ([`super::call_wait`]) comes back to this queue once that answered, ahead of what of its kind
+//! came since, and is taken in this order too. Served in the order they came instead, the
+//! agent's writes that waited beside a person's listing went before it, each handing its own
+//! operation off again, and the listing waited for every one of them.
 
 use std::collections::VecDeque;
 use std::sync::mpsc;
@@ -45,6 +51,7 @@ use tilo_actions::remote::Caller;
 use super::Job;
 use super::invocation_log::InvocationLog;
 use super::job::Urgency;
+use super::part_wait::Tried;
 
 /// How long after serving a person's request the thread starts no agent's: about the time a
 /// person's next request of the same command takes to arrive, a round trip and the client's
@@ -64,8 +71,8 @@ pub(super) const READ_PAUSE: Duration = Duration::from_millis(150);
 pub(super) struct Queue {
     /// A person's requests and the service's own work, with whether serving it starts the
     /// pause ([`PERSON_PAUSE`]).
-    person: VecDeque<(Instant, Job, bool)>,
-    agents: VecDeque<(Instant, Job)>,
+    person: VecDeque<(Waiting, bool)>,
+    agents: VecDeque<Waiting>,
     /// When the last request a person asked was taken ([`PERSON_PAUSE`]).
     person_asked: Option<Instant>,
     /// Since when the agents wait for a turn: when an agent's request came while none waited,
@@ -77,6 +84,28 @@ pub(super) struct Queue {
     reading: bool,
     /// Nobody sends any more requests: the thread ends once these are served.
     closed: bool,
+}
+
+/// A request in the queue: when it was asked, and where it comes from.
+pub(super) struct Waiting {
+    pub(super) queued: Instant,
+    pub(super) job: Job,
+    pub(super) from: Origin,
+}
+
+/// Where a request in the queue comes from.
+pub(super) enum Origin {
+    /// Sent to the thread: it is admitted ([`super::Worker::admit`]).
+    Sent,
+    /// It waited off the thread for an operation of its workspace, admitted already: it goes on
+    /// with how it waited for parts so far.
+    Returned(Option<Tried>),
+}
+
+impl Waiting {
+    fn urgency(&self) -> Urgency {
+        self.job.urgency()
+    }
 }
 
 /// Who a request is served for, which decides when it is taken.
@@ -111,54 +140,93 @@ impl Queue {
     }
 
     /// Put `job` behind the others of whoever asked it.
-    pub(super) fn put(&mut self, (at, job): (Instant, Job), log: &std::sync::Mutex<InvocationLog>) {
-        match asker(&job, log) {
+    pub(super) fn put(
+        &mut self,
+        (queued, job): (Instant, Job),
+        log: &std::sync::Mutex<InvocationLog>,
+    ) {
+        self.add(
+            Waiting {
+                queued,
+                job,
+                from: Origin::Sent,
+            },
+            log,
+            false,
+        );
+    }
+
+    /// Put `returned`, the requests that waited off the thread in the order they came, ahead of
+    /// what of their kind came since: they were taken before it.
+    pub(super) fn put_back(
+        &mut self,
+        returned: impl DoubleEndedIterator<Item = Waiting>,
+        log: &std::sync::Mutex<InvocationLog>,
+    ) {
+        for waiting in returned.rev() {
+            self.add(waiting, log, true);
+        }
+    }
+
+    /// Put `waiting` behind the others of whoever asked it, or ahead of them (`front`).
+    fn add(&mut self, waiting: Waiting, log: &std::sync::Mutex<InvocationLog>, front: bool) {
+        fn push<T>(queue: &mut VecDeque<T>, entry: T, front: bool) {
+            if front {
+                queue.push_front(entry);
+            } else {
+                queue.push_back(entry);
+            }
+        }
+        match asker(&waiting.job, log) {
             Asker::Agent => {
                 if self.agents.is_empty() {
                     self.agents_waiting = Some(Instant::now());
                 }
-                self.agents.push_back((at, job));
+                push(&mut self.agents, waiting, front);
             }
-            Asker::Person => self.person.push_back((at, job, true)),
-            Asker::Service => self.person.push_back((at, job, false)),
+            Asker::Person => push(&mut self.person, (waiting, true), front),
+            Asker::Service => push(&mut self.person, (waiting, false), front),
         }
     }
 
     /// The next request to serve: a person's while one waits, else an agent's once the person
     /// has paused ([`Self::paused_until`]); an agent's first once the agents waited their longest
     /// ([`AGENT_TURN`]).
-    pub(super) fn next(&mut self) -> Option<(Instant, Job)> {
+    pub(super) fn next(&mut self) -> Option<Waiting> {
         if std::mem::take(&mut self.reading) {
             self.agent_read = Some(Instant::now());
         }
         if !self.agents_due()
-            && let Some(at) = most_urgent(self.person.iter().map(|(_, job, _)| job))
-            && let Some((queued, job, pauses)) = self.person.remove(at)
+            && let Some(at) = most_urgent(self.person.iter().map(|(waiting, _)| waiting))
+            && let Some((waiting, pauses)) = self.person.remove(at)
         {
             if pauses {
                 self.person_asked = Some(Instant::now());
             }
-            return Some((queued, job));
+            return Some(waiting);
         }
         if self.paused_until().is_some() {
             return None;
         }
-        let at = most_urgent(self.agents.iter().map(|(_, job)| job))?;
+        let at = most_urgent(self.agents.iter())?;
         if self.reading_until(at).is_some() {
             return None;
         }
-        let (queued, job) = self.agents.remove(at)?;
-        self.reading = job.urgency() == Urgency::Read;
+        let waiting = self.agents.remove(at)?;
+        self.reading = waiting.urgency() == Urgency::Read;
         self.agents_waiting = (!self.agents.is_empty()).then(Instant::now);
-        Some((queued, job))
+        Some(waiting)
     }
 
     /// Until when the agent's write at `at` waits for the next read of a listing whose last
     /// page was just served ([`READ_PAUSE`]): never a read, nor a write that already waited a
     /// pause.
     fn reading_until(&self, at: usize) -> Option<Instant> {
-        let (queued, job) = self.agents.get(at)?;
-        if job.urgency() == Urgency::Read || queued.elapsed() >= READ_PAUSE || self.closed {
+        let waiting = self.agents.get(at)?;
+        if waiting.urgency() == Urgency::Read
+            || waiting.queued.elapsed() >= READ_PAUSE
+            || self.closed
+        {
             return None;
         }
         self.agent_read?
@@ -184,10 +252,7 @@ impl Queue {
             .then(|| self.person_asked?.checked_add(PERSON_PAUSE))
             .flatten()
             .filter(|until| *until > Instant::now());
-        person.or_else(|| {
-            most_urgent(self.agents.iter().map(|(_, job)| job))
-                .and_then(|at| self.reading_until(at))
-        })
+        person.or_else(|| most_urgent(self.agents.iter()).and_then(|at| self.reading_until(at)))
     }
 
     /// Nobody sends any more requests, and every one sent was served.
@@ -202,9 +267,10 @@ impl Queue {
 }
 
 /// Where among `jobs` the most urgent is, the oldest of its kind.
-fn most_urgent<'a>(jobs: impl Iterator<Item = &'a Job> + Clone) -> Option<usize> {
-    let most = jobs.clone().map(Job::urgency).min()?;
-    jobs.into_iter().position(|job| job.urgency() == most)
+fn most_urgent<'a>(jobs: impl Iterator<Item = &'a Waiting> + Clone) -> Option<usize> {
+    let most = jobs.clone().map(Waiting::urgency).min()?;
+    jobs.into_iter()
+        .position(|waiting| waiting.urgency() == most)
 }
 
 /// Whether `caller` was admitted as an agent.
@@ -291,7 +357,7 @@ mod tests {
             queue.put((now, job), &log);
         }
         let taken: Vec<String> = std::iter::from_fn(|| queue.next())
-            .map(|(_, job)| match job {
+            .map(|Waiting { job, .. }| match job {
                 Job::Forget(id) => format!("forget {id}"),
                 job => job.kind().to_owned(),
             })
@@ -306,5 +372,55 @@ mod tests {
             ]
         );
         assert!(queue.next().is_none());
+    }
+
+    /// What waited off the thread for an operation comes back ahead of what of its kind came
+    /// since, and still behind a person's: an agent's write that waited first goes after the
+    /// service's work that waited with it.
+    #[test]
+    fn what_waited_for_an_operation_is_taken_in_the_queues_order() {
+        let workspace = WorkspaceId::parse("6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b").unwrap();
+        let route = |document: &str| DocumentRoute {
+            app_id: "tasks".into(),
+            cluster_id: workspace.to_string(),
+            document: document.into(),
+        };
+        let log = std::sync::Mutex::default();
+        let now = Instant::now();
+        let mut queue = Queue::default();
+        queue.put((now, Job::Rename(workspace, route("came later"))), &log);
+        let returned = |job| Waiting {
+            queued: now,
+            job,
+            from: Origin::Returned(None),
+        };
+        queue.put_back(
+            [
+                returned(Job::Rename(workspace, route("waited"))),
+                returned(Job::Forget(workspace)),
+            ]
+            .into_iter(),
+            &log,
+        );
+        let taken: Vec<String> = std::iter::from_fn(|| queue.next())
+            .map(|Waiting { job, from, .. }| {
+                let from = match from {
+                    Origin::Sent => "sent",
+                    Origin::Returned(_) => "returned",
+                };
+                match job {
+                    Job::Rename(_, route) => format!("{from} rename {}", route.document),
+                    job => format!("{from} {}", job.kind()),
+                }
+            })
+            .collect();
+        assert_eq!(
+            taken,
+            [
+                "returned forget",
+                "returned rename waited",
+                "sent rename came later"
+            ]
+        );
     }
 }

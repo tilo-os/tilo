@@ -12,8 +12,9 @@
 //! Meanwhile the thread answers the other workspaces, and those requests of the same workspace
 //! that read neither the document the operation changes nor anything a write changes: listings
 //! of its other documents, searches, its changes and its history of invocations. Every other
-//! request of the workspace waits for the operation and is then served in the order it came,
-//! so a later write still follows the earlier one.
+//! request of the workspace waits for the operation, and once it answered goes back to the
+//! thread's queue ahead of what came since ([`super::queue`]): a person's request still goes
+//! before an agent's, and a later write still follows the earlier one.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -26,6 +27,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 
 use super::part_wait::Tried;
+use super::queue::{Origin, Waiting};
 use super::{Job, Shared, Worker, resource_of};
 use crate::worker::{ConfinedReplica, Invoked, Operation};
 
@@ -63,6 +65,8 @@ pub(super) struct CallWaits {
     /// The request being served handed its operation off this thread on `holder`, with how it
     /// waited for parts: it is held, not answered.
     held: Option<(DocumentRoute, Option<Tried>)>,
+    /// What waited for an operation that answered, for the thread's queue to take again.
+    returned: VecDeque<Held>,
 }
 
 impl CallWaits {
@@ -178,7 +182,8 @@ impl Worker {
     }
 
     /// The operation `workspace_id`'s request handed off this thread answered: the request is
-    /// applied again and takes its answer, and what waited for it is served in the order it came.
+    /// applied again and takes its answer, and what waited for it goes back to the thread's
+    /// queue ([`Self::returned_to_queue`]).
     pub(super) fn call_answered(&mut self, workspace_id: WorkspaceId) {
         let Some(Running {
             request, behind, ..
@@ -186,10 +191,33 @@ impl Worker {
         else {
             return;
         };
-        for Held { queued, tried, job } in request.into_iter().chain(behind) {
+        self.call_waits.returned.extend(behind);
+        if let Some(Held { queued, tried, job }) = request {
             self.part_waits.resume_with(tried);
             self.timed(queued, job);
         }
+    }
+
+    /// What waited for an operation that answered since this was last asked, in the order it
+    /// came, for the queue to take in its own order: served here at once, an agent's write that
+    /// came before a person's listing went first and, its operation handed off again, the
+    /// listing waited for it as well.
+    pub(super) fn returned_to_queue(&mut self) -> impl DoubleEndedIterator<Item = Waiting> + use<> {
+        std::mem::take(&mut self.call_waits.returned)
+            .into_iter()
+            .map(|Held { queued, tried, job }| Waiting {
+                queued,
+                job,
+                from: Origin::Returned(tried),
+            })
+    }
+
+    /// `job`, asked at `queued`, which waited off this thread for an operation of its workspace
+    /// and goes on with how it waited for parts so far (`tried`).
+    pub(super) fn serve_returned(&mut self, queued: Instant, job: Job, tried: Option<Tried>) {
+        self.part_waits.resume_with(tried);
+        self.timed(queued, job);
+        self.wake_watchers();
     }
 }
 
