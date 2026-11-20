@@ -133,6 +133,24 @@ RUN --mount=type=bind,source=tools/ci/install-android-ndk.sh,target=/tmp/install
       TILO_RUST_TOOLCHAIN="${RUST_CHANNEL}" bash /tmp/install-android-ndk.sh \
       && dnf clean all && rm -rf /var/cache/dnf; \
     fi
+# The tools a local stack asks its build container for: openssl, which signs the releases of the
+# `tilo` command it serves, and the Caddy its server and site answer TLS with, at the version
+# os/containers/tilo-sh/caddy.env pins, from the checksum-pinned upstream archive of this
+# architecture. A build container has no network, so a stack finds both here.
+RUN --mount=type=bind,source=os/containers/tilo-sh/caddy.env,target=/tmp/tilo-caddy.env,ro \
+    dnf install -y --setopt=install_weak_deps=False openssl \
+    && dnf clean all && rm -rf /var/cache/dnf \
+    && . /tmp/tilo-caddy.env \
+    && case "$(uname -m)" in x86_64) arch=amd64; sha=$CADDY_SHA512 ;; aarch64) arch=arm64; sha=$CADDY_SHA512_ARM64 ;; *) exit 1 ;; esac \
+    && release="caddy_${CADDY_VERSION}_linux_${arch}.tar.gz" \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 5 \
+         -o "/tmp/$release" "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/$release" \
+    && echo "$sha  /tmp/$release" | sha512sum --check --strict \
+    && tar -xzf "/tmp/$release" -C /tmp caddy \
+    && install -m 0755 /tmp/caddy /usr/local/bin/caddy \
+    && rm -f "/tmp/$release" /tmp/caddy /tmp/tilo-caddy.env \
+    && openssl version && caddy version
+
 # The browser target for the wasm lint (tools/ci/check-wasm.sh).
 RUN rustup target add --toolchain "${RUST_CHANNEL}" wasm32-unknown-unknown
 # musl for this architecture: t's release builds link its compiler cache's

@@ -33,6 +33,7 @@ on:
       - "crates/sdk/ui-core/assets/fonts/manifest.toml"
       - "crates/sdk/ui-core/assets/fonts/artifacts.json"
       - "crates/browser/tilo-browser-runtime/Cargo.toml"
+      - "os/containers/tilo-sh/caddy.env"
   workflow_dispatch:
 
 concurrency:

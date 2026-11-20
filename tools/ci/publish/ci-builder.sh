@@ -18,7 +18,7 @@ cd "$repo_root"
 # buildah bind-mounts single files only from a writable context, so the build gets a copy of
 # exactly the files the Containerfile uses.
 context_files=(dist/ci/install-build-deps.sh os/external-assets/github-assets.tsv
-  crates/browser/tilo-browser-runtime/Cargo.toml
+  crates/browser/tilo-browser-runtime/Cargo.toml os/containers/tilo-sh/caddy.env
   tools/ci/check-build-env.sh tools/ci/install-android-ndk.sh tools/ci/install-pdfium.sh
   tools/ci/native-mold-linker.sh tools/ci/verify-native-mold.sh tools/ci/windows/wine-prefix.sh
   tools/ci/install-wine.sh os/external-assets/wine/*.patch
