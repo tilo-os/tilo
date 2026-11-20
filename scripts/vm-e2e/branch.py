@@ -11,7 +11,7 @@ configured and then work on their own (`tilo-vm vm branch`, docs/architecture/wo
 "A machine copied from another"). This proves it with this tree's dev disk and tilo-vm:
 
 1. `box` boots and records its machine; a person signs in as the VM's person
-   (`slot create --identity device`: the session's own onboarding creates the identity in the
+   (`account create --identity device`: the session's own onboarding creates the identity in the
    machine's identity tree and certifies the machine) and sets the box up: a Secret Service
    secret, a model provider's API key in their vault, a login in their passwords vault,
    `~/.gitconfig`, an SSH key, and a workspace of their own with a window on its shell.
@@ -25,7 +25,7 @@ configured and then work on their own (`tilo-vm vm branch`, docs/architecture/wo
    after both reboot.
 5. `vm rm box` leaves `a` and `b` bootable.
 
-Everything goes through `tilo-vm` (scripts/vm-acceptance/acceptance/vm.py): `slot exec` as
+Everything goes through `tilo-vm` (scripts/vm-acceptance/acceptance/vm.py): `account exec` as
 the person, `vm ssh` as root, `control` for the desktop. The report (report.json,
 report.md) and evidence go to --out. No secret value is printed: values are compared with
 what was stored inside the guest.
@@ -51,7 +51,7 @@ sys.path.insert(0, str(HERE.parent / "vm-acceptance"))
 
 from acceptance.vm import TiloVm, VmError, first_json, wait_until  # noqa: E402
 
-SLOT = "me"
+ACCOUNT = "me"
 SOURCE, BRANCHES = "box", ("a", "b")
 NAMES = (SOURCE, *BRANCHES)
 # The boxes' local network (tools/ci/vm-e2e-branch.sh's bridge): each box's address on it and
@@ -97,7 +97,7 @@ class Run:
 
     def vm(self, name: str) -> TiloVm:
         if name not in self.vms:
-            self.vms[name] = TiloVm(self.binary, name, SLOT, self.out / f"tilo-vm-{name}.log")
+            self.vms[name] = TiloVm(self.binary, name, ACCOUNT, self.out / f"tilo-vm-{name}.log")
             run_of[name] = self
         return self.vms[name]
 
@@ -363,11 +363,11 @@ def shell_up(vm: TiloVm) -> bool:
 
 
 def wait_session(vm: TiloVm, timeout: float = 300) -> bool:
-    """Until the person's session answers and lists its apps; a slot whose session did not
+    """Until the person's session answers and lists its apps; an account whose session did not
     come up with the box is started as tilo-vm starts it. Whether it had to be."""
     if wait_until(lambda: shell_up(vm), timeout, interval=1.0):
         return False
-    vm.run("slot", "restart", SLOT, timeout=300, slot=False)
+    vm.run("account", "restart", ACCOUNT, timeout=300, account=False)
     if not wait_until(lambda: shell_up(vm), timeout, interval=1.0):
         raise Failed(f"{vm.vm}'s session never showed its shell within {timeout:.0f}s")
     return True
@@ -438,7 +438,7 @@ def shell_at_boot(run: Run, name: str, label: str) -> list[str]:
         try:
             wait_session(vm)
         except Failed as exc:
-            shown.append(f"and after a slot restart: {exc}: {what_shows(vm)}")
+            shown.append(f"and after an account restart: {exc}: {what_shows(vm)}")
     return shown
 
 
@@ -494,12 +494,12 @@ def keep_session(run: Run, name: str, label: str) -> None:
     """What the person's session said and showed, for a step that could not reach it."""
     vm = run.vm(name)
     parts = []
-    for args in (("logs", SLOT, "-n", "4000"),
+    for args in (("logs", ACCOUNT, "-n", "4000"),
                  ("control", "raw", '{"op":"list_targets"}'),
                  ("control", "actions", "list", "--json", "--limit", "300")):
         try:
             parts.append(f"$ tilo-vm {' '.join(args)}\n" + vm.run(*args, timeout=120, check=False,
-                                                                 slot=args[0] != "logs"))
+                                                                 account=args[0] != "logs"))
         except VmError as exc:
             parts.append(f"$ tilo-vm {' '.join(args)}: {exc}")
     try:
@@ -532,12 +532,12 @@ def keep_actions(run: Run, name: str, label: str) -> None:
 def sign_in(facts: dict, run: Run) -> None:
     box = run.vm(SOURCE)
     try:
-        out = box.run("--json", "slot", "create", SLOT, "--headful", "--outputs", f"{OUTPUT}@1",
-                      "--identity", "device", timeout=900, slot=False)
+        out = box.run("--json", "account", "create", ACCOUNT, "--headful", "--outputs", f"{OUTPUT}@1",
+                      "--identity", "device", timeout=900, account=False)
     except VmError:
         keep_session(run, SOURCE, "S02")
         raise
-    run.write("S02-slot-create.json", out)
+    run.write("S02-account-create.json", out)
     wait_session(box)
     p = person_facts(run, SOURCE, "S02-box")
     ident = p.get("identity") or {}
@@ -683,7 +683,7 @@ def configure_workspace(facts: dict, run: Run) -> None:
 
 
 def keep_awake(vm: TiloVm) -> None:
-    """A key on the slot's seat, as a person at it: an idle shell locks, and a locked one offers
+    """A key on the account's seat, as a person at it: an idle shell locks, and a locked one offers
     none of its actions."""
     try:
         vm.key("shift")
@@ -1130,7 +1130,7 @@ def boot(facts: dict, run: Run, names: tuple[str, ...]) -> None:
     # The sessions start again on the network the boxes now share, as on a box that came up
     # on it.
     for name in names:
-        run.vm(name).run("slot", "restart", SLOT, timeout=300, slot=False)
+        run.vm(name).run("account", "restart", ACCOUNT, timeout=300, account=False)
         wait_session(run.vm(name))
     expect(not over, f"setup or identity recovery stood over the shell at first boot: {over}")
 
