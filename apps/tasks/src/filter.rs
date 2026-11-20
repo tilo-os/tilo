@@ -140,9 +140,3 @@ impl Filter {
             .any(|(child, issue)| self.shows(issues, child, issue, me))
     }
 }
-
-/// Every label the tracker's issues carry, in the order a person reads
-/// them, for the sidebar's labels.
-pub(crate) fn labels(issues: &Issues) -> Vec<String> {
-    issues.labels().map(|(label, _)| label.to_owned()).collect()
-}

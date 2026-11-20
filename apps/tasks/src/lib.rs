@@ -443,15 +443,12 @@ fn sidebar_sections(tasks: &Tasks, me: Option<&ui::tilo_resource::MemberId>) -> 
         })
         .collect();
     let mut sections = vec![NavSection::untitled("filters", filters)];
-    let labels: Vec<NavItem> = filter::labels(&issues)
-        .into_iter()
-        .map(|label| {
-            let filter = Filter::Label(label.clone());
-            let count = issues
-                .iter()
-                .filter(|(_, issue)| issue.labels.iter().any(|carried| *carried == label))
-                .count();
-            NavItem::new(filter.key(), label)
+    // Each label's count is the tally the issues keep, not a walk of every issue per label.
+    let labels: Vec<NavItem> = issues
+        .labels()
+        .map(|(label, count)| {
+            let filter = Filter::Label(label.to_owned());
+            NavItem::new(filter.key(), label.to_owned())
                 .icon(ui::icons::Icon::Tag)
                 .count(u32::try_from(count).unwrap_or(u32::MAX))
                 .without_actions()
