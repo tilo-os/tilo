@@ -15,6 +15,9 @@
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
+# The scratch registry the updates below are served from.
+# shellcheck source=os/scratch-registry.env
+. "$repo_root/os/scratch-registry.env"
 
 arch=${1:?usage: os-dev-check.sh ARCH DEV OUT}
 dev=${2:?}

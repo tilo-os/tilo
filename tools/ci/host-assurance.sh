@@ -37,6 +37,9 @@
 # The record of every boot lands in /target/host-assurance.
 set -euo pipefail
 . tools/ci/publish/lib.sh
+# The scratch registry the update below is served from.
+# shellcheck source=os/scratch-registry.env
+. "$repo_root/os/scratch-registry.env"
 
 arch=x86_64
 work=/var/tmp/host-assurance
