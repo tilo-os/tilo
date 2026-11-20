@@ -17,7 +17,7 @@ use std::sync::{Arc, mpsc};
 
 use super::catch_up::{HOLD_ROUNDS, chains_untold, hold, hold_parts, read_parts};
 use super::part_wait::{ChainWait, PART_WAIT};
-use super::{DocumentRoute, Mounted, Worker, WorkspaceState};
+use super::{DocumentRoute, Mounted, Worker, WorkspaceState, Writer};
 use crate::worker::ConfinedReplica;
 
 /// How many parts a replica holds none of before they are taken in off the serving thread:
@@ -138,12 +138,20 @@ fn take_in(holder: &DocumentRoute, mut mounted: Mounted, state: &WorkspaceState)
 }
 
 impl Worker {
-    /// Take up what was taken in of the parts of the caller's replica `key` off this thread:
-    /// whether the request being served waits, held off this thread, while they still are.
-    /// Nothing else touches the replica while they are: its worker answers one call at a time,
-    /// and this thread waited for each part.
-    pub(super) fn parts_taken_in(&mut self, key: &super::bounded::BoundedKey) -> bool {
-        let Some(app) = self.bounded.get(key).map(|held| Arc::clone(&held.held.app)) else {
+    /// The replica `at` holds.
+    fn held_at(&self, at: &Writer) -> Option<&Mounted> {
+        match at {
+            Writer::Mounted(holder) => self.mounted.get(holder),
+            Writer::Bounded(key) => self.bounded.get(key).map(|replica| &replica.held),
+        }
+    }
+
+    /// Take up what was taken in of the parts of the replica `at` holds off this thread, a
+    /// caller's or this device's own: whether the request being served waits, held off this
+    /// thread, while they still are. Nothing else touches the replica while they are: its
+    /// worker answers one call at a time, and this thread waited for each part.
+    pub(super) fn parts_taken_in(&mut self, at: &Writer) -> bool {
+        let Some(app) = self.held_at(at).map(|held| Arc::clone(&held.app)) else {
             return false;
         };
         let loaded = match self.part_loads.of(&app) {
@@ -158,43 +166,44 @@ impl Worker {
             }
         };
         if let Some(loaded) = loaded
-            && let Some(held) = self.bounded.get_mut(key)
+            && let Some(held) = self.held_mut(at)
         {
-            loaded.merge_into(&mut held.held);
+            loaded.merge_into(held);
         }
         false
     }
 
-    /// Have the caller's replica `key` take in its parts off this thread when it holds none of
-    /// many: whether the request being served waits for them, held off this thread. One that
-    /// holds most of them, or a request that cannot wait off the thread, takes them in where
-    /// it is asked ([`Self::hold_chains`]).
+    /// Have the replica `at` holds of the document at `holder`, a caller's or this device's
+    /// own, take in its parts off this thread when it holds none of many: whether the request
+    /// being served waits for them, held off this thread. One that holds most of them, or a
+    /// request that cannot wait off the thread, takes them in where it is asked
+    /// ([`Self::hold_chains`]).
     pub(super) fn load_parts_apart(
         &mut self,
-        key: &super::bounded::BoundedKey,
+        at: &Writer,
+        holder: &DocumentRoute,
         state: &WorkspaceState,
     ) -> bool {
-        let holder = &key.0;
-        let Some(held) = self.bounded.get(key) else {
+        let Some(held) = self.held_at(at) else {
             return false;
         };
         let taken = self
             .part_loads
             .taken
             .iter()
-            .any(|taken| std::ptr::eq(taken.as_ptr(), Arc::as_ptr(&held.held.app)));
+            .any(|taken| std::ptr::eq(taken.as_ptr(), Arc::as_ptr(&held.app)));
         if taken
-            || unheld_parts(holder, &held.held, state) < LOADED_APART
+            || unheld_parts(holder, held, state) < LOADED_APART
             || !self.part_waits.may_wait(PART_WAIT)
         {
             return false;
         }
-        let app = Arc::clone(&held.held.app);
+        let app = Arc::clone(&held.app);
         let copy = Mounted {
             app: Arc::clone(&app),
             merged: None,
-            parts: held.held.parts.clone(),
-            foreign: held.held.foreign.clone(),
+            parts: held.parts.clone(),
+            foreign: held.foreign.clone(),
             wanted_at: None,
             behind: None,
             used: 0,

@@ -1676,11 +1676,15 @@ impl ConfinedReplica {
                 admit_beside_incoming(&mut candidate, bytes)?;
                 Some(candidate)
             }
-            None if snapshot => {
-                let mut candidate = Deferred::default();
-                admit_beside_incoming(&mut candidate, bytes)?;
-                Some(candidate)
-            }
+            // A part taken whole the first time is one the workspace's service read out of
+            // what it admitted and saved itself (`WorkspaceState::document`): it loads here as
+            // the document this process saved, where admitting it through an isolated worker
+            // loaded it twice more, a second and more for each part of a large tracker as a
+            // replica took them in after a start.
+            None if snapshot => Some(Deferred::from(
+                tilo_automerge::shared::load(bytes)
+                    .map_err(|error| AppError::Merge(error.to_string()))?,
+            )),
             None => return Ok(()),
         };
         inner.others.insert(document.clone());
