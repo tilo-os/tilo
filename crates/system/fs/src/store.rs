@@ -133,6 +133,9 @@ pub struct ContentStore {
     write_syncs: std::sync::atomic::AtomicU64,
     /// Whether a write since the last sync has not reached the disk.
     pending: std::sync::atomic::AtomicBool,
+    /// Whether this store syncs on a window ([`Self::set_sync_writes`]`(false)`) instead of on
+    /// every write, which a deferred group's end must not undo.
+    batched: std::sync::atomic::AtomicBool,
     read_bytes: std::sync::atomic::AtomicU64,
     files: Arc<FileArea>,
     _scratch: Option<tempfile::TempDir>,
@@ -285,6 +288,7 @@ impl ContentStore {
             deferred: std::sync::Mutex::new((0, false)),
             write_syncs: std::sync::atomic::AtomicU64::new(0),
             pending: std::sync::atomic::AtomicBool::new(false),
+            batched: std::sync::atomic::AtomicBool::new(false),
             read_bytes: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: None,
@@ -335,6 +339,7 @@ impl ContentStore {
             deferred: std::sync::Mutex::new((0, false)),
             write_syncs: std::sync::atomic::AtomicU64::new(0),
             pending: std::sync::atomic::AtomicBool::new(false),
+            batched: std::sync::atomic::AtomicBool::new(false),
             read_bytes: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: scratch,
@@ -409,6 +414,8 @@ impl ContentStore {
     /// them ([`Self::sync_pending`]): a mount serving many small files turns the per-write sync off
     /// and syncs on a short window and on `fsync`.
     pub fn set_sync_writes(&self, sync: bool) {
+        self.batched
+            .store(!sync, std::sync::atomic::Ordering::Release);
         self.files.set_sync_writes(sync);
     }
 
@@ -445,8 +452,9 @@ impl ContentStore {
             }
             (sync, deferred.0 == 0)
         };
-        if outermost {
-            // Every write after the last group is durable on its own again.
+        if outermost && !self.batched.load(std::sync::atomic::Ordering::Acquire) {
+            // Every write after the last group is durable on its own again, unless this store
+            // syncs on a window.
             self.files.set_sync_writes(true);
         }
         if sync {
