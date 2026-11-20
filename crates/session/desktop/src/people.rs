@@ -157,7 +157,9 @@ pub struct PeopleModel<'a> {
     /// The workspace's name, the panel's title.
     pub workspace: &'a str,
     pub rows: &'a [RosterRow],
-    pub may_invite: bool,
+    /// Whether the footer offers inviting; where the workspace withheld it, the footer says so in
+    /// its place, so whoever looks there for inviting learns why it is not theirs.
+    pub invite: crate::chrome::Invite,
     /// The host can keep the list on screen as the people overlay: the header offers to.
     pub may_pin: bool,
     /// The host keeps the roster on screen now: the header offers to put it back in the bar, and each person's screen stands a mirror under their row.
@@ -322,6 +324,8 @@ pub struct PeopleOverlay {
     rows: Vec<RowPlace>,
     headings: Vec<Heading>,
     invite: Rect,
+    /// Where the words saying why there is no invite stand, and those words.
+    invite_note: (Rect, String),
     /// The header's Keep on screen button (Put back in the bar when pinned).
     pin: Rect,
     /// Where each row's mirror of that person's screen stands.
@@ -579,9 +583,10 @@ impl PeopleOverlay {
             .height(text, theme);
         let control = f64::from(metrics.bar_control_height);
         let groups = model.present_groups();
+        let footer_h = footer_height(model, text, theme, width);
         let face = FloatingPanelFace::new()
             .header(header_h)
-            .footer(if model.may_invite { control } else { 0.0 })
+            .footer(footer_h)
             .body_empty(false);
         // The open row's details: a line per change, then the link.
         let open_index = self
@@ -716,10 +721,15 @@ impl PeopleOverlay {
         };
         self.body = parts.body;
         self.viewport = self.panel;
-        self.invite = if model.may_invite {
+        self.invite = if model.invite == crate::chrome::Invite::Offered {
             parts.footer
         } else {
             Rect::ZERO
+        };
+        self.invite_note = if model.invite == crate::chrome::Invite::Withheld {
+            (parts.footer, t("people-panel-invite-withheld"))
+        } else {
+            (Rect::ZERO, String::new())
         };
     }
 
@@ -1029,11 +1039,7 @@ impl PeopleOverlay {
     ) {
         let face = FloatingPanelFace::new()
             .header(self.header.height())
-            .footer(if model.may_invite {
-                self.invite.height()
-            } else {
-                0.0
-            })
+            .footer(self.invite.height().max(self.invite_note.0.height()))
             .body_empty(false);
         if is_sheet(model.host) && model.panel.is_none() {
             paint_sheet_fade(scene, transform, self.panel, theme);
@@ -1410,6 +1416,15 @@ impl PeopleOverlay {
                     .role(ButtonRole::Secondary)
                     .hovered(cursor.is_some_and(|p| self.invite.contains(p)))
                     .focused(self.keyboard_focus == Some(PeopleHit::Invite)),
+            );
+        }
+        let (note_rect, note) = &self.invite_note;
+        if note_rect.area() > 0.0 {
+            let style = theme.text(TextRole::Caption);
+            ui::widget::TextBlockFace::new(note, &style).paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                *note_rect,
+                theme.tokens.colors.text_dim,
             );
         }
     }
@@ -2024,6 +2039,9 @@ impl PeopleOverlay {
                     .with_state(state),
             );
         }
+        if self.invite_note.0.area() > 0.0 {
+            children.push(AccessNode::new(Role::Paragraph).with_name(self.invite_note.1.clone()));
+        }
         AccessNode::new(Role::Dialog)
             .with_name(t("a11y-shell-people"))
             .with_description(format!(
@@ -2364,6 +2382,31 @@ impl LazyPeopleOverlay {
 /// What a reader is told while the roster's code is on its way: nothing yet.
 fn empty_people_node() -> ui::a11y::AccessNode {
     ui::a11y::AccessNode::new(ui::a11y::Role::List)
+}
+
+/// How tall the roster's footer is: its invite button, or the words saying why there is none,
+/// wrapped to the panel's width; nothing where it says neither.
+fn footer_height(
+    model: &PeopleModel<'_>,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    width: f64,
+) -> f64 {
+    match model.invite {
+        crate::chrome::Invite::Offered => {
+            return f64::from(theme.tokens.metrics.bar_control_height);
+        }
+        crate::chrome::Invite::Unavailable => return 0.0,
+        crate::chrome::Invite::Withheld => {}
+    }
+    // The footer's own width, as the panel lays it out at `width`.
+    let inner = FloatingPanelFace::new()
+        .footer(1.0)
+        .layout(Rect::new(0.0, 0.0, width, width), theme)
+        .footer
+        .width();
+    let note = t("people-panel-invite-withheld");
+    ui::widget::TextBlockFace::new(&note, &theme.text(TextRole::Caption)).height(text, inner)
 }
 
 #[cfg(test)]

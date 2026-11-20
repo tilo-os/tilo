@@ -303,6 +303,8 @@ pub struct People {
     dismissed: Rc<Cell<Option<ui::time::Instant>>>,
     /// What the card asked of the session, carried out on its next pass.
     asks: Rc<RefCell<Vec<PeopleAsk>>>,
+    /// The workspace in front answered that this person may not invite anyone into it.
+    invite_withheld: Rc<Cell<bool>>,
 }
 
 /// Keep the roster on screen: it waits at the edge the person last chose, and what they see from
@@ -335,6 +337,12 @@ fn keep_pinned(pinned: bool, edge: DockEdge) {
 }
 
 impl People {
+    /// Whether the workspace in front answered that this person may not invite anyone into it:
+    /// the roster then says so where its invite would stand.
+    pub fn withhold_invite(&self, withheld: bool) {
+        self.invite_withheld.set(withheld);
+    }
+
     /// Open the roster, or close it again: what the bar's faces do.
     pub fn toggle(&self) {
         // Kept on screen and open, the roster is already where the faces would open it: they
@@ -584,6 +592,7 @@ pub fn mount(
     let open = Rc::new(Cell::new(false));
     let dismissed: Rc<Cell<Option<ui::time::Instant>>> = Rc::default();
     let banner_rect: Rc<Cell<Rect>> = Rc::new(Cell::new(Rect::ZERO));
+    let invite_withheld: Rc<Cell<bool>> = Rc::default();
     let panel = Panel {
         shown: Rc::clone(&shown),
         open: Rc::clone(&open),
@@ -596,6 +605,7 @@ pub fn mount(
         apps: given.apps,
         intents: given.intents,
         invitable: given.invitable,
+        invite_withheld: Rc::clone(&invite_withheld),
         asks: Rc::clone(&asks),
         profile: LazyProfileCard::default(),
         card_node: None,
@@ -612,6 +622,7 @@ pub fn mount(
         open: Rc::clone(&open),
         dismissed,
         asks,
+        invite_withheld,
     }));
     // A press anywhere else closes what the roster has open, as their own press does. The hook
     // stands beside the tree the layer shows, never in it, so holding the roster is no cycle.
@@ -666,6 +677,8 @@ struct Panel {
     /// Whether the person may invite someone into the workspace in front, as the session's loop
     /// last answered it.
     invitable: Rc<Cell<bool>>,
+    /// The workspace in front said this person may not invite into it.
+    invite_withheld: Rc<Cell<bool>>,
     /// What the card asked of the session.
     asks: Rc<RefCell<Vec<PeopleAsk>>>,
     /// The one card of a person, as any host of it shows them.
@@ -1604,7 +1617,13 @@ impl Panel {
             host: shown.area,
             workspace: &workspace,
             rows: &rows,
-            may_invite: self.invitable.get(),
+            invite: if self.invitable.get() {
+                tilo_desktop::chrome::Invite::Offered
+            } else if self.invite_withheld.get() {
+                tilo_desktop::chrome::Invite::Withheld
+            } else {
+                tilo_desktop::chrome::Invite::Unavailable
+            },
             may_pin: !pinned && !sheet,
             pinned,
             panel,

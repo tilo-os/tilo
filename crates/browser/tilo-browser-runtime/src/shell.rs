@@ -295,6 +295,19 @@ impl ChromeSource for PageChrome {
                 .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Whether the workspace told this person they may not invite anyone here: the page takes
+    /// invitations, the workspace answered their part in it, and that part is not one that
+    /// invites. An owner is never told so, even before the workspace's answer came.
+    fn invite_withheld(&self) -> bool {
+        self.invite
+            && !self.may_invite()
+            && self
+                .shared
+                .role
+                .role()
+                .is_some_and(|role| role != tilo_action_policy::Role::Owner)
+    }
+
     fn waved(&self) -> Option<tilo_desktop::chrome::WaveNotice> {
         self.here.borrow().wave_notice()
     }
@@ -1960,6 +1973,9 @@ impl Widget for BrowserShell {
         // The roster offers its footer only where this page hands out a link and the workspace lets
         // this person invite others here.
         self.invitable.set(self.chrome.may_invite());
+        self.people
+            .borrow()
+            .withhold_invite(self.chrome.invite_withheld());
         let following = self.following();
         self.chrome.here.borrow_mut().set_following(following);
         if self.chrome.shared.adopt_feedback() {

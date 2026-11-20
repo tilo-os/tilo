@@ -748,6 +748,7 @@ people-panel-idle = Idle
 people-panel-empty = Nobody else is here right now
 people-panel-changes = Their changes
 people-panel-invite-people = Invite people
+people-panel-invite-withheld = You can't invite people to this workspace. Its owner decides who joins.
 a11y-shell-wave = Wave at { $name }
 a11y-shell-waved = You waved at { $name }
 a11y-shell-wave-description = Their face shows you waved

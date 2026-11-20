@@ -210,9 +210,13 @@ pub struct DesktopChromeSnapshot {
 /// Whether the host lets the person at this desktop invite others here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Invite {
+    /// Nothing here invites: no invite is offered, and nothing says why.
     #[default]
     Unavailable,
     Offered,
+    /// The workspace answered that this person's part in it does not invite: where an invite
+    /// would stand, that is said instead.
+    Withheld,
 }
 
 impl Invite {
@@ -492,6 +496,10 @@ pub trait ChromeSource {
     fn may_invite(&self) -> bool {
         false
     }
+    /// Whether the workspace in front answered that this person may not invite anyone into it.
+    fn invite_withheld(&self) -> bool {
+        false
+    }
     /// The last wave at this person.
     fn waved(&self) -> Option<WaveNotice> {
         None
@@ -651,7 +659,11 @@ impl<S: ChromeSource + ?Sized> DesktopChromeSource for HostChrome<S> {
             notification_badge: notices.unread,
             notifications_quiet: notices.quiet,
             own: Some(self.source.own_chip()),
-            invite: Invite::when(self.source.may_invite()),
+            invite: if self.source.invite_withheld() {
+                Invite::Withheld
+            } else {
+                Invite::when(self.source.may_invite())
+            },
             waved: self.source.waved(),
             ..DesktopChromeSnapshot::default()
         };

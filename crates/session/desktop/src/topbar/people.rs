@@ -34,13 +34,17 @@ fn glyph_chip_width(
 impl TopBarChrome {
     pub(super) const CONTROL_INVITE: &'static str = "topbar:invite";
 
-    /// Whether the host lets this person invite others here.
+    /// Whether the bar keeps its invite button: where the host lets this person invite others
+    /// here, and where the workspace said they may not, so the place they look for inviting
+    /// opens the invite sheet that says why.
     pub(super) fn can_invite(&self) -> bool {
         !self.is_compact()
-            && self
-                .chrome
-                .as_ref()
-                .is_some_and(|chrome| chrome.snapshot().invite == crate::chrome::Invite::Offered)
+            && self.chrome.as_ref().is_some_and(|chrome| {
+                matches!(
+                    chrome.snapshot().invite,
+                    crate::chrome::Invite::Offered | crate::chrome::Invite::Withheld
+                )
+            })
     }
 
     /// Where the invite button was last drawn; zero when it is not shown.

@@ -783,6 +783,7 @@ people-panel-idle = Inaktiv
 people-panel-empty = Gerade ist niemand sonst hier
 people-panel-changes = Ihre Änderungen
 people-panel-invite-people = Personen einladen
+people-panel-invite-withheld = Du kannst niemanden in diesen Arbeitsbereich einladen. Wer dazukommt, entscheidet seine Inhaberin oder sein Inhaber.
 a11y-shell-wave = { $name } zuwinken
 a11y-shell-waved = Du hast { $name } zugewunken
 a11y-shell-wave-description = Ihr Gesicht zeigt, dass du gewunken hast

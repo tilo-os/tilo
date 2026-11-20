@@ -124,7 +124,7 @@ tilo_test_env::scenario! {
         assert!(
             says(
                 &mut app,
-                "Only someone whose part in this workspace allows inviting can make a link."
+                "You can't invite people to this workspace. Its owner decides who joins."
             ),
             "the sheet says why not"
         );
