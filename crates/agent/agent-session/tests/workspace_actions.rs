@@ -125,9 +125,6 @@ mod encrypted_resource;
 #[path = "workspace_actions/feedback_journey.rs"]
 mod feedback_journey;
 #[cfg(test)]
-#[path = "workspace_actions/files_founded_page.rs"]
-mod files_founded_page;
-#[cfg(test)]
 #[path = "workspace_actions/files_put_by_key.rs"]
 mod files_put_by_key;
 #[cfg(test)]
@@ -253,6 +250,9 @@ mod update_reads_older_writes;
 #[cfg(test)]
 #[path = "workspace_actions/workspace_find.rs"]
 mod workspace_find;
+#[cfg(test)]
+#[path = "workspace_actions/write_cost.rs"]
+mod write_cost;
 
 #[cfg(test)]
 #[path = "workspace_actions/search_beside_requests.rs"]
@@ -264,9 +264,6 @@ mod part_held_back;
 #[cfg(test)]
 #[path = "workspace_actions/person_before_agent.rs"]
 mod person_before_agent;
-#[cfg(test)]
-#[path = "workspace_actions/slow_call.rs"]
-mod slow_call;
 
 #[cfg(test)]
 #[path = "workspace_actions/workspace_per_customer.rs"]
