@@ -226,8 +226,8 @@ fn hold_wanted(
 ) -> Vec<DocumentRoute> {
     let mut missing = Vec::new();
     for _ in 0..HOLD_ROUNDS {
-        for route in std::mem::take(&mut asked) {
-            hold(&route, mounted, state);
+        for (route, saved) in read_parts(std::mem::take(&mut asked), state) {
+            hold(route, saved, mounted);
         }
         asked = mounted
             .app
@@ -269,11 +269,54 @@ fn hold_wanted(
 
 /// Hand the part at `route` to `mounted` whole, as the workspace holds it;
 /// a part of another record's chain is remembered as not this one's.
-fn hold(route: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
+/// Each of `routes` as the workspace holds it, read side by side: a part opened first
+/// after the service started is read from its sealed writes, which costs about a second
+/// for a part of a few hundred issues, and the parts of one chain do not wait on each other.
+fn read_parts(
+    routes: Vec<DocumentRoute>,
+    state: &WorkspaceState,
+) -> Vec<(DocumentRoute, Result<super::Saved, String>)> {
+    let read = |route: DocumentRoute| {
+        let saved = state.document(&route);
+        (route, saved)
+    };
+    if routes.len() < 2 {
+        return routes.into_iter().map(read).collect();
+    }
+    let threads = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .clamp(1, PART_READERS);
+    let per_thread = routes.len().div_ceil(threads);
+    let mut routes = routes.into_iter();
+    let chunks: Vec<Vec<DocumentRoute>> = std::iter::from_fn(|| {
+        let chunk: Vec<_> = routes.by_ref().take(per_thread).collect();
+        (!chunk.is_empty()).then_some(chunk)
+    })
+    .collect();
+    std::thread::scope(|scope| {
+        #[expect(
+            clippy::needless_collect,
+            reason = "every reader starts before the first is joined"
+        )]
+        let readers: Vec<_> = chunks
+            .into_iter()
+            .map(|chunk| scope.spawn(move || chunk.into_iter().map(read).collect::<Vec<_>>()))
+            .collect();
+        readers
+            .into_iter()
+            .flat_map(|reader| reader.join().unwrap_or_default())
+            .collect()
+    })
+}
+
+/// How many parts [`read_parts`] reads at once at most.
+const PART_READERS: usize = 8;
+
+fn hold(route: DocumentRoute, saved: Result<super::Saved, String>, mounted: &mut Mounted) {
     let Ok(record) = reads::document_id(&route.document) else {
         return;
     };
-    let Ok((bytes, heads)) = state.document(route) else {
+    let Ok((bytes, heads)) = saved else {
         return;
     };
     match mounted
@@ -281,11 +324,11 @@ fn hold(route: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
         .apply_document(&record, &collab_types::DocumentMutation::Snapshot(bytes))
     {
         Ok(()) => {
-            mounted.parts.insert(route.clone(), Some(heads));
+            mounted.parts.insert(route, Some(heads));
         }
         Err(error) => {
             tracing::debug!(%error, part = %route.document, "workspace actions: a part is not held here");
-            mounted.foreign.insert(route.clone());
+            mounted.foreign.insert(route);
         }
     }
 }
@@ -384,7 +427,8 @@ pub(super) fn tell_kept(
 ) {
     for (route, held) in kept {
         if held {
-            hold(&route, mounted, state);
+            let saved = state.document(&route);
+            hold(route, saved, mounted);
             continue;
         }
         let Ok(id) = reads::document_id(&route.document) else {
@@ -636,8 +680,8 @@ impl Worker {
                 if listed.is_empty() {
                     break;
                 }
-                for route in &listed {
-                    hold(route, mounted, now);
+                for (route, saved) in read_parts(listed, now) {
+                    hold(route, saved, mounted);
                 }
             }
             for route in missing {
@@ -727,7 +771,7 @@ pub(super) fn hand_all_parts(
         if !is_part || mounted.parts.contains_key(route) || mounted.foreign.contains(route) {
             continue;
         }
-        hold(route, mounted, state);
+        hold(route.clone(), state.document(route), mounted);
         handed = handed.saturating_add(1);
     }
 }
