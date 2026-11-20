@@ -316,9 +316,9 @@ mod tests {
 
     #[test]
     fn every_operation_and_every_schema_it_names_is_described() {
-        let surface = "[[resources]]\nkind = \"notes.notebook\"\nlabel = \"Notebook\"\nversion = 1\n\n\
-                       [[resources.verbs]]\nid = \"rename\"\nkind = \"undoable\"\n\
-                       params = [{ name = \"title\", type = \"text\", required = true, schema = { type = \"string\" } }]\n";
+        // An app's surface travels in the form it is kept by: its JSON, every
+        // object's keys in order.
+        let surface = r#"{"resources":[{"kind":"notes.notebook","label":"Notebook","version":1,"verbs":[{"id":"rename","kind":"undoable","params":[{"name":"title","required":true,"schema":{"type":"string"},"type":"text"}]}]}]}"#;
         let described = document(&[App {
             id: "so.tilo.notes".into(),
             title: "Notes".into(),
