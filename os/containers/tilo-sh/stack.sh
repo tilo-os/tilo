@@ -16,6 +16,10 @@ set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd -- "$here/../../.." && pwd)
+# The build server keeps this checkout at a root of its own (/src), so a command that acts there
+# cannot name this script by this machine's path. It names it from the repository instead, which
+# is the same at both roots, and every such command starts there.
+self=${here#"$repo"/}/stack.sh
 
 usage() {
   cat <<EOF
@@ -2596,10 +2600,12 @@ remote_env() {
 
 # remote_cmd ARGS…: this stack's own stack.sh command where the stack is, so
 # the owner, the invites, the log and the mail are read and made in one place.
+# The script is named from the repository (`self`), since the build server keeps a copy of it at
+# a root of its own.
 remote_cmd() {
   local envs=()
   mapfile -t envs < <(remote_env)
-  ( cd "$repo" && "$cargo" exec -- env "${envs[@]}" bash "$here/stack.sh" "$@" )
+  ( cd "$repo" && "$cargo" exec -- env "${envs[@]}" bash "$self" "$@" )
 }
 
 # remote_shell COMMAND: a command on the build server, for what stack.sh has
@@ -2619,7 +2625,7 @@ remote_shell() {
 start_supervisor() {
   local envs=() inner
   mapfile -t envs < <(remote_env)
-  inner=$(printf 'bash %q ' "$here/stack.sh"; printf '%q ' "$@")
+  inner=$(printf 'bash %q ' "$self"; printf '%q ' "$@")
   ( cd "$repo" && setsid env "TILO_SH_STATE=$remote_state" "$cargo" exec \
       --forward "$(forward_tcp)" --forward "udp:$(forward_udp)" \
       -- env "${envs[@]}" bash -c "$inner && exec sleep infinity" ) \
