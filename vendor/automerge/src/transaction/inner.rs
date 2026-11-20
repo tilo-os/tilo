@@ -1537,30 +1537,34 @@ impl<'a> BatchInsertion<'a> {
         text_str: &str,
         marks: Option<Arc<MarkSet>>,
     ) -> SpliceResult {
-        let char_values: Vec<ScalarValue> = match self.doc.text_encoding() {
+        let encoding = self.doc.text_encoding();
+        let mut inserted_width = 0;
+        let mut elemid = after;
+        // TILO(run-splice): each letter's op is made straight from its
+        // slice of `text_str`, an ASCII letter borrowing it from a static
+        // table rather than a string of its own.
+        let mut letter = |letter: &str| {
+            let op = TxOp::insert_letter(
+                self.inner.next_id(),
+                container,
+                self.next_pos(),
+                letter_value(letter),
+                elemid,
+            );
+            inserted_width += encoding.width(letter);
+            elemid = ElemId(op.id());
+            self.inner.pending.push(op);
+        };
+        match encoding {
             // Arguably we should do this for all text, rather than just the grapheme cluster encoding.
             // However, at the time which I (Alex Good) am writing this code the existing implementation
             // uses the unicode code points and the grapheme cluster text encoding is a new thing. I
             // don't want to change the existing behaviour for the existing text encodings without a
             // little more thought.
-            TextEncoding::GraphemeCluster => {
-                text_str.graphemes(true).map(ScalarValue::from).collect()
-            }
-            _ => text_str.chars().map(ScalarValue::from).collect(),
-        };
-        let mut inserted_width = 0;
-        let mut elemid = after;
-        for char in char_values {
-            let op = TxOp::insert_val(
-                self.inner.next_id(),
-                container,
-                self.next_pos(),
-                char,
-                elemid,
-            );
-            inserted_width += op.bld.width(SequenceType::Text, self.doc.text_encoding());
-            elemid = ElemId(op.id());
-            self.inner.pending.push(op);
+            TextEncoding::GraphemeCluster => text_str.graphemes(true).for_each(&mut letter),
+            _ => text_str
+                .char_indices()
+                .for_each(|(at, c)| letter(&text_str[at..at + c.len_utf8()])),
         }
 
         if self.patch_log.is_active() {
@@ -1739,6 +1743,28 @@ struct SpliceResult {
     inserted_width: usize,
 }
 
+/// TILO(run-splice): a letter of a text as the value of its op: an ASCII
+/// letter borrowed from a table of them, any other one owned.
+fn letter_value(letter: &str) -> crate::op_set2::types::ScalarValue<'static> {
+    static ASCII: [u8; 128] = {
+        let mut table = [0; 128];
+        let mut at = 0;
+        while at < 128 {
+            table[at] = at as u8;
+            at += 1;
+        }
+        table
+    };
+    let borrowed = match letter.as_bytes() {
+        [byte] => ASCII
+            .get(usize::from(*byte)..=usize::from(*byte))
+            .and_then(|byte| std::str::from_utf8(byte).ok()),
+        _ => None,
+    };
+    let value = borrowed.map_or_else(|| Cow::Owned(letter.to_owned()), Cow::Borrowed);
+    crate::op_set2::types::ScalarValue::Str(value)
+}
+
 fn value_to_op_type(value: &hydrate::Value) -> (Option<ObjType>, OpType) {
     match value {
         hydrate::Value::Map(_) => (Some(ObjType::Map), OpType::Make(ObjType::Map)),
@@ -1849,7 +1875,7 @@ fn batch_bfs(
                 }
             }
             (ObjType::Text, hydrate::Value::Text(text)) => {
-                let text_str = text.to_string();
+                let text_str = text.as_str();
                 if text.written_marks().is_empty() {
                     batch.splice_text(container_meta, 0, ElemId::head(), &text_str, None);
                 } else {

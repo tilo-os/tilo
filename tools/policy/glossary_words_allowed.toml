@@ -1984,3 +1984,8 @@ reason = "The replica seed's existing field naming the document a replica opens,
 words = ["record"]
 identifiers = ["record"]
 paths = ["crates/agent/agent-session/tests/*"]
+
+[[allow]]
+reason = "A run of a run-length encoding: equal values side by side in one of Automerge's columns, as the vendored crate's work count names it."
+words = ["run"]
+paths = ["crates/doc/tilo-automerge/tests/new_text.rs"]

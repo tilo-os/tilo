@@ -274,18 +274,27 @@ impl MarkIndexColumn {
         self.data = new_data;
     }
 
-    pub(crate) fn extend(&mut self, index: usize, values: Vec<Option<MarkIndexBuilder>>) {
-        let mark_values: Vec<Option<MarkIdx>> = values
-            .into_iter()
-            .map(|v| match v? {
+    pub(crate) fn extend(
+        &mut self,
+        index: usize,
+        values: impl IntoIterator<Item = Option<MarkIndexBuilder>>,
+    ) {
+        // TILO(run-splice): the ops that are no mark's ends, as one run each.
+        let mut runs: Vec<hexane::Run<Option<MarkIdx>>> = Vec::new();
+        for value in values {
+            let value = value.map(|v| match v {
                 MarkIndexBuilder::Start(id, mark) => {
                     self.cache.insert(id, mark);
-                    Some(MarkIdx::Start(id))
+                    MarkIdx::Start(id)
                 }
-                MarkIndexBuilder::End(id) => Some(MarkIdx::End(id)),
-            })
-            .collect();
-        self.data.splice(index, 0, mark_values);
+                MarkIndexBuilder::End(id) => MarkIdx::End(id),
+            });
+            match runs.last_mut() {
+                Some(run) if run.value.is_none() && value.is_none() => run.count += 1,
+                _ => runs.push(hexane::Run { count: 1, value }),
+            }
+        }
+        self.data.splice_runs(index, 0, runs);
     }
 
     pub(crate) fn undo(&mut self, index: usize, values: Vec<Option<MarkIndexBuilder>>) {

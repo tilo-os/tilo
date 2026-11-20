@@ -37,6 +37,8 @@ mod load_hint;
 mod load_in_slices;
 #[path = "map_apply.rs"]
 mod map_apply;
+#[path = "new_text.rs"]
+mod new_text;
 #[path = "object_history.rs"]
 mod object_history;
 #[path = "patch_log_memory.rs"]

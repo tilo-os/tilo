@@ -25,6 +25,9 @@ pub struct Work {
     /// Changes rebuilt from the op set (`Automerge::get_changes` and its kin): each decodes every
     /// op the change made.
     pub rebuilt_changes: u64,
+    /// Runs of values the op set's columns took in: a splice of like ops,
+    /// such as the letters of a text written at once, gives each column one.
+    pub column_runs: u64,
 }
 
 thread_local! {
@@ -36,6 +39,7 @@ thread_local! {
             renumbered_objects: 0,
             object_ops: 0,
             rebuilt_changes: 0,
+            column_runs: 0,
         })
     };
 }
@@ -83,4 +87,9 @@ pub(crate) fn read_object_ops(ops: usize) {
 #[inline]
 pub(crate) fn rebuilt_changes(changes: usize) {
     count(|work| work.rebuilt_changes = work.rebuilt_changes.saturating_add(changes as u64));
+}
+
+#[inline]
+pub(crate) fn wrote_column_run() {
+    count(|work| work.column_runs = work.column_runs.saturating_add(1));
 }

@@ -643,3 +643,20 @@ on a large record spent seconds rebuilding changes it threw away.
 `ReadDoc::has_change`, with `Automerge::has_change` and `AutoCommit::has_change`,
 answers from the change graph's hash index. Pinned by
 `crates/doc/tilo-automerge/tests/has_change.rs`.
+
+# Tilo patch: a text written at once goes into the op set as runs
+
+Writing text makes one op per letter, and the op set took each op into each
+of its twenty-odd columns one value at a time: a list of 200 tracker issues
+with a 2 KB description each spliced 400,000 ops value by value, more than a
+third of the time it took to write them. `Columns::splice` now hands each
+column the ops' values as runs of equal values (and runs of equal steps in a
+delta column, such as the letters' counters), so a text's letters cost each
+column a comparison per letter and one write per run. A letter's op is made
+straight from its slice of the text, an ASCII letter borrowing its string
+from a static table. `hydrate::Text` keeps a text made from a string as that
+string until a patch edits it, so writing a new text builds no tree of its
+letters to read them back out of. The op set, the changes and the saved
+document are byte for byte the ones made before. The marked spots are
+`TILO(run-splice)` and `TILO(written-text)`; `Work::column_runs` counts the
+runs. Pinned by `crates/doc/tilo-automerge/tests/new_text.rs`.

@@ -5,13 +5,72 @@ use crate::{text_value::ConcreteTextValue, PatchAction, ScalarValue, TextEncodin
 
 use super::HydrateError;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub struct Text {
-    value: ConcreteTextValue,
+    value: Letters,
     marks: HashMap<String, ScalarValue>,
     /// TILO(batched-marks): the marks a batch that makes this text writes
     /// over it ([`Text::with_mark`]).
     written_marks: Vec<(Mark, ExpandMark)>,
+}
+
+/// TILO(written-text): a text made from a string keeps the string until a
+/// patch edits it, so writing a new text, or reading one into a hydrated
+/// value, costs no tree of its letters.
+#[derive(Clone)]
+enum Letters {
+    Written(String, TextEncoding),
+    Edited(ConcreteTextValue),
+}
+
+impl Letters {
+    fn make_string(&self) -> String {
+        match self {
+            Self::Written(text, _) => text.clone(),
+            Self::Edited(value) => value.make_string(),
+        }
+    }
+
+    fn edited(&mut self) -> &mut ConcreteTextValue {
+        if let Self::Written(text, encoding) = self {
+            *self = Self::Edited(ConcreteTextValue::new(text, *encoding));
+        }
+        match self {
+            Self::Edited(value) => value,
+            Self::Written(..) => unreachable!("made edited above"),
+        }
+    }
+
+    fn encoding(&self) -> TextEncoding {
+        match self {
+            Self::Written(_, encoding) => *encoding,
+            Self::Edited(ConcreteTextValue::Utf8CodeUnit(_)) => TextEncoding::Utf8CodeUnit,
+            Self::Edited(ConcreteTextValue::Utf16CodeUnit(_)) => TextEncoding::Utf16CodeUnit,
+            Self::Edited(ConcreteTextValue::CodePoint(_)) => TextEncoding::UnicodeCodePoint,
+            Self::Edited(ConcreteTextValue::Grapheme(_)) => TextEncoding::GraphemeCluster,
+        }
+    }
+}
+
+impl PartialEq for Letters {
+    /// The same letters, counted the same way.
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Edited(a), Self::Edited(b)) => a == b,
+            (Self::Written(a, _), Self::Written(b, _)) => {
+                a == b && self.encoding() == other.encoding()
+            }
+            _ => self.encoding() == other.encoding() && self.make_string() == other.make_string(),
+        }
+    }
+}
+
+impl PartialEq for Text {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+            && self.marks == other.marks
+            && self.written_marks == other.written_marks
+    }
 }
 
 impl std::fmt::Debug for Text {
@@ -33,6 +92,7 @@ impl Text {
         match patch {
             PatchAction::SpliceText { index, value, .. } => {
                 self.value
+                    .edited()
                     .splice_text_value(index, &value)
                     .map_err(|_| HydrateError::InvalidEncoding)?;
                 Ok(())
@@ -42,20 +102,22 @@ impl Text {
                 for value in values.iter() {
                     let value = super::Value::new(value.0.clone(), text_encoding);
                     let text = value.as_str();
-                    self.value.splice(index, text);
+                    self.value.edited().splice(index, text);
                     index += text_encoding.width(text);
                 }
                 Ok(())
             }
             PatchAction::PutSeq { index, value, .. } => {
-                self.value.remove(index);
+                let edited = self.value.edited();
+                edited.remove(index);
                 let value = super::Value::new(value.0, text_encoding);
-                self.value.splice(index, value.as_str());
+                edited.splice(index, value.as_str());
                 Ok(())
             }
             PatchAction::DeleteSeq { index, length } => {
+                let edited = self.value.edited();
                 for _ in 0..length {
-                    self.value.remove(index);
+                    edited.remove(index);
                 }
                 Ok(())
             }
@@ -74,7 +136,7 @@ impl Text {
     /// Text of these parts, as a model module and its host pass it.
     pub(crate) fn from_parts(text: &str, marks: HashMap<String, ScalarValue>) -> Self {
         Self {
-            value: ConcreteTextValue::new(text, TextEncoding::platform_default()),
+            value: Letters::Written(text.to_owned(), TextEncoding::platform_default()),
             marks,
             written_marks: Vec::new(),
         }
@@ -82,7 +144,7 @@ impl Text {
 
     pub fn new<S: AsRef<str>>(text_encoding: TextEncoding, text: S) -> Self {
         Self {
-            value: ConcreteTextValue::new(text.as_ref(), text_encoding),
+            value: Letters::Written(text.as_ref().to_owned(), text_encoding),
             marks: Default::default(),
             written_marks: Vec::new(),
         }
@@ -99,6 +161,15 @@ impl Text {
     pub fn with_mark(mut self, mark: Mark, expand: ExpandMark) -> Self {
         self.written_marks.push((mark, expand));
         self
+    }
+
+    /// TILO(written-text): the text, borrowed when it was made from a
+    /// string and not edited since.
+    pub(crate) fn as_str(&self) -> std::borrow::Cow<'_, str> {
+        match &self.value {
+            Letters::Written(text, _) => std::borrow::Cow::Borrowed(text),
+            Letters::Edited(value) => std::borrow::Cow::Owned(value.make_string()),
+        }
     }
 
     /// TILO(batched-marks): the marks [`Text::with_mark`] added.
@@ -122,7 +193,7 @@ impl Display for Text {
 impl From<ConcreteTextValue> for Text {
     fn from(value: ConcreteTextValue) -> Self {
         Self {
-            value,
+            value: Letters::Edited(value),
             marks: Default::default(),
             written_marks: Vec::new(),
         }
