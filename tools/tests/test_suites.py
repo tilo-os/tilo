@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,6 +46,8 @@ class ParseTests(unittest.TestCase):
             manifest = suites.load(ROOT)
             self.assertIn("os/tests/containerfile_copy_invariants.sh", manifest.suites())
             self.assertIn("os/tests/internal_bundle_test.py", manifest.suites())
+            self.assertEqual(
+                manifest.unrequired_checks["os/containers/tilo-lounge/test-e2e.sh"], "e2e")
         with self.subTest(phase='rejects duplicates unknown keys and unsafe paths'):
             for text in (
                 MANIFEST + '[[unrequired]]\nsuite = "os/tests/a.sh"\nreason = "again"\n',
@@ -58,6 +60,9 @@ class ParseTests(unittest.TestCase):
                 '[[group]]\nname = "x"\ninputs = []\nsuites = ["os/a.sh"]\n',
                 '[[group]]\nname = "x"\ninputs = ["os/"]\nsuites = ["os/a.sh"]\nextra = 1\n',
                 '[[unrequired]]\nsuite = "os/a.sh"\nreason = " "\n',
+                '[[unrequired]]\nsuite = "os/a.sh"\nreason = "x"\ncheck = "Not A Check"\n',
+                '[[unrequired]]\nsuite = "os/a.sh"\nreason = "x"\ncheck = ""\n',
+                '[[unrequired]]\nsuite = "os/a.sh"\nreason = "x"\nextra = 1\n',
                 '[[covered]]\nsuite = "os/a.sh"\n',
                 '[[covered]]\nsuite = "os/a.sh"\ncheck = "Not A Check"\n',
                 '[[covered]]\nsuite = "os/a.sh"\nby = "os/tests/b.py"\ncheck = "sdk-python"\n',
@@ -111,6 +116,8 @@ class AuditTests(unittest.TestCase):
                 "scripts/tests/test_c.py": "print('ok')\n",
                 "os/tests/secure.sh": "true\n",
                 "os/tests/native.py": "\n",
+                "os/tests/serial_runner.sh": "true\n",
+                "sdk/python/src/tilo/types/speed_test.py": "\n",
                 "tools/tests/cargo_shim.sh": "true\n",
                 "tools/tests/test_discovered.py": "\n",
             }
@@ -189,6 +196,49 @@ check = "sdk-python"
             problems = self.audit(
                 dict(files, **{"t.toml": '[[check]]\nname = "other"\nrun = "true"\n'}), manifest)
             self.assertTrue(any("sdk-python" in problem for problem in problems), problems)
+
+    def test_an_unrequired_suite_names_the_t_check_that_executes_it(self):
+        manifest = MANIFEST.replace('reason = "boots a VM"',
+                                    'reason = "boots a VM"\ncheck = "vm"')
+        self.assertEqual(self.audit(
+            {"t.toml": '[[check]]\nname = "vm"\nrun = "bash os/tests/vm.sh"\n'}, manifest), [])
+        # Any trigger will do: the suite is not required, so its check need not execute for a change.
+        self.assertEqual(self.audit(
+            {"t.toml": '[[check]]\nname = "vm"\nrun = "bash os/tests/vm.sh"\non = ["dispatch"]\n'},
+            manifest), [])
+        with self.subTest(phase="a check t.toml does not declare"):
+            problems = self.audit(
+                {"t.toml": '[[check]]\nname = "other"\nrun = "bash os/tests/vm.sh"\n'}, manifest)
+            self.assertTrue(any("check vm is not a check t.toml declares" in problem
+                                for problem in problems), problems)
+        with self.subTest(phase="a check that executes something else"):
+            problems = self.audit(
+                {"t.toml": '[[check]]\nname = "vm"\nrun = "bash os/tests/b.py"\n'}, manifest)
+            self.assertTrue(any("check vm does not execute it" in problem
+                                for problem in problems), problems)
+        with self.subTest(phase="the one script a check executes names it"):
+            self.assertEqual(self.audit({
+                "t.toml": '[[check]]\nname = "vm"\nrun = "bash tools/ci/vm.sh"\n',
+                "tools/ci/vm.sh": "bash os/tests/vm.sh\n"}, manifest), [])
+        with self.subTest(phase="a matrix instance names its family"):
+            self.assertEqual(self.audit({
+                "t.toml": '[[check]]\nname = "vm-{arch}"\nrun = "bash os/tests/vm.sh"\n'
+                          '[check.matrix]\narch = ["x86_64", "aarch64"]\n',
+            }, manifest.replace('check = "vm"', 'check = "vm-x86_64"')), [])
+
+    def test_a_dispatcher_may_execute_a_neighbouring_suite_by_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "os/containers/flows").mkdir(parents=True)
+            (root / "os/containers/flows/steps.sh").write_text(
+                'exec bash "$here/test-wait-list.sh" "$bundle"\n')
+            self.assertTrue(suites.executes_suite(
+                root, "bash os/containers/flows/steps.sh /target/out",
+                "os/containers/flows/test-wait-list.sh"))
+            # A script of another directory does not stand for the suite.
+            self.assertFalse(suites.executes_suite(
+                root, "bash os/containers/flows/steps.sh /target/out",
+                "os/containers/elsewhere/test-wait-list.sh"))
 
     def test_cargo_integration_driver_is_a_covering_check(self):
         manifest = MANIFEST.replace('by = "os/tests/b.py"', 'by = "crates/native/tests/oracle.rs"')
@@ -462,6 +512,26 @@ class CargoReaderTests(unittest.TestCase):
             subprocess.run([*git, "commit", "-q", "-m", "base"], cwd=root, check=True)
             (root / "gone.rs").unlink()
             self.assertEqual(suites.tracked_files(root), ["kept.rs"])
+
+
+class ReportTests(unittest.TestCase):
+    def report(self, manifest: str) -> tuple[str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(suites, "load", return_value=suites.parse(manifest)), \
+                redirect_stdout(stdout), redirect_stderr(stderr):
+            self.assertEqual(suites.main(["report"]), 0)
+        return stdout.getvalue(), stderr.getvalue()
+
+    def test_report_counts_unrequired_suites_without_a_check(self):
+        self.assertEqual(self.report(MANIFEST), ("os/tests/vm.sh\n", "1 of 1 unrequired suites "
+                                                 "name no t check yet\n"))
+        with_check = MANIFEST.replace('reason = "boots a VM"', 'reason = "boots a VM"\ncheck = "vm"')
+        self.assertEqual(self.report(with_check)[0], "")
+        self.assertIn("0 of 1 unrequired suites name no t check yet", self.report(with_check)[1])
+        # A bare invocation reports too.
+        with patch.object(suites, "load", return_value=suites.parse(MANIFEST)), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(suites.main([]), 0)
 
 
 class GroupSelectionTests(unittest.TestCase):

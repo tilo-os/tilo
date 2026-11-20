@@ -122,10 +122,10 @@ identifiers = ["run", "RUN"]
 paths = ["crates/dev/tilo-vm/guide/*"]
 
 [[allow]]
-reason = "A check's `run` key: the shell command t, or the policy suite, starts for it."
+reason = "A check's `run` key: the shell command t, or the policy suite, starts for it. The suite tool reads it to hold a check to the suite its command names, and its test writes it."
 words = ["run"]
 identifiers = ["run"]
-paths = ["t.toml", "tools/policy/steps.toml"]
+paths = ["t.toml", "tools/policy/steps.toml", "tools/ci/suites.py", "tools/tests/test_suites.py"]
 
 [[allow]]
 reason = "The hosted-VM service's load of the machine running its VMs, which the glossary keeps as host."

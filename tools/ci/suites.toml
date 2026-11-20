@@ -1,7 +1,7 @@
 # Test suites outside Cargo, and when the required CI checks run them.
 #
-# Every file that looks like a test (see tools/ci/suites.py: SCOPE) is guarded by
-# exactly one of:
+# Every file that looks like a test (see tools/ci/suites.py: in_scope) is
+# guarded by exactly one of:
 #
 #   * tools/security-boundary-invariants.txt or tools/policy/run.sh, which run
 #     on every applicable change;
@@ -12,7 +12,12 @@
 #     with `check = "<name>"`, by the named t check, which runs it in its own
 #     image on every change (a check that runs on idle or when asked is not
 #     required, so its suite is [[unrequired]]); or
-#   * an [[unrequired]] entry with the reason it cannot be a required check.
+#   * an [[unrequired]] entry with the reason it cannot be a required check,
+#     and, where a t check already runs it, `check = "<name>"` naming that
+#     check whatever its trigger: a per-arch family is named by one
+#     architecture's check (`image-release-tools-x86_64`). `check` is not
+#     required yet; `tools/ci/suites.py report` counts the suites still
+#     without one.
 #
 # `tools/ci/suites.py check` (part of tools/policy/run.sh) rejects a
 # test-shaped file in none of these, so a new suite cannot silently stay
@@ -61,6 +66,12 @@ by = "tools/tests/test_local_affected.py"
 
 [[covered]]
 suite = "tools/test-env-setup.sh"
+by = "tools/tests/test_test_environment.py"
+
+# Not a suite: the environment a check hands its command, which that test holds
+# to what it sets.
+[[covered]]
+suite = "tools/test-env.sh"
 by = "tools/tests/test_test_environment.py"
 
 [[group]]
@@ -1733,26 +1744,32 @@ reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Pyth
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
 reason = "needs the built web entry image"
+check = "image-web-entry"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-e2e.sh"
 reason = "the e2e check runs it on main's newest head with spare room (`on = [\"idle\"]`), bisecting a failure to the commit that broke it, and tilo-sh-admits-a-page runs its entry flow there too: with the Lounge check's release builds it needs, about 2 core-hours a head"
+check = "e2e"
 
 [[unrequired]]
 suite = "os/containers/tilo-sh/test-program.sh"
 reason = "needs a whole tilo.sh stack of its own under bwrap, from the built programs, the font catalog and Caddy; the tilo-sh-answers-a-program check brings one up for it, nested, when named"
+check = "tilo-sh-answers-a-program"
 
 [[unrequired]]
 suite = "os/containers/tilo-sh/test-vm-host.sh"
 reason = "needs root, KVM, loop devices and the built VM host and hosted guest images; the tilo-sh-vm-host check runs it in a VM of its own on dispatch"
+check = "tilo-sh-vm-host"
 
 [[unrequired]]
 suite = "os/containers/tilo-sh/test-peer-handover.sh"
 reason = "needs a whole tilo.sh stack and a FUSE mount, and the tilo-sh-programs build it needs costs more than a change should; the peer-handover check runs it on main's idle and when named"
+check = "peer-handover"
 
 [[unrequired]]
 suite = "os/containers/tilo-sh/test-peer-kill-midwrite.sh"
 reason = "needs a whole tilo.sh stack and a FUSE mount, and minutes for the bulk write and its convergence; the peer-kill-midwrite check brings one up when named"
+check = "peer-kill-midwrite"
 
 [[unrequired]]
 suite = "os/containers/tilo-sh/test-warm-restart.sh"
@@ -1760,39 +1777,53 @@ reason = "restarts a stack a person brought up on the build server and reads the
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-wait-list.sh"
-reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, and a mail sink it runs itself; the wait-list check runs it in its image"
+reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, and a mail sink it runs itself; the e2e check's wait-list flow runs it in its image"
+check = "e2e"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-onboarding.sh"
 reason = "one flow of the e2e check, on a whole tilo.sh of its own (the stack, whose entry takes people by invitation and whose mail goes to a sink it reads): it needs the built web desktop bundle, the stack's programs, context, site and Caddy, headless Chromium, the tilo command, and minutes of a machine's walls; the e2e check runs it beside the other flows"
+check = "e2e"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-page-tour.sh"
 reason = "a newcomer's tour kept as pictures for a person to review, judging nothing on looks; needs the built web desktop bundle, headless Chromium and the built server, CLI and crypto programs; the page-tour check runs it on request"
+check = "page-tour"
+
+[[unrequired]]
+suite = "os/containers/tilo-lounge/test-page-notes.sh"
+reason = "walks a workspace's page, its Notes and every app it opens in a headless browser against the Lounge, keeping what each step saw and a picture of it for a reviewer; needs the built web desktop bundle, the built server, crypto and font programs; the page-notes check runs it on request"
+check = "page-notes"
+
+[[unrequired]]
+suite = "os/containers/tilo-lounge/test-page-reopen.sh"
+reason = "walks a page whose app request is held past the server's wait, keeping what each step saw; needs the built web desktop bundle, the built server, crypto and font programs; the page-reopen check runs it on request"
+check = "page-reopen"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-image.sh"
 reason = "needs the built Lounge image"
+check = "image-lounge"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
 reason = "needs the built registry-server image"
+check = "test-image-registry-server"
 
 [[unrequired]]
 suite = "os/containers/tilo-vm-host/test-image.sh"
 reason = "inspects the built VM host image with buildah as root, so it needs the archive image-vm-host writes and a micro-VM step"
+check = "test-image-vm-host"
 
 [[unrequired]]
 suite = "os/tests/host_image.sh"
 reason = "inspects the built server image with buildah as root, so it needs the archive image-host writes and a micro-VM step"
-
-[[unrequired]]
-suite = "os/tests/serial_runner.sh"
-reason = "the runner os/tests/boot_assessment_rollback.sh takes on a machine with no sshd; the host-assurance check runs it against the booted server image's serial console, which it needs"
+check = "test-image-host"
 
 [[unrequired]]
 suite = "os/containers/tilo-api/test-image.sh"
 reason = "starts the built API server image with buildah as root in a loopback network, so it needs the archive image-api writes and a micro-VM step"
+check = "test-image-api"
 
 [[unrequired]]
 suite = "crates/session/tilo-ntfs-helper/tests/test_stage_install.py"
@@ -1827,6 +1858,7 @@ workflow = "release-desktop.yml"
 [[unrequired]]
 suite = "os/dev/test-encrypted-install.sh"
 reason = "boots VMs (KVM) from a built installer image"
+check = "encrypted-install-tpm-x86_64"
 
 [[unrequired]]
 suite = "os/tests/validation_drive_qemu.sh"
@@ -1839,6 +1871,7 @@ reason = "boots the guarded dev disk in a VM and signs in"
 [[unrequired]]
 suite = "os/dev/test-nearby-pairing.sh"
 reason = "boots three VMs (KVM) from the guarded dev disk, the third pairing through a device without the identity key; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock; --wake (os/dev/nearby-wake-phase.sh) also proves suspend, wake and link-cut reconnect"
+check = "nearby-unlock-x86_64"
 
 [[unrequired]]
 suite = "os/dev/test-device-admin-reach.sh"
@@ -1864,6 +1897,7 @@ reason = "boots VMs (KVM) from a built installer image"
 [[unrequired]]
 suite = "os/dev/test-server-plan-install-cycle.sh"
 reason = "boots two VMs (KVM): a retained Fedora that stages and installs Tilo Server unattended from a plan, and the dev disk's headless owner session that answers its enrolment and unlock"
+check = "server-plan-install-cycle"
 
 [[unrequired]]
 suite = "os/dev/test-measured-boot.sh"
@@ -1896,6 +1930,7 @@ reason = "needs a built image root (OS_ROOT)"
 [[unrequired]]
 suite = "os/tests/boot_performance_check.sh"
 reason = "needs a running installed image"
+check = "dev-disk-boot-diagnostic-x86_64"
 
 [[unrequired]]
 suite = "os/tests/boot_units_check.sh"
@@ -1940,6 +1975,7 @@ reason = "needs the disposable root native container with Cosign and Podman"
 [[unrequired]]
 suite = "os/tests/release_trust_chain_native.py"
 reason = "needs skopeo and the OpenSSL CLI, which the hermetic ci-fast image lacks"
+check = "release-trust"
 
 [[unrequired]]
 suite = "os/tests/development_rebind_native.py"
@@ -2054,19 +2090,23 @@ reason = "runs inside a booted guest, as root"
 suite = "os/tests/boot_assessment_rollback.sh"
 reason = "stages an update on a booted disk and reboots it until the boot loader falls back"
 workflow = "dev-disk-boot-diagnostic.yml"
+check = "dev-disk-boot-diagnostic-x86_64"
 
 [[unrequired]]
 suite = "os/tests/shared_disk_esp.sh"
 reason = "runs inside a booted guest, as root, and repartitions its disk"
 workflow = "dev-disk-boot-diagnostic.yml"
+check = "dev-disk-boot-diagnostic-x86_64"
 
 [[unrequired]]
 suite = "os/tests/development_signing_native.sh"
 reason = "needs a privileged node for nested Podman"
+check = "development-signing-x86_64"
 
 [[unrequired]]
 suite = "os/tests/release_tools_image.sh"
 reason = "needs the built release-tools image"
+check = "image-release-tools-x86_64"
 
 [[unrequired]]
 suite = "os/tests/registry_update_check.sh"
@@ -2095,10 +2135,12 @@ reason = "runs inside a booted guest after a greetd login"
 [[unrequired]]
 suite = "os/tests/staging_helper_loop.sh"
 reason = "destructive, root: loop devices"
+check = "staging-loop"
 
 [[unrequired]]
 suite = "os/tests/staging_reclaim_loop.sh"
 reason = "destructive, root: loop devices"
+check = "staging-loop"
 
 [[unrequired]]
 suite = "os/tests/system_extension_boot_pack_stage.sh"
@@ -2123,6 +2165,7 @@ reason = "exercises a Windows-only helper (msvcrt, os.O_BINARY); needs a Windows
 [[unrequired]]
 suite = "os/tests/tilo-session-lifecycle.sh"
 reason = "drives a VM over SSH"
+check = "real-fuse"
 
 [[unrequired]]
 suite = "os/tests/named_public_trust_context.sh"
@@ -2131,10 +2174,7 @@ reason = "needs a container engine and builds images in it; run by hand where a 
 [[unrequired]]
 suite = "tools/ci/test-vendored-crates.sh"
 reason = "compiles each patched vendored crate's own tests"
-
-[[unrequired]]
-suite = "tools/test-env.sh"
-reason = "the test environment for commands that are not a nextest run, not a suite of its own"
+check = "vendored"
 
 [[unrequired]]
 suite = "os/tests/trust_input_copy_equivalence.py"
@@ -2270,6 +2310,7 @@ readers = ["crates/packaging/install/tests/runtime_package.rs"]
 [[unrequired]]
 suite = "tools/ci/windows/wine-test.sh"
 reason = "runs the imager's Windows unit-test executable under Wine; needs the cross-built test binary"
+check = "wine/windows-x86_64-tests"
 
 [[group]]
 name = "cloud-rystic-ci"
@@ -2279,6 +2320,7 @@ suites = ["tools/ci/test_rystic_ci.py"]
 [[unrequired]]
 suite = "tools/ci/run-rystic-ci.sh"
 reason = "metered integration runner"
+check = "cloud-rystic"
 
 [[cargo]]
 package = "tilo-cli"
@@ -2342,13 +2384,10 @@ suite = "sdk/python/tests/test_many.py"
 check = "sdk-python"
 
 [[unrequired]]
-suite = "sdk/python/src/tilo/types/speed_test.py"
-reason = "no test: the generated SDK types of the Speed Test app, named after it; sdk-types checks it is current"
-
-[[unrequired]]
 suite = "crates/server/tilo-server/src/web/page/page.test.mjs"
 reason = "imports bun:test, which node --test cannot run; the page's handshake is exercised by the server's Rust tests, and a bun runner for it is not in the ci-fast image"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-user-stories.sh"
 reason = "walks a fresh tilo.sh stack in fresh browser profiles and judges each recording with a model at Anthropic's API; its checks run on the schedule and by dispatch, not on a change"
+check = "user-stories/files-in"
