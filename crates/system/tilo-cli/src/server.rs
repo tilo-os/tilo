@@ -17,7 +17,7 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_resource,
 };
 use tilo_actions::{ActionAddress, InvocationId};
-use tilo_device_identity::{IdentityPaths, persist};
+use tilo_device_identity::persist;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::servers::admin_workspace_id;
 use tilo_server_protocol::transport::{
@@ -182,7 +182,7 @@ fn list() -> Result<std::process::ExitCode> {
 fn saved_recovery_keys() -> Result<Vec<tilo_session_client::machines::MachineRecovery>> {
     let state = tilo_paths::state_dir().context("this account has no state directory (no HOME)")?;
     let dir = identity::dir()?;
-    let paths = IdentityPaths::under(&dir);
+    let paths = identity::device_paths(&dir);
     let user = persist::read_public_key(&paths.user_pubkey)
         .context("this computer holds no identity; there is no store to read")?;
     let cert = persist::read_device_cert(&paths.device_cert_for_user(&user))
@@ -374,10 +374,10 @@ fn opened_at(at_ns: u64) -> String {
 /// action on the person's Servers workspace that asks it.
 fn ask(server: &str, operation: &ServerOperation) -> Result<ServerOperationResult> {
     let dir = identity::dir()?;
-    let paths = IdentityPaths::under(&dir);
+    let paths = identity::device_paths(&dir);
     let user = persist::read_public_key(&paths.user_pubkey)
         .context("this computer holds no identity; start `tilo login` first")?;
-    let signing_key = persist::read_device_key(&paths.device_privkey)?;
+    let signing_key = persist::load_device_key(&paths)?;
     let cert = persist::read_device_cert(&paths.device_cert_for_user(&user))
         .or_else(|_| persist::read_device_cert(&paths.device_cert))?;
     let peer = find(&dir, server)?;

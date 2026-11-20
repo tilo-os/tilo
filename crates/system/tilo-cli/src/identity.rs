@@ -93,7 +93,7 @@ pub fn dir() -> Result<PathBuf> {
 /// The device key and its certificates: the tree this computer's session reads
 /// (`TILO_IDENTITY_ROOT`), which a profile may keep apart from the identity
 /// directory, else the identity directory's own.
-fn device_paths(dir: &std::path::Path) -> IdentityPaths {
+pub(crate) fn device_paths(dir: &std::path::Path) -> IdentityPaths {
     match std::env::var_os("TILO_IDENTITY_ROOT").filter(|root| !root.is_empty()) {
         Some(root) if std::path::Path::new(&root) != dir => IdentityPaths::under(root),
         _ => IdentityPaths::under(dir),
