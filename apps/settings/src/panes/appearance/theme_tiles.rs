@@ -56,6 +56,9 @@ fn tile_geometry(width: f64, tiles: usize, gap: f64, narrowest: f64) -> (usize, 
     (columns, tile, (tile * TILE_ASPECT).round())
 }
 
+/// The action target of the look `<id>`'s radio button.
+const LOOK_TARGET: &str = "look:";
+
 pub struct ThemeTiles {
     tiles: Vec<Tile>,
     /// The id of the look shown chosen; a theme of the person's own matches none.
@@ -596,6 +599,28 @@ impl Widget for ThemeTiles {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
+        // Each look is a radio button of its own, where it is drawn: a reader moves
+        // between them and hears which is chosen, and a pointer finds them by name.
+        let count = self.tiles.len();
+        let looks = self
+            .tiles
+            .iter()
+            .enumerate()
+            .map(|(index, tile)| {
+                AccessNode::new(Role::RadioButton)
+                    .with_name(Self::label_of(tile.look.id()))
+                    .with_action_target(format!("{LOOK_TARGET}{}", tile.look.id()))
+                    .with_bounds(self.tile_rect(index))
+                    .with_position(index + 1, count)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(self.enabled)
+                            .selected(self.chosen == tile.look.id())
+                            .focused(self.focused && self.cursor == index)
+                            .disabled(!self.enabled),
+                    )
+            })
+            .collect();
         Some(
             AccessNode::new(Role::Group)
                 .with_name(t("settings-appearance-look"))
@@ -605,8 +630,45 @@ impl Widget for ThemeTiles {
                         .focusable(self.enabled)
                         .focused(self.focused)
                         .disabled(!self.enabled),
-                ),
+                )
+                .with_children(looks),
         )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [index] = path else {
+            return None;
+        };
+        (*index < self.tiles.len()).then(|| self.tile_rect(*index))
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ModelPath,
+    ) -> bool {
+        let Some(index) = target
+            .strip_prefix(LOOK_TARGET)
+            .and_then(|id| self.tiles.iter().position(|tile| tile.look.id() == id))
+        else {
+            return false;
+        };
+        match action {
+            ui::a11y::Action::Focus => {
+                self.focused = true;
+                self.cursor = index;
+                self.dirty = true;
+                true
+            }
+            ui::a11y::Action::Activate => {
+                self.choose(index);
+                self.dirty = true;
+                true
+            }
+            _ => false,
+        }
     }
 
     fn perform_action(
@@ -719,6 +781,34 @@ mod tests {
             tiles.rect = Rect::new(0.0, 0.0, 300.0, 400.0);
             assert!(tiles.tile_rect(2).y0 > tiles.tile_rect(0).y1);
             assert_eq!(tiles.tile_at(tiles.tile_rect(3).center()), Some(3));
+        }
+
+        phase each_look_is_a_radio_button_a_reader_hears;
+        {
+            let mut tiles = ThemeTiles::new("paper", None);
+            tiles.rect = Rect::new(0.0, 0.0, 900.0, 400.0);
+            let node = tiles.accessibility().unwrap();
+            let looks = &node.children;
+            assert_eq!(looks.len(), Look::ALL.len());
+            for (index, look) in looks.iter().enumerate() {
+                assert_eq!(look.role, ui::a11y::Role::RadioButton);
+                assert_eq!(look.name.as_deref(), Some(ThemeTiles::label_of(Look::ALL[index].id()).as_str()));
+                assert_eq!(look.state.selected, Look::ALL[index] == Look::Paper);
+                assert_eq!(tiles.synthetic_accessibility_rect(&[index]), Some(tiles.tile_rect(index)));
+            }
+            let dusk = looks
+                .iter()
+                .find(|look| look.name.as_deref() == Some(ThemeTiles::label_of(Look::Dusk.id()).as_str()))
+                .and_then(|look| look.action_target.clone())
+                .unwrap();
+            let mut doc = automerge::AutoCommit::new();
+            assert!(tiles.perform_semantic_action(
+                &dusk,
+                &ui::a11y::Action::Focus,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ));
+            assert_eq!(tiles.cursor, Look::ALL.iter().position(|look| *look == Look::Dusk).unwrap());
         }
     }
 }
