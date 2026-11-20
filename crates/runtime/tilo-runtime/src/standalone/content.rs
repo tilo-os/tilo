@@ -88,7 +88,7 @@ impl ContentPeers for MemberPeers {
             return;
         };
         let message = NeighbourMsg::DocumentContentWant {
-            requester: peer_handle(&self.0.operator()),
+            requester: peer_handle(&self.0.device_cert().device_public_key),
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id.clone(),
             hash: hash.to_owned(),
