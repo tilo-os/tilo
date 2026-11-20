@@ -85,15 +85,23 @@ impl Process {
             .socket
             .set_read_timeout(Some(START_TIMEOUT))
             .map_err(|error| error.to_string())?;
-        match process.receive() {
-            Ok(Reply::Ready { version }) if version == PROTOCOL_VERSION => {}
-            Ok(Reply::Unconfined(reason)) => {
+        match FRAMING.read_value(&mut process.socket) {
+            Ok(Some(Reply::Ready { version })) if version == PROTOCOL_VERSION => {}
+            Ok(Some(Reply::Unconfined(reason))) => {
                 return Err(format!(
                     "the app worker could not confine itself, so no app runs: {reason}"
                 ));
             }
-            Ok(_) => return Err("the app worker speaks another protocol".into()),
-            Err(_) => return Err(not_serving()),
+            Ok(Some(_)) => return Err("the app worker speaks another protocol".into()),
+            // It ended without a word: this executable is no app worker when asked to be one.
+            Ok(None) => return Err(not_serving()),
+            // It is still starting (a machine too busy to start it in time), or its socket broke.
+            Err(error) => {
+                return Err(format!(
+                    "the app worker was not ready within {} s: {error}",
+                    START_TIMEOUT.as_secs()
+                ));
+            }
         }
         process
             .socket
