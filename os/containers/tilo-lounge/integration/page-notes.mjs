@@ -44,20 +44,22 @@ const until = async (expression, timeout = 10_000) => {
 
 try {
   // What the page's own load put on the wire: the document with its script
-  // inlined, and nothing else unless something else was fetched.
-  const wire = {doc: 0, script: 0, requests: [], track: new Map()};
+  // inlined, and nothing else unless something else was fetched. What the
+  // site's entry costs before it is read is counted the same way, so the web
+  // build's own size has a number.
+  const wire = {doc: 0, script: 0, other: 0, requests: [], track: new Map()};
   browser.on(({sessionId, method, params}) => {
     if (sessionId !== tab?.sessionId) return;
     if (method === 'Network.responseReceived') {
       wire.requests.push(`${params.type} ${new URL(params.response.url).pathname}`);
-      if (params.type === 'Document') wire.track.set(params.requestId, 'doc');
-      else if (params.type === 'Script') wire.track.set(params.requestId, 'script');
+      wire.track.set(params.requestId,
+        params.type === 'Document' ? 'doc' : params.type === 'Script' ? 'script' : 'other');
     }
     if (method === 'Network.loadingFinished' && wire.track.has(params.requestId)) {
       wire[wire.track.get(params.requestId)] += params.encodedDataLength;
     }
   });
-  const resetWire = () => { wire.doc = 0; wire.script = 0; wire.requests = []; wire.track = new Map(); };
+  const resetWire = () => { wire.doc = 0; wire.script = 0; wire.other = 0; wire.requests = []; wire.track = new Map(); };
 
   // The entry offers the way in on its card, pressed as a person presses it.
   const arrive = async ({context, label}) => {
@@ -68,6 +70,9 @@ try {
     // a desktop sees every column beside the others.
     await sized(WIDE);
     tab.log.length = 0;
+    // What the entry itself costs to read, before it hands the browser over:
+    // the web build's own size, as a first visit pays it.
+    resetWire();
     await tab.navigate(site);
     for (let i = 0; i < 240; i++) {
       const state = await tab.evaluate(`(() => {
@@ -79,6 +84,9 @@ try {
       if (state === 'done' || state === 'stopped') { step(`${label}: arrival`, {state, ms: i * 250}); break; }
       await sleep(250);
     }
+    step(`${label}: what the entry costs`, {
+      documentBytes: wire.doc, scriptBytes: wire.script, otherBytes: wire.other, requests: wire.requests.length,
+    });
     step(`${label}: devices this browser kept`, {
       kept: await tab.evaluate(`(() => { try { return Object.keys(JSON.parse(localStorage.getItem('tilo-browser-devices') ?? '{}')?.exact ?? {}).length; } catch { return 0; } })()`),
     });
@@ -127,6 +135,7 @@ try {
       marked: Math.round(await tab.evaluate(`performance.getEntriesByName('tilo-page-shown')[0]?.startTime ?? 0`).catch(() => 0)),
       documentBytes: wire.doc,
       scriptBytes: wire.script,
+      otherBytes: wire.other,
       requests: wire.requests.slice(0, 8),
     });
     if (shown === null) problems.push(`${label}: the page never showed`);
@@ -213,6 +222,7 @@ try {
     ms: reloaded,
     documentBytes: wire.doc,
     scriptBytes: wire.script,
+    otherBytes: wire.other,
     marked: Math.round(await tab.evaluate(`performance.getEntriesByName('tilo-page-shown')[0]?.startTime ?? 0`).catch(() => 0)),
   });
   const afterReload = await look('07-reloaded');
