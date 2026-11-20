@@ -185,7 +185,9 @@ impl Asked {
 
 /// The media keys of `device`'s own streams in `workspace`, as `keys` (this
 /// host's workspace keys) derive them at the current epoch, sealed to
-/// `device`.
+/// `device`. The host opens the workspace's group when nothing sealed opened
+/// it yet, as a sealed write does: a workspace whose first call comes before
+/// its first sealed record still has keys to lend.
 async fn lend(
     keys: &dyn tilo_workspace_service::workspaces::GroupKeys,
     workspace: &str,
@@ -193,7 +195,7 @@ async fn lend(
 ) -> Result<serde_json::Value, ActionCallError> {
     let unavailable = |reason: String| ActionCallError::Unavailable { reason };
     let content = keys
-        .group_keys(workspace, collab_types::EVERY_MEMBER, false)
+        .group_keys(workspace, collab_types::EVERY_MEMBER, true)
         .await
         .ok_or_else(|| unavailable("this host holds no keys of the workspace's media".to_owned()))?
         .map_err(|error| {
