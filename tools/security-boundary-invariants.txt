@@ -43,6 +43,7 @@ os/tests/update_channel.sh
 os/tests/update_subprocess_invariants.sh
 os/tests/release_security_invariants.sh
 os/tests/selinux_policy_store_invariants.sh
+os/tests/selinux_policy_refresh.sh
 os/tests/first_boot_service_readiness.sh
 os/tests/release_freshness_security.sh
 os/tests/installer_target_invariants.sh

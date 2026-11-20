@@ -208,6 +208,7 @@ COPY os/etc/profile.d/tilo-apps.sh /etc/profile.d/tilo-apps.sh
 # never at boot: it is the one writer of the vendor's threshold files.
 COPY \
     os/usr/lib/systemd/system/fs.service \
+    os/usr/lib/systemd/system/tilo-selinux-policy.service \
     os/usr/lib/systemd/system/tilo-store-volume.service \
     os/usr/lib/systemd/system/tilo-store-volume-after-signin.path \
     os/usr/lib/systemd/system/tilo-store-loop.service \
@@ -293,6 +294,7 @@ COPY --chmod=0755 \
     os/usr/libexec/tilo-clock-floor \
     os/usr/libexec/tilo-battery-cap \
     os/usr/libexec/tilo-authselect-unchanged \
+    os/usr/libexec/tilo-selinux-policy \
     /usr/libexec/
 # The graphical-session user target. (`systemctl --global enable` further down
 # resolves each unit file at build time, so a unit that was never copied in
@@ -761,6 +763,7 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
     systemctl enable tilo-network-start.service && \
     systemctl enable tilo-extension-activate.service tilo-extension-refresh.timer && \
     systemctl enable tilo-extension-trial.service tilo-extension-booted.service && \
+    systemctl enable tilo-selinux-policy.service && \
     systemctl enable tilo-sandbox-view.service tilo-sandbox-view.path && \
     systemctl enable tilo-runtime-resident.service && \
     systemctl enable NetworkManager-dispatcher.service

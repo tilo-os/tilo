@@ -1,0 +1,50 @@
+#!/usr/bin/bash
+# Keep the active tilo-base SELinux module the one this image ships.
+#
+# A system keeps /etc and /var across system updates, and the compiled policy
+# store counts as locally modified as soon as anything changed it: a module
+# installed by hand, a persistent boolean, a relabel. From then on a newer
+# image's tilo-base.cil is never installed, so a start uses an older module
+# than the one its image ships. A Wine launch missed the module's execmod
+# grant that way.
+#
+# The image's file is the authority. The module is installed from it while the
+# image is built, at the default priority 400, and libsemanage keeps what it
+# was given under the store. A copy that matches means there is nothing to do
+# (one comparison of a small text file); no copy matching means the store's is
+# older or was changed locally, so the image's module is installed again.
+#
+# Fedora keeps the store under /etc/selinux (the layout the image builds and
+# the one a Tilo system boots with) and newer policy tools under
+# /var/lib/selinux; either is checked, so a system that migrated its store is
+# still recognised once its module is the image's.
+set -euo pipefail
+
+SHIPPED="${TILO_SELINUX_SHIPPED:-/usr/share/tilo/selinux/tilo-base.cil}"
+STORES="${TILO_SELINUX_STORES:-/etc/selinux/targeted /var/lib/selinux/targeted}"
+SEMODULE="${TILO_SEMODULE:-semodule}"
+
+# libsemanage keeps the module bzip2-compressed (semanage.conf's bzip-blocksize)
+# or, on a store configured without it, as the text it was given: either form
+# is the image's module when its content is.
+active_is_shipped() {
+  local store active
+  for store in $STORES; do
+    active="$store/active/modules/400/tilo-base/cil"
+    [ -f "$active" ] || continue
+    case "$(head -c 3 "$active")" in
+      BZh) bzip2 -dc "$active" | cmp -s - "$SHIPPED" && return 0 ;;
+      *) cmp -s "$active" "$SHIPPED" && return 0 ;;
+    esac
+  done
+  return 1
+}
+
+[ -f "$SHIPPED" ] || exit 0
+active_is_shipped && exit 0
+
+echo "tilo-selinux-policy: the active tilo-base module is not this image's; installing it again"
+if ! "$SEMODULE" -i "$SHIPPED"; then
+  echo "tilo-selinux-policy: the module could not be installed; this start keeps the older policy" >&2
+  exit 1
+fi

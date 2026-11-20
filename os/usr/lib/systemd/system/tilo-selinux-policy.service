@@ -1,0 +1,48 @@
+[Unit]
+Description=Install this image's Tilo SELinux module when the policy store has another
+Documentation=file:///usr/share/tilo/selinux/tilo-base.cil
+# A system keeps its /etc across updates, so the compiled policy store can
+# carry an older tilo-base module than the image ships (or one a local change
+# made out of date), and later images' module changes would never take
+# effect. /etc and /usr have to be mounted, and the module has to be the
+# active one before anything it confines starts: fs.service executes in
+# tilo_fs_t, and a session's Wine needs the module's execmod grant.
+DefaultDependencies=no
+ConditionPathExists=/usr/share/tilo/selinux/tilo-base.cil
+ConditionPathExists=/sys/fs/selinux/policy
+After=local-fs.target
+Before=sysinit.target fs.service systemd-sysext.service
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-selinux-policy
+# Loading policy writes the kernel's SELinux state through selinuxfs, so the
+# kernel tunables stay writable here; the unit reads /usr and writes only the
+# policy store. It is unconfined init_t work, as any other boot-time policy
+# loader is, so no further sandbox narrows it.
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+# A start that could not replace the module still starts and still works with
+# the older policy; the journal and the console say why.
+StandardOutput=journal
+StandardError=journal+console
+SuccessExitStatus=1
+
+[Install]
+WantedBy=sysinit.target
