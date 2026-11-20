@@ -13,7 +13,9 @@ use automerge::AutoCommit;
 use automerge::transaction::Transactable as _;
 use durable_store::{DurableStore, StorageKey};
 
+use crate::history_source::authors::DeviceActors;
 use crate::portable_storage::{self, PortableStorage};
+use crate::state::WritingActors;
 
 /// Whether a record's changes are stored.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,11 +26,60 @@ pub enum ResourceSaveStatus {
     MemoryOnly,
 }
 
+/// Whether `stored` holds every change the person made here: nothing `doc`
+/// holds beyond it was written by the document's own writer, one of this
+/// replica's writers (`writers`), or a handle of this device. Content the
+/// workspace sent is durable where it came from, so this device still writing
+/// its copy of it is not the person's unsaved work.
+///
+/// The genesis of a record is this device's too: it is the record's creation,
+/// made here when the person made the record.
+///
+/// `writers` is `None` for a process that does not track which changes it
+/// wrote: then every change beyond `stored` is taken to be the person's.
+///
+/// A `stored` baseline the document no longer holds (a withdrawal rebuilt it)
+/// covers nothing: what it names is not here to judge.
+fn stored_covers_local_changes(
+    doc: &AutoCommit,
+    stored: &[automerge::ChangeHash],
+    writers: Option<&WritingActors>,
+) -> bool {
+    if stored == doc.base_heads() {
+        return true;
+    }
+    if !stored.iter().all(|hash| doc.has_change(hash)) {
+        return false;
+    }
+    let Some(writers) = writers else {
+        return false;
+    };
+    let actor = doc.get_actor().clone();
+    let device = DeviceActors::of(&actor);
+    let genesis = crate::resource::genesis_actor(doc);
+    !doc.committed_document()
+        .get_changes_meta(stored)
+        .iter()
+        .any(|change| {
+            let writer = change.actor.as_ref();
+            writer == &actor
+                || genesis.as_ref() == Some(writer)
+                || writers.contains(writer)
+                || device.wrote(&writer.to_hex_string())
+        })
+}
+
 impl ResourceSaveStatus {
     /// The save state of `doc` against the writer of its on-disk copy,
-    /// without closing a typing transaction or scheduling work.
+    /// without closing a typing transaction or scheduling work. `writers` are
+    /// the writers this replica has written the record as besides the
+    /// document's own actor ([`Self::of_portable`] for a process without them).
     #[must_use]
-    pub fn of_writer(doc: &AutoCommit, writer: &DocWriter) -> Self {
+    pub fn of_writer(
+        doc: &AutoCommit,
+        writer: &DocWriter,
+        writers: Option<&WritingActors>,
+    ) -> Self {
         let snapshot = writer.durability_snapshot();
         if let Some(error) = snapshot.error {
             return Self::Failed(error);
@@ -37,7 +88,7 @@ impl ResourceSaveStatus {
         // it has no changes either (a pristine record) there is nothing
         // to save, so it reads as saved rather than saving.
         let durable = snapshot.durable_heads.unwrap_or_default();
-        if doc.pending_ops() == 0 && durable == doc.base_heads() {
+        if doc.pending_ops() == 0 && stored_covers_local_changes(doc, &durable, writers) {
             Self::Saved
         } else {
             Self::Saving
@@ -45,12 +96,13 @@ impl ResourceSaveStatus {
     }
 
     /// The save state of `doc`, kept under `key` in a portable cache (a
-    /// browser's, acknowledged by its host).
+    /// browser's, acknowledged by its host). `writers` as for [`Self::of_writer`].
     #[must_use]
     pub fn of_portable(
         cache: &PortableStorage,
         key: &portable_storage::StorageKey,
         doc: &AutoCommit,
+        writers: Option<&WritingActors>,
     ) -> Self {
         if doc.pending_ops() != 0 {
             return Self::Saving;
@@ -61,7 +113,7 @@ impl ResourceSaveStatus {
         let Ok(heads) = heads else {
             return Self::Failed("cached document is corrupt".into());
         };
-        if heads != doc.base_heads() {
+        if !stored_covers_local_changes(doc, &heads, writers) {
             return Self::Saving;
         }
         match cache.flush(key) {

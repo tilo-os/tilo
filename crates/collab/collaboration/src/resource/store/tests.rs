@@ -998,6 +998,119 @@ tilo_test_env::scenario! {
         );
         assert!(error.contains("the disk is full"), "{error}");
     }
+
+    phase a_record_receiving_the_workspaces_changes_has_no_save_of_its_own;
+    // Opening a record whose content the workspace sends: its changes arrive
+    // while the person edits nothing. They are stored where they came from,
+    // so this device writing its own copy of them is not the person's unsaved
+    // work, and the window is never told a save stalled. What the person
+    // edits is still said as saving until this device stores it.
+    {
+        use durable_store::{DurableStore, MemoryStore, StorageKey};
+        let backend = Rc::new(MemoryStore::queued());
+        let mut owners = ResourceOwners::with_store(backend.clone());
+        let store = owners.open("so.tilo.test", "workspace-a").unwrap();
+        let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("issue-list"));
+        store
+            .reserve_resource(&want)
+            .unwrap()
+            .initialize(|doc| {
+                put_text(doc, "title", "My tracker");
+                Ok(())
+            })
+            .unwrap();
+        for write in backend.drain() {
+            backend.acknowledge(write.revision, Ok(())).unwrap();
+        }
+        assert_eq!(
+            store.save_status(&want.id).unwrap(),
+            ResourceSaveStatus::Saved
+        );
+
+        // The workspace's side of the tracker, built elsewhere: 2,000 issues
+        // in twenty changes, as its window sends them.
+        let mut theirs = store.with(&want.id, |doc| doc.clone().fork()).unwrap();
+        theirs.set_actor(automerge::ActorId::random());
+        let heads = store.with(&want.id, |doc| doc.get_heads()).unwrap();
+        for chunk in 0..20_u64 {
+            for index in 0..100_u64 {
+                let issue = chunk * 100 + index;
+                theirs
+                    .put(automerge::ROOT, format!("issue-{issue}").as_str(), issue)
+                    .unwrap();
+            }
+            theirs.commit();
+        }
+        let changes = theirs.save_after(&heads);
+        assert!(store.merge_peer_changes(&want, changes).unwrap());
+        assert_eq!(
+            store.save_status(&want.id).unwrap(),
+            ResourceSaveStatus::Saved,
+            "content the workspace sent is not the person's unsaved work"
+        );
+
+        // The page's persist writes what arrived, so a reload reads it here.
+        assert!(
+            store.try_flush().is_err(),
+            "its host has not committed the write yet"
+        );
+        for write in backend.drain() {
+            backend.acknowledge(write.revision, Ok(())).unwrap();
+        }
+        assert_eq!(
+            store.save_status(&want.id).unwrap(),
+            ResourceSaveStatus::Saved
+        );
+
+        // The person's own edit is their work, and is said as saving until
+        // this device has it.
+        store
+            .with(&want.id, |doc| put_text(doc, "title", "My tracker, edited"))
+            .unwrap();
+        assert_eq!(
+            store.save_status(&want.id).unwrap(),
+            ResourceSaveStatus::Saving
+        );
+        assert!(store.try_flush().is_err());
+        for write in backend.drain() {
+            backend.acknowledge(write.revision, Ok(())).unwrap();
+        }
+        assert_eq!(
+            store.save_status(&want.id).unwrap(),
+            ResourceSaveStatus::Saved
+        );
+        drop((store, owners));
+
+        // What arrived was stored beside the person's edit: a reload reads
+        // both from this device, without asking the workspace again.
+        let key = StorageKey::document("so.tilo.test", "workspace-a", want.id.storage_key());
+        let restarted = Rc::new(MemoryStore::queued().named(backend.namespace()));
+        restarted
+            .hydrate(key.clone(), backend.read(&key).unwrap().unwrap())
+            .unwrap();
+        let mut owners = ResourceOwners::with_store(restarted);
+        let store = owners.open("so.tilo.test", "workspace-a").unwrap();
+        assert_eq!(
+            store.try_open_resource(&want).unwrap(),
+            ResourceOpenOutcome::Loaded
+        );
+        assert_eq!(
+            store
+                .read(&want.id, |doc| {
+                    doc.get(automerge::ROOT, "issue-1999")
+                        .ok()
+                        .flatten()
+                        .map(|(value, _)| value.to_string())
+                })
+                .unwrap()
+                .as_deref(),
+            Some("1999")
+        );
+        assert_eq!(
+            store.read(&want.id, |doc| text(doc, "title")).unwrap().as_deref(),
+            Some("My tracker, edited")
+        );
+    }
 }
 
 fn put_text(doc: &mut AutoCommit, key: &str, value: &str) {

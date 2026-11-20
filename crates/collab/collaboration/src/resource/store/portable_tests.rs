@@ -221,4 +221,96 @@ tilo_test_env::scenario! {
             "a change the record no longer holds withdraws nothing"
         );
     }
+
+    phase a_page_writing_content_it_received_has_no_save_of_its_own;
+    // The workspace sends a record's content while the person edits nothing.
+    // It is alive where it came from, so the page's copy of it waiting to be
+    // stored is not the person's unsaved work: nothing says a save stalled.
+    // The person's own edit still does, until the page's host acknowledges it.
+    {
+        let cache = PortableStorage::new("profile", "device").unwrap();
+        let store = ResourceOwners::portable(cache.clone())
+            .open("so.tilo.test", "workspace-a")
+            .unwrap();
+        let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("issue-list"));
+        store
+            .reserve_resource(&want)
+            .unwrap()
+            .initialize(|doc| {
+                doc.put(automerge::ROOT, "title", "My tracker").unwrap();
+                Ok(())
+            })
+            .unwrap();
+        let acknowledge = || {
+            for write in cache.pending_writes() {
+                cache.acknowledge(&write, Ok(())).unwrap();
+            }
+        };
+        acknowledge();
+        assert_eq!(
+            store.save_status(&want.id).unwrap(),
+            ResourceSaveStatus::Saved
+        );
+
+        // The workspace's side of the tracker, built elsewhere: 2,000 issues
+        // in twenty changes, as its window sends them.
+        let mut theirs = store.with(&want.id, |doc| doc.clone().fork()).unwrap();
+        theirs.set_actor(automerge::ActorId::random());
+        let heads = store.with(&want.id, |doc| doc.get_heads()).unwrap();
+        for chunk in 0..20_u64 {
+            for index in 0..100_u64 {
+                let issue = chunk * 100 + index;
+                theirs
+                    .put(automerge::ROOT, format!("issue-{issue}").as_str(), issue)
+                    .unwrap();
+            }
+            theirs.commit();
+        }
+        let changes = theirs.save_after(&heads);
+        assert!(store.merge_peer_changes(&want, changes).unwrap());
+        assert_eq!(
+            store.save_status(&want.id).unwrap(),
+            ResourceSaveStatus::Saved,
+            "content the workspace sent is not the person's unsaved work"
+        );
+
+        // The page still writes what arrived, so a reload reads it here.
+        assert!(store.try_flush().is_err(), "its host has not acknowledged");
+        acknowledge();
+        assert_eq!(
+            store.save_status(&want.id).unwrap(),
+            ResourceSaveStatus::Saved
+        );
+
+        // The person's own edit is their work, and says so until it is stored.
+        store
+            .with(&want.id, |doc| {
+                doc.put(automerge::ROOT, "title", "My tracker, edited")
+                    .unwrap()
+            })
+            .unwrap();
+        assert_eq!(
+            store.save_status(&want.id).unwrap(),
+            ResourceSaveStatus::Saving
+        );
+        assert!(store.try_flush().is_err());
+        acknowledge();
+        assert_eq!(
+            store.save_status(&want.id).unwrap(),
+            ResourceSaveStatus::Saved
+        );
+        let cached = cache
+            .get(&super::portable::key("so.tilo.test", "workspace-a", &want.id))
+            .expect("the row is still cached");
+        let reopened = AutoCommit::load(&cached.bytes).unwrap();
+        assert_eq!(
+            reopened
+                .get(automerge::ROOT, "issue-1999")
+                .unwrap()
+                .map(|(value, _)| value.to_string())
+                .as_deref(),
+            Some("1999"),
+            "what arrived is in the page's cache"
+        );
+    }
 }

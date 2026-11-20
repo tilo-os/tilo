@@ -2284,6 +2284,7 @@ impl ResourceStore {
         }
         let slot = set.open.get(id).ok_or(ResourceOpenError::MissingResource)?;
         let doc = slot.doc.as_ref().ok_or(ResourceOpenError::Busy)?;
+        let writers = slot.action_state.writers.borrow();
         if let Some(cache) = &set.portable {
             return Ok(portable::save_status(
                 cache,
@@ -2291,10 +2292,11 @@ impl ResourceStore {
                 &set.home,
                 id,
                 doc,
+                Some(&writers),
             ));
         }
         if let Some(saver) = &slot.autosave {
-            return Ok(ResourceSaveStatus::of_writer(doc, saver));
+            return Ok(ResourceSaveStatus::of_writer(doc, saver, Some(&writers)));
         }
         Ok(if set.persistent {
             ResourceSaveStatus::Failed("record persistence unavailable".to_owned())

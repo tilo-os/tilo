@@ -14,7 +14,7 @@ use collaboration::history_source::authors::{HistoryAuthor, ResolveAuthor, UNKNO
 use collaboration::history_source::steps::{self, Scope};
 use collaboration::history_source::verbs::HistoryEdit;
 use collaboration::history_source::words::HistoryWords;
-use collaboration::state::UndoLog;
+use collaboration::state::{UndoLog, WritingActors};
 use durable_store::DurableStore;
 
 #[global_allocator]
@@ -70,14 +70,14 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
     let mut writer = store.writer();
     // A new record holds no edits of its own, so it has nothing to save.
     assert_eq!(
-        ResourceSaveStatus::of_writer(&doc, &writer),
+        ResourceSaveStatus::of_writer(&doc, &writer, Some(&WritingActors::default())),
         ResourceSaveStatus::Saved
     );
     doc.commit();
     writer.request(&doc);
     writer.flush();
     assert_eq!(
-        ResourceSaveStatus::of_writer(&doc, &writer),
+        ResourceSaveStatus::of_writer(&doc, &writer, Some(&WritingActors::default())),
         ResourceSaveStatus::Saved
     );
 
@@ -91,7 +91,7 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
     assert_eq!(step.author, Some(ada.clone()));
     assert_eq!(step_authors(&mut doc), ["ada"]);
     assert_eq!(
-        ResourceSaveStatus::of_writer(&doc, &writer),
+        ResourceSaveStatus::of_writer(&doc, &writer, Some(&WritingActors::default())),
         ResourceSaveStatus::Saving
     );
 
@@ -115,7 +115,7 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
     writer.request(&doc);
     writer.flush();
     assert_eq!(
-        ResourceSaveStatus::of_writer(&doc, &writer),
+        ResourceSaveStatus::of_writer(&doc, &writer, Some(&WritingActors::default())),
         ResourceSaveStatus::Saved
     );
     let heads = doc.get_heads();

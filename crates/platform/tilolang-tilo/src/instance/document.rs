@@ -677,7 +677,7 @@ impl InstanceDocument {
             let Some(of) = self.read(|chunks| {
                 chunks
                     .held(*chunk)
-                    .map(|doc| ResourceSaveStatus::of_writer(doc, writer))
+                    .map(|doc| ResourceSaveStatus::of_writer(doc, writer, None))
             }) else {
                 continue;
             };

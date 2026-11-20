@@ -267,14 +267,16 @@ pub(super) fn save_status(
     workspace: &str,
     id: &DocumentId,
     doc: &AutoCommit,
+    writers: Option<&crate::state::WritingActors>,
 ) -> ResourceSaveStatus {
-    ResourceSaveStatus::of_portable(cache, &key(package, workspace, id), doc)
+    ResourceSaveStatus::of_portable(cache, &key(package, workspace, id), doc, writers)
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::ResourceType;
     use super::*;
+    use crate::state::WritingActors;
     tilo_test_env::scenario! {
         fn portable_records_are_cached_owned_once_and_written_in_sequence;
 
@@ -288,41 +290,41 @@ mod tests {
             cache.put(storage_key.clone(), doc.save(), None).unwrap();
             let older = cache.pending_writes().remove(0);
             assert_eq!(
-                save_status(&cache, "test", "workspace", &id, &doc),
+                save_status(&cache, "test", "workspace", &id, &doc, Some(&WritingActors::default())),
                 ResourceSaveStatus::Saving
             );
             cache.acknowledge(&older, Ok(())).unwrap();
             assert_eq!(
-                save_status(&cache, "test", "workspace", &id, &doc),
+                save_status(&cache, "test", "workspace", &id, &doc, Some(&WritingActors::default())),
                 ResourceSaveStatus::Saved
             );
             doc.put(automerge::ROOT, "value", 2).unwrap();
             let pending = doc.pending_ops();
             assert_eq!(
-                save_status(&cache, "test", "workspace", &id, &doc),
+                save_status(&cache, "test", "workspace", &id, &doc, Some(&WritingActors::default())),
                 ResourceSaveStatus::Saving
             );
             assert_eq!(doc.pending_ops(), pending, "status must not commit typing");
             cache.put(storage_key.clone(), doc.save(), None).unwrap();
             cache.acknowledge(&older, Ok(())).unwrap();
             assert_eq!(
-                save_status(&cache, "test", "workspace", &id, &doc),
+                save_status(&cache, "test", "workspace", &id, &doc, Some(&WritingActors::default())),
                 ResourceSaveStatus::Saving
             );
             let newer = cache.pending_writes().remove(0);
             cache.acknowledge(&newer, Err("quota".into())).unwrap();
             assert_eq!(
-                save_status(&cache, "test", "workspace", &id, &doc),
+                save_status(&cache, "test", "workspace", &id, &doc, Some(&WritingActors::default())),
                 ResourceSaveStatus::Failed("quota".into())
             );
             cache.acknowledge(&newer, Ok(())).unwrap();
             assert_eq!(
-                save_status(&cache, "test", "workspace", &id, &doc),
+                save_status(&cache, "test", "workspace", &id, &doc, Some(&WritingActors::default())),
                 ResourceSaveStatus::Saved
             );
             cache.put(storage_key, vec![1, 2, 3], None).unwrap();
             assert_eq!(
-                save_status(&cache, "test", "workspace", &id, &doc),
+                save_status(&cache, "test", "workspace", &id, &doc, Some(&WritingActors::default())),
                 ResourceSaveStatus::Failed("cached document is corrupt".into())
             );
         }
