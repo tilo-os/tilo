@@ -11,7 +11,8 @@ use crate::{doc_lines, humanize, krate, param_type, snake_case};
 /// argument is a secret (an invite, a password) the host keeps out of logs,
 /// history and confirmations, and then `choices = EXPR` when the values it
 /// takes are a fixed list (any expression yielding strings, such as a
-/// constant table). `place,` marks a place inside the resource
+/// constant table), or `labelled_choices = EXPR` when each says how a person
+/// reads it (`(value, label)` pairs). `place,` marks a place inside the resource
 /// (`at: Option<Place>`): the effect acts there instead of at the invoker's
 /// caret; `place = "field"` names the collection whose items it takes.
 /// `decimal,` marks an identity the record or the surface names: it travels
@@ -29,6 +30,8 @@ struct Param {
     /// action is published.
     label: Option<String>,
     choices: Option<syn::Expr>,
+    /// Whether `choices` pairs each value with how a person reads it.
+    labelled: bool,
     /// The argument's name where it differs from the field's (`name =
     /// "pageSize"`): a contract its callers already speak.
     name: Option<String>,
@@ -110,14 +113,15 @@ impl syn::parse::Parse for Param {
                 param.name = Some(input.parse::<syn::LitStr>()?.value());
             } else if key == "label" {
                 param.label = Some(input.parse::<syn::LitStr>()?.value());
-            } else if key == "choices" {
+            } else if key == "choices" || key == "labelled_choices" {
+                param.labelled = key == "labelled_choices";
                 param.choices = Some(input.parse()?);
             } else if key == "resource" {
                 param.resource = Some(input.parse::<syn::LitStr>()?.value());
             } else {
                 return Err(syn::Error::new(
                     key.span(),
-                    "expected `choices = ...`, `place = \"field\"`, `resource = \"kind\"`, \
+                    "expected `choices = ...`, `labelled_choices = ...`, `place = \"field\"`, `resource = \"kind\"`, \
                      `name = \"argument\"` or `label = \"key\"`",
                 ));
             }
@@ -652,6 +656,9 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 },
             });
             let declared = match &described.choices {
+                Some(choices) if described.labelled => {
+                    quote!(#declared.with_labelled_choices(#choices))
+                }
                 Some(choices) => quote!(#declared.with_choices(#choices)),
                 None => declared,
             };

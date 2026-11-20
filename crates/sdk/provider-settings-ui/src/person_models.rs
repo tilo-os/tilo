@@ -112,7 +112,10 @@ pub enum PersonModelsEffect {
     #[effect(kind = "outside")]
     #[effect(job)]
     LinkProvider {
-        #[param("The provider: `gemini`, `anthropic`, `openai` or `openrouter`")]
+        #[param(
+            "The provider: `gemini`, `anthropic`, `openai` or `openrouter`",
+            labelled_choices = READY_MADE.map(|preset| (preset.slug(), preset.label()))
+        )]
         preset: String,
     },
     /// Show the form that names another model provider.

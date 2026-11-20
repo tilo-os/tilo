@@ -3,6 +3,7 @@
 //! published (resources, actions, the desktop's model) or what a service
 //! answers; none reads a host's own chrome state.
 
+mod app_actions;
 pub mod ask_agent;
 #[cfg(feature = "catalogue")]
 pub mod catalogue;
@@ -29,6 +30,7 @@ use ui::search::{PagePoll, PendingToken, SearchQuery};
 
 use crate::model::{ActionTarget, Hit, LaunchPlace, Source, Target};
 use crate::rank;
+pub use app_actions::Actions;
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
 /// An application the desktop can open. A desktop lists only the apps it
@@ -334,87 +336,6 @@ fn action_target(resource: &ResourceSpec, action: &str) -> Option<ActionTarget> 
         spec: spec.clone(),
         preset: None,
     })
-}
-
-/// The actions open applications publish (`tilo_actions`), the same
-/// catalogue their own controls, agents and remote peers invoke.
-pub struct Actions(pub Vec<ResourceSpec>);
-
-impl Source for Actions {
-    fn id(&self) -> &'static str {
-        "app-actions"
-    }
-
-    fn name(&self) -> String {
-        crate::i18n::t("search-source-app-actions")
-    }
-
-    fn query(&self, needle: &str) -> Vec<Hit> {
-        // Every open window's actions would bury everything else unasked.
-        if needle.trim().is_empty() {
-            return Vec::new();
-        }
-        let records: std::collections::HashSet<&str> =
-            self.0.iter().map(|record| record.id.as_str()).collect();
-        let flats: Vec<_> = tilo_actions::flatten(&self.0)
-            .into_iter()
-            .filter(|flat| offered(&flat.action.contract))
-            .collect();
-        // An open document's actions answer to what they do. An item's (one
-        // message of a chat, one card of a board) answer only to the item
-        // named: "edit message" must not list the same edit once for every
-        // message there is. Each kind is ranked as one list.
-        let (own, items): (Vec<_>, Vec<_>) = flats
-            .iter()
-            .partition(|flat| records.contains(flat.resource_id.as_str()));
-        let mut own_scores = rank::action_match_scores(
-            needle,
-            own.iter().map(|flat| {
-                (
-                    flat.action.label.as_str(),
-                    flat.action.keywords.as_slice(),
-                    flat.resource_label.as_str(),
-                )
-            }),
-        )
-        .into_iter();
-        let mut item_scores = rank::item_action_match_scores(
-            needle,
-            items.iter().map(|flat| flat.resource_label.as_str()),
-        )
-        .into_iter();
-        flats
-            .iter()
-            .filter_map(|flat| {
-                let score = if records.contains(flat.resource_id.as_str()) {
-                    own_scores.next().flatten()?
-                } else {
-                    item_scores.next().flatten()?
-                };
-                Some(Hit {
-                    row: None,
-                    preview: None,
-                    faces: Vec::new(),
-                    outcome: None,
-                    kind: ResourceKind::Action,
-                    provider: self.id().into(),
-                    id: flat.key.clone(),
-                    title: flat.action.label.clone(),
-                    subtitle: Some(flat.resource_label.clone()),
-                    facts: Vec::new(),
-                    score,
-                    icon: crate::window::action_icon(flat.action),
-                    target: Target::Action(Box::new(ActionTarget {
-                        resource: flat.resource_id.clone(),
-                        resource_kind: flat.resource_kind.clone(),
-                        resource_label: flat.resource_label.clone(),
-                        spec: flat.action.clone(),
-                        preset: None,
-                    })),
-                })
-            })
-            .collect()
-    }
 }
 
 /// What one app publishes in one workspace, as the session's action host lists
@@ -2962,5 +2883,47 @@ mod tests {
             .into_iter()
             .flat_map(|group| group.results)
             .collect()
+    }
+
+    /// A button that links `OpenRouter` invokes "Link a model provider" with it chosen: the
+    /// palette finds it by the provider's name, as one row per named choice, and the row invokes
+    /// it with that choice made.
+    #[test]
+    fn an_action_choosing_among_named_values_is_found_by_each_name() {
+        let mut models = ResourceSpec::new("models", "settings.models", "Agent models");
+        models
+            .actions
+            .push(tilo_actions::ActionSpec::typed_operation(
+                "link-provider",
+                "Link a model provider",
+                "",
+                tilo_actions::OperationKind::Effect,
+                "test.link",
+                vec![
+                    tilo_actions::ActionParam::required(
+                        "preset",
+                        tilo_actions::ParamType::Text,
+                        "",
+                    )
+                    .with_labelled_choices([
+                        ("gemini", "Google Gemini"),
+                        ("openrouter", "OpenRouter"),
+                    ]),
+                ],
+                |_| tilo_actions::EncodedAction {
+                    type_id: "test.link".into(),
+                    payload: Vec::new(),
+                },
+            ));
+        let hits = Actions(vec![models]).query("openrouter");
+        let titles: Vec<&str> = hits.iter().map(|hit| hit.title.as_str()).collect();
+        assert_eq!(titles, ["Link a model provider: OpenRouter"]);
+        let Target::Action(action) = &hits[0].target else {
+            panic!("an app's action: {:?}", hits[0].target);
+        };
+        assert_eq!(
+            action.preset,
+            Some(("preset".to_owned(), "openrouter".to_owned()))
+        );
     }
 }
