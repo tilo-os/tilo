@@ -114,8 +114,12 @@ const server = createServer({cert: readFileSync(cert), key: readFileSync(key)}, 
     return;
   }
   const file = fileAt(path);
-  if (!file) { response.writeHead(404).end(); return; }
-  serve(response, file);
+  if (file) { serve(response, file); return; }
+  // Everything else the entry serves from the host behind it: a workspace's
+  // app as a web page (`/w/…`, the page the server renders), the host's
+  // routes, and a directory listing. The ingress hands what it terminates TLS
+  // for to the shelf (`TILO_WEB_SHELF`), and so does this.
+  shelf(request, response);
 });
 server.listen(Number(port), '127.0.0.1', () => {
   console.log(JSON.stringify({url: `https://127.0.0.1:${server.address().port}`}));
