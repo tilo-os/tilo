@@ -58,9 +58,12 @@ mod namespace_tests {
         let hex: String = include_str!("namespace/fixtures/pre-chunk-namespace.hex")
             .split_whitespace()
             .collect();
-        (0..hex.len())
-            .step_by(2)
-            .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).expect("the fixture is hex"))
+        hex.as_bytes()
+            .chunks(2)
+            .map(|pair| {
+                u8::from_str_radix(std::str::from_utf8(pair).expect("ascii"), 16)
+                    .expect("the fixture is hex")
+            })
             .collect()
     }
 
