@@ -129,7 +129,9 @@ impl OnTheirServer {
         }
     }
 
-    /// Ada writes `words` to her assistant, and the one turn that makes takes `steps`.
+    /// Ada writes `words` to her assistant, and the one turn that makes takes `steps`. A turn of
+    /// her assistant's still going (the one her answer to a question woke) takes her words in
+    /// once it is free: the turn they make is waited for until her assistant was shown them.
     async fn turn(&self, words: &str, steps: Vec<Reply>) -> Id {
         for step in steps {
             self.model.then(step);
@@ -142,15 +144,24 @@ impl OnTheirServer {
             words,
         )
         .await;
-        let turns = self.agents.turns(&self.workspace).await.unwrap();
-        assert_eq!(turns.len(), 1, "one turn for {words:?}: {turns:?}");
-        tokio::time::timeout(
-            Duration::from_secs(60),
-            self.agents.answer(&self.workspace, &turns[0]),
-        )
-        .await
-        .expect("the turn ends")
-        .unwrap();
+        let deadline = tilo_test_env::hang_deadline();
+        while !self.was_shown(words) {
+            assert!(
+                Instant::now() < deadline,
+                "her assistant is never shown {words:?}; it was shown:\n{}",
+                self.shown()
+            );
+            for turn in self.agents.turns(&self.workspace).await.unwrap() {
+                tokio::time::timeout(
+                    Duration::from_secs(60),
+                    Box::pin(self.agents.answer(&self.workspace, &turn)),
+                )
+                .await
+                .expect("the turn ends")
+                .unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         message
     }
 
@@ -300,13 +311,13 @@ async fn command_asks_then_is_done() {
 
     beside(
         &mut page,
-        hosted.turn(
+        Box::pin(hosted.turn(
             "Say hello in the shell",
             vec![
                 executes("first", "echo first-echo-$((40+2))"),
                 Reply::text("I asked you first."),
             ],
-        ),
+        )),
     )
     .await;
     let asked_in_conversation = beside(&mut page, hosted.questions()).await;
@@ -347,22 +358,29 @@ async fn command_asks_then_is_done() {
     // A second command in the same conversation asks again, the same way.
     beside(
         &mut page,
-        hosted.turn(
+        Box::pin(hosted.turn(
             "And once more",
             vec![
                 executes("second", "echo second-echo"),
                 Reply::text("I asked you again."),
             ],
-        ),
+        )),
     )
     .await;
-    let again = beside(&mut page, hosted.questions()).await;
-    assert_eq!(
-        (again.len(), person.questions()),
-        (2, 0),
-        "the second command is asked too; the model was shown:\n{}",
-        hosted.shown()
-    );
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let again = beside(&mut page, hosted.questions()).await;
+        if again.len() == 2 || Instant::now() >= deadline {
+            assert_eq!(
+                (again.len(), person.questions()),
+                (2, 0),
+                "the second command is asked too; the model was shown:\n{}",
+                hosted.shown()
+            );
+            break;
+        }
+        beside(&mut page, tokio::time::sleep(Duration::from_millis(50))).await;
+    }
 }
 
 impl OnTheirServer {

@@ -107,11 +107,15 @@ impl Worker {
         let invocation = request.invocation;
         asked.then(move |reply| {
             let update = answered(invocation, reply);
-            if let Some(entry) = log.log.lock_recover().entries.get_mut(&invocation)
+            let mut held = log.log.lock_recover();
+            if let Some(entry) = held.entries.get_mut(&invocation)
                 && !entry.update.is_terminal()
             {
                 entry.update = update;
             }
+            // Whoever follows the invocation waits for it to move.
+            held.moved();
+            drop(held);
         });
         Ok(())
     }

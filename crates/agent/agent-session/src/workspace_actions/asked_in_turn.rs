@@ -313,11 +313,15 @@ impl super::Shared {
     /// here, told which, and nothing ran.
     fn asked_in_conversation(&self, invocation: InvocationId, put: Option<&Result<(), String>>) {
         let update = ended(invocation, put);
-        if let Some(entry) = self.log.lock_recover().entries.get_mut(&invocation)
+        let mut log = self.log.lock_recover();
+        if let Some(entry) = log.entries.get_mut(&invocation)
             && !entry.update.is_terminal()
         {
             entry.update = update;
         }
+        // Whoever follows the invocation waits for it to move.
+        log.moved();
+        drop(log);
     }
 }
 

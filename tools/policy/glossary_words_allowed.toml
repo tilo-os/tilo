@@ -358,6 +358,12 @@ identifiers = ["channel"]
 paths = ["crates/session/app-keeper/*"]
 
 [[allow]]
+reason = "A Chat message's `channel` field and the `channel` argument of Chat's actions, naming the conversation the server's questions are put in."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/server/tilo-server/src/workspace_agents/asks.rs"]
+
+[[allow]]
 reason = "A Discord server's channels, and the Chat channels the bridge mirrors them into."
 words = ["channel"]
 paths = ["apps/discord/*"]
