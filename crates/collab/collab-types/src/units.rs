@@ -160,10 +160,13 @@ impl ByChange {
     /// indexed before `unit` was one does not.
     #[must_use]
     pub fn indexes(&self, unit: &UnitPath) -> bool {
+        // A unit whose items are any item (an outbox's entries) is indexed as
+        // the pattern naming its entries, `outbox/*`.
         let keys: Option<Vec<&str>> = unit
             .iter()
             .map(|step| match step {
                 PathStep::Field(key) => Some(key.as_str()),
+                PathStep::Item(item) if item == crate::surface::ANY_ITEM => Some(item.as_str()),
                 _ => None,
             })
             .collect();
@@ -302,6 +305,78 @@ mod tests {
                     PathStep::Field("rows".into()),
                     PathStep::Item("r1".into())
                 ]]
+            );
+        }
+
+        phase an_outbox_is_indexed_by_the_entries_it_holds;
+        // An outbox is a collection of entries, so its unit names any entry.
+        // A change settling an entry writes inside it, not a new one: what it
+        // wrote is told apart from a push, and a device reading it knows the
+        // index names the outbox rather than taking every change as one that
+        // queues.
+        {
+            let mut doc = automerge::AutoCommit::new();
+            let index = doc.put_object(ROOT, UNIT_INDEX, ObjType::List).unwrap();
+            doc.insert(&index, 0, "outbox/*").unwrap();
+            let outbox = doc.put_object(ROOT, "outbox", ObjType::Map).unwrap();
+            let entry = doc.put_object(&outbox, "m1", ObjType::Map).unwrap();
+            let value = doc.put_object(&entry, ITEM_VALUE, ObjType::Map).unwrap();
+            doc.put(&value, "to", "ada@example.test").unwrap();
+            doc.commit();
+            let before = doc.clone();
+            doc.put(&value, "settled", "done").unwrap();
+            let settled = doc.commit().unwrap();
+            let after = doc.document().clone();
+            let change = after.get_change_by_hash(&settled).unwrap();
+            let units = units_by_change(before, &[change]).expect("a resource keeping units");
+            assert!(
+                units.indexes(&vec![
+                    PathStep::Field("outbox".into()),
+                    PathStep::Item(crate::surface::ANY_ITEM.into())
+                ]),
+                "the index names the outbox, its entries open"
+            );
+            let written = &units.written[&settled.0];
+            assert_eq!(
+                written.added,
+                Vec::<UnitPath>::new(),
+                "settling an entry queues nothing"
+            );
+            assert_eq!(
+                written.units,
+                vec![vec![
+                    PathStep::Field("outbox".into()),
+                    PathStep::Item("m1".into())
+                ]]
+            );
+        }
+
+        phase a_push_puts_an_entry_into_the_outbox;
+        // Putting an entry in the outbox is what queues work for a device
+        // outside the workspace; settling one it already holds queues nothing.
+        {
+            let mut doc = automerge::AutoCommit::new();
+            let index = doc.put_object(ROOT, UNIT_INDEX, ObjType::List).unwrap();
+            doc.insert(&index, 0, "outbox/*").unwrap();
+            let outbox = doc.put_object(ROOT, "outbox", ObjType::Map).unwrap();
+            doc.commit();
+            let before = doc.clone();
+            let entry = doc.put_object(&outbox, "m2", ObjType::Map).unwrap();
+            doc.put(&entry, "k", "a0").unwrap();
+            let value = doc.put_object(&entry, ITEM_VALUE, ObjType::Map).unwrap();
+            doc.put(&value, "to", "bob@example.test").unwrap();
+            let queued = doc.commit().unwrap();
+            let after = doc.document().clone();
+            let written = &units_by_change(before, &[after.get_change_by_hash(&queued).unwrap()])
+                .expect("a resource keeping units")
+                .written[&queued.0];
+            assert_eq!(
+                written.added,
+                vec![vec![
+                    PathStep::Field("outbox".into()),
+                    PathStep::Item("m2".into())
+                ]],
+                "the entry put into the outbox is what it queued"
             );
         }
     }

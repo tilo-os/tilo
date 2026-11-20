@@ -622,6 +622,9 @@ mod invoker_tests;
 #[path = "continuation_tests.rs"]
 mod continuation_tests;
 
+#[path = "outbox_tests.rs"]
+mod outbox_tests;
+
 /// The surface of the chat's messages, published as a chain of parts.
 struct Messages;
 
