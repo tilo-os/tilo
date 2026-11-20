@@ -36,6 +36,9 @@ const PART_LOOK_MAX: Duration = Duration::from_secs(1);
 
 /// One operation to apply to what is mounted here, as the request named it.
 pub(super) struct Invoked<'a> {
+    /// The request it is part of: applied again, it takes the answer of the operation it
+    /// handed off the thread ([`super::call_wait`]).
+    pub(super) invocation: tilo_actions::InvocationId,
     pub(super) address: &'a tilo_actions::ActionAddress,
     pub(super) arguments: &'a serde_json::Map<String, serde_json::Value>,
     pub(super) context: Option<&'a tilo_actions::ActionContext>,
@@ -45,7 +48,7 @@ pub(super) struct Invoked<'a> {
 
 /// How a write waited for its part so far.
 #[derive(Clone, Copy)]
-struct Tried {
+pub(super) struct Tried {
     /// When it was asked: its wait is counted from then ([`PART_WAIT`]).
     queued: Instant,
     /// The pause before it is applied again.
@@ -155,6 +158,26 @@ impl PartWaits {
             .unwrap_or_else(first)
     }
 
+    /// How the request being served waited so far, with `confirmed`, its person's answer, kept
+    /// for when it is applied again ([`super::call_wait`]).
+    pub(super) fn serving_confirmed(&self, confirmed: bool) -> Option<Tried> {
+        self.serving.map(|tried| Tried {
+            confirmed: tried.confirmed.or(Some(confirmed)),
+            ..tried
+        })
+    }
+
+    /// How the request about to be applied again waited so far, taken from it: it waits once
+    /// more, for something else ([`super::call_wait`]).
+    pub(super) const fn take_resumed(&mut self) -> Option<Tried> {
+        self.resumed.take()
+    }
+
+    /// The request about to be applied again waited as `tried` so far.
+    pub(super) const fn resume_with(&mut self, tried: Option<Tried>) {
+        self.resumed = tried;
+    }
+
     /// Whether a write of `workspace_id` waits for its part.
     pub(super) fn any_in(&self, workspace_id: WorkspaceId) -> bool {
         self.awaiting
@@ -188,7 +211,7 @@ impl Worker {
         needs: Needs<'_>,
         invoked: &Invoked<'_>,
     ) -> Result<ActionOutput, tilo_actions::api::ApiError> {
-        let error = match self.invoke_mounted(holder, invoked) {
+        let error = match self.invoke_mounted(workspace_id, holder, invoked) {
             Ok(output) => return Ok(output),
             Err(error) => error,
         };
@@ -205,7 +228,7 @@ impl Worker {
         if self.hold_for_chains() {
             return Err(not_ready());
         }
-        let error = match self.invoke_mounted(holder, invoked) {
+        let error = match self.invoke_mounted(workspace_id, holder, invoked) {
             Ok(output) => return Ok(output),
             Err(error) => error,
         };
@@ -317,19 +340,26 @@ impl Worker {
     /// [`Self::invoke_on`] once: `invoked` on what is mounted at `holder`.
     fn invoke_mounted(
         &mut self,
+        workspace_id: WorkspaceId,
         holder: &DocumentRoute,
         invoked: &Invoked<'_>,
     ) -> Result<ActionOutput, tilo_actions::api::ApiError> {
-        let mounted = self
+        let app = self
             .mounted
-            .get_mut(holder)
+            .get(holder)
+            .map(|mounted| std::sync::Arc::clone(&mounted.app))
             .ok_or_else(|| tilo_actions::api::ApiError::Unknown(invoked.address.clone()))?;
-        mounted.app.invoke_in(
-            invoked.context,
-            invoked.appearance,
-            invoked.address,
-            invoked.arguments,
+        self.invoke_handed(
+            (workspace_id, holder),
+            (&app, invoked.invocation),
             invoked.confirmed,
+            || crate::worker::Operation {
+                context: invoked.context.cloned(),
+                appearance: invoked.appearance.cloned(),
+                address: invoked.address.clone(),
+                arguments: invoked.arguments.clone(),
+                confirm: invoked.confirmed,
+            },
         )
     }
 }

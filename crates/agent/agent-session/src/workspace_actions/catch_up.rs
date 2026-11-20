@@ -887,7 +887,7 @@ impl Worker {
             self.mounted.insert(
                 route.clone(),
                 Mounted {
-                    app,
+                    app: std::sync::Arc::new(app),
                     merged: Some(heads),
                     parts: HashMap::new(),
                     foreign: HashSet::new(),

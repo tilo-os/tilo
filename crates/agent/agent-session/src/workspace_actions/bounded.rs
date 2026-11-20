@@ -900,7 +900,7 @@ impl Worker {
                 key.clone(),
                 BoundedReplica {
                     held: Mounted {
-                        app,
+                        app: std::sync::Arc::new(app),
                         merged: Some(heads),
                         parts: HashMap::new(),
                         foreign: std::collections::HashSet::new(),
@@ -1123,6 +1123,7 @@ impl Worker {
             bool,
         ),
         asked: impl Fn(
+            &mut Self,
             &BoundedReplica,
         ) -> Result<tilo_actions::ActionOutput, tilo_actions::api::ApiError>,
     ) -> Result<
@@ -1147,7 +1148,11 @@ impl Worker {
             .bounded
             .remove(key)
             .ok_or(Outcome::Rejected(ActionCallError::UnknownAction))?;
-        let tried = asked(&held);
+        let tried = asked(self, &held);
+        if super::call_wait::running(&tried) {
+            self.bounded.insert(key.clone(), held);
+            return Err(super::api_outcome(&super::part_wait::not_ready()));
+        }
         if let Err(error) = &tried
             && super::part_wait::arriving(error)
             && self.hold_for_part(Some(confirmed))
@@ -1199,6 +1204,10 @@ impl Worker {
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one action through a caller's replica, each try of it in order and what it saved"
     )]
     pub(super) fn perform_bounded(
         &mut self,
@@ -1267,12 +1276,27 @@ impl Worker {
             .confirmed_or(|| approved(&self.shared.approvals, given, &binding));
         let context = super::caller_context(caller, request);
         let running = super::timing_start();
-        let asked = |held: &BoundedReplica| {
-            held.held
-                .app
-                .invoke_in(Some(&context), None, &target.address, &arguments, confirmed)
+        // Each try goes on off this thread once its worker takes long to answer, the request held
+        // until it has ([`super::call_wait`]): the replica is kept for it to be applied again.
+        let asked = |worker: &mut Self, held: &BoundedReplica| {
+            worker.invoke_handed(
+                (workspace_id, &key.0),
+                (&held.held.app, request.invocation),
+                confirmed,
+                || crate::worker::Operation {
+                    context: Some(context.clone()),
+                    appearance: None,
+                    address: target.address.clone(),
+                    arguments: arguments.clone(),
+                    confirm: confirmed,
+                },
+            )
         };
-        let mut tried = asked(&held);
+        let mut tried = asked(self, &held);
+        if super::call_wait::running(&tried) {
+            self.bounded.insert(key.clone(), held);
+            return Err(super::api_outcome(&super::part_wait::not_ready()));
+        }
         // What the action named is held by a part of a chain this replica has
         // not been handed (an issue in an older part than the head): the parts
         // it wants are handed, and the action asked once more.
@@ -1281,7 +1305,11 @@ impl Worker {
             let before = held.held.parts.len();
             super::catch_up::hand_all_parts(&key.0, &mut held.held, state);
             if held.held.parts.len() > before {
-                tried = asked(&held);
+                tried = asked(self, &held);
+                if super::call_wait::running(&tried) {
+                    self.bounded.insert(key.clone(), held);
+                    return Err(super::api_outcome(&super::part_wait::not_ready()));
+                }
             }
         }
         // A part nobody holds yet (a chain's first, or the next one a full chain
@@ -1294,7 +1322,11 @@ impl Worker {
                 break;
             }
             super::catch_up::answer_unheld_parts(&key.0, &held.held, state);
-            tried = asked(&held);
+            tried = asked(self, &held);
+            if super::call_wait::running(&tried) {
+                self.bounded.insert(key.clone(), held);
+                return Err(super::api_outcome(&super::part_wait::not_ready()));
+            }
         }
         let (mut held, tried) =
             self.ask_again_once_arrived(workspace_id, &key, held, (tried, confirmed), asked)?;
@@ -1416,7 +1448,7 @@ impl Worker {
 
     /// The app this worker holds mounted at `holder`, if it holds one there.
     pub(super) fn app_at(&self, holder: &DocumentRoute) -> Option<&ConfinedReplica> {
-        self.mounted.get(holder).map(|mounted| &mounted.app)
+        self.mounted.get(holder).map(|mounted| &*mounted.app)
     }
 
     /// Whether the record at `holder` publishes `address` to its owner: what

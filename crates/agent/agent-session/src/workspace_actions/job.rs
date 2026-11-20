@@ -111,6 +111,9 @@ pub(super) enum Job {
     /// A workspace requests wait to be joined to changed: those it joined
     /// go on.
     Joined(WorkspaceId),
+    /// An app's worker answered the operation a request of the workspace handed off this
+    /// thread: the request goes on ([`call_wait`]).
+    Called(WorkspaceId),
     /// A workspace was deleted: the service lets go of all it holds of it.
     Forget(WorkspaceId),
     /// A document written since its name was last read: its name in its app's index is
@@ -137,6 +140,7 @@ impl Job {
             Self::Invocations { .. } => "invocations",
             Self::Changed { .. } => "changed",
             Self::Joined(_) => "joined",
+            Self::Called(_) => "called",
             Self::Forget(_) => "forget",
             Self::Rename(..) => "rename",
             Self::Page(_) => "page",
@@ -178,6 +182,7 @@ impl Job {
             | Self::ContentGet { .. }
             | Self::ContentLink { .. }
             | Self::Joined(_)
+            | Self::Called(_)
             | Self::Page(_) => Urgency::Read,
             Self::Invoke { .. } | Self::Ran(_) | Self::Arrived { .. } | Self::Forget(_) => {
                 Urgency::Write
@@ -202,7 +207,11 @@ impl Job {
             | Self::Arrived { workspace_id, .. }
             | Self::Rename(workspace_id, _) => Some(*workspace_id),
             Self::Page(job) => Some(job.workspace()),
-            Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) | Self::Forget(_) => None,
+            Self::Feedback { .. }
+            | Self::Ran(_)
+            | Self::Joined(_)
+            | Self::Called(_)
+            | Self::Forget(_) => None,
         }
     }
 
@@ -227,6 +236,7 @@ impl Job {
             | Self::ContentLink { .. }
             | Self::Arrived { .. }
             | Self::Joined(_)
+            | Self::Called(_)
             | Self::Forget(_)
             | Self::Page(_)
             | Self::Rename(..) => Keys::Joined,

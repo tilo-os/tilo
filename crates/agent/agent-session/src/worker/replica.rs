@@ -66,7 +66,7 @@ pub struct ConfinedReplica {
     workspace: String,
     member: tilo_actions::MemberId,
     /// JSON [`ReplicaActor`], sent again to a revived worker.
-    actor: String,
+    actor: Mutex<String>,
     record: DocumentId,
     content: Option<ContentStore>,
     /// Who the workspace's members are, read again for each operation.
@@ -75,6 +75,28 @@ pub struct ConfinedReplica {
     /// operation: the same names the person's page is told.
     naming: Option<Members>,
     inner: Mutex<Inner>,
+    /// The operation last handed to a thread of its own because its worker took longer than its
+    /// caller waits ([`Self::invoke_handed`]), until the caller takes its answer.
+    handed: Mutex<Option<Handed>>,
+}
+
+/// What an operation came to: its output, or why it gave none.
+pub(crate) type Invoked = Result<ActionOutput, ApiError>;
+
+/// An operation going on, or answered, on a thread of its own for the request it is part of.
+struct Handed {
+    /// The request it is part of, which takes its answer when it is applied again.
+    request: tilo_actions::InvocationId,
+    answer: std::sync::mpsc::Receiver<Invoked>,
+}
+
+/// One operation to hand to a thread of its own, as [`ConfinedReplica::invoke_in`] takes it.
+pub(crate) struct Operation {
+    pub(crate) context: Option<tilo_actions::ActionContext>,
+    pub(crate) appearance: Option<tilo_actions::Appearance>,
+    pub(crate) address: ActionAddress,
+    pub(crate) arguments: serde_json::Map<String, serde_json::Value>,
+    pub(crate) confirm: bool,
 }
 
 struct Inner {
@@ -285,11 +307,12 @@ impl ConfinedReplica {
             app_id: definition.app_id().to_owned(),
             workspace: workspace.to_owned(),
             member: member.clone(),
-            actor,
+            actor: Mutex::new(actor),
             record,
             content: None,
             members: None,
             naming: None,
+            handed: Mutex::new(None),
             inner: Mutex::new(Inner {
                 process: Some(process),
                 revivals: 0,
@@ -407,7 +430,7 @@ impl ConfinedReplica {
     /// Whether an agent holds the record ([`ReplicaActor::Agent`]): only an
     /// agent's renders go to the host's render service.
     pub(crate) fn is_agents(&self) -> bool {
-        serde_json::from_str::<ReplicaActor>(&self.actor)
+        serde_json::from_str::<ReplicaActor>(&self.actor.lock_recover())
             .is_ok_and(|actor| matches!(actor, ReplicaActor::Agent { .. }))
     }
 
@@ -533,12 +556,13 @@ impl ConfinedReplica {
         }
         let mut process = Lease::new(self.mode, &self.workspace);
         let worker = |stopped: Stopped| worker_error(stopped.to_string());
+        let actor = self.actor.lock_recover().clone();
         match process
             .call(&Request::Open {
                 app_id: self.app_id.clone(),
                 workspace: self.workspace.clone(),
                 member: self.member.clone(),
-                actor: self.actor.clone(),
+                actor,
                 seed: Some((self.record.as_str().to_owned(), vec![inner.mirror.save()])),
                 asks_workspace: inner.asks_workspace.is_some(),
             })
@@ -869,7 +893,7 @@ impl ConfinedReplica {
     ///
     /// # Errors
     /// Why the worker could not renew it.
-    pub fn renew(&mut self, actor: &ReplicaActor) -> Result<(), AppError> {
+    pub fn renew(&self, actor: &ReplicaActor) -> Result<(), AppError> {
         let actor =
             serde_json::to_string(actor).map_err(|error| worker_error(error.to_string()))?;
         let answered = self.call(
@@ -880,7 +904,7 @@ impl ConfinedReplica {
         )?;
         match answered {
             Reply::Done => {
-                self.actor = actor;
+                *self.actor.lock_recover() = actor;
                 Ok(())
             }
             Reply::Failed(reason) => Err(worker_error(reason)),
@@ -961,6 +985,74 @@ impl ConfinedReplica {
         self.invoke_within(None, context, appearance, address, arguments, confirm)
     }
 
+    /// [`Self::invoke_in`] for `request`, on a thread of its own: answered here when the worker
+    /// answers within `grace`, and otherwise `None` while it goes on, after which `answered` is
+    /// called once it has. The request applied again asks for the same operation and takes its
+    /// answer then, instead of running it twice.
+    ///
+    /// Each thread serving workspaces asks the workers of every workspace it serves, so a
+    /// worker that takes long to answer (a large import, an app's long effect, a worker that
+    /// hangs) would otherwise hold every other workspace of that thread behind it. Another
+    /// request asked of this document meanwhile waits for the one going on, as it would have.
+    pub(crate) fn invoke_handed(
+        self: &std::sync::Arc<Self>,
+        request: tilo_actions::InvocationId,
+        grace: std::time::Duration,
+        answered: impl FnOnce() + Send + 'static,
+        operation: impl FnOnce() -> Operation,
+    ) -> Option<Invoked> {
+        let mut handed = self.handed.lock_recover();
+        if let Some(running) = handed.take() {
+            match running.answer.try_recv() {
+                Ok(answer) if running.request == request => return Some(answer),
+                Ok(_) => {
+                    tracing::warn!(app = %self.app_id,
+                        "app worker: an operation's answer was not taken by its request");
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    *handed = Some(running);
+                    return None;
+                }
+                // The thread ended without an answer: the operation is asked again below.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        let Operation {
+            context,
+            appearance,
+            address,
+            arguments,
+            confirm,
+        } = operation();
+        let (send, answer) = std::sync::mpsc::channel();
+        let replica = std::sync::Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name("app-call".into())
+            .spawn(move || {
+                let output = replica.invoke_in(
+                    context.as_ref(),
+                    appearance.as_ref(),
+                    &address,
+                    &arguments,
+                    confirm,
+                );
+                if send.send(output).is_ok() {
+                    answered();
+                }
+            });
+        if let Err(error) = spawned {
+            return Some(Err(ApiError::Unavailable {
+                code: "app_worker".into(),
+                reason: format!("no thread was started for the operation: {error}"),
+            }));
+        }
+        if let Ok(output) = answer.recv_timeout(grace) {
+            return Some(output);
+        }
+        *handed = Some(Handed { request, answer });
+        None
+    }
+
     /// [`Self::invoke`] as `invoker` within `context`:
     /// [`crate::Replica::invoke_with`].
     ///
@@ -1038,6 +1130,8 @@ impl ConfinedReplica {
             members: self.members_for(invoker),
             given: given.clone(),
         };
+        #[cfg(feature = "test-support")]
+        crate::workspace_actions::slowed::wait(&self.workspace, &self.app_id);
         let mut reply = self.call(&mut inner, &request);
         if let Some(content) = &self.content {
             let wanted = self.gather(&mut inner, content);

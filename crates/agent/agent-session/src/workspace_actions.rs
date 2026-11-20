@@ -51,6 +51,7 @@
 mod arguments;
 mod asked_in_turn;
 mod bounded;
+mod call_wait;
 mod canonical;
 mod carried;
 mod catalogue;
@@ -92,6 +93,8 @@ mod reads;
 mod run_context;
 mod search_access;
 mod search_activity;
+#[cfg(feature = "test-support")]
+pub mod slowed;
 use search_activity::SearchActivity;
 mod sealed;
 use sealed::{GaveUp, sealed_for};
@@ -772,7 +775,9 @@ impl WorkspaceActions {
 
 /// One record held on the service thread, in its own app worker.
 struct Mounted {
-    app: ConfinedReplica,
+    /// Shared with the thread an operation on it goes on in, when it leaves this one
+    /// ([`call_wait`]).
+    app: Arc<ConfinedReplica>,
     /// The heads of its record merged into it last: what the next merge
     /// takes only the changes after.
     merged: Option<Vec<[u8; 32]>>,
@@ -1269,6 +1274,8 @@ struct Worker {
     /// Writes waiting off the thread for the part they change to arrive
     /// ([`part_wait`]).
     part_waits: part_wait::PartWaits,
+    /// Requests whose operation goes on off the thread, and what waits for them ([`call_wait`]).
+    call_waits: call_wait::CallWaits,
     /// The caller's device whose request it serves now ([`publish::Worker::writer`](publish)).
     writing_as: Option<Caller>,
     clock: u64,
@@ -1395,6 +1402,7 @@ impl Worker {
             said_directly: HashMap::new(),
             joining: HashMap::new(),
             part_waits: part_wait::PartWaits::default(),
+            call_waits: call_wait::CallWaits::default(),
             writing_as: None,
             pages: pages::Pages::default(),
             clock: 0,
@@ -1496,7 +1504,7 @@ impl Worker {
         // the workspace for each wake would make a busy workspace pay a read
         // for every change the service hears, including the changes of every
         // other workspace.
-        if matches!(job, Job::Joined(_)) {
+        if matches!(job, Job::Joined(_) | Job::Called(_)) {
             self.timed(queued, job);
             return;
         }
@@ -1727,6 +1735,10 @@ impl Worker {
     /// it listed under and the one it looked for, so a slow lookup says which
     /// of the resource's levels was read.
     fn timed(&mut self, queued: Instant, job: Job) {
+        // An operation of its workspace goes on off the thread, and it reads what that changes.
+        let Some(job) = self.unless_behind_call(queued, job) else {
+            return;
+        };
         let started = Instant::now();
         let kind = job.kind();
         let workspace = job.workspace().map(|id| id.to_string()).unwrap_or_default();
@@ -1742,7 +1754,7 @@ impl Worker {
             queued,
             matches!(job, Job::Invoke { .. } | Job::Catalogue { .. }),
         );
-        self.take(job);
+        self.take(queued, job);
         // What it ended, it ended now, as a listing of runs says.
         self.log().stamp_ended();
         let (waited, ran) = (started.duration_since(queued), started.elapsed());
@@ -1773,7 +1785,7 @@ impl Worker {
         clippy::too_many_lines,
         reason = "one arm per kind of request, read together: a dozen tiny methods hide the map"
     )]
-    fn take(&mut self, job: Job) {
+    fn take(&mut self, queued: Instant, job: Job) {
         {
             match job {
                 Job::Feedback {
@@ -1830,6 +1842,16 @@ impl Worker {
                     done,
                 } => match self.invoke(workspace_id, invocation) {
                     Some(receipt) => done.complete(receipt),
+                    // Its app's worker answers it off this thread.
+                    None if self.call_waits.held() => self.await_call(
+                        workspace_id,
+                        queued,
+                        Job::Invoke {
+                            workspace_id,
+                            invocation,
+                            done,
+                        },
+                    ),
                     // It waits for a part of what it changes, off this thread.
                     None => self.await_part(
                         workspace_id,
@@ -1876,6 +1898,7 @@ impl Worker {
                     done,
                 } => done.complete(self.invocations(workspace_id, &caller, &query)),
                 Job::Joined(workspace_id) => self.resume(workspace_id),
+                Job::Called(workspace_id) => self.call_answered(workspace_id),
                 Job::Rename(workspace_id, route) => self.rename(workspace_id, &route),
                 Job::Page(job) => self.page_job(*job),
                 Job::Forget(workspace_id) => self.forget(workspace_id),
@@ -2529,6 +2552,7 @@ impl Worker {
                 &holder,
                 keys.needs(),
                 &Invoked {
+                    invocation: request.invocation,
                     address: &target.address,
                     arguments: &arguments,
                     context: Some(&context),

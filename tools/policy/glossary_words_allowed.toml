@@ -685,6 +685,7 @@ paths = [
     "crates/agent/agent-session/tests/workspace_actions/search_beside_requests.rs",
     "crates/agent/agent-session/tests/workspace_actions/person_before_agent.rs",
     "crates/agent/agent-session/tests/workspace_actions/part_held_back.rs",
+    "crates/agent/agent-session/tests/workspace_actions/slow_call.rs",
 ]
 
 [[allow]]

@@ -789,7 +789,7 @@ impl Worker {
         self.writing_as = Some(caller.clone());
         let ran = self.invoke_or_ask(workspace_id, &caller, &request);
         self.writing_as = None;
-        if self.part_waits.held() {
+        if self.part_waits.held() || self.call_waits.held() {
             return None;
         }
         let (outcome, unsaved) = match ran {

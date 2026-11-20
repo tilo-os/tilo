@@ -69,6 +69,7 @@ pub use process::{affinity, pool_size, running, set_affinity};
 pub use proto::{PageAction, ProbeReport};
 pub(crate) use read::{ConfinedRead, ConfinedTitles, ConfinedViews};
 pub use replica::ConfinedReplica;
+pub(crate) use replica::{Invoked, Operation};
 
 /// The first argument of a worker. It is also the name of the test
 /// [`app_worker!`](crate::app_worker) defines, so libtest runs exactly that

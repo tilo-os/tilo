@@ -25,6 +25,7 @@ impl Job {
             | Self::Changed { workspace_id, .. }
             | Self::Arrived { workspace_id, .. }
             | Self::Joined(workspace_id)
+            | Self::Called(workspace_id)
             | Self::Forget(workspace_id)
             | Self::Rename(workspace_id, _) => *workspace_id,
             Self::Page(job) => job.workspace(),
@@ -84,15 +85,19 @@ impl Jobs {
         reason = "a job the thread cannot take goes back to its sender whole"
     )]
     pub(super) fn send(&self, job: (Instant, Job)) -> Result<(), mpsc::SendError<(Instant, Job)>> {
-        use std::hash::{Hash as _, Hasher as _};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        job.1.served_in().hash(&mut hasher);
-        let count = u64::try_from(self.shards.len()).unwrap_or(1).max(1);
-        let index = usize::try_from(hasher.finish().checked_rem(count).unwrap_or_default())
-            .unwrap_or_default();
+        let index = shard_of(job.1.served_in(), self.shards.len());
         match self.shards.get(index) {
             Some(shard) => shard.send(job),
             None => Err(mpsc::SendError(job)),
         }
     }
+}
+
+/// Which of `count` threads serves `workspace_id`.
+pub(super) fn shard_of(workspace_id: WorkspaceId, count: usize) -> usize {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    workspace_id.hash(&mut hasher);
+    let count = u64::try_from(count).unwrap_or(1).max(1);
+    usize::try_from(hasher.finish().checked_rem(count).unwrap_or_default()).unwrap_or_default()
 }
