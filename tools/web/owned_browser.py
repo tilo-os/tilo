@@ -216,7 +216,12 @@ def is_reaper(pid):
 
 def acquire_permit(caller_pid, watched_grandparent, deadline):
     """Acquire one of MAX_CONCURRENT machine-wide flock permits before starting
-    Chromium. Released automatically by the kernel on exit or crash."""
+    Chromium. Released automatically by the kernel on exit or crash.
+
+    The directory is shared with every other launch on the machine and outlives
+    them all: it is made here when it is missing and never removed, and a launch
+    that finds it gone while it waits (another program cleaned the runtime
+    directory) makes it again rather than failing."""
     if MAX_CONCURRENT <= 0:
         return None
     permit_dir = Path(
@@ -236,7 +241,11 @@ def acquire_permit(caller_pid, watched_grandparent, deadline):
                   file=sys.stderr, flush=True)
             return None
         for index in range(MAX_CONCURRENT):
-            fd = os.open(permit_dir / f'permit-{index}.lock', os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fd = os.open(permit_dir / f'permit-{index}.lock', os.O_CREAT | os.O_RDWR, 0o600)
+            except FileNotFoundError:
+                permit_dir.mkdir(parents=True, exist_ok=True)
+                continue
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return fd

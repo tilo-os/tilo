@@ -6,7 +6,7 @@
 // WebGPU are available.
 import {spawn} from 'node:child_process';
 import {createHash, X509Certificate} from 'node:crypto';
-import {accessSync, constants as fsConstants, readFileSync, existsSync, mkdtempSync, readdirSync, readlinkSync, rmSync, statSync, statfsSync} from 'node:fs';
+import {accessSync, constants as fsConstants, readFileSync, existsSync, mkdtempSync, readdirSync, readlinkSync, rmSync, statSync, statfsSync, writeFileSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {isIP} from 'node:net';
 import {homedir, hostname, tmpdir} from 'node:os';
@@ -228,6 +228,19 @@ function throwawayDir() {
 /** A profile whose browser started less than this long ago is still starting. */
 const startingProfileMs = 10 * 60_000;
 
+/** What marks a `tilo-chrome-` directory as a profile this module made. The throwaway directory is
+ * shared with everything else on the machine that starts a Chromium (a wrapper's start-up queue
+ * among them), and a directory with this name need not be a profile: only one carrying the marker
+ * is the sweep's to remove. */
+const profileMarker = '.tilo-chrome-profile';
+
+/** A new throwaway profile in `home`, marked as this module's. */
+function newProfile(home) {
+  const profile = mkdtempSync(join(home, 'tilo-chrome-'));
+  writeFileSync(join(profile, profileMarker), '');
+  return profile;
+}
+
 /** Whether `profile`'s browser has stopped. Chromium names its owner in the
  * profile's `SingletonLock` symlink as `hostname-pid`, so a profile whose pid
  * is gone, or whose lock was never written and nobody has touched since, is a
@@ -252,7 +265,12 @@ function abandoned(profile) {
 /** Remove profiles whose browser stopped without a test noticing. A killed or
  * crashed test leaves its supervisor and Chromium behind, and each profile
  * holds hundreds of megabytes of memory-backed disk that only the test that
- * created it would have removed. */
+ * created it would have removed.
+ *
+ * Only a directory this module marked as a profile is a candidate: another
+ * tool's start-up queue directory in the same shared place may carry
+ * this prefix too, and deleting one fails every browser launch waiting on it
+ * until the tool makes it again. */
 function sweepProfiles() {
   for (const home of new Set(profileHomes())) {
     let names;
@@ -265,6 +283,7 @@ function sweepProfiles() {
       if (!name.startsWith('tilo-chrome-')) continue;
       const profile = join(home, name);
       try {
+        if (!existsSync(join(profile, profileMarker))) continue;
         if (!abandoned(profile)) continue;
         rmSync(profile, {recursive: true, force: true, maxRetries: 5, retryDelay: 100});
       } catch {
@@ -386,7 +405,7 @@ export function untilTruthy(expression, withinMs) {
  * --ignore-gpu-blocklist` there, and Chromium takes the switch it read last. */
 export async function launch({args = [], media = false} = {}) {
   sweepProfiles();
-  const profile = mkdtempSync(join(throwawayDir(), 'tilo-chrome-'));
+  const profile = newProfile(throwawayDir());
   const supervised = process.platform === 'linux';
   const browser = chromeBinary();
   const browserArgs = [
