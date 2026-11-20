@@ -20,7 +20,7 @@ out=${3:?}
 [[ -f $dev/oci/index.json ]] || die "$dev holds no image layout (oci/)"
 
 missing=()
-for p in dosfstools btrfs-progs systemd-container binutils qemu-img jq cryptsetup mtools zstd procps-ng; do
+for p in dosfstools btrfs-progs systemd-container binutils qemu-img jq cryptsetup mtools zstd procps-ng skopeo curl; do
   rpm -q "$p" >/dev/null 2>&1 || missing+=("$p")
 done
 command -v podman >/dev/null || missing+=(podman skopeo fuse-overlayfs e2fsprogs util-linux python3)
@@ -36,7 +36,7 @@ if [[ $(cat "$dev/revision") == development-loop ]]; then
 else
   revision=$(git rev-parse --verify HEAD) || die 'the disk names its commit: git = true'
 fi
-id=$(podman pull -q "oci:$dev/oci")
+id=$(load_for_disk "$dev/oci" tilo-vm)
 [[ $(podman image inspect --format '{{.Digest}}' "$id") == "$(cat "$dev/digest")" ]] || die "$dev/oci is not the image $dev/digest names"
 podman tag "$id" localhost/tilo-vm:ci
 if [[ $revision == development-loop ]]; then
