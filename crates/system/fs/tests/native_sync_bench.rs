@@ -575,7 +575,8 @@ impl Pair {
             &self.dir.join("host-mount"),
             None,
         );
-        self.host.wait_line("Joined workspace");
+        // A serving host prints its ticket and then mounts; only a joining device says it joined.
+        self.host.wait_ticket();
         self.host.wait_serving();
         started.elapsed()
     }
