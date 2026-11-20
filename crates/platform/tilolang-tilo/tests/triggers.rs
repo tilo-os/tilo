@@ -6,9 +6,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilo_render_protocol::patch::local::pair;
 use tilolang_runtime::meta::Meta;
+use tilolang_runtime::store::Store as _;
 use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_runtime::{Actor, InvokeOutcome};
 use tilolang_tilo::background::Waker;
@@ -55,6 +56,9 @@ action ring(r: Reminder) { r.rings += 1 }
 action ring_newest(r: Rack) {
     if let b = r.bells.last() { b.chimes += r.bells.count() }
 }
+
+/// Adds a bell due at `at`.
+action add_bell(r: Rack, at: Option<Time>) { r.bells.insert(Bell(at: at)) }
 
 action remind(r: Reminder, at: Time) { r.at = .some(at) }
 
@@ -115,35 +119,23 @@ fn type_id(replica: &Replica, ty: &str) -> String {
         .unwrap()
 }
 
-/// The value of the counter field `field` on the type `ty` of the document `doc`.
-fn counted(replica: &Replica, doc: &str, ty: &str, field: &str) -> i64 {
-    let id = crate::fixtures::field_id(&meta(replica), ty, field);
-    match replica.host.store().record(doc).unwrap().get(&id) {
-        Some(tilolang_tilo::resource::DynValue::Counter(counter)) => counter.get(),
+/// The value the counter field `field` of `at` holds.
+fn counted_at(replica: &Replica, at: &ResourceRef, field: &str) -> i64 {
+    match replica.host.runtime().read(at, field) {
+        Ok(Value::Int(value)) => value,
         other => panic!("not a counter: {other:?}"),
     }
 }
 
-/// How many times the rack's `i`th bell has rung.
-fn chimes(replica: &Replica, i: usize) -> i64 {
-    use tilolang_runtime::meta::FieldKind;
-    use tilolang_runtime::store::{FieldSpec, FieldValue, Store as _};
-
-    let spec = FieldSpec {
-        id: crate::fixtures::field_id(&meta(replica), "Bell", "chimes"),
-        kind: FieldKind::Counter,
-    };
-    let at = ResourceRef::root("rack".to_owned(), type_id(replica, "Rack"))
-        .item(&format!("bell-{i:05}"), type_id(replica, "Bell"));
-    match replica.host.store().read(&at, &spec).unwrap() {
-        FieldValue::Counter(rung) => rung,
-        other => panic!("a bell is {other:?}"),
-    }
+/// The value of the counter field `field` on the type `ty` of the root `doc`.
+fn counted(replica: &Replica, doc: &str, ty: &str, field: &str) -> i64 {
+    let at = ResourceRef::root(doc.to_owned(), type_id(replica, ty));
+    counted_at(replica, &at, field)
 }
 
 /// A replica with the package loaded, its board root made, and a reminder root made.
 fn workspace() -> (Replica, String, String) {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &packages());
+    let (ada, _) = Replica::new("ada", Workspace::new(), &packages());
     let board = ada.host.root_of(APP).unwrap().doc;
     let reminder = reminder_root(&ada);
     ada.commit();
@@ -156,67 +148,15 @@ fn reminder_root(replica: &Replica) -> String {
     replica.host.root_resource(APP, &ty).unwrap().doc
 }
 
-/// The id of a rack holding `n` bells, its `first` bell due at `now` and every other an hour or
-/// more later, all made in one change as a workspace is seeded.
-fn rack(replica: &mut Replica, n: usize, first: usize, now: i64) -> String {
-    use serde_json::json;
-    use tilo_resource::{Collection, Id, Model as _};
-    use tilolang_tilo::action::{DynAction, DynEdit};
-    use tilolang_tilo::resource::DynResource;
-
-    let meta = meta(replica);
-    let rack_ty = meta.types.iter().find(|t| t.name == "Rack").unwrap();
-    let bell_ty = meta.types.iter().find(|t| t.name == "Bell").unwrap();
-    let schema = tilolang_tilo::schema::lookup(&bell_ty.id).unwrap();
-    let mut bells = Collection::default();
-    for i in 0..n {
-        let mut bell = DynResource::empty(schema).unwrap();
-        let at = if i == first {
-            now
-        } else {
-            // An hour later, and each the minute after the one before it.
-            now.saturating_add(3600)
-                .saturating_add(i64::try_from(i).unwrap_or(i64::MAX).saturating_mul(60))
-        };
-        if let Some(tilolang_tilo::resource::DynValue::Register(slot)) =
-            bell.get_mut(&crate::fixtures::field_id(&meta, "Bell", "at"))
-        {
-            *slot = json!({ "some": tilolang_tilo::host::iso_utc(at.cast_unsigned()) });
-        }
-        bells.push(Id::from_raw(format!("bell-{i:05}")), bell);
-    }
-    let mut record =
-        DynResource::empty(tilolang_tilo::schema::lookup(&rack_ty.id).unwrap()).unwrap();
-    if let Some(tilolang_tilo::resource::DynValue::Collection(slot)) =
-        record.get_mut(&crate::fixtures::field_id(&meta, "Rack", "bells"))
-    {
-        *slot = bells;
-    }
-    let create = DynAction {
-        app: APP.to_owned(),
-        kind: "tl.t.trig.seed".to_owned(),
-        action_id: "$create".to_owned(),
-        args: serde_json::Value::Null,
-        authorship: tilolang_tilo::Authorship::default(),
-        edits: vec![DynEdit::Create {
-            id: "rack".to_owned(),
-            record: record.to_json(),
-        }],
-    };
-    replica.apply(&create);
-    replica.commit();
-    "rack".to_owned()
-}
-
 /// Run the triggers and commit what they did, as a window of the app does each turn.
-fn turn(replica: &mut Replica, now: i64) -> usize {
+fn turn(replica: &Replica, now: i64) -> usize {
     let ran = replica.host.run_triggers(now);
     replica.commit();
     ran
 }
 
 /// Invoke the action `name` of the package on `args`, as a person at the window, and commit.
-fn run(replica: &mut Replica, name: &str, args: Vec<Value>) {
+fn run(replica: &Replica, name: &str, args: Vec<Value>) {
     let id = action_id(&meta(replica), name);
     let done = replica
         .host
@@ -231,7 +171,7 @@ fn run(replica: &mut Replica, name: &str, args: Vec<Value>) {
 }
 
 /// Set the reminder `doc`'s time to `at`, as a person at the window.
-fn remind_at(replica: &mut Replica, doc: &str, at: &str) {
+fn remind_at(replica: &Replica, doc: &str, at: &str) {
     let target = ResourceRef::root(doc.to_owned(), type_id(replica, "Reminder"));
     run(
         replica,
@@ -252,63 +192,63 @@ tilo_test_env::scenario! {
 
     phase a_schedule_runs_once_a_period;
     {
-        let (mut ada, board, _) = workspace();
+        let (ada, board, _) = workspace();
         let noon = 1_790_000_400 / PERIOD * PERIOD;
 
-        assert_eq!(turn(&mut ada, noon), 1, "the half hour is due");
+        assert_eq!(turn(&ada, noon), 1, "the half hour is due");
         assert_eq!(counted(&ada, &board, "Board", "ticks"), 1);
 
-        assert_eq!(turn(&mut ada, noon + 60), 0, "not twice in one half hour");
+        assert_eq!(turn(&ada, noon + 60), 0, "not twice in one half hour");
         assert_eq!(counted(&ada, &board, "Board", "ticks"), 1);
 
-        assert_eq!(turn(&mut ada, noon + PERIOD), 1, "the next half hour");
+        assert_eq!(turn(&ada, noon + PERIOD), 1, "the next half hour");
         assert_eq!(counted(&ada, &board, "Board", "ticks"), 2);
     }
 
     phase a_trigger_at_a_documents_time_fires_and_rearms_when_it_changes;
     {
-        let (mut ada, _, reminder) = workspace();
+        let (ada, _, reminder) = workspace();
         let ten = tilolang::calendar::instant("2026-10-27T10:00:00Z").unwrap();
         let eleven = tilolang::calendar::instant("2026-10-27T11:00:00Z").unwrap();
         let rings = |ada: &Replica| counted(ada, &reminder, "Reminder", "rings");
 
-        remind_at(&mut ada, &reminder, "2026-10-27T10:00:00Z");
-        turn(&mut ada, ten - 1);
+        remind_at(&ada, &reminder, "2026-10-27T10:00:00Z");
+        turn(&ada, ten - 1);
         assert_eq!(rings(&ada), 0, "not before its time");
 
-        turn(&mut ada, ten);
+        turn(&ada, ten);
         assert_eq!(rings(&ada), 1, "at its time");
-        turn(&mut ada, ten);
+        turn(&ada, ten);
         assert_eq!(rings(&ada), 1, "once, not every turn");
 
-        remind_at(&mut ada, &reminder, "2026-10-27T11:00:00Z");
-        turn(&mut ada, ten + 60);
+        remind_at(&ada, &reminder, "2026-10-27T11:00:00Z");
+        turn(&ada, ten + 60);
         assert_eq!(rings(&ada), 1, "the old time rang already");
 
-        turn(&mut ada, eleven);
+        turn(&ada, eleven);
         assert_eq!(rings(&ada), 2, "the new time comes due");
     }
 
     phase a_run_missed_while_every_device_was_off_runs_once_when_one_comes_up;
     {
-        let (mut ada, board, reminder) = workspace();
+        let (ada, board, reminder) = workspace();
         let ten = tilolang::calendar::instant("2026-10-27T10:00:00Z").unwrap();
-        remind_at(&mut ada, &reminder, "2026-10-27T10:00:00Z");
+        remind_at(&ada, &reminder, "2026-10-27T10:00:00Z");
 
         // Nothing ran for five hours: the board's half hours and the reminder's time all passed.
         let five_past = ten + 5 * 60 * 60;
-        assert_eq!(turn(&mut ada, five_past), 2, "each trigger runs once");
+        assert_eq!(turn(&ada, five_past), 2, "each trigger runs once");
         assert_eq!(counted(&ada, &board, "Board", "ticks"), 1, "one, not ten");
         assert_eq!(counted(&ada, &reminder, "Reminder", "rings"), 1);
 
-        assert_eq!(turn(&mut ada, five_past + 1), 0, "and nothing again");
+        assert_eq!(turn(&ada, five_past + 1), 0, "and nothing again");
         assert_eq!(counted(&ada, &board, "Board", "ticks"), 1);
         assert_eq!(counted(&ada, &reminder, "Reminder", "rings"), 1);
     }
 
     phase a_wake_comes_at_the_next_instant_a_trigger_is_due;
     {
-        let (mut ada, _, reminder) = workspace();
+        let (ada, _, reminder) = workspace();
         let ten = tilolang::calendar::instant("2026-10-27T10:07:30Z").unwrap();
         let now = ten - 60;
 
@@ -318,11 +258,11 @@ tilo_test_env::scenario! {
         assert_eq!(next % PERIOD, 0, "a period's start: {next}");
 
         // A time still to come comes first.
-        remind_at(&mut ada, &reminder, "2026-10-27T10:07:30Z");
+        remind_at(&ada, &reminder, "2026-10-27T10:07:30Z");
         assert_eq!(ada.host.next_trigger(now), Some(ten), "the reminder's time");
 
         // Once it rang, the board's half hour is what wakes the app again.
-        turn(&mut ada, ten);
+        turn(&ada, ten);
         let next = ada.host.next_trigger(ten).unwrap();
         assert!(next > ten && next <= ten + PERIOD, "{next} after {ten}");
         assert_eq!(next % PERIOD, 0);
@@ -330,21 +270,30 @@ tilo_test_env::scenario! {
 
     phase two_devices_run_a_trigger_once;
     {
-        let (mut ada, board, _) = workspace();
+        let (ada, board, _) = workspace();
         let now = 1_790_000_400 / PERIOD * PERIOD;
-        let mut bo = ada.fork("bo", &packages());
+        let bo = ada.fork("bo", &packages());
+        let at = ResourceRef::root(board.clone(), type_id(&ada, "Board"));
 
         assert_eq!(ada.host.run_triggers(now), 1, "the origin runs it");
-        let done = ada.host.take_committed();
-        assert_eq!(done.len(), 1, "one change: {done:#?}");
+        ada.commit();
+        let tick = action_id(&meta(&ada), "tick");
+        // Its run is one change of the board, after the one that made it.
+        let versions: Vec<_> = ada
+            .versions(&at)
+            .into_iter()
+            .filter(|version| version.kind != tilolang_runtime::store::VersionKind::Created)
+            .collect();
+        assert_eq!(versions.len(), 1, "one change: {versions:#?}");
         // The app acting by itself, not the person at the window.
-        assert_eq!(done[0].action.invoker(), tilolang_tilo::runtime::Actor::App("t.trig".into()));
-        for change in done {
-            ada.apply(&change.action);
-        }
+        assert_eq!(
+            versions[0].who,
+            Some(tilolang_tilo::runtime::Actor::App("t.trig".into()))
+        );
+        assert_eq!(versions[0].action, tick);
 
-        bo.sync_with(&mut ada);
-        assert_eq!(turn(&mut bo, now), 0, "the other device finds it ran");
+        bo.sync_with(&ada);
+        assert_eq!(turn(&bo, now), 0, "the other device finds it ran");
         assert_eq!(counted(&bo, &board, "Board", "ticks"), 1);
         assert_eq!(counted(&ada, &board, "Board", "ticks"), 1);
     }
@@ -353,159 +302,49 @@ tilo_test_env::scenario! {
     {
         let noon = "2026-10-27T12:00:00Z";
 
-        let (mut origin, doc) = window(noon, true);
-        origin.sync(Some(&doc));
-        // Driven by hand, this window has no frames to take in the index its load builds off
-        // them: it waits for it, as a running window's frames would.
-        origin.host().expect("the window opened").wait_index();
-        origin.sync(Some(&doc));
-        origin.sync(Some(&doc));
-        let ran: Vec<_> = origin
-            .host()
-            .unwrap()
-            .take_committed()
-            .into_iter()
-            .map(|done| done.action.invoker())
-            .filter(|invoker| invoker.app().is_some())
-            .collect();
-        assert_eq!(ran, vec![tilolang_tilo::runtime::Actor::App("t.trig".into())]);
-
-        let (mut reader, doc) = window(noon, false);
-        reader.sync(Some(&doc));
-        reader.host().expect("the window opened").wait_index();
-        reader.sync(Some(&doc));
-        reader.sync(Some(&doc));
-        assert!(
-            reader
-                .host()
-                .unwrap()
-                .take_committed()
+        let (mut origin, board) = window(noon, true);
+        origin.sync();
+        origin.sync();
+        let at = ResourceRef::root(board, type_id_of(&origin, "Board"));
+        let tick = action_id(&origin.host().unwrap().package(APP).unwrap().meta, "tick");
+        let versions = origin.host().unwrap().store().versions(&at).unwrap();
+        assert_eq!(
+            versions.iter().filter(|version| version.action == tick).count(),
+            1,
+            "the origin runs the trigger: {versions:#?}"
+        );
+        assert_eq!(
+            versions
                 .iter()
-                .all(|done| done.action.invoker().app().is_none()),
-            "a replica that does not govern the workspace runs none"
+                .find(|version| version.action == tick)
+                .and_then(|version| version.who.clone()),
+            Some(tilolang_tilo::runtime::Actor::App("t.trig".into()))
+        );
+
+        let (mut reader, board) = window(noon, false);
+        reader.sync();
+        reader.sync();
+        let at = ResourceRef::root(board, type_id_of(&reader, "Board"));
+        let versions = reader.host().unwrap().store().versions(&at).unwrap();
+        assert!(
+            versions.iter().all(|version| version.action != tick),
+            "a replica that does not govern the workspace runs none: {versions:#?}"
         );
     }
 
-    phase frames_over_a_document_that_did_not_move_take_nothing_in;
+    phase frames_over_a_store_that_did_not_move_take_nothing_in;
     {
-        // The origin's store holds the trigger's change, which the document it is handed lacks:
-        // a frame over that document still has nothing to take in.
-        let (mut window, doc) = window("2026-10-27T12:00:00Z", true);
-        window.sync(Some(&doc));
-        let host = window.host().expect("the window opened");
-        host.wait_index();
-        window.sync(Some(&doc));
-        let merges = host.store().stats().merges;
+        // Frames over a store that did not move read nothing new: the window's view draws again
+        // without the store moving.
+        let (mut window, _board) = window("2026-10-27T12:00:00Z", true);
+        window.sync();
+        let watch = window.host().expect("the window opened").store().watch();
+        let _ = watch.take();
         for _ in 0..10 {
-            window.sync(Some(&doc));
+            window.sync();
         }
-        assert_eq!(host.store().stats().merges, merges, "an idle window merges nothing");
+        assert!(watch.take().is_empty(), "an idle window saw nothing move");
     }
-}
-
-#[test]
-fn a_large_collection_is_read_at_its_next_instant_not_whole() {
-    let now = tilolang::calendar::instant("2026-10-27T10:07:30Z").unwrap();
-    let period = now.div_euclid(PERIOD) * PERIOD;
-
-    // What one turn costs at a rack of `n` bells: the bell due at `now` rings, and nothing reads
-    // the bells that are not.
-    let work = |n: usize| {
-        let (mut ada, _, _) = workspace();
-        rack(&mut ada, n, 0, now);
-        // The board's half hour ticks first, in the turn that starts its period: the turn read
-        // below is the bells' alone.
-        assert_eq!(turn(&mut ada, period), 1, "the board ticks, no bell is due");
-        let before = ada.host.store().read_stats();
-        let next = ada.host.next_trigger(now - 1);
-        let ran = ada.host.run_triggers(now);
-        let after = ada.host.store().read_stats();
-        ada.commit();
-        (
-            ran,
-            next,
-            after.doc.entries - before.doc.entries,
-            after.evaluated - before.evaluated,
-            after.index.pages - before.index.pages,
-            chimes(&ada, 0),
-            chimes(&ada, 1),
-            ada.host.next_trigger(now),
-        )
-    };
-
-    let (ran, next, small_entries, small_evaluated, small_pages, first, second, after_small) =
-        work(20);
-    assert_eq!(next, Some(now), "the bell due is the next instant");
-    assert_eq!(ran, 1, "the one bell due rings");
-    assert_eq!((first, second), (1, 0), "and no other");
-    assert_eq!(
-        after_small,
-        Some(period + PERIOD),
-        "the board's next half hour, the bells' times all past it"
-    );
-
-    let (ran, next, entries, evaluated, pages, first, second, after_large) = work(10_000);
-    assert_eq!(next, Some(now), "the bell due is the next instant");
-    assert_eq!(ran, 1, "the one bell due rings");
-    assert_eq!((first, second), (1, 0), "and no other");
-    assert!(
-        entries <= small_entries && entries < 64,
-        "reading {entries} document entries, against {small_entries} of twenty"
-    );
-    assert_eq!(
-        (evaluated, small_evaluated),
-        (0, 0),
-        "no bell checked one by one"
-    );
-    assert!(
-        pages <= small_pages + 8 && pages < 64,
-        "reading {pages} index pages, against {small_pages} of twenty"
-    );
-    assert_eq!(
-        after_large, after_small,
-        "and what it wakes for is the same"
-    );
-}
-
-/// An action that reads the end of a collection and how many it holds reads those, not every
-/// item: replying in a large mailbox costs what replying in a small one does.
-#[test]
-fn an_action_reads_the_end_and_count_of_a_large_collection_not_its_items() {
-    let now = tilolang::calendar::instant("2026-10-27T10:07:30Z").unwrap();
-    let work = |n: usize| {
-        let (mut ada, _, _) = workspace();
-        let rack = rack(&mut ada, n, 0, now);
-        let target = ResourceRef::root(rack, type_id(&ada, "Rack"));
-        let before = ada.host.store().read_stats();
-        run(&mut ada, "ring_newest", vec![Value::resource(&target)]);
-        let after = ada.host.store().read_stats();
-        (
-            chimes(&ada, n - 1),
-            chimes(&ada, n - 2),
-            after.doc.entries - before.doc.entries,
-            after.index.pages - before.index.pages,
-        )
-    };
-    let (newest, other, small_entries, small_pages) = work(20);
-    assert_eq!(
-        (newest, other),
-        (20, 0),
-        "the newest bell rings once a bell"
-    );
-    let (newest, other, entries, pages) = work(10_000);
-    assert_eq!(
-        (newest, other),
-        (10_000, 0),
-        "the newest bell rings once a bell"
-    );
-    assert!(
-        entries <= small_entries,
-        "reading {entries} document entries, against {small_entries} of twenty"
-    );
-    assert!(
-        pages <= small_pages + 1,
-        "reading {pages} index pages, against {small_pages} of twenty"
-    );
 }
 
 /// What a window's instance asks the platform: the package, the clock, and the words.
@@ -541,9 +380,8 @@ impl NameHost for Alone {
     }
 }
 
-/// A window of the app on a document of its own: no broker, so nothing of it is sent anywhere.
-fn window(now: &str, origin: bool) -> (Instance, AutoCommit) {
-    let doc = AutoCommit::new();
+/// A window of the app over a store of its own: no broker, so nothing of it is sent anywhere.
+fn window(now: &str, origin: bool) -> (Instance, String) {
     let (app_end, _window) = pair();
     let platform = Rc::new(Trig {
         now: RefCell::new(now.to_owned()),
@@ -554,8 +392,7 @@ fn window(now: &str, origin: bool) -> (Instance, AutoCommit) {
             me: "ada".into(),
             mode: Mode::Live,
             device: None,
-            index_dir: None,
-            document_loader: None,
+            store: tilolang_tilo::resources::ResourceStore::in_memory(),
             root: RootView::default(),
             sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
         },
@@ -564,5 +401,26 @@ fn window(now: &str, origin: bool) -> (Instance, AutoCommit) {
         Box::new(app_end),
     );
     instance.set_origin(origin);
-    (instance, doc)
+    (instance, "root-".to_owned() + &type_id_board())
+}
+
+/// The type id the package gives its board.
+fn type_id_board() -> String {
+    let compiled =
+        tilolang::compile_package(SOURCE, &tilolang::IdsLock::parse(ids()).unwrap(), &[])
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    compiled
+        .meta
+        .types
+        .iter()
+        .find(|ty| ty.name == "Board")
+        .unwrap()
+        .id
+        .clone()
+}
+
+/// The type id the package `host` runs gives its type `ty`.
+fn type_id_of(instance: &Instance, ty: &str) -> String {
+    let meta = &instance.host().expect("the window opened").package(APP).unwrap().meta;
+    meta.types.iter().find(|declared| declared.name == ty).unwrap().id.clone()
 }

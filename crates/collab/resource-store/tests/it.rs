@@ -617,6 +617,67 @@ mod store {
             .collect()
     }
 
+    /// The newest version of each resource under a document, most recent first, a page of
+    /// them: what changed last stands first, a removed one too, and a resource elsewhere is not
+    /// among them.
+    #[test]
+    fn the_newest_versions_under_a_document_are_read_most_recent_first_a_page_at_a_time() {
+        use tilo_resource_store::wire::{Command, Reply, read};
+        let mut store = Store::new();
+        let at = |invocation: &str, moment: u64| Stamp {
+            invocation: invocation.to_owned(),
+            moment,
+            ..Stamp::default()
+        };
+        for (id, moment) in [("board/a", 1), ("board/b", 2), ("board/c", 3), ("elsewhere/d", 4)] {
+            store
+                .put(ISSUE, id, resource("board", id, id, "open"), &at(id, moment))
+                .unwrap();
+        }
+        // The first is changed last, and the third removed after that.
+        store
+            .put(ISSUE, "board/a", resource("board", "a", "First", "done"), &at("change", 5))
+            .unwrap();
+        store.remove(ISSUE, "board/c", &at("remove", 6)).unwrap();
+        let newest = |limit| match read(
+            &store,
+            &Command::Newest {
+                within: "board".to_owned(),
+                limit,
+            },
+            &anyone,
+        ) {
+            Some(Reply::Newest { versions, more }) => (
+                versions
+                    .into_iter()
+                    .map(|(_, id, version)| {
+                        (id, version.stamp.map(|stamp| stamp.invocation).unwrap_or_default())
+                    })
+                    .collect::<Vec<_>>(),
+                more,
+            ),
+            other => panic!("the newest versions are read: {other:?}"),
+        };
+        let owned = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(id, invocation)| ((*id).to_owned(), (*invocation).to_owned()))
+                .collect()
+        };
+        assert_eq!(
+            newest(10),
+            (
+                owned(&[("board/c", "remove"), ("board/a", "change"), ("board/b", "board/b")]),
+                false
+            )
+        );
+        assert_eq!(
+            newest(2),
+            (owned(&[("board/c", "remove"), ("board/a", "change")]), true),
+            "a page, saying there are more"
+        );
+    }
+
     #[test]
     fn a_write_is_queried_at_once_and_reaches_a_peer() {
         let mut here = Store::new();
@@ -993,6 +1054,63 @@ mod store {
             invocations
                 .iter()
                 .any(|(invocation, _)| *invocation == "i3")
+        );
+    }
+
+    /// A step of a resource's history reads as it stood just before the step and just after:
+    /// another device's edit made at the same time is in neither.
+    #[test]
+    fn a_resource_reads_as_it_stood_before_and_after_a_change() {
+        use serde_json::json;
+        use tilo_resource_store::wire::{Command, Reply, read};
+
+        let all = |_: &str| true;
+        let (here, _) = edited_on_two_devices();
+        let Some(Reply::Versions(versions)) = read(
+            &here,
+            &Command::Versions {
+                kind: ISSUE.to_owned(),
+                id: "a".to_owned(),
+            },
+            &all,
+        ) else {
+            panic!("versions are read");
+        };
+        let theirs = versions
+            .iter()
+            .find(|version| {
+                version.content
+                    && version
+                        .stamp
+                        .as_ref()
+                        .is_some_and(|stamp| stamp.invocation == "i3")
+            })
+            .expect("the other device's edit is a version");
+        let at = |after: bool, may_read: &dyn Fn(&str) -> bool| {
+            match read(
+                &here,
+                &Command::At {
+                    kind: ISSUE.to_owned(),
+                    id: "a".to_owned(),
+                    change: theirs.change.clone(),
+                    after,
+                },
+                may_read,
+            ) {
+                Some(Reply::At(at)) => at,
+                other => panic!("the resource is read at the change: {other:?}"),
+            }
+        };
+        let body = |after: bool| {
+            at(after, &all)
+                .and_then(|(_, content)| content)
+                .and_then(|content| content.get("body").cloned())
+        };
+        assert_eq!(body(false), Some(json!("Hello")));
+        assert_eq!(body(true), Some(json!("Hello world")));
+        assert!(
+            at(true, &|_| false).is_none(),
+            "only whom the resource's readers admit reads it at a change"
         );
     }
 

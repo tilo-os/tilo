@@ -1,6 +1,6 @@
 //! `cargo run -p tilolang-process --example components -- <package dir>`: the components a tilolang
-//! app's first window shows, as its instance in a host builds them over an empty document, one JSON
-//! object per line: `key` (the widget's test id in the window), `kind` and `label`.
+//! app's first window shows, as its instance in a host builds them over an empty workspace store,
+//! one JSON object per line: `key` (the widget's test id in the window), `kind` and `label`.
 //!
 //! What a test that presses a control by its test id reads, so it names a button by what it says
 //! rather than by a key the compiler derived.
@@ -21,11 +21,12 @@ use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilo_render_protocol::patch::{self, Level, ToUi, Transport as _};
 use tilolang_process::TilolangProcess;
+use tilolang_process::connection::Connection;
 use tilolang_process::hosted::{Hosted, Spec};
 use tilolang_process::phrases::Phrases;
-use tilolang_process::testing::Broker;
+use tilolang_process::testing::{Broker, Bus};
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::instance::document::InstanceDocument;
+use tilolang_tilo::resources::ResourceStore;
 
 fn print(node: &patch::Node) {
     let label = ["label", "title", "text"]
@@ -53,7 +54,8 @@ fn main() {
     let bundle = Bundle::new(&compiled, Vec::new());
     let app = bundle.meta.app.clone();
     let route = RouteSpec::app(app.clone(), uuid::Uuid::new_v4());
-    let mut manager = CollaborationManager::with_peer_transport(Broker::new(route.clone()));
+    let bus = Rc::new(Bus::default());
+    let mut manager = CollaborationManager::with_peer_transport(Broker::on(&bus, route.clone(), "person"));
     manager.send(CollabRequest::Hello {
         app_id: app.clone(),
         cluster_id: route.cluster_id,
@@ -62,21 +64,17 @@ fn main() {
         handle: Some("person".to_owned()),
     });
     let _ = manager.poll();
-    let record = InstanceDocument::new(
-        automerge::AutoCommit::new(),
-        manager,
-        route.clone(),
-        "person",
-    );
+    let connection = Connection::new(manager).expect("the connection joined its route");
+    let store = ResourceStore::new(Rc::new(connection.port(None)));
     let wake: tilolang_tilo::background::Waker = Arc::new(|| {});
-    let mut host = TilolangProcess::new(None, Arc::clone(&wake));
-    let kept = host.kept(&app).unwrap();
+    let mut host = TilolangProcess::new(Arc::clone(&wake));
     let (ours, theirs) = Channel::pair().unwrap();
-    let hosted = Hosted::with_document(
+    let hosted = Hosted::new(
         Spec::new(app, route.cluster_id.to_string(), 1, "person"),
-        record,
+        connection,
+        store,
+        tilolang_process::hosted::memory_content(),
         Arc::new(bundle),
-        &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
         &Rc::new(Phrases::new("en-US")),
         host.formats(),

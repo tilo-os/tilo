@@ -56,11 +56,8 @@ tilo_test_env::scenario! {
         // the instance runs: what it sent waits for the instance, and the loop sleeps meanwhile.
         let answer = Rc::new(std::cell::Cell::new(false));
         let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
-        let mut manager = CollaborationManager::with_peer_transport(SlowBroker {
-            route: route.clone(),
-            answer: Rc::clone(&answer),
-            asked: false,
-        });
+        let mut manager =
+            CollaborationManager::with_peer_transport(SlowBroker::new(route.clone(), Rc::clone(&answer)));
         assert!(manager.send(CollabRequest::Hello {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,

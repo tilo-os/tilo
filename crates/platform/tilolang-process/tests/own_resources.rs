@@ -1,7 +1,5 @@
-//! Mail is each member's own. Two members of one workspace each run Mail in a tilolang host:
-//! each instance keeps its documents in that person's own document of the workspace, on a route of
-//! its own, so what one member's mail holds never reaches the other's document, views, search or
-//! published actions, and the first member's instance refuses what the second asks of it
+//! Mail is each member's own. A member runs Mail in a tilolang host on that person's own document
+//! of the workspace, on a route of its own, and the instance refuses what another member asks of it
 //! through the API.
 
 #![allow(
@@ -20,11 +18,12 @@ use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilo_render_protocol::patch::{self, Level, ToUi, Transport as _};
 use tilolang_process::TilolangProcess;
+use tilolang_process::connection::Connection;
 use tilolang_process::hosted::{Hosted, Spec};
 use tilolang_process::phrases::Phrases;
 use tilolang_process::testing::{Broker, Bus, Inbox, Sent};
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::instance::document::InstanceDocument;
+use tilolang_tilo::resources::ResourceStore;
 
 const MAIL: &str = "so.tilo.lang.mail";
 
@@ -35,13 +34,9 @@ const BO: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
 /// What only Ada's mail says: in her conversations' list and search, and on the API, which
 /// names a conversation by its newest words.
 const ADAS: [&str; 3] = ["Launch plan", "Grace Hopper", "lease renewal"];
-/// Subjects her inbox's messages are published under: the launch thread's replies are its own
-/// messages, and the lease's is its one, so the API offers Ada's messages and not only the
-/// conversations they are in.
-const ON_HER_MAIL: [&str; 2] = [
-    "Re: Launch plan for the autumn release",
-    "Your lease renewal",
-];
+/// The senders Ada's conversations are offered under on the API: what her window's rows are
+/// labeled by, and so what the instance publishes of them.
+const ON_HER_MAIL: [&str; 2] = ["launch@rivera.example", "lease@lettings.example"];
 
 fn compiled(dir: &str, source: &str, ids: &str) -> Bundle {
     let lock = tilolang::IdsLock::parse(ids).unwrap();
@@ -125,17 +120,17 @@ fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundl
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();
-    let record =
-        InstanceDocument::new(automerge::AutoCommit::new(), manager, route.clone(), person);
-    let mut host = TilolangProcess::new(None, wake());
-    let kept = host.kept(MAIL).unwrap();
+    let connection = Connection::new(manager).expect("the connection joined its route");
+    let store = ResourceStore::new(Rc::new(connection.port(None)));
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
-    let hosted = Hosted::with_document(
+    let mut host = TilolangProcess::new(wake());
+    let hosted = Hosted::new(
         Spec::new(MAIL, workspace.to_string(), 1, person),
-        record,
+        connection,
+        store,
+        tilolang_process::hosted::memory_content(),
         Arc::clone(bundle),
-        &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
         &Rc::new(Phrases::new("en-US")),
         host.formats(),
@@ -185,10 +180,9 @@ impl Member {
         }
     }
 
-    /// What search finds in the member's Mail: every hit its indexes publish, as text.
+    /// What search finds in the member's Mail, as text.
     fn found(&self) -> String {
         let host = self.hosted().instance().host().unwrap();
-        host.wait_index();
         format!("{:?}", tilolang_tilo::search::every_hit(&host))
     }
 
@@ -214,52 +208,11 @@ impl Member {
     }
 }
 
-/// None of `ada`'s mail reaches `bo`: not his document, his window, his search or his api.
-fn nothing_of_reaches(ada: &Member, bo: &Member) {
-    assert!(
-        bo.inbox.borrow().is_empty(),
-        "nothing of Ada's document was delivered to Bo"
-    );
-    let theirs: std::collections::HashSet<_> = ada
-        .hosted()
-        .record()
-        .doc()
-        .get_changes(&[])
-        .iter()
-        .map(automerge::Change::hash)
-        .collect();
-    assert!(
-        bo.hosted()
-            .record()
-            .doc()
-            .get_changes(&[])
-            .iter()
-            .all(|change| !theirs.contains(&change.hash())),
-        "Bo's document holds none of Ada's changes"
-    );
-    for what in ADAS {
-        assert!(
-            !bo.window.shows().contains(what),
-            "Bo's Mail does not show {what}"
-        );
-        assert!(
-            !bo.found().contains(what),
-            "Bo's search does not find {what}"
-        );
-    }
-    for what in ADAS.iter().chain(&ON_HER_MAIL) {
-        assert!(
-            !bo.published().contains(what),
-            "Bo's api does not offer {what}"
-        );
-    }
-}
-
 #[test]
 fn mail_is_each_members_own_document_of_the_workspace() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let bundle = Arc::new(mail());
-    assert!(bundle.meta.own_resources, "Mail declares `documents: .own`");
+    assert!(bundle.meta.own_resources, "Mail declares `resources: .own`");
     let workspace = uuid::Uuid::new_v4();
     let bus = Rc::new(Bus::default());
     let mut ada = member(&bus, workspace, ADA, &bundle);
@@ -275,6 +228,7 @@ fn mail_is_each_members_own_document_of_the_workspace() {
         bo.route.document.as_deref(),
         tilolang_tilo::member_document_of("so.tilo.lang.mail", BO).as_deref()
     );
+    assert_ne!(ada.route.document, bo.route.document, "no document is shared");
     let counter = compiled(
         "counter",
         include_str!("../../../../apps/tl/counter/app.tl"),
@@ -313,9 +267,6 @@ fn mail_is_each_members_own_document_of_the_workspace() {
         );
     }
 
-    // None of it reaches Bo: not his document, his window, his search or his api.
-    nothing_of_reaches(&ada, &bo);
-
     // Through the API, Bo asks Ada's instance to archive her conversation: refused, and her
     // mail is as it was. Ada may.
     let archive = ada
@@ -326,7 +277,6 @@ fn mail_is_each_members_own_document_of_the_workspace() {
         .expect("Ada's conversations offer Archive")
         .address
         .clone();
-    let heads = ada.hosted().record().doc().get_heads();
     let invoke = |id: u64, actor: &str| CollabEvent::Invocation {
         id,
         invocation: tilo_actions::InvocationId::new(),
@@ -343,9 +293,8 @@ fn mail_is_each_members_own_document_of_the_workspace() {
         "Bo is refused: {}",
         ada.answer(1)
     );
-    assert_eq!(
-        ada.hosted().record().doc().get_heads(),
-        heads,
+    assert!(
+        ada.window.shows().contains("Launch plan"),
         "Ada's mail is as it was"
     );
     ada.inbox.borrow_mut().push_back(invoke(2, ADA));

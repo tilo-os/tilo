@@ -2,7 +2,7 @@
 //! index over the field's column, answering what the node's subtree holds whatever the
 //! collection's size, and following a change of a parent and a removal as it lands.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::{Actor, InvokeOutcome, Value};
 
 use crate::fixtures::Replica;
@@ -94,13 +94,13 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
 
 /// Ada's replica of an empty tree, and the tree's root.
 fn workspace() -> (Replica, Value) {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(TREE, "")]);
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(TREE, "")]);
     let root = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     (ada, root)
 }
 
-fn add(ada: &mut Replica, root: &Value, title: &str, under: Option<&Value>) -> Value {
+fn add(ada: &Replica, root: &Value, title: &str, under: Option<&Value>) -> Value {
     let made = call(
         ada,
         "add",
@@ -134,12 +134,12 @@ fn titles(ada: &Replica, items: Value) -> Vec<String> {
 
 #[test]
 fn descendants_and_ancestors_follow_a_parent_through_reparenting_and_removing() {
-    let (mut ada, root) = workspace();
-    let top = add(&mut ada, &root, "top", None);
-    let mid = add(&mut ada, &root, "mid", Some(&top));
-    let leaf = add(&mut ada, &root, "leaf", Some(&mid));
-    let side = add(&mut ada, &root, "side", Some(&top));
-    let loose = add(&mut ada, &root, "loose", None);
+    let (ada, root) = workspace();
+    let top = add(&ada, &root, "top", None);
+    let mid = add(&ada, &root, "mid", Some(&top));
+    let leaf = add(&ada, &root, "leaf", Some(&mid));
+    let side = add(&ada, &root, "side", Some(&top));
+    let loose = add(&ada, &root, "loose", None);
     let under = |ada: &Replica, node: &Value, action: &str| {
         titles(ada, call(ada, action, vec![root.clone(), node.clone()]))
     };

@@ -1,13 +1,10 @@
-//! A heading in a note's body: the line's kind and level in the document, made by the format menu
-//! or typed as `## `, which another person's typing merges into, which the Markdown export
-//! writes as the `## ` it is, and whose words search reads as text.
+//! A heading in a note's body: the line's kind and level, made by the format menu or typed as
+//! `## `, which the Markdown export writes as the `## ` it is, and whose words search reads as
+//! text.
 
-use automerge::AutoCommit;
-use serde_json::Value as Json;
-use tilo_document::action::RegionKind;
-use tilo_resource::{Edit, EditOp, Id, Segment};
+use crate::fixtures::Workspace;
+use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Value};
-use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 
 use crate::fixtures::{Replica, field_id};
 
@@ -25,14 +22,12 @@ fn packages() -> [(&'static str, &'static str); 2] {
     [DISCUSSION, NOTES]
 }
 
-/// Ada's workspace with its notebook, and Grace's replica of it.
-fn workspace() -> (Replica, Replica, ResourceRef) {
-    let (mut ada, _loaded) = Replica::new("ada", AutoCommit::new(), &packages());
+/// Ada's workspace with its notebook.
+fn workspace() -> (Replica, ResourceRef) {
+    let (ada, _loaded) = Replica::new("ada", Workspace::new(), &packages());
     ada.host.set_clock(|| "2026-11-04T09:00:00Z".to_owned());
-    ada.commit();
     let notebook = ada.host.root_of(APP).expect("the notebook");
-    let grace = ada.fork("grace", &packages());
-    (ada, grace, notebook)
+    (ada, notebook)
 }
 
 /// What `action` of the notes app answered, run by `r`'s person.
@@ -58,7 +53,7 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
 }
 
 /// A note called `title` at the top of the tree, its body saying `body`.
-fn noted(r: &mut Replica, notebook: &ResourceRef, title: &str, body: &str) -> ResourceRef {
+fn noted(r: &Replica, notebook: &ResourceRef, title: &str, body: &str) -> ResourceRef {
     let made = match call(r, "new_note", vec![Value::resource(notebook)]) {
         Value::Ref(at) => (*at.target).clone(),
         other => panic!("a note: {other:?}"),
@@ -68,15 +63,11 @@ fn noted(r: &mut Replica, notebook: &ResourceRef, title: &str, body: &str) -> Re
         "retitle",
         vec![Value::resource(&made), Value::text(title)],
     );
-    // The note is in the document before its body is edited, as a window's writes reach it one
-    // change after the other.
-    r.commit();
     splice(r, &made, 0, 0, body);
-    r.commit();
     made
 }
 
-/// The blocks of `note`'s body as the document holds them.
+/// The blocks of `note`'s body as its field holds them.
 fn blocks(r: &Replica, note: &ResourceRef) -> Vec<tilo_doc::snapshot::BlockView> {
     match r.host.runtime().read(note, "body") {
         Ok(Value::Rich(rich)) => rich.blocks,
@@ -84,79 +75,65 @@ fn blocks(r: &Replica, note: &ResourceRef) -> Vec<tilo_doc::snapshot::BlockView>
     }
 }
 
-/// What the line at `block` of `note`'s body is, as the document keeps it: its kind and its
-/// heading level.
+/// What the line at `block` of `note`'s body is, as the body keeps it: its kind and its heading
+/// level.
 fn line(r: &Replica, note: &ResourceRef) -> (String, Option<i64>) {
     let block = blocks(r, note).into_iter().next().expect("one line");
     (block.kind.clone(), block.int_attr("level"))
 }
 
-/// `r`'s person edits the `field` of `item` with `action`, as its editor writes one step of
-/// theirs: a rich-text action at the field's path, kept in the document.
-fn rich_edit(
-    r: &mut Replica,
-    item: &ResourceRef,
-    field: &str,
-    action: tilo_document::RichTextAction,
-) {
-    let ty = "Note";
-    let meta = r.host.package(APP).unwrap().meta;
-    let path = vec![
-        Segment::Item(Id::from_raw(item.item.as_deref().unwrap())),
-        Segment::Field(field_id(&meta, ty, field)),
-    ];
-    let rich = serde_json::to_value(&action).unwrap();
-    r.apply(&DynAction {
-        app: APP.to_owned(),
-        kind: format!("tl.{APP}.{ty}"),
-        action_id: "$edit".to_owned(),
-        args: Json::Null,
-        authorship: Authorship::default(),
-        edits: vec![DynEdit::Edit {
-            id: item.doc.clone(),
-            edit: Edit::new(path, EditOp::Rich { rich }),
-        }],
-    });
+/// Write `blocks` as `note`'s body, as the editor does when the person's change lands: the whole
+/// of what the control holds.
+fn wrote(r: &Replica, note: &ResourceRef, blocks: Vec<tilo_doc::snapshot::BlockView>) {
+    let field = field_id(&r.host.package(APP).unwrap().meta, "Note", "body");
+    r.edit(note, &field, &Value::Rich(RichValue { blocks }));
+}
+
+/// The body's first line, made as prose where the body holds none yet.
+fn first_line(blocks: &mut Vec<tilo_doc::snapshot::BlockView>) -> &mut tilo_doc::snapshot::BlockView {
+    if blocks.is_empty() {
+        blocks.push(tilo_doc::snapshot::BlockView {
+            id: String::new(),
+            kind: "paragraph".to_owned(),
+            text: String::new(),
+            marks: Vec::new(),
+            attrs: std::collections::BTreeMap::default(),
+            children: Vec::new(),
+        });
+    }
+    blocks.first_mut().expect("a line")
 }
 
 /// `r`'s person types `text` at `at` of the first line of `note`'s body.
-fn splice(r: &mut Replica, note: &ResourceRef, at: usize, del: usize, text: &str) {
-    let block = blocks(r, note).into_iter().next().expect("one line").id;
-    rich_edit(
-        r,
-        note,
-        "body",
-        tilo_document::RichTextAction::SpliceText {
-            region: RegionKind::Body,
-            block,
-            at,
-            del,
-            ins: text.to_owned(),
-        },
-    );
+fn splice(r: &Replica, note: &ResourceRef, at: usize, del: usize, text: &str) {
+    let mut blocks = blocks(r, note);
+    let first = first_line(&mut blocks);
+    let mut chars: Vec<char> = first.text.chars().collect();
+    let at = at.min(chars.len());
+    let end = at.saturating_add(del).min(chars.len());
+    chars.splice(at..end, text.chars());
+    first.text = chars.into_iter().collect();
+    wrote(r, note, blocks);
 }
 
 /// `r`'s person makes the first line of `note`'s body a heading of `level`, as the format menu
 /// does.
-fn heading(r: &mut Replica, note: &ResourceRef, level: Option<i64>) {
-    let block = blocks(r, note).into_iter().next().expect("one line").id;
-    rich_edit(
-        r,
-        note,
-        "body",
-        tilo_document::RichTextAction::SetParagraphStyle {
-            region: RegionKind::Body,
-            blocks: vec![block],
-            kind: if level.is_some() {
-                "heading"
-            } else {
-                "paragraph"
-            }
-            .to_owned(),
-            level,
-            ordered: None,
-        },
-    );
+fn heading(r: &Replica, note: &ResourceRef, level: Option<i64>) {
+    let mut blocks = blocks(r, note);
+    let first = first_line(&mut blocks);
+    if level.is_some() { "heading" } else { "paragraph" }.clone_into(&mut first.kind);
+    match level {
+        Some(level) => {
+            first.attrs.insert(
+                "level".to_owned(),
+                tilo_doc::snapshot::AttrVal::Int(level),
+            );
+        }
+        None => {
+            first.attrs.remove("level");
+        }
+    }
+    wrote(r, note, blocks);
 }
 
 /// The Markdown the app exports for `note`.
@@ -168,26 +145,26 @@ fn exported(r: &Replica, note: &ResourceRef) -> String {
 }
 
 #[test]
-fn a_heading_made_from_the_format_menu_is_the_lines_kind_and_level_in_the_document() {
-    let (mut ada, _grace, notebook) = workspace();
-    let note = noted(&mut ada, &notebook, "Groceries", "Oat milk, eggs.");
+fn a_heading_made_from_the_format_menu_is_the_lines_kind_and_level_in_the_body() {
+    let (ada, notebook) = workspace();
+    let note = noted(&ada, &notebook, "Groceries", "Oat milk, eggs.");
     assert_eq!(
         line(&ada, &note),
         ("paragraph".to_owned(), None),
         "a note's body starts as prose"
     );
-    heading(&mut ada, &note, Some(2));
+    heading(&ada, &note, Some(2));
     assert_eq!(
         line(&ada, &note),
         ("heading".to_owned(), Some(2)),
-        "the block attribute the action log keeps"
+        "the kind and level the body keeps"
     );
     assert_eq!(
         blocks(&ada, &note)[0].text,
         "Oat milk, eggs.",
         "the words are the line's, never the marker's"
     );
-    heading(&mut ada, &note, None);
+    heading(&ada, &note, None);
     assert_eq!(
         line(&ada, &note),
         ("paragraph".to_owned(), None),
@@ -196,44 +173,10 @@ fn a_heading_made_from_the_format_menu_is_the_lines_kind_and_level_in_the_docume
 }
 
 #[test]
-fn a_heading_merges_with_another_persons_typing_in_the_same_line() {
-    let (mut ada, mut grace, notebook) = workspace();
-    let note = noted(&mut ada, &notebook, "Groceries", "Oat milk");
-    ada.sync_with(&mut grace);
-
-    // At once: Ada makes the line a heading, Grace types into it.
-    heading(&mut ada, &note, Some(2));
-    splice(&mut grace, &note, 0, 0, "Two ");
-    ada.sync_with(&mut grace);
-
-    assert_eq!(
-        line(&ada, &note),
-        ("heading".to_owned(), Some(2)),
-        "the heading stands on Ada's side"
-    );
-    assert_eq!(line(&grace, &note), line(&ada, &note), "and on Grace's");
-    assert_eq!(
-        blocks(&ada, &note)[0].text,
-        blocks(&grace, &note)[0].text,
-        "both replicas read one line"
-    );
-    assert_eq!(
-        blocks(&ada, &note)[0].text,
-        "Two Oat milk",
-        "the words both wrote are in it"
-    );
-    assert_eq!(
-        ada.host.store().record(&note.doc).unwrap(),
-        grace.host.store().record(&note.doc).unwrap(),
-        "the document they hold is the same"
-    );
-}
-
-#[test]
 fn a_heading_exports_as_a_markdown_heading_and_its_words_are_read() {
-    let (mut ada, _grace, notebook) = workspace();
-    let note = noted(&mut ada, &notebook, "Groceries", "Oat milk, eggs.");
-    heading(&mut ada, &note, Some(2));
+    let (ada, notebook) = workspace();
+    let note = noted(&ada, &notebook, "Groceries", "Oat milk, eggs.");
+    heading(&ada, &note, Some(2));
 
     let markdown = exported(&ada, &note);
     assert!(

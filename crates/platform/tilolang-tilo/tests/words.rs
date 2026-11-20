@@ -74,9 +74,7 @@ fn notes(locale: &str) -> (Host, Package) {
         tilolang::compile_package_source(&source, &ids, std::slice::from_ref(&discussion.meta))
             .expect("the notes package compiles");
     ui::i18n::I18nManager::install("en-US", locale, &[("en-US", "")]).expect("the source words");
-    let record = automerge::AutoCommit::new();
     let host = Host::new(
-        &record,
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
     )
@@ -350,9 +348,7 @@ fn a_german_counter_window_draws_german() {
     let compiled =
         tilolang::compile_package_source(&source, &ids, &[]).expect("the counter package compiles");
     ui::i18n::I18nManager::install("en-US", "de-DE", &[("en-US", "")]).expect("the German words");
-    let record = automerge::AutoCommit::new();
     let host = Host::new(
-        &record,
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
     )

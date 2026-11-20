@@ -10,7 +10,6 @@
 use super::Session;
 use crate::change_marks::Driven as _;
 use serde_json::Map;
-use tilolang_tilo::action::resource_ids;
 
 use crate::change_marks::{
     action_id, chroma_in, marks, named, published_with, rows, run, settle, shots_dir, text_field,
@@ -22,7 +21,7 @@ const NOTES: &str = "so.tilo.lang.notes";
 fn notes_after_a_run() -> (Session, String) {
     let mut app = Session::new("so.tilo.lang.notes", "ada");
     settle(&mut app);
-    let root = app.read(|doc| resource_ids(doc, NOTES)).remove(0);
+    let root = super::root_id(&app, NOTES);
     let notebook = format!("tl:{NOTES}:{root}");
     let new_note = action_id(&mut app, &notebook, "New note");
     // Ada's own note: nothing to mark.

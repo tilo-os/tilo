@@ -1686,6 +1686,7 @@ impl Session {
             engine,
             document_reads,
             document_writes: writes,
+            workspace_service: workspace_service.clone(),
             desktops,
             notes,
             membership_fed: std::cell::RefCell::new(None),

@@ -392,14 +392,6 @@ slow-timeout = { period = "60s", terminate-after = 8 }
 filter = 'package(agent) and binary(it) and test(presence_semantics::)'
 test-group = "agent-collaboration"
 
-# Each app check seeds a workspace of a thousand items and one of ten thousand and
-# runs the open, the filter and the changes over both: 42 s of CPU a check on a quiet
-# machine, and a loaded one reached the eight-minute suite-wide bound without a
-# finish. The bound only has to catch a check that stopped.
-[[profile.default.overrides]]
-filter = 'package(tilolang-tilo) and binary(budgets)'
-slow-timeout = { period = "30s", terminate-after = 40 }
-
 # A company's workspace at real size: a thousand notes and five hundred issues
 # written through the API one at a time, then every call an agent makes most
 # timed against what an empty workspace answers in. Writing them is the bulk of

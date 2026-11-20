@@ -5,7 +5,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Tilo platform integration for tilolang apps: dynamic documents in the workspace document, replayable actions, the published surface, and the UI graph translation."
+description = "Tilo platform integration for tilolang apps: their resources in the device's store, the published surface, and the UI graph translation."
 
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
@@ -44,30 +44,17 @@ tilolang = { path = "../../lang/tilolang" }
 tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 # The interpreter alone in a browser page, where the compiled tier cannot run.
 tilolang-runtime = { path = "../../lang/tilolang-runtime", default-features = false }
-# The collab client an instance commits to its workspace through, without the toolkit, and the
-# history verbs every document answers (`history`).
+# The history verbs a store answers, and the names history speaks of its writers in.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
-# The workspace document's on-disk copy and its writer, and who wrote a step (`instance::document`).
-tilo-app-state = { version = "0.1.0", path = "../../system/app-state", optional = true }
-durable-store = { version = "0.1.0", path = "../../system/durable-store", optional = true }
 # Each member's own document of a package declaring `resources: .own` (`member_document_of`).
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The platform's history sentences, which the host's history verbs speak in.
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
+# The device's one store, which every resource of an app is kept in and read from.
+tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 
-[features]
-# The instance's commit path to its workspace document through the collab client
-# (`instance::document`), without the toolkit.
-document = [
-    "collaboration/native",
-    "dep:tilo-app-state",
-    "dep:durable-store",
-]
 [dev-dependencies]
-# The tests drive the instance's commit path (`instance::document`) whatever else the build has
-# turned on.
-tilolang-tilo = { path = ".", features = ["document"] }
 # The system's mention notices, read from a workspace holding tilolang rich text.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
@@ -92,21 +79,9 @@ name = "it"
 path = "tests/it.rs"
 
 [[test]]
-name = "upgrade_it"
-path = "tests/upgrade_it.rs"
-
-[[test]]
-name = "budgets"
-path = "tests/budgets.rs"
-
-[[test]]
 name = "rust_types"
 path = "tests/rust_types.rs"
 
-[[bench]]
-name = "index_units"
-path = "benches/index_units.rs"
-harness = false
 
 [lints]
 workspace = true

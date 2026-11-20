@@ -504,56 +504,7 @@ fn a_task_typed_into_todays_entry_is_due_the_persons_today() {
     );
 }
 
-/// An instance of `bundle` for `attributes` in `host` on `route`, over an empty document: its
-/// window, what its connection sent, what the broker delivers to it and the other routes it
-/// joined.
-fn joined_instance(
-    host: &mut TilolangProcess,
-    attributes: Spec,
-    bundle: Bundle,
-    route: &RouteSpec,
-) -> (Window, Sent, Inbox, Rc<RefCell<Vec<RouteSpec>>>) {
-    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    let broker = Broker::new(route.clone());
-    let (sent, inbox, routes) = (broker.sent(), broker.inbox(), broker.routes());
-    let mut manager = CollaborationManager::with_peer_transport(broker);
-    assert!(manager.send(CollabRequest::Hello {
-        app_id: route.app_id.clone(),
-        cluster_id: route.cluster_id,
-        record: None,
-        resource_type: None,
-        handle: Some(attributes.person.clone()),
-    }));
-    let _ = manager.poll();
-    let record = InstanceDocument::new(
-        automerge::AutoCommit::new(),
-        manager,
-        route.clone(),
-        &attributes.person,
-    );
-    let kept = host.kept(&attributes.app).unwrap();
-    let (ours, theirs) = Channel::pair().unwrap();
-    let watched = ours.as_fd().try_clone_to_owned().unwrap();
-    let hosted = Hosted::with_document(
-        attributes,
-        record,
-        Arc::new(bundle),
-        &kept,
-        Box::new(ChannelTransport::new(ours).unwrap()),
-        &Rc::new(Phrases::new("en-US")),
-        host.formats(),
-        wake(),
-    );
-    host.add(hosted, Some(watched));
-    (
-        Window::over(ChannelTransport::new(theirs).unwrap()),
-        sent,
-        inbox,
-        routes,
-    )
-}
-
-/// Today and Tasks on one broker, each over its own document, as their windows run in a session.
+/// Today and Tasks on one workspace, each over its own route, as their windows run in a session.
 struct Shell {
     host: TilolangProcess,
     tasks: Window,
@@ -561,7 +512,9 @@ struct Shell {
     tasks_inbox: Inbox,
     today_sent: Sent,
     today_inbox: Inbox,
-    tasks_route: RouteSpec,
+    bus: Rc<Bus>,
+    /// What Tasks last wrote of the workspace, as its store says.
+    written: Option<String>,
     /// How many of Today's requests the broker took.
     taken: usize,
     /// The invocations the broker delivered.
@@ -569,16 +522,18 @@ struct Shell {
 }
 
 impl Shell {
-    fn new() -> (Self, Rc<RefCell<Vec<RouteSpec>>>) {
+    fn new() -> Self {
         let workspace = uuid::Uuid::new_v4();
+        let bus = Rc::new(Bus::default());
+        let mut host = TilolangProcess::new(wake());
         let tasks_route = RouteSpec::app(TASKS, workspace);
-        let today_route = RouteSpec::app("so.tilo.lang.today", workspace);
-        let mut host = TilolangProcess::new(None, wake());
-        let (tasks, _, tasks_inbox, _) = joined_instance(
+        let (tasks, _, tasks_inbox) = instance_on(
             &mut host,
             spec(1, "ada", &tasks_route),
             shipped(&shipped_dir().join("tasks")).1,
             &tasks_route,
+            Rc::default(),
+            &bus,
         );
         // Notes, Tasks and Chat are installed as apps of their own; Discussion is not, and stays
         // part of the apps that use it.
@@ -586,7 +541,8 @@ impl Shell {
             .into_iter()
             .map(|app| (app.to_owned(), app.to_owned()))
             .collect();
-        let (today, today_sent, today_inbox, joined) = joined_instance(
+        let today_route = RouteSpec::app("so.tilo.lang.today", workspace);
+        let (today, today_sent, today_inbox) = instance_on(
             &mut host,
             Spec {
                 installed,
@@ -594,21 +550,21 @@ impl Shell {
             },
             shipped(&shipped_dir().join("today")).1,
             &today_route,
+            Rc::default(),
+            &bus,
         );
-        (
-            Self {
-                host,
-                tasks,
-                today,
-                tasks_inbox,
-                today_sent,
-                today_inbox,
-                tasks_route,
-                taken: 0,
-                delivered: 0,
-            },
-            joined,
-        )
+        Self {
+            host,
+            tasks,
+            today,
+            tasks_inbox,
+            today_sent,
+            today_inbox,
+            bus,
+            written: None,
+            taken: 0,
+            delivered: 0,
+        }
     }
 
     fn tasks_instance(&self) -> &Hosted {
@@ -618,27 +574,16 @@ impl Shell {
             .unwrap()
     }
 
-    /// Run the host until it settles, the broker carrying between the two: Tasks' document to
-    /// Today, which joined it to read, and what Today asks of Tasks' api to Tasks.
+    /// Run the host until it settles, the broker carrying between the two: what Tasks wrote of
+    /// the workspace to Today, which reads it from the store, and what Today asks of Tasks' api to
+    /// Tasks.
     fn settle(&mut self) {
         let began = std::time::Instant::now();
-        let mut handed = Vec::new();
         loop {
             let mut changed = self.host.turn();
             self.tasks.take();
             self.today.take();
-            let heads = self.tasks_instance().record().doc().clone().get_heads();
-            if heads != handed {
-                handed = heads;
-                let whole = self.tasks_instance().record().doc().clone().save();
-                self.today_inbox
-                    .borrow_mut()
-                    .push_back(CollabEvent::CommittedDocument {
-                        route: self.tasks_route.clone(),
-                        read: collaboration::CommittedDocument::for_test(whole, None),
-                    });
-                changed = true;
-            }
+            changed |= self.carry_workspace();
             changed |= self.carry_asks();
             let woken = WOKEN.swap(false, std::sync::atomic::Ordering::SeqCst);
             if !changed && !woken && !self.host.owes_work() {
@@ -655,6 +600,22 @@ impl Shell {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
+    }
+
+    /// Tell Today the workspace's documents arrived, as the broker tells a connection when what
+    /// Tasks wrote reached the store. Whether Tasks wrote anything since the last call.
+    fn carry_workspace(&mut self) -> bool {
+        let written = self.tasks_instance().store().last_written();
+        if written == self.written {
+            return false;
+        }
+        self.written = written;
+        self.today_inbox
+            .borrow_mut()
+            .push_back(CollabEvent::ResourcesArrived {
+                records: self.bus.workspace().documents(),
+            });
+        true
     }
 
     /// Deliver to Tasks what Today asked of its API since the last call, as the person's
@@ -715,7 +676,7 @@ impl Shell {
         format!("{:?}", self.today.root).contains(text)
     }
 
-    /// The titles of the tasks Tasks' own document holds.
+    /// The titles of the tasks Tasks' resources hold.
     fn titles_in_tasks(&self) -> Vec<String> {
         let host = self.tasks_instance().instance().host().unwrap();
         let root = host.root_of(TASKS).unwrap();
@@ -752,25 +713,12 @@ impl Shell {
     }
 }
 
-/// Today's cards read Tasks' own document, joined read-only on Today's connection: a task due today
-/// that Tasks makes shows in Today, one checked off in Tasks leaves it, and Today's Morning
-/// cleanup clears the finished tasks at Tasks' api, in Tasks' document. Today's document holds none
-/// of Tasks' resources.
+/// Today's cards read Tasks' resources from the workspace's store: a task due today that Tasks
+/// makes shows in Today, one checked off in Tasks leaves it, and Today's Morning cleanup clears
+/// the finished tasks at Tasks' api, in Tasks' resources.
 #[test]
-fn today_reads_tasks_from_its_document_and_clears_it_at_its_api() {
-    let (mut shell, joined) = Shell::new();
-    assert!(
-        joined.borrow().contains(&shell.tasks_route),
-        "Today joined Tasks' document: {:?}",
-        joined.borrow()
-    );
-    assert!(
-        !joined
-            .borrow()
-            .iter()
-            .any(|route| route.app_id == "so.tilo.lang.discussion"),
-        "Discussion is no app here: its documents are the apps' that use it"
-    );
+fn today_reads_tasks_from_the_workspace_and_clears_it_at_its_api() {
+    let mut shell = Shell::new();
     shell.settle();
 
     let new_task = shell.tasks_action("New task", |resource| !resource.contains('/'));
@@ -825,7 +773,7 @@ fn today_reads_tasks_from_its_document_and_clears_it_at_its_api() {
     shell.settle();
     assert!(
         shell.titles_in_tasks().is_empty(),
-        "the finished task went from Tasks' own document"
+        "the finished task went from Tasks' resources"
     );
     let filed = shell.today_sent.borrow().iter().any(|request| {
         matches!(request, CollabRequest::RemoteAction {
@@ -834,13 +782,4 @@ fn today_reads_tasks_from_its_document_and_clears_it_at_its_api() {
             && format!("{:?}", invoke.argument).contains("Morning: 1 done"))
     });
     assert!(filed, "the morning's note is asked of Notes' api");
-    let today = shell
-        .host
-        .instances()
-        .find(|hosted| hosted.spec().app == "so.tilo.lang.today")
-        .unwrap();
-    assert!(
-        today.instance().host().unwrap().root_of(TASKS).is_err(),
-        "Today's document holds no root of Tasks"
-    );
 }

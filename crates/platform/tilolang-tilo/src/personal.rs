@@ -1,49 +1,39 @@
 //! A person's own state of an app's workspace: the view state they set in views, and what they
 //! have seen.
 //!
-//! The runtime holds those slots while a window is open ([`tilolang_runtime::view_state`]); this
-//! resource is the document they are kept in, so what a person picked is still theirs after a
-//! restart and reaches their other devices. It is the workspace's document of the kind
-//! `tilolang.personal` ([`tilolang::PERSONAL_RESOURCE_TYPE`]), kept by the language's host app
-//! ([`OWNER`]) and opened by every tilolang app's window: one document per workspace, synced to
-//! every member like any document and decided by the workspace's grants like any document's changes.
+//! The runtime holds those slots while a window is open ([`tilolang_runtime::view_state`]); the
+//! store keeps them, so what a person picked is still theirs after a restart and reaches their
+//! other devices. Each person's state of one app is one resource of the kind [`KIND`] in the
+//! device's resource store ([`id_of`]), which only that person reads: its readers are the person,
+//! so it is placed in a document of theirs alone and reaches only their devices.
 //!
-//! Each person's entries are theirs, under `$personal/<person>`:
+//! The resource indexes nothing; its content holds the state:
 //!
 //! ```text
-//! $personal/<person>/views/<window>/<state>                the value, as JSON
-//! $personal/<person>/seen/<resource>/{change,at}           the newest version they saw, and when
-//! $personal/<person>/runs/<run>                            a run they reviewed
+//! views  { "[\"<window>\",\"<state>\"]": <value as JSON> }   the view state, per window and slot
+//! seen   { "<resource>": { change, at } }                    the newest version they saw
+//! runs   { "<run>": true }                                    the runs they reviewed
 //! ```
 //!
-//! A document kept while a view's state was still split into two kinds holds each value one map
-//! deeper, under `<window>/<window|lens>/<state>`; it reads as the same state, and the place
-//! this build keeps wins where it holds one ([`Keep::View`]).
-//!
-//! Only the person an entry is about writes it: [`Keep::apply`] refuses a change whose invoking
-//! actor is not the entry's person, so a window keeps its own person's state and nobody
-//! else's. Others read the entries — a window draws another person's place as presence — and
-//! their changes arrive the way any change of theirs does. Every change is a housekeeping
-//! change ([`Keep::change_kind`]): never an undo step, and never in the workspace's activity or
-//! its search.
+//! Every write keeps one slot or one mark, as an edit of that one entry, so two devices of the
+//! person that keep different entries at once both keep theirs.
 
-use automerge::transaction::Transactable as _;
-use automerge::{ObjId, ObjType, ROOT, ReadDoc as _};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as Json;
-use tilo_actions::{Action, ActionError, ActionKey, ChangeKind, Described, Did};
-use tilo_resource::{ActionDecl, Doc, ModelError, Resource};
+use serde_json::{Map, Value as Json};
+use tilo_resource_store::wire::{Command, Edit, Reply};
+use tilo_resource_store::{Resource, Stamp};
 use tilolang_runtime::ids::{Actor, MemberId};
 use tilolang_runtime::seen::SeenMark;
 use tilolang_runtime::value::Value;
 use tilolang_runtime::view_state::StateKey;
 
-/// The document kind of the workspace's document of each person's own state. The spelling is what
-/// documents on disk carry, so it stays.
+use crate::resources::Port;
+
+/// The kind each person's own state of an app is kept as.
 pub const KIND: &str = tilolang::PERSONAL_RESOURCE_TYPE;
 
-/// The app that keeps the document: the tilolang host's own, since the state is of the windows it
-/// runs rather than of one package, and every package of a workspace shares the one document.
+/// The app that keeps the state: the tilolang host's own, since the state is of the windows it
+/// runs rather than of one package's types.
 pub const OWNER: &str = tilolang::HOST_APP;
 
 /// The verb keeping one slot of view state.
@@ -52,13 +42,12 @@ pub const VIEW_STATE: &str = "view-state";
 pub const SEEN: &str = "seen";
 /// The verb keeping the runs a person reviewed.
 pub const RUNS: &str = "seen-runs";
-/// The verb a delivered reminder was kept by. Retired with the reminder scheduler: a reminder is
-/// now an effect an app schedules through `uses`, so the document no longer keeps deliveries.
-pub const REMINDED: &str = "reminded";
-/// Where the document keeps its own state, apart from anything else it holds.
-const PERSONAL: &str = "$personal";
+
+/// The content map of the view state, by window and slot.
 const VIEWS: &str = "views";
+/// The content map of the seen marks, by resource.
 const SEEN_MARKS: &str = "seen";
+/// The content map of the reviewed runs.
 const REVIEWED: &str = "runs";
 
 /// The id `view`'s state is kept under for the window that takes the shell's tab `tab`: each
@@ -70,8 +59,8 @@ pub fn in_window(tab: u64, view: &str) -> String {
     format!("{tab}/{view}")
 }
 
-/// The view whose state the document keeps under `kept` for the window of the tab `tab`, as
-/// [`in_window`] writes it; `None` for another window's.
+/// The view whose state is kept under `kept` for the window of the tab `tab`, as [`in_window`]
+/// writes it; `None` for another window's.
 #[must_use]
 pub fn of_window(tab: u64, kept: &str) -> Option<&str> {
     kept.strip_prefix(&format!("{tab}/"))
@@ -83,13 +72,19 @@ pub fn actor(id: &str) -> Actor {
     Actor::Member(MemberId::person(id))
 }
 
-/// The person `who` is, when they are one: whose own state the document keeps.
+/// The person `who` is, when they are one: whose own state is kept.
 #[must_use]
 pub fn person_of(who: &Actor) -> Option<&str> {
     who.member_id()?.person_id()
 }
 
-/// One slot of the person's view state, as the runtime keys it and as their document keeps it.
+/// The id of `person`'s own state of the app `app` in the store.
+#[must_use]
+pub fn id_of(app: &str, person: &str) -> String {
+    format!("{app}@{}", person.to_ascii_lowercase())
+}
+
+/// One slot of the person's view state, as the runtime keys it and as the store keeps it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Slot {
     /// Whose state it is.
@@ -130,8 +125,8 @@ pub struct Reviewed {
     pub run: String,
 }
 
-/// What the workspace's document of each person's own state holds: the window and lens state they
-/// set, what they have seen, and the runs they reviewed.
+/// A person's own state of an app: the window state they set, what they have seen, and the runs
+/// they reviewed.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PersonalState {
     /// How their windows show their resources, and where they are in them.
@@ -169,70 +164,14 @@ impl PersonalState {
         }
     }
 
-    /// Whether nobody set or saw anything here yet.
+    /// Whether nothing is set or seen here yet.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty() && self.seen.is_empty() && self.runs.is_empty()
     }
 }
 
-/// The workspace's document of each person's own state of an app's windows, as the framework
-/// keeps it.
-pub struct Personal;
-
-impl Resource for Personal {
-    const KIND: &'static str = KIND;
-    const LABEL: &'static str = "Your place in the app";
-    const APP_ID: &'static str = OWNER;
-    type State = PersonalState;
-    type Action = Keep;
-
-    fn read(doc: &Doc) -> Result<Self::State, ModelError> {
-        Ok(PersonalState {
-            slots: slots(doc),
-            seen: marks(doc)?,
-            runs: reviewed(doc),
-        })
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        [
-            (VIEW_STATE, "Keep a view's state"),
-            (SEEN, "Keep what is seen"),
-            (RUNS, "Keep reviewed runs"),
-            (REMINDED, "Keep a reminder delivered"),
-        ]
-        .into_iter()
-        .map(|(verb, label)| declaration(verb, label))
-        .collect()
-    }
-}
-
-/// The declaration of the verb `verb`: the one change a window of the person's keeps as `verb`,
-/// by name, for the workspaces whose grants decide each change against what the app declares.
-fn declaration(verb: &'static str, label: &'static str) -> ActionDecl<Personal> {
-    let keep = tilo_actions::ActionParam::required_owned(
-        KEEP,
-        tilo_actions::ParamType::Object,
-        "The entry the person keeps",
-    );
-    ActionDecl::new(verb, label, vec![keep], move |args, _now| {
-        let Some(value) = args.to_json().remove(KEEP) else {
-            return Err(format!("`{KEEP}` is missing"));
-        };
-        let keep: Keep =
-            serde_json::from_value(value).map_err(|error| format!("`{KEEP}`: {error}"))?;
-        if keep.verb() != verb {
-            return Err(format!("`{KEEP}`: not a {verb}"));
-        }
-        Ok(keep)
-    })
-}
-
-/// The parameter the one change of a verb is bound to.
-const KEEP: &str = "keep";
-
-/// One piece of a person's own state of the workspace, as a change to the document keeps it.
+/// One piece of a person's own state, as a write keeps it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "keep", rename_all = "kebab-case")]
 pub enum Keep {
@@ -250,38 +189,32 @@ pub enum Keep {
         resource: String,
         mark: Option<SeenMark>,
     },
-    /// The runs `person` reviewed.
+    /// The runs `person` reviewed, all of them: the ones kept before and not named are dropped.
     Runs { person: String, runs: Vec<String> },
-    /// `person` was told the reminder `reminder`: no device of theirs tells it again. Retired
-    /// with the platform's reminder scheduler; the variant stays so entries written by it still
-    /// read, and keeping one now keeps nothing.
-    Reminded { person: String, reminder: String },
 }
 
 impl Keep {
-    /// The verb the change names on [`KIND`].
+    /// The verb the write is stamped with.
     #[must_use]
     pub fn verb(&self) -> &'static str {
         match self {
             Self::View { .. } => VIEW_STATE,
             Self::Seen { .. } => SEEN,
             Self::Runs { .. } => RUNS,
-            Self::Reminded { .. } => REMINDED,
         }
     }
 
-    /// Whose state the change keeps.
+    /// Whose state the write keeps.
     #[must_use]
     pub fn person(&self) -> &str {
         match self {
-            Self::View { person, .. }
-            | Self::Seen { person, .. }
-            | Self::Runs { person, .. }
-            | Self::Reminded { person, .. } => person,
+            Self::View { person, .. } | Self::Seen { person, .. } | Self::Runs { person, .. } => {
+                person
+            }
         }
     }
 
-    /// The change keeping the slot `key` set on this device.
+    /// The write keeping the slot `key` set on this device.
     ///
     /// # Errors
     /// The slot is nobody's, or its value is not one the runtime keeps as JSON.
@@ -305,283 +238,260 @@ impl Keep {
             value,
         })
     }
-}
 
-/// The person whose action applies now: the actor the host admitted with it. `None` outside an
-/// action's apply, where no person is acting.
-fn acting() -> Option<String> {
-    let invoker = tilo_actions::invoking_context()?.invoker?;
-    Some(
-        invoker
-            .acting
-            .acted_for_person()
-            .or_else(|| invoker.acting.by.member_id()?.person_id())?
-            .to_owned(),
-    )
-}
-
-impl Action for Keep {
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        // A person's own entries are only ever theirs to write: the actor the host admitted
-        // with the change, pinned in its envelope, must be the person it is about.
-        if acting().as_deref() != Some(self.person()) {
-            return Err(ActionError::Refused(
-                "only a person keeps their own state".to_owned(),
-            ));
-        }
-        let person = ensure_map(doc, &ROOT, PERSONAL)?;
-        let person = ensure_map(doc, &person, self.person())?;
+    /// The edits of the content that keep this, given what the content holds now.
+    fn edits(&self, content: &Map<String, Json>) -> Vec<Edit> {
         match self {
             Self::View {
                 window,
                 state,
                 value,
                 ..
-            } => {
-                let views = ensure_map(doc, &person, VIEWS)?;
-                let place = ensure_map(doc, &views, window)?;
-                doc.put(&place, state.as_str(), value.to_string())?;
-            }
-            Self::Seen { resource, mark, .. } => {
-                let seen = ensure_map(doc, &person, SEEN_MARKS)?;
-                match mark {
-                    Some(mark) => {
-                        let held = ensure_map(doc, &seen, resource)?;
-                        doc.put(&held, "change", mark.change.as_str())?;
-                        doc.put(&held, "at", mark.at.as_str())?;
-                    }
-                    None => {
-                        doc.delete(&seen, resource.as_str())?;
-                    }
-                }
-            }
+            } => vec![Edit::MapPut {
+                field: VIEWS.to_owned(),
+                key: view_key(window, state),
+                value: value.clone(),
+            }],
+            Self::Seen {
+                resource,
+                mark: Some(mark),
+                ..
+            } => vec![Edit::MapPut {
+                field: SEEN_MARKS.to_owned(),
+                key: resource.clone(),
+                value: serde_json::json!({ "change": mark.change, "at": mark.at }),
+            }],
+            Self::Seen {
+                resource,
+                mark: None,
+                ..
+            } => vec![Edit::MapDelete {
+                field: SEEN_MARKS.to_owned(),
+                key: resource.clone(),
+            }],
             Self::Runs { runs, .. } => {
-                let reviewed = ensure_map(doc, &person, REVIEWED)?;
-                let held: Vec<String> = doc.keys(&reviewed).collect();
-                for run in held {
-                    if !runs.contains(&run) {
-                        doc.delete(&reviewed, run.as_str())?;
-                    }
-                }
-                for run in runs {
-                    doc.put(&reviewed, run.as_str(), true)?;
-                }
-            }
-            // Nothing tells a reminder any more, so there is nothing left to keep: an entry
-            // written when one was told reads, and applies nothing.
-            Self::Reminded { .. } => {}
-        }
-        Ok(())
-    }
-
-    fn describe(&self, doc: &Doc) -> Option<Described> {
-        let _ = doc;
-        let key = ActionKey::new(OWNER, KIND, self.verb());
-        Some(Described::new(Did::verb(key, Vec::new())))
-    }
-
-    fn change_kind(&self) -> ChangeKind {
-        ChangeKind::Housekeeping
-    }
-}
-
-/// The maps a document kept a window's state in while a view's state was still split into two
-/// kinds: how its window showed the resource, and where its person was in it. The names are
-/// what those documents carry, so they stay.
-const SPLIT: [&str; 2] = ["window", "lens"];
-
-/// The map under `key` of `parent`, made when absent; the copies of it a replica made before it
-/// met the others are folded into the one the document keeps ([`crate::containers`]).
-fn ensure_map(doc: &mut Doc, parent: &ObjId, key: &str) -> Result<ObjId, ActionError> {
-    crate::containers::single(doc, parent, key)
-}
-
-/// The map under `key` of `parent`, when it is there.
-fn map_at(doc: &Doc, parent: &ObjId, key: &str) -> Option<ObjId> {
-    match doc.get(parent, key) {
-        Ok(Some((automerge::Value::Object(ObjType::Map), id))) => Some(id),
-        Ok(_) => None,
-        Err(error) => {
-            tracing::warn!(%error, "personal: a map the document keeps does not read");
-            None
-        }
-    }
-}
-
-/// The text held under `key` of `map`, when it is a text.
-fn text_at(doc: &Doc, map: &ObjId, key: &str) -> Result<Option<String>, ModelError> {
-    Ok(match doc.get(map, key)? {
-        Some((automerge::Value::Scalar(value), _)) => value.as_str().map(str::to_owned),
-        _ => None,
-    })
-}
-
-/// What one slot of view state reads back as: `None` when its value is not one the runtime
-/// holds.
-fn view_slot(text: &str) -> Option<Value> {
-    let json: Json = serde_json::from_str(text)
-        .inspect_err(|error| tracing::warn!(%error, "personal: a kept value does not parse"))
-        .ok()?;
-    tilolang_runtime::value::from_json(&json)
-        .inspect_err(|error| {
-            tracing::warn!(
-                ?error,
-                "personal: a kept value is not one the runtime holds"
-            );
-        })
-        .ok()
-}
-
-/// The maps `parent` holds at `key`, the one the document keeps first: a replica that kept a map
-/// of its own before it met the others wrote into a copy the document does not keep, and what it
-/// wrote is the person's all the same ([`crate::containers`]).
-fn kept_first(doc: &Doc, parent: &ObjId, key: &str) -> Vec<ObjId> {
-    let mut held = crate::containers::maps(doc, parent, key);
-    held.reverse();
-    held
-}
-
-/// The people the document holds any state of, each with a copy of their map, the one the document
-/// keeps first: a person's map is made twice when two devices of theirs wrote it at once.
-fn people(doc: &Doc) -> Vec<(String, ObjId)> {
-    let mut people = Vec::new();
-    for personal in kept_first(doc, &ROOT, PERSONAL) {
-        for person in doc.keys(&personal) {
-            people.extend(
-                kept_first(doc, &personal, &person)
+                let held = content.get(REVIEWED).and_then(Json::as_object);
+                let dropped = held
                     .into_iter()
-                    .map(|held| (person.clone(), held)),
-            );
-        }
-    }
-    people
-}
-
-/// The states a window keeps in `place`: the place this build keeps them at, then the two maps
-/// a document kept before it did, each state once and the newer place first.
-fn place_states(doc: &Doc, place: &ObjId) -> Vec<(String, Value)> {
-    let mut found = Vec::new();
-    let collect = |slots_of: &ObjId, found: &mut Vec<(String, Value)>| {
-        for state in doc.keys(slots_of) {
-            if found.iter().any(|(known, _)| *known == state) {
-                continue;
-            }
-            let text = text_at(doc, slots_of, &state).ok().flatten();
-            if let Some(value) = text.as_deref().and_then(view_slot) {
-                found.push((state, value));
-            }
-        }
-    };
-    collect(place, &mut found);
-    for split in SPLIT {
-        if let Some(slots_of) = map_at(doc, place, split) {
-            collect(&slots_of, &mut found);
-        }
-    }
-    found
-}
-
-/// Every slot of view state the document keeps, of everyone, each state once. Every copy of a
-/// person's map is read, so a state a replica set before it met the others is theirs, until the
-/// next write keeps it.
-fn slots(doc: &Doc) -> Vec<Slot> {
-    let mut found: Vec<Slot> = Vec::new();
-    for (person, held) in people(doc) {
-        for views in kept_first(doc, &held, VIEWS) {
-            for window in doc.keys(&views) {
-                for place in kept_first(doc, &views, &window) {
-                    for (state, value) in place_states(doc, &place) {
-                        let known = |slot: &Slot| {
-                            slot.person == person && slot.window == window && slot.state == state
-                        };
-                        if found.iter().any(known) {
-                            continue;
-                        }
-                        found.push(Slot {
-                            person: person.clone(),
-                            window: window.clone(),
-                            state,
-                            value,
-                        });
-                    }
-                }
-            }
-        }
-    }
-    found
-}
-
-/// The seen marks the document keeps, of everyone, per resource.
-fn marks(doc: &Doc) -> Result<Vec<Seen>, ModelError> {
-    let mut marks: Vec<Seen> = Vec::new();
-    for (person, held) in people(doc) {
-        for seen in kept_first(doc, &held, SEEN_MARKS) {
-            for resource in doc.keys(&seen) {
-                let known = |seen: &Seen| seen.person == person && seen.resource == resource;
-                if marks.iter().any(known) {
-                    continue;
-                }
-                let Some(at) = map_at(doc, &seen, &resource) else {
-                    continue;
-                };
-                let mark = SeenMark {
-                    change: text_at(doc, &at, "change")?.unwrap_or_default(),
-                    at: text_at(doc, &at, "at")?.unwrap_or_default(),
-                };
-                marks.push(Seen {
-                    person: person.clone(),
-                    resource,
-                    mark,
-                });
-            }
-        }
-    }
-    Ok(marks)
-}
-
-/// The runs people reviewed.
-fn reviewed(doc: &Doc) -> Vec<Reviewed> {
-    let mut reviewed: Vec<Reviewed> = Vec::new();
-    for (person, held) in people(doc) {
-        for runs in kept_first(doc, &held, REVIEWED) {
-            for run in doc.keys(&runs) {
-                if reviewed
+                    .flat_map(Map::keys)
+                    .filter(|run| !runs.contains(run))
+                    .map(|run| Edit::MapDelete {
+                        field: REVIEWED.to_owned(),
+                        key: run.clone(),
+                    });
+                let kept = runs
                     .iter()
-                    .any(|known| known.person == person && known.run == run)
-                {
-                    continue;
-                }
-                reviewed.push(Reviewed {
-                    person: person.clone(),
-                    run,
-                });
+                    .filter(|run| !held.is_some_and(|held| held.contains_key(*run)))
+                    .map(|run| Edit::MapPut {
+                        field: REVIEWED.to_owned(),
+                        key: run.clone(),
+                        value: Json::Bool(true),
+                    });
+                dropped.chain(kept).collect()
             }
         }
     }
-    reviewed
+}
+
+/// The key a slot is kept under in the view map: the window and the slot, as a JSON pair, so
+/// neither needs a separator it could itself hold.
+fn view_key(window: &str, state: &str) -> String {
+    serde_json::to_string(&(window, state)).unwrap_or_default()
+}
+
+/// What `person` keeps of the app `app`, as the store holds it now: nothing when they kept
+/// nothing yet.
+///
+/// # Errors
+/// When the store cannot be read.
+pub fn read(port: &dyn Port, app: &str, person: &str) -> Result<PersonalState, String> {
+    Ok(state_of(person, &content(port, app, person)?.unwrap_or_default()))
+}
+
+/// Keep `keeps`, the changes `person` made of their own state of the app `app`, in the store as
+/// theirs: their resource is made the first time, readable by them alone, and each change is its
+/// own write. A change of anyone else's state is refused, and keeps nothing.
+///
+/// # Errors
+/// A change is someone else's, or the store refused it; what came before it is kept.
+pub fn keep(port: &dyn Port, app: &str, person: &str, keeps: &[Keep]) -> Result<(), String> {
+    if let Some(other) = keeps
+        .iter()
+        .find(|keep| !keep.person().eq_ignore_ascii_case(person))
+    {
+        return Err(format!(
+            "only a person keeps their own state, not {}'s",
+            other.person()
+        ));
+    }
+    let id = id_of(app, person);
+    let mut held = content(port, app, person)?;
+    for keep in keeps {
+        let stamp = stamp(keep.verb(), person);
+        let none = Map::new();
+        let edits = keep.edits(held.as_ref().unwrap_or(&none));
+        if edits.is_empty() {
+            continue;
+        }
+        let edit = Command::Edit {
+            kind: KIND.to_owned(),
+            id: id.clone(),
+            edits: edits.clone(),
+            stamp: stamp.clone(),
+        };
+        let command = if held.is_some() {
+            edit
+        } else {
+            let made = Command::Put {
+                kind: KIND.to_owned(),
+                id: id.clone(),
+                resource: Resource {
+                    readers: person.to_ascii_lowercase(),
+                    ..Resource::default()
+                },
+                stamp,
+            };
+            Command::Batch(vec![made, edit])
+        };
+        port.command(command)?;
+        let content = held.get_or_insert_with(Map::new);
+        for edit in &edits {
+            apply(content, edit);
+        }
+    }
+    Ok(())
+}
+
+/// The content of `person`'s state of `app`: `None` while the store holds no resource of it.
+fn content(port: &dyn Port, app: &str, person: &str) -> Result<Option<Map<String, Json>>, String> {
+    let id = id_of(app, person);
+    let found = port.command(Command::Get {
+        kind: KIND.to_owned(),
+        id: id.clone(),
+    })?;
+    match found {
+        Reply::Resource(None) => return Ok(None),
+        Reply::Resource(Some(_)) => {}
+        other => return Err(format!("a read answered {other:?}")),
+    }
+    match port.command(Command::Content {
+        kind: KIND.to_owned(),
+        id,
+    })? {
+        Reply::Content(Some(Json::Object(content))) => Ok(Some(content)),
+        Reply::Content(_) => Ok(Some(Map::new())),
+        other => Err(format!("a read answered {other:?}")),
+    }
+}
+
+/// `content` as `edit` leaves it: what the next change of the same keep is decided against.
+fn apply(content: &mut Map<String, Json>, edit: &Edit) {
+    match edit {
+        Edit::MapPut { field, key, value } => {
+            let map = content
+                .entry(field.clone())
+                .or_insert_with(|| Json::Object(Map::new()));
+            if !map.is_object() {
+                *map = Json::Object(Map::new());
+            }
+            if let Some(map) = map.as_object_mut() {
+                map.insert(key.clone(), value.clone());
+            }
+        }
+        Edit::MapDelete { field, key } => {
+            if let Some(map) = content.get_mut(field).and_then(Json::as_object_mut) {
+                map.remove(key);
+            }
+        }
+        Edit::Set { .. } | Edit::Splice { .. } | Edit::Add { .. } | Edit::Remove { .. } => {}
+    }
+}
+
+/// The stamp of one write of `person`'s own state, of the verb `verb`.
+fn stamp(verb: &str, person: &str) -> Stamp {
+    Stamp {
+        verb: verb.to_owned(),
+        invoker: serde_json::to_string(&actor(person)).unwrap_or_default(),
+        invocation: uuid::Uuid::new_v4().to_string(),
+        at: crate::host::system_time(),
+        ..Stamp::default()
+    }
+}
+
+/// What `content`, `person`'s state, holds.
+fn state_of(person: &str, content: &Map<String, Json>) -> PersonalState {
+    let map = |field: &str| content.get(field).and_then(Json::as_object);
+    let slots = map(VIEWS)
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, value)| {
+            let (window, state) = serde_json::from_str::<(String, String)>(key)
+                .inspect_err(|error| tracing::warn!(%error, "personal: a slot's key does not read"))
+                .ok()?;
+            let value = tilolang_runtime::value::from_json(value)
+                .inspect_err(|error| {
+                    tracing::warn!(?error, "personal: a kept value is not one the runtime holds");
+                })
+                .ok()?;
+            Some(Slot {
+                person: person.to_owned(),
+                window,
+                state,
+                value,
+            })
+        })
+        .collect();
+    let seen = map(SEEN_MARKS)
+        .into_iter()
+        .flatten()
+        .filter_map(|(resource, mark)| {
+            let text = |name: &str| mark.get(name).and_then(Json::as_str).map(str::to_owned);
+            Some(Seen {
+                person: person.to_owned(),
+                resource: resource.clone(),
+                mark: SeenMark {
+                    change: text("change")?,
+                    at: text("at").unwrap_or_default(),
+                },
+            })
+        })
+        .collect();
+    let runs = map(REVIEWED)
+        .into_iter()
+        .flatten()
+        .map(|(run, _)| Reviewed {
+            person: person.to_owned(),
+            run: run.clone(),
+        })
+        .collect();
+    PersonalState { slots, seen, runs }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::ActionContext;
+    use crate::resources::LocalPort;
 
-    /// `keep` applied as `actor`'s change: as the document's own window applies it.
-    fn apply_as(doc: &mut Doc, actor: &str, keep: &Keep) -> Result<(), String> {
-        let encoded = tilo_resource::encode::<Personal>(keep).map_err(|e| e.to_string())?;
-        let context = ActionContext::for_resource(KIND, KIND, Personal::LABEL)
-            .with_invoker(tilo_actions::ActionInvoker::person(actor));
-        tilo_actions::apply_local_with_context(doc, keep, encoded, None, context)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+    const APP: &str = "so.tilo.lang.tasks";
+
+    /// One store, as the person `reader` reads it: only resources whose readers are them.
+    struct As {
+        store: std::rc::Rc<std::cell::RefCell<tilo_resource_store::Store>>,
+        reader: &'static str,
     }
 
-    fn kept(keeps: &[(&str, Keep)]) -> Doc {
-        let mut doc = Doc::new();
-        for (actor, keep) in keeps {
-            apply_as(&mut doc, actor, keep).expect("the change applies");
+    impl Port for As {
+        fn command(&self, command: Command) -> Result<Reply, String> {
+            if command.writes() {
+                return tilo_resource_store::wire::write(&mut self.store.borrow_mut(), command)
+                    .map(|_| Reply::Written)
+                    .map_err(|refused| refused.to_string());
+            }
+            tilo_resource_store::wire::read(&self.store.borrow(), &command, &|readers| {
+                readers == "*" || readers == self.reader
+            })
+            .ok_or_else(|| "no read".to_owned())
         }
-        doc
     }
 
     fn view(person: &str, window: &str, state: &str, value: Json) -> Keep {
@@ -601,353 +511,156 @@ mod tests {
         }
     }
 
+    fn mark(change: &str) -> SeenMark {
+        SeenMark {
+            change: change.repeat(32),
+            at: "2026-11-04T12:00:00Z".to_owned(),
+        }
+    }
+
     tilo_test_env::scenario! {
-        fn kept_state_reads_back_wherever_it_was_kept;
+        fn kept_state_reads_back_as_it_was_kept;
 
         phase a_persons_view_state_and_seen_marks_read_back_as_they_were_kept;
         {
-            let doc = kept(&[
-                (
-                    "ada",
-                    view("ada", "tasks", "place", Json::String("today".to_owned())),
-                ),
-                ("ada", view("ada", "tasks", "scroll", Json::from(120))),
-                (
-                    "ada",
-                    seen(
-                        "ada",
-                        "tl:so.tilo.lang.tasks:inbox",
-                        Some(SeenMark {
-                            change: "ab".repeat(32),
-                            at: "2026-11-04T12:00:00Z".to_owned(),
-                        }),
-                    ),
-                ),
-                (
-                    "ada",
-                    Keep::Runs {
-                        person: "ada".to_owned(),
-                        runs: vec!["run-7".to_owned()],
-                    },
-                ),
-            ]);
-            let state = Personal::read(&doc).expect("the document reads");
-            let theirs = state.of("ada");
-            assert_eq!(theirs.slots.len(), 2);
-            assert_eq!(
-                theirs.slots[0].key(),
-                StateKey::view("tasks", actor("ada"), "place")
-            );
-            assert_eq!(theirs.slots[0].value, Value::text("today"));
-            assert_eq!(
-                theirs.slots[1].key(),
-                StateKey::view("tasks", actor("ada"), "scroll")
-            );
-            assert_eq!(theirs.seen.len(), 1);
-            assert_eq!(theirs.seen[0].resource, "tl:so.tilo.lang.tasks:inbox");
-            assert_eq!(theirs.seen[0].mark.change, "ab".repeat(32));
-            assert_eq!(theirs.runs[0].run, "run-7");
-        }
-
-        phase state_a_document_kept_under_the_two_old_maps_still_reads;
-        {
-            let mut doc = Doc::new();
-            kept_under_the_split(&mut doc, "ada", "tasks", "window", "order", "\"due\"");
-            kept_under_the_split(&mut doc, "ada", "tasks", "lens", "draft", "\"hi\"");
-            let state = Personal::read(&doc).expect("the document reads");
-            let theirs = state.of("ada");
-            assert_eq!(theirs.slots.len(), 2);
-            let value = |name: &str| {
-                theirs
-                    .slots
-                    .iter()
-                    .find(|slot| slot.state == name)
-                    .map(|slot| slot.value.clone())
-            };
-            assert_eq!(value("order"), Some(Value::text("due")));
-            assert_eq!(value("draft"), Some(Value::text("hi")));
-            assert_eq!(
-                theirs.slots[0].key(),
-                StateKey::view("tasks", actor("ada"), theirs.slots[0].state.clone())
-            );
-        }
-
-        phase the_place_this_build_keeps_a_state_at_wins_over_the_old_maps;
-        {
-            let mut doc = Doc::new();
-            kept_under_the_split(&mut doc, "ada", "tasks", "window", "order", "\"due\"");
-            apply_as(
-                &mut doc,
+            let port = LocalPort::in_memory();
+            keep(
+                &port,
+                APP,
                 "ada",
-                &view("ada", "tasks", "order", Json::from("created")),
-            )
-            .expect("the change applies");
-            let state = Personal::read(&doc).expect("the document reads");
-            assert_eq!(state.slots.len(), 1, "one state, read once");
-            assert_eq!(state.slots[0].value, Value::text("created"));
-        }
-
-        phase a_slot_kept_twice_reads_back_once_as_it_is_now;
-        {
-            let doc = kept(&[
-                ("ada", view("ada", "tasks", "place", Json::from("inbox"))),
-                ("ada", view("ada", "tasks", "place", Json::from("today"))),
-            ]);
-            let state = Personal::read(&doc).expect("the document reads");
-            assert_eq!(state.of("ada").slots.len(), 1);
-            assert_eq!(state.of("ada").slots[0].value, Value::text("today"));
-        }
-
-        phase a_document_that_kept_no_state_reads_as_none;
-        {
-            let state = Personal::read(&Doc::new()).expect("an empty document reads");
-            assert!(state.is_empty(), "{state:?}");
-        }
-
-        phase the_state_each_device_kept_before_they_met_reads_on_both;
-        // Every entry ada's devices kept before they met reads, and her next change keeps the one
-        // map there is.
-        {
-            let mut doc = kept_apart(
-                &[view("ada", "tasks", "place", Json::from("today"))],
                 &[
-                    view("ada", "tasks", "scroll", Json::from(120)),
-                    seen(
-                        "ada",
-                        "tl:so.tilo.lang.tasks:inbox",
-                        Some(SeenMark {
-                            change: "ab".repeat(32),
-                            at: "2026-11-04T12:00:00Z".to_owned(),
-                        }),
-                    ),
+                    view("ada", "1/tasks", "place", Json::from("today")),
+                    view("ada", "1/tasks", "scroll", Json::from(120)),
+                    seen("ada", "inbox", Some(mark("ab"))),
                     Keep::Runs {
                         person: "ada".to_owned(),
                         runs: vec!["run-7".to_owned()],
                     },
                 ],
-            );
-            assert_eq!(
-                crate::containers::maps(&doc, &ROOT, PERSONAL).len(),
-                2,
-                "the devices made a map each"
-            );
-            let state = Personal::read(&doc).expect("the document reads");
-            let theirs = state.of("ada");
-            let mut places: Vec<String> = theirs
+            )
+            .expect("her state keeps");
+            let theirs = read(&port, APP, "ada").expect("her state reads");
+            let mut slots: Vec<String> = theirs
                 .slots
                 .iter()
                 .map(|slot| format!("{}={:?}", slot.state, slot.value))
                 .collect();
-            places.sort();
-            assert_eq!(places, ["place=Text(\"today\")", "scroll=Int(120)"]);
-            assert_eq!(theirs.seen.len(), 1, "the seen mark her other device kept");
+            slots.sort();
+            assert_eq!(slots, ["place=Text(\"today\")", "scroll=Int(120)"]);
+            assert_eq!(
+                theirs.slots[0].key().window,
+                "1/tasks",
+                "a slot is kept for its window"
+            );
+            assert_eq!(theirs.seen.len(), 1);
+            assert_eq!(theirs.seen[0].resource, "inbox");
+            assert_eq!(theirs.seen[0].mark, mark("ab"));
             assert_eq!(theirs.runs[0].run, "run-7");
+        }
 
-            // Her next change keeps the state of both in the one map, and nothing is lost.
-            apply_as(
-                &mut doc,
+        phase a_slot_kept_twice_reads_back_once_as_it_is_now;
+        {
+            let port = LocalPort::in_memory();
+            keep(&port, APP, "ada", &[view("ada", "1/tasks", "place", Json::from("inbox"))])
+                .expect("kept");
+            keep(&port, APP, "ada", &[view("ada", "1/tasks", "place", Json::from("today"))])
+                .expect("kept again");
+            let theirs = read(&port, APP, "ada").expect("her state reads");
+            assert_eq!(theirs.slots.len(), 1);
+            assert_eq!(theirs.slots[0].value, Value::text("today"));
+        }
+
+        phase nothing_kept_reads_as_nothing;
+        {
+            let port = LocalPort::in_memory();
+            assert!(read(&port, APP, "ada").expect("reads").is_empty());
+        }
+
+        phase a_taken_back_mark_is_no_mark_and_reviewed_runs_replace_the_ones_before;
+        {
+            let port = LocalPort::in_memory();
+            keep(
+                &port,
+                APP,
                 "ada",
-                &view("ada", "tasks", "lens", Json::from(2)),
+                &[
+                    seen("ada", "inbox", Some(mark("cd"))),
+                    seen("ada", "inbox", None),
+                    Keep::Runs {
+                        person: "ada".to_owned(),
+                        runs: vec!["run-1".to_owned(), "run-2".to_owned()],
+                    },
+                    Keep::Runs {
+                        person: "ada".to_owned(),
+                        runs: vec!["run-2".to_owned()],
+                    },
+                ],
             )
-            .expect("the change applies");
+            .expect("kept");
+            let theirs = read(&port, APP, "ada").expect("reads");
+            assert!(theirs.seen.is_empty(), "{theirs:?}");
             assert_eq!(
-                holding(&doc, &ROOT, PERSONAL),
-                1,
-                "one map of her state from that change on"
+                theirs.runs,
+                vec![Reviewed {
+                    person: "ada".to_owned(),
+                    run: "run-2".to_owned(),
+                }]
             );
-            assert_eq!(
-                crate::containers::reach(&doc, &ROOT, &[PERSONAL, "ada", VIEWS, "tasks"])
-                    .iter()
-                    .filter(|place| doc.keys(place).next().is_some())
-                    .count(),
-                1,
-                "her window's state is in one map from that change on"
-            );
-            let state = Personal::read(&doc).expect("the document reads");
-            assert_eq!(state.of("ada").slots.len(), 3);
-            assert_eq!(state.of("ada").seen.len(), 1);
-            assert_eq!(state.of("ada").runs.len(), 1);
         }
     }
 
-    /// The maps a document kept a window's state in before a view's state was one kind.
-    fn kept_under_the_split(
-        doc: &mut Doc,
-        person: &str,
-        window: &str,
-        which: &str,
-        state: &str,
-        value: &str,
-    ) {
-        let personal = ensure_map(doc, &ROOT, PERSONAL).expect("the map opens");
-        let theirs = ensure_map(doc, &personal, person).expect("the map opens");
-        let views = ensure_map(doc, &theirs, VIEWS).expect("the map opens");
-        let place = ensure_map(doc, &views, window).expect("the map opens");
-        let slots = ensure_map(doc, &place, which).expect("the map opens");
-        doc.put(&slots, state, value).expect("the value keeps");
-    }
-
     tilo_test_env::scenario! {
-        fn a_persons_state_is_theirs_and_changed_by_them_alone;
+        fn a_persons_state_is_theirs_alone;
 
-        phase one_persons_state_is_nobodys_else_and_two_people_keep_theirs_side_by_side;
+        phase two_people_and_two_apps_keep_theirs_apart;
         {
-            let doc = kept(&[
-                ("ada", view("ada", "tasks", "place", Json::from("today"))),
-                ("bo", view("bo", "tasks", "place", Json::from("inbox"))),
-            ]);
-            let state = Personal::read(&doc).expect("the document reads");
-            assert_eq!(state.slots.len(), 2, "one document holds both");
-            assert_eq!(
-                state.of("ada").slots[0].value,
-                Value::text("today"),
-                "ada's is hers"
+            let port = LocalPort::in_memory();
+            keep(&port, APP, "ada", &[view("ada", "1/tasks", "place", Json::from("today"))])
+                .expect("ada keeps hers");
+            keep(&port, APP, "bo", &[view("bo", "1/tasks", "place", Json::from("inbox"))])
+                .expect("bo keeps his");
+            keep(
+                &port,
+                "so.tilo.lang.notes",
+                "ada",
+                &[view("ada", "2/notes", "place", Json::from("all"))],
+            )
+            .expect("ada keeps her notes' place");
+            let hers = read(&port, APP, "ada").expect("reads");
+            assert_eq!(hers.slots.len(), 1);
+            assert_eq!(hers.slots[0].value, Value::text("today"));
+            assert_eq!(read(&port, APP, "bo").expect("reads").slots[0].value, Value::text("inbox"));
+            assert!(read(&port, APP, "cy").expect("reads").is_empty());
+        }
+
+        phase her_state_is_read_by_her_alone;
+        {
+            let store = std::rc::Rc::new(std::cell::RefCell::new(tilo_resource_store::Store::new()));
+            let hers = As { store: std::rc::Rc::clone(&store), reader: "ada" };
+            let his = As { store, reader: "bo" };
+            keep(&hers, APP, "AdA", &[view("AdA", "1/tasks", "place", Json::from("today"))])
+                .expect("kept");
+            assert_eq!(read(&hers, APP, "ada").expect("reads").slots.len(), 1);
+            assert!(
+                read(&his, APP, "ada").expect("reads").is_empty(),
+                "bo reads nothing of hers"
             );
-            assert_eq!(state.of("bo").slots[0].value, Value::text("inbox"));
-            assert!(state.of("cy").is_empty());
         }
 
         phase a_change_for_another_person_is_refused_and_keeps_nothing;
         {
-            let mut doc = Doc::new();
-            let error = apply_as(
-                &mut doc,
-                "bo",
-                &view("ada", "tasks", "place", Json::from("today")),
-            )
-            .expect_err("bo keeps no state of ada's");
+            let port = LocalPort::in_memory();
+            let error = keep(&port, APP, "bo", &[view("ada", "1/tasks", "place", Json::from("x"))])
+                .expect_err("bo keeps no state of ada's");
             assert!(error.contains("their own state"), "{error}");
-            assert!(
-                Personal::read(&doc).expect("the document reads").is_empty(),
-                "nothing was kept"
-            );
+            assert!(read(&port, APP, "ada").expect("reads").is_empty());
+            assert!(read(&port, APP, "bo").expect("reads").is_empty());
         }
 
-        phase a_change_no_person_invoked_is_refused;
-        {
-            let mut doc = Doc::new();
-            let keep = view("ada", "tasks", "place", Json::from("today"));
-            let mut plain = Doc::new();
-            assert!(keep.apply(&mut plain).is_err(), "nobody's action");
-            let encoded = tilo_resource::encode::<Personal>(&keep).expect("the change encodes");
-            let error = tilo_actions::apply_local_with_context(
-                &mut doc,
-                &keep,
-                encoded,
-                None,
-                ActionContext::for_resource(KIND, KIND, Personal::LABEL),
-            )
-            .expect_err("no invoker");
-            assert!(error.to_string().contains("their own state"), "{error}");
-        }
-
-        phase a_verb_builds_the_change_of_its_own_kind_and_no_other;
-        {
-            let decl = declaration(SEEN, "Keep what is seen");
-            let keep = serde_json::to_value(seen("ada", "tl:x", None)).expect("the change serializes");
-            let args = tilo_actions::ActionArgs::bind(
-                &decl.params,
-                [(
-                    KEEP.to_owned(),
-                    tilo_actions::ArgValue::Object(keep.as_object().unwrap().clone()),
-                )],
-            )
-            .expect("the argument binds");
-            assert_eq!(decl.build_action(&args, 0), Ok(seen("ada", "tl:x", None)));
-            let other = serde_json::to_value(view("ada", "tasks", "place", Json::from("today")))
-                .expect("the change serializes");
-            let args = tilo_actions::ActionArgs::bind(
-                &decl.params,
-                [(
-                    KEEP.to_owned(),
-                    tilo_actions::ArgValue::Object(other.as_object().unwrap().clone()),
-                )],
-            )
-            .expect("the argument binds");
-            assert!(
-                decl.build_action(&args, 0).is_err(),
-                "a seen verb builds no view"
-            );
-        }
-
-        phase a_reading_the_platform_keeps_is_not_the_persons_state_and_is_not_kept;
+        phase a_reading_the_platform_keeps_is_not_the_persons_state;
         {
             let key = StateKey::runtime("tasks", None, "present");
             assert!(Keep::view(&key, &Value::text("ada")).is_err());
         }
-    }
-
-    #[test]
-    fn a_taken_back_seen_mark_is_no_mark_and_reviewed_runs_replace_the_ones_before() {
-        let doc = kept(&[
-            (
-                "ada",
-                seen(
-                    "ada",
-                    "tl:so.tilo.lang.tasks:inbox",
-                    Some(SeenMark {
-                        change: "cd".repeat(32),
-                        at: "2026-11-04T12:00:00Z".to_owned(),
-                    }),
-                ),
-            ),
-            ("ada", seen("ada", "tl:so.tilo.lang.tasks:inbox", None)),
-            (
-                "ada",
-                Keep::Runs {
-                    person: "ada".to_owned(),
-                    runs: vec!["run-1".to_owned(), "run-2".to_owned()],
-                },
-            ),
-            (
-                "ada",
-                Keep::Runs {
-                    person: "ada".to_owned(),
-                    runs: vec!["run-2".to_owned()],
-                },
-            ),
-        ]);
-        let state = Personal::read(&doc).expect("the document reads");
-        let theirs = state.of("ada");
-        assert!(theirs.seen.is_empty(), "{theirs:?}");
-        assert_eq!(
-            theirs.runs,
-            vec![Reviewed {
-                person: "ada".to_owned(),
-                run: "run-2".to_owned()
-            }]
-        );
-    }
-
-    /// How many of the maps `doc` holds at `key` of `parent` hold anything: a fold empties the
-    /// copies it folded and leaves them in place, so the document holds one map with entries in
-    /// it from that write on.
-    fn holding(doc: &Doc, parent: &ObjId, key: &str) -> usize {
-        crate::containers::maps(doc, parent, key)
-            .iter()
-            .filter(|held| doc.keys(held).next().is_some())
-            .count()
-    }
-
-    /// Two devices of ada's, each keeping her state before they met: each made the `$personal`
-    /// map, her map and the maps below of its own, and Automerge keeps one of each.
-    fn kept_apart(keeps: &[Keep], other: &[Keep]) -> Doc {
-        use tilo_automerge::ApplyIncoming as _;
-        let mut mine = Doc::new();
-        let mut theirs = mine.fork();
-        for keep in keeps {
-            apply_as(&mut mine, "ada", keep).expect("her device keeps it");
-        }
-        for keep in other {
-            apply_as(&mut theirs, "ada", keep).expect("her other device keeps it");
-        }
-        assert_eq!(
-            crate::containers::maps(&mine, &ROOT, PERSONAL).len(),
-            1,
-            "one device made the map"
-        );
-        mine.merge_incoming(&mut theirs).expect("the devices meet");
-        theirs.merge_incoming(&mut mine).expect("and meet again");
-        mine
     }
 }

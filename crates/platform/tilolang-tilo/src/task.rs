@@ -16,8 +16,8 @@
 //! <why>`), and runs every other app as it would without it.
 //!
 //! **Reads** go to the API ([`TaskApi::read`], [`TaskApi::query`]). A tilolang app's the
-//! session's host answers itself from the app's resource as the API hands it over, read with the
-//! app's package ([`crate::task_documents::DocumentReads`]): no app runs for them. One resource is
+//! session's host answers itself from the workspace's store, asked through the API, read with the
+//! app's package ([`crate::task_reads::TaskReads`]): no app runs for them. One resource is
 //! read once per program. A native app's resource only the app knows how to read, so a read of it
 //! is the app's own `read` action through the API, as the task ([`crate::native`]).
 //!
@@ -92,7 +92,7 @@ pub trait TaskApi {
     }
 
     /// A program starts: what was read for an earlier one is read again
-    /// ([`crate::task_documents::DocumentReads::forget`]).
+    /// ([`crate::task_reads::TaskReads::forget`]).
     fn begin_program(&self) {}
 
     /// The id the native app `app` lists the resource a program names `resource` by, which an

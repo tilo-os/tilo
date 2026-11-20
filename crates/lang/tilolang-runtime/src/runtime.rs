@@ -1418,6 +1418,8 @@ impl Runtime {
         let now = tilolang::calendar::instant(&self.core.clock_now()).unwrap_or(0);
         let pending = self.pending_outbox();
         if !pending.is_empty() && self.core.sink.borrow().is_none() {
+            // Nothing can go, but what `delivery(r)` reads still follows the document.
+            self.refresh_deliveries();
             return Err(RuntimeError::Package("no outside sink is set".into()));
         }
         for entry in pending {

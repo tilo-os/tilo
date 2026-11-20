@@ -733,7 +733,7 @@ impl Workspaces {
     /// The workspace is not held here, the store refused the write, or the workspace refused a
     /// document's write.
     #[cfg(feature = "apps")]
-    pub(crate) async fn resource_command(
+    pub async fn resource_command(
         &self,
         context: &crate::apps::services::ResourceRequestContext,
         mut command: tilo_resource_store::wire::Command,

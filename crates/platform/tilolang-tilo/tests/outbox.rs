@@ -1,7 +1,8 @@
 //! Outside effects wait in the workspace document for the device that owns them: approved twice, the
 //! letter leaves once.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
+use tilolang_runtime::store::Store as _;
 use tilolang_runtime::{Actor, InvokeOutcome, MemorySink, Resolution, Value};
 
 use crate::fixtures::Replica;
@@ -12,7 +13,7 @@ const LETTERS_IDS: &str = include_str!("../../../lang/tilolang/tests/fixtures/le
 
 /// A letters workspace with one draft and an agent's suggestion to send it, on `ada`'s replica.
 fn suggested_workspace() -> (Replica, tilolang_runtime::ResourceRef) {
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(LETTERS, LETTERS_IDS)]);
+    let (ada, packages) = Replica::new("ada", Workspace::new(), &[(LETTERS, LETTERS_IDS)]);
     let meta = packages[0].meta.clone();
     let letters = ada.host.root_of("test.letters").unwrap();
     ada.commit();
@@ -71,13 +72,13 @@ tilo_test_env::scenario! {
                 .unwrap();
             replica.commit();
         }
-        ada.sync_with(&mut grace);
+        ada.sync_with(&grace);
         // Each carries out what it owns: the entry has one owner, whichever device's approval won.
         for replica in [&mut ada, &mut grace] {
             replica.host.settle_outbox().unwrap();
             replica.commit();
         }
-        ada.sync_with(&mut grace);
+        ada.sync_with(&grace);
         for replica in [&mut ada, &mut grace] {
             replica.host.settle_outbox().unwrap();
             replica.commit();
@@ -91,13 +92,13 @@ tilo_test_env::scenario! {
             sent_by_grace.delivered()
         );
         // Settled in the document: no device has anything left to carry out.
-        assert_eq!(ada.host.store().outbox_pending_count(), 0);
-        assert_eq!(grace.host.store().outbox_pending_count(), 0);
+        assert_eq!(ada.host.store().outbox_pending().len(), 0);
+        assert_eq!(grace.host.store().outbox_pending().len(), 0);
     }
 
     phase approving_one_suggestion_twice_on_one_replica_queues_it_once;
     {
-        let (mut ada, invocation) = suggested_workspace();
+        let (ada, invocation) = suggested_workspace();
         let sink = MemorySink::new();
         ada.host.runtime().set_sink(sink.clone());
         let approve = |ada: &Replica| {
@@ -111,7 +112,7 @@ tilo_test_env::scenario! {
         // Decided already: a second approval is refused, and nothing is queued twice.
         assert!(approve(&ada).is_err());
         ada.commit();
-        assert_eq!(ada.host.store().outbox_pending_count(), 1);
+        assert_eq!(ada.host.store().outbox_pending().len(), 1);
         // Marked as being handed over first, a change of its own; handed over once that is in.
         ada.host.settle_outbox().unwrap();
         ada.commit();
@@ -124,7 +125,7 @@ tilo_test_env::scenario! {
     phase a_letter_another_process_was_handing_over_is_outcome_unknown_and_never_sent_twice;
     {
         use tilolang_runtime::store::{ChangeNote, OutboxState, Store as _};
-        let (mut ada, invocation) = suggested_workspace();
+        let (ada, invocation) = suggested_workspace();
         let sink = MemorySink::new();
         ada.host.runtime().set_sink(sink.clone());
         ada.host
@@ -147,7 +148,7 @@ tilo_test_env::scenario! {
         ada.host.settle_outbox().unwrap();
         ada.commit();
         assert!(sink.delivered().is_empty(), "never handed over twice");
-        assert_eq!(ada.host.store().outbox_pending_count(), 0);
+        assert_eq!(ada.host.store().outbox_pending().len(), 0);
         let states = ada.host.store().outbox_states();
         let (_, state) = states.iter().find(|(doc, _)| *doc == entry.doc).unwrap();
         assert_eq!(state.state, "unknown");
@@ -155,26 +156,23 @@ tilo_test_env::scenario! {
 
     phase a_commit_needs_what_the_action_it_carries_is;
     {
-        use tilo_actions::ActionKind::{Outside, Undoable};
         let (ada, invocation) = suggested_workspace();
-        // Creating the root is a change of the document. The host offers its commit as one, which a
-        // workspace whose grants let the app author the document allows.
-        let (fresh, _) = Replica::new("ada", AutoCommit::new(), &[(LETTERS, LETTERS_IDS)]);
+        // Creating the root asks nothing of the world outside the workspace.
+        let (fresh, _) = Replica::new("ada", Workspace::new(), &[(LETTERS, LETTERS_IDS)]);
         fresh.host.root_of("test.letters").unwrap();
-        let created = fresh.host.take_committed();
-        assert_eq!(created.len(), 1);
-        assert_eq!(commit_need(&fresh, created[0].ticket), (Undoable, Undoable));
-        // Approving the send queues the letter: committing that reaches outside the document.
+        assert!(
+            fresh.host.store().outbox_pending().is_empty(),
+            "creating the root queues no outside effect"
+        );
+        // Approving the send queues the letter: carrying it out reaches outside the document.
         ada.host
             .runtime()
             .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
             .unwrap();
-        let approved = ada.host.take_committed();
+        ada.commit();
         assert!(
-            approved
-                .iter()
-                .any(|committed| commit_need(&ada, committed.ticket) == (Undoable, Outside)),
-            "{approved:?}"
+            !ada.host.store().outbox_pending().is_empty(),
+            "the send waits for a device to carry it outside"
         );
     }
 
@@ -213,12 +211,12 @@ tilo_test_env::scenario! {
             "done"
         );
         grace.commit();
-        ada.sync_with(&mut grace);
+        ada.sync_with(&grace);
         for replica in [&mut ada, &mut grace] {
             replica.host.settle_outbox().unwrap();
             replica.commit();
         }
-        ada.sync_with(&mut grace);
+        ada.sync_with(&grace);
         for replica in [&mut ada, &mut grace] {
             replica.host.settle_outbox().unwrap();
             replica.commit();
@@ -234,30 +232,9 @@ tilo_test_env::scenario! {
         }
         assert_eq!(posted.len(), 1, "the post leaves once: {posted:?}");
         assert_eq!(sealed.len(), 1, "the letter is sealed once: {sealed:?}");
-        assert_eq!(ada.host.store().outbox_pending_count(), 0);
-        assert_eq!(grace.host.store().outbox_pending_count(), 0);
+        assert_eq!(ada.host.store().outbox_pending().len(), 0);
+        assert_eq!(grace.host.store().outbox_pending().len(), 0);
     }
-}
-
-/// What committing the action queued under `ticket` through the host's resource needs of a
-/// workspace, and what the commit is offered as.
-fn commit_need(
-    replica: &Replica,
-    ticket: u64,
-) -> (tilo_actions::ActionKind, tilo_actions::ActionKind) {
-    let committer: std::sync::Arc<dyn tilolang_tilo::publish::Committer> =
-        std::sync::Arc::new(replica.host.handle());
-    let host = tilolang_tilo::publish::host_resource(&committer);
-    let commit = host
-        .actions
-        .iter()
-        .find(|action| action.id == tilolang_tilo::publish::COMMIT)
-        .unwrap();
-    let arguments = serde_json::json!({ "ticket": ticket });
-    (
-        commit.contract.kind,
-        commit.need_for(arguments.as_object(), None).kind,
-    )
 }
 
 /// A server app: a post that goes out at once, and the ask for who records it.
@@ -349,13 +326,13 @@ fn server_access(
 /// Two replicas of a server workspace: ada posted a letter, and recording it waits on a person.
 fn server_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
     // The ids the app compiles to: every replica loads the same lock, so they agree on them.
-    let (_, probe) = Replica::new("probe", AutoCommit::new(), &[(SERVER, "")]);
+    let (_, probe) = Replica::new("probe", Workspace::new(), &[(SERVER, "")]);
     let meta = probe[0].meta.clone();
     let ids = probe[0].ids.clone();
     let packages = [(SERVER, ids.as_str())];
-    let (mut ada, _) = Replica::access(
+    let (ada, _) = Replica::access(
         "ada",
-        AutoCommit::new(),
+        Workspace::new(),
         &packages,
         Some(server_access(&meta, "ada")),
     );

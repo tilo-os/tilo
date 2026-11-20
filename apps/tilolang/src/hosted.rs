@@ -22,10 +22,9 @@ use tilo_app_window::AppWindow;
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilolang_process::TilolangProcess;
-use tilolang_process::hosted::{Hosted, Kept, Spec};
+use tilolang_process::hosted::{Hosted, Spec};
 use tilolang_process::phrases::Phrases;
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::instance::document::{DocumentError, InstanceDocument};
 use ui::widget::DrawChild;
 use ui::widget::{AppModel, ModelPath, Widget};
 
@@ -242,36 +241,40 @@ impl Woken {
     }
 }
 
-/// A tilolang host in this process running the one instance `spec` of `bundle`, over the document
-/// `document` opens where the host keeps the app's data, its words read by `phrases`, woken by
-/// `wake`; the host keeps what it keeps under `storage` (in memory without). Answers the host
+/// A tilolang host in this process running the one instance `spec` of `bundle` on `route`, its
+/// resources in a store of this device's own kept under `storage` (in memory without), its words
+/// read by `phrases`, woken by `wake`. Answers the host
 /// and the window's end of the instance's patch connection: what a window shows it through
 /// ([`HostedWindow::over`]). The host is the one a session runs, and turns as it does; its
 /// instance takes over the later builds `tilolang dev` publishes for it ([`crate::updates`]).
 ///
 /// # Errors
-/// The app's data cannot be kept, its document does not open, or the patch connection cannot be
-/// made.
+/// The app's data cannot be kept, or the patch connection cannot be made.
 pub fn start(
     spec: Spec,
-    record: impl FnOnce(&Kept) -> Result<InstanceDocument, DocumentError>,
+    route: tilolang_process::connection::Route,
     bundle: Arc<Bundle>,
     phrases: &Rc<Phrases>,
-    storage: Option<std::path::PathBuf>,
+    mut storage: Option<std::path::PathBuf>,
     wake: tilolang_tilo::background::Waker,
 ) -> Result<(TilolangProcess, Channel), StartError> {
-    let mut host = TilolangProcess::new(storage, Arc::clone(&wake));
-    let kept = host.kept(&spec.app)?;
-    let record = record(&kept)?;
+    let port = match storage.take() {
+        Some(storage) => tilolang_tilo::resources::LocalPort::at(storage.join(&spec.app).join("resources"))
+            .map_err(StartError::Store)?,
+        None => tilolang_tilo::resources::LocalPort::in_memory(),
+    };
+    let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(port));
+    let mut host = TilolangProcess::new(Arc::clone(&wake));
     let (ours, theirs) = Channel::pair()?;
     let watched = ours.as_fd().try_clone_to_owned()?;
     crate::updates::start(&spec.app);
     host.follow_builds(&spec.app, crate::updates::builds());
-    let hosted = Hosted::with_document(
+    let hosted = Hosted::new(
         spec,
-        record,
+        tilolang_process::connection::Connection::local(route),
+        store,
+        tilolang_process::hosted::memory_content(),
         bundle,
-        &kept,
         Box::new(ChannelTransport::new(ours)?),
         phrases,
         host.formats(),
@@ -286,8 +289,8 @@ pub fn start(
 pub enum StartError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Record(#[from] DocumentError),
+    #[error("the app's resources cannot be kept: {0}")]
+    Store(String),
 }
 
 /// The longest a capture waits for the instance it runs to show what it stages.
@@ -453,15 +456,15 @@ impl HostedWindow {
         }
     }
 
-    /// The window running its instance in this process ([`start`]): `spec` of `bundle`, over the
-    /// document `document` opens, the host keeping the app's data under `storage`. The window turns
+    /// The window running its instance in this process ([`start`]): `spec` of `bundle` on
+    /// `route`, the host keeping the app's data under `storage`. The window turns
     /// the host on its frames, and is woken when the host's work off the frame is ready.
     ///
     /// # Errors
     /// As [`start`].
     pub fn in_process(
         spec: Spec,
-        record: impl FnOnce(&Kept) -> Result<InstanceDocument, DocumentError>,
+        route: tilolang_process::connection::Route,
         bundle: Arc<Bundle>,
         storage: Option<std::path::PathBuf>,
     ) -> Result<Self, StartError> {
@@ -476,7 +479,7 @@ impl HostedWindow {
         });
         let phrases = Rc::new(Phrases::from_env());
         let app = spec.app.clone();
-        let (host, channel) = start(spec, record, bundle, &phrases, storage, waker)?;
+        let (host, channel) = start(spec, route, bundle, &phrases, storage, waker)?;
         let mut window = Self::unconnected();
         window.take_channel(channel, wake);
         window.in_process = Some(InProcess {

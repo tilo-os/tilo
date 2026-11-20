@@ -1,7 +1,7 @@
 //! Done as a log of the week: the tasks finished under the day each was finished on, newest
 //! first, and a task finished before the app kept that moment under the day the log says.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::{Value, ViewInstance};
 
 use crate::fixtures::Replica;
@@ -120,7 +120,7 @@ tilo_test_env::scenario! {
     {
         const BEFORE: &str = include_str!("tasks_before_done_at/app.tl");
         const BEFORE_IDS: &str = include_str!("tasks_before_done_at/app.ids");
-        let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(BEFORE, BEFORE_IDS)]);
+        let (ada, _) = Replica::new("ada", Workspace::new(), &[(BEFORE, BEFORE_IDS)]);
         ada.host.set_clock(|| "2026-10-26T09:00:00Z".to_owned());
         let all = Value::resource(&ada.host.root_of(APP).unwrap());
         ada.commit();
@@ -130,16 +130,12 @@ tilo_test_env::scenario! {
         ada.commit();
 
         // The same workspace, opened by the version that keeps nothing of it but the box.
-        let (mut later, _) = Replica::new(
+        let (later, _) = Replica::new(
             "ada",
             ada.doc.fork(),
             &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)],
         );
-        later.host.sync_from(&later.doc);
         later.host.migrate();
-        for done in later.host.take_committed() {
-            later.apply(&done.action);
-        }
         later.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
         let mut view = later.view(APP);
         go_to(&mut view, "Done");

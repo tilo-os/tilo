@@ -450,7 +450,6 @@ impl Processes {
             person: instance.person,
             module_len,
             documents_under,
-            applies_change: false,
             formats: ui::format::region::current(),
             // The person's language, as this session resolved it: their windows read every word in
             // it, so the process that draws them must not read its own process's language instead.

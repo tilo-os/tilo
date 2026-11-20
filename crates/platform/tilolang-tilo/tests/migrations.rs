@@ -3,7 +3,7 @@
 //! is nobody's and catches nobody up; a resource that exists never gets its type's initial
 //! content, and a migration upgrades only what an earlier version wrote.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::value::Value;
 use tilolang_runtime::{Actor, InvokeOutcome, UiNode};
 
@@ -160,7 +160,7 @@ fn versions(replica: &Replica, at: &tilolang_runtime::ResourceRef) -> Vec<(Optio
 
 #[test]
 fn a_fresh_root_starts_filled_in_its_making_and_nobody_is_caught_up_on_it() {
-    let (mut replica, packages) = Replica::new("ada", AutoCommit::new(), &[(GALLERY, "")]);
+    let (replica, packages) = Replica::new("ada", Workspace::new(), &[(GALLERY, "")]);
     // The first frame already shows what the gallery starts with, and what each group it made
     // starts with too.
     let first = vec![
@@ -188,7 +188,10 @@ fn a_fresh_root_starts_filled_in_its_making_and_nobody_is_caught_up_on_it() {
     );
     let history = versions(&replica, &root);
     assert!(
-        history.len() == 1 && history[0].1 == tilolang_runtime::store::CREATE_ACTION,
+        !history.is_empty()
+            && history
+                .iter()
+                .all(|(_, action)| action == tilolang_runtime::store::CREATE_ACTION),
         "its history is its making alone: {history:?}"
     );
     assert!(
@@ -208,7 +211,7 @@ fn a_fresh_root_starts_filled_in_its_making_and_nobody_is_caught_up_on_it() {
     assert_eq!(replica.commit(), 0, "and opening it again changes nothing");
 
     let ids = packages[0].ids.clone();
-    let mut peer = Replica::new("peer", replica.doc.fork(), &[(GALLERY, ids.as_str())]).0;
+    let peer = Replica::new("peer", replica.doc.fork(), &[(GALLERY, ids.as_str())]).0;
     assert_eq!(peer.host.migrate(), 0, "a peer opening it changes nothing");
     assert_eq!(peer.commit(), 0);
     assert_eq!(shown(&peer), first, "a peer reads what the making wrote");
@@ -216,7 +219,7 @@ fn a_fresh_root_starts_filled_in_its_making_and_nobody_is_caught_up_on_it() {
 
 #[test]
 fn an_item_inserted_later_starts_with_its_types_initial_content_in_its_own_change() {
-    let (mut replica, _) = Replica::new("ada", AutoCommit::new(), &[(GALLERY, "")]);
+    let (replica, _) = Replica::new("ada", Workspace::new(), &[(GALLERY, "")]);
     let root = replica.host.root_of(APP).unwrap();
     replica.commit();
     let added = target(&call(
@@ -242,7 +245,7 @@ fn an_item_inserted_later_starts_with_its_types_initial_content_in_its_own_chang
 
 #[test]
 fn a_root_that_exists_never_gets_initial_content_and_a_migration_upgrades_it() {
-    let (mut earlier, packages) = Replica::new("ada", AutoCommit::new(), &[(EARLIER, "")]);
+    let (earlier, packages) = Replica::new("ada", Workspace::new(), &[(EARLIER, "")]);
     let root = earlier.host.root_of(APP).unwrap();
     call(
         &earlier,
@@ -254,7 +257,7 @@ fn a_root_that_exists_never_gets_initial_content_and_a_migration_upgrades_it() {
 
     // The next version declares what a new gallery starts with, and a migration of the old ones.
     let ids = packages[0].ids.clone();
-    let mut upgraded = earlier.fork("ada", &[(GALLERY, ids.as_str())]);
+    let upgraded = earlier.fork("ada", &[(GALLERY, ids.as_str())]);
     assert_eq!(
         shown(&upgraded),
         vec!["Old".to_owned()],

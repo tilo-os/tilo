@@ -1,7 +1,7 @@
 //! The notebook's order: the notes stand in its tree in the order the store keeps them, and a
 //! note made stands at the end of them.
 
-use automerge::AutoCommit;
+use crate::fixtures::Workspace;
 use tilolang_runtime::{Actor, Value, ViewInstance};
 
 use crate::fixtures::Replica;
@@ -40,7 +40,7 @@ fn titled(view: &mut ViewInstance) -> Vec<String> {
 /// stands at the end of them.
 #[test]
 fn the_notebook_lists_its_notes_in_the_order_the_store_keeps_them() {
-    let (mut replica, loaded) = Replica::new("ada", AutoCommit::new(), &packages());
+    let (replica, loaded) = Replica::new("ada", Workspace::new(), &packages());
     replica.host.root_of(NOTES).unwrap();
     replica.commit();
     let scenario = loaded

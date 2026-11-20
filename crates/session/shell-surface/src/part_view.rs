@@ -38,7 +38,6 @@ use tilolang_tilo::catalogue;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::wire::resource;
 use tilolang_tilo::instance::{Config, Instance, Mode};
-use tilolang_tilo::publish::{COMMIT, HOST_RESOURCE};
 use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::runtime::{Meta, ResourceRef, Value};
 
@@ -206,9 +205,9 @@ struct Open {
     part: &'static str,
     instance: Instance,
     widgets: WidgetSurface,
-    /// What a view of a part keeps of its own: nothing, unless its package declares resources
-    /// of its own.
-    record: tilo_resource::Doc,
+    /// What moved since the view last ran in what it keeps of its own, in memory: nothing,
+    /// unless its package declares resources of its own.
+    moved: tilolang_tilo::resources::Watch,
     /// The part's resource, as the view reads it.
     target: ResourceRef,
     /// What the view asked the session since it last ran it.
@@ -226,45 +225,15 @@ impl Open {
             .downcast_mut::<AppWindow>()
     }
 
-    /// Commit what the instance planned to the package's own record, as the API would, and
-    /// bring the instance up to date with it. Whether anything was committed.
+    /// Write what the instance planned to the package's own store, and bring the instance up to
+    /// date with it. Whether anything was written.
     fn commit(&mut self) -> bool {
-        let mut committed = false;
-        while let Some((invocation, _)) = self.instance.take_invocation() {
-            let address = invocation.address.clone();
-            if address.resource != HOST_RESOURCE || address.action != COMMIT {
-                self.instance.answered(
-                    &address,
-                    Some("a part's view runs only its own commits".to_owned()),
-                );
-                continue;
-            }
-            let ticket = invocation
-                .arguments
-                .get("ticket")
-                .and_then(Json::as_u64)
-                .unwrap_or_default();
-            let applied = self
-                .instance
-                .host()
-                .and_then(|host| Some((host.store().take_ticket(ticket)?, host)))
-                .ok_or_else(|| format!("no committed action {ticket}"))
-                .and_then(|(action, host)| {
-                    crate::commit::recorded(&host, &mut self.record, &action)
-                });
-            if let Err(why) = &applied {
-                tracing::error!(why, "a part view's change could not be committed");
-            }
-            self.instance.answered(&address, applied.err());
-            committed = true;
+        self.instance.commit_planned();
+        if self.moved.take().is_empty() {
+            return false;
         }
-        if committed {
-            // The record holds the changes once they are committed: the instance reads them
-            // from its heads.
-            self.record.commit();
-            self.instance.sync(Some(&self.record));
-        }
-        committed
+        self.instance.sync();
+        true
     }
 
     /// What the view said that a part has no window to show.
@@ -298,7 +267,7 @@ impl Open {
             }
             if std::mem::take(&mut self.fresh) {
                 // The reading moved: the view runs again over it.
-                self.instance.sync(Some(&self.record));
+                self.instance.sync();
             }
             let updated = self.instance.update();
             let committed = self.commit();
@@ -399,14 +368,14 @@ impl PartView {
         let why = Rc::new(RefCell::new(None));
         let asked = Rc::new(RefCell::new(Vec::new()));
         let (app_end, window_end) = pair();
+        let store = tilolang_tilo::resources::ResourceStore::in_memory();
         let mut instance = Instance::new(
             Config {
                 app: bundle.meta.app.clone(),
                 me: person.into(),
                 mode: Mode::Live,
                 device: None,
-                index_dir: None,
-                document_loader: None,
+                store: store.clone(),
                 sink: None,
                 root: tilolang_tilo::host::RootView::default(),
             },
@@ -423,8 +392,7 @@ impl PartView {
         );
         // A package whose whole view is another app's state has no root of its own to open.
         instance.without_root();
-        let record = tilo_resource::Doc::new();
-        instance.sync(Some(&record));
+        instance.sync();
         if let Some(reason) = why.borrow().clone() {
             return Err(reason);
         }
@@ -460,7 +428,7 @@ impl PartView {
             part: self.part,
             instance,
             widgets,
-            record,
+            moved: store.watch(),
             target,
             asked,
             fresh: false,

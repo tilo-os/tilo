@@ -24,6 +24,44 @@ pub struct Stamp {
     /// same; empty where the invoker named no time.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub at: String,
+    /// The resource the invocation was made from, when it was made from one (a task made from a
+    /// message): what the resources it made read as made from, on every holder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<Origin>,
+    /// The work the invocation is one step of, when it is one of several taken together (an
+    /// agent's run): what a review of that work lists, and what reading its changes groups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<Group>,
+    /// Who proposed the invocation, when the invoker accepted someone's suggestion: the change
+    /// is the invoker's, and it says who proposed it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub suggested_by: String,
+    /// When the writer wrote it, by its clock, as a number that orders: the order a resource's
+    /// versions read in across the documents it is kept in, and what tells two writes of one
+    /// invocation apart. Zero where the writer kept none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub moment: u64,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde passes the field by reference")]
+const fn is_zero(moment: &u64) -> bool {
+    *moment == 0
+}
+
+/// A resource an invocation was made from: its kind and id.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Origin {
+    pub kind: String,
+    pub id: String,
+}
+
+/// Several invocations taken together, as one piece of work: its id, and what it was called
+/// when it ran.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Group {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
 }
 
 impl Stamp {

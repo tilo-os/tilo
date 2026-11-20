@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use automerge::AutoCommit;
+
 use serde_json::json;
 use tilolang::IdsLock;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
@@ -67,9 +67,7 @@ impl Invoker for Sent {
 /// A host that runs the view and knows the app only by its package, with the app's player
 /// reading `level`.
 fn workspace(level: f64) -> (Host, ViewInstance, String, ModuleHash) {
-    let doc = AutoCommit::new();
     let host = Host::new(
-        &doc,
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
     )
@@ -223,9 +221,7 @@ scenario "one waiting" {
   )
 }
 "#;
-    let doc = AutoCommit::new();
     let host = Host::new(
-        &doc,
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
     )
@@ -323,12 +319,11 @@ view switcher(m: settings.AgentModels) {
   ui.Text("{m.in_use.model_label}")
 }
 "#;
-        let doc = AutoCommit::new();
         let host = Host::new(
-            &doc,
             Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             || None,
-        )
+
+    )
         .unwrap();
         let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
         for meta in &metas {

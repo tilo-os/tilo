@@ -247,12 +247,15 @@ pub trait Service {
         Vec::new()
     }
 
-    /// The app's document this service runs over, when it keeps one that belongs in a workspace:
-    /// the document the app's own windows open there. The session keeps the document in the
-    /// workspace's copy, so the service, the app's windows, an agent and the person's other
-    /// devices change one document. `None` for a service that keeps none.
-    fn workspace_document(&self) -> Option<WorkspaceDocument> {
-        None
+    /// Keep the apps' resources this service runs over in the workspace the person is in, from
+    /// now on: `store` answers the workspace's store for each app, the one the app's windows, an
+    /// agent and the person's other devices write and read. Whether the service moved there.
+    ///
+    /// # Errors
+    /// The workspace's store refused what the service wrote there.
+    fn keep_in_workspace(&mut self, store: &std::rc::Rc<dyn WorkspaceStore>) -> Result<bool, String> {
+        let _ = store;
+        Ok(false)
     }
 
     /// Publish the package `share` names, which the session runs itself (the shell), with the
@@ -325,9 +328,9 @@ pub struct Share<'a> {
     pub app: &'a str,
     /// Its compiled module, its description embedded.
     pub wasm: &'a [u8],
-    /// The document its parts commit into: the document, which the service publishes and the
-    /// parts draw from. The service keeps it and takes in what they write there.
-    pub documents: &'a std::rc::Rc<std::cell::RefCell<tilo_resource::Doc>>,
+    /// The store its parts write into and draw from, as the host that runs the package keeps it
+    /// (a tilolang package's `ResourceStore`): the service publishes what it holds.
+    pub store: &'a dyn std::any::Any,
 }
 
 /// A document an app keeps, as [`Service::document`] publishes it: the app, its id there, the
@@ -362,16 +365,16 @@ pub struct HistoryDocument {
     pub document: tilo_resource::Doc,
 }
 
-/// An app's document a service runs over that belongs in a workspace, as
-/// [`Service::workspace_document`] hands it over.
-pub struct WorkspaceDocument {
-    /// The app the document is of, as its package names it (`so.tilo.lang.tasks`).
-    pub app: String,
-    /// The document's id in its app, as the workspace names it: empty for the workspace's document
-    /// of the app, the person's own document of it for an app that keeps each member's apart.
-    pub id: String,
-    /// The document the service runs over: the one the session keeps in the workspace.
-    pub document: std::rc::Rc<std::cell::RefCell<tilo_resource::Doc>>,
+/// The store of the workspace the person is in, as the session reaches it for the apps it runs
+/// itself ([`Service::keep_in_workspace`]).
+pub trait WorkspaceStore {
+    /// Answer `command`, a store command in the store's encoding (JSON), for the resources of
+    /// the app `app` in the workspace, with the reply in the same encoding. Bytes, as an app's
+    /// connection carries them, so the session's services link no store of their own.
+    ///
+    /// # Errors
+    /// The workspace's store cannot be reached, or refused the command.
+    fn command(&self, app: &str, command: &[u8]) -> Result<Vec<u8>, String>;
 }
 
 /// `resource` offering every action of the vocabulary `E`.
@@ -545,14 +548,20 @@ impl Services {
             .collect()
     }
 
-    /// Every app's document the services run over that belongs in a workspace; see
-    /// [`Service::workspace_document`].
-    #[must_use]
-    pub fn workspace_documents(&self) -> Vec<WorkspaceDocument> {
-        self.started
-            .iter()
-            .filter_map(|service| service.workspace_document())
-            .collect()
+    /// Keep the apps' resources the services run over in the workspace the person is in, from
+    /// now on ([`Service::keep_in_workspace`]). Whether any service moved there.
+    ///
+    /// # Errors
+    /// The workspace's store refused what a service wrote there.
+    pub fn keep_in_workspace(&mut self, store: &std::rc::Rc<dyn WorkspaceStore>) -> Result<bool, String> {
+        let mut moved = false;
+        for service in &mut self.started {
+            moved |= service.keep_in_workspace(store)?;
+        }
+        if moved {
+            self.changed();
+        }
+        Ok(moved)
     }
 
     /// Every document the services keep, as the activity's history reads it; see

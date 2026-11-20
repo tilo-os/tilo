@@ -59,6 +59,24 @@ pub enum Command {
     Batch(Vec<Command>),
     /// The versions of the resource `id` of `kind`, oldest first.
     Versions { kind: String, id: String },
+    /// The resource `id` of `kind` as it stood just before the change `change` (a version's
+    /// change, its hash in hex), or just after it with `after`.
+    At {
+        kind: String,
+        id: String,
+        change: String,
+        after: bool,
+    },
+    /// Every version stamped as a step of the group `group`, of every resource it touched.
+    Grouped { group: String },
+    /// The ids of the resources of `kind` removed, nested in `parent` when it names one.
+    Removed { kind: String, parent: Option<String> },
+    /// The resources made by a change stamped as made from the resource `id`, wherever they
+    /// were placed.
+    MadeFrom { id: String },
+    /// The newest version of each resource `within` names (it, and those whose ids are under
+    /// it), of at most `limit` of them, most recent first.
+    Newest { within: String, limit: usize },
 }
 
 /// One edit of a resource's content.
@@ -100,6 +118,21 @@ pub enum Reply {
     /// The content, `None` where there is none the person may read or none was written.
     Content(Option<Json>),
     Versions(Vec<Version>),
+    /// The resource and its content as they stood at a change, `None` where the store holds no
+    /// such change of a resource the person may read.
+    At(Option<(Option<Indexed>, Option<Json>)>),
+    /// Versions, each with the kind and id of the resource it is a version of.
+    Grouped(Vec<(String, String, Version)>),
+    /// Ids of resources.
+    Ids(Vec<String>),
+    /// Resources, by kind and id.
+    Resources(Vec<(String, String)>),
+    /// Versions, each with the kind and id of the resource it is the newest version of, and
+    /// whether there were more than were asked for.
+    Newest {
+        versions: Vec<(String, String, Version)>,
+        more: bool,
+    },
 }
 
 impl Command {
@@ -180,7 +213,12 @@ fn write_into(
         | Command::Query(_)
         | Command::Count { .. }
         | Command::Content { .. }
-        | Command::Versions { .. } => return Err(StoreError::NotAWrite),
+        | Command::Newest { .. }
+        | Command::Versions { .. }
+        | Command::At { .. }
+        | Command::Grouped { .. }
+        | Command::Removed { .. }
+        | Command::MadeFrom { .. } => return Err(StoreError::NotAWrite),
     }
     Ok(())
 }
@@ -197,12 +235,50 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
                 .get(kind, id, may_read)
                 .and_then(|_| store.content_json(kind, id)),
         ),
+        // A resource's history stays readable after its removal, by whoever could read it.
         Command::Versions { kind, id } => Reply::Versions(
             store
-                .get(kind, id, may_read)
+                .readers_of(kind, id)
+                .filter(|readers| may_read(readers))
                 .map(|_| store.versions(kind, id))
                 .unwrap_or_default(),
         ),
+        Command::At {
+            kind,
+            id,
+            change,
+            after,
+        } => Reply::At(
+            store
+                .readers_of(kind, id)
+                .filter(|readers| may_read(readers))
+                .and_then(|_| store.at_change(kind, id, change, *after)),
+        ),
+        Command::Grouped { group } => Reply::Grouped(
+            store
+                .grouped(group)
+                .into_iter()
+                .filter(|(kind, id, _)| {
+                    store
+                        .readers_of(kind, id)
+                        .is_some_and(|readers| may_read(&readers))
+                })
+                .collect(),
+        ),
+        Command::Removed { kind, parent } => {
+            Reply::Ids(store.removed(kind, parent.as_deref(), may_read))
+        }
+        Command::MadeFrom { id } => Reply::Resources(
+            store
+                .made_from(id)
+                .into_iter()
+                .filter(|(kind, id)| store.get(kind, id, may_read).is_some())
+                .collect(),
+        ),
+        Command::Newest { within, limit } => {
+            let (versions, more) = store.newest(within, *limit, may_read);
+            Reply::Newest { versions, more }
+        }
         Command::Put { .. }
         | Command::Remove { .. }
         | Command::Undo { .. }
@@ -332,36 +408,85 @@ fn scalar_of(value: &Json) -> ScalarValue {
 
 /// What the map `obj` of `doc` holds, as JSON.
 pub(crate) fn json_of(doc: &automerge::Automerge, obj: &ObjId) -> Json {
-    let value_at = |prop: automerge::Prop| -> Json {
-        match doc.get(obj, prop).ok().flatten() {
-            Some((automerge::Value::Object(_), inner)) => json_of(doc, &inner),
-            Some((automerge::Value::Scalar(scalar), _)) => match scalar.as_ref() {
-                ScalarValue::Str(text) => Json::String(text.to_string()),
-                ScalarValue::Int(number) => Json::from(*number),
-                ScalarValue::Uint(number) => Json::from(*number),
-                ScalarValue::F64(number) => Json::from(*number),
-                ScalarValue::Counter(counter) => Json::from(i64::from(counter)),
-                ScalarValue::Boolean(flag) => Json::Bool(*flag),
-                _ => Json::Null,
-            },
-            None => Json::Null,
+    AsOf { doc, heads: None }.json(obj)
+}
+
+/// A document read as it stood at `heads`, or as it stands with none.
+pub(crate) struct AsOf<'a> {
+    pub doc: &'a automerge::Automerge,
+    pub heads: Option<&'a [automerge::ChangeHash]>,
+}
+
+impl AsOf<'_> {
+    pub(crate) fn get(
+        &self,
+        obj: &ObjId,
+        prop: impl Into<automerge::Prop>,
+    ) -> Option<(automerge::Value<'_>, ObjId)> {
+        match self.heads {
+            Some(heads) => self.doc.get_at(obj, prop, heads),
+            None => self.doc.get(obj, prop),
         }
-    };
-    match doc.object_type(obj) {
-        Ok(ObjType::Text) => Json::String(doc.text(obj).unwrap_or_default()),
-        Ok(ObjType::List) => Json::Array(
-            (0..doc.length(obj))
-                .map(|at| value_at(automerge::Prop::Seq(at)))
-                .collect(),
-        ),
-        Ok(ObjType::Map | ObjType::Table) => Json::Object(
-            doc.keys(obj)
-                .map(|key| {
-                    let value = value_at(automerge::Prop::Map(key.clone()));
-                    (key, value)
-                })
-                .collect(),
-        ),
-        Err(_) => Json::Null,
+        .ok()
+        .flatten()
+    }
+
+    pub(crate) fn keys(&self, obj: &ObjId) -> Vec<String> {
+        match self.heads {
+            Some(heads) => self.doc.keys_at(obj, heads).collect(),
+            None => self.doc.keys(obj).collect(),
+        }
+    }
+
+    pub(crate) fn length(&self, obj: &ObjId) -> usize {
+        match self.heads {
+            Some(heads) => self.doc.length_at(obj, heads),
+            None => self.doc.length(obj),
+        }
+    }
+
+    fn text(&self, obj: &ObjId) -> String {
+        match self.heads {
+            Some(heads) => self.doc.text_at(obj, heads),
+            None => self.doc.text(obj),
+        }
+        .unwrap_or_default()
+    }
+
+    /// The object `obj` as JSON: texts as strings, counters as numbers.
+    pub(crate) fn json(&self, obj: &ObjId) -> Json {
+        let value_at = |prop: automerge::Prop| -> Json {
+            match self.get(obj, prop) {
+                Some((automerge::Value::Object(_), inner)) => self.json(&inner),
+                Some((automerge::Value::Scalar(scalar), _)) => match scalar.as_ref() {
+                    ScalarValue::Str(text) => Json::String(text.to_string()),
+                    ScalarValue::Int(number) => Json::from(*number),
+                    ScalarValue::Uint(number) => Json::from(*number),
+                    ScalarValue::F64(number) => Json::from(*number),
+                    ScalarValue::Counter(counter) => Json::from(i64::from(counter)),
+                    ScalarValue::Boolean(flag) => Json::Bool(*flag),
+                    _ => Json::Null,
+                },
+                None => Json::Null,
+            }
+        };
+        match self.doc.object_type(obj) {
+            Ok(ObjType::Text) => Json::String(self.text(obj)),
+            Ok(ObjType::List) => Json::Array(
+                (0..self.length(obj))
+                    .map(|at| value_at(automerge::Prop::Seq(at)))
+                    .collect(),
+            ),
+            Ok(ObjType::Map | ObjType::Table) => Json::Object(
+                self.keys(obj)
+                    .into_iter()
+                    .map(|key| {
+                        let value = value_at(automerge::Prop::Map(key.clone()));
+                        (key, value)
+                    })
+                    .collect(),
+            ),
+            Err(_) => Json::Null,
+        }
     }
 }
