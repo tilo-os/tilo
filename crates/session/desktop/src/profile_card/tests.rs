@@ -168,7 +168,7 @@ fn a_lazy_card_opens_on_the_layout_after_its_code_arrives() {
     harness.poll_frame().unwrap();
     let shown = harness.inspection_json().unwrap();
     assert!(shown.contains("Ada’s profile"), "{shown}");
-    assert!(shown.contains(r#""name": "Follow""#), "{shown}");
+    assert!(shown.contains(r#""name": "Follow Ada""#), "{shown}");
 }
 
 /// Someone else's card asked open while its code is on its way opens saying what is said of them

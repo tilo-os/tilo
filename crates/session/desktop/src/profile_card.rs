@@ -954,13 +954,17 @@ impl ProfileCard {
         if other.can_follow {
             let chosen = Rc::clone(&self.chosen);
             let id = other.id.clone();
-            let label = if other.following {
-                t("profile-stop-following")
+            let (label, named) = if other.following {
+                ("profile-stop-following", "a11y-people-stop-following")
             } else {
-                t("profile-follow")
+                ("profile-follow", "a11y-people-follow")
             };
+            // The button says the verb beside their name; a reader hears whom it is about, as
+            // the roster's row says it.
+            let named = t_args(named, &[("name", model.name.clone().into())]);
             actions = actions.push(Box::new(
-                Button::new("profile-follow", &label)
+                Button::new("profile-follow", &t(label))
+                    .with_accessible_name(&named)
                     .with_icon(Icon::Eye)
                     .on_effect(move || {
                         chosen.borrow_mut().push(ProfileChoice::Follow(id.clone()));
