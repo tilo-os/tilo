@@ -1885,3 +1885,8 @@ reason = "The stack script's existing helper and directory for the processes it 
 words = ["run"]
 identifiers = ["run_native", "runs"]
 paths = ["os/containers/tilo-sh/stack.sh"]
+
+[[allow]]
+reason = "Chat's channels, which the glossary keeps: the one Chat's post action writes a message to."
+words = ["channel"]
+paths = ["tools/ci/stack-upgrade/workspace_data.py"]

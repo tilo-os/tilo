@@ -6295,6 +6295,30 @@ default = false
 #
 # Nested, because the stack's services are sandboxed with bwrap (stack.sh), which needs namespaces
 # of its own.
+# A stack holding data comes up on the next build (tools/ci/stack-upgrade/upgrade.sh): the commit
+# before fills a stack with a workspace's chat, tasks, a note, a file, Mail, a contact and an
+# event; this commit's programs bring the same state up and read each back. A change to what a
+# server stores that leaves an earlier build's data behind fails on the commit that made it. The
+# base's programs are built here, from its own checkout, beside the cached build of this commit.
+[[check]]
+name = "stack-upgrade"
+on = ["idle"]
+# The crates the base's build fetches, from the mirror tilo-sh-binaries builds from; the stack
+# meets the fill and the check on loopback.
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/ci/stack-upgrade/upgrade.sh /target/stack-upgrade"
+needs = ["tilo-sh-binaries", "lounge-check-cli", "lounge-fonts", "tilo-sh-caddy", "image-web-entry-context"]
+# The stack signs its release of the tilo command with a key openssl makes. Not pinned: dnf
+# installs the newest build Fedora's updates repository holds, from mirrors no fixed list names.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+env = { CARGO_BUILD_JOBS = "8", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_FONTS = "/target/publish/lounge/fonts", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_VM_HOST = "0" }
+requires = ["arch=x86_64"]
+isolation = "nested"
+git = true
+outputs = ["/target/stack-upgrade/expected.json", "/target/stack-upgrade/state/logs/*.log"]
+evidence = ["/target/stack-upgrade/state/logs/**"]
+timeout_secs = 3600
+
 [[check]]
 name = "e2e"
 # Heavy: on main's newest head with the room main's heads leave (`idle`), keyed on every commit, so
