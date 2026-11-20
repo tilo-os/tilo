@@ -1238,6 +1238,27 @@ fn a_workspace_of_files_on_a_size_ladder() {
     let host_flat = list_directory(&m1.join("flat"));
     let host_root = list_directory(&m1);
     let host_small = read_range(&m1.join("flat").join("f0000000"), 0, 4096);
+    if host_flat < flat_entries as usize || host_root < 3 {
+        let written: std::collections::BTreeSet<String> =
+            (0..flat_entries).map(|i| format!("f{i:07}")).collect();
+        let mut missing = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(m1.join("flat")) {
+            let seen: std::collections::BTreeSet<String> = entries
+                .flatten()
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .collect();
+            missing.extend(written.difference(&seen).take(10).cloned());
+        }
+        eprintln!(
+            "MISSING after writing {} files: {} of the flat folder, {} at the root; e.g. {:?}; \
+             writer's log:\n{}",
+            small_files,
+            host_flat,
+            host_root,
+            missing,
+            pair.host.dump()
+        );
+    }
     report(
         rung.as_str(),
         "host_flat_entries",

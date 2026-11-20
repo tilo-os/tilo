@@ -247,6 +247,25 @@ async fn measure_rung(
         "MiB/s",
     );
     eprintln!("ladder: {total_mib} MiB rung: small files put in {put_small:?}");
+    // What the same puts cost when the content database syncs once at the end instead of per
+    // file: the difference is what a batch of writers could share.
+    let deferred_sample = 1_000_u64.min(small_count);
+    store_a.files().set_sync_writes(false);
+    let deferred_started = Instant::now();
+    for i in 0..deferred_sample {
+        fill(i, 0, &mut buf);
+        let _ = store_a.write_content(&buf).await.unwrap();
+    }
+    let deferred_s = deferred_started.elapsed();
+    store_a.files().set_sync_writes(true);
+    let _ = store_a.files().sync_db();
+    report(&rung, "put_small_deferred_s", deferred_s.as_secs_f64(), "s");
+    report(
+        &rung,
+        "put_small_deferred_files_s",
+        deferred_sample as f64 / deferred_s.as_secs_f64(),
+        "files/s",
+    );
     let started = Instant::now();
     let mut huge_written = 0_u64;
     for i in 0..huge_files {
