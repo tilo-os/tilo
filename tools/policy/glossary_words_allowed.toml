@@ -1698,6 +1698,7 @@ paths = [
     "crates/platform/migration-sources/examples/sample_thunderbird_profile.rs",
     "crates/platform/migration-sources/src/thunderbird/fixture.rs",
     "crates/server/tilo-api/src/session/mail_accounts.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/actions/host/mail_assistant_tests.rs",
     "crates/system/tilo-cli/src/migrate/services.rs",
     "crates/system/tilo-cli/src/migrate/tests.rs",
     "crates/system/tilo-cli/src/migrate/thunderbird.rs",

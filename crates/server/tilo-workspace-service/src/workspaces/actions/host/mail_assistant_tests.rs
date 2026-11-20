@@ -512,6 +512,87 @@ async fn nobody_elses_agent_reads_a_persons_mail() {
     assert_eq!(read::<FetchedMail>(own).folder, "inbox");
 }
 
+/// A person moving in from another mail program connects their accounts from the computer they
+/// logged in with `tilo login`, which asks them in its terminal first: the agent that computer
+/// hands its own session to lists and adds their accounts as they do, signed in before anything
+/// is kept. It reads none of their mail for that, and an agent a grant admitted adds nothing.
+#[tokio::test]
+async fn the_persons_own_computer_connects_an_account_they_move_in() {
+    let setup = Setup::new().await;
+    setup
+        .workspaces
+        .sign_in_accounts_through(|_, password| match password {
+            "bos-password" => Ok("signed in".into()),
+            _ => Err("IMAP server rejected the credential".into()),
+        });
+    let own_computer = setup
+        .ada()
+        .delegated_to(tilo_actions::remote::device_agent_id(
+            &setup.device.user_public_key,
+            "Migration",
+        ));
+    let adding = |password: &str| {
+        json!({
+            "address": "ada@lab.example.test",
+            "displayName": "Ada Lovelace",
+            "incomingHost": "imap.lab.example.test",
+            "incomingPort": 993,
+            "outgoingHost": "smtp.lab.example.test",
+            "outgoingPort": 465,
+            "password": password,
+        })
+    };
+
+    let refused = setup
+        .ask(&own_computer, person_accounts::ADD_MAIL, adding("wrong"))
+        .await;
+    assert!(
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if reason.contains("rejected")),
+        "{refused:?}"
+    );
+    let added = setup
+        .ask(
+            &own_computer,
+            person_accounts::ADD_MAIL,
+            adding("bos-password"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(added["address"], "ada@lab.example.test", "{added}");
+    let listed: MailAccounts = read(
+        setup
+            .ask(&own_computer, person_accounts::LIST, json!({}))
+            .await,
+    );
+    assert!(
+        listed
+            .accounts
+            .iter()
+            .any(|account| account.address == "ada@lab.example.test"),
+        "{listed:?}"
+    );
+
+    // Reading mail is still an agent's, named for an account first.
+    let inbox = json!({"account": "ada@lab.example.test", "folder": "inbox"});
+    nobody(
+        "her own computer's agent reading mail",
+        setup
+            .ask(&own_computer, person_accounts::FETCH, inbox)
+            .await,
+    );
+    // An agent a grant admitted on her device adds nothing.
+    nobody(
+        "an agent a grant admitted",
+        setup
+            .ask(
+                &setup.agent(ASSISTANT),
+                person_accounts::ADD_MAIL,
+                adding("bos-password"),
+            )
+            .await,
+    );
+}
+
 /// Removing an account forgets who was named for it: the same address
 /// kept again names nobody.
 #[tokio::test]

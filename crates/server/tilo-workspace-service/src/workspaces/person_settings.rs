@@ -299,6 +299,17 @@ impl Workspaces {
         if let Ok(person) = Self::asking_person(caller, certificate, workspace_id) {
             return Ok(person);
         }
+        Self::asking_from_own_computer(caller, certificate, workspace_id)
+    }
+
+    /// The person whose own computer `caller` asks from: the agent a computer logged in as the
+    /// person (`tilo login`) hands its own session to. Never an agent a grant admitted (a key
+    /// minted for it, a hosted or invited agent).
+    pub(super) fn asking_from_own_computer(
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        workspace_id: Option<collab_types::WorkspaceId>,
+    ) -> Result<[u8; 32], ActionCallError> {
         workspace_id.ok_or(ActionCallError::UnknownAction)?;
         // Handed the session of the device it connects through, not admitted by a delegation
         // of its own.
@@ -513,6 +524,29 @@ impl Workspaces {
         }
     }
 
+    /// Who asks `request` of the person's accounts. A person moving in from another mail
+    /// program connects their accounts from their own computer, which asked them in its
+    /// terminal first: that computer lists and adds their accounts as they do. Everything else
+    /// of their mail stays as an agent's.
+    fn asking_about_accounts(
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        workspace_id: Option<collab_types::WorkspaceId>,
+        request: &InvokeRequest,
+    ) -> Result<AskingAboutMail, ActionCallError> {
+        let connects = matches!(
+            request.target.address.action.as_str(),
+            person_accounts::LIST | person_accounts::ADD_MAIL
+        );
+        if connects
+            && Self::asking_person(caller, certificate, workspace_id).is_err()
+            && let Ok(person) = Self::asking_from_own_computer(caller, certificate, workspace_id)
+        {
+            return Ok(AskingAboutMail::Person(person));
+        }
+        Self::asking_about_mail(caller, certificate, workspace_id)
+    }
+
     /// Answer a [`person_accounts::PROVIDER`] request.
     pub(super) async fn person_accounts_invoke(
         &self,
@@ -528,7 +562,8 @@ impl Workspaces {
                 .person_calendars_invoke(workspace_id, caller, certificate, request)
                 .await;
         }
-        let person = match Self::asking_about_mail(caller, certificate, workspace_id)? {
+        let person = match Self::asking_about_accounts(caller, certificate, workspace_id, request)?
+        {
             AskingAboutMail::Person(person) => person,
             AskingAboutMail::Assistant {
                 person,
