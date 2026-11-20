@@ -400,6 +400,27 @@ impl Daemon {
         logs[skip..].join("\n")
     }
 
+    /// How much the daemon has said so far: a line count to measure one
+    /// stretch of its work from.
+    fn log_len(&self) -> usize {
+        self.logs.lock_recover().len()
+    }
+
+    /// The requests it answered since line `since`, by kind, when the daemon
+    /// traces them (`TILO_FS_FUSE_REQUESTS=1`).
+    fn request_counts(&self, since: usize) -> Vec<(String, u64)> {
+        let mut counts: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+        {
+            let logs = self.logs.lock_recover();
+            for line in logs.iter().skip(since) {
+                if let Some(kind) = line.strip_prefix("fuse request ") {
+                    *counts.entry(kind.to_string()).or_default() += 1;
+                }
+            }
+        }
+        counts.into_iter().collect()
+    }
+
     fn alive(&mut self) {
         if let Some(status) = self.child.try_wait().unwrap() {
             panic!("{} exited {status}; logs:\n{}", self.name, self.dump());
@@ -1165,6 +1186,48 @@ fn list_directory(path: &Path) -> usize {
     std::fs::read_dir(path).map_or(0, |entries| entries.count())
 }
 
+/// A listing as a file manager makes it: every name, then every entry's
+/// attributes on the same path (`ls -l`'s shape). Answers the names and their
+/// total length.
+fn ls_long(path: &Path) -> (usize, u64) {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return (0, 0);
+    };
+    let (mut names, mut bytes) = (0_usize, 0_u64);
+    for entry in entries.flatten() {
+        names = names.saturating_add(1);
+        if let Ok(meta) = entry.metadata() {
+            bytes = bytes.saturating_add(meta.len());
+        }
+    }
+    (names, bytes)
+}
+
+/// The newest modification time anywhere under `dir`, for waiting on the
+/// first computer to have written something.
+fn newest_modified(dir: &Path) -> Option<std::time::SystemTime> {
+    let mut newest = None;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&at) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else if let Ok(modified) = meta.modified()
+                && newest.is_none_or(|newest| modified > newest)
+            {
+                newest = Some(modified);
+            }
+        }
+    }
+    newest
+}
+
 fn read_range(path: &Path, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
     use std::os::unix::fs::FileExt as _;
     let file = std::fs::File::open(path)?;
@@ -1396,27 +1459,54 @@ fn a_photo_the_second_device_never_fetched_opens() {
         std::fs::write(flat.join(format!("f{i:07}")), &buf).unwrap();
     }
     mark("the photos are written through the first computer's mount");
+    // A joining device is handed the documents the first computer keeps: wait
+    // until this device has written the photos into them, or the second
+    // computer is handed a tree from before the copy. The extra name written
+    // after the clock reading makes the keep that follows the one holding
+    // every photo.
+    let written = std::time::SystemTime::now();
+    std::fs::write(flat.join("f9999999"), &buf).unwrap();
+    let kept = pair.dir.join("host-cache").join("namespace");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while newest_modified(&kept).is_none_or(|newest| newest < written) {
+        pair.host.alive();
+        assert!(
+            Instant::now() < deadline,
+            "the first computer never wrote {} to {}",
+            files,
+            kept.display()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let _ = pair.join_peer();
     let peer_flat = pair.peer_mount().join("flat");
     // The list comes first, so the open below is a fetch and not a race with
     // the tree arriving.
     let deadline = Instant::now() + TIMEOUT;
-    while (list_directory(&peer_flat) as u64) < files {
+    while (list_directory(&peer_flat) as u64) <= files {
         pair.host.alive();
         pair.peer.as_mut().expect("the peer is serving").alive();
         assert!(
             Instant::now() < deadline,
-            "the second computer lists {} of the {files} photos",
-            list_directory(&peer_flat)
+            "the second computer lists {} of the {} photos",
+            list_directory(&peer_flat),
+            files + 1
         );
         std::thread::sleep(Duration::from_millis(20));
     }
     let target = peer_flat.join("f0000000");
     let started = Instant::now();
     let read = read_range(&target, 0, 4096).unwrap_or_else(|error| {
+        // Whether the first computer can still open the photo itself says
+        // which half is failing: its own store, or the crossing.
+        let host_answers = match read_range(&flat.join("f0000000"), 0, 4096) {
+            Ok(bytes) => format!("{} bytes", bytes.len()),
+            Err(error) => format!("the same error ({error})"),
+        };
         panic!(
             "the second computer cannot open a photo it never fetched ({error}); it lists {} of \
-             the {files} photos; its log:\n{}\nthe first computer's log:\n{}",
+             the {files} photos; the first computer opens it as {host_answers}; its log:\n{}\nthe \
+             first computer's log:\n{}",
             list_directory(&peer_flat),
             pair.peer.as_ref().expect("the peer is serving").dump(),
             pair.host.dump()
@@ -1656,6 +1746,47 @@ fn a_workspace_of_files_on_a_size_ladder() {
     }
     let warm_list = started.elapsed().div_f64(8.0);
     let root_entries = list_directory(&m2);
+    // A file manager's listing of the same folder (`ls -l`): names and then
+    // each entry's attributes, with the requests it costs counted when the
+    // daemon traces them.
+    let before = pair.peer.as_ref().expect("the peer is serving").log_len();
+    let started = Instant::now();
+    let (ls_entries, ls_bytes) = ls_long(&flat);
+    let ls_cold = started.elapsed();
+    let ls_requests = pair
+        .peer
+        .as_ref()
+        .expect("the peer is serving")
+        .request_counts(before);
+    let started = Instant::now();
+    for _ in 0..8 {
+        assert_eq!(ls_long(&flat).0, ls_entries);
+    }
+    let ls_warm = started.elapsed().div_f64(8.0);
+    let total_requests: u64 = ls_requests.iter().map(|(_, count)| *count).sum();
+    report(rung.as_str(), "peer_ls_cold_s", ls_cold.as_secs_f64(), "s");
+    report(rung.as_str(), "peer_ls_warm_s", ls_warm.as_secs_f64(), "s");
+    report(
+        rung.as_str(),
+        "peer_ls_entries",
+        ls_entries as f64,
+        "entries",
+    );
+    report(rung.as_str(), "peer_ls_bytes", ls_bytes as f64, "B");
+    report(
+        rung.as_str(),
+        "peer_ls_requests",
+        total_requests as f64,
+        "requests",
+    );
+    for (kind, count) in &ls_requests {
+        report(
+            rung.as_str(),
+            &format!("peer_ls_requests_{kind}"),
+            *count as f64,
+            "requests",
+        );
+    }
     report(
         rung.as_str(),
         "list_flat_entries",
@@ -1700,10 +1831,15 @@ fn a_workspace_of_files_on_a_size_ladder() {
     let small_target = m2.join("flat").join("f0000000");
     let started = Instant::now();
     let small = read_range(&small_target, 0, 4096).unwrap_or_else(|error| {
+        // The daemons say why the bytes did not arrive: a refusal, a peer
+        // that never answered, or content the first computer does not hold.
         panic!(
-            "the joining device holds {} of the {} files the writer holds ({error})",
+            "the joining device holds {} of the {} files the writer holds ({error}); its log:\n{}\nthe \
+             first computer's log:\n{}",
             list_directory(&m2.join("flat")),
-            host_flat
+            host_flat,
+            pair.peer.as_ref().expect("the peer is serving").dump(),
+            pair.host.dump()
         )
     });
     let open_small = started.elapsed();
