@@ -1014,7 +1014,7 @@ impl HostedBrowsers {
                 // The caller's own invocation was answered with "accepted,
                 // it waits": what ran is told to it as the state it follows,
                 // not as a second receipt for the same invocation.
-                allowed.then(|| state_message(receipt.invocation, update))
+                allowed.then(|| state_message(receipt.invocation, update, None))
             }
             ReceiptStatus::Rejected {
                 error: ActionCallError::ConfirmationRequired { departure },
@@ -1155,10 +1155,11 @@ impl HostedBrowsers {
     ) -> Option<crate::app_serving::Routing> {
         match message {
             RemoteActionMessage::Observe {
+                correlation,
                 invocation,
                 wait_ms,
                 ..
-            } => self.observe(caller, *invocation, *wait_ms),
+            } => self.observe(caller, *invocation, *wait_ms, *correlation),
             RemoteActionMessage::Cancel { invocation } => self.cancel(caller, *invocation),
             _ => None,
         }
@@ -1172,6 +1173,7 @@ impl HostedBrowsers {
         caller: &Caller,
         invocation: tilo_actions::InvocationId,
         wait_ms: Option<u32>,
+        correlation: u64,
     ) -> Option<crate::app_serving::Routing> {
         let device = *caller.device_public_key()?;
         let mut handed = self.handed.lock_recover();
@@ -1183,13 +1185,17 @@ impl HostedBrowsers {
             // The window holds it, and answers whoever asks after it.
             Stage::Running => return Some(crate::app_serving::Routing::Device(entry.window)),
             Stage::Over(update) => {
-                return Some(state_routing(invocation, update.clone()));
+                return Some(state_routing(invocation, update.clone(), correlation));
             }
             Stage::Asking | Stage::Allowed => {}
         }
         let wait = Duration::from_millis(u64::from(wait_ms.unwrap_or_default()));
         if wait.is_zero() {
-            return Some(state_routing(invocation, entry.stage.state(invocation)));
+            return Some(state_routing(
+                invocation,
+                entry.stage.state(invocation),
+                correlation,
+            ));
         }
         let token = self.next_waiter.fetch_add(1, Ordering::Relaxed);
         let (completer, answer) = pending();
@@ -1209,7 +1215,7 @@ impl HostedBrowsers {
                 })
             };
             if let Some((waiting, state)) = found {
-                waiting.complete(state_message(invocation, state));
+                waiting.complete(state_message(invocation, state, Some(correlation)));
             }
         });
         Some(crate::app_serving::Routing::Answer(answer))
@@ -2153,10 +2159,12 @@ fn waiting(invocation: tilo_actions::InvocationId) -> crate::app_serving::Routin
 fn state_message(
     invocation: tilo_actions::InvocationId,
     update: InvocationUpdate,
+    correlation: Option<u64>,
 ) -> RemoteActionMessage {
     RemoteActionMessage::Update {
         invocation,
         state: Some(InvocationState::new(invocation, update)),
+        correlation,
     }
 }
 
@@ -2164,8 +2172,13 @@ fn state_message(
 fn state_routing(
     invocation: tilo_actions::InvocationId,
     update: InvocationUpdate,
+    correlation: u64,
 ) -> crate::app_serving::Routing {
-    crate::app_serving::Routing::Answer(Pending::ready(state_message(invocation, update)))
+    crate::app_serving::Routing::Answer(Pending::ready(state_message(
+        invocation,
+        update,
+        Some(correlation),
+    )))
 }
 
 /// `message` — a request of a window's — answered at once with `error`.
@@ -2189,7 +2202,7 @@ fn answered(entry: &mut Handed, status: &ReceiptStatus) {
 /// callers waiting on it.
 fn over(entry: &mut Handed, update: InvocationUpdate) {
     entry.stage = Stage::Over(update.clone());
-    let state = state_message(entry.request.invocation, update);
+    let state = state_message(entry.request.invocation, update, None);
     for (_, waiting) in entry.waiting.drain(..) {
         waiting.complete(state.clone());
     }

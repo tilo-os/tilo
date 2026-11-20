@@ -889,7 +889,9 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
             };
             settle(inner, invocation, update)
         }
-        RemoteActionMessage::Update { invocation, state } => {
+        RemoteActionMessage::Update {
+            invocation, state, ..
+        } => {
             if let Some(state) = state {
                 return settle(inner, invocation, state.update);
             }
@@ -1080,6 +1082,7 @@ fn settle(
     if inner.host_waits {
         running.waiting = Some((now, mark));
         return Some(RemoteActionMessage::Observe {
+            correlation: 0,
             invocation,
             wait_ms: Some(OBSERVE_WAIT_MS),
             seen: Some(mark),

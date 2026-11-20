@@ -87,6 +87,7 @@ fn answer(app: &mut TestApp<App>, invocation: InvocationId, value: serde_json::V
                         value,
                     },
                 )),
+                correlation: None,
             },
         });
     app.frame();

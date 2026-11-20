@@ -60,6 +60,7 @@ impl ShareInvite {
                 ReceiptStatus::Accepted => {
                     self.requests.push(CollabRequest::RemoteAction {
                         message: RemoteActionMessage::Observe {
+                            correlation: 0,
                             invocation,
                             wait_ms: None,
                             seen: None,
@@ -108,6 +109,7 @@ mod tests {
             message: RemoteActionMessage::Update {
                 invocation,
                 state: Some(InvocationState::new(invocation, update)),
+                correlation: None,
             },
         }
     }

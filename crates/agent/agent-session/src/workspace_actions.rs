@@ -519,10 +519,11 @@ impl WorkspaceActions {
                 })
             }
             RemoteActionMessage::Observe {
+                correlation,
                 invocation,
                 wait_ms,
                 seen,
-            } => self.follow(caller, invocation, seen, wait_ms),
+            } => self.follow(caller, correlation, invocation, seen, wait_ms),
             RemoteActionMessage::Cancel { invocation } => {
                 Pending::ready(RemoteActionMessage::CancelResponse {
                     invocation,

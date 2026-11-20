@@ -770,6 +770,7 @@ fn a_follow_is_held_until_the_invocation_moves() {
                 super::WorkspaceId::from_u128(1),
                 &caller,
                 RemoteActionMessage::Observe {
+                    correlation: 0,
                     invocation,
                     wait_ms: Some(wait_ms),
                     seen: Some(seen),

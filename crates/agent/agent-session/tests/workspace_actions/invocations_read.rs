@@ -207,6 +207,7 @@ fn observed(
             workspace,
             caller,
             RemoteActionMessage::Observe {
+                correlation: 0,
                 invocation,
                 wait_ms: None,
                 seen: None,

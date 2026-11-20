@@ -1160,7 +1160,9 @@ impl App {
                 };
                 (BrokerReply::Receipt(invocation), update)
             }
-            RemoteActionMessage::Update { invocation, state } => (
+            RemoteActionMessage::Update {
+                invocation, state, ..
+            } => (
                 BrokerReply::Update(invocation),
                 state
                     .map(|state| state.update)

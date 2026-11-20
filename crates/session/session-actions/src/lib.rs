@@ -443,8 +443,12 @@ impl Waiting {
     fn answer(&mut self, message: RemoteActionMessage, give: &mut Vec<Give>) {
         match message {
             RemoteActionMessage::Receipt(receipt) => self.receipt(&receipt, give),
-            RemoteActionMessage::Update { invocation, state } => {
-                self.update(invocation, state.as_ref(), give);
+            RemoteActionMessage::Update {
+                invocation,
+                state,
+                correlation,
+            } => {
+                self.update(invocation, correlation, state.as_ref(), give);
             }
             RemoteActionMessage::CancelResponse { invocation, result } => {
                 for asked in self.cancels.remove(&invocation).unwrap_or_default() {
@@ -546,21 +550,59 @@ impl Waiting {
         }
     }
 
-    /// An update the device pushes unasked answers whoever waits for one; with nobody waiting,
-    /// the next observe asks again.
+    /// An update the device sent for `invocation` answers the ask it names
+    /// (`correlation`); one that names none — a push, or an answer from a
+    /// provider that predates named asks — answers those it brings news to.
+    /// The state is kept either way. An answer naming an ask this caller gave
+    /// up on (its wait outlived the reply deadline) answers nothing: it may
+    /// carry the state the caller already saw, which taken for the ask out
+    /// now would read as a device that does not hold.
     fn update(
         &mut self,
         invocation: tilo_actions::InvocationId,
+        correlation: Option<u64>,
         state: Option<&tilo_actions::remote::InvocationState>,
         give: &mut Vec<Give>,
     ) {
         if let (Some(followed), Some(state)) = (self.follows.get_mut(&invocation), state) {
             followed.state = state.clone();
         }
-        for asked in self.updates.remove(&invocation).unwrap_or_default() {
+        let Some(all) = self.updates.remove(&invocation) else {
+            return;
+        };
+        let (answered, kept): (Vec<_>, Vec<_>) = all
+            .into_iter()
+            .partition(|asked| answers(asked, correlation, state));
+        if !kept.is_empty() {
+            self.updates.insert(invocation, kept);
+        }
+        for asked in answered {
             give.push(giving(asked, Ok(state.cloned())));
         }
     }
+}
+
+/// Whether `asked`, a wait for an invocation's state, is answered by the update
+/// that named `correlation` with `state`.
+fn answers(
+    asked: &Asked<Answered<Option<InvocationState>>>,
+    correlation: Option<u64>,
+    state: Option<&InvocationState>,
+) -> bool {
+    let RemoteActionMessage::Observe {
+        correlation: named,
+        seen,
+        ..
+    } = &asked.again
+    else {
+        return true;
+    };
+    if let Some(correlation) = correlation {
+        return *named != 0 && *named == correlation;
+    }
+    state.is_none_or(|state| {
+        state.is_terminal() || seen.is_none() || Some(UpdateMark::of(&state.update)) != *seen
+    })
 }
 
 /// `answered`'s answer, if it came within [`REPLY_DEADLINE`].
@@ -775,6 +817,7 @@ impl SessionActions {
     fn ask_again(&self, id: &InvocationId) {
         let (answer, _answered) = pending();
         let message = RemoteActionMessage::Observe {
+            correlation: self.0.next_correlation.fetch_add(1, Ordering::Relaxed),
             invocation: *id,
             wait_ms: None,
             seen: None,
@@ -803,6 +846,7 @@ impl SessionActions {
     fn ask_state(&self, id: &InvocationId) -> Option<InvocationState> {
         let (answer, answered) = pending();
         let message = RemoteActionMessage::Observe {
+            correlation: self.0.next_correlation.fetch_add(1, Ordering::Relaxed),
             invocation: *id,
             wait_ms: None,
             seen: None,
@@ -1242,6 +1286,7 @@ impl ActionProvider for SessionActions {
         let (answer, answered) = pending();
         let wait_ms = u32::try_from(MAX_REMOTE_WAIT.as_millis()).unwrap_or(u32::MAX);
         let message = RemoteActionMessage::Observe {
+            correlation: self.0.next_correlation.fetch_add(1, Ordering::Relaxed),
             invocation: *id,
             wait_ms: Some(wait_ms),
             seen: Some(seen),
@@ -1631,6 +1676,7 @@ mod tests {
                     }
                 }
                 RemoteActionMessage::Observe {
+                    correlation,
                     invocation,
                     wait_ms,
                     ..
@@ -1645,6 +1691,7 @@ mod tests {
                     self.say(RemoteActionMessage::Update {
                         invocation,
                         state: Some(InvocationState::new(invocation, state)),
+                        correlation: Some(correlation),
                     });
                 }
                 _ => {}
@@ -1990,6 +2037,7 @@ mod tests {
         device.say(RemoteActionMessage::Update {
             invocation,
             state: Some(InvocationState::new(invocation, moved.clone())),
+            correlation: None,
         });
         assert_eq!(
             change.wait_timeout(Duration::from_secs(5)).ok().flatten(),
@@ -2039,12 +2087,102 @@ mod tests {
         assert_eq!(kept, Some(moved), "what the device said is kept");
     }
 
+    /// An answer names the wait it answers: one naming a wait this caller gave
+    /// up on (its answer came past the reply deadline) leaves the wait out now
+    /// alone, however much the state it carries says. Taken for the wait out
+    /// now, an answer the state has not moved past would read as a device that
+    /// does not hold, and the follow would stop hearing its changes.
+    #[test]
+    fn an_update_answers_only_the_wait_it_names() {
+        let invocation = InvocationId::new();
+        let device = Device::new(invocation, true);
+        let actions = SessionActions::new(
+            Arc::clone(&device) as Arc<dyn RemoteSession>,
+            WorkspaceId::from_u128(1),
+            DEVICE,
+        );
+        accepted(&actions, invocation);
+        let mut change = actions
+            .next_change(&caller(), &invocation)
+            .expect("an accepted invocation is followed");
+        let asked = actions
+            .0
+            .waiting
+            .lock_recover()
+            .updates
+            .get(&invocation)
+            .and_then(|all| all.first())
+            .and_then(|asked| match &asked.again {
+                RemoteActionMessage::Observe { correlation, .. } => Some(*correlation),
+                _ => None,
+            })
+            .expect("the wait out names itself");
+
+        let waiting_state =
+            InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
+        let mut give = Vec::new();
+        actions.0.waiting.lock_recover().answer(
+            RemoteActionMessage::Update {
+                invocation,
+                state: Some(waiting_state),
+                correlation: Some(asked.wrapping_add(1_000)),
+            },
+            &mut give,
+        );
+        for give in give {
+            give();
+        }
+        assert!(
+            matches!(
+                change.poll_ready(),
+                tilo_actions::remote::PendingPoll::Waiting
+            ),
+            "another wait's answer does not answer this one"
+        );
+        assert!(
+            actions.next_change(&caller(), &invocation).is_some(),
+            "the follow still holds"
+        );
+
+        let moved = InvocationUpdate::Item {
+            invocation,
+            sequence: 2,
+            value: serde_json::json!({"accounts": ["ada@example.test"]}),
+        };
+        *device.state.lock_recover() = moved.clone();
+        let mut give = Vec::new();
+        actions.0.waiting.lock_recover().answer(
+            RemoteActionMessage::Update {
+                invocation,
+                state: Some(InvocationState::new(invocation, moved.clone())),
+                correlation: Some(asked),
+            },
+            &mut give,
+        );
+        for give in give {
+            give();
+        }
+        assert_eq!(
+            change.wait_timeout(Duration::from_secs(5)).ok().flatten(),
+            Some(()),
+            "its own answer wakes the follow"
+        );
+        assert_eq!(
+            actions
+                .observe(&caller(), &invocation)
+                .expect("a state")
+                .update,
+            moved
+        );
+    }
+
     /// A caller that gave up on its answer leaves nothing behind: its ask is let go at the next
     /// sweep and is not asked again on a later connection, so the asks of calls that waited out
     /// a session without its server do not pile up and go out again all at once on its return.
     #[test]
     fn an_ask_its_caller_left_is_let_go_and_never_asked_again() {
         let observe = || RemoteActionMessage::Observe {
+            correlation: 0,
             invocation: InvocationId::new(),
             wait_ms: None,
             seen: None,

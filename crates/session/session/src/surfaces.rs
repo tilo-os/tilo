@@ -963,7 +963,9 @@ impl Surfaces {
                             app.actions.settle(receipt.invocation, &update);
                         }
                     }
-                    RemoteActionMessage::Update { invocation, state } => {
+                    RemoteActionMessage::Update {
+                        invocation, state, ..
+                    } => {
                         if let Some(state) = state {
                             app.actions.settle(invocation, &state.update);
                         }
@@ -1137,13 +1139,18 @@ fn answer(
         }
         // The desktop runs every action it offers to its end, so an invocation stands where its
         // receipt left it.
-        RemoteActionMessage::Observe { invocation, .. } => Some(RemoteActionMessage::Update {
+        RemoteActionMessage::Observe {
+            correlation,
+            invocation,
+            ..
+        } => Some(RemoteActionMessage::Update {
             invocation,
             state: answered
                 .iter()
                 .rev()
                 .find(|(id, _)| *id == invocation)
                 .map(|(_, update)| InvocationState::new(invocation, update.clone())),
+            correlation: Some(correlation),
         }),
         RemoteActionMessage::Cancel { invocation } => Some(RemoteActionMessage::CancelResponse {
             invocation,

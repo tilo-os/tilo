@@ -3716,6 +3716,7 @@ fn remote_update(index: u128) -> CollabEvent {
         message: tilo_actions::remote::RemoteActionMessage::Update {
             invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(index)),
             state: None,
+            correlation: None,
         },
     }
 }
@@ -4446,6 +4447,7 @@ tilo_test_env::scenario! {
             message: tilo_actions::remote::RemoteActionMessage::Update {
                 invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
                 state: None,
+                correlation: None,
             },
         }));
         assert_eq!(
@@ -4470,6 +4472,7 @@ tilo_test_env::scenario! {
             message: tilo_actions::remote::RemoteActionMessage::Update {
                 invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
                 state: None,
+                correlation: None,
             },
         }));
         assert_eq!(
@@ -4484,6 +4487,7 @@ tilo_test_env::scenario! {
             message: tilo_actions::remote::RemoteActionMessage::Update {
                 invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
                 state: None,
+                correlation: None,
             },
         }));
         assert_eq!(
@@ -4519,6 +4523,7 @@ tilo_test_env::scenario! {
             message: tilo_actions::remote::RemoteActionMessage::Update {
                 invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
                 state: None,
+                correlation: None,
             },
         }));
         assert!(

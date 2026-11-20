@@ -1051,6 +1051,29 @@ pub trait ActionProvider {
     }
 }
 
+/// Whether `value` is the zero an asker that names no ask uses: left out of
+/// the bytes, as it always was.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde hands a skipped field to it by reference"
+)]
+const fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+/// An answer to an [`RemoteActionMessage::Observe`], naming the ask it answers.
+fn updated(
+    correlation: u64,
+    invocation: InvocationId,
+    state: Option<InvocationState>,
+) -> RemoteActionMessage {
+    RemoteActionMessage::Update {
+        invocation,
+        state,
+        correlation: Some(correlation),
+    }
+}
+
 /// Everything that crosses the wire for remote action use.
 #[allow(
     clippy::large_enum_variant,
@@ -1085,6 +1108,13 @@ pub enum RemoteActionMessage {
     Receipt(InvocationReceipt),
     /// Ask for an invocation's latest state.
     Observe {
+        /// Names this ask, so its [`Self::Update`] answers it and no other: a
+        /// caller that gave up on one ask and sent another must not mistake
+        /// the first one's late answer — which may carry the state it already
+        /// saw — for its own. An asker that names none keeps the bytes it
+        /// always sent.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        correlation: u64,
         invocation: InvocationId,
         /// Hold the answer until the invocation moves past `seen` (or, with
         /// no `seen`, settles) or this many milliseconds pass, at most
@@ -1101,6 +1131,10 @@ pub enum RemoteActionMessage {
     Update {
         invocation: InvocationId,
         state: Option<InvocationState>,
+        /// The ask this answers, as it named itself; absent for a push, and
+        /// for a provider that predates named asks.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        correlation: Option<u64>,
     },
     /// Ask a running invocation to stop.
     Cancel { invocation: InvocationId },
@@ -1266,6 +1300,7 @@ impl RemoteActionMessage {
     #[must_use]
     pub const fn observe(invocation: InvocationId) -> Self {
         Self::Observe {
+            correlation: 0,
             invocation,
             wait_ms: None,
             seen: None,
@@ -1491,17 +1526,21 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
             .map(RemoteActionMessage::Receipt)
         }
         RemoteActionMessage::Observe {
+            correlation,
             invocation,
             wait_ms: Some(wait_ms),
             seen,
         } => settle_with(provider, caller, invocation, seen, wait::deadline(wait_ms))
-            .map(move |state| RemoteActionMessage::Update { invocation, state }),
-        RemoteActionMessage::Observe { invocation, .. } => {
-            Pending::ready(RemoteActionMessage::Update {
-                invocation,
-                state: provider.observe(caller, &invocation),
-            })
-        }
+            .map(move |state| updated(correlation, invocation, state)),
+        RemoteActionMessage::Observe {
+            correlation,
+            invocation,
+            ..
+        } => Pending::ready(updated(
+            correlation,
+            invocation,
+            provider.observe(caller, &invocation),
+        )),
         RemoteActionMessage::Cancel { invocation } => provider
             .cancel(caller, &invocation)
             .map(move |result| RemoteActionMessage::CancelResponse { invocation, result }),
@@ -1583,10 +1622,11 @@ pub fn refuse(
             invocation: request.invocation,
             status: ReceiptStatus::Rejected { error },
         }),
-        RemoteActionMessage::Observe { invocation, .. } => RemoteActionMessage::Update {
-            invocation: *invocation,
-            state: None,
-        },
+        RemoteActionMessage::Observe {
+            correlation,
+            invocation,
+            ..
+        } => updated(*correlation, *invocation, None),
         RemoteActionMessage::Cancel { invocation } => RemoteActionMessage::CancelResponse {
             invocation: *invocation,
             result: Err(error),
@@ -2311,6 +2351,7 @@ mod tests {
             }),
             RemoteActionMessage::observe(invocation),
             RemoteActionMessage::Observe {
+                correlation: 7,
                 invocation,
                 wait_ms: Some(10_000),
                 seen: Some(UpdateMark::Progress { sequence: 2 }),
@@ -2328,10 +2369,12 @@ mod tests {
                         message: None,
                     },
                 )),
+                correlation: Some(7),
             },
             RemoteActionMessage::Update {
                 invocation,
                 state: None,
+                correlation: Some(7),
             },
             RemoteActionMessage::Cancel { invocation },
             RemoteActionMessage::CancelResponse {
@@ -2685,14 +2728,16 @@ mod tests {
             refuse(&RemoteActionMessage::observe(id), error.clone()),
             Some(RemoteActionMessage::Update {
                 invocation: id,
-                state: None
+                state: None,
+                correlation: Some(0),
             })
         );
         assert_eq!(
             refuse(
                 &RemoteActionMessage::Update {
                     invocation: id,
-                    state: None
+                    state: None,
+                    correlation: None,
                 },
                 error
             ),

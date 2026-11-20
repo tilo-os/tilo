@@ -449,6 +449,7 @@ impl Page {
                     RemoteActionMessage::Update {
                         invocation: got,
                         state,
+                        ..
                     } if *got == invocation => Some(state.clone()),
                     _ => None,
                 })

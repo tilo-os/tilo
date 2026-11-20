@@ -213,6 +213,7 @@ impl PeerTransport for SurfacePeer {
                     .send(RemoteActionMessage::Update {
                         invocation,
                         state: Some(state),
+                        correlation: None,
                     })
                     .map_err(|_| String::from("the session closed the actions socket"))
             }

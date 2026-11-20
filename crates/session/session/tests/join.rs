@@ -365,6 +365,7 @@ fn settings_lists_shortcuts(
         answered(
             &handle,
             RemoteActionMessage::Observe {
+                correlation: 0,
                 invocation,
                 wait_ms: Some(5_000),
                 seen: None,

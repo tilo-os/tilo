@@ -144,6 +144,7 @@ fn succeeded(invocation: InvocationId) -> InvocationUpdate {
 
 fn waiting_observe(invocation: InvocationId, wait_ms: u32) -> RemoteActionMessage {
     RemoteActionMessage::Observe {
+        correlation: 0,
         invocation,
         wait_ms: Some(wait_ms),
         seen: Some(UpdateMark::Accepted),

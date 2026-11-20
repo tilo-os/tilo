@@ -519,6 +519,7 @@ tilo_test_env::scenario! {
                         message: Some("Stopped by the person".into()),
                     },
                 )),
+                correlation: None,
             },
         });
         assert!(matches!(
@@ -597,6 +598,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             only_message(actions.take_collab_requests()),
             RemoteActionMessage::Observe {
+                correlation: 0,
                 invocation,
                 wait_ms: Some(OBSERVE_WAIT_MS),
                 seen: Some(UpdateMark::Accepted),
@@ -618,6 +620,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             only_message(actions.take_collab_requests()),
             RemoteActionMessage::Observe {
+                correlation: 0,
                 invocation,
                 wait_ms: Some(OBSERVE_WAIT_MS),
                 seen: Some(UpdateMark::Progress { sequence: 1 }),
@@ -749,6 +752,7 @@ tilo_test_env::scenario! {
                 message: RemoteActionMessage::Update {
                     invocation,
                     state: Some(InvocationState::new(invocation, item.clone())),
+                    correlation: None,
                 },
             });
             assert_eq!(followed.call().get(), Arrival::Ready(item));
@@ -835,6 +839,7 @@ fn update(invocation: InvocationId, update: InvocationUpdate) -> CollabEvent {
         message: RemoteActionMessage::Update {
             invocation,
             state: Some(InvocationState::new(invocation, update)),
+            correlation: None,
         },
     }
 }

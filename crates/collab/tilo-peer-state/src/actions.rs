@@ -703,6 +703,7 @@ impl ActionService {
                 }))
             }
             RemoteActionMessage::Observe {
+                correlation,
                 invocation,
                 wait_ms,
                 seen,
@@ -711,6 +712,7 @@ impl ActionService {
                 Some(RemoteActionMessage::Update {
                     invocation: *invocation,
                     state,
+                    correlation: Some(*correlation),
                 })
             }
             RemoteActionMessage::Cancel { invocation } => {
@@ -1231,6 +1233,7 @@ fn follow(
     provider
         .ask(
             RemoteActionMessage::Observe {
+                correlation: 0,
                 invocation,
                 wait_ms: Some(CHANGE_WAIT_MS),
                 seen,
@@ -1355,6 +1358,7 @@ impl ActionProvider for RemoteDevice {
             let answer = self
                 .ask(
                     RemoteActionMessage::Observe {
+                        correlation: 0,
                         invocation: *id,
                         wait_ms: None,
                         seen: None,
@@ -1394,6 +1398,7 @@ impl ActionProvider for RemoteDevice {
         let (changed, change) = tilo_actions::remote::pending();
         self.ask(
             RemoteActionMessage::Observe {
+                correlation: 0,
                 invocation,
                 wait_ms: Some(CHANGE_WAIT_MS),
                 seen,

@@ -55,6 +55,7 @@ fn answer(opener: &Opener, invocation: InvocationId, update: InvocationUpdate) {
         message: RemoteActionMessage::Update {
             invocation,
             state: Some(InvocationState::new(invocation, update)),
+            correlation: None,
         },
     });
 }

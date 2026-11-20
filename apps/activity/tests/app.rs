@@ -119,6 +119,7 @@ fn answer(
                         value,
                     },
                 )),
+                correlation: None,
             },
         });
     app.frame();
@@ -198,6 +199,7 @@ fn a_refused_read_says_so_instead_of_showing_history() {
                         },
                     },
                 )),
+                correlation: None,
             },
         });
     app.frame();

@@ -247,6 +247,7 @@ fn submit(invocation: InvocationId) -> RemoteActionMessage {
 /// A caller asking how `invocation` went, waiting until it moves.
 fn observe(invocation: InvocationId) -> RemoteActionMessage {
     RemoteActionMessage::Observe {
+        correlation: 0,
         invocation,
         wait_ms: Some(500),
         seen: None,

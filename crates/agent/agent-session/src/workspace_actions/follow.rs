@@ -31,6 +31,7 @@ impl WorkspaceActions {
     pub(super) fn follow(
         &self,
         caller: &Caller,
+        correlation: u64,
         invocation: InvocationId,
         seen: Option<UpdateMark>,
         wait_ms: Option<u32>,
@@ -56,6 +57,7 @@ impl WorkspaceActions {
             return Pending::ready(RemoteActionMessage::Update {
                 invocation,
                 state: read(&self.shared),
+                correlation: Some(correlation),
             });
         };
         let until = std::time::Instant::now()
@@ -89,7 +91,11 @@ impl WorkspaceActions {
                     });
                     let now = std::time::Instant::now();
                     if arrived || now >= until || completer.is_abandoned() {
-                        completer.complete(RemoteActionMessage::Update { invocation, state });
+                        completer.complete(RemoteActionMessage::Update {
+                            invocation,
+                            state,
+                            correlation: Some(correlation),
+                        });
                         return;
                     }
                     // Looked again on the log's own move, and at least this
@@ -104,6 +110,7 @@ impl WorkspaceActions {
             return Pending::ready(RemoteActionMessage::Update {
                 invocation,
                 state: read(&self.shared),
+                correlation: Some(correlation),
             });
         }
         answer

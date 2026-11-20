@@ -164,6 +164,7 @@ impl HostedBrowsers {
                 from,
                 window.device,
                 RemoteActionMessage::Observe {
+                    correlation: 0,
                     invocation,
                     wait_ms: Some(ANSWER_HOLD_MS),
                     seen: None,
@@ -218,7 +219,9 @@ impl HostedBrowsers {
     ) -> Option<crate::app_serving::Routing> {
         let (invocation, status) = match message {
             RemoteActionMessage::Receipt(receipt) => (receipt.invocation, receipt.status.clone()),
-            RemoteActionMessage::Update { invocation, state } => (
+            RemoteActionMessage::Update {
+                invocation, state, ..
+            } => (
                 *invocation,
                 state.as_ref().map_or_else(
                     || ReceiptStatus::Rejected {

@@ -60,6 +60,7 @@ fn answer(app: &mut TestApp<App>, request: &InvokeRequest, value: serde_json::Va
                         value,
                     },
                 )),
+                correlation: None,
             },
         });
     app.frame();
