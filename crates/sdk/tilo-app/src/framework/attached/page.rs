@@ -4,12 +4,25 @@
 
 use super::{AttachedView, lay_out};
 
+/// The most frames a read of the page lays out to take up what its view owes: a wake
+/// that keeps asking for frames (an animation) is not waited out.
+const PAGE_FRAMES: usize = 8;
+
 impl AttachedView {
     /// The view as a page shows it: its composition, laid out with everything
-    /// that reached it since its last frame.
+    /// that reached it since its last frame, and with the frames that take up
+    /// (a store that opened once the workspace answered, a note an action
+    /// opened) laid out as a window lays them out while it is looked at.
     #[must_use]
     pub fn composition(&self) -> ui_core::composition::Composition {
-        self.frame().composition()
+        drop(self.frame());
+        let mut frame = self.frame.borrow_mut();
+        for _ in 0..PAGE_FRAMES {
+            if !frame.poll_frame().unwrap_or(false) {
+                break;
+            }
+        }
+        frame.composition()
     }
 
     /// The theme the view is laid out in: what a page's colours are.

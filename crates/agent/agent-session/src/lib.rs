@@ -67,7 +67,7 @@ pub use host::{AgentHost, CatalogueFactory, HostEndpoint};
 pub use member::actions::{RESOURCE_PROVIDER, record_provider};
 pub use member::{AgentMember, MemberConfig, Next, Pumped};
 pub use model::{ApiKey, CLOUD_MODEL, MakeTurns, ModelChoice};
-pub use worker::ConfinedReplica;
+pub use worker::{ConfinedReplica, PageAction};
 pub use workspace_actions::{
     FeedbackReviewer, HostActions, WorkspaceActions, WorkspaceDocumentsLink,
 };

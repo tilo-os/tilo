@@ -60,6 +60,8 @@ mod issue_reads;
 mod mail_for_agents;
 #[path = "messages_for_agents.rs"]
 mod messages_for_agents;
+#[path = "page_view.rs"]
+mod page_view;
 #[path = "render_video.rs"]
 mod render_video;
 #[path = "replicas.rs"]
