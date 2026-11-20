@@ -2454,7 +2454,9 @@ name = "fs-workspace-scale"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "script=$(cat <<'SCALE'\nexport TILO_FS_LADDER_RUNGS_MIB=${T_INPUT_RUNGS:-10240,20480}\nexport TILO_FS_LADDER_TOTAL_MIB=${T_INPUT_TOTAL_MIB:-10240}\nexport TILO_FS_LADDER_SMALL_FILES=${T_INPUT_SMALL_FILES:-1000}\nexport TILO_FS_LADDER_SMALL_BYTES=${T_INPUT_SMALL_BYTES:-4096}\nbash tools/ci/fs-workspace-scale.sh all\nSCALE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
 dispatch_inputs = { rungs = "10240,20480", total_mib = "10240", small_files = "1000", small_bytes = "4096" }
-env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
+# Every request the daemons answer is named on stderr, so each run prices a listing by the
+# requests it costs as well as by the time it takes.
+env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1", TILO_FS_FUSE_REQUESTS = "1" }
 requires = ["/dev/fuse", "disk-100g"]
 isolation = "nested"
 on = ["dispatch"]
