@@ -1825,13 +1825,14 @@ suite = "os/containers/tilo-api/test-image.sh"
 reason = "starts the built API server image with buildah as root in a loopback network, so it needs the archive image-api writes and a micro-VM step"
 check = "test-image-api"
 
-[[unrequired]]
+[[covered]]
 suite = "crates/session/tilo-ntfs-helper/tests/test_stage_install.py"
-reason = "needs a built staging binary (TILO_NTFS_STAGING_BINARY)"
+check = "ntfs-stage-install"
 
 [[unrequired]]
 suite = "dist/arch/test-package.sh"
-reason = "needs a built Arch package"
+check = "desktop-package-amd64"
+reason = "installs and verifies the built Arch package in an Arch userspace; desktop-package-amd64 builds, installs and tests every distro's package when dispatched"
 
 [[unrequired]]
 suite = "dist/ci/run-dev-session-test.sh"
@@ -1841,20 +1842,23 @@ workflow = "release-desktop.yml"
 
 [[unrequired]]
 suite = "dist/ci/test-installed-host-startup.sh"
-reason = "needs an installed compositor package"
+check = "installed-host-startup"
+reason = "starts the installed session as a fresh ordinary user, which needs the release binary, useradd and a host identity tree; installed-host-startup dispatches it"
 
 [[unrequired]]
 suite = "dist/debian/test-package.sh"
-reason = "needs a built Debian package"
+check = "desktop-package-amd64"
+reason = "installs and verifies the built Debian packages in a Debian userspace; desktop-package-amd64 builds, installs and tests every distro's package when dispatched"
 
 [[unrequired]]
 suite = "dist/rpm/test-package.sh"
-reason = "needs built RPM packages"
+check = "desktop-package-amd64"
+reason = "installs and verifies the built RPMs in a Fedora userspace; desktop-package-amd64 builds, installs and tests every distro's package when dispatched"
 
 [[unrequired]]
 suite = "dist/rpm/test-signing-contract.sh"
-reason = "needs a gpg-agent the ci-fast image cannot provide reliably; runs in the package container"
-workflow = "release-desktop.yml"
+check = "desktop-preflight"
+reason = "needs a gpg-agent and release-artifact parsers, which the ci-fast image cannot provide reliably; desktop-preflight runs it when dispatched or on idle"
 
 [[unrequired]]
 suite = "os/dev/test-encrypted-install.sh"
@@ -1921,21 +1925,24 @@ suite = "os/kernel/tests/test-boot-smoke-compressed.sh"
 reason = "hermetic: the test stands a script in for qemu-system, so it boots no VM and needs no KVM; it runs on dispatch and main's idle rather than on every change"
 check = "kernel-boot-smoke-compressed"
 
-[[unrequired]]
+[[covered]]
 suite = "os/kernel/tests/test-cn20k-debugfs.py"
-reason = "needs make and a kernel source tree"
+check = "os-build-contracts"
 
 [[unrequired]]
 suite = "os/kernel/tests/test-rpm.sh"
-reason = "needs the built kernel RPM; kernel-acceptance-<arch> runs it"
+check = "kernel-acceptance-x86_64"
+reason = "needs the built kernel RPM and QEMU firmware; kernel-acceptance-x86_64 runs it when dispatched"
 
 [[unrequired]]
 suite = "os/tests/airplay-encrypted-session.sh"
-reason = "needs the built tilo-doubletake binaries and OpenH264 from the opt-in codec pack on an assembled image"
+check = "os-image-contracts"
+reason = "needs the assembled image's tilo-doubletake binaries, GStreamer and OpenH264, which the ci-fast image does not hold; os-image-contracts runs it from the composed image when dispatched"
 
 [[unrequired]]
 suite = "os/tests/boot_chain_invariants.sh"
-reason = "needs a built image root (OS_ROOT)"
+check = "os-image-contracts"
+reason = "needs the built OS image, which the ci-fast image does not hold; os-image-contracts runs it from the composed image when dispatched"
 
 [[unrequired]]
 suite = "os/tests/boot_performance_check.sh"
@@ -1969,23 +1976,28 @@ check = "windows-dxvk-load"
 
 [[unrequired]]
 suite = "os/tests/collaborative-files-image-contract.sh"
-reason = "needs an assembled image root (OS_ROOT)"
+check = "os-image-contracts"
+reason = "needs the assembled OS image root, which the ci-fast image does not hold; os-image-contracts runs it from the composed image when dispatched"
 
 [[unrequired]]
 suite = "os/tests/container_build_context.py"
-reason = "needs rootless Podman"
+check = "disposable-root-podman"
+reason = "builds real images with Podman, which the ci-fast image cannot give; disposable-root-podman dispatches the Podman fixtures together"
 
 [[unrequired]]
 suite = "os/tests/development_layer_audit_native.py"
-reason = "needs the disposable root native container with Podman"
+check = "development-signing-x86_64"
+reason = "the development-source fixture builds and runs it in a privileged container that nests Podman, which takes the builder image and hours; development-signing-x86_64 dispatches the whole fixture"
 
 [[unrequired]]
 suite = "os/tests/development_prediction_native.py"
-reason = "needs the disposable root native container with Cosign"
+check = "development-signing-x86_64"
+reason = "the development-source fixture builds and runs it in a privileged container that nests Podman, which takes the builder image and hours; development-signing-x86_64 dispatches the whole fixture"
 
 [[unrequired]]
 suite = "os/tests/development_retention_native.py"
-reason = "needs the disposable root native container with Cosign and Podman"
+check = "development-signing-x86_64"
+reason = "the development-source fixture builds and runs it in a privileged container that nests Podman, which takes the builder image and hours; development-signing-x86_64 dispatches the whole fixture"
 
 [[unrequired]]
 suite = "os/tests/release_trust_chain_native.py"
@@ -1994,27 +2006,33 @@ check = "release-trust"
 
 [[unrequired]]
 suite = "os/tests/development_rebind_native.py"
-reason = "needs the disposable root native container with Cosign, Podman and packaged-kernel dracut"
+check = "development-signing-x86_64"
+reason = "the development-source fixture builds and runs it in a privileged container that nests Podman with the packaged kernel's dracut, which takes the builder image and hours; development-signing-x86_64 dispatches the whole fixture"
 
 [[unrequired]]
 suite = "os/tests/development_rootfs.py"
-reason = "needs the disposable root native container with Podman"
+check = "development-signing-x86_64"
+reason = "the development-source fixture builds and runs it in a privileged container that nests Podman, which takes the builder image and hours; development-signing-x86_64 dispatches the whole fixture"
 
 [[unrequired]]
 suite = "os/tests/development_signer.py"
-reason = "needs the disposable root native container"
+check = "development-signing-x86_64"
+reason = "the development-source fixture builds and runs it in a privileged container with its own keys, which takes the builder image and hours; development-signing-x86_64 dispatches the whole fixture"
 
 [[unrequired]]
 suite = "os/tests/development_source_registry.py"
-reason = "needs Podman, Cosign and a TLS registry"
+check = "development-signing-x86_64"
+reason = "the development-source fixture builds and runs it in a privileged container with a registry it starts, which takes the builder image and hours; development-signing-x86_64 dispatches the whole fixture"
 
 [[unrequired]]
 suite = "os/tests/development_stage_reuse.py"
-reason = "needs the disposable root native container with Podman"
+check = "development-signing-x86_64"
+reason = "the development-source fixture builds and runs it in a privileged container that nests Podman, which takes the builder image and hours; development-signing-x86_64 dispatches the whole fixture"
 
 [[unrequired]]
 suite = "os/tests/fex-assembler.sh"
-reason = "needs NASM"
+check = "image-fex-buildroot"
+reason = "proves the pinned NASM 2.16.03 the FEX build uses keeps the SMSW operand-size encodings; image-fex-buildroot runs it while it builds that assembler, and the system NASM is a newer major on purpose"
 
 [[unrequired]]
 suite = "os/tests/fex-proton-smoke.py"
@@ -2026,7 +2044,8 @@ reason = "needs an installed native FEX runtime, a verified x86 guest rootfs and
 
 [[unrequired]]
 suite = "os/tests/initramfs_trust_native.py"
-reason = "needs the disposable root native container"
+check = "development-signing-x86_64"
+reason = "the development-source fixture builds and runs it in a privileged container with disposable keys, which takes the builder image and hours; development-signing-x86_64 dispatches the whole fixture"
 
 [[unrequired]]
 suite = "os/tests/installed_atspi_apps.sh"
@@ -2035,11 +2054,12 @@ check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/installed_material_audit.py"
-reason = "needs squashfs-tools, absent from the ci-fast image"
+check = "installed-material-audit"
+reason = "needs squashfs-tools, absent from the ci-fast image; installed-material-audit installs it when dispatched"
 
 [[unrequired]]
 suite = "os/tests/installer-render-smoke.sh"
-reason = "needs a built tilo-installer binary"
+reason = "drives the installer with `--shots --step --viewport`, an interface the guided setup no longer has; no binary in the tree accepts `--step`, so the script needs bringing to the current CLI before a check can render it"
 
 [[unrequired]]
 suite = "os/tests/installed-admin-actions.sh"
@@ -2058,8 +2078,8 @@ check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/internal_bundle_export.sh"
-reason = "root: loop devices and vfat/Btrfs mounts"
-workflow = "release-imager.yml"
+check = "loop-device-native"
+reason = "needs real root, loop devices and vfat/Btrfs mounts, which only a micro-VM step gives; loop-device-native dispatches it"
 
 [[unrequired]]
 suite = "os/tests/kernel-arm-capsule-smoke.py"
@@ -2076,7 +2096,8 @@ reason = "needs a local kernel source build tree (arch/x86/boot/bzImage, gen_ini
 
 [[unrequired]]
 suite = "os/tests/luks_enrolment.sh"
-reason = "needs a built image (tilo-disk-encrypt, cryptsetup)"
+check = "os-image-contracts"
+reason = "needs the built image's tilo-disk-encrypt and systemd-cryptenroll, which the ci-fast image does not hold; os-image-contracts runs it from the composed image when dispatched"
 
 [[unrequired]]
 suite = "os/tests/managed-fex-wine-smoke.py"
@@ -2094,15 +2115,17 @@ check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/prove_kernel_failure_cache.py"
-reason = "needs a live BuildKit daemon"
+reason = "drives `docker buildx build` against a live BuildKit daemon; a t job's userspace has Podman and no docker daemon or buildx plugin, and podman builds do not speak that frontend, so no check can host it"
 
 [[unrequired]]
 suite = "os/tests/prove_kernel_failure_cache_local.py"
-reason = "needs rootful Podman with cached images"
+check = "disposable-root-podman"
+reason = "runs a privileged BuildKit container against rootful Podman with pinned images, which the ci-fast image cannot give; disposable-root-podman dispatches the Podman fixtures together"
 
 [[unrequired]]
 suite = "os/tests/rootfs_firmware_cache.py"
-reason = "needs rootful Podman to observe real firmware mount layer-cache reuse on the build host"
+check = "disposable-root-podman"
+reason = "builds real images with rootful Podman, which the ci-fast image cannot give; disposable-root-podman dispatches the Podman fixtures together"
 
 [[unrequired]]
 suite = "os/tests/recovery-boot-check.sh"
@@ -2141,7 +2164,8 @@ check = "measured-boot-x86_64"
 
 [[unrequired]]
 suite = "os/tests/rollback-wrappers.sh"
-reason = "needs cryptsetup and a built tilo-rollback binary; skips without them"
+check = "os-image-contracts"
+reason = "needs cryptsetup and the built tilo-rollback binary, which the ci-fast image does not hold; os-image-contracts runs it from the composed image when dispatched"
 
 [[unrequired]]
 suite = "os/tests/run-fex-tests.py"
@@ -2169,19 +2193,21 @@ check = "staging-loop"
 
 [[unrequired]]
 suite = "os/tests/system_extension_boot_pack_stage.sh"
-reason = "needs a systemd system manager; skips without one"
+reason = "asks a running systemd manager to execute a systemd-run profile; a t micro-VM step's init is not systemd, and the installed-image checks boot the image over SSH without naming this script, so nothing in CI gives it a manager"
 
 [[unrequired]]
 suite = "os/tests/test_import_development_rootfs.py"
-reason = "needs a root-owned /usr/local/bin/tilo-crypto"
+check = "development-signing-x86_64"
+reason = "the development-source fixture builds and runs it in a privileged container, which takes the builder image and hours; development-signing-x86_64 dispatches the whole fixture"
 
-[[unrequired]]
+[[covered]]
 suite = "os/tests/test_kernel_checkpoint_make.py"
-reason = "needs make, absent from the ci-fast image"
+check = "os-build-contracts"
 
 [[unrequired]]
 suite = "os/tests/test_signing_spool.py"
-reason = "needs the isolated signing tools container (root-owned tilo-crypto)"
+check = "signing-spool-native"
+reason = "needs the built tilo-crypto installed root-owned at /usr/local/bin and a real signer, which only a micro-VM step gives; signing-spool-native dispatches it"
 
 [[unrequired]]
 suite = "os/tests/test_write_verified_installer_media.py"
@@ -2194,7 +2220,8 @@ check = "real-fuse"
 
 [[unrequired]]
 suite = "os/tests/named_public_trust_context.sh"
-reason = "needs a container engine and builds images in it; run by hand where a backend needs qualifying (docs/development-signing.md)"
+check = "disposable-root-podman"
+reason = "builds images in a container engine, which the ci-fast image cannot give; disposable-root-podman dispatches the Podman fixtures together"
 
 [[unrequired]]
 suite = "tools/ci/test-vendored-crates.sh"
@@ -2203,7 +2230,8 @@ check = "vendored"
 
 [[unrequired]]
 suite = "os/tests/trust_input_copy_equivalence.py"
-reason = "needs a built tools image (--tools-image) and Podman"
+check = "disposable-root-podman"
+reason = "builds real images with rootful Podman and compares mounted filesystems, which the ci-fast image cannot give; disposable-root-podman dispatches the Podman fixtures together"
 
 [[unrequired]]
 suite = "os/tests/ush-systemd-terminal-probe.py"
@@ -2231,7 +2259,7 @@ reason = "manual smoke test across two hosts on a LAN"
 
 [[unrequired]]
 suite = "tools/tests/test_vendor_history.sh"
-reason = "needs the vendor-upstream refs fetched from the network"
+reason = "needs the vendor-upstream remote-tracking refs a fresh clone receives; a t check's Git view holds only the commit under test and has no remote or credential to fetch them, and a job's egress cannot add one"
 
 [[covered]]
 suite = "crates/browser/tilo-browser-runtime/web/close-recovery.test.mjs"

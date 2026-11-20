@@ -3388,7 +3388,7 @@ default = false
 name = "desktop-preflight"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "set -eu\npython3 scripts/check-install-contract.py\nbash -n dist/*.sh dist/*/*.sh dist/ci/proot-apt-key dist/arch/PKGBUILD\ncc -fsyntax-only -Wall -Wextra -Werror dist/ci/qemu-argv0-wrapper.c\ntest \"$(cat dist/VERSION)\" = \"$(sed -n 's/^pkgver=//p' dist/arch/PKGBUILD)\"\ngrep -Fxq \"%{!?tilo_version:%global tilo_version $(cat dist/VERSION)}\" dist/rpm/tilo-session.spec\npython3 -m unittest discover -s tools/tests -p test_rpm_broker.py\ndist/ci/run-payload-contract-tests.sh\nos/tests/portal_config_validity.sh\n"
+run = "set -eu\n# dist/rpm/test-signing-contract.sh runs from dist/ci/run-payload-contract-tests.sh below.\npython3 scripts/check-install-contract.py\nbash -n dist/*.sh dist/*/*.sh dist/ci/proot-apt-key dist/arch/PKGBUILD\ncc -fsyntax-only -Wall -Wextra -Werror dist/ci/qemu-argv0-wrapper.c\ntest \"$(cat dist/VERSION)\" = \"$(sed -n 's/^pkgver=//p' dist/arch/PKGBUILD)\"\ngrep -Fxq \"%{!?tilo_version:%global tilo_version $(cat dist/VERSION)}\" dist/rpm/tilo-session.spec\npython3 -m unittest discover -s tools/tests -p test_rpm_broker.py\ndist/ci/run-payload-contract-tests.sh\nos/tests/portal_config_validity.sh\n"
 git = true
 on = ["dispatch", "idle"]
 heavy = true
@@ -3415,7 +3415,7 @@ on = ["dispatch"]
 name = "desktop-package-{deb}"
 # Publishes with a stored token, to hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash dist/ci/package-job.sh {deb}"
+run = "set -eu\n# dist/arch/test-package.sh, dist/debian/test-package.sh and dist/rpm/test-package.sh are the\n# install tests each of the job's userspaces runs (dist/ci/run-package-job.sh).\nbash dist/ci/package-job.sh {deb}"
 isolation = "vm"
 outputs = ["dist/ci-output/**"]
 git = true
@@ -4573,7 +4573,7 @@ on = ["tag:imager-v*"]
 name = "image-fex-buildroot"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/windows-compat.sh fex-buildroot /target/publish/fex-buildroot"
+run = "set -eu\n# os/tests/fex-assembler.sh runs inside os/Containerfile.fex-buildroot beside the pinned\n# NASM it proves.\nbash tools/ci/publish/windows-compat.sh fex-buildroot /target/publish/fex-buildroot"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=arm64"]
 isolation = "vm"
@@ -7640,3 +7640,142 @@ pointers = { api = "/target/publish/api/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["dispatch"]
+
+# The OS image's own contracts, run against the image the chain composed as an OCI archive: the
+# build runs them while it assembles, and this reruns each from the composed image itself, so a
+# broken encrypted-boot, filesystem, LUKS-enrolment, rollback or AirPlay contract names its test
+# against the image rather than only a red image build.
+[[check]]
+name = "os-image-contracts"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = '''set -eu
+# The image installs os/tests/boot_chain_invariants.sh, os/tests/luks_enrolment.sh and
+# os/tests/airplay-encrypted-session.sh as its own entrypoints; each runs the shipped script.
+dnf install -y --setopt=install_weak_deps=False podman >/dev/null
+podman=(podman --cgroup-manager=cgroupfs --events-backend=file)
+image=$("${podman[@]}" pull -q "oci-archive:/target/os/x86_64/image/image.oci.tar")
+trap '"${podman[@]}" image rm "$image" >/dev/null 2>&1 || true' EXIT
+"${podman[@]}" run --rm --entrypoint /usr/libexec/tilo/boot-chain-test.sh "$image"
+"${podman[@]}" run --rm --entrypoint /usr/libexec/tilo/luks-enrolment-test.sh "$image"
+"${podman[@]}" run --rm --entrypoint /usr/libexec/tilo/airplay-encrypted-session-test.sh "$image"
+"${podman[@]}" run --rm --mount "type=bind,src=$PWD/os/tests/collaborative-files-image-contract.sh,dst=/run/tilo-collaborative-files-image-contract.sh,ro" \
+  --entrypoint bash "$image" -c 'OS_ROOT=/ bash /run/tilo-collaborative-files-image-contract.sh image'
+"${podman[@]}" run --rm --mount "type=bind,src=$PWD/os,dst=/repo/os,ro" \
+  --entrypoint bash "$image" -c 'bash /repo/os/tests/rollback-wrappers.sh /usr/libexec/tilo/tilo-rollback'
+'''
+needs = ["os-image-x86_64"]
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+timeout_secs = 3600
+on = ["dispatch", "idle"]
+
+# Rootful Podman and the offline fixtures that build with it: a group-relative layer audit, the
+# firmware mount's layer-cache reuse, external-asset build contexts, a named public trust context,
+# the production trust-input copy's filesystem contract, and the failed-RUN BuildKit cache. Every
+# one builds only from scratch or from the pinned images the check pulls, and keeps its images in
+# private storage.
+[[check]]
+name = "disposable-root-podman"
+# Pulls the fixtures' pinned images from docker.io, which is no fixed host list the image store serves.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = '''set -eu
+dnf install -y --setopt=install_weak_deps=False podman >/dev/null
+podman=(podman --cgroup-manager=cgroupfs --events-backend=file)
+busybox=docker.io/library/busybox@sha256:f10e809bcf667d8e9f01d2baf82869049a495cd448cdfe1f4dee94078b960ae9
+buildkit=docker.io/moby/buildkit@sha256:5a8cd84cb3fcfd082789a08f92bd36f8e745c6231edd78e24a3bf34fd471a823
+"${podman[@]}" pull -q "$busybox" >/dev/null
+"${podman[@]}" pull -q "$buildkit" >/dev/null
+python3 os/tests/rootfs_firmware_cache.py
+python3 os/tests/container_build_context.py
+bash os/tests/named_public_trust_context.sh podman
+tools=$("${podman[@]}" image inspect --format '{{.Id}}' "$busybox")
+python3 os/tests/trust_input_copy_equivalence.py --tools-image "$tools"
+python3 os/tests/prove_kernel_failure_cache_local.py --output /target/kernel-failure-cache-local
+'''
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+timeout_secs = 3600
+on = ["dispatch"]
+
+# The internal bundle export on real loop devices, vfat and Btrfs: the installer's export path is
+# only honest when a fresh mount reads back what it wrote, so it runs as root in a micro-VM.
+[[check]]
+name = "loop-device-native"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = '''set -eu
+dnf install -y --setopt=install_weak_deps=False dosfstools mtools btrfs-progs qemu-img util-linux >/dev/null
+bash os/tests/internal_bundle_export.sh
+'''
+requires = ["arch=x86_64", "disk-100g", "/dev/loop-control"]
+isolation = "vm"
+timeout_secs = 3600
+on = ["dispatch"]
+
+# The signing spool with the real signer: real EFI and PCR signatures from the built tilo-crypto,
+# root-owned where the spool's own trust check requires it, with every key in a private tree.
+[[check]]
+name = "signing-spool-native"
+# The build fetches crates from code.tilo.so, pinned by the lock.
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = '''set -eu
+cargo build --locked -p tilo-crypto --bin tilo-crypto
+install -m 0755 -o root -g root "$CARGO_TARGET_DIR/debug/tilo-crypto" /usr/local/bin/tilo-crypto
+python3 os/tests/test_signing_spool.py
+'''
+requires = ["arch=x86_64"]
+isolation = "vm"
+timeout_secs = 3600
+on = ["dispatch"]
+
+# The installed session's first login as an ordinary user, then the host identity minted, verified
+# and re-provisioned through the production provisioning entrypoint.
+[[check]]
+name = "installed-host-startup"
+# dnf installs from Fedora's mirrors, which are no fixed host list; the build fetches crates.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = '''set -eu
+dnf install -y --setopt=install_weak_deps=False shadow-utils util-linux >/dev/null
+cargo build --locked --release -p tilo-session --bins
+TILO_SESSION_BIN="$CARGO_TARGET_DIR/release/tilo-session" bash dist/ci/test-installed-host-startup.sh
+'''
+requires = ["arch=x86_64"]
+isolation = "vm"
+timeout_secs = 3600
+on = ["dispatch"]
+
+# The Kbuild contracts in the builder's own userspace: a checkpointed kernel restore over a real
+# make run and the CN20K object selection through Kbuild.
+[[check]]
+name = "os-build-contracts"
+run = '''set -eu
+python3 os/tests/test_kernel_checkpoint_make.py
+python3 os/kernel/tests/test-cn20k-debugfs.py
+'''
+
+# The installed material audit against a real squashfs image it builds itself, which the ci-fast
+# image cannot make.
+[[check]]
+name = "installed-material-audit"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = '''set -eu
+dnf install -y --setopt=install_weak_deps=False squashfs-tools >/dev/null
+python3 os/tests/installed_material_audit.py
+'''
+requires = ["arch=x86_64"]
+isolation = "vm"
+on = ["dispatch"]
+
+# The NTFS helper's staged archive: the real binary sealed with its parser-free source and tested
+# from the archive alone, which the crate's own tests never see.
+[[check]]
+name = "ntfs-stage-install"
+# The build fetches crates from code.tilo.so, pinned by the lock.
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = '''set -eu
+cargo build --locked -p tilo-ntfs-helper --bin tilo-ntfs-probe
+TILO_NTFS_STAGING_BINARY="$CARGO_TARGET_DIR/debug/tilo-ntfs-probe" python3 crates/session/tilo-ntfs-helper/tests/test_stage_install.py
+'''
+requires = ["arch=x86_64"]
