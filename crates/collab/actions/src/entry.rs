@@ -376,7 +376,7 @@ impl Described {
     /// plain arguments the encoded value carries. An empty `key.app` is
     /// filled by the executor from the entry's app.
     pub fn of_published(encoded: &crate::EncodedAction, key: ActionKey) -> Option<Self> {
-        let value: serde_json::Value = serde_json::from_slice(&encoded.payload).ok()?;
+        let value = without_lists(&encoded.payload)?;
         let args = variant_of(&value).and_then(|(_, fields)| fields);
         Some(Self::new(Did::verb(key, plain_args(args))))
     }
@@ -386,7 +386,7 @@ impl Described {
     /// `app` names the publishing app; without one the action type's stem
     /// (`notes` of `notes.action`) stands in.
     pub fn from_encoded(encoded: &crate::EncodedAction, app: Option<&str>) -> Option<Self> {
-        let value: serde_json::Value = serde_json::from_slice(&encoded.payload).ok()?;
+        let value = without_lists(&encoded.payload)?;
         Self::from_value(&encoded.type_id, &value, app)
     }
 
@@ -435,6 +435,81 @@ fn plain_args(
             })
     });
     plain.chain(nested)
+}
+
+/// The JSON value of `payload` with every list in it read as empty: what an
+/// action is described by, as no list is a plain argument, read without
+/// building the lists an action carries in bulk (the issues of a long list
+/// made in one call).
+fn without_lists(payload: &[u8]) -> Option<serde_json::Value> {
+    use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
+
+    struct Shallow(serde_json::Value);
+
+    impl<'de> Deserialize<'de> for Shallow {
+        fn deserialize<D: serde::Deserializer<'de>>(from: D) -> Result<Self, D::Error> {
+            from.deserialize_any(ShallowVisitor)
+        }
+    }
+
+    struct ShallowVisitor;
+
+    impl<'de> Visitor<'de> for ShallowVisitor {
+        type Value = Shallow;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a JSON value")
+        }
+
+        fn visit_bool<E>(self, value: bool) -> Result<Shallow, E> {
+            Ok(Shallow(value.into()))
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Shallow, E> {
+            Ok(Shallow(value.into()))
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Shallow, E> {
+            Ok(Shallow(value.into()))
+        }
+
+        fn visit_f64<E>(self, value: f64) -> Result<Shallow, E> {
+            Ok(Shallow(value.into()))
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Shallow, E> {
+            Ok(Shallow(value.into()))
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Shallow, E> {
+            Ok(Shallow(value.into()))
+        }
+
+        fn visit_unit<E>(self) -> Result<Shallow, E> {
+            Ok(Shallow(serde_json::Value::Null))
+        }
+
+        fn visit_none<E>(self) -> Result<Shallow, E> {
+            Ok(Shallow(serde_json::Value::Null))
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut items: A) -> Result<Shallow, A::Error> {
+            while items.next_element::<IgnoredAny>()?.is_some() {}
+            Ok(Shallow(serde_json::Value::Array(Vec::new())))
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut entries: A) -> Result<Shallow, A::Error> {
+            let mut fields = serde_json::Map::new();
+            while let Some((name, Shallow(value))) = entries.next_entry::<String, Shallow>()? {
+                fields.insert(name, value);
+            }
+            Ok(Shallow(serde_json::Value::Object(fields)))
+        }
+    }
+
+    serde_json::from_slice::<Shallow>(payload)
+        .ok()
+        .map(|Shallow(value)| value)
 }
 
 /// The variant name and fields of an externally, adjacently or internally

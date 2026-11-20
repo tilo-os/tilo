@@ -357,7 +357,60 @@ pub fn asks_first(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EncodedAction {
     pub type_id: String,
+    /// Written as its text where the action is written as text (JSON), and
+    /// as bytes elsewhere: never a list of numbers, one per byte.
+    #[serde(with = "payload_text")]
     pub payload: Vec<u8>,
+}
+
+/// An action's payload, JSON text, as a string in a format written as text
+/// and as bytes in one that is not.
+mod payload_text {
+    use serde::de::Visitor;
+    use serde::ser::Error as _;
+    use serde::{Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(payload: &[u8], into: S) -> Result<S::Ok, S::Error> {
+        if into.is_human_readable() {
+            into.serialize_str(std::str::from_utf8(payload).map_err(S::Error::custom)?)
+        } else {
+            into.serialize_bytes(payload)
+        }
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Vec<u8>, D::Error> {
+        struct Payload;
+
+        impl Visitor<'_> for Payload {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an action's payload, as text or bytes")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<Vec<u8>, E> {
+                Ok(text.as_bytes().to_vec())
+            }
+
+            fn visit_string<E: serde::de::Error>(self, text: String) -> Result<Vec<u8>, E> {
+                Ok(text.into_bytes())
+            }
+
+            fn visit_bytes<E: serde::de::Error>(self, bytes: &[u8]) -> Result<Vec<u8>, E> {
+                Ok(bytes.to_vec())
+            }
+
+            fn visit_byte_buf<E: serde::de::Error>(self, bytes: Vec<u8>) -> Result<Vec<u8>, E> {
+                Ok(bytes)
+            }
+        }
+
+        if from.is_human_readable() {
+            from.deserialize_string(Payload)
+        } else {
+            from.deserialize_byte_buf(Payload)
+        }
+    }
 }
 
 impl EncodedAction {

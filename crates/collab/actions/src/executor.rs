@@ -794,11 +794,11 @@ pub enum Verified {
 /// refused, and so is one whose parts no store would keep: a change never
 /// commits without the action it ran.
 pub fn recorded_form(action: &EncodedAction) -> Result<EncodedAction, ActionError> {
-    if recorded_size(action)? <= crate::context::HISTORY_BUDGET {
+    if recorded_size(action) <= crate::context::HISTORY_BUDGET {
         return Ok(action.clone());
     }
     let recorded = action.with_content_parts(crate::content::CONTENT_PART_THRESHOLD)?;
-    if recorded_size(&recorded)? > crate::context::HISTORY_BUDGET {
+    if recorded_size(&recorded) > crate::context::HISTORY_BUDGET {
         return Err(ActionError::Refused(
             "the action is too large to record, even with its large parts kept as content".into(),
         ));
@@ -806,11 +806,10 @@ pub fn recorded_form(action: &EncodedAction) -> Result<EncodedAction, ActionErro
     Ok(recorded)
 }
 
-/// What an entry's action takes, encoded.
-fn recorded_size(action: &EncodedAction) -> Result<usize, ActionError> {
-    Ok(serde_json::to_vec(action)
-        .map_err(ActionError::Encode)?
-        .len())
+/// What an entry's action takes in the change that keeps it: its type and its
+/// payload, inline.
+fn recorded_size(action: &EncodedAction) -> usize {
+    action.type_id.len().saturating_add(action.payload.len())
 }
 
 /// Replay the action the change `hash` records on the document it was
