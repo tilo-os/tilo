@@ -33,6 +33,12 @@ const TYPES = {
 
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+/** `WebSocket.OPEN`, as the protocol numbers it: a driver that hands this module
+ * a socket of its own (tools/tests' fixtures) keeps its own class, so the
+ * number, not the class's own constant, says whether a connection is open. A
+ * socket that is not open drops what it is handed without a word. */
+const SOCKET_OPEN = 1;
+
 /** How long one step of a page test may take: `TILO_STEP_SECONDS`, for a
  * machine whose pages answer slower than one with a GPU (the page drivers give
  * every wait a whole number of steps). */
@@ -451,6 +457,7 @@ export async function launch({args = [], media = false} = {}) {
   // The end of what the browser (or its supervisor) said: why a launch or a
   // shutdown failed is otherwise lost with the pipe.
   let said = '';
+  const asked = Date.now();
   const endpoint = await new Promise((resolve, reject) => {
     let buffered = '';
     child.stderr.on('data', chunk => {
@@ -462,6 +469,17 @@ export async function launch({args = [], media = false} = {}) {
     });
     child.on('exit', code => reject(new Error(`Chrome exited (${code}): ${said.slice(-400)}`)));
   });
+  // A launch that took much longer than one does says so, with the reason its
+  // own supervisor gave: a browser queued behind the machine's others waits
+  // without a word otherwise, and a driver that spends minutes here reports it
+  // as the step it was in, with nothing saying why.
+  const launched = Date.now() - asked;
+  if (launched > 3 * STEP_MS) {
+    const why = said.split('\n')
+      .filter(line => /permit|queue|waited|lifetime|stopping/i.test(line))
+      .slice(-2).map(line => line.trim()).join(' | ');
+    console.error(`chrome: the browser was ready ${(launched / 1000).toFixed(1)}s after it was asked for${why ? ` (its supervisor: ${why})` : ''}`);
+  }
   // Browser and supervisor lines that explain a failed shutdown, not
   // Chrome's routine noise.
   const shutdownLines = () => said.split('\n')
@@ -474,6 +492,18 @@ export async function launch({args = [], media = false} = {}) {
   let id = 0;
   const pending = new Map();
   const listeners = new Set();
+  // Which target each session drives, and the sessions the browser has let go
+  // of: a command names its target when it fails, and one asked of a target
+  // that is gone is refused at once instead of waiting for an answer that
+  // cannot come.
+  const targets = new Map();
+  const detached = new Map();
+  // Why nothing more can be asked of the browser: its connection closed, or
+  // its process ended. A closed WebSocket drops what it is handed without a
+  // word (the protocol's own `send` says so), so a command asked after that
+  // would be left pending for ever, and a driver waiting on it dies with an
+  // unsettled top-level await that names nothing.
+  let ended = null;
   // Nothing a test asks of a page takes longer than this, so a command still
   // unanswered then is a browser or a page that stopped: the test that is
   // waiting on it fails and names the command, instead of waiting for ever.
@@ -483,9 +513,21 @@ export async function launch({args = [], media = false} = {}) {
   // (`TILO_STEP_SECONDS`), which wait a whole number of them for everything
   // else a page answers.
   const CAPTURE_TIMEOUT_MS = 3 * STEP_MS;
-  const stop = error => {
-    for (const waiting of pending.values()) waiting.reject(error);
+  const stop = reason => {
+    ended ??= reason;
+    for (const waiting of pending.values()) waiting.reject(new Error(`${waiting.method}: ${reason} (${waiting.target})`));
     pending.clear();
+  };
+  /** The browser let this session's target go: its commands are answered with
+   * `why` from now on, the ones already waiting included. */
+  const letGo = (sessionId, why) => {
+    if (!sessionId || detached.has(sessionId)) return;
+    detached.set(sessionId, why);
+    for (const [n, waiting] of pending) {
+      if (waiting.sessionId !== sessionId) continue;
+      pending.delete(n);
+      waiting.reject(new Error(`${waiting.method}: ${why} (${waiting.target})`));
+    }
   };
   ws.addEventListener('message', ({data}) => {
     const message = JSON.parse(data);
@@ -493,12 +535,22 @@ export async function launch({args = [], media = false} = {}) {
     if (waiting) {
       pending.delete(message.id);
       waiting.resolve(message);
-    } else {
-      for (const listener of listeners) listener(message);
+      return;
     }
+    if (message.method === 'Target.detachedFromTarget') {
+      const {sessionId, targetId} = message.params ?? {};
+      letGo(sessionId, `the browser let go of target ${targetId}`);
+    } else if (message.method === 'Inspector.detached') {
+      letGo(message.sessionId, `the browser let go of its page (${message.params?.reason ?? 'detached'})`);
+    }
+    for (const listener of listeners) listener(message);
   });
-  ws.addEventListener('close', () => stop(new Error('the browser\'s connection closed')));
-  ws.addEventListener('error', () => stop(new Error('the browser\'s connection failed')));
+  ws.addEventListener('close', () => stop('the browser\'s connection closed'));
+  ws.addEventListener('error', () => stop('the browser\'s connection failed'));
+  // The connection's own close can arrive after the process that held it is
+  // gone, and a driver dies on what nothing rejected; so the browser's end counts
+  // as the end of every command waiting on it.
+  child.on('exit', code => stop(`the browser stopped (exit ${code})`));
   // What the browser said that explains a process that died: a page whose
   // renderer was killed says so here, and a test that would otherwise wait out
   // its own step hears it at once.
@@ -506,14 +558,20 @@ export async function launch({args = [], media = false} = {}) {
     .filter(line => /crash|kill|OOM|out of memory|SIGSEGV|SIGILL|SIGKILL|SIGABRT|FATAL/i.test(line))
     .slice(-6).map(line => line.trim()).join(' | ');
   const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
+    const target = sessionId === undefined ? 'the browser' : targets.get(sessionId) ?? sessionId;
+    const refuse = why => reject(new Error(`${method}: ${why} (${target})`));
+    if (ended) { refuse(ended); return; }
+    if (sessionId && detached.has(sessionId)) { refuse(detached.get(sessionId)); return; }
+    if (ws.readyState !== SOCKET_OPEN) { refuse('the browser\'s connection is not open'); return; }
     const n = ++id;
     const timer = setTimeout(() => {
       pending.delete(n);
       const why = died();
-      reject(new Error(`${method}: the browser stopped answering for ${ANSWER_TIMEOUT_MS / 1000}s${why ? ` (what it said: ${why})` : ''}`));
+      reject(new Error(`${method}: the browser stopped answering for ${ANSWER_TIMEOUT_MS / 1000}s (${target})${why ? ` (what it said: ${why})` : ''}`));
     }, ANSWER_TIMEOUT_MS);
     timer.unref?.();
-    pending.set(n, {resolve: message => { clearTimeout(timer); resolve(message); },
+    pending.set(n, {method, target, sessionId,
+      resolve: message => { clearTimeout(timer); resolve(message); },
       reject: error => { clearTimeout(timer); reject(error); }});
     ws.send(JSON.stringify({id: n, method, params, sessionId}));
   });
@@ -541,6 +599,7 @@ export async function launch({args = [], media = false} = {}) {
     const targetId = target ?? (await send('Target.createTarget',
       {url: 'about:blank', ...(context ? {browserContextId: context} : {})})).result.targetId;
     const {result: {sessionId}} = await send('Target.attachToTarget', {targetId, flatten: true});
+    targets.set(sessionId, targetId);
     const log = [];
     // A renderer that died answers nothing: every command on it would wait
     // out the whole answer timeout, so the tab says it died once, here, where
@@ -696,8 +755,11 @@ export async function launch({args = [], media = false} = {}) {
       changed,
       /** Bring the tab to the front: the browser answers a passkey or a
        * permission prompt in the tab the person is looking at, and puts a tab
-       * nobody looks at to sleep. A tab already closed has nothing to bring. */
-      front: () => send('Page.bringToFront', {}, sessionId).catch(() => {}),
+       * nobody looks at to sleep. A tab already closed has nothing to bring;
+       * anything else (a browser that stopped, a page it let go of) is said in
+       * the tab's log, where a failed flow dumps it, and never left waiting. */
+      front: () => send('Page.bringToFront', {}, sessionId)
+        .catch(error => { log.push(`FRONT ${error.message}`); }),
       navigate: url => send('Page.navigate', {url}, sessionId),
       reload: () => send('Page.reload', {ignoreCache: true}, sessionId),
       screenshot: async () => {
@@ -715,6 +777,9 @@ export async function launch({args = [], media = false} = {}) {
     tab,
     /** Recent browser-process diagnostics, including GPU-process failures. */
     diagnostics: () => shutdownLines(),
+    /** What the browser still owes, by method and target: what a driver that
+     * ends before its commands are answered was waiting on. */
+    outstanding: () => [...pending.values()].map(({method, target}) => `${method} (${target})`),
     /** The end of what the browser said, without its routine noise: with
      * `--enable-logging=stderr` Chromium's own log, which tells why a process died. */
     crashLines: () => said.split('\n')

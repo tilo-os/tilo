@@ -600,6 +600,9 @@ while not (root / 'browser.pid').exists() and time.monotonic() < deadline:
                 self.assertTrue(queued_finished.exists(),
                                 f'the queued browser never finished its own lifetime: {err}')
                 self.assertNotIn('exceeded max lifetime', err)
+                # The wait says itself, from its first moment: a driver that
+                # queues here otherwise spends it in a silent launch.
+                self.assertIn('all 1 browser permits are taken, waiting for one', err)
                 # It ran its 1.0 s after a wait longer than its own lifetime, and still finished.
                 self.assertGreater(waited, 1.5, f'it was not queued long enough to prove it: {waited:.2f}s')
             finally:

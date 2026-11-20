@@ -234,6 +234,7 @@ def acquire_permit(caller_pid, watched_grandparent, queue_deadline):
         or Path(os.environ.get('XDG_RUNTIME_DIR') or '/tmp') / 'tilo-owned-browser-permits'
     )
     permit_dir.mkdir(parents=True, exist_ok=True)
+    waiting = False
     while not stopping:
         if caller_gone():
             return None
@@ -256,6 +257,12 @@ def acquire_permit(caller_pid, watched_grandparent, queue_deadline):
                 return fd
             except BlockingIOError:
                 os.close(fd)
+        if not waiting:
+            # Said once, as the wait starts: a driver that queues here otherwise
+            # spends minutes in a launch with nothing to show for it.
+            print(f'owned browser: all {MAX_CONCURRENT} browser permits are taken, waiting for one',
+                  file=sys.stderr, flush=True)
+            waiting = True
         time.sleep(0.1)
     return None
 

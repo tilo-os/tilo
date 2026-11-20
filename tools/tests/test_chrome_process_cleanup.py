@@ -68,11 +68,15 @@ class FixtureSocket extends EventTarget {
   constructor(endpoint) {
     super();
     this.root = new URL(endpoint).pathname;
+    this.readyState = 1;
+    globalThis.__fixtureSocket = this;
     queueMicrotask(() => this.dispatchEvent(new Event('open')));
   }
   send(encoded) {
     const message = JSON.parse(encoded);
-    if (message.method !== 'Browser.close') throw new Error('unexpected lifecycle request');
+    // Anything but the close is a request this fixture leaves unanswered, as a
+    // browser that stopped does.
+    if (message.method !== 'Browser.close') return;
     writeFileSync(this.root + '/close-request', 'requested');
     if (existsSync(this.root + '/no-close-reply')) return;
     queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', {
@@ -91,6 +95,21 @@ if (process.env.FIXTURE_MODE === 'wait') {
   await launch();
   writeFileSync(process.env.FIXTURE_READY, 'ready');
   setInterval(() => {}, 1000);
+} else if (process.env.FIXTURE_MODE === 'closed') {
+  // A connection that ends with a command still unanswered, and a command asked
+  // after it: both must be refused, by name, instead of waiting for ever (a
+  // driver left waiting dies as an unsettled top-level await that names
+  // neither the command nor the target).
+  process.env.CHROME = roots[0] + '/fake-chrome';
+  const browser = await launch();
+  const waiting = browser.send('Page.captureScreenshot', {format: 'png'});
+  globalThis.__fixtureSocket.dispatchEvent(new Event('close'));
+  let refused = null;
+  try { await waiting; } catch (error) { refused = String(error.message ?? error); }
+  let after = null;
+  try { await browser.send('Page.bringToFront', {}, 'a-session'); } catch (error) { after = String(error.message ?? error); }
+  console.log(JSON.stringify({refused, after, outstanding: browser.outstanding()}));
+  process.exit(0);
 } else {
 const browsers = [];
 for (const root of roots) {
@@ -196,7 +215,7 @@ class ChromeProcessCleanup(unittest.TestCase):
             if profile.exists():
                 shutil.rmtree(profile)
 
-    def run_fixture(self, *, independent=False, root_failure=False, stalled_close=False, close_reply=False):
+    def fixture_facts(self, *, independent=False, root_failure=False, stalled_close=False, close_reply=False, mode=None):
         with tempfile.TemporaryDirectory(prefix='tilo-chrome-lifecycle-') as temporary:
             root = Path(temporary)
             roots = [root / 'first']
@@ -214,6 +233,8 @@ class ChromeProcessCleanup(unittest.TestCase):
             script.write_text(CLIENT)
             environment = dict(os.environ, FIXTURE_ROOTS=json.dumps([str(p) for p in roots]),
                                FIXTURE_HELPER=str(REPO / 'tools/web/chrome.mjs'))
+            if mode:
+                environment['FIXTURE_MODE'] = mode
             try:
                 process = subprocess.run(['node', str(script)], cwd=REPO, env=environment,
                                          capture_output=True, text=True, timeout=HANG_BOUND)
@@ -224,15 +245,27 @@ class ChromeProcessCleanup(unittest.TestCase):
                     self.stop_owned_fixture(directory)
 
     def test_detached_writer_exits_before_profile_removal(self):
-        result = self.run_fixture()
+        result = self.fixture_facts()
         self.assertIsNone(result['closeError'], result)
         self.assertTrue(result['first']['rootClosed'], result)
         self.assertTrue(result['first']['writerClosed'], result)
         self.assertFalse(result['first']['earlyRemoval'], result)
         self.assertFalse(result['first']['profileExists'], result)
 
+    def test_a_closed_connection_refuses_its_commands_by_name(self):
+        """The browser's connection ending leaves nothing pending: the command
+        waiting on it and the one asked after it both fail, naming the method
+        and the target. A command left pending ends a driver as an unsettled
+        top-level await, which names neither."""
+        result = self.fixture_facts(mode='closed')
+        self.assertIn('Page.captureScreenshot', result['refused'], result)
+        self.assertIn('closed', result['refused'], result)
+        self.assertIn('Page.bringToFront', result['after'], result)
+        self.assertIn('a-session', result['after'], result)
+        self.assertEqual(result['outstanding'], [], result)
+
     def test_closing_one_browser_keeps_an_independent_browser_live(self):
-        result = self.run_fixture(independent=True)
+        result = self.fixture_facts(independent=True)
         self.assertIsNone(result['closeError'], result)
         self.assertTrue(result['first']['writerClosed'], result)
         self.assertFalse(result['independent']['rootClosed'], result)
@@ -240,7 +273,7 @@ class ChromeProcessCleanup(unittest.TestCase):
         self.assertTrue(result['independent']['profileExists'], result)
 
     def test_stalled_cdp_close_stops_owned_writers_within_original_deadline(self):
-        result = self.run_fixture(stalled_close=True, independent=True)
+        result = self.fixture_facts(stalled_close=True, independent=True)
         # A close that outlived its own deadline reports a timeout here.
         self.assertIsNone(result['closeError'], result)
         self.assertTrue(result['first']['rootClosed'], result)
@@ -252,7 +285,7 @@ class ChromeProcessCleanup(unittest.TestCase):
         self.assertTrue(result['independent']['profileExists'], result)
 
     def test_acknowledged_close_still_waits_for_owned_processes(self):
-        result = self.run_fixture(stalled_close=True, close_reply=True)
+        result = self.fixture_facts(stalled_close=True, close_reply=True)
         self.assertIsNone(result['closeError'], result)
         self.assertTrue(result['first']['rootClosed'], result)
         self.assertTrue(result['first']['writerClosed'], result)
@@ -260,7 +293,7 @@ class ChromeProcessCleanup(unittest.TestCase):
         self.assertFalse(result['first']['profileExists'], result)
 
     def test_abnormal_owned_exit_preserves_the_profile_and_fails(self):
-        result = self.run_fixture(root_failure=True)
+        result = self.fixture_facts(root_failure=True)
         self.assertIsNotNone(result['closeError'], result)
         self.assertTrue(result['first']['writerClosed'], result)
         self.assertFalse(result['first']['earlyRemoval'], result)

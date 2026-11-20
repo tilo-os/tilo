@@ -6566,6 +6566,11 @@ timeout_secs = 1800
 # workspace the link lands them in with the agent setup, the passkey that brings them back on a
 # browser that forgot the site, a second workspace they make, and a visitor with no invitation who
 # still cannot get in. Nested, because the stack's services are sandboxed with bwrap (stack.sh).
+# Its browsers are as bounded as the flow is, not as a developer's machine is: three people's pages
+# are open at once here (the operator's, the stranger's, and the browser that signs in), where the
+# supervisor's two-browser bound and ten-minute lifetime (tools/web/owned_browser.py) are one agent's
+# share of a machine. Only the job bounds a job: its timeout stops a driver that never finishes,
+# and a driver that stops takes its browsers with it.
 [[check]]
 name = "onboarding"
 # No egress: the entry, the stack and the people's browsers meet on loopback alone.
@@ -6574,7 +6579,7 @@ needs = ["lounge-check-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
-env = { TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/onboarding/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0" }
+env = { TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/onboarding/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
 requires = ["arch=x86_64"]
 isolation = "nested"
 outputs = ["/target/onboarding/**"]

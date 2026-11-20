@@ -59,6 +59,11 @@ const mark = clock();
 const report = {site, server, at: new Date().toISOString(), steps: []};
 const browsers = [];
 const said = [];
+/** The part of the flow under way. Every line this driver prints names a part
+ * that has finished, so what stopped inside one has nothing else to say which:
+ * a failure, and a flow that ends without failing, name this. */
+let doing = 'starting';
+const step = name => { doing = name; };
 
 /** Where the host is as the pages know it: a workspace is stored per origin. */
 const hostOrigin = new URL(server).origin;
@@ -91,6 +96,7 @@ const dump = async (tab, name) => {
 const fail = async message => {
   if (!report.error) report.error = message;
   console.error(`FAIL: ${message}`);
+  console.error(`it failed while ${doing}`);
   console.error(`the machine as it failed: ${machine().text}`);
   for (const {name, tab} of said) {
     const lines = (tab.log ?? []).slice(-40);
@@ -109,12 +115,30 @@ const fail = async message => {
   process.exit(1);
 };
 const finished = async () => {
+  report.finished = true;
   for (const {name, tab} of said) await dump(tab, name).catch(() => {});
   writeFileSync(join(work, 'report.json'), JSON.stringify(report, null, 2));
   for (const browser of browsers) await browser.close().catch(() => {});
   console.log(JSON.stringify(report, null, 2));
   process.exit(0);
 };
+// A flow that ends without a part failing it: the process has nothing left to
+// do (a browser command nothing will ever answer leaves the top-level await
+// unsettled, and node exits with a bare warning that names no part and no
+// command), or something kills it. Say which part was under way and what the
+// browsers still owed, so the wrapper's one line is not the whole report.
+process.on('exit', code => {
+  if (report.finished || report.error) return;
+  const owed = browsers.flatMap(browser => browser.outstanding?.() ?? []);
+  console.error(`FAIL: the flow ended while ${doing} (node exited ${code})`);
+  console.error(`what the browsers still owed: ${owed.length ? owed.join(', ') : 'nothing'}`);
+  for (const {name, tab} of said) {
+    const lines = (tab.log ?? []).slice(-20);
+    if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
+  }
+  report.ended = {while: doing, owed, exit: code};
+  try { writeFileSync(join(work, 'report.json'), JSON.stringify(report, null, 2)); } catch {}
+});
 
 const failures = tab => (tab.log ?? []).filter(line => /^(EXC|ERROR) /.test(line) || /panic/i.test(line));
 const checkPage = async (tab, name) => {
@@ -408,6 +432,7 @@ try {
   // deployment's owners add are the ones its entry lets in, so the person who
   // runs it arrives first, and this run adds their key as an owner with
   // `stack.sh owner`, which runs `tilo workspace people add`.
+  step('the operator the deployment made an owner being let in');
   const operator = await visit('operator', {setupDone: true});
   await arrive(operator, {expected: 'refused'});
   const operatorPerson = await operator.tab.evaluate(`(async () => {
@@ -424,6 +449,7 @@ try {
   // The operator gives their name, as anyone does: the invitations they make
   // say who asked the stranger in, and the first thing that stranger reads is
   // a person, never "someone".
+  step('the operator giving their name, so those they invite know who asked them in');
   const operatorName = 'Maya Chen';
   await search(operator.tab, 'set your name', 'Set your name');
   await until(operator.tab, `!!document.querySelector('input[name=display-name]')`, 'the name form', stepLimit(4));
@@ -438,6 +464,7 @@ try {
   mark('the operator gave their name, so those they invite know who asked them in');
 
   // -- 1. a stranger at the wait list ----------------------------------------
+  step('a stranger arriving at the wait list');
   const stranger = await visit('stranger', {passkey: true});
   await arrive(stranger, {expected: 'refused'});
   await until(stranger.tab, `document.documentElement.dataset.refusal === 'wait-list'`, "the entry showing its wait list", stepLimit(6));
@@ -455,6 +482,7 @@ try {
   console.log(`ok: a stranger met the wait list, not the setup screen (${report.waitList.heading})`);
   mark('a stranger met the wait list');
 
+  step('the stranger leaving an address and confirming it through the mail');
   const address = 'ada@example.org';
   await stranger.tab.evaluate(`(() => {
     const field = document.getElementById('arrival-wait-email');
@@ -479,6 +507,7 @@ try {
   //      address, then the address on the wait list ------------------------
   // And a link for someone the operator has no address for: one press, and it
   // is on the clipboard, with no sheet and no role to choose.
+  step('the operator handing over an invite link and inviting the address');
   await operator.tab.send('Browser.grantPermissions', {origin: siteOrigin,
     permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});
   // Only the tab in front may read the clipboard of a browser here: the
@@ -543,6 +572,7 @@ try {
 
 
   // -- 3. the stranger follows it, joins, and sets Tilo up through an agent ---
+  step('the invitation bringing the stranger into a workspace of their own');
   await stranger.tab.navigate(inviteLink);
   // Someone let in off the wait list asked to get in, so the link joins them at
   // once, with no card to press: the invitation admits them to the Lounge, and
@@ -568,6 +598,7 @@ try {
   // Their own setup is offered inside the workspace: the person's card's
   // "Connect an agent or computer", on Devices and access, which shows the
   // first screen's flow with a fresh code. This person has an agent.
+  step('the agent being set up in the workspace the person joined');
   await search(stranger.tab, 'devices and access', 'Devices and access');
   if (!await pressName(stranger.tab, 'Connect an agent or computer', stepLimit(8))) {
     await fail(`Devices and access offers no "Connect an agent or computer" to press: ${(await pageText(stranger.tab)).slice(0, 1200)}`);
@@ -628,6 +659,7 @@ try {
   // second tab of the same browser, which holds a device key of its own (one
   // per tab), opens the workspace the person is in as theirs, and the first
   // tab stays in: the agent's entry never takes the person's own tabs out.
+  step('a second tab of the person entering the workspace they are in');
   const failureOf = tab => tab.evaluate(`document.documentElement.dataset.failure
     ? document.documentElement.dataset.failure + ': ' + (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 300) : ''`).catch(() => '');
   const refusedFirst = await failureOf(stranger.tab);
@@ -656,6 +688,7 @@ try {
   // `tilo login` set up above claims it. That computer is a device of the
   // person (their root stays in the tab that set it up), and a device of the
   // person signs a browser tab of theirs in.
+  step('a browser new to the site signing the person in with their agent');
   const returning = await visit('returning');
   await arrive(returning, {expected: 'refused'});
   await until(returning.tab, `document.documentElement.dataset.refusal === 'wait-list'`, 'the wait list for a browser new to the site', stepLimit(6));
@@ -704,6 +737,7 @@ try {
   // Kept from the person's own desktop, as "Keep with passkey" does. A
   // passkey is made in the tab a person is looking at: the second tab opened
   // above closed, and this one is in front again before the browser is asked.
+  step('the passkey kept, and bringing the person back to a workspace of theirs');
   await stranger.tab.front();
   const kept = await stranger.tab.evaluate(`(async () => {
     const id = ${identityModule};
@@ -740,6 +774,7 @@ try {
   mark('a passkey signed the person back in to their own workspace');
 
   // -- 5. a second workspace -------------------------------------------------
+  step('a second workspace the person makes');
   await search(stranger.tab, 'new workspace', 'New workspace');
   await until(stranger.tab, `document.querySelector('.tilo-entry-card input') !== null`, 'the card asking what to name it', stepLimit(6));
   const named = 'Studio';
@@ -770,6 +805,7 @@ try {
   mark('the person made a second workspace');
 
   // -- 6. a visitor with no invitation is still out --------------------------
+  step('a visitor with no invitation, who still cannot get in');
   const visitor = await visit('visitor', {passkey: false});
   await arrive(visitor, {expected: 'refused'});
   await until(visitor.tab, `document.documentElement.dataset.refusal === 'wait-list'`, 'the last visitor meeting the wait list', stepLimit(6));
