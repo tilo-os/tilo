@@ -17,7 +17,7 @@
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use tilo_action_policy::bot::{MODERATION, MODERATION_GRANT, moderation_grant};
-use tilo_action_policy::{Actor, Change, MemberAccess, MemberId, WorkspacePolicy};
+use tilo_action_policy::{Actor, Change, Grant, MemberAccess, MemberId, WorkspacePolicy};
 use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_moderation::{Judge, ModerationAgent};
 use tilo_resource::Resource as _;
@@ -133,9 +133,10 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
     pub async fn wake(&mut self) -> Result<(), String> {
         // Turned off, it looks at nothing: the reports wait from where it
         // left off until a person turns it on again.
-        if !enabled(&self.workspaces, &self.workspace).await? {
+        let Some(grant) = installed_moderation_grant(&self.workspaces, &self.workspace).await?
+        else {
             return Ok(());
-        }
+        };
         let Some(bytes) = self.record().await? else {
             return Ok(());
         };
@@ -157,11 +158,13 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
         // synchronously from one thread, so the whole look is held on a
         // blocking thread; the workspace's locks are only taken per call.
         let (mutation, beside) = tokio::task::spawn_blocking(move || {
-            let mut replica = bot_replica(&governed, &root, bytes, parts)?;
+            let mut replica = bot_replica(&governed, &root, grant, bytes, parts)?;
             let mut govern =
                 |change: Change| handle.block_on(govern(&workspaces, &governed, &host, &change));
             let mut api = chat_api(&mut replica, &mut govern);
-            let moderation = api.moderation().unwrap_or_default();
+            let moderation = api
+                .moderation()
+                .ok_or("the chat's moderation record did not read")?;
             for person in ModerationAgent::<J>::reported(&moderation) {
                 let look = ModerationAgent::<J>::look(&mut api, &moderation, &person);
                 // A model that gives no verdict leaves the report open for
@@ -193,8 +196,9 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
         for (record, mutation) in beside {
             self.publish(record.as_str(), mutation).await?;
         }
-        let bytes = self.record().await?.unwrap_or_default();
-        self.cursor = Some(reports_since(&self.workspace, &bytes, None)?.1);
+        // Remember only the heads the bot looked at. Members may have filed
+        // more reports while it waited for a verdict or published its changes.
+        self.cursor = Some(heads);
         Ok(())
     }
 
@@ -281,13 +285,21 @@ fn reports_since(
     ))
 }
 
-/// Turn `workspace`'s moderation agent on as the workspace's own person, whose
-/// device this server holds: write the grant it moderates Chat by into the
-/// workspace's governance, as a person's device turning it on writes it.
+/// Give `workspace` its initial moderation grant as the workspace's own person.
+/// A grant already recorded under that id is a workspace policy decision.
 ///
 /// # Errors
 /// The workspace is not governed here, or the grant could not be written.
 pub async fn enable(workspaces: &Workspaces, workspace: &str) -> Result<(), String> {
+    if workspaces
+        .workspace_grants(workspace)
+        .await
+        .map_err(|error| error.to_string())?
+        .iter()
+        .any(|grant| grant.id.as_str() == MODERATION_GRANT)
+    {
+        return Ok(());
+    }
     let cert = workspaces.governor();
     let grant = moderation_grant(workspace, &hex::encode(cert.user_public_key));
     // The request is the grant as this build writes it: settling the same
@@ -313,13 +325,31 @@ pub async fn enable(workspaces: &Workspaces, workspace: &str) -> Result<(), Stri
 /// # Errors
 /// The workspace is not governed here.
 pub async fn enabled(workspaces: &Workspaces, workspace: &str) -> Result<bool, String> {
+    Ok(installed_moderation_grant(workspaces, workspace)
+        .await?
+        .is_some())
+}
+
+async fn installed_moderation_grant(
+    workspaces: &Workspaces,
+    workspace: &str,
+) -> Result<Option<Grant>, String> {
+    let expected = moderation_grant(
+        workspace,
+        &hex::encode(workspaces.governor().user_public_key),
+    );
     let grants = workspaces
         .workspace_grants(workspace)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(grants
-        .iter()
-        .any(|grant| grant.id.as_str() == MODERATION_GRANT))
+    Ok(grants.into_iter().find(|grant| {
+        grant.id == expected.id
+            && grant.grantee == expected.grantee
+            && grant.node == expected.node
+            && grant.kinds == expected.kinds
+            && grant.answer == expected.answer
+            && grant.lifetime == expected.lifetime
+    }))
 }
 
 /// The moderation agent's replica of the workspace's chat, holding the parts of
@@ -328,10 +358,10 @@ pub async fn enabled(workspaces: &Workspaces, workspace: &str) -> Result<bool, S
 fn bot_replica(
     workspace: &str,
     installer: &str,
+    grant: Grant,
     bytes: Vec<u8>,
     parts: Vec<(collab_types::document::DocumentId, Vec<u8>)>,
 ) -> Result<Replica, String> {
-    let grant = moderation_grant(workspace, installer);
     let access = MemberAccess::person(WorkspacePolicy::new(workspace, installer), installer)
         .acting_as(Actor::Member(MemberId::bot(MODERATION)), [grant]);
     let mut replica = Replica::open(

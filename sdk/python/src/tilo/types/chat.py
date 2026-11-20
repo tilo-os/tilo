@@ -941,7 +941,7 @@ RemoveAnyEmojiArgs = TypedDict("RemoveAnyEmojiArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@db403e671c679bc7"
+    __surface__ = "so.tilo.chat@c6cccf2f93cfe870"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -952,7 +952,10 @@ class Workspace(Resource):
         return self.fields["channels"]
     read: dict[str, dict[str, ReadMark]]
     feedback: list[Entry[FeedbackReport]]
-    moderation: Moderation
+    @property
+    def moderation(self) -> Moderation:
+        """Read only."""
+        return self.fields["moderation"]
     @property
     def files(self) -> WorkspaceFiles:
         """Read only."""
@@ -1276,7 +1279,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@db403e671c679bc7"
+    __surface__ = "so.tilo.chat@c6cccf2f93cfe870"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -1753,7 +1756,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@db403e671c679bc7"
+    __surface__ = "so.tilo.chat@c6cccf2f93cfe870"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> None:
@@ -1771,7 +1774,7 @@ class Drafts(Resource):
 
 class Learned(Resource):
     """What your agents learned — `chat.learned`."""
-    __surface__ = "so.tilo.chat@db403e671c679bc7"
+    __surface__ = "so.tilo.chat@c6cccf2f93cfe870"
     @property
     def facts(self) -> list[Entry[Fact]]:
         """Read only."""
@@ -1822,7 +1825,7 @@ class Learned(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@db403e671c679bc7"
+    __surface__ = "so.tilo.chat@c6cccf2f93cfe870"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,

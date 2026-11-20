@@ -138,6 +138,23 @@ async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_b
         cert.clone(),
         ModerationAgent::new(FakeJudge),
     );
+    // A grant id alone carries no authority. A grant with the same name and
+    // scope that only permits reading must not start the bot.
+    let mut read_only =
+        tilo_action_policy::bot::moderation_grant(&workspace, &hex::encode(cert.user_public_key));
+    read_only.kinds = tilo_action_policy::KindSet::READ;
+    workspaces
+        .put_workspace_grants(&workspace, &cert, [77; 32], vec![read_only])
+        .await
+        .unwrap();
+    crate::workspace_bots::enable(&workspaces, &workspace)
+        .await
+        .unwrap();
+    assert!(
+        !crate::workspace_bots::enabled(&workspaces, &workspace)
+            .await
+            .unwrap()
+    );
     // Nobody turned it on: it looks at nothing and the report stays open.
     bot.wake().await.unwrap();
     assert_eq!(
@@ -180,7 +197,13 @@ async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_b
         "Mallory is restricted through the workspace's governance"
     );
     // The bot's own changes file no report, so they do not wake it again.
-    let cursor = bot.cursor.clone();
     bot.wake().await.unwrap();
-    assert_eq!(bot.cursor, cursor);
+    let after_second_wake = chat_of(
+        &workspaces
+            .resource_document(&workspace, CHAT, "")
+            .await
+            .unwrap()
+            .unwrap(),
+    );
+    assert_eq!(after_second_wake.moderation, after.moderation);
 }

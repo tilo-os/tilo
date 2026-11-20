@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@db403e671c679bc7";
+export const SURFACE = "so.tilo.chat@c6cccf2f93cfe870";
 
 export interface Category {
   name: string;
@@ -880,7 +880,7 @@ export interface Workspace extends tilo.Resource {
   readonly channels: Array<tilo.Entry<Conversation>>;
   read: Record<string, Record<string, ReadMark>>;
   feedback: Array<tilo.Entry<FeedbackReport>>;
-  moderation: Moderation;
+  readonly moderation: Moderation;
   readonly files: WorkspaceFiles;
   readonly summaries: Record<string, Record<string, Summary>>;
   beginChat(): Promise<void>;

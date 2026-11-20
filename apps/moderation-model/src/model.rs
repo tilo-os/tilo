@@ -21,7 +21,9 @@ const MAX_ID_CHARS: usize = 128;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Moderation {
+    #[model(readonly)]
     pub reports: Keyed<Report>,
+    #[model(readonly)]
     pub decisions: Keyed<Decision>,
 }
 

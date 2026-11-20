@@ -154,6 +154,7 @@ pub struct Chat {
     pub feedback: Collection<FeedbackReport>,
     /// Reports of people and messages, and what the workspace's moderators (or
     /// its host's moderation agent) decided on them.
+    #[model(readonly)]
     pub moderation: moderation_model::Moderation,
     /// What the workspace's server keeps of the files members post, as the host
     /// says: a member's Chat refuses, in plain words, a file its server would

@@ -9,10 +9,7 @@ use std::sync::Mutex;
 
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
-use tilo_action_policy::{
-    Answer, Authority, Context, Grant, Grantee, KindSet, MemberAccess, Role, TreePath,
-    WorkspacePolicy,
-};
+use tilo_action_policy::{Authority, Context, MemberAccess, Role, WorkspacePolicy};
 use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_moderation::{Case, Judge, JudgeError, ModerationAgent, Outcome, Verdict};
 
@@ -164,15 +161,7 @@ fn messages(replica: &Replica) -> chat::messages::Messages {
 /// it: the workspace owner's installation, granted reading and undoable changes
 /// in the workspace.
 fn bot_replica(page: &Replica) -> Replica {
-    let bot = Grantee::bot(BOT);
-    let grant = Grant::new(
-        "bot:moderation",
-        bot,
-        TreePath::workspace(WORKSPACE),
-        KindSet::READ_UNDOABLE,
-        Answer::Allow,
-        Grantee::person(OWNER),
-    );
+    let grant = tilo_action_policy::bot::moderation_grant(WORKSPACE, OWNER);
     let access = MemberAccess::person(WorkspacePolicy::new(WORKSPACE, OWNER), OWNER).acting_as(
         tilo_action_policy::Actor::Member(MemberId::bot(BOT)),
         [grant],
@@ -201,6 +190,92 @@ fn bot_replica(page: &Replica) -> Replica {
             .unwrap();
     }
     bot
+}
+
+#[test]
+fn a_member_reports_but_cannot_edit_the_report_or_decide_it() {
+    use serde_json::json;
+    use tilo_resource::{Edit, EditOp, Segment};
+
+    let member_actor = |policy| ReplicaActor::Member {
+        access: MemberAccess::person(policy, ADA),
+        sandbox: Vec::new(),
+        unix_time: 2000,
+        agent_name: None,
+        device: None,
+    };
+    let mut policy = WorkspacePolicy::new(WORKSPACE, OWNER);
+    policy.members.insert(ADA.into(), Role::Editor);
+    let mut page = Replica::open(
+        &AppCatalogue::native(),
+        tilo_app_id::apps::CHAT,
+        WORKSPACE,
+        &MemberId::person(ADA),
+        member_actor(policy.clone()),
+        Seed::New,
+    )
+    .unwrap();
+    let invoke = |page: &mut Replica, verb: &str, args: serde_json::Value| {
+        page.invoke_with(
+            None,
+            None,
+            &ActionAddress::new(chat::Chat::KIND, verb),
+            args.as_object().unwrap(),
+            true,
+        )
+    };
+    invoke(
+        &mut page,
+        "report-person",
+        json!({"person": {"person": MALLORY}, "reason": "spam"}),
+    )
+    .unwrap();
+    let before = chat_state(&page).moderation;
+    let report = before.open_reports().next().unwrap();
+    assert_eq!(report.reporter, MemberId::person(ADA));
+    let decision = json!({
+        "id": "d1",
+        "person": {"person": MALLORY},
+        "reports": [&report.id],
+        "ruling": {"outcome": "no-action", "reasoning": "Keep the post."},
+    });
+    let error = invoke(&mut page, "decide-reports", decision.clone()).unwrap_err();
+    assert_eq!(
+        error,
+        tilo_actions::api::ApiError::Unknown(ActionAddress::new(
+            chat::Chat::KIND,
+            "decide-reports"
+        )),
+    );
+
+    let edit = Edit::<chat::Chat>::new(
+        vec![
+            Segment::Field("moderation".into()),
+            Segment::Field("reports".into()),
+            Segment::Item(tilo_resource::Id::from_raw(report.id.clone())),
+            Segment::Field("decision".into()),
+        ],
+        EditOp::Set { value: json!("d1") },
+    );
+    invoke(
+        &mut page,
+        tilo_resource::resource::FIELD_EDIT,
+        json!({"edit": edit}),
+    )
+    .unwrap_err();
+    assert_eq!(chat_state(&page).moderation, before);
+
+    // The same action address and arguments settle the existing report when
+    // the workspace authorizes the caller as a Moderator.
+    policy.members.insert(ADA.into(), Role::Moderator);
+    page.renew(member_actor(policy)).unwrap();
+    invoke(&mut page, "decide-reports", decision).unwrap();
+    let after = chat_state(&page).moderation;
+    assert_eq!(after.open_reports().count(), 0);
+    assert_eq!(
+        after.decisions.iter().next().unwrap().reports.as_slice(),
+        std::slice::from_ref(&report.id)
+    );
 }
 
 #[test]
