@@ -256,7 +256,7 @@ impl Palette {
     /// Moss, light: sage paper, an off-white that leans olive and never mint.
     #[must_use]
     pub const fn moss_light() -> Self {
-        Self::light_at(115.0, 0.009, 0.92, 0.988)
+        Self::light_at(125.0, 0.013, 0.92, 0.988)
     }
 
     /// Dusk, dark: deep indigo.

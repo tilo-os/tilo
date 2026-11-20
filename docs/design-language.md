@@ -96,7 +96,7 @@ look once and the mode only turns it over:
 |---|---|---|---|
 | Tilo | slate 255 / 0.016; light takes the workspace's hue at 0.008 | the person's colour | the default: cool, calm, yours |
 | Paper | warm 70 / 0.014, 80 / 0.011 on a cream page | orange (55), a pencil mark | reading and writing |
-| Moss | olive 125 / 0.016, sage 115 / 0.009 | ochre (85) | quiet, outdoors |
+| Moss | olive 125 / 0.016, sage 125 / 0.013 | ochre (85) | quiet, outdoors |
 | Dusk | violet 285 / 0.030, 295 / 0.018 | magenta (325) | evening, the most colour |
 | Mono | none | inverted: ink is the fill | colourless, for those who want none |
 
