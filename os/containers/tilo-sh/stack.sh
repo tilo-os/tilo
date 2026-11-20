@@ -392,13 +392,6 @@ case $(cat "$state/mode" 2>/dev/null) in
       remote_why="it is up here already, its state in $state"
     fi ;;
 esac
-# A stack forwarded into a t job is refused by name: t gives every command a fresh copy of the
-# checkout, so the commands that act on a stack afterwards could not reach it, and its port relay
-# cannot hold one without disturbing the worker. Better a plain refusal than a stack nobody can
-# stop.
-if [[ $remote == 1 && ${cargo%% *} == t ]]; then
-  die 'TILO_SH_CARGO=t cannot hold a stack on the build server yet: t cannot serve the commands that act on it afterwards, so use TILO_SH_CARGO=rcargo, whose build container keeps the stack'
-fi
 # Where a remote stack's own state lives: the same path here and on the build
 # server (the worktree is built at its real path, and this is the one part of
 # it the build server keeps for the stack).
