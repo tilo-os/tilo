@@ -120,11 +120,7 @@ pub(crate) fn morning_preview(
                     .and_then(|seconds| jiff::Timestamp::from_second(seconds).ok())
                     .map_or_else(
                         || snapshot.fetched_at.to_string(),
-                        |time| {
-                            ui::format::timestamp(
-                                &time.to_zoned(jiff::tz::TimeZone::system()).datetime(),
-                            )
-                        },
+                        |time| ui::format::timestamp(&ui::clock::at(time).datetime()),
                     ),
             ),
         )],

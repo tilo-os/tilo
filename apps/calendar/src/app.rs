@@ -423,7 +423,7 @@ impl CalendarApp {
 
     fn now(&self) -> jiff::civil::DateTime {
         self.pinned_now
-            .unwrap_or_else(|| jiff::Zoned::now().datetime())
+            .unwrap_or_else(|| ui::clock::local_now().datetime())
     }
 
     pub(crate) fn attach_framework(

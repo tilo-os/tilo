@@ -689,7 +689,7 @@ impl Calendar {
             })
         };
         let Some(item) = item else {
-            let now = jiff::Zoned::now().datetime();
+            let now = tilo_clock::local::now().datetime();
             let mut events: Vec<&Event> = self.events.iter().collect();
             events.sort_by_key(|event| {
                 let past = event.end < now;

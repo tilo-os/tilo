@@ -963,8 +963,7 @@ impl MainPanel {
         // moved it.
         let now = self.clock.map_or_else(ui::clock::local_now, |at| {
             jiff::Timestamp::try_from(ui::time::to_std(at))
-                .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
-                .to_zoned(jiff::tz::TimeZone::system())
+                .map_or_else(|_| ui::clock::local_now(), ui::clock::at)
         });
         lines.extend(self.dates.labels_at(&now, self.origin.is_some()));
         lines

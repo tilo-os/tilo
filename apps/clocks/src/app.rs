@@ -39,15 +39,14 @@ impl Shown {
 
     fn here(&self) -> jiff::civil::DateTime {
         self.pinned_now.map_or_else(
-            || jiff::Zoned::now().datetime(),
+            || ui::clock::local_now().datetime(),
             |pinned| pinned.to_zoned(jiff::tz::TimeZone::UTC).datetime(),
         )
     }
 
     fn local_now(&self) -> jiff::Zoned {
-        self.pinned_now.map_or_else(jiff::Zoned::now, |pinned| {
-            pinned.to_zoned(jiff::tz::TimeZone::system())
-        })
+        self.pinned_now
+            .map_or_else(ui::clock::local_now, ui::clock::at)
     }
 }
 
@@ -171,7 +170,7 @@ pub(crate) fn city_time(zone: &str, now: jiff::Timestamp) -> (String, Vec<Fact>)
         );
     };
     let there = now.to_zoned(zone);
-    let here = now.to_zoned(jiff::tz::TimeZone::system());
+    let here = ui::clock::at(now);
     let mut facts = Vec::new();
     if there.date() != here.date() {
         facts.push(Fact::text(ui::format::day_heading_short(there.date())));
@@ -1544,7 +1543,7 @@ impl ClocksApp {
         }
         let clocks = self.store.state.with(|shown| shown.clocks.clone());
         let mut delivery = self.store.device.get().delivery;
-        let offset = jiff::Zoned::now().offset().seconds();
+        let offset = ui::clock::local_now().offset().seconds();
         if self.last_scheduled_clocks.as_ref() == Some(&(clocks.clone(), delivery.clone(), offset))
         {
             return;
@@ -1573,7 +1572,7 @@ impl ClocksApp {
         if !schedules_notifications() || ui::time::now() < self.next_schedule_attempt {
             return;
         }
-        let offset = jiff::Zoned::now().offset().seconds();
+        let offset = ui::clock::local_now().offset().seconds();
         if self
             .last_scheduled_clocks
             .as_ref()
@@ -1599,7 +1598,7 @@ impl ClocksApp {
     fn ring_due(&mut self, now: jiff::Timestamp) {
         let mut delivery = self.store.device.get().delivery;
         let tick = self.store.state.with(|shown| {
-            crate::schedule::tick(&shown.clocks, &mut delivery, now, &jiff::Zoned::now())
+            crate::schedule::tick(&shown.clocks, &mut delivery, now, &ui::clock::local_now())
         });
         if delivery != self.store.device.get().delivery {
             self.store
@@ -1742,9 +1741,7 @@ impl ClocksApp {
 /// The present as the toolkit reads it, so a test that holds the clock holds every
 /// countdown with it.
 pub(crate) fn wall_now() -> jiff::Timestamp {
-    jiff::Timestamp::from_millisecond(ui::time::unix_now_ms_i64())
-        .ok()
-        .unwrap_or_default()
+    ui::clock::now_instant()
 }
 
 fn retry_at() -> ui::time::Instant {

@@ -7,7 +7,7 @@ pub use tilo_formats::TimeStyle;
 /// 30 June 2026, 10:42.
 pub const CAPTURE_LOCAL_TIME: (i16, i8, i8, i8, i8) = (2026, 6, 30, 10, 42);
 
-pub use tilo_clock::local::{Zone, at, instant_of, now as local_now, today};
+pub use tilo_clock::local::{Zone, at, instant_of, now as local_now, now_instant, today};
 
 /// Pin the wall clock to [`CAPTURE_LOCAL_TIME`] in the local time zone for
 /// the rest of the process. The launcher calls this before it builds an app
@@ -83,6 +83,11 @@ mod tests {
                 );
                 assert_eq!(today(), now.date());
                 assert_eq!(local_now(), now, "the frozen clock does not move");
+                assert_eq!(
+                    now_instant(),
+                    now.timestamp(),
+                    "the instant and the local reading are one clock"
+                );
             });
         }
     }

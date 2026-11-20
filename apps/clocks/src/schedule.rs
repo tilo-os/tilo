@@ -188,7 +188,7 @@ pub fn tick(
             scheduled_for,
             native_scheduled,
         });
-        armed.last_rung = Some(scheduled_for.to_zoned(jiff::tz::TimeZone::system()).date());
+        armed.last_rung = Some(ui::clock::at(scheduled_for).date());
         if alarm.repeat == 0 {
             armed.next_due_ms = None;
             found.finished_alarms.push(id.clone());

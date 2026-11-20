@@ -240,7 +240,7 @@ fn heading(entry: &wire::Entry) -> Heading {
             Heading::Day(
                 jiff::Timestamp::from_millisecond(entry.at_ms)
                     .ok()
-                    .map(|at| at.to_zoned(jiff::tz::TimeZone::system()).date()),
+                    .map(|at| ui::clock::at(at).date()),
             )
         },
         Heading::Group,
@@ -260,7 +260,7 @@ fn list(
         .iter()
         .map(|group| (group.id.as_str(), group))
         .collect();
-    let this_year = jiff::Zoned::now().date();
+    let this_year = ui::clock::local_now().date();
     let mut sections: Vec<(Heading, Vec<Element>)> = Vec::new();
     for (index, entry) in feed.entries.iter().enumerate() {
         let mut words: Vec<&str> = vec![entry.summary.as_str(), entry.author.name.as_str()];

@@ -52,17 +52,17 @@ pub fn register_messages() {
 
 impl NoteDates {
     pub fn display_labels(self, compact: bool) -> Vec<String> {
-        self.display_labels_in(compact, &jiff::tz::TimeZone::system())
+        self.display_labels_in(compact, &ui::clock::Zone::here())
     }
 
     /// The labels with times in `zone`: the person's local time zone in the
     /// app, a fixed one in tests.
-    fn display_labels_in(self, compact: bool, zone: &jiff::tz::TimeZone) -> Vec<String> {
+    fn display_labels_in(self, compact: bool, zone: &ui::clock::Zone) -> Vec<String> {
         let date = |value: Option<i64>| {
             value
                 .and_then(|seconds| jiff::Timestamp::from_second(seconds).ok())
                 .map(|date| {
-                    let date = date.to_zoned(zone.clone()).datetime();
+                    let date = zone.at(date).datetime();
                     let formats = ui::format::Formats::current();
                     if compact {
                         formats.date(date.date())
@@ -315,12 +315,14 @@ mod tests {
             created: Some(edited),
             edited: Some(edited),
         };
-        let cest = jiff::tz::TimeZone::fixed(jiff::tz::offset(2));
+        let cest = ui::clock::Zone::of(jiff::tz::TimeZone::fixed(jiff::tz::offset(2)));
         let labels = dates.display_labels_in(false, &cest);
         assert!(labels[1].contains("Oct 4, 2026, 5:54"), "{labels:?}");
         assert!(!labels[1].contains("UTC"), "{labels:?}");
-        let compact =
-            dates.display_labels_in(true, &jiff::tz::TimeZone::fixed(jiff::tz::offset(-5)));
+        let compact = dates.display_labels_in(
+            true,
+            &ui::clock::Zone::of(jiff::tz::TimeZone::fixed(jiff::tz::offset(-5))),
+        );
         assert!(compact[0].contains("Oct 3, 2026"), "{compact:?}");
     }
     /// A note written elsewhere first says when it arrived here, and its

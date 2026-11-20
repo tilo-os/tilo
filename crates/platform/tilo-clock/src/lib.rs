@@ -55,10 +55,16 @@ pub mod local {
         }
     }
 
+    /// The current instant, read from the device or page's wall clock.
+    #[must_use]
+    pub fn now_instant() -> Timestamp {
+        Timestamp::try_from(crate::to_std(crate::wall())).unwrap_or(Timestamp::UNIX_EPOCH)
+    }
+
     /// The current local date and time.
     #[must_use]
     pub fn now() -> Zoned {
-        at(Timestamp::try_from(crate::to_std(crate::wall())).unwrap_or(Timestamp::UNIX_EPOCH))
+        at(now_instant())
     }
 
     /// The instant `at` as the person reads it.
@@ -282,6 +288,36 @@ pub mod local {
             assert_eq!(
                 read(resolve(midnight, offsets).unwrap(), offsets).datetime(),
                 midnight
+            );
+        }
+
+        /// A page and a device read the wall clock through the same two calls: the instant they
+        /// hand to `at`, and the local date and time it reads as.
+        #[test]
+        fn the_wall_clock_is_one_reading_as_an_instant_and_in_the_persons_zone() {
+            tilo_test_env::in_own_process(
+                module_path!(),
+                "the_wall_clock_is_one_reading_as_an_instant_and_in_the_persons_zone",
+                || {
+                    // 2026-10-04 03:54:00 UTC.
+                    let held = crate::UNIX_EPOCH + crate::time::Duration::from_secs(1_791_086_040);
+                    let _held = crate::testing::hold_wall_everywhere(
+                        crate::testing::OwnProcess::of_a_test_in_its_own_process(),
+                        held,
+                    );
+                    let instant = super::now_instant();
+                    assert_eq!(instant.as_second(), 1_791_086_040);
+                    assert_eq!(
+                        super::now().timestamp(),
+                        instant,
+                        "the local reading is that instant"
+                    );
+                    assert_eq!(
+                        super::at(instant),
+                        super::now(),
+                        "and the instant reads back as the same local time"
+                    );
+                },
             );
         }
     }

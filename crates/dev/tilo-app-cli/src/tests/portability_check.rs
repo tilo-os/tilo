@@ -159,6 +159,36 @@ fn the_portability_check_counts_every_app_against_its_shrink_only_baseline() {
 }
 
 #[test]
+fn the_check_refuses_a_clock_a_web_build_cannot_read() {
+    let root = tempfile::tempdir().unwrap();
+    web_featured_workspace(root.path(), true);
+    let app = root.path().join("apps/tree");
+    // Narrowed off Linux so the finding is counted rather than made strict: what a page cannot
+    // read is still a site its baseline may not grow for.
+    let manifest = app.join("tilo-app.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replace("[\"linux\", \"macos\", \"web\"]", "[\"macos\", \"web\"]"),
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("src/lib.rs"),
+        "pub fn zoned() -> jiff::Zoned { jiff::Zoned::now() }\n\
+         pub fn stamp() -> jiff::Timestamp { jiff::Timestamp::now() }\n\
+         pub fn zone() -> jiff::tz::TimeZone { jiff::tz::TimeZone::system() }\n",
+    )
+    .unwrap();
+    let check = portability::check(root.path()).unwrap();
+    let grown = check.render();
+    assert!(!check.passed(), "{grown}");
+    assert!(
+        grown.contains("apps.tree: 3 W2 finding(s)"),
+        "jiff's clock and system zone are reads a page cannot make: {grown}"
+    );
+}
+
+#[test]
 fn the_workspace_holds_no_more_platform_code_than_its_baseline_allows() {
     let check = portability::check(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
     assert!(check.passed(), "{}", check.render());

@@ -25,9 +25,7 @@ pub(crate) fn updated(fetched_at: u64, now: DateTime) -> Option<Updated> {
     if fetched_at == 0 {
         return None;
     }
-    let at = jiff::Timestamp::from_second(i64::try_from(fetched_at).ok()?)
-        .ok()?
-        .to_zoned(jiff::tz::TimeZone::system())
+    let at = ui::clock::at(jiff::Timestamp::from_second(i64::try_from(fetched_at).ok()?).ok()?)
         .datetime();
     Some(updated_at(at, now))
 }

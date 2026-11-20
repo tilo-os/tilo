@@ -258,12 +258,21 @@ severity = "warn"
 paths = ["thread::spawn", "thread::Builder", "thread::sleep"]
 
 [rules.W2]
-summary = "reads the std clock, which panics on web"
-help = "use `tilo_clock::now()` / `wall()` / `unix_now_ms()`"
+summary = "reads a clock directly, which panics or misses the zone on web"
+help = "read the clock through `ui::time` (`crate::time` in the toolkit) and the person's zone through `ui::clock`"
 applies = "web"
 # Warn until `tilo-clock` absorbs `ui::time`.
 severity = "warn"
-paths = ["Instant::now", "SystemTime::now"]
+# `Instant`/`SystemTime` are `std::time`'s, which have no browser clock; jiff's own clock needs
+# its `js` backend, which the page does not carry, and `TimeZone::system()` finds no zone in a
+# page's database: both are `tilo_clock`'s here.
+paths = [
+    "Instant::now",
+    "SystemTime::now",
+    "Timestamp::now",
+    "Zoned::now",
+    "TimeZone::system",
+]
 
 [rules.W3]
 summary = "uses the std filesystem or sockets, which fail on web"

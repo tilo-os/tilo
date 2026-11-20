@@ -30,14 +30,11 @@ impl Viewer {
         self.zone.as_ref().map(|(name, _)| *name)
     }
 
-    fn time_zone(&self) -> TimeZone {
-        self.zone
-            .as_ref()
-            .map_or_else(TimeZone::system, |(_, zone)| zone.clone())
-    }
-
     pub fn wall(&self, instant: Timestamp) -> DateTime {
-        instant.to_zoned(self.time_zone()).datetime()
+        self.zone.as_ref().map_or_else(
+            || ui::clock::at(instant).datetime(),
+            |(_, zone)| instant.to_zoned(zone.clone()).datetime(),
+        )
     }
 
     pub fn instant(&self, wall: DateTime) -> Option<Timestamp> {
@@ -132,7 +129,6 @@ mod tests {
     tilo_test_env::scenario! {
         /// An event as its viewer sees it: the same instant, on the viewer's clock and days.
         fn a_viewer_sees_events_at_their_instant_on_their_own_clock;
-
         phase events_are_placed_at_their_instant_on_the_viewers_clock;
         {
             let berlin = Viewer::named("Europe/Berlin");
@@ -216,5 +212,23 @@ mod tests {
                 at(2026, 6, 30, 9, 0)
             );
         }
+    }
+
+    /// A viewer with no zone of its own stands where the person's clock stands, read the one way
+    /// a device and a page both answer.
+    #[test]
+    fn a_device_viewer_reads_the_instant_in_the_persons_zone() {
+        tilo_test_env::in_own_process(
+            module_path!(),
+            "a_device_viewer_reads_the_instant_in_the_persons_zone",
+            || {
+                let mut zone = tilo_test_env::ScopedEnv::new();
+                zone.set("TZ", "America/Los_Angeles");
+                // 2026-06-30 17:00 UTC is ten in the morning in Los Angeles.
+                let instant = jiff::Timestamp::from_second(1_782_838_800)
+                    .expect("the test's instant is inside the calendar");
+                assert_eq!(Viewer { zone: None }.wall(instant), at(2026, 6, 30, 10, 0));
+            },
+        );
     }
 }

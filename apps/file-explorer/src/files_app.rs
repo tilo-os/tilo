@@ -204,7 +204,7 @@ fn entry_answer(entry: &Entry) -> serde_json::Value {
         "type": entry.mime,
         "size": entry.app.as_ref().map_or(Some(entry.size), |app| app.size),
         "modified": entry.modified.map(|modified| {
-            let local = modified.to_zoned(jiff::tz::TimeZone::system());
+            let local = ui::clock::at(modified);
             modified.display_with_offset(local.offset()).to_string()
         }),
         "app": entry.app.as_ref().map(|app| crate::applications::kind_label(app.kind)),
