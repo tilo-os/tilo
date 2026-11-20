@@ -275,6 +275,7 @@ mod tests {
                 destructive: false,
                 labelled: false,
                 primary: false,
+                ..ToolbarAction::default()
             };
             let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
             for group in &mut row.groups {

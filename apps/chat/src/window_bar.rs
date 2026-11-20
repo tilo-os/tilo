@@ -300,7 +300,8 @@ impl ChatApp {
 
     /// The switcher: the model the agent's answers answer on, every model of
     /// every provider the server keeps, and — a conversation is one
-    /// session — what its answers cost so far.
+    /// session — what its answers cost so far, which the menu shows under the
+    /// model as its own line.
     fn agent_model_action(&self, agent: &Agent) -> ToolbarAction {
         self.models.poll();
         let chosen = agent.model.as_deref();
@@ -309,10 +310,6 @@ impl ChatApp {
             .label(chosen)
             .or_else(|| chosen.map(str::to_owned))
             .unwrap_or_else(|| crate::i18n::t("chat-agent-model"));
-        let label = match self.session_cost_micros() {
-            0 => label,
-            cost => format!("{label} · {}", ui::format::money(cost)),
-        };
         let mine = self.me.id.person_id() == Some(agent.keeper.as_str());
         let mut items = Vec::new();
         if mine {
@@ -327,11 +324,16 @@ impl ChatApp {
                 })
                 .map(|found| found.value);
             for choice in self.models.choices().unwrap_or_default() {
-                let mut item = self.bar_entries.entry(
-                    "sparkles",
-                    choice.label,
-                    Hit::AgentModel(Some(choice.value.clone())),
-                );
+                // The provider is the row's own value, never joined into the
+                // model's name.
+                let mut item = self
+                    .bar_entries
+                    .entry(
+                        "sparkles",
+                        choice.label,
+                        Hit::AgentModel(Some(choice.value.clone())),
+                    )
+                    .with_detail(choice.provider);
                 if current.as_deref() == Some(choice.value.as_str()) {
                     item = item.on(true);
                 }
@@ -346,10 +348,17 @@ impl ChatApp {
             }
         }
         let enabled = !items.is_empty();
-        ToolbarAction::new("chat-agent-model", "sparkles", label)
+        let action = ToolbarAction::new("chat-agent-model", "sparkles", label)
             .with_items(items)
             .labelled()
-            .enabled(enabled)
+            .enabled(enabled);
+        match self.session_cost_micros() {
+            0 => action,
+            cost => action.with_detail(crate::i18n::t_args(
+                "chat-agent-model-cost",
+                &[("cost", ui::format::money(cost).into())],
+            )),
+        }
     }
 
     /// What the answers in the conversation in view cost so far, as each one
@@ -499,22 +508,32 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "chat-agent-model")
             .expect("the switcher is in the conversation's header");
-        assert_eq!(action.name, "GPT-5.5 · ChatGPT", "the model it answers on");
+        assert_eq!(action.name, "GPT-5.5", "the model it answers on");
+        assert_eq!(
+            action.detail, "",
+            "a conversation that has cost nothing says nothing"
+        );
         let names: Vec<&str> = action.items.iter().map(|item| item.name.as_str()).collect();
-        assert_eq!(names, ["GPT-5.5 · ChatGPT", "Sonnet · Anthropic"]);
+        assert_eq!(names, ["GPT-5.5", "Sonnet"]);
+        let providers: Vec<&str> = action
+            .items
+            .iter()
+            .map(|item| item.detail.as_str())
+            .collect();
+        assert_eq!(providers, ["ChatGPT", "Anthropic"], "each row its provider");
         let used = action
             .items
             .iter()
             .find(|item| item.on)
             .expect("the model in use is marked");
-        assert_eq!(used.name, "GPT-5.5 · ChatGPT");
+        assert_eq!(used.name, "GPT-5.5");
 
         // A choice's press is the window's own command, which changes the
         // agent's model through the resource's action.
         let sonnet = action
             .items
             .iter()
-            .find(|item| item.name == "Sonnet · Anthropic")
+            .find(|item| item.name == "Sonnet")
             .expect("the other model");
         assert_eq!(
             chat.bar_entries.pressed(&ToolbarEvent::Action {

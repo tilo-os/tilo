@@ -95,6 +95,9 @@ fn menu_item(action: &crate::window_toolbar::ToolbarAction) -> MenuItem {
     if action.toggles || action.on {
         item = item.with_checked(action.on);
     }
+    if !action.detail.is_empty() {
+        item = item.with_detail(action.detail.clone());
+    }
     item
 }
 
@@ -126,6 +129,10 @@ fn menu_rows(
     }
     items.push(MenuItem::caption(action.name.clone()));
     entries.push(None);
+    if !action.detail.is_empty() {
+        items.push(MenuItem::caption(action.detail.clone()));
+        entries.push(None);
+    }
     items.extend(action.items.iter().map(menu_item));
     entries.extend(listed_entries(action, entry).into_iter().map(Some));
 }

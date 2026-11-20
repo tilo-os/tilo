@@ -392,6 +392,11 @@ pub struct ToolbarAction {
     pub id: String,
     pub icon: String,
     pub name: String,
+    /// A second fact the menu shows for this entry, apart from its name: a
+    /// model's provider, what a conversation has cost. A menu row lays it out
+    /// as its own value, never joined into the name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
     #[serde(default = "enabled")]
     pub enabled: bool,
     #[serde(default)]
@@ -442,6 +447,7 @@ impl ToolbarAction {
             id,
             icon,
             name,
+            detail: String::new(),
             enabled: true,
             on: false,
             menu: false,
@@ -452,6 +458,14 @@ impl ToolbarAction {
             labelled: false,
             primary: false,
         }
+    }
+
+    /// A second fact the menu shows for this entry ([`Self::detail`]): its
+    /// own value in the row, apart from the name.
+    #[must_use]
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = detail.into();
+        self
     }
 
     /// It ends, removes or discards something ([`Self::destructive`]).
@@ -1651,6 +1665,7 @@ mod tests {
                 destructive: false,
                 labelled: false,
                 primary: false,
+                ..ToolbarAction::default()
             }],
             ..WindowToolbar::default()
         }
@@ -1737,6 +1752,7 @@ mod tests {
                     destructive: false,
                     labelled: false,
                     primary: false,
+                    ..ToolbarAction::default()
                 });
             }
             many.actions.push(ToolbarAction {
@@ -1752,6 +1768,7 @@ mod tests {
                 destructive: false,
                 labelled: false,
                 primary: false,
+                ..ToolbarAction::default()
             });
             for n in 6..20 {
                 many.actions.push(ToolbarAction {
@@ -1767,6 +1784,7 @@ mod tests {
                     destructive: false,
                     labelled: false,
                     primary: false,
+                    ..ToolbarAction::default()
                 });
             }
             let bounded = many.clone().bounded();

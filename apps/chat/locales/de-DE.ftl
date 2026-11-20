@@ -134,6 +134,9 @@ chat-agent-answered = { $model } · { $provider } · { $cost }
 # Wahl, die wieder der Vorgabe folgt.
 chat-agent-model = Modell
 chat-agent-model-default = Dem Standardmodell folgen
+# Was die Antworten dieses Gesprächs bisher gekostet haben ($cost), die zweite Zeile des
+# Modellwechslers.
+chat-agent-model-cost = Bisherige Antworten: { $cost }
 chat-agent-answered-tokens = { $model } · { $provider } · { $cost } · { $tokens ->
     [one] 1 Token
    *[other] { $tokens } Token

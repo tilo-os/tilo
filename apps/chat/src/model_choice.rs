@@ -15,11 +15,13 @@ use tilo_actions::remote::person_models::{self, ModelProviders, ProviderView};
 use ui::{Arrival, InvocationCall, RemoteActions};
 
 /// One model a person may choose for an agent: the value an agent's model
-/// names (provider/model), and the words a person reads.
+/// names (provider/model), the words a person reads for the model, and the
+/// provider that offers it as its own fact.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Choice {
     pub(crate) value: String,
     pub(crate) label: String,
+    pub(crate) provider: String,
 }
 
 /// The person's model providers, as the server that keeps them answered.
@@ -146,11 +148,8 @@ fn provider_choices(provider: &ProviderView) -> Vec<Choice> {
         .iter()
         .map(|model| Choice {
             value: format!("{}/{}", provider.id, model.id),
-            label: format!(
-                "{} · {}",
-                model_label(&model.label, &model.id),
-                provider.name
-            ),
+            label: model_label(&model.label, &model.id),
+            provider: provider.name.clone(),
         })
         .collect()
 }
@@ -163,11 +162,8 @@ fn provider_choice(provider: &ProviderView, model: &str) -> Option<Choice> {
         .find(|offered| offered.id == model)
         .map(|offered| Choice {
             value: format!("{}/{}", provider.id, offered.id),
-            label: format!(
-                "{} · {}",
-                model_label(&offered.label, &offered.id),
-                provider.name
-            ),
+            label: model_label(&offered.label, &offered.id),
+            provider: provider.name.clone(),
         })
 }
 

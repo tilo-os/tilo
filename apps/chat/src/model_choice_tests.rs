@@ -56,15 +56,18 @@ fn every_model_of_every_connected_provider_is_offered_and_named_by_its_provider(
         Some(vec![
             Choice {
                 value: "chatgpt/gpt-5.5".into(),
-                label: "GPT-5.5 · ChatGPT".into(),
+                label: "GPT-5.5".into(),
+                provider: "ChatGPT".into(),
             },
             Choice {
                 value: "chatgpt/gpt-5.5-mini".into(),
-                label: "GPT-5.5 mini · ChatGPT".into(),
+                label: "GPT-5.5 mini".into(),
+                provider: "ChatGPT".into(),
             },
             Choice {
                 value: "anthropic/sonnet".into(),
-                label: "Sonnet · Anthropic".into(),
+                label: "Sonnet".into(),
+                provider: "Anthropic".into(),
             },
         ])
     );
@@ -72,15 +75,19 @@ fn every_model_of_every_connected_provider_is_offered_and_named_by_its_provider(
     // id, or by what a person reads on it.
     assert_eq!(
         choices.find("anthropic/sonnet").map(|found| found.label),
-        Some("Sonnet · Anthropic".into())
+        Some("Sonnet".into())
     );
     assert_eq!(
         choices.find("sonnet").map(|found| found.value),
         Some("anthropic/sonnet".into())
     );
     assert_eq!(
-        choices.find("Sonnet · Anthropic").map(|found| found.value),
+        choices.find("Sonnet").map(|found| found.value),
         Some("anthropic/sonnet".into())
+    );
+    assert_eq!(
+        choices.find("sonnet").map(|found| found.provider),
+        Some("Anthropic".into())
     );
     // Nothing the server keeps answers nothing.
     assert_eq!(choices.find("local/llama"), None);

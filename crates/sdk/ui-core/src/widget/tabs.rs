@@ -8876,6 +8876,7 @@ mod tests {
                 destructive: false,
                 labelled: false,
                 primary: false,
+                ..ToolbarAction::default()
             }],
             ..WindowToolbar::default()
         }
@@ -9454,6 +9455,7 @@ mod tests {
                 destructive: false,
                 labelled: false,
                 primary: false,
+                ..crate::window_toolbar::ToolbarAction::default()
             });
         }
         parts

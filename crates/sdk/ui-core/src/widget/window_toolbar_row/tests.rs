@@ -29,6 +29,7 @@ fn browser() -> WindowToolbar {
             destructive: false,
             labelled: false,
             primary: false,
+            ..ToolbarAction::default()
         }],
         ..WindowToolbar::default()
     }

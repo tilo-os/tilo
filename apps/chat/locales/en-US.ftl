@@ -136,6 +136,8 @@ chat-agent-answered = { $model } · { $provider } · { $cost }
 # that follows the keeper's default again.
 chat-agent-model = Model
 chat-agent-model-default = Follow the default model
+# What this conversation's answers have cost so far ($cost), the model switcher's second line.
+chat-agent-model-cost = Answers so far: { $cost }
 chat-agent-answered-tokens = { $model } · { $provider } · { $cost } · { $tokens ->
     [one] 1 token
    *[other] { $tokens } tokens
