@@ -254,7 +254,7 @@ impl Http {
                 StatusCode::BAD_REQUEST,
                 "That sign-in didn't finish",
                 &said,
-                Some("Start it again from Settings > External accounts."),
+                Some("Start it again from Settings > Accounts."),
             ),
         }
     }
