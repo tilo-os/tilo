@@ -1802,10 +1802,9 @@ mod tests {
             .expect("a runtime");
         let inbox_holds = || {
             runtime.block_on(async {
-                let mut session =
-                    sign_in(Some(Arc::clone(&tls)), Some(&reach), &account, &secret)
-                        .await
-                        .expect("the bearer token signs in");
+                let mut session = sign_in(Some(Arc::clone(&tls)), Some(&reach), &account, &secret)
+                    .await
+                    .expect("the bearer token signs in");
                 let inbox = session.select("INBOX").await.expect("an inbox");
                 let _ = session.logout().await;
                 inbox.exists
