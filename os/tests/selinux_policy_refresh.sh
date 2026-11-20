@@ -97,6 +97,12 @@ grep -Fq 'Before=sysinit.target fs.service' "$unit" \
   || fail "the module is not in place before fs.service and the rest of sysinit"
 grep -q '^ProtectKernelTunables=yes' "$unit" \
   && fail "the unit hides the selinuxfs its policy load writes"
+# The policy store lives under /etc, so a sandbox that makes /etc read-only
+# stops the install the unit exists for: on a real boot with `full`, semodule
+# could not open its transaction lock ("Read-only file system") and the older
+# module stayed in force.
+grep -qx 'ProtectSystem=yes' "$unit" \
+  || fail "the unit's sandbox covers /etc, where the policy store lives"
 for image in os/image/system.Containerfile os/Containerfile; do
   grep -Fq 'systemctl enable tilo-selinux-policy.service' "$repo/$image" \
     || fail "$image does not turn the unit on"

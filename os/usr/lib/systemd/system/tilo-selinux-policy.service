@@ -22,7 +22,12 @@ ExecStart=/usr/libexec/tilo-selinux-policy
 # kernel tunables stay writable here; the unit reads /usr and writes only the
 # policy store. It is unconfined init_t work, as any other boot-time policy
 # loader is, so no further sandbox narrows it.
-ProtectSystem=full
+#
+# The store it writes is /etc/selinux (or /var/lib/selinux), so the system
+# hierarchy alone is read-only here: `full` covers /etc too, and a boot with it
+# could not install anything ("Could not open direct transaction lock ...
+# Read-only file system"), leaving the older module in force for good.
+ProtectSystem=yes
 ProtectHome=yes
 PrivateTmp=yes
 PrivateNetwork=yes
