@@ -566,7 +566,7 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
         // Asked by `tilo status`: no agent run, and nothing entered for it.
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         return Some(
-            json!({"jsonrpc": "2.0", "id": id, "result": peer_status(connection).await})
+            json!({"jsonrpc": "2.0", "id": id, "result": peer_status(&connection.shared).await})
                 .to_string(),
         );
     }
@@ -641,9 +641,9 @@ pub(crate) const PEER_STATUS: &str = "tilo/peer";
 pub(crate) const STEP_DOWN: &str = "tilo/stepDown";
 
 /// The peer's answer to [`PEER_STATUS`].
-async fn peer_status<E: Enter>(connection: &Connection<E>) -> Value {
-    let device = connection.shared.device.as_ref().ok();
-    let session = connection.shared.session.lock().await.clone();
+pub(crate) async fn peer_status<E: Enter>(shared: &Shared<E>) -> Value {
+    let device = shared.device.as_ref().ok();
+    let session = shared.session.lock().await.clone();
     let phase = session.as_ref().map_or_else(
         || "entering".to_owned(),
         |session| format!("{:?}", session.device.session().status().phase).to_lowercase(),

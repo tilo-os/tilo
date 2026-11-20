@@ -483,12 +483,15 @@ fn hold_for<E: Enter>(
     trim_log();
     let _ = shared.held_as.set(claim);
     let runtime = bridge_runtime()?;
+    runtime.spawn(beating());
+    let watching = watch_workers();
     let served = runtime.block_on(serve_held(place, shared, holding));
     // A step that walks a whole folder tree — a merge of a tree record, a save of one — runs on
     // its thread to its end and cannot be interrupted. The process ends now instead of waiting
     // for it: the socket is gone, the folders were unmounted (or given up on), and the trees
     // were kept, above.
     runtime.shutdown_timeout(SHUTDOWN);
+    drop(watching);
     // The next holder opens the stores as soon as this process lets go of the lock, which is
     // before this process ends: let go of them first, or it finds them still open.
     if let Some(peer) = PEER.get() {
@@ -709,22 +712,18 @@ fn accepting<E: Enter>(
             loop {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        let Ok(()) = stream.set_nonblocking(true) else {
-                            continue;
-                        };
                         count.send_modify(|live| *live = live.saturating_add(1));
                         let (shared, count) = (Arc::clone(&shared), Arc::clone(&count));
-                        runtime.spawn(async move {
-                            let Ok(stream) = tokio::net::UnixStream::from_std(stream) else {
-                                count.send_modify(|live| *live = live.saturating_sub(1));
-                                return;
-                            };
-                            let (read, write) = stream.into_split();
-                            // This process is no agent's: the name comes in each connection's
-                            // own initialize, which the connection that reached it wrote.
-                            converse(shared, read, write, None).await;
-                            count.send_modify(|live| *live = live.saturating_sub(1));
-                        });
+                        let runtime = runtime.clone();
+                        // Its first request is read on a thread of its own: `tilo status` is
+                        // answered there whether or not the runtime's workers are free, and
+                        // anything else goes on to the runtime as before.
+                        let started = std::thread::Builder::new()
+                            .name("tilo-connection".to_owned())
+                            .spawn(move || first_request(stream, shared, &runtime, count));
+                        if let Err(error) = started {
+                            tracing::warn!(%error, "a connection to this holder could not be served");
+                        }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                     // The holder stopped listening: the socket was shut down.
@@ -736,6 +735,194 @@ fn accepting<E: Enter>(
         socket,
         thread: Some(thread),
     })
+}
+
+/// Serve `stream`, a connection [`accepting`] took: its first request is read here, and one
+/// asking how the peer stands ([`super::PEER_STATUS`]) is answered here too, from
+/// [`status_answer`]; the connection is served on `runtime` from there on.
+fn first_request<E: Enter>(
+    stream: UnixStream,
+    shared: Arc<Shared<E>>,
+    runtime: &tokio::runtime::Handle,
+    count: Arc<tokio::sync::watch::Sender<usize>>,
+) {
+    use std::io::{BufRead as _, Write as _};
+    let ended = || count.send_modify(|live| *live = live.saturating_sub(1));
+    let Ok(reading) = stream.try_clone() else {
+        ended();
+        return;
+    };
+    let mut reader = std::io::BufReader::new(reading);
+    let mut first = String::new();
+    if reader.read_line(&mut first).unwrap_or(0) == 0 {
+        ended();
+        return;
+    }
+    let request = serde_json::from_str::<Value>(&first).ok();
+    if let Some(request) = &request
+        && request.get("method").and_then(Value::as_str) == Some(super::PEER_STATUS)
+    {
+        let id = request.get("id").cloned().unwrap_or(Value::Null);
+        let answer = json!({"jsonrpc": "2.0", "id": id, "result": status_answer(&shared, runtime)});
+        let mut writing = &stream;
+        let _ = writeln!(writing, "{answer}");
+        let _ = writing.flush();
+        ended();
+        return;
+    }
+    // What the thread read past the first line is the connection's too.
+    let mut read = first.into_bytes();
+    read.extend_from_slice(reader.buffer());
+    drop(reader);
+    let Ok(()) = stream.set_nonblocking(true) else {
+        ended();
+        return;
+    };
+    let guard = runtime.enter();
+    let stream = tokio::net::UnixStream::from_std(stream);
+    drop(guard);
+    let Ok(stream) = stream else {
+        ended();
+        return;
+    };
+    runtime.spawn(async move {
+        use tokio::io::AsyncReadExt as _;
+        let (rest, write) = stream.into_split();
+        // This process is no agent's: the name comes in each connection's own initialize,
+        // which the connection that reached it wrote.
+        converse(shared, std::io::Cursor::new(read).chain(rest), write, None).await;
+        count.send_modify(|live| *live = live.saturating_sub(1));
+    });
+}
+
+/// How long `tilo status` waits for the runtime to say how the peer stands before it is answered
+/// with what the peer last said.
+const STATUS_FRESH: Duration = Duration::from_secs(2);
+
+/// The last answer to `tilo status` and when it was made.
+static LAST_STATUS: std::sync::Mutex<Option<(Instant, Value)>> = std::sync::Mutex::new(None);
+
+/// How the peer stands: asked of the runtime and waited for at most [`STATUS_FRESH`]. When the
+/// runtime's workers do not answer in that time, what the peer last said, with how long ago
+/// (`answered_ago_s`), so `tilo status` answers whatever the peer is busy with and says it is.
+fn status_answer<E: Enter>(shared: &Arc<Shared<E>>, runtime: &tokio::runtime::Handle) -> Value {
+    let (told, answered) = std::sync::mpsc::sync_channel(1);
+    let asked = Arc::clone(shared);
+    runtime.spawn(async move {
+        let _ = told.send(super::peer_status(&asked).await);
+    });
+    if let Ok(status) = answered.recv_timeout(STATUS_FRESH) {
+        *LAST_STATUS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((Instant::now(), status.clone()));
+        return status;
+    }
+    let last = LAST_STATUS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let (ago, mut status) = match last {
+        Some((at, status)) => (at.elapsed(), status),
+        None => (
+            WORKERS.since_beat(),
+            json!({"pid": std::process::id(), "session": "starting", "mounted": [], "workspaces": [], "failed": []}),
+        ),
+    };
+    if let Some(status) = status.as_object_mut() {
+        status.insert("answered_ago_s".to_owned(), json!(ago.as_secs()));
+        status.insert("restarts_after_s".to_owned(), json!(WEDGED.as_secs()));
+    }
+    status
+}
+
+/// How long the runtime's workers may go without a step of their own before the holder ends so
+/// that a fresh one takes its place: everything that walks a whole tree is done off them, so a
+/// worker that gives no sign for this long is stuck, and nothing in the process frees it.
+const WEDGED: Duration = Duration::from_secs(120);
+
+/// When the runtime's workers last took a step: [`beating`] notes it every second.
+struct Beat {
+    started: std::sync::OnceLock<Instant>,
+    at_ms: std::sync::atomic::AtomicU64,
+}
+
+static WORKERS: Beat = Beat {
+    started: std::sync::OnceLock::new(),
+    at_ms: std::sync::atomic::AtomicU64::new(0),
+};
+
+impl Beat {
+    fn note(&self) {
+        let started = self.started.get_or_init(Instant::now);
+        let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.at_ms.store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// How long since the workers last took a step.
+    fn since_beat(&self) -> Duration {
+        let Some(started) = self.started.get() else {
+            return Duration::ZERO;
+        };
+        let at = Duration::from_millis(self.at_ms.load(std::sync::atomic::Ordering::Relaxed));
+        started.elapsed().saturating_sub(at)
+    }
+}
+
+/// Note every second that the runtime's workers take steps, for as long as the runtime lasts.
+async fn beating() {
+    loop {
+        WORKERS.note();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// End this holder once the runtime's workers took no step for [`WEDGED`], saying so in its log:
+/// its service starts a fresh one, and a command that needs one starts it. Its folders' changes
+/// are on disk, as a kill would leave them, and the next holder sends them. Watched until the
+/// value this returns is dropped, as the holder ends.
+#[expect(
+    clippy::exit,
+    reason = "a holder whose workers are stuck cannot end through them; its folders' changes are \
+              on disk, as a kill would leave them"
+)]
+fn watch_workers() -> Watching {
+    WORKERS.note();
+    let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop = Arc::clone(&stopped);
+    let watching = std::thread::Builder::new()
+        .name("tilo-watch".to_owned())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_secs(5));
+                if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                let quiet = WORKERS.since_beat();
+                if quiet >= WEDGED {
+                    tracing::error!(
+                        quiet_s = quiet.as_secs(),
+                        "this holder ends: its workers took no step for {}s, so nothing it does \
+                         can finish; a fresh holder takes its place",
+                        quiet.as_secs()
+                    );
+                    std::process::exit(1);
+                }
+            }
+        });
+    if let Err(error) = watching {
+        tracing::warn!(%error, "this holder's workers are not watched");
+    }
+    Watching(stopped)
+}
+
+/// The watch [`watch_workers`] keeps, until this is dropped.
+struct Watching(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for Watching {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Serve Tilo's API at `place` as this computer's device, over the one session it holds: every
@@ -1557,6 +1744,94 @@ mod tests {
     }
 
     /// An entry that answers which holder asked it: what tells two holders' answers apart.
+    /// What keeps both of the runtime's workers in a step that does not let go of them for
+    /// [`Self::FOR`], each time the device is entered: a step stuck where it should not be.
+    struct Wedging;
+
+    impl Wedging {
+        const FOR: Duration = Duration::from_secs(12);
+    }
+
+    impl Enter for Wedging {
+        async fn enter(&self) -> Result<Arc<super::super::Session>, String> {
+            // Spawned from outside the runtime, so the other worker takes it at once: one spawned
+            // from this worker would wait in its own queue for this step to end.
+            let runtime = tokio::runtime::Handle::current();
+            std::thread::spawn(move || {
+                runtime.spawn(async { std::thread::sleep(Wedging::FOR) });
+            })
+            .join()
+            .unwrap();
+            std::thread::sleep(Wedging::FOR);
+            Err("wedged".to_owned())
+        }
+    }
+
+    /// `tilo status` is answered while every worker of the holder's runtime is stuck in a step:
+    /// within seconds, with what the peer last said and how long ago, rather than not at all,
+    /// which the command reads as a holder busy with a large change and waits on.
+    #[test]
+    fn a_status_is_answered_while_the_workers_are_stuck() {
+        let dir = tempfile::tempdir().unwrap();
+        let place = Place::at(dir.path(), dir.path(), &[7; 32]);
+        let holding = {
+            let place = place.clone();
+            std::thread::spawn(move || {
+                let shared = Arc::new(Shared::new(Wedging, Err("unused".to_owned())));
+                hold_for(
+                    &place,
+                    shared,
+                    Holding::Linger(Duration::from_millis(100)),
+                    TAKING_OVER,
+                    agents(Program::running()),
+                )
+                .unwrap()
+            })
+        };
+        let started = Instant::now();
+        let mut agent = loop {
+            if let Ok(stream) = UnixStream::connect(&place.socket) {
+                break stream;
+            }
+            assert!(started.elapsed() < TAKING_OVER, "no holder listened");
+            std::thread::sleep(POLL);
+        };
+        // An agent's first call enters the workspace, which takes both workers.
+        agent
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n")
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+
+        let asked = Instant::now();
+        let mut status = UnixStream::connect(&place.socket).unwrap();
+        status
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        writeln!(
+            status,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": 1, "method": super::super::PEER_STATUS})
+        )
+        .unwrap();
+        let mut answer = String::new();
+        let read = std::io::BufReader::new(status).read_line(&mut answer);
+        let took = asked.elapsed();
+        assert!(
+            read.is_ok_and(|read| read > 0),
+            "no status answered in {took:?} while the workers were stuck"
+        );
+        assert!(took < Duration::from_secs(4), "the status took {took:?}");
+        let answer: Value = serde_json::from_str(&answer).unwrap();
+        assert_eq!(answer["result"]["pid"], json!(std::process::id()));
+        assert!(
+            answer["result"]["answered_ago_s"].is_u64(),
+            "it says the answer is not a fresh one: {answer}"
+        );
+
+        drop(agent);
+        holding.join().unwrap();
+    }
+
     struct Named(&'static str);
 
     impl Enter for Named {

@@ -273,6 +273,7 @@ fn list(dir: &Path, json: bool) -> ExitCode {
                     .any(|entry| entry.get("workspace").and_then(Value::as_str) == Some(id))
             })
     };
+    say_answered_late(&peer);
     if mounted.is_empty() && folders.workspaces.is_empty() {
         println!("No workspace has a folder here yet.");
     }
@@ -564,4 +565,20 @@ pub(crate) fn after_login(workspace: &str, name: Option<&str>) -> Result<PathBuf
         )?;
     start()?;
     Ok(path)
+}
+
+/// Say that the peer's workers did not answer in time, when its answer is what it said last: a
+/// peer that stays that way is replaced by a fresh one.
+fn say_answered_late(peer: &Value) {
+    let Some(ago) = peer.get("answered_ago_s").and_then(Value::as_u64) else {
+        return;
+    };
+    let restarts = peer
+        .get("restarts_after_s")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    println!(
+        "Tilo's background sync is busy and hasn't answered for {ago}s, so this is how it stood \
+         then. If it stays busy for {restarts}s, it starts again by itself."
+    );
 }
