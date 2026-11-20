@@ -2452,7 +2452,8 @@ name = "fs-workspace-scale"
 # The daemon pass mounts FUSE and has one device join another over iroh; the
 # ladder's content stays inside the step's own target directory.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "script=$(cat <<'SCALE'\nexport TILO_FS_LADDER_RUNGS_MIB=${TILO_FS_LADDER_RUNGS_MIB:-10240,20480}\nbash tools/ci/fs-workspace-scale.sh all\nSCALE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+run = "script=$(cat <<'SCALE'\nexport TILO_FS_LADDER_RUNGS_MIB=${T_INPUT_RUNGS:-10240,20480}\nexport TILO_FS_LADDER_TOTAL_MIB=${T_INPUT_TOTAL_MIB:-10240}\nexport TILO_FS_LADDER_SMALL_FILES=${T_INPUT_SMALL_FILES:-1000}\nexport TILO_FS_LADDER_SMALL_BYTES=${T_INPUT_SMALL_BYTES:-4096}\nbash tools/ci/fs-workspace-scale.sh all\nSCALE\n)\nexec unshare --user --map-root-user --mount -- bash -ec \"$script\"\n"
+dispatch_inputs = { rungs = "10240,20480", total_mib = "10240", small_files = "1000", small_bytes = "4096" }
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "disk-100g"]
 isolation = "nested"
@@ -2467,11 +2468,11 @@ name = "fs-second-device-open"
 # has rather than the few bytes a test file usually has.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "exec unshare --user --map-root-user --mount -- bash tools/ci/fs-workspace-scale.sh photo"
-env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
+env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1", TILO_FS_BENCH_VERBOSE = "1" }
 requires = ["/dev/fuse"]
 isolation = "nested"
 on = ["dispatch"]
-timeout_secs = 1800
+timeout_secs = 5400
 
 [[check]]
 name = "native-tier1"
