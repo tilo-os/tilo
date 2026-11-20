@@ -4861,7 +4861,7 @@ name = "installer-cycle-x86_64"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt tools/ci/packages/installer-cycle.txt && rm -rf /var/tmp/tilo-installer-cycle && TILO_VM_DISPLAY=2d TILO_ACCEL=kvm TILO_DISTROBOX= TILO_MEM=8192 TILO_VM_CYCLE=installer-cycle TILO_INSTALLER_CYCLE_STORAGE=/var/tmp/tilo-installer-cycle TILO_BOOT_WAIT_SECS=1800 TILO_INSTALLER_CYCLE_MAX_INSTALL_SECONDS=3600 bash os/dev/test-installer-cycle.sh /target/publish/dev-installer-medium/x86_64/disk.qcow2 --graphics software --out /target/installer-cycle"
 needs = ["dev-installer-medium-x86_64", "tilo-vm-binary-x86_64"]
-env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm", TILO_CYCLE_DIR = "/var/tmp/tilo-installer-cycle/cycle" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/installer-cycle/**"]
