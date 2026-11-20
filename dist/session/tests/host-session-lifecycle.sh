@@ -68,6 +68,13 @@ if [ "${TILO_SESSION_TEST_HOLD:-0}" = 1 ]; then
     trap 'printf "compositor-term\n" >>"$TILO_SESSION_TEST_LOG"; exit 0' HUP INT TERM
     while :; do sleep 1; done
 fi
+if [ "${TILO_SESSION_TEST_IGNORE_TERM:-0}" = 1 ]; then
+    # Stuck so badly that it cannot end its own login: every stop signal is
+    # ignored, as a loop stuck with its ending flag unread would.
+    trap '' HUP INT TERM
+    printf 'ignoring\n' >"$TILO_SESSION_TEST_LOG.ignoring"
+    while :; do sleep 1; done
+fi
 exit "${TILO_SESSION_TEST_STATUS:-0}"
 SH
 cat >"$work/systemd-cat" <<'SH'
@@ -255,6 +262,48 @@ kill -TERM "$wrapper_pid"
 wait "$wrapper_pid" || [[ $? == 143 ]]
 grep -Fqx 'compositor-term' "$log"
 [[ $(grep -Fc 'systemctl --user stop tilo-graphical-session.target' "$log") == 1 ]]
+
+# A compositor that cannot be stopped must not hold the login: the login holds the
+# workspace service, whose invocation journal admits one writer, so a login that will
+# not end keeps the next login from opening it. The runner ends the compositor once
+# its bound is spent. The bound is staged short here; the shipped one is longer than
+# the desktop's own watchdog and ordered teardown.
+: >"$log"
+rm -f "$log.ignoring"
+short_stop_runner="$work/tilo-session-short-stop"
+tilo_stage_script "$repo_root/dist/session/tilo-session-runner" "$short_stop_runner" \
+    SYSTEMCTL="$work/systemctl" \
+    SYSTEMD_CAT="$work/systemd-cat" \
+    DBUS_UPDATE="$work/dbus-update-activation-environment" \
+    LOGINCTL="$work/loginctl" \
+    FLIGHT_RECORDER="$work/tilo-flight-recorder" \
+    EXIT_WAIT_TENTHS=10
+XDG_SESSION_ID=fixture-42 TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_IGNORE_TERM=1 \
+    "$short_stop_runner" "$work/compositor" --backend drm \
+    >"$work/hung.out" 2>"$work/hung.err" &
+wrapper_pid=$!
+for _ in $(seq 1 6000); do
+    [ -s "$log.ignoring" ] && break
+    kill -0 "$wrapper_pid" 2>/dev/null || break
+    sleep 0.02
+done
+[ -s "$log.ignoring" ] || {
+    echo 'the ignoring session never started the compositor:' >&2
+    cat "$log" >&2
+    exit 1
+}
+stopped_at=$(date +%s)
+kill -TERM "$wrapper_pid"
+set +e
+wait "$wrapper_pid"
+status=$?
+set -e
+[[ $status == 143 ]] || { echo "an unkillable login ended with $status" >&2; exit 1; }
+[[ $(( $(date +%s) - stopped_at )) -lt 10 ]] || {
+    echo 'the runner waited for a compositor that ignored every stop signal' >&2
+    exit 1
+}
+grep -Fq 'the desktop did not stop in 1 s; ending it' "$work/hung.err"
 
 # Shell-requested logout must return success through the wrapper-owned cleanup
 # path, even if the compositor uses a non-zero sentinel while exiting. Most

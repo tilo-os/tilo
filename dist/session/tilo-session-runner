@@ -30,6 +30,15 @@ DBUS_UPDATE=/usr/bin/dbus-update-activation-environment
 LOGINCTL=/usr/bin/loginctl
 FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder
 SESSION_TARGET=tilo-graphical-session.target
+# How long a compositor that was asked to stop gets before this runner ends it
+# for it, in tenths of a second. A compositor that finds its own main loop hung
+# ends it within its watchdog's bound (about 30 s, the report of the hang
+# included), and an ordered teardown may flush the person's layout for up to
+# 10 s: one still going after this is not coming back. Ending it here matters
+# because the login holds the workspace service, whose invocation journal admits
+# one writer: a login that will not end keeps that writer, and the next login
+# cannot open it.
+EXIT_WAIT_TENTHS=450
 target_started=0
 environment_imported=0
 shell_pid=
@@ -178,12 +187,36 @@ stop_predecessor_graphical_session() {
     fi
 }
 
+# Whether a pid is still at work: a process that exited but was not reaped yet is
+# a zombie, and a zombie has nothing left to put away.
+compositor_running() {
+    [ -r "/proc/$1/stat" ] || return 1
+    stat_contents=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    # The state follows the parenthesised command name, which may hold spaces.
+    state=${stat_contents##*) }
+    state=${state%% *}
+    [ -n "$state" ] && [ "$state" != Z ]
+}
+
 forward_signal() {
     signal=$1
     status=$2
     trap - HUP INT TERM
     if [ -n "$shell_pid" ] && kill -0 "$shell_pid" 2>/dev/null; then
         kill "-$signal" "$shell_pid" 2>/dev/null || true
+        # A compositor that does not end this login ends here: the login must not
+        # hold the workspace service's invocation journal against the next one.
+        tenths=0
+        while compositor_running "$shell_pid"; do
+            if [ "$tenths" -ge "$EXIT_WAIT_TENTHS" ]; then
+                printf 'tilo-session: the desktop did not stop in %s s; ending it\n' \
+                    "$((EXIT_WAIT_TENTHS / 10))" >&2 || true
+                kill -KILL "$shell_pid" 2>/dev/null || true
+                break
+            fi
+            sleep 0.1
+            tenths=$((tenths + 1))
+        done
         wait "$shell_pid" 2>/dev/null || true
     fi
     exit "$status"
