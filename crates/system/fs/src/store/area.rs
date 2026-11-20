@@ -1339,22 +1339,58 @@ impl FileArea {
         // fsyncs is either in the bytes below or in a record that waits for the next barrier.
         let _commit = self.commit.lock_recover();
         let pending = std::mem::take(&mut *self.written.lock_recover());
-        let mut first = None;
-        let mut unsynced = Vec::new();
-        for key in pending {
-            // An entry removed or replaced since it was written has nothing left to sync; one
-            // replaced before this barrier queued its bytes again under the same key.
-            if self.entry(&key).is_none() {
-                continue;
-            }
-            match self.file(&key).and_then(|file| self.sync(&file)) {
-                Ok(()) => {}
-                Err(error) => {
-                    unsynced.push(key);
-                    first.get_or_insert(error);
+        // A window of a copy closes one small entry per file, and syncing them one after another
+        // makes the window cost their count. The filesystem batches the fsyncs of a group into one
+        // commit anyway, so a few syncers take the same window in a fraction of the time.
+        let syncers = std::thread::available_parallelism()
+            .map_or(4, |cores| cores.get().clamp(2, 8))
+            .min(pending.len().max(1));
+        let per = pending.len().div_ceil(syncers).max(1);
+        let (unsynced, first) = std::thread::scope(|scope| {
+            let workers: Vec<_> = pending
+                .chunks(per)
+                .map(|chunk| {
+                    scope.spawn(move || {
+                        let mut unsynced = Vec::new();
+                        let mut first = None;
+                        for key in chunk {
+                            // An entry removed or replaced since it was written has nothing left
+                            // to sync; one replaced before this barrier queued its bytes again
+                            // under the same key.
+                            if self.entry(key).is_none() {
+                                continue;
+                            }
+                            match self.file(key).and_then(|file| self.sync(&file)) {
+                                Ok(()) => {}
+                                Err(error) => {
+                                    unsynced.push(*key);
+                                    first.get_or_insert(error);
+                                }
+                            }
+                        }
+                        (unsynced, first)
+                    })
+                })
+                .collect();
+            let mut unsynced = Vec::new();
+            let mut first = None;
+            for worker in workers {
+                match worker.join() {
+                    Ok((failed, error)) => {
+                        unsynced.extend(failed);
+                        if first.is_none() {
+                            first = error;
+                        }
+                    }
+                    Err(_) => {
+                        first.get_or_insert_with(|| {
+                            io::Error::other("a barrier's sync worker did not finish")
+                        });
+                    }
                 }
             }
-        }
+            (unsynced, first)
+        });
         if let Some(error) = first {
             self.written.lock_recover().extend(unsynced);
             return Err(error);
