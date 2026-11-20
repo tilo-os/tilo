@@ -187,9 +187,11 @@ mod tests {
             assert_eq!(error.to_string(), "device gone");
         }
 
-        phase an_unmount_request_waits_for_the_session_to_end;
-        // An unmount request unmounts and returns only once the session's
-        // thread has ended, so the old mount is gone before a rebind.
+        phase an_unmount_request_is_answered_once_it_is_asked_for;
+        // An unmount request is answered when the unmount was asked for, not when the session's
+        // thread ends: a mount this process may not unmount leaves that thread reading its
+        // device until the process ends, and waiting on it kept a stopping daemon alive
+        // forever. The unmount still ends the session — it is just not waited for.
         {
             let (session, _end, finished) = StandIn::serving(|| Ok(()));
             let (result, events) = supervised(session, "fs-test-unmount");
@@ -198,12 +200,15 @@ mod tests {
                 .recv_timeout(tilo_test_env::hang_bound())
                 .expect("an unmount request was not served")
                 .unwrap();
+            let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+            while !finished.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
             assert!(
                 finished.load(Ordering::SeqCst),
-                "returned before the session's thread ended"
+                "the unmount did not end the session"
             );
         }
-
         phase a_read_aborted_by_the_unmount_ends_the_session_cleanly;
         // The unmount aborts the kernel connection, and the session's read of
         // the device can lose the race with that abort and fail with
@@ -218,7 +223,16 @@ mod tests {
                 .recv_timeout(tilo_test_env::hang_bound())
                 .expect("an unmount request was not served")
                 .expect("an aborted connection is the end of the session");
-            assert!(finished.load(Ordering::SeqCst));
+            // The unmount ends the session; the supervisor does not wait for its thread, so the
+            // test allows it the usual hang bound.
+            let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+            while !finished.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert!(
+                finished.load(Ordering::SeqCst),
+                "the unmount did not end the session"
+            );
         }
     }
 
