@@ -141,10 +141,10 @@ public final class TiloSource: AssistantSource {
     /// conversation with it, what answers for it. Until it is, nothing is said of what is not
     /// read yet, so that one word stands from the look for her assistant until the main chat does.
     private var starts = false
-    /// How often this page refused to read the workspace's agents since the device got in. A
-    /// page that just got in publishes them a moment later, so they are asked for again at its
-    /// next words; a page that never does is left alone after a few.
-    private var agentsRefused = 0
+    /// The workspace's agents as its server last said them, each whole, and whether this page's
+    /// server keeps no such roster at all: an older one is not asked again while the page is in.
+    private var roster: [JSON]?
+    private var rosterRefused = false
     /// What the main chat says of the person's providers, as their server last listed them.
     private var providerSetup = Setup.unknown
     /// Nor one of what was learned.
@@ -281,6 +281,9 @@ public final class TiloSource: AssistantSource {
         // workspace changed. Its other moments stay: they are what it reads at where a page
         // tells nothing this way.
         follows.follow(Followed(app: "so.tilo.tasks")) { [weak self] in await self?.readTasks() }
+        // The workspace's agents are Assistant's, and read again where the workspace says that
+        // Assistant changed what it keeps: the page shows Chat, which keeps no roster.
+        follows.follow(Followed(app: "so.tilo.assistant")) { [weak self] in await self?.readAgents() }
         // A device that was paired before comes back as itself. So does one that was approved
         // and stopped before it got in: its store holds that device, and nothing is paired again.
         if let route = defaults.string(forKey: TiloSource.routeKey) ?? approved?.route {
@@ -398,7 +401,9 @@ public final class TiloSource: AssistantSource {
         soughtOwn = false
         ownRoute = nil
         standsInOwn = false
-        agentsRefused = 0
+        roster = nil
+        rosterRefused = false
+        agentsAgain.settle()
         providerSetup = .unknown
         setups.set(.unknown)
         keepsNothingLearned = false
@@ -587,7 +592,7 @@ public final class TiloSource: AssistantSource {
             finds = false
             endWaits()
         }
-        agentsRefused = 0
+        rosterRefused = false
         if let whose = try? await engine.whose() {
             root = whose.person
             // The assistant lives in the person's own workspace. A device is let in where its
@@ -639,6 +644,7 @@ public final class TiloSource: AssistantSource {
         await readToldOnce()
         for chat in Array(feeds.keys) { feeds[chat]?.told = false }
         await look()
+        await readAgents()
         await survey(.everything)
         // The start has read what it reads. What her server left unsaid is waited for no
         // longer: where nothing stands in the way, or nothing is known of it, nothing is said.
@@ -749,23 +755,6 @@ public final class TiloSource: AssistantSource {
         throw TiloEngine.Problem.refused(code: "unknown_action", reason: "Chat has not published this person yet")
     }
 
-    /// The workspace's agents as this page holds them, each read whole: Assistant's
-    /// `tilo.workspace.agent`, which every app of the workspace opens. Nil while the page
-    /// publishes none of it.
-    private func agentsInPage() async -> [JSON]? {
-        guard agentsRefused < 8 else { return nil }
-        guard let listed = try? await engine.read("tilo.workspace.agent") else {
-            agentsRefused += 1
-            return nil
-        }
-        agentsRefused = 0
-        var read: [JSON] = []
-        for row in listed["agents"]?.array ?? [] {
-            if let item = row["item"]?.string, let agent = try? await engine.read(item) { read.append(agent) }
-        }
-        return read
-    }
-
     /// The workspace's agents as its server says them to the person on this device, each whole.
     ///
     /// Its answer is taken as the server's word only where it is one: a list of the agents in
@@ -823,6 +812,50 @@ public final class TiloSource: AssistantSource {
                 _ = await engine.nextChange(within: .milliseconds(500))
             }
         }
+    }
+
+    /// Whether the workspace's agents are being read right now, and whether they are wanted
+    /// once more after.
+    private var readsAgents = false
+    private var agentsWanted = false
+    /// The read of the workspace's agents, made again where it went unanswered.
+    private let agentsAgain = Again()
+
+    /// Read the workspace's agents again, each whole, as its server says them to the person on
+    /// this device: Assistant's `tilo.workspace.agent`. The page shows Chat alone and holds no
+    /// roster of its own, so this is the one place they come from.
+    ///
+    /// They are read when the device gets in and when the workspace says Assistant's document
+    /// changed, and never on a clock. A read that went unanswered, or that her server failed
+    /// at, is made again by itself after a pause that grows, and what was read stands meanwhile.
+    /// A server that keeps no roster is not asked again while the page is in.
+    private func readAgents() async {
+        guard case .open = engine.state, !rosterRefused else { return }
+        guard !readsAgents else {
+            agentsWanted = true
+            return
+        }
+        readsAgents = true
+        defer { readsAgents = false }
+        repeat {
+            agentsWanted = false
+            do {
+                let all = try await agentsOnServer()
+                roster = all
+                agentsAgain.settle()
+                var seen = supervisionNow.now
+                await sayAgents(all, into: &seen)
+                supervisionNow.set(seen)
+            } catch TiloEngine.Problem.refused(let code, _) where code == "unknown_action" {
+                rosterRefused = true
+                agentsAgain.settle()
+            } catch TiloEngine.Problem.notOpen {
+                // The page is on its way in again: they are read anew when it is in.
+                agentsAgain.settle()
+            } catch {
+                agentsAgain.later(first: firstPause) { [weak self] in await self?.readAgents() }
+            }
+        } while agentsWanted
     }
 
     /// The person's assistant among a workspace's agents: the active one they keep that no
@@ -982,6 +1015,7 @@ public final class TiloSource: AssistantSource {
                 if let id = found["id"]?.string, id != finished, TiloSource.isTwin(found), !livesInOwn || standsInOwn {
                     try? await haveServerAnswer(for: id)
                 }
+                roster = all
                 take(found, of: me)
                 return
             }
@@ -990,17 +1024,13 @@ public final class TiloSource: AssistantSource {
             setups.set(.noAssistant(reason.isEmpty ? code : reason))
             return
         } catch TiloEngine.Problem.refused {
-            // An older page or an older server: what the page holds is read below.
+            // An older page or an older server: the workspace's agents are offered nowhere.
         } catch {
             // A page that just let a device in starts over once more, and what it was asked
             // then is never answered. Nothing is wrong: it is asked again once it is in.
             if startedOver { return }
             setups.set(.noAssistant(TiloSource.notAnswered))
             findLater()
-            return
-        }
-        if let all = await agentsInPage(), let found = TiloSource.assistant(among: all, of: me) {
-            take(found, of: me)
             return
         }
         if startedOver { return }
@@ -2260,51 +2290,57 @@ public final class TiloSource: AssistantSource {
         }
     }
 
-    private func surveyRecords(_ seen: inout Supervision) async {
-        // Sub-agents: the agents of the person's that an agent started for a job.
-        if let me, let all = await agentsInPage() {
-            // An assistant this page did not hold yet when the device got in.
-            if mainChat == .assistant, assistant == nil, case .noAssistant = setups.now,
-               let found = TiloSource.assistant(among: all, of: me) {
-                take(found, of: me)
+    /// What the workspace's agents say of the assistant's work, as the view shows it: the
+    /// sub-agents a person's assistant started, the day it used and the places it works.
+    private func sayAgents(_ all: [JSON], into seen: inout Supervision) async {
+        guard let me else { return }
+        // An assistant the roster did not hold yet when the device got in.
+        if mainChat == .assistant, assistant == nil, case .noAssistant = setups.now,
+           let found = TiloSource.assistant(among: all, of: me) {
+            take(found, of: me)
+            again = true
+        }
+        var listed: [SubAgent] = []
+        for agent in all {
+            guard let sub = agent["sub"], !sub.isNull, ChatMember(agent["keeper"])?.id == me, TiloSource.variant(agent["state"]) == "active",
+                  let id = agent["id"]?.string
+            else { continue }
+            let stands = TiloSource.variant(sub["stands"]) ?? "working"
+            let state: SubAgent.State = switch stands {
+            case "needs_person": .needsYou
+            case "done": .done
+            case "failed": .failed
+            case "stopped": .stopped
+            default: .working
+            }
+            let since = sub["since"]?.number.map { Date(timeIntervalSince1970: $0 / 1000) }
+            listed.append(SubAgent(
+                id: .init(id), title: agent["name"]?.string ?? id, role: sub["role"]?.string ?? "", state: state,
+                runsOn: TiloSource.place(of: sub),
+                started: Date(timeIntervalSince1970: (agent["created_at"]?.number ?? 0) / 1000),
+                startedBy: sub["started_by"]?.string == assistant ? .mainAgent : .person,
+                finished: state == .done ? since : nil))
+            if let channel = sub["conversation"]?.string, feeds[.subAgent(.init(id))]?.conversation != channel {
+                feeds[.subAgent(.init(id)), default: Feed()].conversation = channel
                 again = true
             }
-            var listed: [SubAgent] = []
-            for agent in all {
-                guard let sub = agent["sub"], !sub.isNull, ChatMember(agent["keeper"])?.id == me, TiloSource.variant(agent["state"]) == "active",
-                      let id = agent["id"]?.string
-                else { continue }
-                let stands = TiloSource.variant(sub["stands"]) ?? "working"
-                let state: SubAgent.State = switch stands {
-                case "needs_person": .needsYou
-                case "done": .done
-                case "failed": .failed
-                case "stopped": .stopped
-                default: .working
-                }
-                let since = sub["since"]?.number.map { Date(timeIntervalSince1970: $0 / 1000) }
-                listed.append(SubAgent(
-                    id: .init(id), title: agent["name"]?.string ?? id, role: sub["role"]?.string ?? "", state: state,
-                    runsOn: TiloSource.place(of: sub),
-                    started: Date(timeIntervalSince1970: (agent["created_at"]?.number ?? 0) / 1000),
-                    startedBy: sub["started_by"]?.string == assistant ? .mainAgent : .person,
-                    finished: state == .done ? since : nil))
-                if let channel = sub["conversation"]?.string, feeds[.subAgent(.init(id))]?.conversation != channel {
-                    feeds[.subAgent(.init(id)), default: Feed()].conversation = channel
-                    again = true
-                }
-            }
-            agents.set(listed.sorted { $0.started > $1.started })
-            // What the assistant itself used today, as its server counted it, and the most it may spend.
-            if let record = all.first(where: { $0["id"]?.string == assistant }) {
-                seen.usage = assistantDay.usage(of: record, before: seen.usage)
-                seen.isOn = TiloSource.variant(record["state"]) == "active"
-                seen.places = AssistantPlaces.places(among: all, assistant: assistant, keptBy: me)
-                // A day turns with nothing written anywhere: what was counted is read again then.
-                assistantDay.atNextDay { [weak self] in await self?.survey(.records) }
-            }
-            if again { await look() }
         }
+        agents.set(listed.sorted { $0.started > $1.started })
+        // What the assistant itself used today, as its server counted it, and the most it may spend.
+        if let record = all.first(where: { $0["id"]?.string == assistant }) {
+            seen.usage = assistantDay.usage(of: record, before: seen.usage)
+            seen.isOn = TiloSource.variant(record["state"]) == "active"
+            seen.places = AssistantPlaces.places(among: all, assistant: assistant, keptBy: me)
+            // A day turns with nothing written anywhere: what was counted is read again then.
+            assistantDay.atNextDay { [weak self] in await self?.survey(.records) }
+        }
+        if again { await look() }
+    }
+
+    private func surveyRecords(_ seen: inout Supervision) async {
+        // The sub-agents, the assistant's day and the places it works: the workspace's agents
+        // as her server last said them.
+        if let all = roster { await sayAgents(all, into: &seen) }
         // What it has learned: the person's own record in Chat.
         guard !keepsNothingLearned else { return }
         guard let learned = try? await engine.read("person:chat.learned") else {
