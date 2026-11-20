@@ -1,14 +1,24 @@
 //! Exact-source discovery using the governor's already-owned channel state.
 use super::{GovernedWorkspace, StatePeer, SystemTime, Workspaces};
+use std::collections::HashMap;
+use std::sync::Arc;
 use tilo_action_policy::MemberAccess;
 use tilo_actions::remote::Caller;
 use tilo_agent_session::workspace_actions::{ViewDocument, ViewReadPolicy};
+use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 
 const MAX_VIEW_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 
-impl GovernedWorkspace {
+/// A governed workspace's governance as its replica holds it now: what every
+/// decision of who reads what is made against.
+struct Governance<'a> {
+    peer: &'a StatePeer,
+    workspace: &'a str,
+}
+
+impl Governance<'_> {
     /// The access `caller` holds here now: only a person on a device this
     /// workspace certified, whose certificate is current and whose membership
     /// it still records. A revoked device, a removed member and a stranger hold
@@ -20,15 +30,15 @@ impl GovernedWorkspace {
         }
         let device = *caller.device_public_key()?;
         let user = caller.user_public_key()?;
-        let peer = self.peer();
-        if !peer
+        if !self
+            .peer
             .certificates()
             .iter()
             .any(|cert| cert.device_public_key == device && &cert.user_public_key == user)
         {
             return None;
         }
-        peer.permissions(device, tilo_clock::wall()).ok()
+        self.peer.permissions(device, tilo_clock::wall()).ok()
     }
 
     /// Whether `caller` is someone this workspace admits.
@@ -43,7 +53,7 @@ impl GovernedWorkspace {
             return false;
         };
         matches!(
-            self.peer().permissions(*device, tilo_clock::wall()),
+            self.peer.permissions(*device, tilo_clock::wall()),
             Err(tilo_peer_state::MembershipError::Revoked)
         )
     }
@@ -52,9 +62,9 @@ impl GovernedWorkspace {
     /// every record's policy holds before the record's own read is checked.
     fn workspace_policy(&self, caller: &Caller) -> Option<ViewReadPolicy> {
         let access = self.admitted(caller)?;
-        let sandbox = self.peer().governance().governed_sandbox().ok()?;
+        let sandbox = self.peer.governance().governed_sandbox().ok()?;
         Some(ViewReadPolicy {
-            workspace: self.workspace().to_owned(),
+            workspace: self.workspace.to_owned(),
             access,
             sandbox,
             unix_time: tilo_clock::wall()
@@ -65,13 +75,84 @@ impl GovernedWorkspace {
         })
     }
 
-    /// Called while holding this governed workspace's lock, including before keys.
-    fn view_read_policy(&self, caller: &Caller, app: &str, record: &str) -> Option<ViewReadPolicy> {
+    fn view_read_policy(
+        &self,
+        caller: &Caller,
+        app: &str,
+        resource: &str,
+    ) -> Option<ViewReadPolicy> {
         let device = *caller.device_public_key()?;
-        self.peer()
-            .check_document_read(device, app, record, tilo_clock::wall())
+        self.peer
+            .check_document_read(device, app, resource, tilo_clock::wall())
             .ok()?;
         self.workspace_policy(caller)
+    }
+}
+
+impl GovernedWorkspace {
+    /// Called while holding this governed workspace's lock, including before keys.
+    fn view_read_policy(
+        &self,
+        caller: &Caller,
+        app: &str,
+        resource: &str,
+    ) -> Option<ViewReadPolicy> {
+        Governance {
+            peer: &self.peer(),
+            workspace: self.workspace(),
+        }
+        .view_read_policy(caller, app, resource)
+    }
+
+    /// What this workspace is read through without its lock.
+    fn reading(&self) -> Reading {
+        Reading {
+            replica: self.peer.clone(),
+            workspace: self.workspace().to_owned(),
+            device: self.device.clone(),
+        }
+    }
+}
+
+/// What a governed workspace is read through without its lock: its replica,
+/// which every change is made in and which is only ever held for a moment, the
+/// workspace's name and the keys of the device it is held on. The workspace's
+/// lock is held across what takes long: asking the key service, which settles a
+/// newcomer's access first, and a commit's writes. A read waiting for those made
+/// every call of an agent wait up to a minute while a person joined.
+#[derive(Clone)]
+pub(super) struct Reading {
+    pub(super) replica: super::Replica,
+    pub(super) workspace: String,
+    pub(super) device: Option<super::DeviceKeys>,
+}
+
+type Governed = std::sync::Weak<tokio::sync::Mutex<GovernedWorkspace>>;
+
+/// The [`Reading`] of each workspace governed here, once one was read.
+#[derive(Default)]
+pub(super) struct Readings(std::sync::Mutex<HashMap<WorkspaceId, (Governed, Reading)>>);
+
+impl Readings {
+    fn of(
+        &self,
+        workspace: WorkspaceId,
+        governed: &Arc<tokio::sync::Mutex<GovernedWorkspace>>,
+    ) -> Option<Reading> {
+        let (of, reading) = self.0.lock_recover().get(&workspace)?.clone();
+        // A workspace opened again is read through its new replica.
+        (of.as_ptr() == Arc::as_ptr(governed)).then_some(reading)
+    }
+
+    fn keep(
+        &self,
+        workspace: WorkspaceId,
+        governed: &Arc<tokio::sync::Mutex<GovernedWorkspace>>,
+        reading: Reading,
+    ) {
+        let mut known = self.0.lock_recover();
+        known.retain(|_, (of, _)| of.strong_count() > 0);
+        known.insert(workspace, (Arc::downgrade(governed), reading));
     }
 }
 
@@ -90,23 +171,41 @@ pub fn bot_shows_personas(peer: &StatePeer, installation: &str, now: SystemTime)
 }
 
 impl Workspaces {
-    /// `answer` of the workspace `workspace` governed here, under its lock;
-    /// `None` for a workspace not governed here.
+    /// What the workspace `workspace` governed here is read through without
+    /// its lock; `None` for a workspace not governed here. Only the first read
+    /// of a workspace opened here waits for its lock.
+    pub(super) async fn reading(&self, workspace: WorkspaceId) -> Option<Reading> {
+        let governed = self.held(workspace).await?;
+        if let Some(reading) = self.inner.readings.of(workspace, &governed) {
+            return Some(reading);
+        }
+        let reading = governed.lock().await.reading();
+        self.inner
+            .readings
+            .keep(workspace, &governed, reading.clone());
+        Some(reading)
+    }
+
+    /// `answer` of the governance of the workspace `workspace` governed here,
+    /// as its replica holds it now; `None` for a workspace not governed here.
     async fn governing<T>(
         &self,
         workspace: WorkspaceId,
-        answer: impl FnOnce(&GovernedWorkspace) -> T,
+        answer: impl FnOnce(&Governance<'_>) -> T,
     ) -> Option<T> {
-        let governed = self.held(workspace).await?;
-        let runtime = governed.lock().await;
-        Some(answer(&runtime))
+        let reading = self.reading(workspace).await?;
+        let peer = reading.replica.lock();
+        Some(answer(&Governance {
+            peer: &peer,
+            workspace: &reading.workspace,
+        }))
     }
 
     /// [`bot_shows_personas`] in the workspace of `workspace` governed here;
     /// false for a workspace not governed here.
     pub async fn bot_personas(&self, workspace: WorkspaceId, installation: &str) -> bool {
         self.governing(workspace, |runtime| {
-            bot_shows_personas(&runtime.peer(), installation, tilo_clock::wall())
+            bot_shows_personas(runtime.peer, installation, tilo_clock::wall())
         })
         .await
         .unwrap_or(false)

@@ -2842,3 +2842,118 @@ async fn a_store_holding_a_stuck_write_is_repaired_when_its_server_starts() {
     drop(workspaces);
     server.shutdown().await;
 }
+
+/// Who an agent's call is and what it reads are answered while a change holds
+/// the workspace waiting on something slow, as one waits on the key service
+/// settling a newcomer's access: no read waits for the workspace's lock. Every
+/// call of an agent asks both, and each waited up to a minute while a person
+/// joined.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reads_answer_while_a_change_holds_the_workspace() {
+    use tilo_actions::remote::Caller;
+    let Lounge {
+        _dir,
+        server,
+        workspaces,
+        workspace,
+        workspace_id,
+        member_cert,
+        ..
+    } = lounge().await;
+    let caller = Caller::authenticated(member_cert.user_public_key, member_cert.device_public_key);
+    let read = || async {
+        let started = std::time::Instant::now();
+        assert!(workspaces.admits(workspace_id, &caller).await);
+        assert!(
+            workspaces
+                .workspace_policy(workspace_id, &caller)
+                .await
+                .is_some()
+        );
+        assert_eq!(
+            readable(&workspaces, &workspace).await.as_deref(),
+            Some("Welcome")
+        );
+        started.elapsed()
+    };
+    let mut normal = std::time::Duration::ZERO;
+    for _ in 0..5 {
+        normal = normal.max(read().await);
+    }
+    let governed = workspaces.held(workspace_id).await.unwrap();
+    let held = governed.lock().await;
+    let during = tokio::time::timeout(normal * 50, read())
+        .await
+        .expect("a read answers while a change holds the workspace");
+    drop(held);
+    assert!(
+        during <= normal * 50,
+        "{during:?} against {normal:?} unheld"
+    );
+    drop(governed);
+    drop(workspaces);
+    server.shutdown().await;
+}
+
+/// The governor's copy of members' writes is kept on disk without holding
+/// the workspace: while the disk is slow to take it, the next write is taken
+/// in and read, and the copy is written once the disk takes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_write_is_taken_in_while_the_disk_keeps_the_last() {
+    let Lounge {
+        _dir,
+        server,
+        workspaces,
+        workspace,
+        workspace_id,
+        member,
+        ..
+    } = lounge().await;
+    let governed = workspaces.held(workspace_id).await.unwrap();
+    let files = governed.lock().await.parts.files();
+    // The disk, slow: nothing is written until it is let go.
+    let (busy, release) = (
+        std::sync::Arc::new(std::sync::Barrier::new(2)),
+        std::sync::Arc::new(std::sync::Barrier::new(2)),
+    );
+    let disk = std::thread::spawn({
+        let (busy, release) = (
+            std::sync::Arc::clone(&busy),
+            std::sync::Arc::clone(&release),
+        );
+        move || {
+            let _writing = files.busy();
+            busy.wait();
+            release.wait();
+        }
+    });
+    busy.wait();
+    set_title(&member, &workspaces, &workspace, "first").await;
+    follows(&workspaces, &workspace, "first").await;
+    // The copy holding it is named and on its way to the disk.
+    tilo_test_env::within("the governor keeps its copy", async {
+        loop {
+            {
+                let held = governed.lock().await;
+                if !held.unkept && !held.keeping {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    set_title(&member, &workspaces, &workspace, "second").await;
+    follows(&workspaces, &workspace, "second").await;
+    release.wait();
+    disk.join().unwrap();
+    tilo_test_env::within("the kept copy reaches the disk", async {
+        while governed.lock().await.parts.pending() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    drop(governed);
+    drop(workspaces);
+    server.shutdown().await;
+}

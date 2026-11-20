@@ -250,15 +250,7 @@ impl GovernedWorkspace {
     /// This device takes no part in the readers' group, or holds no
     /// keys of it yet.
     pub(super) async fn keys_of(&self, readers: &str, doc: &str) -> Result<DocumentKeys, String> {
-        let device = self
-            .device
-            .as_ref()
-            .ok_or("this device holds no group keys")?;
-        let keys = device
-            .group_keys(self.workspace(), readers, false)
-            .await
-            .ok_or("this device takes no part in the readers' group")??;
-        Ok(DocumentKeys::of(keys, self.workspace(), readers, doc))
+        keys_of(self.device.as_ref(), self.workspace(), readers, doc).await
     }
 
     /// The plaintext of `op`, a member's sealed write of `record` of `app`,
@@ -304,31 +296,94 @@ impl GovernedWorkspace {
         app: &str,
         record: &str,
     ) -> Result<Option<Vec<u8>>, String> {
-        let Some(keys) = self.document_keys(app, record).await? else {
-            return Ok(self.peer().document(app, record));
-        };
-        let Some(opened) =
-            self.peer()
-                .publication()
-                .opened_document(app, record, &mut keys.open())?
-        else {
-            return Ok(None);
-        };
-        if !opened.unmerged.is_empty() {
-            // A write left out for any reason is a loss: nothing reads it, and
-            // it is kept for an operator rather than dropped.
-            let writes: Vec<String> = opened.unmerged.iter().map(ToString::to_string).collect();
-            tracing::warn!(
-                workspace = %self.workspace(),
-                %app,
-                %record,
-                left_out = writes.len(),
-                writes = ?writes,
-                "a sealed record is read without writes of its history that do not merge; they are kept"
-            );
-        }
-        Ok(Some(opened.document))
+        let keys = self.document_keys(app, record).await?;
+        opened_readable(&self.peer(), keys.as_ref(), self.workspace(), (app, record))
     }
+}
+
+/// The keys of document `doc` that `readers` of `workspace` read, as `device` holds its readers'
+/// group's keys ([`GovernedWorkspace::keys_of`]).
+async fn keys_of(
+    device: Option<&super::DeviceKeys>,
+    workspace: &str,
+    readers: &str,
+    doc: &str,
+) -> Result<DocumentKeys, String> {
+    let device = device.ok_or("this device holds no group keys")?;
+    let keys = device
+        .group_keys(workspace, readers, false)
+        .await
+        .ok_or("this device takes no part in the readers' group")??;
+    Ok(DocumentKeys::of(keys, workspace, readers, doc))
+}
+
+/// [`GovernedWorkspace::readable_document`] as the workspace `reading` reads
+/// holds it now, without the workspace's lock: the device's key service can
+/// take long to answer (it settles a newcomer's access first), and every other
+/// read and every member's write waited for it while a read held the workspace.
+///
+/// # Errors
+///
+/// As [`GovernedWorkspace::readable_document`].
+pub(super) async fn readable_now(
+    reading: &super::views::Reading,
+    (app, resource): (&str, &str),
+) -> Result<Option<Vec<u8>>, String> {
+    let sealed = reading
+        .replica
+        .read(|peer| peer.publication().is_sealed_document(app, resource));
+    let keys = if sealed {
+        Some(
+            keys_of(
+                reading.device.as_ref(),
+                &reading.workspace,
+                collab_types::EVERY_MEMBER,
+                &collab_types::app_document_id(app, resource),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    opened_readable(
+        &reading.replica.lock(),
+        keys.as_ref(),
+        &reading.workspace,
+        (app, resource),
+    )
+}
+
+/// `resource` of `app` as `peer` holds it, its sealed history opened with `keys` where it has
+/// them; a write of the history that does not merge is left out and named in the log.
+fn opened_readable(
+    peer: &StatePeer,
+    keys: Option<&DocumentKeys>,
+    workspace: &str,
+    (app, resource): (&str, &str),
+) -> Result<Option<Vec<u8>>, String> {
+    let Some(keys) = keys else {
+        return Ok(peer.document(app, resource));
+    };
+    let Some(opened) = peer
+        .publication()
+        .opened_document(app, resource, &mut keys.open())?
+    else {
+        return Ok(None);
+    };
+    if !opened.unmerged.is_empty() {
+        // A write left out for any reason is a loss: nothing reads it, and
+        // it is kept for an operator rather than dropped.
+        let writes: Vec<String> = opened.unmerged.iter().map(ToString::to_string).collect();
+        tracing::warn!(
+            %workspace,
+            %app,
+            %resource,
+            left_out = writes.len(),
+            writes = ?writes,
+            "a sealed resource is read without writes of its history that do not merge; they are kept"
+        );
+    }
+    Ok(Some(opened.document))
 }
 
 /// `record` of `app` of `workspace` with every write of its history, saved,

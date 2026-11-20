@@ -53,7 +53,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
         "the large record is stored apart from the workspace file"
     );
     assert_eq!(
-        workspace.parts.files(),
+        workspace.parts.file_count(),
         first.len(),
         "every large part of the record has a file of its own, and only those"
     );
@@ -89,7 +89,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     assert_eq!(second.len(), first.len());
     assert_ne!(second, first);
     assert_eq!(
-        workspace.parts.files(),
+        workspace.parts.file_count(),
         second.len(),
         "the parts it replaced are removed"
     );

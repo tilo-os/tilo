@@ -424,7 +424,7 @@ impl GovernedWorkspace {
                     document_format::FORMAT.name
                 )
             })?;
-        let mut parts = peer_parts::PeerParts::open(&path)?;
+        let parts = peer_parts::PeerParts::open(&path)?;
         let (publications, published) =
             appended::Appended::open(&path, PUBLICATIONS, stored.filed_publications)?;
         let (receipts, receipted) =
@@ -506,7 +506,25 @@ impl GovernedWorkspace {
     /// their files, then the workspace file naming how many those hold. A
     /// write costs what the change added, not the workspace's size.
     fn persist(&mut self) -> Result<(), String> {
-        let writing = crate::timing::start();
+        let write = self.file_write()?;
+        if let Err(error) = self.parts.files().write(&write) {
+            self.unsure();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// The files a write of the workspace file found appended may hold
+    /// entries the workspace file on disk does not name.
+    fn unsure(&mut self) {
+        self.publications.unsure();
+        self.receipts.unsure();
+    }
+
+    /// The workspace file as the record stands, to write: the publications and
+    /// join receipts added since the last write are appended to their files
+    /// first.
+    fn file_write(&mut self) -> Result<peer_parts::FileWrite, String> {
         // What the publisher could not admit is not published yet, whatever
         // `published` says until the next settle takes the failure back.
         let published = match self.publisher.unretained_from() {
@@ -544,15 +562,7 @@ impl GovernedWorkspace {
             filed_receipts,
         };
         let bytes = postcard::to_stdvec(&record).map_err(|error| error.to_string())?;
-        if let Err(error) = tilo_files::native::atomic::write(&self.path, &bytes) {
-            // The files may hold entries the record on disk does not name.
-            self.publications.unsure();
-            self.receipts.unsure();
-            return Err(error.to_string());
-        }
-        crate::timing::event("workspace.record.write", writing, bytes.len() as u64);
-        self.parts.collect(&self.record.peer);
-        Ok(())
+        Ok(self.parts.file_write(&self.path, bytes, &self.record.peer))
     }
 
     fn peer(&self) -> PeerGuard<'_> {
@@ -932,6 +942,9 @@ struct WorkspacesInner {
     /// The workspaces governed here, each under its id spelled out: the one
     /// id a workspace has, which its channels carry too ([`Workspaces::held`]).
     workspaces: Arc<device_actions::WorkspacesMap>,
+    /// What each governed workspace is read through without its lock
+    /// ([`Workspaces::reading`]).
+    readings: views::Readings,
     /// The action service the workspaces answer their members' devices on, as this
     /// host's own device ([`device_actions`]).
     action_service: tilo_peer_state::actions::ActionService,
@@ -1219,6 +1232,7 @@ impl Workspaces {
                 action_service,
                 jobs,
                 workspaces,
+                readings: views::Readings::default(),
                 calls: Arc::default(),
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
@@ -1595,17 +1609,19 @@ impl Workspaces {
         app: &str,
         record: &str,
     ) -> Result<Option<Vec<u8>>, CollaborationError> {
-        let state = self.workspace(workspace).await?;
-        let governed = state.lock().await;
+        // Read without holding the workspace: the record's keys are asked for
+        // while every other read, decision and member's write goes on.
+        let reading = match WorkspaceId::parse(workspace) {
+            Some(id) => self.reading(id).await,
+            None => None,
+        }
+        .ok_or_else(|| CollaborationError::new("this server does not hold that workspace"))?;
         #[cfg(any(feature = "agents", feature = "web"))]
-        let document = governed
-            .readable_document(app, record)
+        return sealed_documents::readable_now(&reading, (app, record))
             .await
-            .map_err(CollaborationError::new)?;
+            .map_err(CollaborationError::new);
         #[cfg(not(any(feature = "agents", feature = "web")))]
-        let document = governed.peer().document(app, record);
-        drop(governed);
-        Ok(document)
+        Ok(reading.replica.read(|peer| peer.document(app, record)))
     }
 
     /// The `(app, record)` of every record of `workspace` the governor's copy
@@ -2733,7 +2749,9 @@ impl Workspaces {
         };
         for workspace in held {
             let mut workspace = workspace.lock().await;
-            if workspace.unkept {
+            // A copy kept in the background may still be on its way: this
+            // one, written now, holds all it held.
+            if workspace.unkept || workspace.parts.pending() {
                 workspace.keeping = false;
                 workspace.keep_followed();
             }

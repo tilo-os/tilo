@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use super::{GovernedWorkspace, KEEP_FOLLOWED, Workspaces, publisher};
+use super::{GovernedWorkspace, KEEP_FOLLOWED, Workspaces, peer_parts, publisher};
 use ed25519_dalek::SigningKey;
 use tilo_peer_state::TransportOrigin;
 use tilo_user_identity::DeviceCert;
@@ -152,18 +152,36 @@ impl GovernedWorkspace {
     /// way left its record with a gap, once a later write that builds on it
     /// was committed, and the workspace no longer opened.
     pub(super) fn keep_followed(&mut self) {
-        self.unkept = false;
-        let staged = {
-            let replica = self.peer.clone();
-            let peer = replica.lock();
-            self.parts.stage(&peer)
+        let Some((files, write)) = self.keep_later() else {
+            return;
         };
-        let kept = staged.and_then(|parts| {
+        if let Err(error) = files.write(&write) {
+            self.unsure();
+            self.unkept = true;
+            tracing::warn!(workspace = %self.workspace(), %error, "the governor's copy of members' writes was not kept");
+        }
+    }
+
+    /// What [`Self::keep_followed`] writes, named now, and the files it is
+    /// written to: written after the workspace is let go, as a large document
+    /// can take the disk seconds, and every read of the workspace and every
+    /// member's write would wait for them.
+    fn keep_later(&mut self) -> Option<(peer_parts::PartFiles, peer_parts::FileWrite)> {
+        self.unkept = false;
+        let named = {
+            let peer = self.peer.lock();
+            self.parts.name(&peer)
+        };
+        let kept = named.and_then(|parts| {
             let prior = std::mem::replace(&mut self.record.peer, parts);
-            self.persist().inspect_err(|_| self.record.peer = prior)
+            self.file_write().inspect_err(|_| self.record.peer = prior)
         });
-        if let Err(error) = kept {
-            tracing::warn!(workspace = %self.record.workspace, %error, "the governor's copy of members' writes was not kept");
+        match kept {
+            Ok(write) => Some((self.parts.files(), write)),
+            Err(error) => {
+                tracing::warn!(workspace = %self.workspace(), %error, "the governor's copy of members' writes was not kept");
+                None
+            }
         }
     }
 
@@ -416,10 +434,25 @@ impl Workspaces {
             let Ok(workspace) = (Self { inner }).workspace(&id).await else {
                 return;
             };
-            let mut workspace = workspace.lock().await;
-            workspace.keeping = false;
-            if workspace.unkept {
-                workspace.keep_followed();
+            let kept = {
+                let mut workspace = workspace.lock().await;
+                workspace.keeping = false;
+                if !workspace.unkept {
+                    return;
+                }
+                workspace.keep_later()
+            };
+            let Some((files, write)) = kept else {
+                return;
+            };
+            let written = tokio::task::spawn_blocking(move || files.write(&write))
+                .await
+                .unwrap_or_else(|error| Err(error.to_string()));
+            if let Err(error) = written {
+                let mut workspace = workspace.lock().await;
+                workspace.unsure();
+                workspace.unkept = true;
+                tracing::warn!(workspace = %workspace.workspace(), %error, "the governor's copy of members' writes was not kept");
             }
         });
     }

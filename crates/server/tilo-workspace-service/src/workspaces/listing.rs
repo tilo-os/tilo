@@ -450,14 +450,21 @@ impl Workspaces {
     /// keeps many of them answers the directory without reading each one's
     /// people.
     pub async fn published_workspaces(&self) -> Vec<String> {
+        // Each workspace is waited for with the others let go: holding them
+        // all kept every read of any workspace waiting for the busiest one.
+        let held: Vec<_> = self
+            .inner
+            .workspaces
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect();
         let mut listed = Vec::new();
-        {
-            let workspaces = self.inner.workspaces.lock().await;
-            for workspace in workspaces.values() {
-                let workspace = workspace.lock().await;
-                if Self::entry_of(&workspace).is_listed() {
-                    listed.push(workspace.workspace().to_owned());
-                }
+        for workspace in held {
+            let workspace = workspace.lock().await;
+            if Self::entry_of(&workspace).is_listed() {
+                listed.push(workspace.workspace().to_owned());
             }
         }
         listed
