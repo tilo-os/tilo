@@ -923,6 +923,7 @@ fn an_agents_question_says_who_wants_what_and_hugs_its_words() {
         page: None,
         picture: None,
         ask: None,
+        allow_always: false,
     };
     let dialog = asked.dialog("request-1");
     assert_eq!(
@@ -1135,6 +1136,7 @@ tilo_test_env::scenario! {
             page: None,
             picture: None,
             ask: None,
+            allow_always: false,
         };
         let dialog = asked.dialog("request-1");
         assert_eq!(dialog.facts.len(), 8, "every argument is on the question");

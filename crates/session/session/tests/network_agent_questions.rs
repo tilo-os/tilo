@@ -1,7 +1,7 @@
 //! An agent working on the person's workspace host asks them to allow one action, and the session
 //! answers with what they chose.
 //! The host is this test's own endpoint, speaking the certification protocol's approver side: it
-//! lists one pending confirmation and records the answer the session sends. The session is a
+//! lists pending confirmations and keeps each answer the session sends. The session is a
 //! headless one, started the way the desktop starts it, so the question goes through everything
 //! that runs in between: the actor's approver session, the session's question sheet, and the
 //! person's answer back to the host.
@@ -37,6 +37,7 @@ use tilo_server_protocol::certify::{
 };
 use tilo_service::Questions;
 use tilo_session::Options;
+use tilo_sheets::SheetState as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
 /// The person's identity and this device's certificate, in a directory of its own, as the desktop's
@@ -110,9 +111,9 @@ fn person() -> Person {
 }
 
 /// One question the host puts to the person's devices.
-fn question() -> PendingConfirmation {
+fn question(id: u8, allow_always: bool) -> PendingConfirmation {
     PendingConfirmation {
-        id: [0x21; 32],
+        id: [id; 32],
         agent_id: "careful".into(),
         agent_label: "Careful".into(),
         title: "Tidy the shell".into(),
@@ -120,6 +121,7 @@ fn question() -> PendingConfirmation {
         arguments: vec![("Entries".into(), "All".into())],
         resource_label: "Calculator".into(),
         risk: "destructive".into(),
+        allow_always,
         workspace: "The shell".into(),
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(60_000_000_000),
         ..PendingConfirmation::default()
@@ -134,7 +136,7 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
     let questions = Questions::new();
 
     // The host answers the person's approver as a server serves it: the certification handshake,
-    // then one listed question until it is answered.
+    // then questions listed one at a time until each is answered.
     let (router, host_addr) = runtime.block_on(async {
         let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(RelayMode::Disabled)
@@ -180,61 +182,82 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
         },
     );
 
-    let deadline = tilo_test_env::hang_deadline();
-    let shown = loop {
-        if let Some(shown) = questions
-            .pending()
-            .into_iter()
-            .find(|question| question.kind == "network.agent-question")
-        {
-            break shown;
-        }
-        session
-            .step(Duration::from_millis(20))
-            .expect("the session steps");
-        assert!(
-            Instant::now() < deadline,
-            "the agent's question reached the person"
-        );
-    };
-    assert_eq!(shown.label, "Careful");
-    let details: serde_json::Value = shown.details.clone();
-    assert_eq!(details["agent"], "Careful");
-    assert_eq!(details["action"], "Clear the history");
-    assert_eq!(details["title"], "Tidy the shell");
-    assert_eq!(
-        details["arguments"],
-        serde_json::json!([["Entries", "All"]])
-    );
-    assert_eq!(details["resource"], "Calculator");
-    assert_eq!(details["workspace"], "The shell");
-    assert_eq!(details["risk"], "destructive");
-
-    assert!(
-        questions.answer(&shown.handle, tilo_service::Answer::default()),
-        "the person answered the question"
-    );
-
-    let deadline = tilo_test_env::hang_deadline();
-    while asked
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .is_empty()
+    for (index, (id, expected)) in [
+        (0x21, ConfirmationAnswer::AllowOnce),
+        (0x22, ConfirmationAnswer::AllowAlways),
+    ]
+    .into_iter()
+    .enumerate()
     {
-        session
-            .step(Duration::from_millis(20))
-            .expect("the session steps");
-        assert!(
-            Instant::now() < deadline,
-            "the answer reached the agent's host"
+        let allow_always = expected == ConfirmationAnswer::AllowAlways;
+        let handle = format!("agent-question:{}", hex::encode([id; 32]));
+        let deadline = tilo_test_env::hang_deadline();
+        let shown = loop {
+            if let Some(shown) = questions.pending().into_iter().find(|question| {
+                question.kind == "network.agent-question" && question.handle == handle
+            }) {
+                break shown;
+            }
+            session
+                .step(Duration::from_millis(20))
+                .expect("the session steps");
+            assert!(
+                Instant::now() < deadline,
+                "the agent's question reached the person"
+            );
+        };
+        assert_eq!(shown.label, "Careful");
+        let details = shown.details;
+        assert_eq!(details["agent"], "Careful");
+        assert_eq!(details["action"], "Clear the history");
+        assert_eq!(details["title"], "Tidy the shell");
+        assert_eq!(
+            details["arguments"],
+            serde_json::json!([["Entries", "All"]])
+        );
+        assert_eq!(details["resource"], "Calculator");
+        assert_eq!(details["workspace"], "The shell");
+        assert_eq!(details["risk"], "destructive");
+        assert_eq!(details["allow_always"], allow_always);
+        if allow_always {
+            session
+                .step(Duration::from_millis(20))
+                .expect("the session shows the sheet");
+            let sheet = session.portal().expect("the system approval sheet");
+            assert!(sheet.presentation().is_open());
+            sheet.press(tilo_sheets::portal::PortalEffect::Answer {
+                handle,
+                index: u32::try_from(tilo_sheets::portal::ALLOW_ALWAYS).unwrap(),
+            });
+        } else {
+            assert!(
+                questions.answer(&handle, tilo_service::Answer::default()),
+                "the person answered the question"
+            );
+        }
+
+        let deadline = tilo_test_env::hang_deadline();
+        while asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+            <= index
+        {
+            session
+                .step(Duration::from_millis(20))
+                .expect("the session steps");
+            assert!(
+                Instant::now() < deadline,
+                "the answer reached the agent's server"
+            );
+        }
+        assert_eq!(
+            asked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)[index],
+            expected
         );
     }
-    assert_eq!(
-        asked
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)[0],
-        ConfirmationAnswer::AllowOnce
-    );
 }
 
 /// The person's workspace host, as far as the certification protocol sees it: it answers approver
@@ -262,7 +285,7 @@ impl ProtocolHandler for Asking {
 }
 
 /// Serve the approver side of the certification protocol for one connection,
-/// listing one question and recording what the person answers.
+/// listing two questions in order and keeping each answer.
 async fn serve_approver(
     connection: Connection,
     user: [u8; 32],
@@ -310,13 +333,20 @@ async fn serve_approver(
     if pending.finish(&ack2).is_err() {
         return;
     }
-    let question = question();
+    let questions = [question(0x21, false), question(0x22, true)];
     while let Ok(frame) = read_frame(&mut recv, MAX_CERTIFY_FRAME_BYTES).await {
         let Ok(request) = postcard::from_bytes::<ApproverRequest>(&frame) else {
             return;
         };
         let reply = match request {
-            ApproverRequest::Confirmations => ApproverReply::Confirmations(vec![question.clone()]),
+            ApproverRequest::Confirmations => {
+                let answered = asked
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .len();
+                let next = questions.get(answered).cloned().into_iter().collect();
+                ApproverReply::Confirmations(next)
+            }
             ApproverRequest::Answer { answer, .. } => {
                 asked
                     .lock()
@@ -328,7 +358,7 @@ async fn serve_approver(
                 reason: "this host asks nothing else".into(),
             },
         };
-        let Ok(reply) = postcard::to_allocvec(&reply) else {
+        let Ok(reply) = reply.encode() else {
             return;
         };
         if write_frame(&mut send, &reply).await.is_err() {

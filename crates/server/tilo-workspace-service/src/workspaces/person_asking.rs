@@ -9,10 +9,14 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
+use std::time::SystemTime;
 
 use serde_json::{Map, Value, json};
 use tilo_action_policy::agent_answers::AnswerScope;
-use tilo_action_policy::{ActionKind, Answer, Context, Grant, Grantee, KindSet, TreePath, decide};
+use tilo_action_policy::{
+    ActionKind, Answer, Context, Grant, GrantId, Grantee, KindSet, TreePath, WorkspacePolicy,
+    decide,
+};
 use tilo_actions::remote::person_asking::{
     self, AgentName, Asked, AskedBy, Call, MAX_NAME_BYTES, MAX_WORDS_BYTES, Permission,
     Permissions, Source, TakeBack, Waiting, WaitingQuestions, Words,
@@ -23,7 +27,7 @@ use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::person_settings::{answer, argument};
-use super::{Workspaces, WorkspacesInner};
+use super::{GovernedWorkspace, Workspaces, WorkspacesInner};
 
 pub mod kept_asks;
 
@@ -33,6 +37,12 @@ pub const MAX_PERMISSIONS: usize = 256;
 const NOT_NAMED: &str = "A lasting permission names its agent, its action and its workspace";
 const TOO_MANY: &str = "Too many permissions stand already: take one back first";
 const NONE_STANDS: &str = "No such permission stands";
+const APPROVAL_ID_PREFIX: &str = "approval:";
+
+pub(super) enum ApprovalChange<'a> {
+    Keep(&'a Grant),
+    Revoke(&'a [GrantId]),
+}
 
 #[derive(Default)]
 struct WaitingIndex(Mutex<BTreeMap<String, Vec<(String, Waiting)>>>);
@@ -114,6 +124,56 @@ fn id_of(scope: &Asked) -> Option<String> {
     Some(blake3::hash(&named).to_hex().chars().take(32).collect())
 }
 
+fn governed_permission(person: &[u8; 32], scope: &Asked) -> Option<Grant> {
+    if !scope.is_named() {
+        return None;
+    }
+    let named = serde_json::to_vec(&(person, scope)).ok()?;
+    let id = format!("{APPROVAL_ID_PREFIX}{}", blake3::hash(&named).to_hex());
+    Some(Grant::new(
+        id,
+        Grantee::agent(&scope.agent),
+        policy_node(scope),
+        KindSet::OUTSIDE,
+        Answer::Allow,
+        Grantee::person(hex::encode(person)),
+    ))
+}
+
+pub(super) fn is_scoped_approval(grant: &Grant) -> bool {
+    grant.id.as_str().starts_with(APPROVAL_ID_PREFIX)
+}
+
+fn approval_in_policy(
+    policy: &WorkspacePolicy,
+    expected: &Grant,
+    proposed: bool,
+) -> Result<bool, String> {
+    let person = expected.granted_by.person_id().ok_or(NOT_NAMED)?;
+    let context = Context::at(tilo_clock::unix_now_ms());
+    let (node, kind) = (&expected.node, ActionKind::Outside);
+    if policy.active_role(person).is_none()
+        || policy.party(person).decide(node, kind, &context).answer == Answer::Deny
+    {
+        return Err("workspace policy does not allow the person to approve this action".to_owned());
+    }
+    let grants = policy
+        .grants
+        .iter()
+        .filter(|grant| !is_scoped_approval(grant) || grant.granted_by == expected.granted_by);
+    let decision = decide(
+        grants.chain(proposed.then_some(expected)),
+        std::slice::from_ref(&expected.grantee),
+        node,
+        kind,
+        &context,
+    );
+    if decision.answer == Answer::Deny && decision.grant().is_some() {
+        return Err("workspace policy denies this action for the agent".to_owned());
+    }
+    Ok(decision.answer == Answer::Allow && (proposed || policy.grants.contains(expected)))
+}
+
 fn worded(text: &str) -> String {
     let mut kept = String::new();
     for character in text.chars().filter(|character| !character.is_control()) {
@@ -193,7 +253,11 @@ impl Workspaces {
             .read_recover()
             .clone()
             .ok_or_else(|| "no approving device is available to answer".to_owned())?;
-        asker.ask(person, question).await
+        let answer = asker.ask(person, question.clone()).await?;
+        if !answer.answers(&question) {
+            return Err("the answer is not offered by this question".to_owned());
+        }
+        Ok(answer)
     }
 
     /// Persist a lasting `tilo-action-policy` [`Grant`] for `scope` into its
@@ -209,25 +273,67 @@ impl Workspaces {
         if !scope.is_named() {
             return Err(NOT_NAMED.to_owned());
         }
-        let id = id_of(scope).ok_or(NOT_NAMED)?;
-        let grant = policy_grant(person, &id, scope);
-        if let Ok(workspace) = self.workspace(&scope.workspace).await {
-            let mut workspace = workspace.lock().await;
-            let now = tilo_clock::unix_now_ns();
-            let at = super::system_time(now);
-            let key = &self.inner.host.key;
-            let mut candidate = workspace.peer().clone();
-            candidate.governance_mut().put_governed_grants(
-                std::slice::from_ref(&grant),
-                key,
-                at,
-            )?;
+        let grant = governed_permission(person, scope).ok_or(NOT_NAMED)?;
+        let workspace = self
+            .workspace(&scope.workspace)
+            .await
+            .map_err(|err| err.to_string())?;
+        let mut workspace = workspace.lock().await;
+        let at = tilo_clock::wall();
+        let policy = workspace.peer().governance().governed_policy()?;
+        if !approval_in_policy(&policy, &grant, true)? {
+            return Err(
+                "workspace policy does not allow a lasting approval for this action".to_owned(),
+            );
+        }
+        self.change_approval(&mut workspace, at, ApprovalChange::Keep(&grant))
+            .await?;
+        drop(workspace);
+        Ok(grant)
+    }
+
+    /// Write a scoped grant change after checking it against the locked workspace.
+    pub(super) async fn change_approval(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        at: SystemTime,
+        change: ApprovalChange<'_>,
+    ) -> Result<(), String> {
+        if !self.governs(workspace.workspace()) {
+            return Err("this server's person does not govern the workspace".to_owned());
+        }
+        let key = &self.inner.host.key;
+        let mut candidate = workspace.peer().clone();
+        let governance = candidate.governance_mut();
+        let changed = match change {
+            ApprovalChange::Keep(grant) => {
+                governance.put_governed_grants(std::slice::from_ref(grant), key, at)?
+            }
+            ApprovalChange::Revoke(ids) => governance.remove_governed_grants(ids, key, at)?,
+        };
+        if changed {
             let state = workspace.collaboration().clone();
             workspace.commit(candidate, key, at, |_, _| Ok(state))?;
-            self.settle(&mut workspace).await?;
-            drop(workspace);
+            self.settle(workspace).await?;
         }
-        Ok(grant)
+        Ok(())
+    }
+
+    /// Whether workspace policy still holds the approval this person gave for this scope.
+    ///
+    /// # Errors
+    /// Workspace policy cannot be read or explicitly refuses the action.
+    pub async fn governed_permission_stands(
+        &self,
+        person: &[u8; 32],
+        scope: &Asked,
+    ) -> Result<bool, String> {
+        let expected = governed_permission(person, scope).ok_or(NOT_NAMED)?;
+        let policy = self
+            .policy_of(&scope.workspace)
+            .await
+            .ok_or_else(|| "the workspace's policy is not here".to_owned())?;
+        approval_in_policy(&policy, &expected, false)
     }
 
     /// Decide whether a workspace `tilo-action-policy` grant covers `asked`.
@@ -441,7 +547,7 @@ impl Workspaces {
         }
     }
 
-    pub(super) fn person_alone_invoke(
+    pub(super) async fn person_alone_invoke(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
         caller: &Caller,
@@ -452,6 +558,7 @@ impl Workspaces {
             self.person_asking_invoke(workspace_id, caller, certificate, request)
         } else {
             self.person_vault_invoke(workspace_id, caller, certificate, request)
+                .await
         }
     }
 }

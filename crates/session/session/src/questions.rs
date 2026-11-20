@@ -1060,10 +1060,14 @@ fn admitted(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
 /// An agent's question on a workspace host, on the sheet a page shows it on too.
 fn agent_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     let asked: tilo_sheets::portal::AgentQuestion = serde_json::from_value(details).ok()?;
-    let plan = asked.ask.as_ref().map_or(Plan::Confirm, |ask| Plan::Ask {
-        choices: ask.choices.len(),
-        typed: ask.typed,
-    });
+    let plan = match &asked.ask {
+        Some(ask) => Plan::Ask {
+            choices: ask.choices.len(),
+            typed: ask.typed,
+        },
+        None if asked.allow_always => Plan::Choose(vec![0, tilo_sheets::portal::ALLOW_ALWAYS]),
+        None => Plan::Confirm,
+    };
     Some((asked.dialog(handle), plan))
 }
 

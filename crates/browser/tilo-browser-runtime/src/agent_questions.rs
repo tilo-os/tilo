@@ -25,7 +25,7 @@ use tilo_server_client::questions::{Answered, MemberQuestions, QuestionSheet, an
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::portal::{
-    AgentAsk, AgentQuestion, Dialog, DrawnSheet, Field, PortalEffect, PortalState,
+    ALLOW_ALWAYS, AgentAsk, AgentQuestion, Dialog, DrawnSheet, Field, PortalEffect, PortalState,
 };
 use tokio::sync::mpsc;
 use wasm_bindgen::prelude::*;
@@ -180,6 +180,7 @@ fn dialog(question: &PendingConfirmation) -> Dialog {
         page: question.page_origin(),
         picture: question.page.as_ref().and_then(|page| page.picture.clone()),
         ask: asked_words(question),
+        allow_always: question.allow_always,
     }
     .dialog(&format!("agent-question:{}", hex::encode(question.id)))
 }
@@ -347,14 +348,16 @@ impl PageQuestions {
     fn take_presses(&mut self) -> bool {
         let mut changed = false;
         // The state took only presses naming the question up.
-        let asking = self.up.and_then(|id| {
+        let question = self.up.and_then(|id| {
             WAITING.with_borrow(|waiting| {
                 waiting
                     .iter()
                     .find(|asked| asked.question.id == id)
-                    .and_then(|asked| asked_words(&asked.question))
+                    .map(|asked| asked.question.clone())
             })
         });
+        let asking = question.as_ref().and_then(asked_words);
+        let allow_always = question.is_some_and(|question| question.allow_always);
         for effect in self.state.take_asked() {
             let given = match (effect, &asking) {
                 (PortalEffect::Defer { .. }, Some(_)) => {
@@ -366,9 +369,18 @@ impl PageQuestions {
                     continue;
                 }
                 (PortalEffect::Cancel { .. }, _) => ConfirmationAnswer::Deny,
-                (PortalEffect::Confirm { .. }, None) => ConfirmationAnswer::AllowOnce,
-                (PortalEffect::Select { index, .. }, Some(_)) => {
-                    // A choice above the field is picked, not yet sent.
+                (PortalEffect::Confirm { .. }, None) if !allow_always => {
+                    ConfirmationAnswer::AllowOnce
+                }
+                (PortalEffect::Answer { index, .. }, None) if allow_always => {
+                    match usize::try_from(index).ok() {
+                        Some(0) => ConfirmationAnswer::AllowOnce,
+                        Some(ALLOW_ALWAYS) => ConfirmationAnswer::AllowAlways,
+                        _ => continue,
+                    }
+                }
+                (PortalEffect::Select { index, .. }, ask) if ask.is_some() || allow_always => {
+                    // Moving the highlight leaves the answers available.
                     if let Some(mut shown) = self.state.dialog() {
                         shown.selected = usize::try_from(index).unwrap_or(usize::MAX);
                         shown.error = None;

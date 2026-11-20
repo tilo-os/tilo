@@ -29,6 +29,7 @@ use super::{
     invoke_named,
 };
 use crate::hosted_browser::{Release, Releasing, TurnFill};
+use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::{HostedTurn, OpenAsk, TurnRelease, TurnUse, UseAnswer};
 
 /// How long the person has to answer a pending vault-use confirmation.
@@ -75,13 +76,18 @@ impl TurnUses {
         })
     }
 
-    fn confirmation_for(open: &OpenAsk) -> PendingConfirmation {
+    fn confirmation_for(open: &OpenAsk, workspaces: &Workspaces) -> PendingConfirmation {
         let target = open.target();
-        let action_label = if open.reason.trim().is_empty() {
-            format!("use vault item for {}", target.address.action)
-        } else {
-            open.reason.trim().to_owned()
-        };
+        let draft = person_vault::described_use(&target);
+        let action_label = draft.map_or(target.address.action, |described| described.action_label);
+        let arguments = open
+            .detail
+            .pointer("/use/item/belongsTo")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|place| Some(("Destination".to_owned(), place.as_str()?.to_owned())))
+            .collect();
         PendingConfirmation {
             id: rand::random(),
             agent_id: open.agent.clone(),
@@ -89,13 +95,14 @@ impl TurnUses {
             title: String::new(),
             action_label,
             resource_label: target.address.resource,
-            arguments: Vec::new(),
+            arguments,
             risk: "sensitive".to_owned(),
             kind: "outside".to_owned(),
             undoable: false,
             workspace: open.workspace.clone(),
             expires_at_ns: tilo_clock::unix_now_ns().saturating_add(QUESTION_WAIT_NS),
             page: None,
+            allow_always: open.takes_always() && workspaces.governs(&open.workspace),
             ..PendingConfirmation::default()
         }
     }
@@ -133,11 +140,18 @@ impl TurnUses {
                     workspaces.use_not_asked(&open);
                     return Err(ActionCallError::confirmation_required());
                 }
-                let question = Self::confirmation_for(&open);
+                let question = Self::confirmation_for(&open, workspaces);
                 match workspaces.ask_person_confirmation(person, question).await {
-                    Ok(ConfirmationAnswer::AllowOnce) => {
+                    Ok(
+                        answer @ (ConfirmationAnswer::AllowOnce | ConfirmationAnswer::AllowAlways),
+                    ) => {
+                        let answer = if answer == ConfirmationAnswer::AllowAlways {
+                            UseAnswer::Always
+                        } else {
+                            UseAnswer::Once
+                        };
                         let answered = workspaces
-                            .answer_use(&hosted, &open.ask, &open.detail, UseAnswer::Once)
+                            .answer_use(&hosted, &open.ask, &open.detail, answer)
                             .await?;
                         Ok(InvocationUpdate::Succeeded {
                             invocation,
@@ -249,11 +263,18 @@ impl TurnUses {
                         "confirmation is required to fill this vault item".to_owned(),
                     );
                 }
-                let question = Self::confirmation_for(&open);
+                let question = Self::confirmation_for(&open, workspaces);
                 match workspaces.ask_person_confirmation(person, question).await {
-                    Ok(ConfirmationAnswer::AllowOnce) => {
+                    Ok(
+                        answer @ (ConfirmationAnswer::AllowOnce | ConfirmationAnswer::AllowAlways),
+                    ) => {
+                        let answer = if answer == ConfirmationAnswer::AllowAlways {
+                            UseAnswer::Always
+                        } else {
+                            UseAnswer::Once
+                        };
                         if let Err(error) = workspaces
-                            .answer_use(&hosted, &open.ask, &open.detail, UseAnswer::Once)
+                            .answer_use(&hosted, &open.ask, &open.detail, answer)
                             .await
                         {
                             return Release::Refused(error.to_string());

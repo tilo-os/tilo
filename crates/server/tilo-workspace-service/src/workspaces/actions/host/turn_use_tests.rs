@@ -376,11 +376,15 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
         remembers["always"],
         json!([{
             "agent": "scout",
-            "by": "Scout",
             "using": MAIL_USE,
             "places": [IMAP, SMTP],
             "since": remembers["always"][0]["since"],
         }])
+    );
+    assert!(
+        remembers["always"][0]["since"]
+            .as_u64()
+            .is_some_and(|since| since > 0)
     );
 
     // From now on that agent uses that item there without a question, and

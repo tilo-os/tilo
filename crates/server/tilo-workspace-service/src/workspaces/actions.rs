@@ -1398,15 +1398,14 @@ impl Workspaces {
             // an agent acting for the person may ask it too: the vault decides
             // whether the item belongs where it would be used.
             #[cfg(not(target_arch = "wasm32"))]
-            (person_accounts::PROVIDER, _)
-                if request.target.address.action == person_accounts::ADD_MAIL_WITH_ITEM =>
-            {
-                self.vault_use_invoke(workspace_id, caller, certificate, request)
-                    .await
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            (person_models::PROVIDER, _)
-                if request.target.address.action == person_models::SET_KEY_FROM_ITEM =>
+            (provider, _)
+                if matches!(
+                    (provider, request.target.address.action.as_str()),
+                    (
+                        person_accounts::PROVIDER,
+                        person_accounts::ADD_MAIL_WITH_ITEM
+                    ) | (person_models::PROVIDER, person_models::SET_KEY_FROM_ITEM)
+                ) =>
             {
                 self.vault_use_invoke(workspace_id, caller, certificate, request)
                     .await
@@ -1432,6 +1431,7 @@ impl Workspaces {
             #[cfg(not(target_arch = "wasm32"))]
             (person_vault::PROVIDER | person_asking::PROVIDER, _) => {
                 self.person_alone_invoke(workspace_id, caller, certificate, request)
+                    .await
             }
             // What the person calls important, and what may interrupt
             // them: theirs, and their own agent's to read and to keep.

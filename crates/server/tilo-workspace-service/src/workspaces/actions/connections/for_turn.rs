@@ -16,7 +16,7 @@
 //!   command that only reads are done at once;
 //! - a command that changes something is called unasked only where its
 //!   person let that command of that connection stand for this agent, as
-//!   the service defined it then ([`Workspaces::stands`]). Otherwise nothing
+//!   the service defined it then. Otherwise nothing
 //!   is called: the person is asked ([`Taken::Asks`]), shown the service by
 //!   the site its address names, the command and its arguments whole;
 //! - a connection is never added by a turn. An agent proposes one, and its
@@ -430,7 +430,11 @@ impl Workspaces {
         );
         // What its person let stand is read at every call, so a permission
         // taken back covers nothing from that moment.
-        if let Some(permission) = self.stands(&using.person, &always) {
+        if self
+            .governed_permission_stands(&using.person, &always)
+            .await
+            .map_err(refused)?
+        {
             let allowed = Calling::Allowed {
                 by: &using.name,
                 leave: Leave::Always,
@@ -439,7 +443,6 @@ impl Workspaces {
             let called = connections::call(root, reach, allowed, call)
                 .await
                 .map_err(refused)?;
-            self.permission_used(&using.person, &permission);
             return done(called);
         }
         // What a question could not show whole is refused before anybody
@@ -604,7 +607,7 @@ impl Workspaces {
         turn: &HostedTurn<'_>,
         ask: &KeptAsk,
         leave: Option<Leave>,
-    ) -> Result<(), String> {
+    ) -> Result<Option<Value>, String> {
         if ask.carrier != person_connections::CARRIER {
             return Err(NO_LONGER_WAITS.to_owned());
         }
@@ -621,7 +624,7 @@ impl Workspaces {
             return Err(NOT_THEIRS.to_owned());
         }
         let Some(leave) = leave.filter(|leave| matches!(leave, Leave::Once | Leave::Always)) else {
-            return Ok(());
+            return Ok(None);
         };
         let root = self.person_settings_root(&using.person);
         let reach = self.connections_reach();
@@ -640,15 +643,32 @@ impl Workspaces {
                     command: asked.command,
                     arguments: asked.arguments,
                 };
-                connections::call(&root, &reach, allowed, call)
-                    .await
-                    .map(drop)
+                let expected = person_connections::always_call(
+                    &using.workspace,
+                    &using.agent,
+                    &call.connection,
+                    (&call.command, &waits.digest),
+                );
+                if leave == Leave::Always {
+                    if ask.always.as_ref() != Some(&expected) {
+                        return Err(NO_LONGER_WAITS.to_owned());
+                    }
+                    self.grant_always_in_workspace(&using.person, &expected)
+                        .await?;
+                } else {
+                    self.governed_permission_stands(&using.person, &expected)
+                        .await?;
+                }
+                let called = connections::call(&root, &reach, allowed, call).await?;
+                serde_json::to_value(called)
+                    .map(Some)
+                    .map_err(|err| err.to_string())
             }
             // Their own yes is what adds it: the address this server looked
             // at when it asked, read again now.
             Shown::Connection(card) => connections::add(&root, &reach, &card.address)
                 .await
-                .map(drop),
+                .map(|_| None),
         }
     }
 }

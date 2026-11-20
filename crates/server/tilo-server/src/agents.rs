@@ -750,6 +750,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
                 CONFIRMATION_WAIT_NS
             }),
             page: None,
+            allow_always: false,
             ask: question
                 .ask
                 .map(|ask| tilo_server_protocol::certify::AgentAsk {
@@ -781,7 +782,9 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
                 Ok(ConfirmationAnswer::AllowOnce) => {
                     Ok(tilo_actions::remote::ConfirmationReply::AllowOnce)
                 }
-                Ok(ConfirmationAnswer::Deny) => Ok(tilo_actions::remote::ConfirmationReply::Deny),
+                Ok(ConfirmationAnswer::Deny | ConfirmationAnswer::AllowAlways) => {
+                    Ok(tilo_actions::remote::ConfirmationReply::Deny)
+                }
                 Ok(ConfirmationAnswer::Reply(reply)) => {
                     Ok(tilo_actions::remote::ConfirmationReply::Replied(reply))
                 }

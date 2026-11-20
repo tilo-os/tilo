@@ -33,7 +33,7 @@ pub enum Answered {
 }
 
 /// The answer to an ask, once it is carried out.
-pub type Carried<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+pub type Carried<'a> = Pin<Box<dyn Future<Output = Result<Option<Value>, String>> + Send + 'a>>;
 
 /// What carries out a person's answer to an ask code of this server put under
 /// a word of its own.
@@ -43,11 +43,6 @@ pub trait Carries: Send + Sync {
     /// # Errors
     /// Why it could not be done, in words its person reads.
     fn carry<'a>(&'a self, ask: &'a KeptAsk, answer: Answered) -> Carried<'a>;
-
-    /// The words `ask` was put to its person with, where its carrier keeps them.
-    fn asked_with(&self, _ask: &KeptAsk) -> Option<String> {
-        None
-    }
 }
 
 /// The carriers of this server, by their word.
@@ -65,7 +60,7 @@ impl Asker {
     ///
     /// # Errors
     /// Why the ask could not be put or carried out.
-    pub(super) async fn ask(&self, asking: ServerAsk) -> Result<(), String> {
+    pub(super) async fn ask(&self, asking: ServerAsk) -> Result<Option<Value>, String> {
         (self.ask)(asking).await
     }
 }
@@ -126,7 +121,7 @@ impl Agents {
     ///
     /// # Errors
     /// The ask is invalid, the agent does not exist, or carrying out the answer failed.
-    pub async fn ask(&self, asking: ServerAsk) -> Result<(), String> {
+    pub async fn ask(&self, asking: ServerAsk) -> Result<Option<Value>, String> {
         let ServerAsk {
             workspace,
             person,
@@ -185,10 +180,11 @@ impl Agents {
                 ask.words.action.clone()
             },
             resource_label: ask.words.on.clone(),
-            arguments: Vec::new(),
+            arguments: vec![("Request".to_owned(), words)],
             risk: "sensitive".to_owned(),
             kind: "outside".to_owned(),
             undoable: false,
+            allow_always: ask.always.is_some() && self.workspaces.governs(&workspace),
             workspace,
             expires_at_ns: tilo_clock::unix_now_ns().saturating_add(QUESTION_WAIT_NS),
             page: None,
@@ -200,10 +196,11 @@ impl Agents {
             .await
         {
             Ok(ConfirmationAnswer::AllowOnce) => Answered::Once,
+            Ok(ConfirmationAnswer::AllowAlways) => Answered::Always,
             Ok(ConfirmationAnswer::Deny | ConfirmationAnswer::Reply(_)) | Err(_) => Answered::No,
         };
         let Some(runner) = self.carriers.lock_recover().get(&carrier).cloned() else {
-            return Ok(());
+            return Err("there is no handler for this approval".to_owned());
         };
         runner.carry(&ask, answer).await
     }

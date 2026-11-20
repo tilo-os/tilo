@@ -37,8 +37,8 @@
 //! unasked.
 //!
 //! A turn the server carries out is unattended. So a use is made unasked
-//! only where the item keeps a leave for this agent, this use and these
-//! places ([`accounts::vault_items::VaultItems::stands`]). Otherwise the
+//! only where workspace policy keeps a grant for this agent, this use and
+//! these places. Otherwise the
 //! server keeps what was asked ([`OpenAsk`]: the action and its arguments,
 //! which hold the reference and no secret) and answers that the person must
 //! be asked ([`TurnUse::Asks`]). Whoever carries out the turn puts the
@@ -75,7 +75,7 @@ use tilo_actions::remote::ActionCallError::{
     self, InvalidRequest, NotPermitted, Refused, UnknownAction,
 };
 use tilo_actions::remote::person_accounts::{self, AddMailWithItem};
-use tilo_actions::remote::person_asking::{ActionName, Asked, Thing, Words};
+use tilo_actions::remote::person_asking::{ActionName, Asked, Thing};
 use tilo_actions::remote::person_models::{self, SetKeyFromItem};
 use tilo_actions::remote::person_vault::{self, FillPage, ItemRef};
 use tilo_actions::remote::{
@@ -83,7 +83,6 @@ use tilo_actions::remote::{
 };
 use tilo_lock::MutexRecover as _;
 
-use super::person_asking::Allowing;
 use super::{WorkspaceId, Workspaces};
 
 mod web_call;
@@ -679,7 +678,7 @@ fn vault_use_scope(
         },
         on: Some(Thing {
             document: item.as_str().to_owned(),
-            resource: sorted.join(","),
+            resource: json!(sorted).to_string(),
         }),
     }
 }
@@ -870,15 +869,16 @@ impl Workspaces {
                 .map_err(|error| refused(error.to_string()))?;
         }
         let stands = self
-            .stands(
+            .governed_permission_stands(
                 &using.person,
                 &vault_use_scope(&using, &request.target, &item, &places),
             )
-            .is_some();
+            .await
+            .map_err(refused)?;
         wanted.sendable(self, &root).map_err(refused)?;
         // A leave that covers the use is what allowed it; else an allow its
         // person gave this very use, which is spent by being found.
-        let allowed = if stands {
+        let allowed = if stands && wanted.takes_leave() {
             Some(Allowance::Always)
         } else if wanted.allowed_once(&self.inner.vault_uses, &using, &arguments) {
             Some(Allowance::Once)
@@ -1120,38 +1120,38 @@ impl Workspaces {
         if target == person_vault::page_target() {
             return self
                 .page_answered(&root, &using, kept, answer)
+                .await
                 .map(Some)
                 .map_err(refused);
         }
         let wanted = Use::read(&target, &kept.arguments)?;
         let word = person_vault::use_word(&target);
         let (item, kind, places) = wanted.wanted(&root).map_err(refused)?;
+        let destination = json!(places.iter().map(Place::as_str).collect::<Vec<_>>());
+        if kept.detail.pointer("/use/item/belongsTo") != Some(&destination) {
+            return Err(refused(
+                "Where the secret goes changed after it was asked about",
+            ));
+        }
         // A delegation that no longer names the item, or was revoked, stops the
         // use its person answered about.
         if !using.may_use(item.as_str()) {
             return Err(refused(not_delegated()));
         }
         let always = answer == UseAnswer::Always && wanted.takes_leave();
+        let scope = vault_use_scope(&using, &target, &item, &places);
         if always {
-            let items = VaultItems::open_in(&root).map_err(|error| refused(error.to_string()))?;
-            items
+            VaultItems::open_in(&root)
+                .map_err(|error| refused(error.to_string()))?
                 .fits(&item, kind, &places)
                 .map_err(|error| refused(error.to_string()))?;
-            let scope = vault_use_scope(&using, &target, &item, &places);
-            let _ = self.let_always(
-                &using.person,
-                Allowing {
-                    scope: scope.clone(),
-                    name: using.name.clone(),
-                    words: Words {
-                        action: word.clone(),
-                        on: String::new(),
-                        place: String::new(),
-                    },
-                    asked_by: None,
-                },
-            );
-            let _ = self.grant_always_in_workspace(&using.person, &scope).await;
+            self.grant_always_in_workspace(&using.person, &scope)
+                .await
+                .map_err(refused)?;
+        } else {
+            self.governed_permission_stands(&using.person, &scope)
+                .await
+                .map_err(refused)?;
         }
         if matches!(wanted, Use::Call(_)) {
             // What a call answers goes to whoever made it, so nothing is
@@ -1426,11 +1426,12 @@ impl Workspaces {
             facts.kind
         };
         let stands = self
-            .stands(
+            .governed_permission_stands(
                 &using.person,
                 &vault_use_scope(&using, &target, &item, std::slice::from_ref(&site)),
             )
-            .is_some();
+            .await
+            .map_err(refused)?;
         if stands || self.once_allowed(&using, &item, &site) {
             return page_text(&root, &item, kind, &site, &using.name)
                 .map(TurnRelease::Released)
@@ -1468,10 +1469,10 @@ impl Workspaces {
     }
 
     /// What a person's allow of the page fill kept under `kept` comes to.
-    /// Nothing is filled here. [`UseAnswer::Always`] is the item's own leave,
-    /// read and taken back like any; an allow for once lets that agent's next
+    /// Nothing is filled here. [`UseAnswer::Always`] keeps a workspace grant;
+    /// an allow for once lets that agent's next
     /// fill of that item at that site through.
-    fn page_answered(
+    async fn page_answered(
         &self,
         root: &Path,
         using: &KeepersTurn,
@@ -1484,29 +1485,22 @@ impl Workspaces {
         if !using.may_use(item.as_str()) {
             return Err(not_delegated().to_owned());
         }
-        let items = VaultItems::open_in(root).map_err(|error| error.to_string())?;
-        let facts = items
-            .belongs_at(&item, &site)
-            .map_err(|error| error.to_string())?;
-        page_field(facts.kind)?;
+        {
+            let items = VaultItems::open_in(root).map_err(|error| error.to_string())?;
+            let facts = items
+                .belongs_at(&item, &site)
+                .map_err(|error| error.to_string())?;
+            page_field(facts.kind)?;
+        }
+        let target = kept.target();
+        let scope = vault_use_scope(using, &target, &item, std::slice::from_ref(&site));
         let allowed = if answer == UseAnswer::Always {
-            let target = kept.target();
-            let scope = vault_use_scope(using, &target, &item, std::slice::from_ref(&site));
-            self.let_always(
-                &using.person,
-                Allowing {
-                    scope,
-                    name: using.name.clone(),
-                    words: Words {
-                        action: person_vault::use_word(&target),
-                        on: site.as_str().to_owned(),
-                        place: String::new(),
-                    },
-                    asked_by: None,
-                },
-            )?;
+            self.grant_always_in_workspace(&using.person, &scope)
+                .await?;
             "always"
         } else {
+            self.governed_permission_stands(&using.person, &scope)
+                .await?;
             self.allow_once(using, &item, &site);
             "once"
         };

@@ -16,7 +16,7 @@ use tilo_server_client::Approver;
 use tilo_server_client::questions::{Answered, QuestionSheet, answer_questions};
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_service::{Question, Questions};
-use tilo_sheets::portal::{AgentAsk, AgentQuestion};
+use tilo_sheets::portal::{ALLOW_ALWAYS, AgentAsk, AgentQuestion};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
@@ -155,10 +155,12 @@ impl QuestionSheet for SessionSheet {
                     choices: ask.choices.clone(),
                     typed: ask.typed,
                 }),
+                allow_always: question.allow_always,
             })
             .unwrap_or_default(),
         });
         let answered = self.answered.clone();
+        let allow_always = question.allow_always;
         let ask = question.ask.as_ref().map(|ask| AgentAsk {
             question: ask.question.clone(),
             choices: ask.choices.clone(),
@@ -171,6 +173,11 @@ impl QuestionSheet for SessionSheet {
                     ask.reply(given.choice, typed)
                         .map_or(ConfirmationAnswer::Deny, ConfirmationAnswer::Reply)
                 }
+                (Some(given), None) if allow_always => match given.choice {
+                    Some(0) => ConfirmationAnswer::AllowOnce,
+                    Some(ALLOW_ALWAYS) => ConfirmationAnswer::AllowAlways,
+                    _ => ConfirmationAnswer::Deny,
+                },
                 (Some(_), None) => ConfirmationAnswer::AllowOnce,
                 (None, _) => ConfirmationAnswer::Deny,
             };

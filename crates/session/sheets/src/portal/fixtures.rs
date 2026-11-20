@@ -367,6 +367,7 @@ fn visa_question(title: &str, handle: &str) -> Dialog {
         page: Some("https://consulate.example".to_owned()),
         picture: Some("fixture:filled-form".to_owned()),
         ask: None,
+        allow_always: false,
     }
     .dialog(handle)
 }

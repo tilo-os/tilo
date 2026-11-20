@@ -164,6 +164,7 @@ impl TurnMail {
                 },
             })
             .await
+            .map(drop)
     }
 }
 
@@ -301,7 +302,7 @@ impl Carries for Sends {
                 changed = !self.says(ask, words.trim()).await;
             }
             let allowed = answer == Answered::Once && !changed;
-            let left = self.workspaces.send_asked(ask, allowed).await.map(drop);
+            let left = self.workspaces.send_asked(ask, allowed).await.map(|_| None);
             if changed {
                 return Err(CHANGED.to_owned());
             }

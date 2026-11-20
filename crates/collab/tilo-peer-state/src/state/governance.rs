@@ -400,6 +400,38 @@ impl PeerGovernance<'_> {
             .ok_or("workspace governance missing")?;
         Ok(doc.workspace_policy(&self.peer.core.workspace).clone())
     }
+
+    /// The issuance time of each live grant, from the signed change that wrote it.
+    #[must_use]
+    pub fn governed_grant_times(
+        &self,
+        grants: &[Grant],
+    ) -> std::collections::BTreeMap<GrantId, u64> {
+        use crate::members::{self, MembershipOpCommand};
+        let mut times = std::collections::BTreeMap::<GrantId, u64>::new();
+        if grants.is_empty() {
+            return times;
+        }
+        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
+            return times;
+        };
+        for op in members::ops(doc).values() {
+            let MembershipOpCommand::Project { changes } = &op.command else {
+                continue;
+            };
+            for change in changes {
+                if let Change::Grant(grant) = change
+                    && grants.contains(grant)
+                {
+                    times
+                        .entry(grant.id.clone())
+                        .and_modify(|at| *at = (*at).max(op.at_ns))
+                        .or_insert(op.at_ns);
+                }
+            }
+        }
+        times
+    }
     /// How the workspace's membership log stands against its rows, for an
     /// operator: how many operations it holds, whether it has started, and
     /// each way the membership it replays to differs from the one the rows

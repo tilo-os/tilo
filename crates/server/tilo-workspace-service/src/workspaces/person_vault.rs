@@ -23,7 +23,7 @@
 //!
 //! An agent on this server, working with no device of its person's on, uses
 //! an item through the server's own entry ([`super::hosted_use`]), which asks
-//! the person first. Their "Always" is a leave kept with the item.
+//! the person first. Their "Always" is a grant kept by the workspace.
 //! The person reads the leaves beside the uses and takes them back here,
 //! and no agent does either.
 
@@ -33,6 +33,7 @@ use std::sync::Arc;
 use accounts::vault_items::{self, ItemFacts, NewItem, Place, UsedFor, VaultItems};
 use serde_json::Value;
 use tilo_account_probe::AccountTester;
+use tilo_action_policy::{Answer, Grant, Level};
 use tilo_actions::remote::person_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
 use tilo_actions::remote::person_models::{self, ProviderView, SetKey, SetKeyFromItem};
 use tilo_actions::remote::person_vault::{
@@ -42,11 +43,12 @@ use tilo_actions::remote::person_vault::{
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
-use super::Workspaces;
+use super::person_asking::{ApprovalChange, is_scoped_approval};
+use super::{WorkspaceId, Workspaces};
 
 impl Workspaces {
     /// Answer a [`person_vault::PROVIDER`] request.
-    pub(super) fn person_vault_invoke(
+    pub(super) async fn person_vault_invoke(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
         caller: &Caller,
@@ -71,17 +73,101 @@ impl Workspaces {
             }
             person_vault::USES => {
                 let of: UsesOf = argument(request, "an item's uses are read by its reference")?;
-                answer(uses(&root, &of.item))
+                let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
+                let cert = certificate.ok_or(ActionCallError::UnknownAction)?;
+                let mut history = uses(&root, &of.item).map_err(|err| refused(err.to_string()))?;
+                history.always = self
+                    .vault_approvals(workspace, cert, &of.item, None)
+                    .await?;
+                answer(Ok(history))
             }
             person_vault::TAKE_BACK => {
                 let taking: TakeBack = argument(
                     request,
                     "what an agent may always use is taken back by the item's reference",
                 )?;
-                answer(take_back(&root, &taking))
+                let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
+                let cert = certificate.ok_or(ActionCallError::UnknownAction)?;
+                let mut history =
+                    uses(&root, &taking.item).map_err(|err| refused(err.to_string()))?;
+                history.always = self
+                    .vault_approvals(workspace, cert, &taking.item, Some(&taking))
+                    .await?;
+                answer(Ok(history))
             }
             _ => Err(ActionCallError::UnknownAction),
         }
+    }
+
+    /// Read a vault item's grants, and revoke those the person chose to take back.
+    async fn vault_approvals(
+        &self,
+        workspace: WorkspaceId,
+        device: &DeviceCert,
+        item: &ItemRef,
+        take_back: Option<&TakeBack>,
+    ) -> Result<Vec<AlwaysUse>, ActionCallError> {
+        let name = workspace.to_string();
+        let person = hex::encode(device.user_public_key);
+        let workspace = self
+            .workspace(&name)
+            .await
+            .map_err(|err| refused(err.to_string()))?;
+        let mut workspace = workspace.lock().await;
+        let at = tilo_clock::wall();
+        let access = workspace
+            .peer()
+            .permissions(device.device_public_key, at)
+            .map_err(|_| ActionCallError::NotPermitted)?;
+        if !access.acting.is_person()
+            || access.person_id() != Some(person.as_str())
+            || access.policy.active_role(&person).is_none()
+        {
+            return Err(ActionCallError::NotPermitted);
+        }
+        let mut kept: Vec<_> = access
+            .policy
+            .grants
+            .iter()
+            .filter_map(|grant| Some((grant.clone(), vault_approval(grant, &person, item)?)))
+            .collect();
+        drop(access);
+        if let Some(taking) = take_back {
+            let mut ids = Vec::new();
+            kept.retain(|(grant, shown)| {
+                if taking
+                    .agent
+                    .as_ref()
+                    .is_some_and(|agent| *agent != shown.agent)
+                {
+                    return true;
+                }
+                ids.push(grant.id.clone());
+                false
+            });
+            if !ids.is_empty() {
+                self.change_approval(&mut workspace, at, ApprovalChange::Revoke(&ids))
+                    .await
+                    .map_err(refused)?;
+            }
+        }
+        let grants = kept
+            .iter()
+            .map(|(grant, _)| grant.clone())
+            .collect::<Vec<_>>();
+        let times = workspace.peer().governance().governed_grant_times(&grants);
+        drop(workspace);
+        let mut shown = Vec::with_capacity(kept.len());
+        for (grant, mut approval) in kept {
+            approval.since = times.get(&grant.id).map_or(0, |at| at / 1_000_000_000);
+            approval.by = self
+                .agent_name(&name, &approval.agent)
+                .await
+                .unwrap_or_default();
+            shown.push(approval);
+        }
+        shown.sort_by_key(|approval| approval.since);
+        Ok(shown)
     }
 
     /// The person a request that uses what their vault keeps is for, and
@@ -259,13 +345,43 @@ fn said<T: serde::Serialize>(outcome: Result<T, String>) -> Result<Value, Action
     serde_json::to_value(outcome.map_err(refused)?).map_err(|error| refused(error.to_string()))
 }
 
-/// Take back the leaves of the item `taking` names, every agent's
-/// or one's, answering what the item remembers then.
-fn take_back(root: &Path, taking: &TakeBack) -> Result<ItemUses, vault_items::ItemError> {
-    let id =
-        vault_items::ItemId::parse(taking.item.id()).ok_or(vault_items::ItemError::NotFound)?;
-    VaultItems::open_in(root)?.take_back(&id, taking.agent.as_deref())?;
-    uses(root, &taking.item)
+fn refused(reason: String) -> ActionCallError {
+    ActionCallError::Refused { reason }
+}
+
+fn vault_approval(grant: &Grant, person: &str, item: &ItemRef) -> Option<AlwaysUse> {
+    if !is_scoped_approval(grant)
+        || grant.answer != Answer::Allow
+        || grant.granted_by.person_id() != Some(person)
+    {
+        return None;
+    }
+    let agent = grant.grantee.agent_id()?;
+    let (app, action) = (
+        grant.node.id_at(Level::App)?,
+        grant.node.id_at(Level::Action)?,
+    );
+    if !matches!(
+        (app, action),
+        (
+            person_accounts::PROVIDER,
+            person_accounts::ADD_MAIL_WITH_ITEM
+        ) | (person_models::PROVIDER, person_models::SET_KEY_FROM_ITEM)
+            | (person_vault::PROVIDER, person_vault::FILL_PAGE)
+    ) {
+        return None;
+    }
+    let (named, places) = grant.node.id_at(Level::Resource)?.split_once('/')?;
+    if named != item.id() {
+        return None;
+    }
+    Some(AlwaysUse {
+        agent: agent.to_owned(),
+        by: String::new(),
+        using: grant.node.id_at(Level::Kind)?.to_owned(),
+        places: serde_json::from_str(places).ok()?,
+        since: 0,
+    })
 }
 
 /// When and where the item `item` names was handed to something that signs
@@ -275,17 +391,7 @@ fn uses(root: &Path, item: &ItemRef) -> Result<ItemUses, vault_items::ItemError>
     let id = vault_items::ItemId::parse(item.id()).ok_or(vault_items::ItemError::NotFound)?;
     let items = VaultItems::open_in(root)?;
     Ok(ItemUses {
-        always: items
-            .leaves(&id)?
-            .into_iter()
-            .map(|leave| AlwaysUse {
-                agent: leave.by,
-                by: leave.name,
-                using: leave.using,
-                places: leave.places.into_iter().map(String::from).collect(),
-                since: leave.since_unix,
-            })
-            .collect(),
+        always: Vec::new(),
         uses: items
             .uses(&id)?
             .into_iter()

@@ -86,6 +86,13 @@ async fn read<T: serde::de::DeserializeOwned>(
         .map_err(|error| codec(&error))
 }
 
+async fn read_approver_reply(
+    recv: &mut (impl AsyncRead + Unpin),
+) -> Result<ApproverReply, CertifyError> {
+    ApproverReply::decode(&read_frame(recv, MAX_CERTIFY_FRAME_BYTES).await?)
+        .map_err(|error| codec(&error))
+}
+
 async fn write<T: serde::Serialize + Sync>(
     send: &mut (impl AsyncWrite + Unpin),
     value: &T,
@@ -317,7 +324,7 @@ impl Approver {
 
     async fn call(&mut self, request: &ApproverRequest) -> Result<ApproverReply, CertifyError> {
         write(&mut self.send, request).await?;
-        read(&mut self.recv).await
+        read_approver_reply(&mut self.recv).await
     }
 
     /// Every request currently waiting for an approver.
@@ -418,7 +425,7 @@ pub async fn ask_member(
 ) -> Result<ApproverReply, CertifyError> {
     let (mut send, mut recv) = link.open_bi().await?;
     write(&mut send, &CertifyOpen::Member(approval.clone())).await?;
-    read(&mut recv).await
+    read_approver_reply(&mut recv).await
 }
 
 /// The link a device keeps to its server's certification, and how many it
@@ -479,7 +486,7 @@ impl KeptAsks {
                 // Said whole: the stream ends here, so the link holds no
                 // more streams open than asks wait for an answer.
                 send.finish();
-                read(&mut recv).await
+                read_approver_reply(&mut recv).await
             }
             .await;
             if reply.is_err() || link.protocol() != Some(LINK_CERTIFY_KEPT) {

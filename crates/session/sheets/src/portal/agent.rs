@@ -47,7 +47,13 @@ pub struct AgentQuestion {
     /// than to allow an action: the action fields are empty then.
     #[serde(default)]
     pub ask: Option<AgentAsk>,
+    /// Whether a lasting grant is offered for this action.
+    #[serde(default)]
+    pub allow_always: bool,
 }
+
+/// The Allow always button's position among the approval answers.
+pub const ALLOW_ALWAYS: usize = 1;
 
 /// A question an agent words itself, as the sheet asks it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -109,7 +115,7 @@ impl AgentAsk {
 }
 
 impl AgentQuestion {
-    /// The sheet asking it, as request `handle`: Allow once, or Deny. The
+    /// The sheet asking it, as request `handle`. The
     /// title says who wants to do what; the group, the record, the arguments
     /// and what it risks follow, and the picture of the page it leaves from.
     #[must_use]
@@ -135,7 +141,18 @@ impl AgentQuestion {
             facts,
             caution: self.consequence(),
             picture: self.picture.clone(),
-            body: Body::Review,
+            body: if self.allow_always {
+                Body::Answers {
+                    choices: vec![
+                        word("network-agent-question-allow"),
+                        word("portal-allow-always"),
+                    ],
+                    suggested: 0,
+                    remember: None,
+                }
+            } else {
+                Body::Review
+            },
             confirm_label: word("network-agent-question-allow"),
             cancel_label: word("portal-deny"),
             ..Dialog::default()

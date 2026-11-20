@@ -19,8 +19,9 @@ use std::sync::{Arc, Mutex};
 
 use collab_types::WorkspaceId;
 use serde_json::{Map, Value, json};
-use tilo_action_policy::{ActionKind, Answer, KindSet, Level, Rule, TreePath};
-use tilo_actions::remote::person_asking::{self, PERMISSIONS, TAKE_BACK};
+use tilo_action_policy::{
+    ActionKind, Answer, Grant, GrantId, Grantee, KindSet, Level, Rule, TreePath,
+};
 use tilo_actions::remote::person_connections::{
     self, ADD, Asks, BEGIN_SIGN_IN, CALL, FINISH_SIGN_IN, LIST, LOOK, Leave, PROPOSE, REFRESH,
     REMOVE, Taken, USES,
@@ -37,8 +38,8 @@ use crate::connections::DEFINED_ANEW;
 use crate::connections::stand_in::StandIn;
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::HostedTurn;
-use crate::workspaces::person_asking::Allowing;
 use crate::workspaces::person_asking::kept_asks::{CARRIED_OUT, KeptAsk, NewAsk};
+use crate::workspaces::person_asking::policy_node;
 
 const SCOUT: &str = "scout";
 
@@ -355,22 +356,7 @@ impl<'a> Team<'a> {
         self.workspaces
             .connection_answered(turn, waits, leave)
             .await
-    }
-
-    /// Ada's "always" to the question about `asks`: what it offers stands
-    /// for her first, written by whoever read her own answer. The
-    /// permission's id.
-    fn lets_always(&self, asks: &Asks) -> String {
-        let allowing = Allowing {
-            scope: asks.always.clone().expect("always is offered"),
-            name: "Scout".to_owned(),
-            words: asks.named.clone(),
-            asked_by: None,
-        };
-        self.workspaces
-            .let_always(&self.ada.user_public_key, allowing)
-            .expect("what the person allowed for good is kept")
-            .id
+            .map(drop)
     }
 }
 
@@ -735,14 +721,12 @@ async fn a_question_about_a_command_outlives_a_restart_and_its_answer_is_carried
 }
 
 /// After her "always" that command of that connection is called unasked,
-/// and Ada reads the permission among what stands for her, with how often
-/// it was used. The permission's id.
-async fn always_lets_it_go_ahead_unasked(team: &Team<'_>, service: &StandIn, id: &str) -> String {
+/// and Ada's exact approval is kept in workspace governance.
+async fn always_lets_it_go_ahead_unasked(team: &Team<'_>, service: &StandIn, id: &str) -> GrantId {
     let turn = team.turn();
     let planting = calling(id, "plant_tree", json!({"kind": "apple"}));
     let asks = asked(team.takes(&turn, &planting).await);
     let waits = team.keeps(&asks);
-    let permission = team.lets_always(&asks);
     team.answered(&turn, &waits, Some(Leave::Always))
         .await
         .expect("the person's always calls the command");
@@ -758,30 +742,25 @@ async fn always_lets_it_go_ahead_unasked(team: &Team<'_>, service: &StandIn, id:
             ("plant_tree".to_owned(), json!({"kind": "pear"})),
         ]
     );
-    let listed = team
-        .hers(
-            person_asking::target(PERMISSIONS, person_asking::LIST),
-            json!({}),
-        )
-        .await;
-    assert_eq!(listed["permissions"].as_array().map(Vec::len), Some(1));
-    let stands = &listed["permissions"][0];
-    assert_eq!(stands["id"], permission.as_str());
-    assert_eq!(stands["agent"]["id"], SCOUT);
-    assert_eq!(
-        stands["action"],
-        json!({
-            "provider": person_connections::PROVIDER,
-            "kind": person_connections::COMMAND_KIND,
-            "action": CALL,
+    let scope = asks.always.expect("the command offers lasting approval");
+    let grant = team
+        .workspaces
+        .workspace_grants(&team.workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|grant| {
+            grant.node == policy_node(&scope)
+                && grant.grantee == Grantee::agent(SCOUT)
+                && grant.granted_by == Grantee::person(team.keeper.clone())
         })
-    );
-    assert_eq!(stands["on"]["document"], id);
-    assert_eq!(stands["usedTimes"], 1, "the unasked call was counted");
+        .expect("the workspace keeps the precise approval");
+    assert_eq!(grant.answer, Answer::Allow);
+    assert_eq!(grant.kinds, KindSet::OUTSIDE);
     let used = team.uses(id).await;
     assert_eq!(used.as_array().map(Vec::len), Some(2), "{used}");
     assert!(used[0]["leave"] == "always" && used[1]["leave"] == "always");
-    permission
+    grant.id
 }
 
 /// Their "always" lets one command of one connection go ahead unasked for
@@ -796,8 +775,17 @@ async fn always_covers_one_command_of_one_connection_until_its_person_takes_it_b
     let (service, another) = (StandIn::start("plain"), StandIn::start("plain"));
     let id = team.connects(&service).await;
     let other = team.connects(&another).await;
-    let turn = team.turn();
     let permission = always_lets_it_go_ahead_unasked(&team, &service, &id).await;
+
+    let members = team.members();
+    started.shutdown().await;
+    let started = start_serving(dir.path(), &key, &owner).await;
+    let team = Team::back(started.workspaces(), members);
+    let turn = team.turn();
+    let planting = calling(&id, "plant_tree", json!({"kind": "peach"}));
+    let planted = done(team.takes(&turn, &planting).await);
+    assert_eq!(planted["isError"], false, "the approval survives restart");
+    assert_eq!(calls(&service.seen()).len(), 1);
 
     // It covers nothing wider: the same command of another connection, and
     // another agent of the same person, ask.
@@ -808,12 +796,44 @@ async fn always_covers_one_command_of_one_connection_until_its_person_takes_it_b
     let planting = calling(&id, "plant_tree", json!({"kind": "plum"}));
     asked(team.takes(&for_second, &planting).await);
 
+    let accepted = team
+        .workspaces
+        .workspace_grants(&team.workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|grant| grant.id == permission)
+        .unwrap();
+    let blocked = Grant::new(
+        "no more planting",
+        accepted.grantee,
+        accepted.node,
+        KindSet::OUTSIDE,
+        Answer::Deny,
+        Grantee::person(hex::encode(owner.user_public_key)),
+    );
+    team.workspaces
+        .put_workspace_grants(&team.workspace, &owner, [0x53; 32], vec![blocked.clone()])
+        .await
+        .unwrap();
+    assert!(refused_with(
+        &team.takes(&turn, &planting).await,
+        "workspace policy denies this action for the agent",
+    ));
+    assert!(
+        calls(&service.seen()).is_empty(),
+        "the deny takes precedence"
+    );
+    team.workspaces
+        .remove_workspace_grants(&team.workspace, &owner, [0x54; 32], vec![blocked.id])
+        .await
+        .unwrap();
+
     // Taken back, it asks again from the very next call.
-    team.hers(
-        person_asking::target(PERMISSIONS, TAKE_BACK),
-        json!({"permission": permission}),
-    )
-    .await;
+    team.workspaces
+        .remove_workspace_grants(&team.workspace, &owner, [0x51; 32], vec![permission])
+        .await
+        .expect("the workspace's grant was revoked");
     asked(team.takes(&turn, &planting).await);
     assert!(calls(&service.seen()).is_empty());
     assert!(calls(&another.seen()).is_empty());
@@ -841,7 +861,6 @@ async fn a_command_its_service_defines_anew_asks_again_also_after_always() {
     let planting = calling(&id, "plant_tree", json!({"kind": "apple"}));
     let asks = asked(team.takes(&turn, &planting).await);
     let waits = team.keeps(&asks);
-    team.lets_always(&asks);
     let carried = team.answered(&turn, &waits, Some(Leave::Always)).await;
     assert_eq!(carried, Err(DEFINED_ANEW.to_owned()));
     team.workspaces.forget_ask(&waits);

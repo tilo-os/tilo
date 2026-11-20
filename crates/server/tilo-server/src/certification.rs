@@ -753,7 +753,7 @@ impl CertificationProtocol {
                 reason: "only a member approves devices here".into(),
             }
         };
-        write_frame(&mut send, &encode(&reply)?)
+        write_frame(&mut send, &reply.encode().map_err(|err| io(&err))?)
             .await
             .map_err(|error| io(&error))?;
         finish(connection, send).await
@@ -847,7 +847,7 @@ impl CertificationProtocol {
             } else {
                 self.answer_for_device(&peer.user_public_key, request, unix_now_ns())
             };
-            write_frame(&mut send, &encode(&reply)?)
+            write_frame(&mut send, &reply.encode().map_err(|err| io(&err))?)
                 .await
                 .map_err(|error| io(&error))?;
         }

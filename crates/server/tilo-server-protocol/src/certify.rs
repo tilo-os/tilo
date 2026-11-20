@@ -443,6 +443,7 @@ impl PageDeparture {
 /// A question an agent on the host puts to its person: one invocation of
 /// an action the person's grants leave to them.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "ConfirmationWire", into = "ConfirmationWire")]
 pub struct PendingConfirmation {
     /// Names this question, to answer it.
     pub id: [u8; 32],
@@ -478,14 +479,79 @@ pub struct PendingConfirmation {
     /// page nobody stands at, and the filled page it leaves from. Written even
     /// when there is none: a question is encoded by position (postcard), so a
     /// field left out is one its reader still expects.
-    #[serde(default)]
     pub page: Option<PageDeparture>,
     /// What the agent asks in its own words, where it asks the person
     /// something rather than to allow an action: the action fields are
     /// empty then, and the person answers with [`ConfirmationAnswer::Reply`].
     /// Written even when there is none, as [`Self::page`] is.
-    #[serde(default)]
     pub ask: Option<AgentAsk>,
+    /// A lasting workspace grant is offered for the action shown.
+    pub allow_always: bool,
+}
+
+// Fixed fields of the certification protocol. New approval choices are encoded
+// after the reply frame's original payload, outside these positional fields.
+#[derive(Serialize, Deserialize)]
+struct ConfirmationWire {
+    id: [u8; 32],
+    agent_id: String,
+    agent_label: String,
+    title: String,
+    action_label: String,
+    resource_label: String,
+    arguments: Vec<(String, String)>,
+    risk: String,
+    kind: String,
+    undoable: bool,
+    workspace: String,
+    expires_at_ns: u64,
+    #[serde(default)]
+    page: Option<PageDeparture>,
+    #[serde(default)]
+    ask: Option<AgentAsk>,
+}
+
+impl From<PendingConfirmation> for ConfirmationWire {
+    fn from(value: PendingConfirmation) -> Self {
+        Self {
+            id: value.id,
+            agent_id: value.agent_id,
+            agent_label: value.agent_label,
+            title: value.title,
+            action_label: value.action_label,
+            resource_label: value.resource_label,
+            arguments: value.arguments,
+            risk: value.risk,
+            kind: value.kind,
+            undoable: value.undoable,
+            workspace: value.workspace,
+            expires_at_ns: value.expires_at_ns,
+            page: value.page,
+            ask: value.ask,
+        }
+    }
+}
+
+impl From<ConfirmationWire> for PendingConfirmation {
+    fn from(value: ConfirmationWire) -> Self {
+        Self {
+            id: value.id,
+            agent_id: value.agent_id,
+            agent_label: value.agent_label,
+            title: value.title,
+            action_label: value.action_label,
+            resource_label: value.resource_label,
+            arguments: value.arguments,
+            risk: value.risk,
+            kind: value.kind,
+            undoable: value.undoable,
+            workspace: value.workspace,
+            expires_at_ns: value.expires_at_ns,
+            page: value.page,
+            ask: value.ask,
+            allow_always: false,
+        }
+    }
 }
 
 /// A question an agent puts to its person in its own words.
@@ -534,6 +600,8 @@ pub enum ConfirmationAnswer {
     /// The person's answer to an [`AgentAsk`]: one of its choices, or what
     /// they typed.
     Reply(String),
+    /// Carry out this invocation and keep a workspace grant for its scope.
+    AllowAlways,
 }
 
 impl ConfirmationAnswer {
@@ -545,6 +613,9 @@ impl ConfirmationAnswer {
         match (self, &question.ask) {
             (Self::Deny, _) => true,
             (Self::AllowOnce, ask) => ask.is_none(),
+            (Self::AllowAlways, ask) => {
+                ask.is_none() && question.page.is_none() && question.allow_always
+            }
             (Self::Reply(_), None) => false,
             (Self::Reply(reply), Some(ask)) => {
                 let reply = reply.trim();
@@ -578,12 +649,84 @@ pub enum ApproverReply {
     PushKey(Vec<u8>),
 }
 
+// Kept outside the legacy reply so an older client still reads every question.
+const GRANT_OFFERS_V1: &[u8] = b"tilo grant offers/1\0";
+
+impl ApproverReply {
+    /// Encode the original reply followed by one byte per question when any
+    /// offer a lasting workspace grant. Old clients read the original reply.
+    ///
+    /// # Errors
+    /// The reply could not be encoded.
+    pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
+        let mut bytes = postcard::to_allocvec(self)?;
+        if let Self::Confirmations(questions) = self
+            && questions.iter().any(|question| question.allow_always)
+        {
+            bytes.extend_from_slice(GRANT_OFFERS_V1);
+            bytes.extend(
+                questions
+                    .iter()
+                    .map(|question| u8::from(question.allow_always)),
+            );
+        }
+        Ok(bytes)
+    }
+
+    /// Read a reply from either version of the approver.
+    ///
+    /// # Errors
+    /// The reply or its lasting grant offers are malformed.
+    pub fn decode(bytes: &[u8]) -> Result<Self, postcard::Error> {
+        let (mut reply, rest): (Self, _) = postcard::take_from_bytes(bytes)?;
+        if let Self::Confirmations(questions) = &mut reply
+            && let Some(offers) = rest.strip_prefix(GRANT_OFFERS_V1)
+        {
+            if offers.len() != questions.len() || offers.iter().any(|&offer| offer > 1) {
+                return Err(postcard::Error::DeserializeBadEncoding);
+            }
+            for (question, &offer) in questions.iter_mut().zip(offers) {
+                question.allow_always = offer == 1;
+            }
+        }
+        Ok(reply)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
     use tilo_user_identity::StatementSigner as _;
+
+    #[test]
+    fn confirmation_replies_keep_their_original_payload() {
+        let question = |id, allow_always| PendingConfirmation {
+            id: [id; 32],
+            allow_always,
+            ..PendingConfirmation::default()
+        };
+        let old = ApproverReply::Confirmations(vec![question(1, false), question(2, false)]);
+        let new = ApproverReply::Confirmations(vec![question(1, true), question(2, false)]);
+        // Confirmations (variant 4), two entries, each the id and thirteen
+        // empty fields in their original positions.
+        let mut old_wire = vec![4, 2];
+        for id in [1, 2] {
+            old_wire.extend_from_slice(&[id; 32]);
+            old_wire.extend_from_slice(&[0; 13]);
+        }
+        let new_wire = new.encode().unwrap();
+
+        assert_eq!(ApproverReply::decode(&old_wire).unwrap(), old);
+        assert!(new_wire.starts_with(&old_wire));
+        assert_eq!(
+            postcard::from_bytes::<ApproverReply>(&new_wire).unwrap(),
+            old
+        );
+        assert_eq!(ApproverReply::decode(&new_wire).unwrap(), new);
+        assert!(ApproverReply::decode(new_wire.split_last().unwrap().1).is_err());
+    }
 
     fn approval(root: &SigningKey, issued_at_ns: u64, request: ApproverRequest) -> MemberApproval {
         let user_public_key = root.verifying_key().to_bytes();
@@ -657,6 +800,14 @@ mod tests {
         assert!(!ConfirmationAnswer::AllowOnce.answers(&ask(false)));
         let action = PendingConfirmation::default();
         assert!(ConfirmationAnswer::AllowOnce.answers(&action));
+        assert!(!ConfirmationAnswer::AllowAlways.answers(&action));
+        assert!(!ConfirmationAnswer::AllowAlways.answers(&ask(false)));
+        assert!(
+            ConfirmationAnswer::AllowAlways.answers(&PendingConfirmation {
+                allow_always: true,
+                ..PendingConfirmation::default()
+            })
+        );
         assert!(!reply("Munich").answers(&action));
     }
 

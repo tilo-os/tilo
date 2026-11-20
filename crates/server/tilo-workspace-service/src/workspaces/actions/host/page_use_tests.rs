@@ -271,11 +271,15 @@ async fn after_always_the_agent_fills_there_alone_until_the_leave_is_taken_back(
         remembers["always"],
         json!([{
             "agent": "scout",
-            "by": "Scout",
             "using": PAGE_USE,
             "places": [SITE],
             "since": remembers["always"][0]["since"],
         }])
+    );
+    assert!(
+        remembers["always"][0]["since"]
+            .as_u64()
+            .is_some_and(|since| since > 0)
     );
     assert_eq!(remembers["uses"], json!([]), "the leave used nothing");
 

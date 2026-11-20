@@ -13,44 +13,29 @@
 //!
 //! A command that changes something asks, unless its person let exactly that command of that
 //! connection stand for this agent. The entry answers what the person is to be asked, and this
-//! puts the question to them (`ask` of this server's agents): into their own conversation with
-//! the agent, whatever conversation the turn works in, because it shows what would be sent to
-//! a service of theirs. The tool call ends at once, told that its person is asked, and nothing
-//! waits on a thread. A connection an agent proposes is asked the same way, and offers no
-//! answer of always. When the person answers, on any device of theirs, the server carries out
-//! what it kept ([`Answers`]): once, only for the agent that asked acting for that person now,
-//! and only while the question still says what the server asked.
+//! puts the question on the system approval sheet. A connection an agent proposes is asked the
+//! same way and offers no lasting approval. On the person's answer the server carries out
+//! the original request ([`Answers`]), once and for the agent that asked acting for that person.
 
 use std::future::Future;
 use std::sync::Arc;
 
-use serde_json::{Value, json};
-use tilo_actions::policy::MemberId;
+use serde_json::Value;
 /// The word the answers about connections are carried out under.
 pub(super) use tilo_actions::remote::person_connections::CARRIER as WORD;
 use tilo_actions::remote::person_connections::{self, Asks, Leave, Taken};
 use tilo_actions::remote::{
     Caller, CatalogueProvider, CatalogueQuery, InvokeRequest, RemoteActionTarget,
 };
-use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
+use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
 use super::asks::{Answered, Asker, Carried, Carries, ServerAsk};
 use super::turn_provider::{Ending, Rows};
-use super::{CHAT, Reply, Turn, TurnProvider, WorkspaceId};
+use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::HostedTurn;
 use crate::workspaces::person_asking::kept_asks::KeptAsk;
-
-/// What an agent is told when its person is asked before a command is called: nothing was
-/// called, and it neither waits nor calls again.
-const ASKED: &str = "Your person is asked in your conversation with them whether this command \
-     may be called. Nothing was called. It is called once when they allow it there: tell them \
-     it waits for their answer, and do not call it again.";
-
-/// What an answer is told when the question it was given to no longer says what this server
-/// asked.
-const CHANGED: &str = "The question no longer says what this server asked, so nothing was done.";
 
 /// What an answer is told when the agent that asked no longer acts for the person asked.
 const NOT_THEIRS: &str =
@@ -119,21 +104,17 @@ impl TurnConnections {
             Taken::Done(value) => return Ok(succeeded(invocation, value)),
             Taken::Asks(asks) => asks,
         };
-        let put = self.put(&asks).await;
-        Ok(match (put, asks.answers) {
-            // Asking was all that was asked for: a proposal.
-            (Ok(()), Some(value)) => succeeded(invocation, value),
-            (Ok(()), None) => asked(invocation, ASKED.to_owned()),
-            (Err(why), _) => asked(
+        match self.put(&asks).await {
+            Ok(value) => Ok(succeeded(
                 invocation,
-                format!("Your person could not be asked ({why}), so nothing was done."),
-            ),
-        })
+                value.or(asks.answers).unwrap_or_default(),
+            )),
+            Err(reason) => Err(tilo_actions::remote::ActionCallError::Refused { reason }),
+        }
     }
 
-    /// Put the question `asks` holds to its person, in their own conversation with the agent:
-    /// what it shows of a service of theirs is theirs alone to read.
-    async fn put(&self, asks: &Asks) -> Result<(), String> {
+    /// Put the question `asks` holds to the person's system approval sheet.
+    async fn put(&self, asks: &Asks) -> Result<Option<Value>, String> {
         self.asker
             .ask(ServerAsk {
                 workspace: self.workspace.clone(),
@@ -233,21 +214,6 @@ fn succeeded(invocation: InvocationId, value: Value) -> InvocationUpdate {
     }
 }
 
-/// The end of a call that was not made because its person is asked first: `words` tell the
-/// agent so. It is not the code of an action that wants a confirmation, which the agent's
-/// tools word themselves.
-fn asked(invocation: InvocationId, words: String) -> InvocationUpdate {
-    InvocationUpdate::Failed {
-        invocation,
-        error: ActionFailure {
-            code: tilo_actions::remote::CONFIRMATION_REQUIRED_CODE.to_owned(),
-            message: words,
-            details: None,
-            retryable: false,
-        },
-    }
-}
-
 /// What carries out a person's answer to a question about a connection of theirs.
 struct Answers {
     workspaces: Workspaces,
@@ -267,76 +233,17 @@ impl Answers {
             .find(|agent| agent.id.0 == ask.agent && agent.is_active())
             .cloned()
     }
-
-    /// Whether the question about `ask` still says `words`, exactly as this server asked: an
-    /// agent may edit a message it wrote, and a question that was ever edited, or that stands
-    /// beside another under the same ask, is not the one its person was asked.
-    async fn says(&self, ask: &KeptAsk, words: &str) -> bool {
-        let agent = MemberId::agent(ask.agent.clone());
-        let person = MemberId::person(ask.person.clone());
-        let named = json!(ask.ask);
-        let routes = self
-            .workspaces
-            .document_routes(&ask.workspace)
-            .await
-            .unwrap_or_default();
-        let mut found = false;
-        for (app, document) in routes {
-            if app != CHAT
-                || collab_types::document::DocumentId::parse(&document)
-                    .is_none_or(|part| chat::parts::part_index(&part).is_none())
-            {
-                continue;
-            }
-            let read = (CHAT, document.as_str());
-            let Ok(Some(part)) = self
-                .workspaces
-                .read_resource::<chat::parts::ChatMessages>(&ask.workspace, read)
-                .await
-            else {
-                continue;
-            };
-            for (_, message) in part.messages.iter() {
-                let asks = message.author == agent
-                    && message.question.as_ref().is_some_and(|question| {
-                        question.person == person
-                            && question
-                                .kept()
-                                .is_some_and(|kept| kept.get("ask") == Some(&named))
-                    });
-                if !asks {
-                    continue;
-                }
-                let as_asked = message.text == words
-                    && !message.edited
-                    && message.history.is_empty()
-                    && message.body.is_empty();
-                if !as_asked {
-                    return false;
-                }
-                found = true;
-            }
-        }
-        found
-    }
 }
 
 impl Carries for Answers {
-    /// The words this server asked with, kept beside what the question shows.
-    fn asked_with(&self, ask: &KeptAsk) -> Option<String> {
-        let words = ask.kept.get("words").and_then(Value::as_str);
-        words.map(str::to_owned)
-    }
-
     /// Their yes calls the command, or adds the connection, as this server kept it: for the
-    /// agent that asked, acting for the person asked as the workspace admits them now, and
-    /// only while the question says what the server asked. Their no does nothing.
+    /// agent that asked, acting for the person asked as the workspace admits them now.
     fn carry<'a>(&'a self, ask: &'a KeptAsk, answer: Answered) -> Carried<'a> {
         Box::pin(async move {
             let leave = match answer {
                 Answered::Once => Some(Leave::Once),
                 Answered::Always => Some(Leave::Always),
-                Answered::No => None,
+                Answered::No => return Err("The person did not approve the request.".to_owned()),
             };
             let gone = || NOT_THEIRS.to_owned();
             let workspace = WorkspaceId::parse(&ask.workspace).ok_or_else(gone)?;
@@ -348,12 +255,6 @@ impl Carries for Answers {
                 .await
                 .ok_or_else(gone)?;
             let agent = self.asker(ask).await.ok_or_else(gone)?;
-            if leave.is_some() {
-                let words = ask.kept.get("words").and_then(Value::as_str);
-                if !self.says(ask, words.unwrap_or_default()).await {
-                    return Err(CHANGED.to_owned());
-                }
-            }
             // The agent acting for its person now, on a turn of its own: what the entry
             // decides the answer by.
             let caller = Caller::authenticated(person, device)

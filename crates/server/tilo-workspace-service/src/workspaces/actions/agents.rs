@@ -289,6 +289,7 @@ impl Workspaces {
                     expires_at_ns: now.saturating_add(QUESTION_WAIT_NS),
                     page: None,
                     ask: None,
+                    allow_always: false,
                 };
                 self.ask_person(certificate.user_public_key, question).await
             }
@@ -319,11 +320,13 @@ impl Workspaces {
             .ok_or_else(ActionCallError::confirmation_required)?;
         match asker.ask(person, question).await {
             Ok(ConfirmationAnswer::AllowOnce) => Ok(()),
-            Ok(ConfirmationAnswer::Deny | ConfirmationAnswer::Reply(_)) => {
-                Err(ActionCallError::Refused {
-                    reason: "the person did not allow it".into(),
-                })
-            }
+            Ok(
+                ConfirmationAnswer::Deny
+                | ConfirmationAnswer::Reply(_)
+                | ConfirmationAnswer::AllowAlways,
+            ) => Err(ActionCallError::Refused {
+                reason: "the person did not allow it".into(),
+            }),
             Err(_) => Err(ActionCallError::confirmation_required()),
         }
     }
