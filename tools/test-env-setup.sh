@@ -64,8 +64,6 @@
 #          makes one in a directory of its own and places it with one rename,
 #          so no job waits on another's generation, and a set a job raced to
 #          make is dropped whole rather than written over the one that landed.
-# root     Root only (a micro-VM step): in a container's own cgroup root its
-#          processes move to a leaf so the root delegates its controllers.
 # swtpm    TILO_REQUIRE_SWTPM=1: the sign-in and rollback tests observe an emulated
 #          TPM, which the builder has (dist/ci/install-build-deps.sh); one that
 #          cannot start it fails instead of passing by skipping.
@@ -102,7 +100,7 @@
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
-    echo "usage: $0 runtime|fonts|audio|ntfs|root|swtpm|pdf-sandbox|video-render|pam-module|throughput|property-cases ..." >&2
+    echo "usage: $0 runtime|fonts|audio|ntfs|swtpm|pdf-sandbox|video-render|pam-module|throughput|property-cases ..." >&2
     exit 2
 fi
 env_file=${NEXTEST_ENV:?test-env-setup.sh writes the environment to the file NEXTEST_ENV names}
@@ -361,33 +359,9 @@ throughput() {
     provide TILO_THROUGHPUT_LARGE_MB 16
 }
 
-# The limits tests give jobs cgroups of their own, under one that hands its
-# children the controllers. A cgroup holding processes cannot: a container's
-# own root, where every process of the run starts, is one. As root there, its
-# processes move into a leaf and the root hands its children every controller
-# it is given, as a container that starts containers does.
-delegate_cgroups() {
-    local cg=/sys/fs/cgroup pids pid controller
-    [[ $(id -u) == 0 && $(cat /proc/self/cgroup) == 0::/ && -w $cg/cgroup.subtree_control ]] || return 0
-    [[ -z $(cat "$cg/cgroup.subtree_control") ]] || return 0
-    mkdir -p "$cg/init"
-    # Again while any is left: a process may fork while the others move.
-    for _ in 1 2 3 4 5; do
-        pids=$(cat "$cg/cgroup.procs")
-        [[ -n $pids ]] || break
-        for pid in $pids; do
-            echo "$pid" >"$cg/init/cgroup.procs" 2>/dev/null || true
-        done
-    done
-    for controller in $(cat "$cg/cgroup.controllers"); do
-        echo "+$controller" >"$cg/cgroup.subtree_control" ||
-            echo "the cgroup root does not delegate $controller" >&2
-    done
-}
-
 for step; do
     case $step in
-        runtime | fonts | audio | ntfs | root | swtpm | pdf-sandbox | video-render | pam-module | throughput | property-cases)
+        runtime | fonts | audio | ntfs | swtpm | pdf-sandbox | video-render | pam-module | throughput | property-cases)
             "$step" ;;
         *) echo "unknown test environment step: $step" >&2; exit 2 ;;
     esac
