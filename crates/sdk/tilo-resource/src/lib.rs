@@ -176,7 +176,8 @@ pub use absolute_path::{AbsolutePath, RelativePath};
 pub use action::{
     ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
     Outcome, Params, Refusal, Reverting, Stamped, TryMapped, Undoing, fresh_uuid, invoking_member,
-    invoking_name, minted_ids, minted_keys, restore_minted, reverting_type, take_minted,
+    invoking_name, minted_entry, minted_ids, minted_keys, restore_minted, reverting_type,
+    take_minted,
 };
 /// A change a document reports, as an `answer` hook reads what its action did.
 pub use automerge::Patch;

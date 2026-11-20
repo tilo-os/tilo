@@ -228,7 +228,7 @@ fn apply_prepared(
 ) -> Result<(), ActionError> {
     let seed = crate::action::seed(doc, b"tilo-resource/group-seed/v1", payload);
     if current_member().is_none() {
-        drop(crate::action::take_minted());
+        crate::action::start_minting();
     }
     let deferring = Deferring::begin();
     {
@@ -257,7 +257,7 @@ fn apply_encoded(
         serde_json::from_slice(payload).map_err(ActionError::Encode)?;
     let seed = crate::action::seed(doc, b"tilo-resource/group-seed/v1", payload);
     if current_member().is_none() {
-        drop(crate::action::take_minted());
+        crate::action::start_minting();
     }
     let deferring = Deferring::begin();
     let mut made: Vec<Vec<String>> = Vec::with_capacity(members.len());

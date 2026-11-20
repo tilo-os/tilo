@@ -1066,7 +1066,6 @@ impl ChainCore {
                         self.part.kind,
                         &minted,
                         &envelope,
-                        &before,
                     );
                     tilo_resource::restore_minted(minted);
                     items

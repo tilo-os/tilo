@@ -2221,49 +2221,41 @@ pub(crate) struct OrdinaryConfirmation {
 /// the address it is published under, in minting order: what a write answers
 /// its caller, so nothing reads an id out of a rendered address. `minted`
 /// are the ids the action logged as it applied — every member of a group's
-/// together ([`tilo_resource::take_minted`]) — read from the action changes
-/// since `before`, never a diff of the whole document, so an edit costs the
-/// same however large the record is. An action applied outside this
-/// process's thread logs nothing, and its ids are read from its seed.
+/// together ([`tilo_resource::take_minted`]) — or, when it logged none, those
+/// its seed mints; each is found in the collection the action made its entry
+/// in ([`tilo_resource::minted_entry`]), never by reading the change it
+/// wrote, so answering costs what it made, not what it wrote.
 pub fn minted_items(
-    doc: &mut AutoCommit,
+    doc: &AutoCommit,
     kind: &str,
     minted: &[String],
     envelope: &tilo_actions::ActionEnvelope,
-    before: &[ChangeHash],
 ) -> Vec<(String, String)> {
-    // Each map key the changes write, with the object it is first written in:
-    // only the ids the action logged, when it logged them, rather than every
-    // field of every item it made.
-    let logged: std::collections::HashSet<&str> = minted.iter().map(String::as_str).collect();
     let mut stored = std::collections::HashMap::new();
-    for change in doc.get_changes(before) {
-        let Some(touches) = doc.committed_document().change_touches(&change) else {
-            continue;
-        };
-        for (obj, key) in touches.writes {
-            if let Some(key) = key
-                && (logged.is_empty() || logged.contains(key.as_str()))
-            {
-                stored.entry(key).or_insert(obj);
-            }
-        }
-    }
-    if stored.is_empty() {
-        return Vec::new();
-    }
     let ids: Vec<String> = if minted.is_empty() {
         let mut found = Vec::new();
         for keys in tilo_resource::minted_keys(envelope) {
-            let Some(id) = keys.into_iter().find(|id| stored.contains_key(id.as_str())) else {
+            let Some((id, obj)) = keys
+                .into_iter()
+                .find_map(|id| tilo_resource::minted_entry(&id).map(|obj| (id, obj)))
+            else {
                 break;
             };
+            stored.insert(id.clone(), obj);
             found.push(id);
         }
         found
     } else {
+        for id in minted {
+            if let Some(obj) = tilo_resource::minted_entry(id) {
+                stored.insert(id.clone(), obj);
+            }
+        }
         minted.to_vec()
     };
+    if stored.is_empty() {
+        return Vec::new();
+    }
     // Each item it stored, under the path of map keys down to it from the document's root: `issues`, or
     // `issues/<issue>/comments` for one inside an item.
     // The document's own collections publish items. What a write that made one stored inside it
@@ -2748,9 +2740,7 @@ fn perform_resource_operation(
             // members' ids are here together.
             let minted = tilo_resource::take_minted();
             let made = match (applied.as_ref(), before.as_ref()) {
-                (Some(envelope), Some(before)) => {
-                    minted_items(doc, &resource.kind, &minted, envelope, before)
-                }
+                (Some(envelope), Some(_)) => minted_items(doc, &resource.kind, &minted, envelope),
                 _ => Vec::new(),
             };
             let value = with_made(value, &minted, &made);

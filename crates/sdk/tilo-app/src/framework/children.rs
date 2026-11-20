@@ -845,7 +845,6 @@ impl<C: ChildResource> ChildrenState<C> {
             .workspace
             .store
             .with_history(&record, |doc, history| {
-                let before = doc.get_heads();
                 let writer = ui_core::bound_dispatch::document_writer(&invoker.acting.by, doc);
                 let applied = tilo_actions::apply_local_with_context(
                     doc,
@@ -854,9 +853,7 @@ impl<C: ChildResource> ChildrenState<C> {
                     Some(&writer),
                     context,
                 )
-                .map(|envelope| {
-                    ui_core::bound_dispatch::minted_items(doc, C::KIND, &[], &envelope, &before)
-                })
+                .map(|envelope| ui_core::bound_dispatch::minted_items(doc, C::KIND, &[], &envelope))
                 .map_err(|error| ActionError::Refused(error.to_string()));
                 history.rebase(doc);
                 applied

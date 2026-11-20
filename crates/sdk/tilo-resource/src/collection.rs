@@ -729,6 +729,7 @@ pub(crate) fn put_entry(
     store: &dyn Fn(&mut Doc, Slot<'_>) -> Result<(), ModelError>,
 ) -> Result<(), ModelError> {
     if order_only {
+        crate::action::note_entry(map, id.as_str());
         return Slot::Key(map, id.as_str()).put_scalar(doc, ScalarValue::Str(key.into()));
     }
     let at = Slot::Key(map, id.as_str());
@@ -736,6 +737,7 @@ pub(crate) fn put_entry(
         Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
         entry
     } else {
+        crate::action::note_entry(map, id.as_str());
         // A new entry is made with its order key at once.
         let mut made = std::collections::HashMap::with_capacity(1);
         made.insert(

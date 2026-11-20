@@ -257,6 +257,33 @@ fn uuid_from(digest: &[u8; 32]) -> uuid::Uuid {
 thread_local! {
     /// The ids the action applying last on this thread minted, in order.
     static MINTED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The entries the action applying last on this thread made in a
+    /// collection: the collection map each item's id was made a key of.
+    static ENTRIES: std::cell::RefCell<std::collections::HashMap<String, automerge::ObjId>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// An action starts applying on this thread: nothing minted or made before
+/// it is its own.
+pub(crate) fn start_minting() {
+    drop(take_minted());
+    ENTRIES.with(|entries| entries.borrow_mut().clear());
+}
+
+/// Note that the action applying on this thread made the entry of the item
+/// `id` in the collection map `map`.
+pub(crate) fn note_entry(map: &automerge::ObjId, id: &str) {
+    ENTRIES.with(|entries| {
+        entries.borrow_mut().insert(id.to_owned(), map.clone());
+    });
+}
+
+/// The collection map the action applied last on this thread made the
+/// entry of the item `id` in, if it made one: where whoever answers what it
+/// made finds the item, without reading the change it wrote.
+#[must_use]
+pub fn minted_entry(id: &str) -> Option<automerge::ObjId> {
+    ENTRIES.with(|entries| entries.borrow().get(id).cloned())
 }
 
 /// Note `id` among the ids the action applying on this thread minted, for
@@ -1262,7 +1289,7 @@ fn apply_operation(
 ) -> Result<(), ActionError> {
     // A group's members mint into one list; anything else starts afresh.
     if crate::group::current_member().is_none() {
-        drop(take_minted());
+        start_minting();
     }
     let mut cx = ActionCx::for_apply(doc, payload, now_ms);
     let shape = record.shape;
