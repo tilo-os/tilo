@@ -1196,10 +1196,14 @@ impl Workspaces {
     /// sends a device its records only when it opens one, so this is what a
     /// service listing the workspace's apps goes by. `None` for a workspace
     /// this host does not hold.
+    ///
+    /// Read from the replica without the workspace's lock ([`Workspaces::reading`]): the lock is
+    /// held across each commit's writes, so under a long change of many files a listing waited
+    /// seconds behind them, up to the half minute after which a device takes the server for gone.
     pub async fn records(&self, workspace: &str) -> Option<Vec<(String, String)>> {
-        let governed = self.workspace(workspace).await.ok()?;
-        let governed = governed.lock().await;
-        Some(governed.peer().records())
+        let reading = self.reading(WorkspaceId::parse(workspace)?).await?;
+        let peer = reading.replica.lock();
+        Some(peer.records())
     }
 
     /// Open every workspace recorded under `dir` and bind each to the server, pinned.
