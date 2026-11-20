@@ -1028,10 +1028,10 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
         .as_ref()
         .and_then(|access| access.name.clone())
         .unwrap_or_default();
-    // The mark names who writes there and what it did there: the characters it left say it in
-    // the past tense, as the action's words or else the kind of step it took.
+    // The mark names who writes there and what it is doing there: a step that has not committed
+    // says which field it edits, where its caret ends what it has written so far.
     assert!(
-        named.starts_with("Helper: wrote"),
+        named.starts_with("Helper: editing Title"),
         "a reader is told who writes there and what: {named}"
     );
     let [cx, cy, _, ch] = caret.rect;
