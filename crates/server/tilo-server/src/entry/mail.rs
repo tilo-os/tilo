@@ -1242,18 +1242,18 @@ mod tests {
                 Templates::baked().render(Kind::Invite, language, "x@example.org", &values)
             };
             let named = invited("en", "Ada");
-            assert!(named.text.contains("Ada invited you to join Lounge."), "{}", named.text);
-            assert!(named.html.contains("<p>Ada invited you to join Lounge.</p>"));
+            assert!(named.text.contains("Ada invited you to Tilo."), "{}", named.text);
+            assert!(named.html.contains("<p>Ada invited you to Tilo. "));
             let unnamed = invited("en", "");
-            assert!(unnamed.text.contains("You're invited to join Lounge."), "{}", unnamed.text);
-            assert!(unnamed.html.contains("<p>You're invited to join Lounge.</p>"));
+            assert!(unnamed.text.contains("you're invited to Tilo."), "{}", unnamed.text);
+            assert!(unnamed.html.contains("<p>You're off the wait list: you're invited to Tilo. "));
             for mail in [&named, &unnamed] {
                 assert!(!mail.text.to_lowercase().contains("someone"));
                 assert!(!mail.html.to_lowercase().contains("someone"));
             }
             let german = invited("de", "");
-            assert!(german.text.contains("Du bist zu Lounge eingeladen."), "{}", german.text);
-            assert!(invited("de", "Ada").text.contains("Ada hat dich zu Lounge eingeladen."));
+            assert!(german.text.contains("Deine Einladung zu Tilo ist da."), "{}", german.text);
+            assert!(invited("de", "Ada").text.contains("Ada hat dich zu Tilo eingeladen."));
             // The name is a person's text, escaped in the HTML, never markup.
             let escaped = invited("en", "<Ada & Bo>");
             assert!(escaped.html.contains("&lt;Ada &amp; Bo&gt; invited you"));

@@ -1,9 +1,11 @@
-Subject: Confirm your address for the {{workspace}} wait list
+Subject: Confirm your place on the Tilo wait list
 
-Someone, hopefully you, put {{email}} on the wait list for {{workspace}}.
+Someone, hopefully you, asked for an invite to Tilo for {{email}}.
 
-Confirm it to get on the list:
+Confirm it to get on the wait list:
 {{link}}
+
+Tilo is one workspace for you, your team and your AI agents: notes, tasks, files and chat in one place, on all your devices. We'll email you once more, with your invite. Nothing else.
 
 Not you? Ignore this mail. An address nobody confirms is forgotten in two days.
 

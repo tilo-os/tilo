@@ -1,8 +1,10 @@
-Subject: You're invited to {{workspace}}
+Subject: You're invited to Tilo
 
-{{#inviter}}{{inviter}} invited you to join {{workspace}}.{{/inviter}}{{^inviter}}You're invited to join {{workspace}}.{{/inviter}}
+{{#inviter}}{{inviter}} invited you to Tilo.{{/inviter}}{{^inviter}}You're off the wait list: you're invited to Tilo.{{/inviter}} Your own workspace is ready.
 
-Join with this link:
+Open it with this link:
 {{link}}
+
+Put your notes, tasks and files in it, and connect Claude Code or another agent to work in it beside you. You'll find {{workspace}} in the workspace menu too.
 
 Not interested any more? Take me off the list: {{remove_link}}

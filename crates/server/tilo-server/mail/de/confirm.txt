@@ -1,9 +1,11 @@
-Subject: Bestätige deine Adresse für die Warteliste von {{workspace}}
+Subject: Bestätige deinen Platz auf der Warteliste von Tilo
 
-Jemand, hoffentlich du, hat {{email}} auf die Warteliste von {{workspace}} gesetzt.
+Jemand, hoffentlich du, hat für {{email}} eine Einladung zu Tilo angefragt.
 
-Bestätige sie, um auf die Liste zu kommen:
+Bestätige sie, um auf die Warteliste zu kommen:
 {{link}}
+
+Tilo ist ein Arbeitsbereich für dich, dein Team und deine KI-Agenten: Notizen, Aufgaben, Dateien und Chat an einem Ort, auf all deinen Geräten. Wir schreiben dir noch einmal, mit deiner Einladung. Sonst nichts.
 
 Warst du das nicht? Dann ignoriere diese Mail. Eine Adresse, die niemand bestätigt, ist in zwei Tagen vergessen.
 

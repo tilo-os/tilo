@@ -6,12 +6,9 @@
 arrival-joke-netscape = Optimiert für Netscape 4.0 bei 800×600
 arrival-joke-splines = Splines werden retikuliert…
 arrival-joke-downloading-cloud = Die Cloud wird heruntergeladen…
-arrival-joke-more-ram = Mehr RAM wird heruntergeladen…
 arrival-joke-zero-updates = 0 Updates installiert. Gern geschehen.
-arrival-joke-do-not-turn-off = Bitte schalte den Browser nicht aus.
 arrival-joke-clippy = Karl Klammer kommt nicht zurück.
 arrival-joke-new-computer = Wir bereiten alles für dich vor…
-arrival-joke-off-and-on = Schon mal aus- und wieder eingeschaltet?
 arrival-joke-fax = Faxgerät wird vorgeheizt…
 
 ## Gemeinsam
@@ -50,9 +47,9 @@ arrival-tip-operating-system = Tilo ist ein Betriebssystem. Dieses läuft in dei
 # Künftige Tipps: siehe en-US.ftl.
 
 ## Statt einer Zeile, wenn ein Schritt des Hereinkommens langsam ist
-arrival-slow-loading = Lädt noch. Dein Netz ist vielleicht langsam.
-arrival-slow-connecting = Verbindet noch. Dein Netz ist vielleicht langsam.
-arrival-slow-starting = Tilo startet noch. Dieses Gerät ist vielleicht ausgelastet.
+arrival-slow-loading = Tilo lädt noch.
+arrival-slow-connecting = Verbindet sich noch mit dem Arbeitsbereich.
+arrival-slow-starting = Tilo startet noch.
 arrival-slow-opening = Der Arbeitsbereich öffnet sich noch.
 arrival-slow-drawing = Die Grafik startet noch. Ohne Grafikkarte dauert das länger.
 # Steht mit „Noch einmal versuchen“ daneben, wenn ein Schritt lange nicht
@@ -82,8 +79,8 @@ arrival-invite-link = Einladungs- oder Kopplungslink
 arrival-invite-placeholder = Einladungs- oder Kopplungslink einfügen
 arrival-invite-open = Öffnen
 arrival-invite-not-a-link = Das ist kein Einladungs- oder Kopplungslink. Füge den ganzen Link ein.
-arrival-refusal-wait-heading = Tilo ist im Moment leider nur mit Einladung offen
-arrival-refusal-wait-body = Es ist eine frühe Alpha. Hinterlass deine E-Mail-Adresse, und wir schicken dir eine Einladung, sobald Platz ist.
+arrival-refusal-wait-heading = Ein Arbeitsbereich für dich, dein Team und deine KI-Agenten
+arrival-refusal-wait-body = Notizen, Aufgaben, Dateien und Chat an einem Ort, auf all deinen Geräten. Claude Code und andere Agenten arbeiten darin neben dir, und du siehst alles, was sie tun. In der frühen Alpha geht es nur mit Einladung: Hinterlass deine E-Mail-Adresse, und wir schicken dir eine.
 arrival-wait-email = E-Mail-Adresse
 arrival-wait-placeholder = du@beispiel.de
 arrival-wait-join = Auf die Warteliste

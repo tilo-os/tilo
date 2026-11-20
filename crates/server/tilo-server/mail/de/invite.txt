@@ -1,8 +1,10 @@
-Subject: Du bist zu {{workspace}} eingeladen
+Subject: Du bist zu Tilo eingeladen
 
-{{#inviter}}{{inviter}} hat dich zu {{workspace}} eingeladen.{{/inviter}}{{^inviter}}Du bist zu {{workspace}} eingeladen.{{/inviter}}
+{{#inviter}}{{inviter}} hat dich zu Tilo eingeladen.{{/inviter}}{{^inviter}}Deine Einladung zu Tilo ist da.{{/inviter}} Dein eigener Arbeitsbereich ist bereit.
 
-Komm mit diesem Link dazu:
+Öffne ihn mit diesem Link:
 {{link}}
+
+Leg deine Notizen, Aufgaben und Dateien hinein und verbinde Claude Code oder einen anderen Agenten, der darin neben dir arbeitet. {{workspace}} findest du auch im Arbeitsbereich-Menü.
 
 Kein Interesse mehr? Nimm mich von der Liste: {{remove_link}}

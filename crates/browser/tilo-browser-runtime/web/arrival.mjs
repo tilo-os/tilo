@@ -187,9 +187,9 @@ export const STEP_NOTES = new Set([
 /** Said in place of the line when a step runs long; the locale file may
  * word them. */
 export const SLOW_NOTES = {
-  fetch: ['arrival-slow-loading', 'Still loading. Your network may be slow.'],
-  compile: ['arrival-slow-starting', 'Still starting Tilo. This device may be busy.'],
-  join: ['arrival-slow-connecting', 'Still connecting. Your network may be slow.'],
+  fetch: ['arrival-slow-loading', 'Still loading Tilo.'],
+  compile: ['arrival-slow-starting', 'Still starting Tilo.'],
+  join: ['arrival-slow-connecting', 'Still connecting to the workspace.'],
   open: ['arrival-slow-opening', 'Still opening the workspace.'],
   draw: ['arrival-slow-drawing', 'Still starting graphics. Without a graphics card this takes longer.'],
 };
@@ -304,8 +304,9 @@ export function refusedByHost(error) {
  * The words of the entry a page turned away for coming without an
  * invitation shows (index.html, `#arrival-refusal`), in `messages`' language.
  * An entry whose host keeps a wait list (`waitList`) is the product's own
- * front entry: it apologises, says why, and asks for an address. Without
- * one, it names the workspace and how to get an invite.
+ * front entry: it says what Tilo is, that it takes people by invitation
+ * for now, and asks for an address. Without one, it names the workspace and
+ * how to get an invite.
  */
 export function refusalCopy({workspace = null, waitList = false, signIn = false, messages = null} = {}) {
   const say = (key, english, args) => localized(messages, key, english, args);
@@ -323,8 +324,8 @@ export function refusalCopy({workspace = null, waitList = false, signIn = false,
   }
   if (waitList) {
     return {
-      heading: say('arrival-refusal-wait-heading', 'Sorry, Tilo is invite-only right now'),
-      body: say('arrival-refusal-wait-body', 'It’s an early alpha. Leave your email and we’ll send you an invite when there’s room.'),
+      heading: say('arrival-refusal-wait-heading', 'One workspace for you, your team and your AI agents'),
+      body: say('arrival-refusal-wait-body', 'Notes, tasks, files and chat in one place, on all your devices. Claude Code and other agents work in it beside you, and you see everything they do. Tilo is invite-only during its early alpha: leave your email and we’ll send you an invite.'),
     };
   }
   return {

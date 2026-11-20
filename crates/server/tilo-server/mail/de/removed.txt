@@ -1,5 +1,5 @@
-Subject: Du stehst nicht mehr auf der Warteliste von {{workspace}}
+Subject: Du stehst nicht mehr auf der Warteliste von Tilo
 
-{{email}} steht nicht mehr auf der Warteliste von {{workspace}}, und nichts davon wird aufbewahrt.
+{{email}} steht nicht mehr auf der Warteliste von Tilo, und nichts davon wird aufbewahrt.
 
 Doch anders entschieden? Trag dich wieder ein: {{entry}}

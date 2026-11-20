@@ -365,7 +365,11 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
        toggle. Trying Tilo on their own sits at the foot of the page.
        #status keeps the words for screen readers. */
     #arrival-refusal { display: none; }
-    [data-arrival=stopped][data-entry=refused][data-refusal] #arrival-refusal { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 230px)) 24px 0; overflow-y: auto; text-align: center; background: #121214; }
+    /* A first visit to a site that keeps a wait list sees its entry at once
+       (entry-page.mjs `offerFront`), over the page still loading; the ways
+       to sign in show once the runtime that signs in is there. */
+    [data-front]:not([data-arrival=stopped]) .refusal-alt { visibility: hidden; }
+    :is([data-front], [data-arrival=stopped][data-entry=refused])[data-refusal] #arrival-refusal { position: fixed; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 230px)) 24px 0; overflow-y: auto; text-align: center; background: #121214; }
     [data-refusal] #status { position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .refusal-main { display: flex; flex-direction: column; align-items: center; width: min(400px, 100%); }
     .refusal-main > svg { display: block; margin-bottom: 24px; }
@@ -426,7 +430,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #arrival-refusal #arrival-own:hover { color: #c4c4cc; }
     [data-own-desktop] #arrival-refusal #arrival-own { visibility: visible; }
     @media (max-width: 480px) {
-      [data-arrival=stopped][data-entry=refused][data-refusal] #arrival-refusal { padding-top: max(32px, calc(42vh - 230px)); }
+      :is([data-front], [data-arrival=stopped][data-entry=refused])[data-refusal] #arrival-refusal { padding-top: max(32px, calc(42vh - 230px)); }
       #arrival-refusal h1 { font-size: 20px; }
       .refusal-field { grid-template-columns: 1fr; }
     }

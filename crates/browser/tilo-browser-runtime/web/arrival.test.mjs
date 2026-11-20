@@ -70,7 +70,7 @@ test('a slow fetch or join says so in plain words instead of a joke', () => {
   assert.ok(arrival.update(loading, 7999).line);
   const slow = arrival.update(loading, 8000);
   assert.equal(slow.line, null);
-  assert.equal(slow.note, 'Still loading. Your network may be slow.');
+  assert.equal(slow.note, 'Still loading Tilo.');
   assert.ok(arrival.update({arrival: 'load', wasmFetched: true}, 8100).line, 'compiling is not the network');
   arrival.update({arrival: 'join'}, 9000);
   assert.ok(arrival.update({arrival: 'join'}, 14_999).line);
@@ -119,7 +119,7 @@ test('a step that does not move on offers Try again and keeps waiting', () => {
 test('a slow start or opening says so too', () => {
   const arrival = createArrival({lines: {jokes, tips}});
   arrival.update({arrival: 'load', wasmFetched: true}, 2000);
-  assert.equal(arrival.update({arrival: 'load', wasmFetched: true}, 10_000).note, 'Still starting Tilo. This device may be busy.');
+  assert.equal(arrival.update({arrival: 'load', wasmFetched: true}, 10_000).note, 'Still starting Tilo.');
   arrival.update({arrival: 'open'}, 11_000);
   assert.equal(arrival.update({arrival: 'open'}, 19_000).note, 'Still opening the workspace.');
 });
@@ -352,17 +352,17 @@ test('a tip reads after its label, a joke bare', () => {
   assert.ok(!arrivalLines(locale('de-DE')).tips.includes('Tipp'));
 });
 
-test('the entry apologises and asks for an email where there is a wait list, else names the workspace', () => {
+test('the entry says what Tilo is and asks for an email where there is a wait list, else names the workspace', () => {
   assert.deepEqual(refusalCopy({workspace: 'Lounge', waitList: true}), {
-    heading: 'Sorry, Tilo is invite-only right now',
-    body: 'It’s an early alpha. Leave your email and we’ll send you an invite when there’s room.',
+    heading: 'One workspace for you, your team and your AI agents',
+    body: 'Notes, tasks, files and chat in one place, on all your devices. Claude Code and other agents work in it beside you, and you see everything they do. Tilo is invite-only during its early alpha: leave your email and we’ll send you an invite.',
   });
   assert.deepEqual(refusalCopy({workspace: 'Lounge'}), {heading: 'Lounge is invite-only for now',
     body: 'Ask someone in it for an invite link, then paste it here. If you are in it on another device, paste the link “Pair a new device” makes there.'});
   assert.equal(refusalCopy().heading, 'This workspace is invite-only for now');
   const german = refusalCopy({waitList: true, messages: locale('de-DE')});
-  assert.match(german.heading, /Einladung/);
-  assert.match(german.body, /Warteliste|E-Mail/);
+  assert.match(german.heading, /KI-Agenten/);
+  assert.match(german.body, /Einladung/);
   assert.equal(waitListFailure('invalid-email'), 'That doesn’t look like an email address.');
   assert.match(waitListFailure('wait-list-full'), /full for now/);
   assert.match(waitListFailure('too-many'), /Try again later/);

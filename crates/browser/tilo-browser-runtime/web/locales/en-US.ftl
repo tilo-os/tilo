@@ -15,12 +15,9 @@
 arrival-joke-netscape = Best viewed in Netscape Navigator 4.0 at 800×600
 arrival-joke-splines = Reticulating splines…
 arrival-joke-downloading-cloud = Downloading the cloud…
-arrival-joke-more-ram = Downloading more RAM…
 arrival-joke-zero-updates = Installing 0 updates. You’re welcome.
-arrival-joke-do-not-turn-off = Please do not turn off your browser.
 arrival-joke-clippy = Clippy is not coming back.
 arrival-joke-new-computer = Getting your new computer ready…
-arrival-joke-off-and-on = Have you tried turning it off and on again?
 arrival-joke-fax = Warming up the fax machine…
 
 ## Together
@@ -63,9 +60,9 @@ arrival-tip-operating-system = Tilo is an operating system. This one runs in you
 #   Strips as places
 
 ## Said instead of a line when a step of getting in is slow
-arrival-slow-loading = Still loading. Your network may be slow.
-arrival-slow-connecting = Still connecting. Your network may be slow.
-arrival-slow-starting = Still starting Tilo. This device may be busy.
+arrival-slow-loading = Still loading Tilo.
+arrival-slow-connecting = Still connecting to the workspace.
+arrival-slow-starting = Still starting Tilo.
 arrival-slow-opening = Still opening the workspace.
 arrival-slow-drawing = Still starting graphics. Without a graphics card this takes longer.
 # Said with Try again beside it once a step has not moved on for long; the
@@ -98,8 +95,8 @@ arrival-invite-link = Invite or pairing link
 arrival-invite-placeholder = Paste an invite or pairing link
 arrival-invite-open = Open
 arrival-invite-not-a-link = That isn’t an invite or pairing link. Paste the whole link.
-arrival-refusal-wait-heading = Sorry, Tilo is invite-only right now
-arrival-refusal-wait-body = It’s an early alpha. Leave your email and we’ll send you an invite when there’s room.
+arrival-refusal-wait-heading = One workspace for you, your team and your AI agents
+arrival-refusal-wait-body = Notes, tasks, files and chat in one place, on all your devices. Claude Code and other agents work in it beside you, and you see everything they do. Tilo is invite-only during its early alpha: leave your email and we’ll send you an invite.
 arrival-wait-email = Email
 arrival-wait-placeholder = you@example.com
 arrival-wait-join = Join the wait list

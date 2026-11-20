@@ -24,6 +24,7 @@ import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './wait-list.mjs';
 import {handToNativeHost} from './native-host.mjs';
 import {boot, grammar} from './entry.mjs';
+import {readEntry} from './entry.mjs';
 import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchApplications, prefetchDesktop, prepareGpu, reportPageErrors} from './host.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, invitedServer, joinWorkspace, openInvitation, profileDevice, withDeviceKey} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
@@ -178,7 +179,8 @@ async function inviterName(inviter, origin) {
  *
  * An invitation sent off the wait list (`offer.ownFirst`) opens the person's
  * own workspace, and joins them to the one it names on the way: the card says
- * they are in, that their own workspace opens, and where the other one is. */
+ * they are in, that their own workspace opens, and where the other one is,
+ * in one line. */
 function invitationCard(offer, inviterColour) {
   return new Promise(resolve => {
     const form = element('form', 'tilo-entry-card tilo-invite');
@@ -211,17 +213,11 @@ function invitationCard(offer, inviterColour) {
       heading.id = 'tilo-invite-workspace';
       const head = element('div', 'tilo-invite-head');
       if (inviter) head.append(from);
-      head.append(heading, element('p', 'tilo-invite-people', 'Your own workspace is ready'));
+      // What opens, then, in the same breath, where the workspace that
+      // invited them is: one sentence, since the person came for their own.
+      const joined = offer.workspaceName ? ` ${offer.workspaceName} is yours too, in the workspace menu.` : '';
+      head.append(heading, element('p', 'tilo-invite-people', `Your own workspace is ready.${joined}`));
       form.append(head);
-      // The workspace the invitation joins them to, as the card names any:
-      // its name, then how many people are in it, then where to find it.
-      const joined = element('div', 'tilo-invite-role');
-      joined.append(element('p', 'tilo-invite-role-name', offer.workspaceName || 'The workspace that invited you'));
-      if (Number.isInteger(offer.members) && offer.members > 0) {
-        joined.append(element('p', 'tilo-invite-role-words', offer.members === 1 ? '1 person' : `${offer.members} people`));
-      }
-      joined.append(element('p', 'tilo-invite-role-words', 'Also yours, in the workspace menu'));
-      form.append(joined);
       form.append(answers(form, resolve, 'Open my workspace'));
       document.body.append(form);
       return;
@@ -919,6 +915,10 @@ export async function startEntryPage({mode}) {
   const notes = {open: opening, draw: drawing};
   const arrive = step => {
     if (root.arrival === 'done' && step !== 'stopped') return;
+    // Let in after all (an identity this browser kept): the desktop opens over the site's entry.
+    if (step === 'open' && 'front' in root) {
+      for (const name of ['front', 'refusal', 'waitListed']) delete root[name];
+    }
     // A page that cannot go on has no workspace to set an agent up in: the
     // first screen says so rather than wait.
     if (step === 'stopped') firstScreen?.unavailable({code: 'stopped'});
@@ -927,6 +927,9 @@ export async function startEntryPage({mode}) {
   };
   // The arrival screen's line and bar follow those steps (arrival.mjs).
   startArrival({mode});
+  // Someone new at the site itself, whose home keeps a wait list: its
+  // entry, at once, while the runtime loads behind it for signing in.
+  if (mode === 'desktop' && !embed) void offerFront();
   // What the page says when something stops it, in the arrival screen's
   // language once its locale file is in.
   let messages = new Map();
@@ -2109,9 +2112,14 @@ function offerRefusal({messages, language, named, error, workspace, runtime, lin
   const kept = offered ?? (error?.entry?.waitList && workspace?.admission
     ? {workspace, contact: error.entry.contact, mail: error.entry.mail === true} : null);
   const waitList = Boolean(kept);
+  // The site's entry the page showed at once (`offerFront`) is this one: it
+  // keeps its words and its wait list, and gains the ways to sign in.
+  const shown = waitList && !signIn && 'front' in document.documentElement.dataset;
   const copy = refusalCopy({workspace: named, waitList, signIn, messages});
-  document.getElementById('arrival-refusal-heading').textContent = copy.heading;
-  document.getElementById('arrival-refusal-body').textContent = copy.body;
+  if (!shown) {
+    document.getElementById('arrival-refusal-heading').textContent = copy.heading;
+    document.getElementById('arrival-refusal-body').textContent = copy.body;
+  }
   const own = document.getElementById('arrival-own');
   if (own) {
     void ownDesktopAllowed(workspace).then(open => {
@@ -2120,7 +2128,7 @@ function offerRefusal({messages, language, named, error, workspace, runtime, lin
       entry.querySelector('.refusal-foot')?.append(own);
     });
   }
-  if (kept) offerWaitList({workspace: kept.workspace, contact: kept.contact, mail: kept.mail === true, messages, language});
+  if (kept && !shown) offerWaitList({workspace: kept.workspace, contact: kept.contact, mail: kept.mail === true, messages, language});
   // Signing in from a link comes back to the link; at the site's entry, to a workspace of their own.
   offerSignIn({workspace, named, messages, runtime, link, home, pair, stay: signIn});
   // The link that lets someone in, an invitation or a pairing from a device
@@ -2143,6 +2151,46 @@ function offerRefusal({messages, language, named, error, workspace, runtime, lin
     if (target) loadPage(target);
   });
   document.documentElement.dataset.refusal = waitList ? 'wait-list' : 'invite';
+}
+
+/**
+ * A first visit to the site itself (`data-first-screen-hold`: this browser
+ * kept no membership, no workspace and no setup, and the address names no
+ * workspace), at a site whose home workspace takes people by invitation and
+ * keeps a wait list: the site's entry (`#arrival-refusal`), what Tilo is and
+ * the wait list, as soon as the site's `entry.json` and its server's
+ * directory answer, instead of after the runtime loaded and the home's
+ * entry refused it. The page goes on loading behind it: once the entry
+ * refuses it, `offerRefusal` adds the ways to sign in (`data-front` keeps them
+ * hidden until then); a browser let in after all opens its desktop over it.
+ * Resolves to whether it showed.
+ */
+async function offerFront() {
+  const root = document.documentElement;
+  if (!('firstScreenHold' in root.dataset)) return false;
+  try {
+    const {home} = await readEntry({mode: 'desktop', location});
+    if (!home?.admission) return false;
+    const listing = (await publicListings(home.host.origin))
+      .find(listed => home.admission.includes(`/directory/${encodeURIComponent(listed.workspace)}/`));
+    if (!listing?.invitationOnly || !listing.waitList) return false;
+    const language = visitorLocale();
+    const messages = await localeMessagesSoon(1000, globalThis, language);
+    // The runtime got there first: the entry it showed stands.
+    if (root.dataset.arrival === 'stopped' || root.dataset.arrival === 'done') return false;
+    const copy = refusalCopy({waitList: true, messages});
+    document.getElementById('arrival-refusal-heading').textContent = copy.heading;
+    document.getElementById('arrival-refusal-body').textContent = copy.body;
+    document.getElementById('status').textContent = `${copy.heading}. ${copy.body}`;
+    root.dataset.refusal = 'wait-list';
+    root.dataset.front = '';
+    offerWaitList({workspace: home, contact: listing.waitList.contact, mail: listing.waitList.mail, messages, language});
+    return true;
+  } catch (error) {
+    // The site's entry comes as before, once the runtime asked it.
+    console.warn('the site’s entry was not read ahead of the runtime:', error?.message ?? error);
+    return false;
+  }
 }
 
 /** The entry's wait list (wait-list.mjs): an email field that leaves
