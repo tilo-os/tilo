@@ -678,8 +678,28 @@ impl Pair {
         if backend() == Backend::Fuse {
             let from = self.dir.join("host-cache").join("namespace");
             let to = self.dir.join("peer-cache").join("namespace");
+            // The keeper saves the tree a moment after its last change. A copy taken before
+            // that save carries journals and no saved document, and the joiner then starts with
+            // nothing and lists an empty workspace: wait for a saved document, then copy, and
+            // say the count so an empty hand-off is loud rather than an hour of silence.
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while saved_documents(&from) == 0 {
+                assert!(
+                    Instant::now() < deadline,
+                    "the first computer never saved its tree to {}",
+                    from.display()
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
             let _ = std::fs::remove_dir_all(&to);
             copy_tree(&from, &to).expect("the joiner is given the host's kept tree");
+            let copied = saved_documents(&to);
+            assert!(
+                copied > 0,
+                "the joiner was handed no saved document in {}",
+                to.display()
+            );
+            eprintln!("join: the joiner is handed {copied} saved document(s)");
         }
         let mut peer = Daemon::spawn(
             "peer",
@@ -1142,6 +1162,24 @@ fn git_repository() {
 }
 
 /// Copy every file under `from` to the same relative path under `to`.
+/// How many saved documents (`.automerge`) a kept-tree directory holds: the part a joiner can
+/// start from.
+fn saved_documents(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .is_some_and(|ext| ext == "automerge")
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
