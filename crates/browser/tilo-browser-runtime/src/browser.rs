@@ -1802,7 +1802,11 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         SurfaceCaps::STANDARD
     };
     let viewport = observed.bounded_by(caps);
-    let component_wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // The desktop's tabs count their wakes where the desktop keeps them, so a save of theirs
+    // that shows nothing draws no frame, as a page's own app's does not.
+    let component_wakes = desktop.as_ref().map_or_else(Arc::default, |desktop| {
+        Arc::clone(&desktop.shared.component_wakes)
+    });
     let dpr = viewport.dpr;
     let mut frame = match root {
         Root::Component(component) => {

@@ -17,6 +17,26 @@ impl Mount {
         })
     }
 
+    /// The shell took a key or a click, and what it asked of the page for it (a card chosen on
+    /// the empty shell, a menu's row, a command) is carried out on its next pass. That pass comes
+    /// in the frame the input asks for and only there: a frame the shell's widgets asked for does
+    /// theirs, and one a press itself asked for may find none, leaving the choice waiting for
+    /// whatever frame the page came to next. The input's own frame follows at once
+    /// (`Self::present_after_input`), so the shell is told without asking the page for a second
+    /// frame of its own: that frame found nothing left to do and drew every key twice. A key let
+    /// go asks nothing of the page (a shortcut acts as it is pressed), so its frame leaves the
+    /// shell's pass alone.
+    pub(crate) fn wake_shell_for_input(&self, event: &winit::event::WindowEvent) {
+        let released = matches!(
+            event,
+            winit::event::WindowEvent::KeyboardInput { event, .. }
+                if event.state == winit::event::ElementState::Released
+        );
+        if let Some(desktop) = self.desktop.as_ref().filter(|_| !released) {
+            desktop.shared.wake_in_input_frame();
+        }
+    }
+
     /// The desktop's part of a frame, whichever way it is presented: its
     /// width, its agents, uploads, notices, mentions, activity, governance,
     /// search and holders, and the wakes its components sent since the last frame.

@@ -368,6 +368,9 @@ pub(crate) struct Shared {
     pub image_owners: crate::page_content::ImageOwners,
     /// Set by any tab component's wake; the host relayouts before drawing.
     pub woken: Arc<AtomicBool>,
+    /// Wakes the tabs' components sent the page and it has not taken up yet: the page draws for
+    /// one only when its owner's service shows something or [`Self::woken`] asks it to.
+    pub component_wakes: Arc<std::sync::atomic::AtomicUsize>,
     /// The page has put a frame on screen while it was visible: the person
     /// can see the desktop. What waits for them to have seen it a while
     /// (the first control hint) counts from here, not from the mount.
@@ -514,6 +517,13 @@ impl Shared {
     /// to draw.
     pub fn wake(&self) {
         wake(&self.woken);
+    }
+
+    /// What [`Self::wake`] tells the shell, for an input whose own frame is drawn right after it
+    /// (`Mount::present_after_input`): that frame takes the wake, so no frame of
+    /// its own is asked for.
+    pub fn wake_in_input_frame(&self) {
+        self.woken.store(true, Ordering::Release);
     }
 
     /// The workspace cannot answer this page now, for `cause`, or can again (`None`): the windows
@@ -1245,6 +1255,7 @@ impl Tiles {
         crate::capture_declarations::note(definition.app_id(), component.capture_protected());
         let woken = Arc::clone(&self.shared.woken);
         let wakers = Arc::clone(&self.shared.wakers);
+        let sent = Arc::clone(&self.shared.component_wakes);
         let notify = Arc::clone(&self.notify);
         let app_id = definition.app_id();
         component
@@ -1258,6 +1269,7 @@ impl Tiles {
                         wakers.push(app_id);
                     }
                 }
+                sent.fetch_add(1, Ordering::Relaxed);
                 notify();
             })
             .map_err(|error| error.to_string())?;
@@ -1388,12 +1400,14 @@ impl Tiles {
             (code.prepare)(services, &self.inputs.device, &self.inputs.author, instance)
                 .map_err(|error| error.to_string())?;
         let woken = Arc::clone(&self.shared.woken);
+        let sent = Arc::clone(&self.shared.component_wakes);
         let notify = Arc::clone(&self.notify);
         component
             .mount_with_owner_queue(&self.shared.owner_wakes, move |event| {
                 if event.asks_for_frame() {
                     woken.store(true, Ordering::Release);
                 }
+                sent.fetch_add(1, Ordering::Relaxed);
                 notify();
             })
             .map_err(|error| error.to_string())?;

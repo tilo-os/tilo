@@ -345,15 +345,7 @@ impl ApplicationHandler<u64> for Runner {
                         event,
                         WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. }
                     ) {
-                        // The shell took the input, and what it asked of the host for it — a card
-                        // chosen on the empty shell, a menu's row, a command — is carried out on its
-                        // next pass. That pass runs in the frame asked for here and only here: a
-                        // frame the shell's widgets asked for runs theirs, and one a press itself
-                        // asked for may find none, leaving the choice waiting for whatever frame
-                        // the page came to next.
-                        if let Some(desktop) = &m.desktop {
-                            desktop.shared.wake();
-                        }
+                        m.wake_shell_for_input(&event);
                         m.present_after_input();
                     } else if !(pointer_motion && m.frame.last_send_skipped_relayout()) {
                         // Motion that moved nothing a frame shows (no hover,
