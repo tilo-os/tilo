@@ -956,6 +956,7 @@ impl Worker {
                     record: "",
                 },
                 link.as_deref(),
+                true,
             )
             .map_err(|error| error.to_string())?;
         let (mut index, held) = document(&workspace.reads, &index_route);

@@ -1257,7 +1257,16 @@ impl Worker {
         // refused action from one that does not exist. The owner's copy is
         // brought up to date for that answer alone: a caller's own actions
         // never catch this device's copy up (`Worker::perform`).
-        let Some(descriptor) = held.held.app.descriptor(&target.address) else {
+        //
+        // A request applied again after handing its operation off the thread answers from the
+        // action as it was published then: the operation may have removed the item it named
+        // (a delete), and the resource has no such action now.
+        let Some(descriptor) = held
+            .held
+            .app
+            .descriptor(&target.address)
+            .or_else(|| held.held.app.handed_descriptor(request.invocation))
+        else {
             self.brought_up_to_date(&key.0, state);
             return Err(Outcome::Rejected(
                 if self.publishes(&key.0, &target.address) {
@@ -1293,6 +1302,7 @@ impl Worker {
                 (workspace_id, &key.0),
                 (&held.held.app, request.invocation),
                 confirmed,
+                Some(descriptor.clone()),
                 || crate::worker::Operation {
                     context: Some(context.clone()),
                     appearance: None,

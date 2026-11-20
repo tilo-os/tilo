@@ -1131,13 +1131,22 @@ impl Workspace {
     /// refused: nothing acts on a record seen only in part. A listing gives
     /// up quietly, lists what opened, and does not wait for the same keys
     /// again.
+    ///
+    /// `pump` is whether the changes that landed are taken up first: a request applied again to
+    /// take an answer it already has reads none of them.
     fn wait_for(
         &mut self,
         workspace_id: WorkspaceId,
         needs: Needs<'_>,
         link: Option<&dyn WorkspaceDocumentsLink>,
+        pump: bool,
     ) -> Result<(), ActionCallError> {
-        self.pump(workspace_id);
+        // A request applied again to take the answer of the operation it handed off the thread
+        // reads no change: the operation ran already, and what landed since is merged by the
+        // next request. Reading it here would read a landing in the middle of one request.
+        if pump {
+            self.pump(workspace_id);
+        }
         if !self.ready {
             return Err(ActionCallError::Unavailable {
                 reason: "the host has not joined the workspace yet".into(),
@@ -2047,6 +2056,7 @@ impl Worker {
             workspace_id,
             needs,
             self.shared.link.get().map(|link| &**link),
+            !self.part_waits.answer_only(),
         )?;
         timing_done("refresh.wait", waited);
         let stating = timing_start();
@@ -2583,11 +2593,15 @@ impl Worker {
                 .share_link(workspace_id, caller, at, target, arguments)
                 .map(|output| (output, None));
         }
-        // The one action asked for, not the whole listing: a record of ten
-        // thousand items costs this what a record of ten does.
+        // The one action asked for, not the whole listing: a resource of ten
+        // thousand items costs this what one of ten does. A request applied again after
+        // handing its operation off the thread answers from the action as it was published
+        // then: the operation may have removed the item it named (a delete), and the resource
+        // has no such action now.
         let descriptor = mounted
             .app
             .descriptor(&target.address)
+            .or_else(|| mounted.app.handed_descriptor(request.invocation))
             .ok_or_else(unknown_action)?;
         if descriptor.contract.kind == ActionKind::Read {
             self.note_reads(request);
@@ -2609,6 +2623,7 @@ impl Worker {
                     context: Some(&context),
                     appearance: appearance.as_ref(),
                     confirmed,
+                    descriptor: &descriptor,
                 },
             )
             .map_err(|error| api_outcome(&error))?;

@@ -44,6 +44,9 @@ pub(super) struct Invoked<'a> {
     pub(super) context: Option<&'a tilo_actions::ActionContext>,
     pub(super) appearance: Option<&'a tilo_actions::Appearance>,
     pub(super) confirmed: bool,
+    /// The action as the resource published it before it ran: kept for the request applied
+    /// again, which resolves it from here though the operation removed what it named.
+    pub(super) descriptor: &'a tilo_actions::ActionDescriptor,
 }
 
 /// How a write waited for its part so far.
@@ -90,8 +93,22 @@ pub(super) struct PartWaits {
     /// The request being served found parts of a chain on their way and did not wait for
     /// them here: it is held until they arrive ([`Worker::hold_for_chains`]).
     chains_owed: bool,
-    /// Whether the request being served is applied again after waiting off this thread.
-    again: bool,
+    /// How the request being served is applied again, when it is.
+    again: Option<Again>,
+    /// Whether the request about to be served is applied again only to take the answer of the
+    /// operation it handed off the thread ([`super::call_wait`]).
+    resumed_answer: bool,
+}
+
+/// How a request is applied again after waiting off the thread that serves its workspace.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Again {
+    /// It waited for a part of what it changes to arrive.
+    Part,
+    /// It waits only to take the answer of the operation it handed off the thread: the
+    /// operation ran, so reading what changed of its workspace now answers nothing it waits
+    /// for, and the next request merges it.
+    Answer,
 }
 
 /// What a request does about parts of a chain still on their way ([`Worker::hold_chains`]).
@@ -111,7 +128,12 @@ impl PartWaits {
     pub(super) fn begin(&mut self, queued: Instant, holdable: bool) {
         self.holdable = holdable;
         self.chains_owed = false;
-        self.again = self.resumed.is_some();
+        let answering = std::mem::take(&mut self.resumed_answer);
+        self.again = match self.resumed {
+            Some(_) if answering => Some(Again::Answer),
+            Some(_) => Some(Again::Part),
+            None => None,
+        };
         self.serving = Some(self.resumed.take().unwrap_or(Tried {
             queued,
             look: PART_LOOK,
@@ -122,7 +144,20 @@ impl PartWaits {
 
     /// Whether the request being served is applied again after waiting off this thread.
     pub(super) const fn again(&self) -> bool {
-        self.again
+        self.again.is_some()
+    }
+
+    /// Whether the request being served is applied again only to take the answer of the
+    /// operation it handed off the thread: the operation ran, so reading what changed of its
+    /// workspace now answers nothing it waits for, and the next request merges it.
+    pub(super) const fn answer_only(&self) -> bool {
+        matches!(self.again, Some(Again::Answer))
+    }
+
+    /// The request about to be served is applied again to take `answer`, the answer of the
+    /// operation it handed off the thread (`true`), or to be served as any other (`false`).
+    pub(super) const fn takes_answer(&mut self, answer: bool) {
+        self.resumed_answer = answer;
     }
 
     /// What the request being served does about parts of a chain still on their way, waited
@@ -361,6 +396,7 @@ impl Worker {
             (workspace_id, holder),
             (&app, invoked.invocation),
             invoked.confirmed,
+            Some(invoked.descriptor.clone()),
             || crate::worker::Operation {
                 context: invoked.context.cloned(),
                 appearance: invoked.appearance.cloned(),

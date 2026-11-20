@@ -88,6 +88,10 @@ struct Handed {
     /// The request it is part of, which takes its answer when it is applied again.
     request: tilo_actions::InvocationId,
     answer: std::sync::mpsc::Receiver<Invoked>,
+    /// The action as the resource published it before the operation ran: a request applied
+    /// again resolves the action from it, though the operation changed what the resource is
+    /// part of so that the item the action named is gone (a delete).
+    descriptor: Option<ActionDescriptor>,
 }
 
 /// One operation to hand to a thread of its own, as [`ConfinedReplica::invoke_in`] takes it.
@@ -994,11 +998,15 @@ impl ConfinedReplica {
     /// worker that takes long to answer (a large import, an app's long effect, a worker that
     /// hangs) would otherwise hold every other workspace of that thread behind it. Another
     /// request asked of this document meanwhile waits for the one going on, as it would have.
+    ///
+    /// `descriptor` is the action as the resource published it before the operation ran
+    /// ([`Self::handed_descriptor`]).
     pub(crate) fn invoke_handed(
         self: &std::sync::Arc<Self>,
         request: tilo_actions::InvocationId,
         grace: std::time::Duration,
         answered: impl FnOnce() + Send + 'static,
+        descriptor: Option<ActionDescriptor>,
         operation: impl FnOnce() -> Operation,
     ) -> Option<Invoked> {
         let mut handed = self.handed.lock_recover();
@@ -1049,8 +1057,27 @@ impl ConfinedReplica {
         if let Ok(output) = answer.recv_timeout(grace) {
             return Some(output);
         }
-        *handed = Some(Handed { request, answer });
+        *handed = Some(Handed {
+            request,
+            answer,
+            descriptor,
+        });
         None
+    }
+
+    /// The action `request` handed off to a thread of its own ([`Self::invoke_handed`]), as the
+    /// resource published it before the operation ran: what a request applied again resolves the
+    /// action from, though the operation removed what it named (a delete).
+    #[must_use]
+    pub(crate) fn handed_descriptor(
+        &self,
+        request: tilo_actions::InvocationId,
+    ) -> Option<ActionDescriptor> {
+        self.handed
+            .lock_recover()
+            .as_ref()
+            .filter(|running| running.request == request)
+            .and_then(|running| running.descriptor.clone())
     }
 
     /// [`Self::invoke`] as `invoker` within `context`:

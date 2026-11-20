@@ -115,17 +115,21 @@ impl Worker {
     /// `operation` on `app`, the document at `holder` of `workspace_id`, for `invocation`: its
     /// answer, or [`still_running`] once it goes on off this thread, the request being served held
     /// until it answers. `confirmed` is whether its person confirmed it, kept for when it is
-    /// applied again.
+    /// applied again. `descriptor` is the action as the resource published it before it ran, kept
+    /// for the request applied again.
     pub(super) fn invoke_handed(
         &mut self,
         (workspace_id, holder): (WorkspaceId, &DocumentRoute),
         (app, invocation): (&Arc<ConfinedReplica>, tilo_actions::InvocationId),
         confirmed: bool,
+        descriptor: Option<tilo_actions::ActionDescriptor>,
         operation: impl FnOnce() -> Operation,
     ) -> Invoked {
         let shared = Arc::clone(&self.shared);
         let answered = move || answered(&shared, workspace_id);
-        if let Some(answer) = app.invoke_handed(invocation, CALL_GRACE, answered, operation) {
+        if let Some(answer) =
+            app.invoke_handed(invocation, CALL_GRACE, answered, descriptor, operation)
+        {
             return answer;
         }
         let tried = self.part_waits.serving_confirmed(confirmed);
@@ -194,7 +198,11 @@ impl Worker {
         self.call_waits.returned.extend(behind);
         if let Some(Held { queued, tried, job }) = request {
             self.part_waits.resume_with(tried);
+            // The request whose operation ran reads nothing of what changed since it handed it
+            // off: the operation answered already. What waited for it is served as any other.
+            self.part_waits.takes_answer(true);
             self.timed(queued, job);
+            self.part_waits.takes_answer(false);
         }
     }
 
