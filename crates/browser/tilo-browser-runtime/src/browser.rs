@@ -3433,7 +3433,7 @@ impl Mount {
 /// Rejects an unknown kind or a closed mount.
 mod app_window;
 mod attention;
-mod carry_out;
+pub(crate) mod carry_out;
 use app_window::AppPage;
 use app_window::present_component;
 mod desktop_exports;

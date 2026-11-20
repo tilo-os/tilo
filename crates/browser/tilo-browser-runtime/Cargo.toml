@@ -183,6 +183,10 @@ deferred-jobs-band = ["ui/lazy-jobs-band"]
 # own module the first time a drag reaches the shell. Without it the drops are
 # linked in.
 deferred-drops = []
+# The bundling crate supplies what carrying a file out of the page does after the click (asking
+# for its link, saving it, showing it in a tab: `CARRY_OUT`), which the browser desktop fetches as
+# its own module once its first frame is up. Without it the code is linked in.
+deferred-carry-out = []
 # The bundling crate supplies the code that follows what the person's workspace server tells
 # them (`TOLD_NOTICES`), which the browser desktop fetches as its own module once its first frame
 # is up. Without it the code is linked in.

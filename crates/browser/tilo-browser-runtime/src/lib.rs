@@ -75,6 +75,8 @@ pub(crate) mod page_content;
 #[cfg(target_arch = "wasm32")]
 mod page_files;
 #[cfg(target_arch = "wasm32")]
+pub use browser::carry_out::{CARRY_OUT, CarryOutCode, builtin_carry_out};
+#[cfg(target_arch = "wasm32")]
 pub use drops_code::{DROPS, MakeDrops, builtin_drops};
 #[cfg(target_arch = "wasm32")]
 mod told_code;

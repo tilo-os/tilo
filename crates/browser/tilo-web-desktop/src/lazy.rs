@@ -12,7 +12,8 @@
 //! desktop asks for as it first lays out, the page's layout actions and
 //! search, which the page asks for as it first draws, the jobs band, which the first
 //! job that runs asks for, the file drops, which the first drag onto the
-//! shell asks for and the page fetches once its first frame is up, the
+//! shell asks for and the page fetches once its first frame is up, carrying
+//! files out of the page, fetched with them, the
 //! document codecs, which a workspace's first document asks for, the
 //! notification centre,
 //! which opening it asks for, the people roster, which the bar's faces
@@ -232,6 +233,13 @@ split_code! {
 }
 
 split_code! {
+    /// What carrying a file out of the page does after the click: asking for its link, saving
+    /// it, showing it in a tab. The page fetches it once its first frame is up, beside the drops.
+    mod page_carry_out: tilo_browser_runtime::CarryOutCode = tilo_browser_runtime::builtin_carry_out()
+        => tilo_browser_runtime::CARRY_OUT, module = "page_carry_out", hash = "3b7d90e2a6c41f58";
+}
+
+split_code! {
     /// The code that reads the workspace's resources: what a window opens beside its own, the
     /// workspace's agents, its files and its governance. The page fetches it as it starts, beside
     /// its first frame; the windows that wait for it are built once it is in.
@@ -422,6 +430,7 @@ pub(crate) fn register() {
     people::register();
     jobs_band::register();
     page_drops::register();
+    page_carry_out::register();
     page_layout::register();
     page_search::register();
     invited_server::register();
@@ -469,7 +478,8 @@ fn prepare_people_after_first_frame() {
 }
 
 /// Once the page has drawn its first frame, fetch what a file dropped on the
-/// shell or picked from its menu needs.
+/// shell or picked from its menu needs, and what carrying one out of the page
+/// does after the click.
 ///
 /// A drag asks for it as it starts over the shell; a person who picks files
 /// with the menu instead picks them before anything asks, so the module goes
@@ -479,6 +489,7 @@ fn prepare_page_drops_after_first_frame() {
     let work = Closure::once_into_js(move |_deadline: f64| {
         if tilo_browser_runtime::first_frame_presented() {
             let _ = tilo_browser_runtime::DROPS.get();
+            let _ = tilo_browser_runtime::CARRY_OUT.get();
         } else {
             prepare_page_drops_after_first_frame();
         }
