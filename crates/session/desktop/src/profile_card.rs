@@ -84,6 +84,9 @@ fn visibility_detail_key(visibility: ui::PresenceVisibility) -> &'static str {
 /// What a profile action is about, so the card can group them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProfileGroup {
+    /// The card's way into Settings: its top, under the person's name and picture, where someone
+    /// scanning the card for it looks first.
+    Settings,
     /// Being with the people here: saying something beside the pointer.
     Together,
     /// Keeping this identity: a passkey, a recovery key, signing in.
@@ -395,6 +398,13 @@ impl Widget for CardFocus {
     }
 
     fn is_focusable(&self) -> bool {
+        true
+    }
+
+    /// Opening the card is not editing: the card itself is the keyboard's entry, ahead of its name
+    /// field, so the first key typed lands on the card rather than renaming the person
+    /// ([`CardFocus`]). A click on the field, or Tab, enters it.
+    fn is_default_keyboard_focus(&self) -> bool {
         true
     }
 
@@ -1180,6 +1190,19 @@ impl ProfileCard {
             .push(Box::new(who))
     }
 
+    /// One of the session's commands as a row: what it says, its mark, and the choice it puts to
+    /// the session when pressed.
+    fn action_button(&self, action: &ProfileAction) -> Button {
+        let chosen = Rc::clone(&self.chosen);
+        let id = action.id.clone();
+        Button::new(&format!("profile-action-{}", action.id), &action.title)
+            .with_icon(action.icon)
+            .role(ButtonRole::Plain)
+            .on_effect(move || {
+                chosen.borrow_mut().push(ProfileChoice::Action(id.clone()));
+            })
+    }
+
     fn body(&self, model: &ProfileModel) -> Column {
         if let Some(other) = &model.other {
             return self.other_body(model, other);
@@ -1197,6 +1220,15 @@ impl ProfileCard {
             .push(Box::new(header));
         if let Some(photo) = self.photo_buttons(model) {
             body = body.push(photo);
+        }
+        // The card's way into Settings sits at its top, under the person's name and picture: where
+        // someone scanning the card for it looks first, before what they are doing.
+        for action in model
+            .actions
+            .iter()
+            .filter(|action| action.group == ProfileGroup::Settings)
+        {
+            body = body.push(Box::new(self.action_button(action)));
         }
         if model.offers_presence {
             body = self.presence_sections(body, model);
@@ -1244,16 +1276,7 @@ impl ProfileCard {
                 body = body.push(row);
             }
             for action in actions {
-                let chosen = Rc::clone(&self.chosen);
-                let id = action.id.clone();
-                body = body.push(Box::new(
-                    Button::new(&format!("profile-action-{}", action.id), &action.title)
-                        .with_icon(action.icon)
-                        .role(ButtonRole::Plain)
-                        .on_effect(move || {
-                            chosen.borrow_mut().push(ProfileChoice::Action(id.clone()));
-                        }),
-                ));
+                body = body.push(Box::new(self.action_button(action)));
             }
             if let Some(key) = key {
                 body = body.push(Self::key_row(key, true));

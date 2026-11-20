@@ -924,13 +924,14 @@ impl Panel {
                 icon: ui::icons::Icon::Fingerprint,
             })
             .collect();
-        // Settings itself, first on the card: where a person looks for it.
+        // Settings itself, at the top of the card, under the person's name and picture: where a
+        // person looks for it.
         actions.insert(
             0,
             ProfileAction {
                 id: OPEN_SETTINGS.to_owned(),
                 title: crate::i18n::t("profile-action-settings"),
-                group: ProfileGroup::Together,
+                group: ProfileGroup::Settings,
                 icon: ui::icons::Icon::Settings,
             },
         );

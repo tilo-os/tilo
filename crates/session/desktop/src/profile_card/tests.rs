@@ -223,6 +223,80 @@ fn the_card_opens_focused_on_itself_and_tab_enters_the_name() {
     );
 }
 
+/// Opening the card is not editing: the keyboard rests on the card itself rather than in its name
+/// field, so a stray key cannot rename the person. A click on the field still edits it.
+#[test]
+fn the_card_opens_with_the_keyboard_on_itself_not_in_the_name_field() {
+    let mut frame = framed(Vec::new());
+    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    harness.poll_frame().unwrap();
+    let focused = harness
+        .focused_access_node()
+        .expect("the open card holds the keyboard");
+    assert_eq!(
+        focused.semantic_key.as_deref(),
+        Some("profile-card-focus"),
+        "the card opens focused on itself, not in its name field: {:?}",
+        focused.name
+    );
+    // The name field is entered on purpose.
+    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    harness.click_named("profile-name").unwrap();
+    harness.poll_frame().unwrap();
+    let focused = ui::headless::Framed::harness(&frame)
+        .focused_access_node()
+        .expect("the clicked field holds the keyboard");
+    assert_eq!(
+        focused.name.as_deref(),
+        Some(t("profile-name").as_str()),
+        "clicking the name field edits it"
+    );
+}
+
+/// Someone scanning the card for Settings finds it at the top, under the person's name and
+/// picture, ahead of the status sections.
+#[test]
+fn settings_sits_at_the_top_of_the_card_before_the_status_sections() {
+    let mut with_settings = with_status_and_photo();
+    with_settings.offers_presence = true;
+    with_settings.availability = ui::Availability::Available;
+    with_settings.actions.insert(
+        0,
+        ProfileAction {
+            id: "settings".into(),
+            title: t("profile-action-settings"),
+            group: ProfileGroup::Settings,
+            icon: Icon::Settings,
+        },
+    );
+    let mut frame = framed_model(&with_settings);
+    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    harness.poll_frame().unwrap();
+    let top = |harness: &ui::headless::FrameHarness, name: &str| {
+        let id = harness
+            .a11y_node_named(name)
+            .unwrap_or_else(|| panic!("no control named {name}"));
+        harness
+            .a11y_nodes()
+            .into_iter()
+            .find(|(node, _)| *node == id)
+            .and_then(|(_, node)| node.bounds())
+            .unwrap_or_else(|| panic!("{name} is drawn"))
+            .y0
+    };
+    let settings = top(harness, &t("profile-action-settings"));
+    let name = top(harness, &t("profile-name"));
+    let status = top(harness, &t("profile-status"));
+    assert!(
+        settings > name,
+        "Settings sits under the person's name ({settings} against {name})"
+    );
+    assert!(
+        settings < status,
+        "Settings sits ahead of the status sections ({settings} against {status})"
+    );
+}
+
 /// A person who has not named themselves is asked, gently, in the card: "Add your name", in
 /// place of the hint, until they have.
 #[test]

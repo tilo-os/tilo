@@ -1563,7 +1563,7 @@ impl BrowserShell {
             ProfileAction {
                 id: OPEN_SETTINGS.into(),
                 title: tilo_desktop::i18n::t("profile-action-settings"),
-                group: ProfileGroup::Together,
+                group: ProfileGroup::Settings,
                 icon: ui::icons::Icon::Settings,
             },
         );
