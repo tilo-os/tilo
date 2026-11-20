@@ -56,7 +56,8 @@ fn permissions_wait(peer: u32) -> Option<u64> {
 /// must wake for one that is due later. A frame already owed reads the
 /// schedule when it draws, and the loop turns again after it: walking every
 /// widget for the schedule here, after each key, press and wheel before that
-/// frame, would only delay it.
+/// frame, would only delay it. A mount drawing on the CPU also wakes for its
+/// next try at the GPU ([`Mount::soft_retry`]).
 fn next_frame(m: &Mount, now: ui::time::Instant) -> Option<ui::time::Instant> {
     if m.pending {
         m.window.request_redraw();
@@ -67,15 +68,20 @@ fn next_frame(m: &Mount, now: ui::time::Instant) -> Option<ui::time::Instant> {
         .desktop
         .as_ref()
         .is_some_and(|d| d.shared.woken.load(std::sync::atomic::Ordering::Acquire));
+    let retry = m.soft_retry();
     if desktop_woken
         || m.viewport.needs_present()
         || output.queued_work
         || output.needs_animation_frame
         || pixels_waiting()
+        || retry.is_some_and(|at| at <= now)
     {
         m.window.request_redraw();
     }
-    let at = output.next_wake_deadline?;
+    let at = match (output.next_wake_deadline, retry) {
+        (Some(due), Some(retry)) => Some(due.min(retry)),
+        (due, retry) => due.or(retry),
+    }?;
     if at <= now {
         m.window.request_redraw();
         return None;
@@ -223,7 +229,7 @@ impl ApplicationHandler<u64> for Runner {
                 .is_ok();
             let shows = m.service_owner_models();
             if let Some(failure) = m.gpu.as_ref().and_then(Gpu::failure) {
-                m.frame_failed(id, failure);
+                m.gpu_failed(id, &failure);
             } else {
                 // What asked for this frame waits for the shell's next pass: the pump that takes it
                 // runs in the frame asked for here, so a redraw that found nothing else to do would

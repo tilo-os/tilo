@@ -181,6 +181,36 @@ impl RetainedRaster {
         }
     }
 
+    /// Rasterize `frame` on the CPU into this scratch, keeping its pixels for
+    /// [`Self::cpu_frame`]: how a presenter with no GPU to draw on shows its
+    /// frames (a page whose device keeps failing). Fails for a frame only the
+    /// renderer can draw (its backdrops), and when this scratch draws on the
+    /// GPU.
+    pub fn rasterize_to_cpu(&mut self, frame: FrameContent<'_>) -> Result<u64, String> {
+        if !frame.backdrop.is_empty() {
+            return Err("a backdrop needs the renderer's pipelines".to_owned());
+        }
+        let canvas = self
+            .cpu
+            .as_mut()
+            .ok_or("this rasterizer draws on the GPU")?;
+        canvas.rasterize(&frame)
+    }
+
+    /// The pixels [`Self::rasterize_to_cpu`] last drew, while this scratch
+    /// draws on the CPU.
+    #[must_use]
+    pub fn cpu_frame(&self) -> Option<CpuFrame<'_>> {
+        let canvas = self.cpu.as_ref()?;
+        let (width, height) = canvas.size();
+        Some(CpuFrame {
+            pixels: canvas.pixels(),
+            width,
+            height,
+            dirty: canvas.dirty(),
+        })
+    }
+
     /// Bring `target` up to date with `frame`: its backdrops blurred and substituted, its scroll copies
     /// made, its damage (or all of it) repainted. Returns the pixels rasterized, and the backdrop
     /// pass's statistics when the frame had backdrops.
@@ -292,6 +322,49 @@ impl RetainedRaster {
 pub struct RetainedTarget<'a> {
     pub texture: &'a vello::wgpu::Texture,
     pub view: &'a vello::wgpu::TextureView,
+}
+
+/// A frame rasterized on the CPU ([`RetainedRaster::rasterize_to_cpu`]): what a presenter with no
+/// GPU to draw on puts on its canvas.
+#[derive(Clone, Copy)]
+pub struct CpuFrame<'a> {
+    /// Rows of `width * 4` bytes, premultiplied RGBA8.
+    pub pixels: &'a [u8],
+    pub width: u32,
+    pub height: u32,
+    /// The rectangles the frame wrote, in pixels: outside them the canvas still holds the frames
+    /// before it.
+    pub dirty: &'a [tilo_cpu_raster::Region],
+}
+
+/// [`CpuFrame`]'s premultiplied pixels as a canvas's `ImageData` holds them,
+/// straight alpha, in place: a pixel of full alpha is its own colour over
+/// nothing, and no other colour is more than its alpha, so no step leaves the
+/// byte.
+pub fn straighten(pixels: &mut [u8]) {
+    for pixel in pixels.chunks_exact_mut(4) {
+        let [red, green, blue, a] = pixel else {
+            continue;
+        };
+        let alpha = u32::from(*a);
+        if alpha == 255 {
+            continue;
+        }
+        for value in [red, green, blue] {
+            *value = if alpha == 0 {
+                0
+            } else {
+                u8::try_from(
+                    u32::from(*value)
+                        .saturating_mul(255)
+                        .saturating_add(alpha / 2)
+                        .checked_div(alpha)
+                        .unwrap_or(0),
+                )
+                .unwrap_or(u8::MAX)
+            };
+        }
+    }
 }
 
 /// Bring `retained` up to date with `frame`: its scroll copies made, then its damage (or all of it)

@@ -79,7 +79,7 @@ fn present_queued() {
     for id in ids {
         let result = with_mount_quietly(id, |m| {
             if let Err(error) = m.draw_dom() {
-                m.frame_failed(id, error);
+                m.frame_failed(id, error.into());
             }
             Ok(())
         });
@@ -230,10 +230,10 @@ pub(crate) fn paint_composed(
 }
 
 impl Mount {
-    /// Whether the mount can present a frame: on its GPU surface, or as
-    /// HTML.
+    /// Whether the mount can present a frame: on its GPU surface, on the CPU's
+    /// canvas over it, or as HTML.
     pub(super) fn presents(&self) -> bool {
-        self.gpu.is_some() || shows(self.id)
+        self.gpu.is_some() || self.soft.is_some() || shows(self.id)
     }
 
     /// Present the frame an input just asked for before the browser paints
@@ -247,7 +247,7 @@ impl Mount {
     pub(super) fn present_after_input(&mut self) {
         if !shows(self.id) {
             self.pending = true;
-            if input_sync() && self.gpu.is_some() {
+            if input_sync() && (self.gpu.is_some() || self.soft.is_some()) {
                 // A frame the GPU or the surface held stays asked for.
                 match self.draw() {
                     Ok(()) if !self.pending => {}
@@ -363,7 +363,7 @@ impl Mount {
         let mut reasons = Vec::new();
         if self.metrics.borrow().enabled() {
             if asked {
-                reasons.push("input or host".to_owned());
+                reasons.push("input or a wake".to_owned());
             }
             if self.viewport.needs_present() {
                 reasons.push("viewport".into());

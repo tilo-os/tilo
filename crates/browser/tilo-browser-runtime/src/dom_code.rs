@@ -91,24 +91,7 @@ fn picture(scene: &vello::Scene, width: u32, height: u32) -> Option<Vec<u8>> {
         None,
         tilo_cpu_raster::color::AlphaColor::TRANSPARENT,
     );
-    for pixel in rgba.chunks_exact_mut(4) {
-        if let [r, g, b, a] = pixel
-            && *a != 0
-            && *a != 255
-        {
-            // Premultiplied, a channel is at most its alpha: no step overflows
-            // a u32, and the alpha is not zero.
-            let alpha = u32::from(*a);
-            for channel in [r, g, b] {
-                let straight = u32::from(*channel)
-                    .saturating_mul(255)
-                    .saturating_add(alpha / 2)
-                    .checked_div(alpha)
-                    .unwrap_or(0);
-                *channel = u8::try_from(straight).unwrap_or(u8::MAX);
-            }
-        }
-    }
+    ui::retained_raster::straighten(&mut rgba);
     Some(rgba)
 }
 

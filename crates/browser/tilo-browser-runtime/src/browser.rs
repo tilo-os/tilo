@@ -21,6 +21,7 @@ use winit::platform::web::{EventLoopExtWebSys as _, WindowAttributesExtWebSys as
 use winit::window::{Window, WindowId};
 
 use crate::viewport::{SurfaceCaps, Viewport, ViewportState};
+use draw::{DrawError, repaint_plan};
 use tilo_lock::MutexRecover as _;
 
 thread_local! {
@@ -519,6 +520,9 @@ pub(crate) struct Mount {
     /// the desktop, which answers its windows itself.
     reads: Option<Box<dyn std::any::Any>>,
     gpu: Option<Gpu>,
+    /// The frames drawn on the CPU and put on the page, while the GPU cannot
+    /// draw them ([`crate::gpu_recovery`]).
+    soft: Option<software::Software>,
     pending: bool,
     /// Wakes the mounted app's component sent the loop, not yet taken up:
     /// one of them is its owner's service, which asks for a frame only when
@@ -564,8 +568,9 @@ pub(crate) struct Mount {
     /// fires the key reads it earlier than that, as a frame can be presented
     /// between the browser's event and the shell taking it.
     frames_at_key: Option<u64>,
-    /// When this mount made its GPU again lately ([`Mount::frame_failed`]).
-    gpu_remakes: crate::gpu_recovery::GpuRemakes,
+    /// When this mount made its GPU again lately, and when it may try the
+    /// GPU again while drawing on the CPU ([`Mount::frame_failed`]).
+    gpu_recovery: crate::gpu_recovery::GpuRecovery,
     /// The last composed scene exceeded `scene_within_limits` (reported once).
     oversized_scene: bool,
     /// The last frame's layout failed and was skipped
@@ -1935,6 +1940,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         desktop,
         reads: None,
         gpu: None,
+        soft: None,
         pending: true,
         component_wakes,
         background_retry: None,
@@ -1957,7 +1963,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         blob_waiting: RefCell::default(),
         image_tickets: RefCell::default(),
         error: None,
-        gpu_remakes: crate::gpu_recovery::GpuRemakes::default(),
+        gpu_recovery: crate::gpu_recovery::GpuRecovery::default(),
         frames_at_key: None,
         oversized_scene: false,
         skipped_frame: false,
@@ -2424,6 +2430,9 @@ async fn set_up_gpu(setup: GpuSetup) {
                     retained: Retained::new(true),
                     pacing: crate::frame_pacing::FramePacing::default(),
                 });
+                // The GPU draws again: the canvas it draws on is the page's
+                // own, and the overlay the CPU drew on goes.
+                m.soft = None;
                 m.viewport.surface_installed();
                 m.queue_resize();
                 m.pending = true;
@@ -2431,8 +2440,9 @@ async fn set_up_gpu(setup: GpuSetup) {
                 Ok(true)
             }
             Err(e) => {
-                m.error = Some(format!("WebGPU unavailable: {e}"));
-                m.publish(id);
+                // No adapter or device could be made at all: this mount's
+                // frames draw on the CPU until the GPU may be tried again.
+                m.gpu_failed(id, &format!("WebGPU unavailable: {e}"));
                 Ok(false)
             }
         }
@@ -2520,7 +2530,7 @@ impl Mount {
         changed
     }
 
-    fn draw(&mut self) -> Result<(), String> {
+    fn draw(&mut self) -> Result<(), DrawError> {
         // The workspace's files as the palette will find them: what moved
         // since the last frame, and the words of content that arrived.
         if let Some(files) = &self.files_of_the_workspace
@@ -2551,7 +2561,7 @@ impl Mount {
         clippy::too_many_lines,
         reason = "configure, acquire, render, submit and present stay in one synchronous redraw"
     )]
-    fn draw_measured(&mut self) -> Result<(), String> {
+    fn draw_measured(&mut self) -> Result<(), DrawError> {
         if self.hidden || self.error.is_some() {
             self.held = "hidden";
             return Ok(());
@@ -2568,85 +2578,42 @@ impl Mount {
         self.reveal_opened();
         self.follow_view();
         if dom::shows(self.id) {
-            return self.draw_dom();
+            return self.draw_dom().map_err(DrawError::from);
         }
-        let Some(gpu) = self.gpu.as_mut() else {
+        if self.gpu.is_none() {
+            if self.soft.is_some() {
+                return self.draw_software();
+            }
             self.held = "no surface";
             return Ok(());
-        };
+        }
         let viewport = self.viewport.requested();
         // What asked for this frame, when frame metrics are on.
         let mut reasons = self.metrics.borrow().enabled().then(|| {
             let mut reasons = Vec::new();
             if self.pending {
-                reasons.push("input or host".to_owned());
+                reasons.push("input or a wake".to_owned());
             }
             reasons
         });
-        // Host wakes are consumed only after acquiring a surface. A skipped
-        // acquisition must retain them for the next redraw.
-        self.pending |= Self::desktop_wants_frame(self.desktop.as_ref());
-        if let Some(peer) = self.peer {
-            crate::replicated::follow_answers(peer);
-        }
-        self.pending |=
-            self.replica_changed.get() || self.theme_seen != crate::page_theme::generation();
-        let frame = self.frame.frame_schedule();
-        let due = frame
-            .next_wake_deadline
-            .is_some_and(|wake| wake <= ui::time::now());
-        if let Some(reasons) = &mut reasons {
-            if self.viewport.needs_present() {
-                reasons.push("viewport".into());
-            }
-            if frame.queued_work {
-                let sources = self.frame.queued_work_sources();
-                if sources.is_empty() {
-                    reasons.push("queued work".into());
+        self.frame_due(&mut reasons);
+        // What only a frame on the GPU adds: one that lost geometry is drawn
+        // again, and pixels an app asked for move until they are there.
+        if let Some(gpu) = self.gpu.as_mut() {
+            let lost = gpu.shows_lost_frame();
+            if lost {
+                if let Some(reasons) = &mut reasons {
+                    reasons.push("a frame that lost geometry".into());
                 }
-                reasons.extend(
-                    sources
-                        .into_iter()
-                        .map(|source| format!("queued: {source}")),
-                );
+                self.pending = true;
             }
-            if frame.needs_animation_frame || due {
-                reasons.extend(
-                    self.frame
-                        .frame_requesters()
-                        .into_iter()
-                        .map(|(path, demand)| match demand {
-                            ui::headless::FrameDemand::Animation => format!("animation: {path}"),
-                            ui::headless::FrameDemand::Deadline => format!("deadline: {path}"),
-                        }),
-                );
+            if pixels_waiting()
+                && let Ok(shared) = gpu.shared.try_borrow()
+                && let Some(handle) = shared.cx.devices.get(gpu.surface.dev_id)
+            {
+                let conservative = self.viewport.caps() != SurfaceCaps::STANDARD;
+                self.pending |= drive_pixels(&handle.device, &handle.queue, conservative);
             }
-        }
-        let lost = gpu.shows_lost_frame();
-        if lost && let Some(reasons) = &mut reasons {
-            reasons.push("a frame that lost geometry".into());
-        }
-        self.pending |= self.viewport.needs_present()
-            || frame.queued_work
-            || frame.needs_animation_frame
-            || due
-            || lost;
-        // Pixels an app asked for move on every frame until they are there,
-        // whether or not this frame draws.
-        if pixels_waiting()
-            && let Ok(shared) = gpu.shared.try_borrow()
-            && let Some(handle) = shared.cx.devices.get(gpu.surface.dev_id)
-        {
-            let conservative = self.viewport.caps() != SurfaceCaps::STANDARD;
-            self.pending |= drive_pixels(&handle.device, &handle.queue, conservative);
-        }
-        // Who is here changed on the board: the frame puts them on the desktop, whose people
-        // lists read them, even when nothing else on the page moved.
-        if !self.pending && presence::moved(self.peer, &self.workspace, self.presence.revision) {
-            if let Some(reasons) = &mut reasons {
-                reasons.push("presence".into());
-            }
-            self.pending = true;
         }
         if !self.pending {
             // A skipped layout waits for input or a wake: say that, not idleness.
@@ -2655,6 +2622,10 @@ impl Mount {
             }
             return Ok(());
         }
+        let Some(gpu) = self.gpu.as_mut() else {
+            self.held = "no surface";
+            return Ok(());
+        };
         // The GPU's own answer, asked and not waited for: stopping here is
         // what keeps a completion from arriving (`crate::frame_pacing`). A
         // slow GPU is not a lost one: the device's own `lost` and errors say
@@ -2680,7 +2651,7 @@ impl Mount {
                 .failure
                 .lock_recover()
                 .get_or_insert_with(|| lost.clone());
-            return Err(lost);
+            return Err(DrawError::Gpu(lost));
         }
         // The target may show a frame the renderer drew with geometry
         // missing: this one repaints it whole. It still shows that frame
@@ -2723,10 +2694,13 @@ impl Mount {
                 self.held = "an occluded surface";
                 None
             }
-            other => return Err(format!("WebGPU surface unavailable: {other:?}")),
+            other => {
+                return Err(DrawError::Gpu(format!(
+                    "WebGPU surface unavailable: {other:?}"
+                )));
+            }
         };
         drop(shared_guard);
-        let passes_before = self.frame.relayout_frames();
         let frame = &mut self.frame;
         // A layout that fails skips this frame's drawing, as every host
         // does: the last frame stays on screen and input keeps landing.
@@ -2744,99 +2718,7 @@ impl Mount {
             self.window.request_redraw();
             return Ok(());
         };
-        let mut host_changed =
-            self.follow_desktop(f64::from(viewport.logical_size().0), reasons.as_mut());
-        // The person's settings or their browser's preferences changed
-        // what the theme is: every window draws in the new one.
-        if self.theme_seen != crate::page_theme::generation() {
-            self.theme_seen = crate::page_theme::generation();
-            self.frame.set_theme(crate::page_theme::current());
-            host_changed = true;
-        }
-        // A peer's change merged into an open record.
-        if self.replica_changed.replace(false) {
-            if let Some(reasons) = &mut reasons {
-                reasons.push("replica change".into());
-            }
-            host_changed = true;
-        }
-        // Who is here, placed in the windows this frame lays out.
-        self.place_here();
-        self.place_presence();
-        // Whom this page's person follows, told to the windows' apps as a native shell's apps
-        // hear it: the window of theirs shows where they work.
-        if let Some(desktop) = &self.desktop {
-            crate::follow::tell(
-                &mut desktop.shared.follow_to_tell.borrow_mut(),
-                &mut self.frame,
-            );
-        }
-        // A frame whose semantics will be built draws every window: one it
-        // replayed instead (a pan frame may) would have to be drawn again
-        // before its tree could be read.
-        let tree_due = host_changed
-            || self.entries != self.tree_entries.get()
-            || !self.semantics.borrow().would_defer_unbuilt(ui::time::now());
-        self.frame.set_pan_replay(!tree_due);
-        // Poll only after applying the new viewport, avoiding an old-size
-        // layout merely to discover work.
-        let passes_resized = self.frame.relayout_frames();
-        let stage = self.metric_start();
-        let tooltip_before = self.frame.drawn_tooltip().map(|(text, _)| text.to_owned());
-        let polled = match self.frame.poll_frame() {
-            Ok(polled) => polled,
-            Err(error) => {
-                unsettled = Some(error);
-                false
-            }
-        };
-        let stats = self.frame.last_relayout();
-        // A tooltip that came or went is in the tree a reader is told.
-        let tooltip_changed =
-            self.frame.drawn_tooltip().map(|(text, _)| text) != tooltip_before.as_deref();
-        self.metric_end(
-            match (polled, stats.rebuilt, stats.measured) {
-                (false, ..) => "poll_frame:idle",
-                (true, true, _) => "poll_frame:rebuilt",
-                (true, false, true) => "poll_frame:measured",
-                (true, false, false) => "poll_frame:applied",
-            },
-            stage,
-        );
-        if polled {
-            self.note_measured();
-        }
-        // A frame that laid nothing out shows a reader what the last one
-        // did; one that only re-applied positions moved laid-out content
-        // and nothing else, so its tree's structure and focus are the last
-        // one's. Either needs no host change, and the tree also no call
-        // since it was built that the frame cannot see (`publish_frame`).
-        let change = if host_changed || tooltip_changed || passes_resized != passes_before {
-            FrameChange::Other
-        } else if !polled && self.frame.relayout_frames() == passes_resized {
-            FrameChange::Nothing
-        } else if polled && !stats.rebuilt && !stats.measured {
-            FrameChange::Moved
-        } else {
-            FrameChange::Other
-        };
-        if host_changed && !polled && unsettled.is_none() {
-            let stage = self.metric_start();
-            unsettled = self.frame.relayout_at(viewport.logical_size()).err();
-            self.metric_end("wake_relayout", stage);
-        }
-        let stage = self.metric_start();
-        self.save_desktop();
-        self.metric_end("save_desktop", stage);
-        if let Some(peer) = self.peer {
-            let stage = self.metric_start();
-            crate::replicated::publish(peer);
-            self.metric_end("replicate", stage);
-        }
-        // A frame input or an idle pass ran and skipped reports here.
-        if let Some(line) = self.frame.take_skip_report() {
-            web_sys::console::error_1(&JsValue::from_str(&line));
-        }
+        let (change, unsettled) = self.lay_out(unsettled, &mut reasons);
         if let Some(error) = unsettled {
             if let Some(line) = self.frame.skip_frame(&error) {
                 web_sys::console::error_1(&JsValue::from_str(&line));
@@ -2850,11 +2732,11 @@ impl Mount {
         }
         self.skipped_frame = false;
         let stage = self.metric_start();
-        let frame = self.frame.frame_render_input();
         // Never hand the renderer a scene it cannot resolve: an oversized
         // encoding overflows vello's resolver or WebGPU buffer limits. Keep the
         // last presented frame, report once, and keep the session alive.
-        if let Err(reason) = scene_within_limits(frame.scene) {
+        let oversized = scene_within_limits(self.frame.frame_render_input().scene).err();
+        if let Some(reason) = oversized {
             if !self.oversized_scene {
                 self.oversized_scene = true;
                 web_sys::console::error_1(&JsValue::from_str(&reason));
@@ -2866,14 +2748,22 @@ impl Mount {
         self.oversized_scene = false;
         self.metric_end("scene", stage);
         let stage = self.metric_start();
-        let gpu = self.gpu.as_mut().ok_or("WebGPU renderer missing")?;
-        let mut shared_guard = gpu.shared.try_borrow_mut().map_err(|_| "shared GPU busy")?;
+        let gpu = self
+            .gpu
+            .as_mut()
+            .ok_or_else(|| DrawError::Gpu("WebGPU renderer missing".to_owned()))?;
+        let Ok(mut shared_guard) = gpu.shared.try_borrow_mut() else {
+            // Another mount holds the shared device: the frame waits for it.
+            self.held = "the shared device busy";
+            self.window.request_redraw();
+            return Ok(());
+        };
         let shared = &mut *shared_guard;
         let handle = shared
             .cx
             .devices
             .get(gpu.surface.dev_id)
-            .ok_or("WebGPU device missing")?;
+            .ok_or_else(|| DrawError::Gpu("WebGPU device missing".to_owned()))?;
         // A software adapter compiles vello's pipelines on the CPU for seconds each, and a page
         // that leaves waits for those still running: there it is made only for a video's pictures.
         let needed = !shared.software || ui::element_pictures::waiting();
@@ -2886,26 +2776,13 @@ impl Mount {
         // after it. The first frame the renderer draws repaints this target
         // whole (`Retained::switch_raster` forgets what it held): pixels the
         // CPU drew are not pixels the GPU's renderer drew.
-        gpu.retained.switch_raster(shared.renderer.is_none());
-        let key = ui::retained_raster::TargetKey {
-            width: viewport.width,
-            height: viewport.height,
-            to_device: ui::scale::composite_transform(viewport.dpr),
-            base_color: frame.background,
-            generation: gpu.retained.generation,
-        };
-        let parts = self.frame.scene_parts();
-        // Compared with the frame the target shows, command by command: a
-        // change no part proves is bounded (an unknown one) repaints it all.
-        let (repaint, copies) = gpu.retained.frames.repaint_copying(frame.scene, parts, key);
-        let (damage, full_redraw) = match &repaint {
-            ui::retained_raster::Repaint::Full(_) => (&[][..], true),
-            ui::retained_raster::Repaint::Regions(regions) => (regions.as_slice(), false),
-        };
-        // A small damage renders only the parts that can reach it.
-        let culled = ui::retained_raster::culled_for_damage(frame.scene, parts, key, damage);
-        let mut physical = vello::Scene::new();
-        physical.append(culled.as_ref().unwrap_or(frame.scene), Some(key.to_device));
+        let (parts, plan) = repaint_plan(
+            &mut gpu.retained,
+            &self.frame,
+            viewport,
+            shared.renderer.is_none(),
+        );
+        let frame = self.frame.frame_render_input();
         let target = ui::retained_raster::RetainedTarget {
             texture: &gpu.surface.target_texture,
             view: &gpu.surface.target_view,
@@ -2920,26 +2797,19 @@ impl Mount {
             (&handle.device, &handle.queue),
             shared.renderer.as_mut(),
             target,
-            ui::retained_raster::FrameContent {
-                scene: &physical,
-                width: viewport.width,
-                height: viewport.height,
-                base_color: frame.background,
-                damage_regions: damage,
-                scroll_copies: &copies,
-                full_redraw,
-                backdrop: &ui::backdrop::BackdropFrame::default(),
-            },
+            plan.content(),
         );
         let mut rasterized = match rasterized {
             Ok(pixels) => pixels,
             Err(error) => {
                 // What the target holds after a failed raster is unknown.
                 gpu.retained.forget();
-                return Err(error);
+                return Err(DrawError::Gpu(error));
             }
         };
-        let mut repaint = repaint;
+        let key = plan.key;
+        let full_redraw = matches!(plan.repaint, ui::retained_raster::Repaint::Full(_));
+        let mut repaint = plan.repaint.clone();
         // This frame's scene whole, for a frame that must be drawn again.
         let mut whole = None;
         // A render collects the counters of the frames before it before it
@@ -2968,7 +2838,7 @@ impl Mount {
                         scene,
                         width: viewport.width,
                         height: viewport.height,
-                        base_color: frame.background,
+                        base_color: key.base_color,
                         damage_regions: &[],
                         scroll_copies: &[],
                         full_redraw: true,
@@ -3020,7 +2890,7 @@ impl Mount {
         }
         gpu.retained.frames.presented(frame.scene, parts, key);
         #[cfg(debug_assertions)]
-        if culled.is_some() && whole.is_none() {
+        if plan.culled && whole.is_none() {
             let mut scene = vello::Scene::new();
             scene.append(frame.scene, Some(key.to_device));
             whole = Some(scene);
@@ -3045,7 +2915,7 @@ impl Mount {
             &gpu.surface,
             shared.renderer.as_mut(),
             handle,
-            whole.as_ref().unwrap_or(&physical),
+            whole.as_ref().unwrap_or(&plan.physical),
             key,
             full_redraw,
             drawn,
@@ -3069,39 +2939,31 @@ impl Mount {
         output.present();
         self.presented_capture_protected = self.frame.capture_protected();
         self.metric_end(render_stage, stage);
-        self.viewport.did_present();
-        self.pending = false;
-        self.frames = self.frames.saturating_add(1);
-        if !self.hidden
-            && let Some(desktop) = &self.desktop
-        {
-            desktop.shared.presented.set(true);
-        }
-        if let Some(reasons) = reasons {
-            self.metrics.borrow_mut().presented(reasons);
-        }
-        let stage = self.metric_start();
-        self.presentation.set(true);
-        self.publish_frame(0, change, true);
-        self.presentation.set(false);
-        self.metric_end("publish", stage);
+        self.presented(change, reasons);
         Ok(())
     }
 
-    /// Present the frame the target already holds on `output`, drawing
     /// nothing: a texture once acquired shows whatever it holds, so a frame
     /// skipped after acquiring it would otherwise blank the canvas. A
     /// target that no longer holds the last frame (a resize made it anew)
     /// has nothing to show again.
-    fn keep_last_frame(&mut self, output: wgpu::SurfaceTexture) -> Result<(), String> {
-        let gpu = self.gpu.as_mut().ok_or("WebGPU renderer missing")?;
+    fn keep_last_frame(&mut self, output: wgpu::SurfaceTexture) -> Result<(), DrawError> {
+        let gpu = self
+            .gpu
+            .as_mut()
+            .ok_or_else(|| DrawError::Gpu("WebGPU renderer missing".to_owned()))?;
         if gpu.retained.frames.shows_frame() {
-            let shared = gpu.shared.try_borrow().map_err(|_| "shared GPU busy")?;
+            // Another mount holds the shared device for a moment: the canvas
+            // keeps what it presented, and a texture left unpresented shows
+            // nothing over it.
+            let Ok(shared) = gpu.shared.try_borrow() else {
+                return Ok(());
+            };
             let handle = shared
                 .cx
                 .devices
                 .get(gpu.surface.dev_id)
-                .ok_or("WebGPU device missing")?;
+                .ok_or_else(|| DrawError::Gpu("WebGPU device missing".to_owned()))?;
             ui::gpu::submit_target_to_surface(
                 &handle.device,
                 &handle.queue,
@@ -3144,43 +3006,6 @@ impl Mount {
                 "line": hex(theme.border_standard),
             }),
         );
-    }
-
-    /// A frame failed with `error`. When the GPU is what failed (its device
-    /// lost, or an error from it), the device, surface and renderer are made
-    /// again and the shell redraws on them, keeping every document; anything
-    /// else, or a GPU that keeps failing ([`crate::gpu_recovery`]), stops the
-    /// desktop with `error`.
-    fn frame_failed(&mut self, id: u64, error: String) {
-        let gpu_failed = self.gpu.as_ref().and_then(Gpu::failure).is_some();
-        if gpu_failed && self.gpu_remakes.admit(ui::time::now()) {
-            let lived = self
-                .gpu
-                .as_ref()
-                .and_then(|gpu| gpu.shared.try_borrow().ok().map(|shared| shared.made))
-                .map_or(ui::time::Duration::ZERO, |made| {
-                    ui::time::now().saturating_duration_since(made)
-                });
-            let other = crate::gpu_recovery::device_lost(lived);
-            let on = if other {
-                "on the other GPU"
-            } else {
-                "on the same GPU"
-            };
-            web_sys::console::warn_1(&JsValue::from_str(&format!(
-                "Browser runtime: the GPU failed ({error}); making it again {on} and drawing on"
-            )));
-            self.remake_gpu(id);
-            return;
-        }
-        if gpu_failed {
-            // The canvas would keep showing the last frame the lost device
-            // presented, which may be half drawn: the page says the desktop
-            // stopped over an empty one instead.
-            unconfigure(&self.canvas);
-        }
-        self.error = Some(error);
-        self.publish(id);
     }
 
     /// A pressed key reaching the shell: how many frames were presented by then.
@@ -3351,7 +3176,7 @@ impl Mount {
             (Some(decision), root_rect)
         };
         let applied = self.viewport.applied();
-        let value = serde_json::json!({
+        let mut value = serde_json::json!({
             "phase": if self.error.is_some() { "failed" } else { "presented" },
             "id": id,
             // The tab this mount shows, hex: what its pointers are over.
@@ -3369,6 +3194,7 @@ impl Mount {
             "componentInstance": self.frame.component_instance_id(),
             "semanticLoci": self.presentation.get().then(|| self.semantic_loci()),
             "gpuGeneration": self.generation,
+            "software": self.soft.is_some(),
             "layoutGeneration": self.frame.relayout_frames(),
             "logicalSize": applied.logical_size(),
             "dpr": applied.dpr,
@@ -3398,7 +3224,6 @@ impl Mount {
             )).filter(|r| !r.is_empty()),
             "ime": ime,
         });
-        let mut value = value;
         self.add_search_state(&mut value);
         if !(unbuilt && change == FrameChange::Nothing) {
             self.add_presence_changes(&mut value);
@@ -3441,6 +3266,7 @@ mod desktop_frame;
 mod dom;
 mod prepare;
 pub(crate) use dom::{draw_dom_frame, paint_composed};
+mod draw;
 pub(crate) mod drops;
 mod fonts;
 mod frame_loop;
@@ -3455,6 +3281,7 @@ mod publication;
 mod scale;
 mod scene;
 mod session_asks;
+mod software;
 pub(crate) mod told_notices;
 pub(crate) mod uploads;
 use crate::first_frame::{self, GpuStep};

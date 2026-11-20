@@ -130,3 +130,87 @@ tilo_test_env::scenario! {
         }
     }
 }
+
+tilo_test_env::scenario! {
+    fn a_frame_rasterized_on_the_cpu_keeps_its_pixels_for_a_screen_with_no_gpu;
+
+    phase the_frame_holds_its_colours_and_says_which_pixels_it_drew;
+    // Catches a page whose GPU keeps failing having nothing to put on its
+    // canvas: the frame is on the CPU, ready for it.
+    {
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(255, 0, 0, 255),
+            None,
+            &Rect::new(4.0, 4.0, 8.0, 8.0),
+        );
+        let mut raster = RetainedRaster::new(true);
+        raster
+            .rasterize_to_cpu(FrameContent {
+                scene: &scene,
+                width: 16,
+                height: 16,
+                base_color: Color::WHITE,
+                damage_regions: &[],
+                scroll_copies: &[],
+                full_redraw: true,
+                backdrop: &crate::backdrop::BackdropFrame::default(),
+            })
+            .expect("the CPU draws the frame");
+        let cpu = raster.cpu_frame().expect("the frame is on the CPU");
+        assert_eq!((cpu.width, cpu.height), (16, 16));
+        assert_eq!(cpu.dirty.len(), 1, "the whole frame is new");
+        assert_eq!(cpu.dirty[0], tilo_cpu_raster::Region::new(0, 0, 16, 16));
+        let pixel = |x: usize, y: usize| {
+            let at = (y * 16 + x) * 4;
+            [
+                cpu.pixels[at],
+                cpu.pixels[at + 1],
+                cpu.pixels[at + 2],
+                cpu.pixels[at + 3],
+            ]
+        };
+        assert_eq!(pixel(1, 1), [255, 255, 255, 255], "the base colour");
+        assert_eq!(pixel(6, 6), [255, 0, 0, 255], "the rectangle drawn on it");
+    }
+
+    phase a_rasterizer_for_the_gpu_has_no_pixels_of_its_own;
+    {
+        let mut raster = RetainedRaster::new(false);
+        assert!(raster.cpu_frame().is_none());
+        let scene = Scene::new();
+        assert!(
+            raster
+                .rasterize_to_cpu(FrameContent {
+                    scene: &scene,
+                    width: 16,
+                    height: 16,
+                    base_color: Color::WHITE,
+                    damage_regions: &[],
+                    scroll_copies: &[],
+                    full_redraw: true,
+                    backdrop: &crate::backdrop::BackdropFrame::default(),
+                })
+                .is_err()
+        );
+    }
+
+    phase premultiplied_pixels_become_the_colours_a_canvas_shows;
+    // Catches a translucent pixel shown the colour of its premultiplied
+    // value, which reads darker than what was drawn.
+    {
+        let mut pixels = [
+            255, 0, 0, 255, // opaque red
+            128, 0, 0, 128, // half red over nothing
+            0, 0, 0, 0, // nothing
+            64, 64, 64, 128, // a quarter of a grey
+        ];
+        straighten(&mut pixels);
+        assert_eq!(&pixels[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&pixels[4..8], &[255, 0, 0, 128]);
+        assert_eq!(&pixels[8..12], &[0, 0, 0, 0]);
+        assert_eq!(&pixels[12..16], &[128, 128, 128, 128]);
+    }
+}

@@ -96,6 +96,16 @@ web-sys = { version = "=0.3.85", features = [
     "HtmlMediaElement",
     "HtmlVideoElement",
     "console",
+    # The canvas frames drawn on the CPU are put on, over the mount's own
+    # (src/browser/software.rs).
+    "CanvasRenderingContext2d",
+    "CssStyleDeclaration",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "ImageData",
+    "Node",
+    "Window",
 ] }
 # The certified peer over WebTransport, its live session and the member's client.
 tilo-session-client = { version = "0.1.0", path = "../../session/client", features = ["toolkit"] }

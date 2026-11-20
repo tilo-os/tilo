@@ -126,10 +126,20 @@ impl CpuCanvas {
     }
 
     /// The canvas: premultiplied RGBA8, rows of `width * 4` bytes. What a
-    /// test reads back; a host presents the target it uploaded.
-    #[cfg(test)]
+    /// presenter shows, and what a test reads back.
     pub(crate) fn pixels(&self) -> &[u8] {
         &self.pixels
+    }
+
+    /// The regions [`Self::rasterize`] wrote: the rest still holds the frames
+    /// before it.
+    pub(crate) fn dirty(&self) -> &[Region] {
+        &self.uploads
+    }
+
+    /// The canvas's extent in pixels, as [`Self::rasterize`] last made it.
+    pub(crate) fn size(&self) -> (u32, u32) {
+        self.size
     }
 
     pub(crate) fn upload(&self, queue: &vello::wgpu::Queue, texture: &vello::wgpu::Texture) {
