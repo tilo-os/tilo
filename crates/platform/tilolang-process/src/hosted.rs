@@ -1962,15 +1962,11 @@ impl Hosted {
             .instance
             .host()
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
-        let recovery;
-        let argument = if self.spec.app == crate::mail_recovery::APP
-            && address.action == crate::mail_recovery::ACTION
-        {
-            recovery = self.recover_earlier_mail(&host, &invoker)?;
-            Some(recovery.as_str())
-        } else {
-            argument
-        };
+        let recovery = (self.spec.app == crate::mail_recovery::APP
+            && address.action == crate::mail_recovery::ACTION)
+            .then(|| self.recover_earlier_mail(&host, &invoker))
+            .transpose()?;
+        let argument = recovery.as_deref().or(argument);
         // The action is applied as soon as it is built: the run that builds it is the one whose
         // writes the document commits.
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
