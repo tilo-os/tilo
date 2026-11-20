@@ -59,6 +59,21 @@ pub(crate) fn opened_file(
     OpenFile::new(&name, media_type, bytes)
 }
 
+/// The app that opens the workspace's content `hash`, called `name`, in `content`: the file it is
+/// (a manifest and the chunks it lists, or its bytes whole), and which app its bytes name. `None`
+/// when no app opens it.
+///
+/// # Errors
+/// Content the page does not hold, or bytes no app may be handed.
+pub(crate) fn opening_app(
+    content: &ContentStore,
+    hash: &str,
+    name: &str,
+) -> Result<Option<String>, String> {
+    let (file, _) = opened_file(hash, content, Some(name))?;
+    Ok(crate::dropped_files::opens_in(file.bytes(), file.name()))
+}
+
 /// Keep the file whose content is `hash` in `kept` (its manifest and the chunks it lists, or its
 /// bytes whole) in `windows` too, under the same addresses: a file dropped on the shell is kept in
 /// the workspace tree's content, and the window it opens in reads the content windows share.
@@ -161,6 +176,52 @@ mod tests {
         assert_eq!(file.media_type(), "text/csv");
         let (file, _) = opened_file(&table, &content, Some("data.TSV")).unwrap();
         assert_eq!(file.media_type(), "text/tab-separated-values");
+    }
+
+    /// A file a workspace's tree names by its manifest (a file copied in through the workspace's
+    /// folder, as a login mounts it) opens in the app its bytes say: the manifest names the file,
+    /// never what a person wrote in it.
+    #[test]
+    fn an_opened_file_names_the_app_its_bytes_open_however_the_tree_kept_it() {
+        let content = store();
+        let mut keep = |_: &fs_content::ChunkRef, bytes: &[u8]| {
+            content.put_public(bytes).unwrap();
+        };
+        let letter = b"Dear Ada,\n\nThe keys are under the flowerpot.\n\nGrace\n".to_vec();
+        let mut stream = fs_content::Streamed::new(letter.len() as u64, None);
+        stream.push(&letter, &mut keep).unwrap();
+        let (manifest, _) = stream.finish(&mut keep).unwrap();
+        let text = content.put_public(&manifest.encode()).unwrap();
+        assert_eq!(
+            opening_app(&content, &text, "letter.txt")
+                .unwrap()
+                .as_deref(),
+            Some("so.tilo.notes"),
+            "a text document kept as chunks opens in Notes"
+        );
+        // The table a command put in, kept whole, is what its name says.
+        let table = content.put(b"item,cost\nrent,900\n").unwrap();
+        assert_eq!(
+            opening_app(&content, &table, "budget.csv")
+                .unwrap()
+                .as_deref(),
+            Some("so.tilo.sheets"),
+            "a table kept whole opens in Sheets"
+        );
+        let png = b"\x89PNG\r\n\x1a\n-a-capture".to_vec();
+        let photo = content.put(&png).unwrap();
+        assert_eq!(
+            opening_app(&content, &photo, "spring.png")
+                .unwrap()
+                .as_deref(),
+            Some("so.tilo.photos")
+        );
+        let blob = content.put(&[0_u8, 1, 2, 3]).unwrap();
+        assert_eq!(opening_app(&content, &blob, "blob.bin").unwrap(), None);
+        assert!(
+            opening_app(&content, &"ab".repeat(32), "gone.txt").is_err(),
+            "content the page does not hold is no file to open"
+        );
     }
 
     #[test]

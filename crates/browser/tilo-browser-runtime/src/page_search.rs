@@ -84,16 +84,23 @@ impl AppActions for PageActions {
     /// where the page keeps the workspace's content, and asked of the workspace when it is not
     /// here yet.
     fn open_content(&self, hash: &str, name: &str) -> Result<(), ApiError> {
-        let Some(bytes) = self.content.read(hash) else {
+        if self.content.read(hash).is_none() {
             return Err(ApiError::Unavailable {
                 code: "content_on_its_way".into(),
                 reason: format!("{name} is still coming from the workspace"),
             });
-        };
-        let head = bytes
-            .get(..bytes.len().min(tilo_content_types::HEAD_BYTES))
-            .unwrap_or(&bytes);
-        let Some(app) = crate::dropped_files::opens_in(head, name) else {
+        }
+        // A tree names a file by the hash of its content manifest when it was kept in chunks, as a
+        // workspace's own folder and a drop keep one: what the app opens is the file the manifest
+        // lists, never the manifest's own bytes.
+        let app =
+            crate::content_open::opening_app(&self.content, hash, name).map_err(|reason| {
+                ApiError::Unavailable {
+                    code: "content_unreadable".into(),
+                    reason,
+                }
+            })?;
+        let Some(app) = app else {
             return Err(ApiError::Unavailable {
                 code: "no_app".into(),
                 reason: format!("No app here opens {name}"),
@@ -101,7 +108,9 @@ impl AppActions for PageActions {
         };
         self.handle
             .dispatch(ChromeEffect::OpenApp {
-                app: tilo_desktop_surface::session::content_launch(&app, hash),
+                // The window it opens names the file by the name the tree gave it: a text document
+                // opens as the Markdown a note is, and a table as the table Sheets imports.
+                app: tilo_desktop_surface::session::named_content_launch(&app, hash, Some(name)),
                 beside: None,
                 background: None,
                 float: None,
