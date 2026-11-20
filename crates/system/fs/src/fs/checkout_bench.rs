@@ -286,6 +286,26 @@ async fn checkout_commit_split() {
         "tree alone: {:.0} us/file",
         started.elapsed().as_secs_f64() * 1_000_000.0 / FILES as f64
     );
+    // The tree's change as a closed file makes it: a version with its content id and length.
+    let started = Instant::now();
+    for (n, ino) in inos.iter().enumerate() {
+        let hash = Hash::from_bytes(*blake3::hash(&bytes_for(n)).as_bytes());
+        let mut namespace = fs.ns();
+        namespace.set_content(*ino, Some(&hash), 4_000, 2);
+        namespace.note_change();
+    }
+    println!(
+        "tree with a content id: {:.0} us/file",
+        started.elapsed().as_secs_f64() * 1_000_000.0 / FILES as f64
+    );
+    let started = Instant::now();
+    for ino in &inos {
+        let _ = fs.ns().hash_for(*ino);
+    }
+    println!(
+        "a namespace lock and its journal check: {:.0} us",
+        started.elapsed().as_secs_f64() * 1_000_000.0 / FILES as f64
+    );
     let started = Instant::now();
     for (n, ino) in inos.iter().enumerate() {
         fs.write_staged(*ino, Some(0), &bytes_for(n)).unwrap();
