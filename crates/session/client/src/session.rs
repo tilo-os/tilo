@@ -396,7 +396,7 @@ fn session_task(
         agent_sessions_pending: BTreeMap::new(),
         agent_sessions_next: 0,
         agent_session: None,
-        held_actions: Vec::new(),
+        held_actions: HeldActions::default(),
         begun: BTreeSet::new(),
         unadmitted: BTreeMap::new(),
         admitted_here: BTreeSet::new(),
@@ -617,7 +617,7 @@ struct Task {
     /// to yet, oldest first, with the workspace each is for: sent before the
     /// admission, they are refused by the host and the request they carry is
     /// never answered.
-    held_actions: Vec<HeldAction>,
+    held_actions: HeldActions,
     /// The workspaces whose replay the host began on this connection: their
     /// bootstrap arrived, or their `Ready` for a host that sends none. The
     /// host subscribed this connection to them, so it takes what the page
@@ -664,10 +664,38 @@ type Answering = (WorkspaceId, [u8; 16], DocumentRoute, Vec<[u8; 32]>);
 /// Open compaction requests kept; the oldest goes first.
 const MAX_COMPACTIONS: usize = 16;
 
-/// Action frames held for a workspace's admission. Past it, the oldest is
-/// given up: an action that waited for a session's admission longer than this
-/// many actions is better refused than delivered late.
+/// Action frames held for a workspace's admission at once. Past it, a new action is refused at
+/// once, saying the session waits to be let in: every one already held stays held, in order.
 const MAX_HELD_ACTIONS: usize = 64;
+
+/// The action frames waiting for the server to admit this session to their workspace, oldest
+/// first. None is ever given up once held: a person who was told their action waits is never
+/// told later that it was dropped for a newer one. When too many wait, the newest is refused at
+/// once, while its caller is still there to hear it and ask again.
+#[derive(Default)]
+struct HeldActions(Vec<HeldAction>);
+
+impl HeldActions {
+    /// Hold `action` until its workspace admits this session; it comes back when as many wait
+    /// as [`MAX_HELD_ACTIONS`], and nothing held was let go.
+    fn hold(&mut self, action: HeldAction) -> Result<(), HeldAction> {
+        if self.0.len() >= MAX_HELD_ACTIONS {
+            return Err(action);
+        }
+        self.0.push(action);
+        Ok(())
+    }
+
+    /// Every action held for `workspace_id`, in the order they were made; those for other
+    /// workspaces keep waiting.
+    fn take(&mut self, workspace_id: WorkspaceId) -> Vec<HeldAction> {
+        let (due, waiting) = std::mem::take(&mut self.0)
+            .into_iter()
+            .partition(|held| held.workspace_id == workspace_id);
+        self.0 = waiting;
+        due
+    }
+}
 
 impl Task {
     fn note_delivered(&mut self, route: &DocumentRoute, entries: &[[u8; 32]]) {
@@ -1504,21 +1532,23 @@ impl Task {
             return;
         }
         if self.admitted_to(workspace_id) == Some(false) {
-            if self.held_actions.len() >= MAX_HELD_ACTIONS {
-                let dropped = self.held_actions.remove(0);
-                self.reports.emit(&Event::Remote(Heard::Undeliverable {
-                    workspace_id: dropped.workspace_id,
-                    to: dropped.to,
-                    refusal: tilo_server_protocol::refusal::Refusal::Other(
-                        "too many actions waited for the workspace's admission".into(),
-                    ),
-                }));
-            }
-            self.held_actions.push(HeldAction {
+            let held = HeldAction {
                 workspace_id,
                 to,
                 frame,
-            });
+            };
+            if let Err(refused) = self.held_actions.hold(held) {
+                self.reports.emit(&Event::Remote(Heard::Undeliverable {
+                    workspace_id: refused.workspace_id,
+                    to: refused.to,
+                    refusal: tilo_server_protocol::refusal::Refusal::Other(
+                        "this computer is waiting for the workspace to let it back in, with \
+                         earlier actions ahead of this one; nothing was sent, ask again in a \
+                         moment"
+                            .into(),
+                    ),
+                }));
+            }
             return;
         }
         self.send_action(client, workspace_id, to, frame);
@@ -1553,12 +1583,7 @@ impl Task {
     /// the order they were made. What this session owes another workspace
     /// waits for that one.
     fn flush_held_actions(&mut self, workspace_id: WorkspaceId, client: &ServerClient) {
-        let (due, waiting): (Vec<HeldAction>, Vec<HeldAction>) =
-            std::mem::take(&mut self.held_actions)
-                .into_iter()
-                .partition(|held| held.workspace_id == workspace_id);
-        self.held_actions = waiting;
-        for held in due {
+        for held in self.held_actions.take(workspace_id) {
             self.send_action(client, held.workspace_id, held.to, held.frame);
         }
     }
@@ -2507,6 +2532,51 @@ fn wanted(envelope: &Envelope) -> Option<(WorkspaceId, [u8; 32], Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Actions waiting for a workspace to let the session back in are never given up: past
+    /// as many as are held, the newest is refused at once, and every one held before goes out
+    /// in order once the workspace admits the session. Giving up the oldest lost a person's
+    /// action they had been told was on its way.
+    #[test]
+    fn a_held_action_is_never_dropped_for_a_newer_one() {
+        let lounge = WorkspaceId::from_u128(1);
+        let other = WorkspaceId::from_u128(2);
+        let action = |workspace_id, n: usize| HeldAction {
+            workspace_id,
+            to: [0; 32],
+            frame: n.to_le_bytes().to_vec(),
+        };
+        let mut held = HeldActions::default();
+        assert!(held.hold(action(other, usize::MAX)).is_ok());
+        for n in 1..MAX_HELD_ACTIONS {
+            assert!(held.hold(action(lounge, n)).is_ok(), "action {n} is held");
+        }
+        let refused = held
+            .hold(action(lounge, MAX_HELD_ACTIONS))
+            .expect_err("one past the bound is refused, not held");
+        assert_eq!(refused.frame, MAX_HELD_ACTIONS.to_le_bytes());
+        let sent: Vec<Vec<u8>> = held
+            .take(lounge)
+            .into_iter()
+            .map(|held| held.frame)
+            .collect();
+        let made: Vec<Vec<u8>> = (1..MAX_HELD_ACTIONS)
+            .map(|n| n.to_le_bytes().to_vec())
+            .collect();
+        assert_eq!(
+            sent, made,
+            "every held action goes out, in the order it was made"
+        );
+        assert_eq!(
+            held.take(other).len(),
+            1,
+            "another workspace's action still waits"
+        );
+        assert!(
+            held.hold(action(lounge, 0)).is_ok(),
+            "held again once they went out"
+        );
+    }
 
     /// Three keep-alive intervals without a frame from the server end the connection; anything it
     /// said within them, a `Pong` included, keeps it.
