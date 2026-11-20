@@ -1954,7 +1954,8 @@ private_env() {
 }
 
 # run_native NAME DIR COMMAND…: COMMAND as the service NAME, in a session of
-# its own, with only the environment $runs/NAME.env sets. bwrap puts the
+# its own, with only the environment $runs/NAME.env sets: bwrap is the one
+# on the caller's PATH, which that environment may not name. bwrap puts the
 # stack's trust bundle (this machine's roots) at the one
 # path Tilo's programs read, for this process alone, as the containers mount
 # it; everything else it sees is this machine as it is.
