@@ -393,6 +393,7 @@ impl Worker {
             .bounded_replica(workspace_id, &who, &route, &state)
             .map_err(refused)?;
         let held_at = started.elapsed();
+        let acting = act.is_some();
         let patches = self
             .bounded
             .get(&key)
@@ -405,6 +406,8 @@ impl Worker {
         self.save_page(workspace_id, &key, (&who, &route, &state))?;
         tracing::debug!(
             page,
+            acted = acting,
+            patches = patches.len(),
             refresh_ms = refreshed.as_millis(),
             replica_ms = held_at.saturating_sub(refreshed).as_millis(),
             view_ms = acted.saturating_sub(held_at).as_millis(),

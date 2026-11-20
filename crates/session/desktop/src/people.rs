@@ -98,6 +98,12 @@ pub struct RosterRow {
     pub followable: bool,
     /// How available they say they are (idle and away come on their own).
     pub availability: ui::Availability,
+    /// When the workspace admitted them, Unix milliseconds: for someone nobody named, the one
+    /// fact that tells their row from every other unnamed person's.
+    pub joined: Option<u64>,
+    /// The joined line their row shows, once the roster's unnamed rows are known: the clock they
+    /// joined by, with milliseconds where two of them would otherwise read alike.
+    pub joined_line: Option<String>,
     /// The voice channel they are in, if any.
     pub call: Option<String>,
     /// The voice channel of theirs this device may join from their row: one they are in and this person is not.
@@ -389,6 +395,14 @@ pub fn doing_line(row: &RosterRow) -> Option<String> {
         ui::Availability::Away => Some(t("people-panel-away")),
         ui::Availability::Idle => Some(t("people-panel-idle")),
     }
+}
+
+/// When someone nobody named joined: the one fact a person can tell them apart and recognise
+/// them by, since their name and face are every unnamed person's. Never a device's name or a key.
+/// The roster fills it once it knows its other unnamed rows ([`roster_rows_named`]).
+#[must_use]
+pub fn joined_line(row: &RosterRow) -> Option<String> {
+    row.joined_line.clone()
 }
 
 /// Whether the line under someone's name is software's words about them (a model's, or the host's reading of what they did), not theirs: it carries the automatic mark.
@@ -1130,6 +1144,9 @@ impl PeopleOverlay {
                 continue;
             };
             let lines = (row.activity.clone().unwrap_or_default(), doing_line(row));
+            // Someone nobody named is told apart by when they joined: their name and face are
+            // every unnamed person's, and the line where they are says nothing about who they are.
+            let joined = joined_line(row);
             let mirror = self
                 .mirrors
                 .iter()
@@ -1190,8 +1207,9 @@ impl PeopleOverlay {
                 ChipStyle::Neutral,
             )];
             let mut face = ListRowFace::new(&row.label);
-            if !lines.0.is_empty() {
-                face = face.subtitle(&lines.0);
+            let subtitle = joined.as_deref().unwrap_or(&lines.0);
+            if !subtitle.is_empty() {
+                face = face.subtitle(subtitle);
             }
             // The line under the row says it whole where software's window line stands there:
             // the row's own line is elided to a caption column beside Wave and Stop, and a
@@ -1201,6 +1219,13 @@ impl PeopleOverlay {
                 && place.said.area() <= 0.0
             {
                 face = face.secondary(doing);
+            } else if joined.is_some()
+                && !lines.0.is_empty()
+                && place.working_in.area() <= 0.0
+                && place.said.area() <= 0.0
+            {
+                // The joined line took the subtitle's place: where they are still says something.
+                face = face.secondary(&lines.0);
             }
             // Words software wrote about someone are marked as such: never shown as if they had
             // said them.

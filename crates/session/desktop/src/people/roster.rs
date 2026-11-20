@@ -3,6 +3,9 @@
 //! A row is one member of the active workspace — a person, an agent or a bot — with the colour
 //! their member row wears, said beside where presence puts them and what they say they are doing.
 //! The overlay paints what this derives; nothing here measures or paints.
+//!
+//! A person nobody named is told apart by when they joined, which is the one fact a row about
+//! them can carry that is theirs alone: their name and face are every unnamed person's.
 
 use std::collections::HashMap;
 
@@ -17,9 +20,61 @@ use super::{LineSource, RosterRow, RosterStatus, doing_line};
 
 /// Every member of the active workspace who is here now, as the roster lists them.
 pub fn roster_rows(desktop: &Layout) -> Vec<RosterRow> {
-    desktop
-        .active_workspace()
-        .map_or_else(Vec::new, |workspace| rows_of(workspace, &workspace.present))
+    let Some(workspace) = desktop.active_workspace() else {
+        return Vec::new();
+    };
+    let mut rows = rows_of(workspace, &workspace.present);
+    name_the_unnamed(&mut rows);
+    rows
+}
+
+/// Give each row nobody named the clock they joined by. Two people admitted within one second
+/// would read alike otherwise, so those two say the millisecond as well: every unnamed row is a
+/// person someone can tell apart and recognise, never a device's name or a key.
+fn name_the_unnamed(rows: &mut [RosterRow]) {
+    let joined: Vec<(usize, u64)> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| ui::presence::is_unnamed_person(&row.label))
+        .filter_map(|(index, row)| Some((index, row.joined?)))
+        .collect();
+    let seconds: Vec<String> = joined
+        .iter()
+        .map(|(_, at)| clock(*at, ui::format::time_of_with_seconds))
+        .collect();
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for text in &seconds {
+        let count = counts.entry(text.as_str()).or_default();
+        *count = count.saturating_add(1);
+    }
+    for ((index, at), text) in joined.iter().zip(&seconds) {
+        let shown = if counts.get(text.as_str()).copied().unwrap_or_default() > 1 {
+            clock_millis(*at)
+        } else {
+            text.clone()
+        };
+        if let Some(row) = rows.get_mut(*index)
+            && !shown.trim().is_empty()
+        {
+            row.joined_line = Some(t_args("people-panel-joined", &[("time", shown.into())]));
+        }
+    }
+}
+
+/// The local clock `at` (Unix milliseconds) reads by, to the second, through the person's own
+/// time format.
+fn clock(at: u64, read: fn(&ui::format::UnixSecs) -> String) -> String {
+    i64::try_from(at / 1000)
+        .map(|seconds| read(&ui::format::UnixSecs(seconds)))
+        .unwrap_or_default()
+}
+
+/// The local clock `at` reads by, to the millisecond: what tells two people who joined within one
+/// second apart.
+fn clock_millis(at: u64) -> String {
+    i64::try_from(at)
+        .map(|millis| ui::format::time_of_with_millis(&ui::format::UnixMillis(millis)))
+        .unwrap_or_default()
 }
 
 /// What each member in the active workspace is called, exactly as the roster calls them, with this
@@ -118,6 +173,12 @@ fn row_of(workspace: &Workspace, member: &Member, here: &Present) -> RosterRow {
         recent: Vec::new(),
         followable: true,
         availability: here.availability,
+        // When the workspace admitted them: what a row nobody named is told apart by.
+        joined: member
+            .id
+            .person_id()
+            .and_then(|person| workspace.policy.joined_at(person)),
+        joined_line: None,
         call: here
             .call
             .as_ref()
@@ -172,6 +233,10 @@ pub(super) fn spoken_details(row: &RosterRow) -> String {
     }
     if let Some(doing) = doing_line(row) {
         details.push(doing);
+    }
+    // Someone nobody named is told apart by when they joined, and a reader is told it too.
+    if let Some(joined) = super::joined_line(row) {
+        details.push(joined);
     }
     // Where software works: the line under its row says it on screen, and a reader is told it too.
     if let Some((_, record)) = &row.working_in {

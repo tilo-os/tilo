@@ -19,7 +19,8 @@ pub use dates::{
     date, day_done, day_fact, day_heading, day_heading_short, day_range, days_between, duration,
     language_date, list_date, moment_fact, month_day, month_day_time, month_day_year,
     month_heading, month_heading_short, month_name, month_short, near_day, sentence_date,
-    sentence_moment, time, timestamp, week, weekday_name, weekday_short,
+    sentence_moment, time, time_with_millis, time_with_seconds, timestamp, week, weekday_name,
+    weekday_short,
 };
 pub use region::{DateStyle, FirstDayOfWeek, NumberStyle, RegionFormats};
 pub use shown::{sentence, shown};

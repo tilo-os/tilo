@@ -28,6 +28,8 @@ fn row(id: &str, label: &str) -> RosterRow {
         recent: Vec::new(),
         followable: true,
         availability: ui::Availability::Available,
+        joined: None,
+        joined_line: None,
         call: None,
         join: None,
     }
@@ -972,4 +974,121 @@ fn the_header_counts_the_people_listed() {
     assert_eq!(here_line(0), "Just you");
     assert_eq!(here_line(1), "You and 1 other");
     assert_eq!(here_line(3), "You and 3 others");
+}
+
+tilo_test_env::scenario! {
+    fn a_row_nobody_named_says_when_they_joined;
+
+    phase two_unnamed_people_are_told_apart_by_when_they_joined;
+    // Two people the workspace has no name for share the words in their place and the person
+    // glyph, so their colour is all a face says. Their row says when they joined, with its
+    // seconds, and a reader hears it too: each is a person someone can tell apart and remember,
+    // never a device name or a key.
+    {
+        use tilo_desktop_model::{Workspace, WorkspaceId};
+
+        let unnamed = ui::presence::unnamed_person_label();
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(74), "Lounge");
+        let early = "ab".repeat(32);
+        let late = "cd".repeat(32);
+        // The two joined within one second of each other: the clock alone would read alike.
+        for (person, at) in [
+            (early.as_str(), 1_765_000_000_000_u64),
+            (late.as_str(), 1_765_000_000_402),
+        ] {
+            workspace
+                .policy
+                .members
+                .insert(person.to_owned(), tilo_action_policy::Role::Editor);
+            workspace.policy.joined.insert(person.to_owned(), at);
+            let member = Member::named(
+                collab_types::MemberId::person(person),
+                unnamed.clone(),
+            );
+            workspace.member_here(member.clone());
+            workspace.place_presence(Present {
+                device: format!("{person}-device"),
+                ..Present::of(member.id)
+            });
+        }
+        let desktop = Layout {
+            active: workspace.id(),
+            workspaces: vec![workspace],
+            ..Layout::default()
+        };
+        let rows = roster_rows(&desktop);
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter().all(|row| row.label == unnamed),
+            "both are named by the words in their place: {:?}",
+            rows.iter().map(|row| &row.label).collect::<Vec<_>>()
+        );
+        let told: Vec<String> = rows
+            .iter()
+            .map(|row| joined_line(row).expect("each row says when they joined"))
+            .collect();
+        assert_ne!(told[0], told[1], "the two rows read apart: {told:?}");
+        assert!(
+            told[0].contains(':') && told[1].contains(':'),
+            "the clock carries seconds, so joins in one minute differ: {told:?}"
+        );
+        assert!(
+            told[0].contains('.') && told[1].contains('.'),
+            "and the millisecond where two came within one second: {told:?}"
+        );
+        for (row, joined) in rows.iter().zip(&told) {
+            assert!(
+                spoken_details(row).contains(joined.as_str()),
+                "a reader hears when they joined: {}",
+                spoken_details(row)
+            );
+        }
+    }
+
+    phase a_named_person_s_row_says_who_they_are_by_their_name;
+    {
+        let named = row("ada", "Ada");
+        assert_eq!(joined_line(&named), None);
+    }
+
+    phase people_who_joined_in_different_seconds_read_by_the_second;
+    {
+        use tilo_desktop_model::{Workspace, WorkspaceId};
+
+        let unnamed = ui::presence::unnamed_person_label();
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(75), "Lounge");
+        let first = "ab".repeat(32);
+        let later = "cd".repeat(32);
+        for (person, at) in [
+            (first.as_str(), 1_765_000_000_000_u64),
+            (later.as_str(), 1_765_000_007_000),
+        ] {
+            workspace
+                .policy
+                .members
+                .insert(person.to_owned(), tilo_action_policy::Role::Editor);
+            workspace.policy.joined.insert(person.to_owned(), at);
+            let member = Member::named(collab_types::MemberId::person(person), unnamed.clone());
+            workspace.member_here(member.clone());
+            workspace.place_presence(Present {
+                device: format!("{person}-device"),
+                ..Present::of(member.id)
+            });
+        }
+        let desktop = Layout {
+            active: workspace.id(),
+            workspaces: vec![workspace],
+            ..Layout::default()
+        };
+        let rows = roster_rows(&desktop);
+        let told: Vec<String> = rows
+            .iter()
+            .map(|row| joined_line(row).expect("each row says when they joined"))
+            .collect();
+        assert_ne!(told[0], told[1]);
+        assert!(
+            !told[0].contains('.') && !told[1].contains('.'),
+            "seconds tell them apart, so no millisecond is needed: {told:?}"
+        );
+    }
 }

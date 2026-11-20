@@ -70,6 +70,36 @@ fn an_answer_is_a_live_view_over_other_apps_at_every_size_and_theme() {
     }
 }
 
+/// The answer's view is the page's own: the composition the window draws, rendered as the
+/// HTML a server serves, carries the words the view shows and the controls it offers. This is
+/// the path every app's Views take to a page, whatever language the app is written in.
+#[test]
+fn a_written_view_is_html_on_the_page() {
+    crate::support::installed_beside("views", &["tasks"]);
+    let mut app = TestApp::<TlApp>::capture_at(Some("a release answer"), (1280, 800))
+        .expect("the scenario stages");
+    app.harness()
+        .settle_for_capture(ui::time::Duration::from_millis(600));
+    app.harness().relayout();
+    let composition = app.harness().composition();
+    let mut page = ui::composition::page::Page::new();
+    let body = page.render(&composition);
+    println!("<<<PAGE\n{body}\nPAGE>>>");
+    // The answer's title, and the tasks' card drawn by Tasks' own view.
+    for shown in ["Left for the release", "Tasks"] {
+        assert!(body.contains(shown), "{shown:?} is on the page: {body}");
+    }
+    // What the view offers to press is an element of the page, not a picture of one.
+    assert!(
+        body.contains("<button"),
+        "the view's controls are elements: {body}"
+    );
+    assert!(
+        !body.contains("position:absolute") && !body.contains(";left:"),
+        "the page lays itself out: {body}"
+    );
+}
+
 /// The view the recorded model answers with in the agent's end-to-end check is a `view`
 /// declaration that compiles over the apps that check installs, none of which Views names.
 /// (Its programs are a task's session, each after the last, which the API runs; only the view
