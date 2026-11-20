@@ -284,6 +284,10 @@ impl AppOutput {
         if !partial.is_empty() || truncated {
             self.keep(stream, &mut partial, &mut truncated, file, &mut bucket);
         }
+        // A stream that ends with lines the log never passed on says so even when no later line
+        // is: an app that chatters once and exits would otherwise leave the log looking as if
+        // everything it wrote had been kept.
+        self.notice_dropped(stream);
     }
 
     /// One line of `stream`: kept in the tail, written to the file, and
@@ -330,15 +334,7 @@ impl AppOutput {
         }
         // A line that relayed after some that did not says what was left out:
         // a log that silently skipped lines would read as if nothing came.
-        let dropped = self.dropped.swap(0, Ordering::Relaxed);
-        if dropped > 0 {
-            tracing::info!(
-                target: TARGET,
-                app = %self.app,
-                stream,
-                "{dropped} lines of this app were not relayed"
-            );
-        }
+        self.notice_dropped(stream);
         self.relayed.fetch_add(1, Ordering::Relaxed);
         tracing::info!(
             target: TARGET,
@@ -353,6 +349,19 @@ impl AppOutput {
                 app = %self.app,
                 stream,
                 "this app has written {RELAY_LINES_MAX} lines; the rest of its {stream} is not relayed"
+            );
+        }
+    }
+
+    /// Say, once, how many lines of `stream` the log left out since it last said so.
+    fn notice_dropped(&self, stream: &'static str) {
+        let dropped = self.dropped.swap(0, Ordering::Relaxed);
+        if dropped > 0 {
+            tracing::info!(
+                target: TARGET,
+                app = %self.app,
+                stream,
+                "{dropped} lines of this app were not relayed"
             );
         }
     }
