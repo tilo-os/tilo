@@ -33,6 +33,10 @@ extern "C" {
     fn save_from_link(target: &JsValue, url: &str) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(js_name = nowMs)]
     fn now_ms() -> f64;
+    #[wasm_bindgen(js_name = openShowTab)]
+    fn open_show_tab() -> JsValue;
+    #[wasm_bindgen(js_name = showInTab)]
+    fn show_in_tab(tab: &JsValue, url: &str);
 }
 
 /// How long before a link expires the page stops handing it to a drag: a drop a few seconds
@@ -93,7 +97,7 @@ impl Carrying {
             links: RefCell::default(),
             notifications,
         });
-        let served = ui::carry_out::serve(Rc::new(Host(Rc::clone(&inner))));
+        let served = ui::carry_out::serve(Rc::new(Way(Rc::clone(&inner))));
         Self {
             inner,
             _served: served,
@@ -177,17 +181,26 @@ impl Inner {
     /// Show `name` did not reach the person's computer, and why. A save that works says nothing:
     /// the Save dialog or the browser's download manager is where the person watched it.
     fn not_saved(&self, name: &str, why: &str) {
-        let mut notice = Notification::new(format!("{name} was not saved"), why);
+        self.failed(format!("{name} was not saved"), why);
+    }
+
+    /// Show `name` did not open in the browser's tab, and why.
+    fn not_shown(&self, name: &str, why: &str) {
+        self.failed(format!("{name} did not open"), why);
+    }
+
+    fn failed(&self, title: String, why: &str) {
+        let mut notice = Notification::new(title, why);
         notice.severity = NotificationSeverity::Error;
         self.notifications.post(notice);
         self.shared.wake();
     }
 }
 
-/// The host a window's [`ui::carry_out::save`] reaches.
-struct Host(Rc<Inner>);
+/// The way out a window's [`ui::carry_out::save`] reaches.
+struct Way(Rc<Inner>);
 
-impl ui::carry_out::CarryHost for Host {
+impl ui::carry_out::Carrier for Way {
     fn save(&self, ask: ContentLinkAsk) {
         // The Save dialog first, inside the click's gesture, which the browser asks for it.
         let target = match choose_carry_target(&ask.name) {
@@ -205,6 +218,27 @@ impl ui::carry_out::CarryHost for Host {
                 inner.not_saved(&name, &why);
             }
             inner.shared.wake();
+        });
+    }
+
+    fn show(&self, ask: ContentLinkAsk) {
+        // The tab first, inside the click's gesture, which the browser asks
+        // a new tab for; the link follows once the workspace minted it.
+        let tab = open_show_tab();
+        if tab.is_null() {
+            self.save(ask);
+            return;
+        }
+        let inner = Rc::clone(&self.0);
+        let name = ask.name.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match inner.mint(ask).await {
+                Ok((url, _)) => show_in_tab(&tab, &url),
+                Err(why) => {
+                    show_in_tab(&tab, "");
+                    inner.not_shown(&name, &why);
+                }
+            }
         });
     }
 }

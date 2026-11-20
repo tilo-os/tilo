@@ -5,6 +5,20 @@ use super::{MailApp, Mailroom};
 use crate::model::MessageId;
 use crate::notice::AttachmentUnavailable;
 
+/// How an attachment opens in a page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PageOpening {
+    /// In an app here, handed its bytes.
+    Here,
+    /// In the browser's own tab, streamed from the server: a film or a
+    /// recording, which no app here plays, or a picture too large to hand
+    /// an app.
+    Shown,
+    /// Saved from the server: too large for an app here, and nothing a
+    /// browser shows.
+    Saved,
+}
+
 impl Mailroom {
     /// Whether attachment `index` of `message` can be read here, without
     /// reading it.
@@ -136,6 +150,36 @@ impl Mailroom {
             name,
             zip: false,
         })
+    }
+
+    /// How opening attachment `index` of `message` goes in a page, where the
+    /// browser can take a file from the server itself.
+    pub(crate) fn attachment_opening(&self, message: &str, index: usize) -> PageOpening {
+        let Ok(message_id) = message.parse::<MessageId>() else {
+            return PageOpening::Here;
+        };
+        let shared = self.shared.borrow();
+        let Some(attachment) = shared
+            .mailbox
+            .get(message_id)
+            .and_then(|message| message.attachments.get(index))
+        else {
+            return PageOpening::Here;
+        };
+        let mime = attachment.mime.to_ascii_lowercase();
+        let played = |kind: &str| kind.starts_with("video/") || kind.starts_with("audio/");
+        let named = ui::tilo_actions::remote::viewable(&attachment.filename);
+        if played(&mime) || named.is_some_and(played) {
+            PageOpening::Shown
+        } else if attachment.size > ui::application::MAX_OPEN_FILE_BYTES as u64 {
+            if named.is_some() {
+                PageOpening::Shown
+            } else {
+                PageOpening::Saved
+            }
+        } else {
+            PageOpening::Here
+        }
     }
 
     /// Attachment `index` of `message` whole, and the name to save it under.

@@ -227,6 +227,26 @@ fn draft_row(mail: &Mail, id: &str) -> Option<ui::framework::LiveRow> {
         .then(|| crate::actions::draft_row(id, draft))
 }
 
+/// In a page, a film, a recording or a file too large for an app here goes
+/// from the server to the browser, which plays or keeps it as it streams; the
+/// page never holds it. `false` when it stays for an app here.
+fn carried_from_the_server(mailroom: &Mailroom, message: &str, index: usize) -> bool {
+    let opening = mailroom.attachment_opening(message, index);
+    if opening == super::PageOpening::Here || !ui::carry_out::available() {
+        return false;
+    }
+    let Some(ask) = ui::tilo_resource::content::current()
+        .and_then(|store| mailroom.attachment_link(message, index, &store))
+    else {
+        return false;
+    };
+    if opening == super::PageOpening::Shown {
+        ui::carry_out::show(ask)
+    } else {
+        ui::carry_out::save(ask)
+    }
+}
+
 fn answer_effect(
     mailroom: &Rc<RefCell<Mailroom>>,
     effect: MailEffect,
@@ -277,6 +297,9 @@ fn answer_effect(
             index,
             group,
         } => {
+            if carried_from_the_server(&mailroom.borrow(), message, *index) {
+                return Ok(Effected::done());
+            }
             let handed = mailroom
                 .borrow()
                 .attachment_content(&messages, message, *index)?;

@@ -18,6 +18,9 @@
 //!   the file's.
 //! - **Saving.** [`save`] hands the files to the host, which asks where to
 //!   save them (or lets the browser download them) and streams them there.
+//! - **Showing.** [`show`] hands one file over to be shown in the
+//!   browser's own tab, streamed from the link: a film or a recording plays
+//!   there without the page holding it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -27,15 +30,21 @@ use std::rc::Rc;
 pub use tilo_actions::remote::{ContentLinkAsk, ContentLinkFile};
 
 /// The host a window's carried files go through: a page's desktop.
-pub trait CarryHost {
+pub trait Carrier {
     /// Save `ask`'s files where the person chooses, as one file or one zip.
     /// Called while the window handles the person's click, inside the
     /// gesture a browser asks a Save dialog for.
     fn save(&self, ask: ContentLinkAsk);
+    /// Show `ask`'s one file in a tab of the browser's own, which plays or
+    /// shows it as it streams; a file it would not show safely is saved.
+    /// Called inside the person's click, as [`Carrier::save`] is.
+    fn show(&self, ask: ContentLinkAsk) {
+        self.save(ask);
+    }
 }
 
 thread_local! {
-    static HOST: RefCell<Option<Rc<dyn CarryHost>>> = const { RefCell::new(None) };
+    static CARRIER: RefCell<Option<Rc<dyn Carrier>>> = const { RefCell::new(None) };
     /// What each offered key carries, and how many offers hold it.
     static OFFERED: RefCell<HashMap<String, (ContentLinkAsk, usize)>> = RefCell::new(HashMap::new());
 }
@@ -43,37 +52,47 @@ thread_local! {
 /// Carry the windows' files on this thread through `host` until the guard
 /// drops.
 #[must_use = "the host carries files only while the guard lives"]
-pub fn serve(host: Rc<dyn CarryHost>) -> CarryGuard {
+pub fn serve(carrier: Rc<dyn Carrier>) -> CarryGuard {
     CarryGuard {
-        previous: HOST.with(|served| served.replace(Some(host))),
+        previous: CARRIER.with(|served| served.replace(Some(carrier))),
     }
 }
 
 /// Puts back the host served before, when dropped.
 pub struct CarryGuard {
-    previous: Option<Rc<dyn CarryHost>>,
+    previous: Option<Rc<dyn Carrier>>,
 }
 
 impl Drop for CarryGuard {
     fn drop(&mut self) {
         let previous = self.previous.take();
-        HOST.with(|served| *served.borrow_mut() = previous);
+        CARRIER.with(|served| *served.borrow_mut() = previous);
     }
 }
 
 /// Whether a host carries files out here: in a page, yes.
 #[must_use]
 pub fn available() -> bool {
-    HOST.with(|served| served.borrow().is_some())
+    CARRIER.with(|served| served.borrow().is_some())
 }
 
 /// Save `ask`'s files where the person chooses. `false` when no host
 /// carries files out here.
 pub fn save(ask: ContentLinkAsk) -> bool {
-    let Some(host) = HOST.with(|served| served.borrow().clone()) else {
+    let Some(carrier) = CARRIER.with(|served| served.borrow().clone()) else {
         return false;
     };
-    host.save(ask);
+    carrier.save(ask);
+    true
+}
+
+/// Show `ask`'s one file in the browser's own tab, streamed from the link.
+/// `false` when nothing carries files out here.
+pub fn show(ask: ContentLinkAsk) -> bool {
+    let Some(carrier) = CARRIER.with(|served| served.borrow().clone()) else {
+        return false;
+    };
+    carrier.show(ask);
     true
 }
 
@@ -159,7 +178,7 @@ mod tests {
 
     struct Kept(RefCell<Vec<String>>);
 
-    impl CarryHost for Kept {
+    impl Carrier for Kept {
         fn save(&self, ask: ContentLinkAsk) {
             self.0.borrow_mut().push(ask.name);
         }

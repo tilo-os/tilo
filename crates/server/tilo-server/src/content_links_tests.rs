@@ -3,7 +3,9 @@ use std::io::Read as _;
 use tilo_actions::remote::{ContentLinkAsk, ContentLinkFile, EncodedFile};
 use tilo_content::ContentStore;
 
-use super::{ContentLinks, ROUTE, Refusal, Sink, prepare, stream};
+use tilo_actions::remote::viewable;
+
+use super::{ContentLinks, ROUTE, Refusal, Sink, inline_disposition, prepare, stream};
 
 /// Every byte a link sends, kept.
 #[derive(Default)]
@@ -212,4 +214,24 @@ fn a_link_serves_an_attachment_decoded_from_the_pieces_its_message_carried() {
             "named {wrong} bytes"
         );
     }
+}
+
+#[test]
+fn a_link_shows_in_a_tab_only_what_a_browser_plays_or_shows_safely() {
+    assert_eq!(viewable("walkthrough.MP4"), Some("video/mp4"));
+    assert_eq!(viewable("voice.m4a"), Some("audio/mp4"));
+    assert_eq!(viewable("scan.png"), Some("image/png"));
+    for saved in [
+        "page.html",
+        "logo.svg",
+        "script.js",
+        "report.pdf",
+        "archive.zip",
+        "no-extension",
+    ] {
+        assert_eq!(viewable(saved), None, "{saved} is saved, never shown");
+    }
+    assert!(
+        inline_disposition("walkthrough.mp4").starts_with("inline; filename=\"walkthrough.mp4\"")
+    );
 }

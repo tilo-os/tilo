@@ -1069,8 +1069,12 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
         .and_then(|route| route.strip_prefix(crate::content_links::ROUTE))
     {
         let link = link.to_owned();
+        let view = request
+            .uri()
+            .query()
+            .is_some_and(|query| query.split('&').any(|pair| pair == "view"));
         let origin = request.headers().get(header::ORIGIN).cloned();
-        let mut response = content::handle(web, request.method(), &link).await;
+        let mut response = content::handle(web, request.method(), &link, view).await;
         cors(
             &web.allowed_origins,
             ALLOWED_HEADERS,

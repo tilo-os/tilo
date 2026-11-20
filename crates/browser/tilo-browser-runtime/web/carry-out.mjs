@@ -97,6 +97,23 @@ export async function saveFromLink(target,url,{fetch:fetcher=globalThis.fetch,do
   try{link.click();}finally{link.remove();}
 }
 
+/** A tab of the browser's own for a file shown from its link, opened now,
+ * inside the person's click, which a browser asks a new tab for; pointed at
+ * the link once it is minted (`showInTab`). `null` where the browser refused
+ * the tab. */
+export function openShowTab({window:win=globalThis}={}){
+  const tab=win.open?.('about:blank','_blank');
+  if(tab)tab.opener=null;
+  return tab??null;
+}
+
+/** Show what `url` serves in `tab` (from `openShowTab`), or close the tab
+ * when there is nothing to show (`url` empty). */
+export function showInTab(tab,url){
+  if(!url){tab?.close?.();return;}
+  tab.location.replace(`${url}?view`);
+}
+
 // What the canvas's pointer listeners (winit's) take. Crossing between the
 // canvas and a carrying element (pointerover, pointerout and their enter and
 // leave) is no entry or exit of the surface: only one from or to outside it

@@ -5491,6 +5491,7 @@ mod empty;
 mod tests;
 
 mod attachment_bytes;
+pub(crate) use attachment_bytes::PageOpening;
 mod undo;
 mod view;
 pub(crate) use view::window;

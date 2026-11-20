@@ -128,6 +128,12 @@ fn path_segment(name: &str) -> String {
     out
 }
 
+/// The `Content-Disposition` that shows the response as `name` in the
+/// browser's own tab, where [`tilo_actions::remote::viewable`] says it may be.
+pub(crate) fn inline_disposition(name: &str) -> String {
+    disposition(name).replacen("attachment", "inline", 1)
+}
+
 /// The `Content-Disposition` that saves the response as `name`: an ASCII
 /// fallback, and the exact name for every browser that reads `filename*`.
 pub(crate) fn disposition(name: &str) -> String {

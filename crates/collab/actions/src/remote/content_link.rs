@@ -152,6 +152,33 @@ pub struct ContentLink {
     pub expires_in_secs: u64,
 }
 
+/// The media type a browser shows `name` as in a tab of its own, when it is
+/// one it plays or shows safely: films, sound, pictures and plain text.
+/// Nothing executable (HTML, SVG, scripts) is ever shown from a link, nor a
+/// PDF, which a browser will not show sandboxed; those are saved.
+#[must_use]
+pub fn viewable(name: &str) -> Option<&'static str> {
+    let (_, extension) = name.rsplit_once('.')?;
+    Some(match extension.to_ascii_lowercase().as_str() {
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "ogv" => "video/ogg",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "wav" => "audio/wav",
+        "ogg" | "oga" | "opus" => "audio/ogg",
+        "flac" => "audio/flac",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "txt" => "text/plain; charset=utf-8",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]

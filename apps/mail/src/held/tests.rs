@@ -730,3 +730,54 @@ fn saving_an_attachment_kept_apart_names_the_pieces_it_came_in() {
         bytes.len()
     );
 }
+
+/// What a page's desktop was asked to carry out: shown in a tab, or saved.
+#[derive(Default)]
+struct Carried(std::cell::RefCell<Vec<(&'static str, ui::carry_out::ContentLinkAsk)>>);
+
+impl ui::carry_out::Carrier for Carried {
+    fn save(&self, ask: ui::carry_out::ContentLinkAsk) {
+        self.0.borrow_mut().push(("saved", ask));
+    }
+
+    fn show(&self, ask: ui::carry_out::ContentLinkAsk) {
+        self.0.borrow_mut().push(("shown", ask));
+    }
+}
+
+#[test]
+fn opening_a_film_kept_apart_in_a_page_plays_it_from_the_server() {
+    use tilo_mail_parts::fixture::message_with_attachments;
+    let size = 3 * 1024 * 1024 + 7;
+    let message = message_with_attachments(
+        "film@example.net",
+        "Walkthrough",
+        &[("walkthrough.mp4", size), ("notes.pdf", size)],
+    );
+    let mut app = TestApp::<MailShell>::new().unwrap();
+    let id = deliver_apart(&mut app, &message)["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    app.settle();
+    let carried = std::rc::Rc::new(Carried::default());
+    let _served = ui::carry_out::serve(carried.clone());
+    app.call_by(
+        tilo_actions::ActionInvoker::agent("planner"),
+        &format!("mail.attachment:{id}:0"),
+        "open-attachment",
+        json!({}),
+    )
+    .expect("the film opens");
+    let asked = carried.0.take();
+    assert_eq!(asked.len(), 1, "one tab for the film");
+    let (how, ask) = &asked[0];
+    assert_eq!(*how, "shown");
+    assert_eq!(ask.name, "walkthrough.mp4");
+    assert_eq!(ask.files[0].encoded.as_ref().unwrap().size, size as u64);
+    // A document an app here opens is handed to that app, as before.
+    assert_eq!(
+        app.with_surface(|mail: &mut crate::app::MailApp| mail.state().attachment_opening(&id, 1)),
+        Some(crate::app::PageOpening::Here)
+    );
+}

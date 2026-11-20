@@ -21,8 +21,10 @@ impl Sink for Channel {
     }
 }
 
-/// Answer one request for the link `link` (`<token>/<name>`).
-pub(super) async fn handle(web: &Web, method: &Method, link: &str) -> Response<Body> {
+/// Answer one request for the link `link` (`<token>/<name>`). `view` asks for
+/// the file shown in the browser's tab rather than saved: it is, where the
+/// file is one a browser plays or shows safely, and saved otherwise.
+pub(super) async fn handle(web: &Web, method: &Method, link: &str, view: bool) -> Response<Body> {
     if method == Method::OPTIONS {
         return reply(StatusCode::NO_CONTENT, Vec::new());
     }
@@ -73,15 +75,37 @@ pub(super) async fn handle(web: &Web, method: &Method, link: &str) -> Response<B
     };
     let mut response = Response::new(body);
     let headers = response.headers_mut();
-    let kind = if ask.zip {
-        "application/zip"
-    } else {
-        "application/octet-stream"
+    let shown = (view && !ask.zip)
+        .then(|| tilo_actions::remote::viewable(&ask.name))
+        .flatten();
+    let kind = match shown {
+        Some(kind) => kind,
+        None if ask.zip => "application/zip",
+        None => "application/octet-stream",
     };
     headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static(kind));
     headers.insert(header::CONTENT_LENGTH, header::HeaderValue::from(length));
-    if let Ok(disposition) = header::HeaderValue::from_str(&content_links::disposition(&ask.name)) {
+    let disposition = if shown.is_some() {
+        content_links::inline_disposition(&ask.name)
+    } else {
+        content_links::disposition(&ask.name)
+    };
+    if let Ok(disposition) = header::HeaderValue::from_str(&disposition) {
         headers.insert(header::CONTENT_DISPOSITION, disposition);
+    }
+    if shown.is_some() {
+        // Shown on this origin, so nothing it holds may act there: no
+        // script, no form, and the type it was named, never one guessed.
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            header::HeaderValue::from_static(
+                "sandbox; default-src 'none'; img-src 'self'; media-src 'self'",
+            ),
+        );
+        headers.insert(
+            header::X_CONTENT_TYPE_OPTIONS,
+            header::HeaderValue::from_static("nosniff"),
+        );
     }
     // A link names its bytes for good: what it serves never changes, and no
     // cache should keep a capability's answer.
