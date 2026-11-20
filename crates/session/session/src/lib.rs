@@ -203,6 +203,7 @@ pub mod drives;
 mod emoji;
 #[cfg(target_os = "linux")]
 mod engine_records;
+#[cfg(target_os = "linux")]
 mod engine_write;
 #[cfg(target_os = "linux")]
 mod enrollment;
@@ -263,6 +264,9 @@ mod landing;
 // the same steps the command and the installer's window name, answered from this session.
 #[cfg(target_os = "linux")]
 mod launches;
+// The workspaces' layouts as a device's workspace service holds them. A page never had this
+// path: it keeps the layout of the workspace it shows in its own layout document.
+#[cfg(target_os = "linux")]
 mod layout;
 #[cfg(target_os = "linux")]
 mod lists;

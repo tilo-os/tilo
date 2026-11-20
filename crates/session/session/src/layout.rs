@@ -12,16 +12,6 @@
 //! move since the last look is neither read nor written again, and what is written is published off
 //! the loop ([`crate::engine_write`]).
 
-// Nothing compiled for the web reads this module's roles yet: the page's session wires them with
-// its own host.
-#![cfg_attr(
-    target_arch = "wasm32",
-    allow(
-        dead_code,
-        reason = "the page's session reads these with its own wiring"
-    )
-)]
-
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
@@ -360,13 +350,6 @@ struct Save {
 impl Save {
     /// Write it: the record this device writes on, with the record laid into this session's workspace
     /// and this device's own change on top, and the write of that to the workspace.
-    #[cfg_attr(
-        target_family = "wasm",
-        expect(
-            clippy::future_not_send,
-            reason = "a page's engine holds its one thread's handles; the write runs on that thread"
-        )
-    )]
     async fn write(
         self,
         engine: &Engine,

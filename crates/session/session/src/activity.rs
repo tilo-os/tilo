@@ -50,6 +50,7 @@ use crate::unlock_history::UnlockHistory;
 const VIEW_PACKAGE: &str = "so.tilo.session.activity";
 
 /// Seconds since the epoch, as a change of the session names its time.
+#[cfg(target_os = "linux")]
 pub(crate) fn now_seconds() -> i64 {
     ui::time::wall()
         .duration_since(ui::time::UNIX_EPOCH)
@@ -79,7 +80,9 @@ pub trait History {
     /// A number that moves whenever the session's layout does.
     fn moved(&self) -> u64;
     /// Read the layouts through `reads`, and write them through `writes`, once this session
-    /// opened both: the documents of the workspaces the session holds.
+    /// opened both: the documents of the workspaces the session holds. Only a device's session
+    /// has them; a page keeps its layout in its own document.
+    #[cfg(target_os = "linux")]
     fn attach(
         &self,
         engine: &std::sync::Arc<crate::engine::Engine>,
