@@ -577,6 +577,32 @@ export const typeInto = async (tab, field, text) => {
   await type(tab, text);
 };
 
+/** Wait until the page has arrived, its shell presents, and it has not begun a
+ * new document for `quiet` ms: the page a person is working on. Opening a
+ * workspace may load the page again, and a click or a drop given while it
+ * does lands on a page that is going away. Resolves `false` when the page did
+ * not settle within `timeout` ms. */
+export const settled = async (tab, {quiet = 2500, timeout = stepLimit(8)} = {}) => {
+  const deadline = Date.now() + timeout;
+  let seen = -1;
+  let since = Date.now();
+  for (;;) {
+    const at = JSON.parse(await tab.evaluate(`JSON.stringify({
+      arrival: document.documentElement.dataset.arrival ?? null,
+      phase: globalThis.tiloMount?.state?.()?.phase ?? null,
+    })`).catch(() => '{}'));
+    const documents = await tab.documents?.() ?? 0;
+    const up = at.arrival === 'done' && at.phase === 'presented';
+    if (documents !== seen || !up) {
+      seen = documents;
+      since = Date.now();
+    }
+    if (up && Date.now() - since >= quiet) return true;
+    if (Date.now() > deadline) return false;
+    await sleep(250);
+  }
+};
+
 /** Every name and value in the page's semantic tree, as one text: what a
  * person reads on the desktop, whichever app drew it. */
 export const TREE_TEXT = `(() => {

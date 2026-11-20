@@ -13,7 +13,7 @@
 // step failed or ran over its budget.
 import {sleep} from '../../../../tools/web/chrome.mjs';
 import {SHELL, stepLimit} from '../integration/waits.mjs';
-import {click, found, key, makeWorkspace, openWorkspace, pressNamed, searcher, showsText as shows, TREE_TEXT, waitUntil}
+import {click, found, key, makeWorkspace, openWorkspace, pressNamed, searcher, settled, showsText as shows, TREE_TEXT, waitUntil}
   from '../integration/shell.mjs';
 import {computerAt} from './computer.mjs';
 import {recorder, StoryStopped} from './recorder.mjs';
@@ -91,6 +91,7 @@ try {
     await search(ada.tab, adaKeys, 'new workspace', 'New workspace');
     await makeWorkspace(ada.tab, WORKSPACE);
     await until(ada.tab, openWorkspace(WORKSPACE), `${WORKSPACE} opening`, stepLimit(10));
+    await settled(ada.tab);
   });
 
   await story.step('Ada connects their agent to the workspace', async () => {
@@ -130,12 +131,16 @@ try {
   });
 
   await story.step('The agent writes a file', async () => {
+    // Files is open on the workspace's folder, where Ada watches her agent work.
+    const files = `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === 'so.tilo.file-explorer')`;
+    await search(ada.tab, adaKeys, 'files', 'Files', 'so.tilo.file-explorer');
+    await until(ada.tab, files, 'Files on Ada’s screen', stepLimit(4));
     const bytes = Buffer.from('# Notes from your agent\n\nThe spring budget is filed.\n', 'utf8');
     const stored = await agent.call('tilo_put_many', {files: [bytes.toString('base64')]});
     const content = stored.match(/tilo\.content:[0-9a-f]{64}/)?.[0];
     if (!content) fail(`the upload answered no content reference: ${stored.slice(0, 300)}`);
     await act(['files#open'], {content, name: FILE});
-    await openApp(ada.tab, adaKeys, 'Files', 'so.tilo.file-explorer', FILE, `${FILE} in Files`, stepLimit(8));
+    await shows(ada.tab, FILE, `${FILE} in Files`, stepLimit(8));
   });
 
   await story.step('The agent adds a Tasks issue', async () => {

@@ -19,7 +19,7 @@ import {join} from 'node:path';
 import {deflateSync} from 'node:zlib';
 import {sleep} from '../../../../tools/web/chrome.mjs';
 import {SHELL, stepLimit} from '../integration/waits.mjs';
-import {click, giveName, key, makeWorkspace, openWorkspace, searcher, showsText as shows, waitUntil}
+import {click, giveName, key, makeWorkspace, openWorkspace, searcher, settled, showsText as shows, waitUntil}
   from '../integration/shell.mjs';
 import {computerAt} from './computer.mjs';
 import {recorder, StoryStopped} from './recorder.mjs';
@@ -182,9 +182,14 @@ try {
     await search(ada.tab, adaKeys, 'new workspace', 'New workspace');
     await makeWorkspace(ada.tab, WORKSPACE);
     await until(ada.tab, openWorkspace(WORKSPACE), `${WORKSPACE} opening`, stepLimit(10));
+    await settled(ada.tab);
   });
 
   await story.step('Ada drops a photo and a PDF on the page', async () => {
+    // Files is open on the workspace's folder, where she watches them arrive.
+    const files = `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === 'so.tilo.file-explorer')`;
+    await search(ada.tab, adaKeys, 'files', 'Files', 'so.tilo.file-explorer');
+    await until(ada.tab, files, 'Files on Ada’s screen', stepLimit(4));
     await drop(ada.tab, [join(where, PHOTO), join(where, PDF)], SHELL.empty);
     // The shell says how the copy went where it fell, then opens each file.
     const progress = `(() => {
@@ -198,6 +203,8 @@ try {
     const opened = app => `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(app)})`;
     await until(ada.tab, opened('so.tilo.photos'), 'the photo opening in Photos', stepLimit(4));
     await until(ada.tab, opened('so.tilo.pdf-viewer'), 'the PDF opening in PDF Viewer', stepLimit(4));
+    await shows(ada.tab, PHOTO, `${PHOTO} in Files`, stepLimit(4));
+    await shows(ada.tab, PDF, `${PDF} in Files`, stepLimit(4));
   });
 
   await story.step('Ada runs `tilo login` and copies a document into the workspace folder', async () => {
@@ -240,8 +247,7 @@ try {
     // Her document, copied into the folder as a person copies one.
     const copied = await computer.line(`cp ${JSON.stringify(join(where, DOCUMENT))} ${JSON.stringify(folder.path)}/`);
     if (copied.code !== 0) fail(`copying ${DOCUMENT} into ${folder.path} failed: ${copied.stderr}`);
-    // It is in the workspace: Files shows it, and the page shows Files.
-    await search(ada.tab, adaKeys, 'files', 'Files', 'so.tilo.file-explorer');
+    // It is in the workspace: the Files window she has open shows it.
     await shows(ada.tab, DOCUMENT, `the copied ${DOCUMENT} in Files`, stepLimit(8));
   });
 
