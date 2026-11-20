@@ -85,7 +85,7 @@ const {search} = searcher({until, failed: fail, dump: async () => {}});
 // A field a person presses and types into, until the page holds what they
 // typed: the first press on a window just opened can be the one that brings it
 // in front, and a field nothing was typed into says so.
-const typeInto = async (one, id, text, tries = 3) => {
+const typeInto = async (one, id, text, {secret = false, tries = 3} = {}) => {
   let value = '';
   let said = '';
   for (let pressed = 0; pressed < tries; pressed += 1) {
@@ -95,6 +95,8 @@ const typeInto = async (one, id, text, tries = 3) => {
     // What the field held is replaced, as a person selects it and types over it.
     await key(one.tab, 'a', chord);
     await story.web.type(one, text);
+    // A secret field publishes no value to read back, and is typed once.
+    if (secret) return;
     value = (await nodesOf(one.tab)).find(node => node.id === id)?.value ?? '';
     if (value === text) return;
     said = `bounds ${JSON.stringify(node.bounds)}`;
@@ -220,7 +222,7 @@ try {
       if (shown && !shown.includes(port)) fail(`Mail shows “${shown}” as the incoming server, not the provider's on port ${port}`);
       console.log(`Mail found the servers by itself: ${mail.imap} and ${mail.smtp} (${shown})`);
       await scrollTo(ada.tab, 'settings.web.accounts.password');
-      await typeInto(ada, 'settings.web.accounts.password', mail.password);
+      await typeInto(ada, 'settings.web.accounts.password', mail.password, {secret: true});
     } else {
       await shows(ada.tab, 'Incoming server (IMAP)', 'the page asking for the servers', stepLimit(3));
       const [incoming, incomingPort] = mail.imap.split(':');
@@ -230,10 +232,13 @@ try {
         ['settings.web.accounts.incoming-port', incomingPort],
         ['settings.web.accounts.outgoing', outgoing],
         ['settings.web.accounts.outgoing-port', outgoingPort],
-        ['settings.web.accounts.password', mail.password],
       ]) {
         await scrollTo(ada.tab, id);
         await typeInto(ada, id, value);
+      }
+      {
+        await scrollTo(ada.tab, 'settings.web.accounts.password');
+        await typeInto(ada, 'settings.web.accounts.password', mail.password, {secret: true});
       }
       // What the page said when it found nothing: a lookup that came back empty
       // says so; one whose request did not reach the host says that instead.
