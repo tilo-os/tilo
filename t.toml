@@ -2460,6 +2460,19 @@ heavy = true
 timeout_secs = 7200
 
 [[check]]
+name = "fs-second-device-open"
+# One device opens a photo another device holds and it never fetched: a
+# quarter-megabyte file crosses on demand through the mount, the size a photo
+# has rather than the few bytes a test file usually has.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "exec unshare --user --map-root-user --mount -- bash tools/ci/fs-workspace-scale.sh photo"
+env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
+requires = ["/dev/fuse"]
+isolation = "nested"
+on = ["dispatch"]
+timeout_secs = 1800
+
+[[check]]
 name = "native-tier1"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "TILO_NATIVE_TIER1_DIR=$TMPDIR/native-tier1 tools/native-tier1.sh --nocapture"
