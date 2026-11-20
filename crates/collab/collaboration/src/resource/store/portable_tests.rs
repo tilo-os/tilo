@@ -107,7 +107,10 @@ tilo_test_env::scenario! {
         let (_, heads) = store.replication_snapshot(&checkout.id).unwrap();
         let mut frontier = crate::state::DocumentFrontier::default();
         frontier.advance(heads);
-        store.workspace_settled(&checkout.id);
+        assert!(
+            !store.workspace_settled(&checkout.id),
+            "an answer that settles nothing to say shows nothing new"
+        );
         commit("title", "shared");
         hold("Saved shared");
         assert!(
@@ -123,7 +126,10 @@ tilo_test_env::scenario! {
             store.take_said(&checkout.id).is_empty(),
             "the workspace has not answered"
         );
-        store.workspace_settled(&checkout.id);
+        assert!(
+            store.workspace_settled(&checkout.id),
+            "the answer settles what was held for it"
+        );
         assert_eq!(store.take_said(&checkout.id), ["Saved shared"]);
         assert!(store.take_said(&checkout.id).is_empty(), "said once");
 

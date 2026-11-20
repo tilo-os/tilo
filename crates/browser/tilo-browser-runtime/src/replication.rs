@@ -1633,8 +1633,8 @@ impl Joined {
                 if let Some(checkout) = store.open_resources().into_iter().find(|checkout| {
                     tilo_desktop_surface::host::records::wire_document(&checkout.id)
                         == route.document
-                }) {
-                    store.workspace_settled(&checkout.id);
+                }) && store.workspace_settled(&checkout.id)
+                {
                     woken.insert(id);
                 }
             }

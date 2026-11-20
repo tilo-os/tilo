@@ -1477,15 +1477,18 @@ impl WorkspaceNotices {
         }
     }
 
-    /// The workspace's host answered every commit published so far.
-    fn settled(&mut self) {
+    /// The workspace's host answered every commit published so far. Whether a notice became
+    /// something to say: an answer that settles nothing to say shows nothing new.
+    fn settled(&mut self) -> bool {
         self.answered = true;
         let (published, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held)
             .into_iter()
             .partition(|notice| notice.published);
         self.held = waiting;
+        let says = !published.is_empty();
         self.said
             .extend(published.into_iter().map(|notice| notice.text));
+        says
     }
 
     /// Changes were withdrawn: what was said at heads `doc` no longer holds
@@ -3184,13 +3187,16 @@ impl ResourceStore {
     }
 
     /// The workspace's host answered every commit of record `id` it published:
-    /// what was held for them is said ([`Self::take_said`]).
-    pub fn workspace_settled(&self, id: &DocumentId) {
+    /// what was held for them is said ([`Self::take_said`]). Whether there is now something to
+    /// say: an answer that settled nothing to say gives its windows nothing new to draw, and that
+    /// is every keystroke's answer while a person types.
+    pub fn workspace_settled(&self, id: &DocumentId) -> bool {
         if let Ok(mut set) = self.try_set_mut()
             && let Some(parked) = set.open.get_mut(id)
         {
-            parked.action_state.notices.settled();
+            return parked.action_state.notices.settled();
         }
+        false
     }
 
     /// What to say now of record `id` ([`Self::hold_notice`]), each once.
