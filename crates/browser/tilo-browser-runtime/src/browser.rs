@@ -373,6 +373,11 @@ struct SharedGpu {
     /// When the device was made: one lost soon after could not draw the
     /// page on its GPU at all ([`crate::gpu_recovery::power_after_loss`]).
     made: ui::time::Instant,
+    /// A software adapter ([`ui::gpu::rasterizes_on_cpu`]): frames draw on the CPU (`Mount::draw`).
+    software: bool,
+    /// The bounds the renderer is made for, and whether it was asked for.
+    caps: SurfaceCaps,
+    renderer_asked: bool,
 }
 
 impl SharedGpu {
@@ -2259,9 +2264,9 @@ async fn shared_gpu(
         .devices
         .get(surface.dev_id)
         .ok_or("WebGPU device missing")?;
-    // The device presents to any canvas on WebGPU; its renderer compiles on
-    // it below, behind the frames the page draws on the CPU meanwhile.
-    let device = handle.device.clone();
+    // The device presents to any canvas on WebGPU; its renderer compiles
+    // behind the frames the page draws on the CPU meanwhile.
+    let software = ui::gpu::rasterizes_on_cpu(&handle.adapter.get_info());
     let p = proxy().map_err(|e| format!("{e:?}"))?;
     let failure = Arc::new(Mutex::new(None));
     let mounts: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
@@ -2297,14 +2302,16 @@ async fn shared_gpu(
         device: surface.dev_id,
         overflows: ui::render_bump_recovery::Overflows::default(),
         made: ui::time::now(),
+        software,
+        caps,
+        renderer_asked: false,
     }));
     SHARED_GPU.with_borrow_mut(|s| *s = Some(Rc::clone(&shared)));
     // Apps that composite on the GPU themselves (the video editor) borrow
     // this device: the page cannot wait for one of their own.
     ui::offscreen::provide_page_gpu(Some(page_gpu));
-    // A renderer made anew (after a lost device) compiles its own.
+    // A renderer made anew (after a lost device) compiles its own (`Mount::draw`).
     DEFERRED_PIPELINES_ASKED.set(false);
-    compile_renderer(Rc::clone(&shared), device, caps);
     Ok((shared, surface))
 }
 
@@ -2848,6 +2855,13 @@ impl Mount {
             .devices
             .get(gpu.surface.dev_id)
             .ok_or("WebGPU device missing")?;
+        // A software adapter compiles vello's pipelines on the CPU for seconds each, and a page
+        // that leaves waits for those still running: there it is made only for a video's pictures.
+        let needed = !shared.software || ui::element_pictures::waiting();
+        if shared.renderer.is_none() && !shared.renderer_asked && needed {
+            shared.renderer_asked = true;
+            compile_renderer(Rc::clone(&gpu.shared), handle.device.clone(), shared.caps);
+        }
         // Until the renderer's pipelines are compiled, frames rasterize on the
         // CPU: the shell is on screen while the browser compiles instead of
         // after it. The first frame the renderer draws repaints this target

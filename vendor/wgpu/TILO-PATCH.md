@@ -29,6 +29,14 @@ yields an `ArrayBuffer` of the mapping's size, which writes go into and
 nothing reads, as nothing reads a lost device's buffers. Remove it once
 upstream handles a refused range.
 
+On the web, `src/backend/webgpu.rs`'s adapter info said `DeviceType::Other`
+of every adapter, so a page could not tell the browser's software adapter
+(SwiftShader in Chromium) from a GPU. An adapter whose
+`GPUAdapterInfo.isFallbackAdapter` is true now reports `DeviceType::Cpu`, as a
+native software adapter does, and a host rasterizes its frames on the CPU there
+instead of compiling vello's compute pipelines on an emulated GPU. Remove it once
+upstream maps the field (gfx-rs/wgpu issue 8819).
+
 Workspace CI compiles `vendor/wgpu` with `-D warnings` for
 `wasm32-unknown-unknown`. Upstream 29.0.3 leaves the HAL documentation
 macros, two `Deref` imports and `BufferMappedRangeInterface::len` unused on

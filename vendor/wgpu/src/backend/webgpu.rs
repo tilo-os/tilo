@@ -863,7 +863,15 @@ fn map_adapter_info(adapter_info: &webgpu_sys::GpuAdapterInfo) -> wgt::AdapterIn
         name: adapter_info.description().to_string(),
         vendor: 0,
         device: 0,
-        device_type: wgt::DeviceType::Other,
+        // A fallback adapter is the browser's software one (SwiftShader in
+        // Chromium): it runs on the CPU, as `DeviceType::Cpu` says of a
+        // native one. `isFallbackAdapter` is read by name, since the
+        // generated `GpuAdapterInfo` binding predates it.
+        device_type: if is_fallback_adapter(adapter_info) {
+            wgt::DeviceType::Cpu
+        } else {
+            wgt::DeviceType::Other
+        },
         device_pci_bus_id: String::new(),
         driver: String::new(),
         driver_info: String::new(),
@@ -872,6 +880,15 @@ fn map_adapter_info(adapter_info: &webgpu_sys::GpuAdapterInfo) -> wgt::AdapterIn
         subgroup_max_size: wgt::MAXIMUM_SUBGROUP_MAX_SIZE,
         transient_saves_memory: false,
     }
+}
+
+/// Whether the browser says `adapter_info` is a fallback adapter
+/// (`GPUAdapterInfo.isFallbackAdapter`); `false` where it says nothing.
+fn is_fallback_adapter(adapter_info: &webgpu_sys::GpuAdapterInfo) -> bool {
+    js_sys::Reflect::get(adapter_info, &JsValue::from_str("isFallbackAdapter"))
+        .ok()
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
 }
 
 fn map_js_sys_limits(limits: &wgt::Limits) -> js_sys::Object {

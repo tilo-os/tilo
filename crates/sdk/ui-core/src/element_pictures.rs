@@ -35,6 +35,11 @@ pub fn show(image: ImageData, element: Rc<dyn std::any::Any>) {
     });
 }
 
+/// Whether a picture waits for a renderer to copy it.
+pub fn waiting() -> bool {
+    WAITING_PICTURES.with(|waiting| !waiting.borrow().is_empty())
+}
+
 /// The pictures shown since the last call, oldest first.
 pub fn take() -> Vec<ElementPicture> {
     WAITING_PICTURES.with(|waiting| std::mem::take(&mut *waiting.borrow_mut()))
