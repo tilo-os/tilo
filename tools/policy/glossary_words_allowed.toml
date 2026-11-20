@@ -1776,3 +1776,12 @@ reason = "Rust's std::sync::mpsc channels a test of the Windows Apps worker read
 words = ["channel"]
 identifiers = ["channel"]
 paths = ["apps/windows/src/provider.rs"]
+
+[[allow]]
+reason = "The loop of a server's agents, `HostAgents::run`, which a test starts as the server does."
+words = ["run"]
+identifiers = ["run"]
+paths = [
+    "crates/agent/agent-session/tests/workspace_actions/hosted_agent_terminal.rs",
+    "crates/agent/agent-session/tests/workspace_actions/hosted_turn_asks_again.rs",
+]
