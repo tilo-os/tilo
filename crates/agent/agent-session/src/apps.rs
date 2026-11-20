@@ -1212,12 +1212,9 @@ impl Replica {
                 // The items the rows the page still needs take: each item may
                 // offer fewer, so the walk asks again from where this window
                 // ended.
-                let rows_left = walk.end.saturating_sub(walk.total).max(1);
-                let children = self.view.past_page_range_under(
-                    root,
-                    next_child,
-                    rows_left.div_ceil(rows_each),
-                );
+                let children =
+                    self.view
+                        .past_page_range_under(root, next_child, walk.items_left(rows_each));
                 if children.is_empty() {
                     break;
                 }
@@ -1926,6 +1923,25 @@ impl SurveyWalk<'_> {
             }
         }
         self.total < self.end
+    }
+
+    /// How many more items, each taken to offer `rows_each` rows, the walk
+    /// may still need: those its rows still take, and on a page bounded in
+    /// resources no more than reach the page and the one past its bound.
+    /// Rows are only a guess at an item, so a page asked for forty issues
+    /// would otherwise build as many as a page's worth of rows guesses.
+    fn items_left(&self, rows_each: usize) -> usize {
+        let by_rows = self
+            .end
+            .saturating_sub(self.total)
+            .max(1)
+            .div_ceil(rows_each);
+        let Some(most) = self.query.resource_bound() else {
+            return by_rows;
+        };
+        let to_page = self.offset.saturating_sub(self.total).div_ceil(rows_each);
+        let on_page = most.saturating_add(1).saturating_sub(self.resources).max(1);
+        by_rows.min(to_page.saturating_add(on_page))
     }
 
     /// Put `row` on the page. A page bounded in resources

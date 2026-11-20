@@ -86,6 +86,7 @@ impl ChainState {
             .skip(offset)
             .take(take)
             .filter_map(|item| {
+                let _built = tilo_resource::profiling::Phase::start("framework.past_item");
                 let resource =
                     tilo_resource::items::item_resource_id_in(part.kind, item.field, &item.id);
                 let child = (part.child)(&*item.state, &resource)?;
