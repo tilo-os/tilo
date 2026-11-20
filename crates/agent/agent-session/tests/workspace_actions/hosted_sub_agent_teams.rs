@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use tilo_actions::remote::{
     ActionProvider as _, InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
-use ui::tilo_workspace_agent::Bound;
+use ui::tilo_workspace_agent::{Bound, KIND, OWNER};
 
 /// The team of a turn's agent, as the agent tools name it, and its three verbs.
 const TEAM: &str = "sub-agents/team";
@@ -1062,7 +1062,7 @@ async fn a_team_is_answered_to_a_turn_of_the_agents_keeper_alone() {
         &workspace,
         (None, person.as_str()),
         bound(vec![Bound {
-            node: format!("workspace:{workspace}/app:{CHAT}/kind:chat.agent"),
+            node: format!("workspace:{workspace}/app:{OWNER}/kind:{KIND}"),
             kinds: vec!["undoable".to_owned()],
             answer: "deny".to_owned(),
         }]),

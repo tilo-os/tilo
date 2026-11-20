@@ -4,9 +4,9 @@
 //! work, and a sub-agent does the same for a team of its own, as deep as its person allows
 //! ([`tilo_workspace_agent::sub`]). The workspace's list of its agents holds all of it and
 //! guards it: who may start one, how deep, how many at once, and who steers which. That list
-//! is Chat's, and a sub-agent's turn reads nothing Chat keeps, so a turn does not reach its
-//! team through Chat. [`TurnTeam`] is this server's own answer for the one turn it serves, a
-//! provider of the turn's own ([`TurnProvider`]):
+//! is Assistant's, and a sub-agent's turn reads nothing Chat or the list keeps, so a turn does
+//! not reach its team through either. [`TurnTeam`] is this server's own answer for the one turn
+//! it serves, a provider of the turn's own ([`TurnProvider`]):
 //!
 //! - **Three verbs**, the list's own by name: `start-sub-agent`, `note-sub-agent` and
 //!   `stop-sub-agent`. Each is applied on the list as the turn's agent acting for the person
@@ -22,9 +22,9 @@
 //! Whom it answers: a turn of the agent's own keeper and nobody else
 //! ([`Workspaces::keepers_turn`]). A turn another member started on the agent, and anything
 //! that is no turn, is answered what an unknown action is. That check is never the whole
-//! rule. The list's verbs are Chat's, so each is also decided by the rules the turn carries,
-//! at the place Chat's own verb of that name is decided at: what an agent's keeper bounds it
-//! to holds here, and a sub-agent keeps exactly the verbs of its own team
+//! rule. The list's verbs are Assistant's, so each is also decided by the rules the turn
+//! carries, at the place the list's own verb of that name is decided at: what an agent's keeper
+//! bounds it to holds here, and a sub-agent keeps exactly the verbs of its own team
 //! ([`tilo_workspace_agent::sub::one_way`]). Reading a team is part of steering it and is
 //! decided as a note is. And the list is the workspace's own document, which a member changes
 //! as an editor: a keeper who is less than that here starts and steers nothing through
@@ -46,10 +46,10 @@ use tilo_actions::{
 };
 use tilo_resource::{Id, Invoke, NonBlank};
 use tilo_workspace_agent::workspace_agents::{NoteSubAgent, StartSubAgent, StopSubAgent};
-use tilo_workspace_agent::{Agent, KIND, NewSubAgent, WorkspaceAgents, sub};
+use tilo_workspace_agent::{Agent, KIND, NewSubAgent, OWNER, WorkspaceAgents, sub};
 
 use super::turn_provider::{Ending, Rows};
-use super::{CHAT, Turn, TurnProvider, TurnScope, WorkspaceId};
+use super::{Turn, TurnProvider, TurnScope, WorkspaceId};
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::HostedTurn;
 
@@ -178,15 +178,15 @@ impl TurnTeam {
     }
 
     /// Whether the rules `caller`'s turn carries let it take `verb`, on the sub-agent `on`
-    /// where the verb names one. Decided where Chat's own verb of that name on the list is
-    /// decided, so what the agent's keeper bounds it to holds here, and a sub-agent keeps the
-    /// verbs of its own team and no other. Reading a team is part of steering it: it is
-    /// decided as a note is.
+    /// where the verb names one. Decided where the list's own verb of that name is decided,
+    /// so what the agent's keeper bounds it to holds here, and a sub-agent keeps the verbs of
+    /// its own team and no other. Reading a team is part of steering it: it is decided as a
+    /// note is.
     fn lets(&self, caller: &Caller, verb: &str, on: Option<&str>) -> bool {
         let Some(agent) = caller.acting().agent_id() else {
             return false;
         };
-        let list = TreePath::workspace(self.workspace.as_str()).app(CHAT);
+        let list = TreePath::workspace(self.workspace.as_str()).app(OWNER);
         let node = if verb == START {
             list.kind(KIND).resource(KIND).action(START)
         } else {
