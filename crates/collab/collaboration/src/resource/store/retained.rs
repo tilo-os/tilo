@@ -1,5 +1,4 @@
-use automerge::{AutoCommit, ReadDoc};
-use durable_store::DurableStore;
+use automerge::AutoCommit;
 
 use super::{DocumentCheckout, ResourceOpenError, ResourceStore, portable, validate_identity};
 

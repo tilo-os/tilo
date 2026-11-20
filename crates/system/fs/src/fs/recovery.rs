@@ -122,12 +122,13 @@ impl QuickFS {
         document: Option<fs_protocol::FileDocumentId>,
         workspace: Option<collab_types::WorkspaceId>,
     ) -> Option<u64> {
-        let ns = self.ns();
-        let ino = ns.ino_for_document_id(document?)?;
-        ns.getattr(ino)?;
-        let scope = ns
-            .path_for(ino)
-            .and_then(|path| self.hydrator.scoped_workspace(&path));
+        let (ino, path) = {
+            let ns = self.ns();
+            let ino = ns.ino_for_document_id(document?)?;
+            ns.getattr(ino)?;
+            (ino, ns.path_for(ino))
+        };
+        let scope = path.and_then(|path| self.hydrator.scoped_workspace(&path));
         (scope == workspace).then_some(ino)
     }
 
