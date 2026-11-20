@@ -902,18 +902,22 @@ impl Layouts {
 
     /// `key`'s document, read from the workspace's own copy in this device's service: what the
     /// workspace last admitted, what it held before this device joined included. `Ok(None)` for a
-    /// document no one wrote yet, or one that did not move since `known`.
+    /// document no one wrote yet, or one that did not move since `known`; [`NotRead::Waiting`] for
+    /// one this device cannot read yet (its keys are on their way), which is no document's absence.
     fn document(
         &self,
         key: &Key,
         known: Option<[u8; 32]>,
-    ) -> Result<Option<(automerge::AutoCommit, [u8; 32])>, String> {
+    ) -> Result<Option<(automerge::AutoCommit, [u8; 32])>, NotRead> {
         use tilo_peer_state::workspace_documents::DocumentRead;
         let Some(reads) = self.reads() else {
             return Ok(None);
         };
         let (workspace_id, route) = key;
-        match reads.read(&workspace_id.to_string(), route.app, &route.document, None)? {
+        match reads
+            .read(&workspace_id.to_string(), route.app, &route.document, None)
+            .map_err(NotRead::Failed)?
+        {
             DocumentRead::Whole {
                 revision, bytes, ..
             } => {
@@ -922,14 +926,13 @@ impl Layouts {
                 }
                 automerge::AutoCommit::load(&bytes)
                     .map(|doc| Some((doc, revision)))
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| NotRead::Failed(error.to_string()))
             }
-            // What this device holds stands: nothing moved, nothing is here yet, or it is on its
-            // way.
-            DocumentRead::Changes { .. }
-            | DocumentRead::Unchanged(_)
-            | DocumentRead::Absent
-            | DocumentRead::Pending => Ok(None),
+            // What this device holds stands: nothing moved, or nothing is here yet.
+            DocumentRead::Changes { .. } | DocumentRead::Unchanged(_) | DocumentRead::Absent => {
+                Ok(None)
+            }
+            DocumentRead::Pending => Err(NotRead::Waiting),
         }
     }
 
@@ -1139,11 +1142,16 @@ impl Layouts {
             }
             let known = self.held(&key, |held| held.revision);
             let document = self.document(&key, known);
-            // Read at this revision, whatever it held: a record that fails to read fails again until
-            // the engine moves.
+            // Read at this revision, whatever it held: a layout that fails to read fails again
+            // until the workspace moves. One whose keys have not arrived is not read at all: the
+            // restore and the kept windows wait for it, and every look asks again until it reads.
+            let waiting = matches!(document, Err(NotRead::Waiting));
+            if let Err(NotRead::Failed(error)) = &document {
+                tracing::warn!(%workspace_id, error, "a workspace's layout could not be read");
+            }
             self.held(&key, |held| {
                 held.read_at = Some(at);
-                held.read_once = true;
+                held.read_once |= !waiting;
             });
             let Ok(document) = document else {
                 changed |= self.owed(workspace_id, workspace);
@@ -1330,9 +1338,11 @@ impl Layouts {
                 // holds and this look cannot read is nobody's to write over, so nothing counts as
                 // written until a look reads it.
                 failed => {
-                    let absent = failed.is_err() && self.nothing_written(workspace_id, &route);
+                    let waiting = matches!(failed, Err(NotRead::Waiting));
+                    let absent =
+                        !waiting && failed.is_err() && self.nothing_written(workspace_id, &route);
                     self.held(&key, |held| {
-                        held.read = true;
+                        held.read = !waiting;
                         held.unreadable = !absent;
                         if absent && held.written.is_none() {
                             held.written = Some(Written::View(PersonView::default()));
@@ -1491,11 +1501,15 @@ impl Layouts {
             }
             return false;
         };
-        let (reached, revision, holds) = self.reached(&key);
+        let read = self.reached(&key);
+        let (reached, revision, holds) = (read.doc, read.revision, read.holds);
         // A layout the workspace holds is laid out here before this device writes it: what the
-        // layout shows before then is not what the person made of it. A copy this device wrote is
+        // layout shows before then is not what the person made of it, and one this device cannot
+        // read yet (its keys are on their way) is never written over. A copy this device wrote is
         // what its next write is made on, with the workspace's merged in.
-        if reached.is_some() && !holds && self.held(&key, |held| held.folded.is_none()) {
+        if !holds
+            && (read.waiting || reached.is_some() && self.held(&key, |held| held.folded.is_none()))
+        {
             self.unwritten(
                 workspace_id,
                 Some("the workspace's layout is not read here yet"),
@@ -1802,7 +1816,9 @@ impl Layouts {
             let Some(sealed) = self.sealed(engine, &key) else {
                 continue;
             };
-            let (mut doc, revision) = self.copy(&key);
+            let Some((mut doc, revision)) = self.copy(&key) else {
+                continue;
+            };
             doc.set_actor(actor(engine, person));
             let log = self
                 .held(&key, |held| held.undo.take())
@@ -1999,7 +2015,9 @@ impl Layouts {
         let Some(sealed) = self.sealed(engine, &key) else {
             return false;
         };
-        let (mut doc, revision) = self.copy(&key);
+        let Some((mut doc, revision)) = self.copy(&key) else {
+            return false;
+        };
         doc.set_actor(actor(engine, person));
         let before = doc.get_heads();
         if !edit(&mut doc) {
@@ -2128,7 +2146,17 @@ impl Layouts {
                 });
                 continue;
             };
-            let (mut held, revision) = self.copy(&key);
+            let Some((mut held, revision)) = self.copy(&key) else {
+                // The view the workspace keeps cannot be read here yet: the steps wait for the look
+                // that reads it.
+                self.held(&key, |held| {
+                    held.read = false;
+                    held.written = None;
+                    held.pending = None;
+                    held.pending_view.restore(steps);
+                });
+                continue;
+            };
             let from = held.get_heads();
             let mut log = self.held(&key, |kept| kept.undo.take());
             let mut refused = None;
@@ -2377,20 +2405,33 @@ impl Layouts {
     /// device's own copy holds, the revision it was read at, and whether this device holds a copy.
     /// A record this device was never sent, or cannot read, is one it holds nothing of, and one
     /// that did not move since its copy is the copy.
-    fn reached(&self, key: &Key) -> (Option<automerge::AutoCommit>, Option<[u8; 32]>, bool) {
+    fn reached(&self, key: &Key) -> Reached {
         let (holds, known) = self.held(key, |held| (held.kept.is_some(), held.based));
         let known = holds.then_some(known).flatten();
-        let read = self.document(key, known).unwrap_or(None);
+        let (read, waiting) = match self.document(key, known) {
+            Ok(read) => (read, false),
+            Err(NotRead::Waiting) => (None, true),
+            Err(NotRead::Failed(_)) => (None, false),
+        };
         let revision = read.as_ref().map(|(_, revision)| *revision);
-        (read.map(|(doc, _)| doc), revision, holds)
+        Reached {
+            doc: read.map(|(doc, _)| doc),
+            revision,
+            holds,
+            waiting,
+        }
     }
 
     /// The record of `key` this device writes on ([`base_of`]), and the revision the workspace's
-    /// copy is at.
-    fn copy(&self, key: &Key) -> (automerge::AutoCommit, Option<[u8; 32]>) {
-        let (reached, revision, _) = self.reached(key);
+    /// copy is at. `None` while the workspace holds one this device cannot read yet and holds no
+    /// copy of its own: a write then would stand an empty one over what the workspace keeps.
+    fn copy(&self, key: &Key) -> Option<(automerge::AutoCommit, Option<[u8; 32]>)> {
+        let reached = self.reached(key);
         let kept = self.held(key, |held| held.kept.clone());
-        (base_of(key.0, kept, reached), revision)
+        if reached.waiting && kept.is_none() {
+            return None;
+        }
+        Some((base_of(key.0, kept, reached.doc), reached.revision))
     }
 
     /// Keep `record` as this device's copy of `key`'s record, read at `revision` when this look
@@ -2404,6 +2445,24 @@ impl Layouts {
             }
         });
     }
+}
+
+/// Why a read of a layout or a view found nothing to lay out.
+enum NotRead {
+    /// The workspace keeps it, and its keys have not reached this device yet.
+    Waiting,
+    /// It could not be read.
+    Failed(String),
+}
+
+/// What [`Layouts::reached`] found of the workspace's copy.
+struct Reached {
+    doc: Option<automerge::AutoCommit>,
+    revision: Option<[u8; 32]>,
+    /// Whether this device holds a copy of its own.
+    holds: bool,
+    /// Whether the workspace's copy is one this device cannot read yet.
+    waiting: bool,
 }
 
 /// Stand the record's containers, `workspace` and its strips in `doc`, a record nobody wrote yet,

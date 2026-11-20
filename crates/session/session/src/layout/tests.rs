@@ -639,7 +639,7 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
         "the loop folds no record and begins no history"
     );
     assert!(
-        desktops.reached(&layout).0.is_none(),
+        desktops.reached(&layout).doc.is_none(),
         "the loop writes nothing into the workspace"
     );
     assert!(
@@ -1313,4 +1313,137 @@ fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
         strips_of(&shown.workspaces[0]),
         "the workspace's layout holds the renamed strip"
     );
+}
+
+/// A login reads a workspace's saved layout before the workspace's keys reach the session: the
+/// layout is not read yet, so the restore waits for it and no look writes the empty shell over it;
+/// once the keys arrive the next look lays its windows out.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one session that saves a layout, the login after it, and what each look holds"
+)]
+fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
+    use ed25519_dalek::SigningKey;
+    use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+
+    use crate::engine::Engine;
+
+    let state = tempfile::tempdir().expect("a state directory");
+    let root = SigningKey::from_bytes(&[0x50; 32]);
+    let key = SigningKey::from_bytes(&[0x51; 32]);
+    let signing = key.clone();
+    let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
+    let open = || {
+        Arc::new(
+            Engine::open(
+                tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key.clone()),
+                Some(state.path()),
+                std::iter::empty(),
+                crate::platform::membership_check::of_this_session(),
+            )
+            .expect("this device's engine opens"),
+        )
+    };
+    let engine = open();
+    let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
+    let person = hex::encode(cert.user_public_key);
+    let workspace = tilo_peer_state::owner::testing::founded(engine.owner(), &cert, &signing)
+        .expect("the workspace is founded");
+    engine.bind(workspace);
+    let keys = key_group::KeyGroup::create(
+        workspace,
+        key_group::MemberKey::generate("owner").expect("a member key"),
+    )
+    .expect("the workspace's group")
+    .content_keys()
+    .expect("the workspace's keys");
+    engine.hand_keys(workspace, keys.clone());
+
+    // The session before saves one window in the workspace.
+    let mut ids = tilo_desktop_model::IdMinter::new(salt);
+    let (strip, group, tab) = (ids.mint(), ids.mint(), ids.mint());
+    let mut laid = Workspace::new(workspace, "Layout");
+    laid.strips = vec![Strip {
+        id: StripId(strip),
+        name: "Main".to_owned(),
+        window_groups: vec![WindowGroup {
+            id: group,
+            tabs: vec![Tab {
+                id: tab,
+                title: "Notes".to_owned(),
+                tile: TileContent::Stub {
+                    kind: tilo_desktop_model::AppKind::Other("Notes".to_owned()),
+                    label: "Notes".to_owned(),
+                },
+                app_title: None,
+                view: String::new(),
+                pinned: false,
+            }],
+            active_tab: tab,
+            width: WindowWidth::Wide,
+            maximized: false,
+            focus_history: Vec::new(),
+        }],
+    }];
+    let saved = Layout {
+        workspaces: vec![laid],
+        active: workspace,
+        salt,
+        ..Layout::default()
+    };
+    let notes = Arc::new(crate::continuations::Continuations::default());
+    let (wake, _heard) = woken();
+    let before = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(state.path()));
+    attach_through_engine(&before, &engine);
+    let mut shown = saved;
+    before.follow(&engine, "", &mut shown);
+    before.capture(&engine, &shown);
+    before.finish_writes(&engine, &shown, std::time::Duration::from_secs(30));
+    assert!(
+        before.layout(workspace).is_some(),
+        "the session before saved its layout"
+    );
+    drop(before);
+    drop(engine);
+    tilo_durable_writer::global().flush();
+
+    // The login after: its engine holds the workspace, and the keys have not reached it yet.
+    let engine = open();
+    engine.bind(workspace);
+    let (wake, _heard) = woken();
+    let after = Layouts::new(notes, wake, person, Some(state.path()));
+    attach_through_engine(&after, &engine);
+    let layout_key = (workspace, Route::layout());
+    let mut login = Layout {
+        workspaces: vec![Workspace::new(workspace, "Layout")],
+        active: workspace,
+        salt,
+        ..Layout::default()
+    };
+    after.follow(&engine, "", &mut login);
+    assert!(
+        windows_of(&login.workspaces[0]).is_empty(),
+        "nothing of the layout is readable yet"
+    );
+    assert!(
+        !after.all_read(&login),
+        "a layout whose keys have not arrived is not read: the restore waits for it"
+    );
+    after.capture(&engine, &login);
+    assert!(
+        after.held(&layout_key, |held| held.writing.is_none()
+            && held.written.is_none()),
+        "the empty shell of the login is not written over the saved layout"
+    );
+
+    // The keys arrive, and the next look lays the saved window out.
+    engine.hand_keys(workspace, keys);
+    after.follow(&engine, "", &mut login);
+    assert_eq!(
+        windows_of(&login.workspaces[0]),
+        std::collections::BTreeSet::from([tab]),
+        "the saved window is back in its workspace"
+    );
+    assert!(after.all_read(&login), "and the layout is read");
 }
