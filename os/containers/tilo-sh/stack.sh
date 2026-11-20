@@ -171,7 +171,7 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
             OpenAI at; its sign-in page takes any code it showed
 
 TILO_SH_PORT_BASE gives the stack its ports, the numbers above from it up to
-BASE+43. They must lie outside the range the machine hands to outgoing
+BASE+44 (the last is the held program's control port on the build server). They must lie outside the range the machine hands to outgoing
 connections (32768 and up on many machines; stack.sh reads
 /proc/sys/net/ipv4/ip_local_port_range there, also on the build server when
 the stack is there), and nothing may answer on them already: up refuses a
@@ -290,7 +290,8 @@ discord_rest_port=$((base + 40))
 discord_gateway_port=$((base + 41))
 discord_control_port=$((base + 42))
 models_port=$((base + 43))     # the fake OpenAI sign-in and model providers
-last_port=$models_port  # the highest port a stack on this base takes
+control_port=$((base + 44))    # the held program's control port, for a stack on the build server
+last_port=$control_port  # the highest port a stack on this base takes
 
 # Plain HTTP on this machine, which a browser treats as a secure context as it
 # does https://, so any browser profile opens the site with no certificate to
@@ -451,7 +452,7 @@ stack_tcp_ports() {
     "$live_port" "$caddy_http_port" "$api_port" "$site_port" "$web_port" \
     "$releases_port" "$mail_port" "$mail_stand_in_imap_port" \
     "$mail_stand_in_smtp_port" "$fake_oauth_port" "$discord_rest_port" "$discord_gateway_port" \
-    "$discord_control_port" "$models_port"
+    "$discord_control_port" "$models_port" "$control_port"
 }
 stack_udp_ports() { printf '%s\n' "$packet_port" "$iroh_port" "$link_port"; }
 
@@ -480,12 +481,18 @@ check_ports() {
     out=$(python3 -I "$here/port-check.py" --range \
       --tcp "$(join_comma "${tcp_ports[@]}")" --udp "$(join_comma "${udp_ports[@]}")") \
       || die "could not check which ports base $base needs ($here/port-check.py)"
-    low='' high='' held=()
+    low='' high='' held=() entry=
     while IFS= read -r line; do
       case $line in
         'range unknown') ;;
         'range '*) read -r _ low high <<< "$line" ;;
-        'held '*) held+=("${line#held }") ;;
+        # A stack started inside its own control program holds that one port itself.
+        'held '*)
+          entry=${line#held }
+          if [[ -n ${TILO_SH_CONTROL_PORT:-} && $entry == "tcp $TILO_SH_CONTROL_PORT by pid "* ]]; then
+            continue
+          fi
+          held+=("$entry") ;;
       esac
     done <<< "$out"
     # Something may still be letting go of a stack just stopped.
@@ -518,7 +525,7 @@ join_comma() { local IFS=,; printf '%s' "$*"; }
 # not a secret: it names the stack's state, it opens nothing. A remote stack's
 # forward once reached another stack holding the same base, and a bring-up
 # that never came up was called up.
-stack_token=${TILO_SH_STACK_TOKEN:-}
+stack_token=${TILO_SH_STACK_TOKEN:-$(cat "$state/releases/tilo-cli/latest/stack-token" 2>/dev/null || true)}
 write_stack_token() {
   [[ -n $stack_token ]] || return 0
   local dir=$state/releases/tilo-cli/latest
@@ -2696,7 +2703,7 @@ supervisor_pid() {
 # provider sign-in page, the fake Discord when one runs, and the fake model
 # providers, whose sign-in page a person's browser opens.
 forward_tcp() {
-  printf '%s\n' "$server_port,$live_port,$plain_port,$routes_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$mail_stand_in_imap_port,$mail_stand_in_smtp_port,$fake_oauth_port,$discord_rest_port,$discord_gateway_port,$discord_control_port,$models_port"
+  printf '%s\n' "$server_port,$live_port,$plain_port,$routes_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$mail_stand_in_imap_port,$mail_stand_in_smtp_port,$fake_oauth_port,$discord_rest_port,$discord_gateway_port,$discord_control_port,$models_port,$control_port"
 }
 
 # The page reaches the server over QUIC (WebTransport, then iroh), which ssh
@@ -2761,6 +2768,7 @@ remote_env() {
   printf 'TILO_SH_STATE=%s\n' "$remote_state"
   printf 'TILO_SH_PORT_BASE=%s\n' "$base"
   printf 'TILO_SH_REMOTE=0\n'
+  printf 'TILO_SH_CONTROL_PORT=%s\n' "$control_port"
   [[ -z $stack_token ]] || printf 'TILO_SH_STACK_TOKEN=%s\n' "$stack_token"
   printf 'TILO_SH_CARGO=%s\n' "${TILO_SH_REMOTE_CARGO:-cargo}"
   printf 'TILO_SH_REMOTE_COMMIT=%s\n' "$commit"
@@ -2777,6 +2785,10 @@ remote_env() {
 # is rcargo's own switch for that, and means nothing to another drop-in; rcargo does not take its
 # `--on-builder` before `exec`.
 remote_cmd() {
+  if [[ $mode == remote ]] && control_ready; then
+    control_cmd "$@"
+    return
+  fi
   local envs=()
   mapfile -t envs < <(remote_env)
   builder_flags
@@ -2799,15 +2811,35 @@ remote_shell() {
 # environment carries the state it serves, which is how its pid file is known
 # to be this stack's (`supervisor_pid`).
 start_supervisor() {
-  local envs=() inner
+  local envs=() start control
   mapfile -t envs < <(remote_env)
-  inner=$(printf 'bash %q ' "$self"; printf '%q ' "$@")
+  # The held program listens on its control port first, so the acting commands reach it from the
+  # start, then starts the stack and serves them: a job's state is its own, so nothing else can
+  # enter it to act on the stack, and ending the program ends the job.
+  control=${self%/*}/control.py
+  start=$(printf '%q ' "$@")
   builder_flags
   ( cd "$repo" && setsid env "TILO_SH_STATE=$remote_state" RCARGO_T=0 "$cargo" "${builder_flags[@]}" exec \
       --forward "$(forward_tcp)" --forward "udp:$(forward_udp)" \
-      -- env "${envs[@]}" bash -c "$inner && exec sleep infinity" ) \
+      -- env "${envs[@]}" bash -c "exec python3 $(printf '%q' "$control") serve --port $(printf '%q' "$control_port") --token $(printf '%q' "$stack_token") --repo . --self $(printf '%q' "$self") --start $start" ) \
     >> "$state/logs/remote.log" 2>&1 < /dev/null 9>&- &
   printf '%s\n' "$!" > "$state/supervisor.pid"
+}
+
+# Whether the held program answers on its control port here, through the forward: a stack on a
+# builder that keeps a job's state to itself is acted on this way, and one on a builder whose
+# container outlives the program (rcargo) the older way.
+control_ready() {
+  (exec 3<>"/dev/tcp/127.0.0.1/$control_port") >/dev/null 2>&1
+}
+
+# control_cmd ARGS… / control_down [ARGS…]: start stack.sh on the held program, with the stack's
+# token; the program prints what the command printed and exits with its status.
+control_cmd() {
+  python3 "$here/control.py" request --port "$control_port" --token "$stack_token" -- "$@"
+}
+control_down() {
+  python3 "$here/control.py" down --port "$control_port" --token "$stack_token" -- "$@"
 }
 
 # up_remote [--seed] [--discord]: the stack on the build server, its ports here
@@ -2923,9 +2955,12 @@ down_any() {
 
 # down_remote [--wipe]: the services stop where they run, then the forward.
 down_remote() {
-  local wipe= stopped=1
+  local wipe= stopped=1 via_control=
   [[ ${1:-} == --wipe ]] && wipe=1
-  if ! remote_cmd down ${wipe:+--wipe}; then
+  if [[ $mode == remote ]] && control_ready; then
+    via_control=1
+    if control_down ${wipe:+--wipe}; then :; else stopped=0; fi
+  elif ! remote_cmd down ${wipe:+--wipe}; then
     # A stack whose services are running there still writes to its state: say
     # what is left instead of claiming it is gone.
     stopped=0
@@ -2935,7 +2970,10 @@ down_remote() {
   # Its ports are this machine's again: the master keeps a forward after the
   # client that asked for it ends, and the next up would find them in use.
   cancel_forwards "$(forward_tcp)"
-  if [[ -n $wipe ]]; then
+  if [[ -n $wipe && -n $via_control ]]; then
+    rm -rf "${state:?}" 2>/dev/null || true
+    say 'stopped; the job it ran in is gone with it, and this machine keeps nothing of it'
+  elif [[ -n $wipe ]]; then
     if ((stopped)) && remote_shell "rm -rf $(printf '%q' "$remote_state")" 2>/dev/null; then
       # This machine keeps what it printed and its connection's log, and nothing else.
       rm -rf "${state:?}" 2>/dev/null || true
