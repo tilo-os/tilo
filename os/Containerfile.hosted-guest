@@ -79,7 +79,6 @@ RUN set -eu; \
 #   compiled         os/image/compile.sh's tree: the thin-app runtime, Browser's
 #                    binary and the packing tools
 #   chromium-engine  os-chromium-<arch>: the pinned CEF build
-#   font-seed        every font of the catalog, by digest
 FROM guest-base AS browser-payload
 ARG CHROMIUM_RUNTIME_VERSION
 ARG RUNTIME_RELEASE=2026.07
@@ -106,11 +105,10 @@ COPY crates/sdk/tilo-webview/src/chromium/runtime.rs /build/crates/sdk/tilo-webv
 COPY tools/ /build/tools/
 COPY --from=compiled / /out/
 COPY --from=chromium-engine / /run/tilo-chromium/
-COPY --from=font-seed / /run/tilo-fonts/
 # The catalog's fonts for the runtime bundle's own copy (`lib/fonts`, which the
-# launcher mounts into an app's sandbox).
-RUN python3 /build/tools/font-catalog.py prepare /build/crates/sdk/ui-core/assets/fonts \
-      /out/fonts --scope product --cache /run/tilo-fonts --offline
+# launcher mounts into an app's sandbox) come with the compiled tree, which
+# prepared them (os/image/compile.sh).
+RUN test -s /out/fonts/manifest.toml
 # The shared runtime bundle the thin apps link: this build's own, signed here
 # and trusted by the guest's own publisher list (below). It carries the native
 # closure of the runtime, Browser and the runtime's engines, resolved from this
@@ -338,6 +336,21 @@ RUN set -eu; \
     for program in node npm npx corepack; do \
       if [ -e "$node_bin/$program" ]; then ln -sf "$node_bin/$program" "/usr/local/bin/$program"; fi; \
     done
+
+# Claude Code, at the one version the server starts
+# (crates/server/tilo-server/src/coding_agents/claude_code.rs, which
+# hosted-guest.sh reads it from) and in the folder the server starts it from,
+# so a coding agent's first run fetches nothing and a person who types `claude`
+# in Terminal gets the same program. Signing in is the person's, inside the VM.
+ARG CLAUDE_CODE_VERSION
+RUN set -eu; \
+    test -n "$CLAUDE_CODE_VERSION"; \
+    at="/home/tilo/.local/share/claude-code/$CLAUDE_CODE_VERSION"; \
+    su -s /bin/bash tilo -c \
+      "npm install --global --no-fund --no-audit --prefix '$at' @anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"; \
+    test -x "$at/bin/claude"; \
+    ln -sf "$at/bin/claude" /usr/local/bin/claude; \
+    rm -rf /home/tilo/.npm
 
 # rust: rustup (checksum-pinned) with the stable toolchain, minimal profile —
 # cargo, rustc, rustup and rustdoc, and no documentation or clippy the tenant

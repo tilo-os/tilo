@@ -3702,8 +3702,8 @@ default = false
 name = "image-hosted-guest"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/hosted-guest.sh build /target/publish/hosted-guest/session /target/os/x86_64/compiled /target/os/x86_64/chromium /target/publish/hosted-guest/kernel /target/publish/hosted-guest/agent /target/font-seed /target/publish/hosted-guest/image"
-needs = ["hosted-guest-session", "os-compile-x86_64", "os-chromium-x86_64", "hosted-guest-kernel", "hosted-guest-agent", "font-seed", "os-assets"]
+run = "bash tools/ci/publish/hosted-guest.sh build /target/publish/hosted-guest/session /target/os/x86_64/compiled /target/os/x86_64/chromium /target/publish/hosted-guest/kernel /target/publish/hosted-guest/agent /target/publish/hosted-guest/image"
+needs = ["hosted-guest-session", "os-compile-x86_64", "os-chromium-x86_64", "hosted-guest-kernel", "hosted-guest-agent", "os-assets"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 git = true

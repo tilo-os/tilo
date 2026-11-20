@@ -26,7 +26,8 @@ pub const ID: &str = "claude-code";
 /// The most of a command or a path a line of what it is doing shows.
 const DOING_LENGTH: usize = 120;
 
-/// The version of Claude Code a machine starts, written once.
+/// The version of Claude Code a machine starts, written once. The hosted guest image's build
+/// (tools/ci/publish/hosted-guest.sh) reads it from this line and ships that version.
 macro_rules! version {
     () => {
         "2.1.326"

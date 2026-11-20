@@ -18,7 +18,7 @@
 #                                       os/components.toml from the compiled tree
 #                                       (os/image/compile.sh) the guest's apps and
 #                                       Browser come from
-#   hosted-guest.sh build SESSION COMPILED CHROMIUM KERNEL AGENT FONTS OUT
+#   hosted-guest.sh build SESSION COMPILED CHROMIUM KERNEL AGENT OUT
 #                                       export the guest's filesystem into rootfs.ext4,
 #                                       over the session, the compiled tree
 #                                       (os/image/compile.sh) and the engine
@@ -74,6 +74,16 @@ chromium_runtime_version() {
   version=$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\([^"]*\)";$/\1/p' \
     crates/sdk/tilo-webview/src/chromium/runtime.rs)
   [[ -n $version ]] || die 'the Chromium runtime names no RUNTIME_VERSION'
+  printf '%s' "$version"
+}
+
+# The version of Claude Code the server's coding agents start, which the guest
+# ships in the folder they start it from.
+claude_code_version() {
+  local version
+  version=$(sed -n '/^macro_rules! version {/,/^}/s/^ *"\([0-9][^"]*\)"$/\1/p' \
+    crates/server/tilo-server/src/coding_agents/claude_code.rs)
+  [[ -n $version ]] || die 'the coding agents name no Claude Code version'
   printf '%s' "$version"
 }
 
@@ -197,13 +207,12 @@ case ${1:-} in
     du -sh "$out"
     ;;
   build)
-    session=${2:?usage: hosted-guest.sh build SESSION COMPILED CHROMIUM KERNEL AGENT FONTS OUT}
+    session=${2:?usage: hosted-guest.sh build SESSION COMPILED CHROMIUM KERNEL AGENT OUT}
     compiled=${3:?}
     chromium=${4:?}
     kernel=${5:?}
     agent=${6:?}
-    fonts=${7:?}
-    out=${8:?}
+    out=${7:?}
     [[ $(uname -m) == x86_64 ]] || die 'the hosted guest is built on x86_64'
     container_build_setup
     assets=$(pinned_assets "${guest_assets[@]}")
@@ -215,12 +224,12 @@ case ${1:-} in
       --build-arg "FNM_ASSET=$fnm_asset" \
       --build-arg "RUSTUP_INIT_ASSET=$rustup_init_asset" \
       --build-arg "CHROMIUM_RUNTIME_VERSION=$(chromium_runtime_version)" \
+      --build-arg "CLAUDE_CODE_VERSION=$(claude_code_version)" \
       --build-arg "SOURCE_DATE_EPOCH=$(git show -s --format=%ct "${T_COMMIT:-HEAD}")" \
       --build-context "github-assets=$assets" \
       --build-context "session=$session" \
       --build-context "compiled=$compiled" \
       --build-context "chromium-engine=$chromium" \
-      --build-context "font-seed=$fonts" \
       --build-context "hosted-agent=$agent" \
       -t "$guest"
     root=$scratch/hosted-guest-root
@@ -235,6 +244,8 @@ case ${1:-} in
     test -x "$root/usr/libexec/tilo/browser-session"
     test -x "$root/usr/libexec/tilo/apps-session"
     test -x "$root/usr/bin/Xwayland"
+    test -x "$root/home/tilo/.local/share/claude-code/$(claude_code_version)/bin/claude"
+    test -L "$root/usr/local/bin/claude"
     grep -q 'so\.tilo\.browser' "$root/usr/share/tilo-apps/registry.toml"
     test -x "$root/usr/lib/tilo-runtime/$(chromium_runtime_version)/lib/chromium/tilo-chromium-host"
     wrap_guest "$root" "$kernel" "$out" hosted-guest-image
