@@ -19,7 +19,7 @@ pub(crate) struct ResolvedAction {
 
 /// Paths a session keeps resolved at most: a session naming ever new paths
 /// does not grow them without end.
-const RESOLVED_PATHS: usize = 256;
+pub(super) const RESOLVED_PATHS: usize = 256;
 
 /// What resolving a call's path came to: the action to invoke (with the
 /// arguments handed back), or the call already answered (an app started or
@@ -49,9 +49,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 Ok(value) => return self.invoked_at(known, value).await,
                 Err(failure) if crate::confirm::needs_the_person(&failure) => return Err(failure),
                 // Nothing was invoked: what the path named has gone or moved since, so
-                // it is resolved again, once.
+                // it is resolved again, once, and the app it was in looked up again.
                 Err(_) => {
                     self.resolved_paths.lock_recover().remove(path);
+                    self.forget_app(&known.app_id);
                 }
             }
         }
@@ -154,6 +155,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // the resource a listing showed: such a segment is read by the program form first, and
         // a form no app declares is read plainly, as a title may be.
         let forms = self.forms_named(&parsed).await;
+        // What this session read of the app's directory answers the path where
+        // it names the resource: a write on another of the app's resources
+        // asks the workspace for nothing but the write.
+        let mut levels = self.levels_kept(&provider);
         let mut resolved = if pinned {
             self.resolve_in(
                 &parsed,
@@ -161,6 +166,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 provider.clone(),
                 false,
                 forms.as_ref(),
+                &mut levels,
             )
             .await
             .map_err(|why| refused_as("not_found", why))?
@@ -171,19 +177,21 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 provider.clone(),
                 false,
                 forms.as_ref(),
+                &mut levels,
             )
             .await
             .map_err(|why| refused_as("not_found", why))?
         };
         if forms.is_some() && resolved.chain.is_empty() {
             resolved = if pinned {
-                self.resolve_in(&parsed, app_id, provider, false, None)
+                self.resolve_in(&parsed, app_id, provider, false, None, &mut levels)
                     .await?
             } else {
-                self.resolve_published(&parsed, app_id, provider, false, None)
+                self.resolve_published(&parsed, app_id, provider, false, None, &mut levels)
                     .await?
             };
         }
+        self.keep_levels(&resolved.provider, &resolved.levels);
         self.acted_in(&resolved.provider, &resolved.app_id);
         self.resolve_in_target(&parsed, &action, resolved, arguments, invocation, wait_ms)
             .await
@@ -202,8 +210,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         wait_ms: Option<u64>,
     ) -> Result<Resolution, Failure> {
         let answered = |done: Done| Resolution::Done(Box::new(done));
+        // The rows the path was resolved through carry the actions each resource
+        // offers: the action named is run from what the workspace already
+        // answered, and only a name none of them holds is asked of it again.
         let (named_at, descriptor) =
-            if let Some(descriptor) = self.action_named(&resolved, action).await? {
+            if let Some(found) = delivered_action(&resolved, action) {
+                (resolved.path.clone(), crate::refusal::not_allowed(found)?)
+            } else if let Some(descriptor) = self.action_named(&resolved, action).await? {
                 (resolved.path.clone(), descriptor)
             } else {
                 // Not one of the target's actions by its id: what the target
@@ -215,6 +228,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     let here = self
                         .level(&resolved.provider, &node.id, &mut levels)
                         .await?;
+                    resolved.levels = levels;
                     resolved.actions = if here.own.is_empty() {
                         node.actions.clone()
                     } else {
@@ -258,6 +272,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     }
                 }
             };
+        self.keep_levels(&resolved.provider, &resolved.levels);
         let history = resolved.history();
         let known = ResolvedAction {
             app_id: resolved.app_id,
@@ -268,4 +283,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         };
         Ok(Resolution::At(Box::new(known), arguments))
     }
+}
+
+/// The action `action` among the actions the rows `resolved` read delivered for
+/// its target, when they hold it: what the workspace answered with the path,
+/// without asking it again.
+fn delivered_action(resolved: &Resolved, action: &str) -> Option<ActionDescriptor> {
+    let resource = resolved.node.as_ref().map(|node| node.id.as_str());
+    resolved
+        .actions
+        .iter()
+        .chain(resolved.node.iter().flat_map(|node| node.actions.iter()))
+        .find(|descriptor| {
+            descriptor.address.action == action
+                && resource.is_none_or(|resource| descriptor.address.resource == resource)
+        })
+        .cloned()
 }

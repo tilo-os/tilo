@@ -121,7 +121,7 @@ impl<'a> Names<'a> {
 
 /// One resource of an app's directory, as an agent names it.
 #[derive(Clone, Debug)]
-pub(super) struct Node {
+pub(crate) struct Node {
     /// The broker's id: never shown, only sent back.
     pub(super) id: String,
     pub(super) kind: String,
@@ -256,7 +256,7 @@ impl Node {
 
 /// The resources and actions one directory listing holds under `parent`.
 #[derive(Clone, Default)]
-pub(super) struct Level {
+pub(crate) struct Level {
     /// Actions of the parent itself.
     pub(super) own: Vec<ActionDescriptor>,
     pub(super) children: Vec<Node>,

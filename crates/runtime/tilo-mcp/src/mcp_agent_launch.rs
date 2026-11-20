@@ -43,20 +43,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let (value, reply) =
             Box::pin(self.launch(parsed, app_id, action, arguments, invocation, wait_ms)).await?;
         // `open` puts the app's window in front of the person, on the document it opened; `start`
-        // starts it without one. The app is started either way: a window that cannot be put there is
-        // said beside what the open did.
-        let mut not_shown = None;
-        if action == tilo_actions::remote::APPLICATION_OPEN_ACTION && !reply.failed {
-            let opened = value
-                .pointer("/update/output/value/provider")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            not_shown = self.show(opened, app_id).await.err();
-        }
+        // starts it without one. The open itself shows it, wherever the person's layout is: asking
+        // to show it again cost a second round trip, and a workspace with no window to put there
+        // refused the one nobody asked for.
         Ok(Done::Launched {
             value,
             reply,
-            not_shown,
+            not_shown: None,
         })
     }
 

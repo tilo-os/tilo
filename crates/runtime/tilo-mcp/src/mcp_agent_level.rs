@@ -21,7 +21,7 @@ const RESUMES: u32 = 16;
 /// a listing starts at the page its first resource was read in
 /// ([`LsCursor`]).
 #[derive(Clone, Default)]
-pub(super) struct LevelPages {
+pub(crate) struct LevelPages {
     pub(super) rows: Vec<CatalogueRow>,
     pub(super) marks: Vec<PageMark>,
     pub(super) rest: Option<PageMark>,

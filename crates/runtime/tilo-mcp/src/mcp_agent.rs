@@ -620,7 +620,8 @@ fn next_cursor(value: &Value) -> Option<String> {
 }
 
 /// What an app name names.
-enum AppRef {
+#[derive(Clone)]
+pub(super) enum AppRef {
     /// A running publisher of the app: its newest window, the window the
     /// path named (`browser@4711`, `pinned`), or the host's own service
     /// answering for it (`desktop`).
@@ -631,6 +632,39 @@ enum AppRef {
     },
     /// `opens` when this caller may start it.
     Installed { app_id: String, opens: bool },
+}
+
+impl AppRef {
+    /// The app's id, as the workspace names it.
+    pub(super) fn app_id(&self) -> &str {
+        match self {
+            Self::Running { app_id, .. } | Self::Installed { app_id, .. } => app_id,
+        }
+    }
+}
+
+/// The one resource an already-read level names exactly as `name`: its id
+/// first, then its label. `None` for a name several resources carry, or one
+/// none of them does.
+fn named_among(level: &Level, name: &str) -> Option<Node> {
+    let children = level.whole_children();
+    if let [only] = children
+        .iter()
+        .filter(|node| node.names_id(name))
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        return Some((*only).clone());
+    }
+    match children
+        .iter()
+        .filter(|node| node.answers_to(name) == Some(0))
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [only] => Some((*only).clone()),
+        _ => None,
+    }
 }
 
 /// An app installed for the workspace, as the workspace lists it.
@@ -664,8 +698,9 @@ impl InstalledApp {
     }
 }
 
-/// A directory read once per call.
-type Levels = HashMap<String, Level>;
+/// The directory levels one call read, by the resource each holds, seeded
+/// with what the session read before ([`McpServer::dirs`]).
+pub(crate) type Levels = HashMap<String, Level>;
 
 /// A path resolved against the live directory, kept for the pages that list on from it.
 pub(super) type ListingResolution = std::sync::Arc<Resolved>;
@@ -811,9 +846,65 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .collect())
     }
 
+    /// The directory levels this session read in `provider`, as the last call
+    /// left them: what a call resolving a path there starts from.
+    fn levels_kept(&self, provider: &str) -> Levels {
+        self.dirs
+            .lock_recover()
+            .get(provider)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Keep what a call resolving its path in `provider` read, for the calls
+    /// after it: a write on another of the app's resources is resolved from
+    /// what the workspace already answered.
+    fn keep_levels(&self, provider: &str, levels: &Levels) {
+        let mut dirs = self.dirs.lock_recover();
+        if dirs.len() >= resolved::RESOLVED_PATHS && !dirs.contains_key(provider) {
+            dirs.clear();
+        }
+        dirs.insert(provider.to_owned(), levels.clone());
+    }
+
+    /// Forget the app `app_id` the session found, after the workspace refused a
+    /// call as one the app does not offer: the app or its directory moved
+    /// since, so the next call looks both up again.
+    pub(super) fn forget_app(&self, app_id: &str) {
+        self.apps
+            .lock_recover()
+            .retain(|_, app| app.app_id() != app_id);
+        self.dirs.lock_recover().clear();
+    }
+
     /// The app `name` means: a running one by its id or last part, else an
     /// installed one the workspace offers to open.
+    ///
+    /// A running app the session found is kept: every call in it names the
+    /// app again, and asking which apps run for each of them cost a request a
+    /// call. A call the app refuses drops what was kept
+    /// ([`McpServer::forget_app`]), so one that closed or moved is looked up
+    /// again.
     async fn app_ref(&self, name: &str) -> Result<AppRef, String> {
+        let known = { self.apps.lock_recover().get(name).cloned() };
+        if let Some(known) = known {
+            return Ok(known);
+        }
+        let found = self.app_ref_live(name).await?;
+        if matches!(found, AppRef::Running { .. }) {
+            let mut apps = self.apps.lock_recover();
+            if apps.len() >= resolved::RESOLVED_PATHS {
+                apps.clear();
+            }
+            apps.insert(name.to_owned(), found.clone());
+        }
+        Ok(found)
+    }
+
+    /// [`Self::app_ref`] as the live directory answers it, asked of the
+    /// workspace: the app a running one is by its id or last part, else an
+    /// installed one the workspace offers to open.
+    async fn app_ref_live(&self, name: &str) -> Result<AppRef, String> {
         // Files is every workspace's own folder, served by the framework
         // rather than installed into it: `files#open` reaches it wherever the
         // workspace is, and puts a file into its tree.
@@ -1025,6 +1116,19 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         name: &str,
         levels: &mut Levels,
     ) -> Result<Option<Level>, String> {
+        // What this call already holds of the app's own level answers the name
+        // where it names one resource exactly: the session keeps the directory
+        // it read, so a call on another of the app's resources costs itself.
+        if let Some(root) = levels.get("").cloned()
+            && let Some(only) = named_among(&root, name)
+        {
+            return Ok(Some(Level {
+                own: Vec::new(),
+                children: vec![only],
+                revision: root.revision,
+                pages: std::sync::Arc::default(),
+            }));
+        }
         // A name the app's own level carries is asked of the app by name
         // first: a chain it keeps is answered from the head part publishing
         // it, never a page of the listing built from every item the app
@@ -1281,12 +1385,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         parsed: &ParsedPath,
         forms: Option<&ProgramForms>,
     ) -> Result<Result<Resolved, String>, String> {
+        let mut levels = Levels::new();
         let reference = match self.app_ref(&parsed.app).await {
             Ok(reference) => reference,
             Err(why) => match self.kind_app(&parsed.app).await {
                 Some((app_id, provider, _)) => {
                     return Ok(Ok(self
-                        .resolve_in(parsed, app_id, provider, true, forms)
+                        .resolve_in(parsed, app_id, provider, true, forms, &mut levels)
                         .await?));
                 }
                 None => return Err(why),
@@ -1298,12 +1403,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 provider,
                 pinned: true,
             } => Ok(Ok(self
-                .resolve_in(parsed, app_id, provider, true, forms)
+                .resolve_in(parsed, app_id, provider, true, forms, &mut levels)
                 .await?)),
             AppRef::Running {
                 app_id, provider, ..
             } => Ok(Ok(self
-                .resolve_published(parsed, app_id, provider, true, forms)
+                .resolve_published(parsed, app_id, provider, true, forms, &mut levels)
                 .await?)),
             // Reading what an installed app holds starts it without a window, as an action on
             // it does: a path names the app's resources, not one of its processes.
@@ -1313,7 +1418,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             } => {
                 let provider = self.started_provider(&app_id, None).await?;
                 Ok(Ok(self
-                    .resolve_published(parsed, app_id, provider, true, forms)
+                    .resolve_published(parsed, app_id, provider, true, forms, &mut levels)
                     .await?))
             }
             AppRef::Installed { opens: false, .. } => {
@@ -1335,16 +1440,21 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         newest: String,
         list: bool,
         forms: Option<&ProgramForms>,
+        levels: &mut Levels,
     ) -> Result<Resolved, String> {
         let published = |found: &Resolved| {
             !found.chain.is_empty() || !found.actions.is_empty() || !found.children.is_empty()
         };
         let first = self
-            .resolve_in(parsed, app_id.clone(), newest.clone(), list, forms)
+            .resolve_in(parsed, app_id.clone(), newest.clone(), list, forms, levels)
             .await;
         if first.as_ref().is_ok_and(published) {
             return first;
         }
+        // The levels here are the newest instance's: an older one keeps its
+        // directory, and reading it under this one's name would name the wrong
+        // resources.
+        levels.clear();
         // Only then are the running apps asked again, for the older instances.
         let older: Vec<String> = self
             .providers()
@@ -1358,7 +1468,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .collect();
         for provider in older {
             let resolved = self
-                .resolve_in(parsed, app_id.clone(), provider, list, forms)
+                .resolve_in(parsed, app_id.clone(), provider, list, forms, levels)
                 .await;
             if resolved.as_ref().is_ok_and(published) {
                 return resolved;
@@ -1380,16 +1490,16 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         provider: String,
         list: bool,
         forms: Option<&ProgramForms>,
+        levels: &mut Levels,
     ) -> Result<Resolved, String> {
         let app = parsed.app.to_lowercase();
-        let mut levels = Levels::new();
         // What an action answered is a path the next call takes as it is:
         // `tasks.tracker/issues/7` names one resource whole, where its parts
         // named one at a time would name every kind that shares a word.
         if kind_address(&parsed.app).is_some() {
             let address = parsed.address();
             if let Some(found) = self
-                .by_item_address(&app_id, &provider, &address, &mut levels)
+                .by_item_address(&app_id, &provider, &address, levels)
                 .await?
             {
                 return Ok(found);
@@ -1405,7 +1515,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let mut at = app.clone();
         for segment in &parsed.segments {
             let (found, siblings) = self
-                .step(&provider, &at, chain.last(), segment, &mut levels, forms)
+                .step(&provider, &at, chain.last(), segment, levels, forms)
                 .await?;
             at = format!("{at}/{}", found.name(&siblings.children));
             chain.push(found);
@@ -1414,16 +1524,16 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         let mut here = match chain.last() {
             Some(_) if !list => Level::default(),
-            Some(node) => self.level_near(&provider, &node.id, &mut levels).await?,
+            Some(node) => self.level_near(&provider, &node.id, levels).await?,
             None => {
                 // What the app's containers hold (a notebook's notes) is read for a listing.
                 // An action named on the app is found on the app's own level first
                 // ([`Self::pick_action_in`]): `notes#create-page` is the notebook's, and
                 // reading every note to find it would grow with the notebook.
                 let mut root = if list {
-                    self.app_children_listed(&provider, &mut levels).await?
+                    self.app_children_listed(&provider, levels).await?
                 } else {
-                    self.level(&provider, "", &mut levels).await?
+                    self.level(&provider, "", levels).await?
                 };
                 // A host service (the desktop's layout, on `desktop:session`)
                 // publishes everything on its one resource: its actions are
@@ -1483,7 +1593,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             },
             children: here.children,
             chain,
-            levels,
+            levels: levels.clone(),
             revision,
         })
     }
@@ -2705,6 +2815,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// action on a notebook is found without a page of the notebook's notes.
     /// `None` when the target offers no action by that id (or the directory
     /// moved on), for the caller to list it.
+    /// The action `action` on the resource `resolved` names, as the app publishes
+    /// it now: the exact target asked of the workspace, with the availability it
+    /// holds for this caller. `None` where the app's own rows already delivered
+    /// it ([`delivered_action`]) or the app has no directory revision to ask at.
     async fn action_named(
         &self,
         resolved: &Resolved,

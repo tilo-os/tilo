@@ -172,6 +172,17 @@ pub struct McpServer<H> {
     /// or moved is refused by the server, and resolved again then.
     resolved_paths:
         std::sync::Mutex<std::collections::HashMap<String, agent::resolved::ResolvedAction>>,
+    /// The app each name this session named means, as it found it: a call
+    /// naming a resource in an app the session already works in asks the
+    /// workspace for nothing but the call. A call the app refuses as one it
+    /// does not offer drops it, and the app is looked up again.
+    apps: std::sync::Mutex<std::collections::HashMap<String, agent::AppRef>>,
+    /// The directory levels this session read, by the provider that serves
+    /// them and the resource they hold: a write on a resource the app's
+    /// directory already answered is resolved from what was read, not read
+    /// again. What a level names is checked by the workspace when the call
+    /// reaches it, so a stale one costs a refusal, never a wrong write.
+    dirs: std::sync::Mutex<std::collections::HashMap<String, agent::Levels>>,
     /// The root resource whose read answers a path an app's directory holds
     /// none of its own for, by the app and the revision its directory was read
     /// at: reading every root resource to find it is done once, not once a
@@ -648,6 +659,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             acted: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
             resolved_paths: std::sync::Mutex::default(),
+            apps: std::sync::Mutex::default(),
+            dirs: std::sync::Mutex::default(),
             swept_reads: std::sync::Mutex::default(),
             listing_resolutions: std::sync::Mutex::default(),
             showed: std::sync::Mutex::default(),

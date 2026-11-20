@@ -155,6 +155,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             tilo_actions::remote::workspace_provider(&self.workspace),
             true,
             Some(forms),
+            &mut super::Levels::new(),
         )
         .await
     }
