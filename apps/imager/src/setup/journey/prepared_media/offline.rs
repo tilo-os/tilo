@@ -1256,7 +1256,7 @@ pub(crate) struct PreparedOriginalMedia {
     pub review: Arc<OfflineMediaReview>,
 }
 impl PreparedMedia {
-    pub(crate) fn prepare_original_on_media(
+    pub(in crate::setup) fn native_prepare_original_on_media(
         self: &Arc<Self>,
         image_review: &super::super::super::original_admission::ReviewedOriginalImage,
         target: &TargetDrive,

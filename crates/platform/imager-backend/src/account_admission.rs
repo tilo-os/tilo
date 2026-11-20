@@ -297,6 +297,14 @@ pub fn receiving_candidate(
 
 /// Authenticate the actual installed consumer proof before target ownership writes.
 /// The check re-executes the installed probes and compares the image receipt.
+#[cfg(not(target_os = "linux"))]
+pub fn installed() -> io::Result<ConsumerCapability> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "this machine holds no installed consumer to authenticate",
+    ))
+}
+
 #[cfg(target_os = "linux")]
 pub fn installed() -> io::Result<ConsumerCapability> {
     let value = crate::installed_consumers::account::check().map_err(|_| unavailable())?;

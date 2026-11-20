@@ -1954,3 +1954,9 @@ reason = "The policy table's file name, `record_conversions.toml`, written as th
 words = ["record"]
 identifiers = ["record_conversions"]
 paths = ["tools/policy/check_resource_placement.py", "tools/tests/test_check_resource_placement.py", "tools/policy/record_conversions.toml"]
+
+[[allow]]
+reason = "The Flatpak transfer `Runner`'s method that reads a Flatpak installation's list; a platform with no Flatpak still implements the trait, refusing."
+words = ["run"]
+identifiers = ["run"]
+paths = ["crates/platform/imager-backend/src/setup/flatpak_transfer/portable_absent.rs"]

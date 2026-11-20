@@ -29,6 +29,8 @@ mod native;
 mod repository;
 #[cfg(target_os = "linux")]
 pub use native::{CancellableNativeRunner, NativeRunner};
+#[cfg(not(target_os = "linux"))]
+pub use portable_absent::NativeRunner;
 pub use repository::extract_remote_definition;
 #[cfg(test)]
 mod tests;

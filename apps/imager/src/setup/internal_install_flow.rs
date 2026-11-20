@@ -567,14 +567,14 @@ pub(super) fn staging_consumer(
         };
         let mut intent = intent;
         if let Some(prepared) = &intent.prepared_ownership {
-            if let Ok((fresh, artifact, expected)) = prepared
-                .refreshed_for_transfer(cancel.signal())
-                .and_then(|fresh| {
-                    let artifact = fresh.staging_artifact()?;
-                    let expected =
-                        serde_json::to_value(fresh.expectation()).map_err(std::io::Error::other)?;
-                    Ok((fresh, artifact, expected))
-                })
+            if let Ok((fresh, artifact, expected)) =
+                crate::setup::journey::prepared_media::refresh_for_write(prepared, cancel.signal())
+                    .and_then(|fresh| {
+                        let artifact = fresh.staging_artifact()?;
+                        let expected = serde_json::to_value(fresh.expectation())
+                            .map_err(std::io::Error::other)?;
+                        Ok((fresh, artifact, expected))
+                    })
             {
                 intent.profile.insert("prepared_setup".into(), expected);
                 if let Err(error) = remember_tpm_handoff(&mut intent.profile, &fresh) {

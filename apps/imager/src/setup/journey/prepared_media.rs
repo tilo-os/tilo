@@ -1665,7 +1665,7 @@ impl PreparedMedia {
             .collect();
         Ok(())
     }
-    pub(crate) fn validate_recovery_for_stage(
+    fn native_validate_recovery_for_stage(
         &self,
         actual_plan: &super::super::staging::plan::Plan,
         cancel: &AtomicBool,
@@ -1848,6 +1848,13 @@ impl PreparedMedia {
     }
     pub(in crate::setup) fn native_is_other_device(&self) -> bool {
         self.other_device.is_some()
+    }
+    fn native_deliver_desktop_preparation(
+        prepared: &Arc<PreparedMedia>,
+        home: &std::path::Path,
+        cancel: &AtomicBool,
+    ) -> io::Result<()> {
+        crate::setup::desktop_delivery::deliver(Arc::clone(prepared), home, cancel).map(|_| ())
     }
     pub(crate) fn copy_ciphertext(&self, output: &mut std::fs::File) -> io::Result<()> {
         let cancel = AtomicBool::new(false);
@@ -2054,10 +2061,10 @@ impl PreparedMedia {
     pub fn native_expectation(&self) -> &imager_backend::imager_model::PreparedSetupExpectation {
         &self.expectation
     }
-    pub(crate) fn install_profile(&self) -> Option<&prepared_setup::PublicInstallProfile> {
+    fn native_install_profile(&self) -> Option<&prepared_setup::PublicInstallProfile> {
         self.install_profile.as_ref()
     }
-    pub(crate) fn tpm_handoff(
+    fn native_tpm_handoff(
         &self,
     ) -> Option<&imager_backend::setup::prepared_tpm::SealedPreparation> {
         self.tpm_handoff.as_ref()
@@ -2088,7 +2095,7 @@ impl PreparedMedia {
         .then_some(imager_backend::home_admission::ARCHIVE_PROTOCOL)
     }
 
-    pub(in crate::setup) fn staging_artifact(
+    fn native_staging_artifact(
         &self,
     ) -> io::Result<super::super::staging::prepared_setup::PreparedArtifact> {
         self.review_recovery()?;
@@ -3497,6 +3504,13 @@ impl PreparedMedia {
                         .map(|profile| profile.to_draft())
                         .transpose()
                 },
+                is_other_device: Self::native_is_other_device,
+                install_profile: Self::native_install_profile,
+                tpm_handoff: Self::native_tpm_handoff,
+                staging_artifact: Self::native_staging_artifact,
+                validate_recovery_for_stage: Self::native_validate_recovery_for_stage,
+                prepare_original_on_media: Self::native_prepare_original_on_media,
+                deliver_desktop_preparation: Self::native_deliver_desktop_preparation,
             },
         }
     }
@@ -3533,6 +3547,9 @@ impl super::prepared_media::DeliveryState for Delivery {
     }
     fn artifact(&self) -> Option<Arc<PreparedMedia>> {
         Delivery::artifact(self)
+    }
+    fn is_other_device(&self) -> bool {
+        Delivery::is_other_device(self)
     }
     fn mark_source_changed(&mut self) {
         Delivery::mark_source_changed(self)

@@ -105,14 +105,7 @@ impl SetupApp {
                 })
             });
             let result = admission
-                .and_then(|()| {
-                    super::super::desktop_delivery::deliver(
-                        prepared,
-                        &home,
-                        &AtomicBool::new(false),
-                    )
-                    .map(|_| ())
-                })
+                .and_then(|()| prepared.deliver_desktop_preparation(&home, &AtomicBool::new(false)))
                 .map_err(|_| super::super::strings::t("installer-desktop-delivery-failed"));
             let _ = sender.send(result);
         });

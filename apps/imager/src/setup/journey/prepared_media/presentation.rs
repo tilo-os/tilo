@@ -18,6 +18,32 @@ pub(super) struct PreparedApi {
         fn(&PreparedMedia, &std::sync::atomic::AtomicBool) -> std::io::Result<()>,
     pub install_profile_draft:
         fn(&PreparedMedia) -> std::io::Result<Option<imager_backend::imager_model::InstallProfile>>,
+    pub is_other_device: fn(&PreparedMedia) -> bool,
+    pub install_profile:
+        fn(&PreparedMedia) -> Option<&imager_backend::prepared_setup::PublicInstallProfile>,
+    pub tpm_handoff:
+        fn(&PreparedMedia) -> Option<&imager_backend::setup::prepared_tpm::SealedPreparation>,
+    pub staging_artifact:
+        fn(
+            &PreparedMedia,
+        ) -> std::io::Result<crate::setup::staging::prepared_setup::PreparedArtifact>,
+    pub validate_recovery_for_stage: fn(
+        &PreparedMedia,
+        &crate::setup::staging::plan::Plan,
+        &std::sync::atomic::AtomicBool,
+    ) -> std::io::Result<()>,
+    pub prepare_original_on_media: fn(
+        &Arc<PreparedMedia>,
+        &crate::setup::original_admission::ReviewedOriginalImage,
+        &imager_backend::imager_model::TargetDrive,
+        &super::portable_source::OriginalSource,
+        &std::sync::atomic::AtomicBool,
+    ) -> std::io::Result<offline::PreparedOriginalMedia>,
+    pub deliver_desktop_preparation: fn(
+        &Arc<PreparedMedia>,
+        &std::path::Path,
+        &std::sync::atomic::AtomicBool,
+    ) -> std::io::Result<()>,
 }
 impl PreparedMedia {
     pub(super) fn matches_reviewed_belongings(
@@ -99,7 +125,45 @@ impl PreparedMedia {
         (self.api.projection)(self)
     }
     pub fn is_other_device(&self) -> bool {
-        self.native_is_other_device()
+        (self.api.is_other_device)(self)
+    }
+    pub(crate) fn install_profile(
+        &self,
+    ) -> Option<&imager_backend::prepared_setup::PublicInstallProfile> {
+        (self.api.install_profile)(self)
+    }
+    pub(crate) fn tpm_handoff(
+        &self,
+    ) -> Option<&imager_backend::setup::prepared_tpm::SealedPreparation> {
+        (self.api.tpm_handoff)(self)
+    }
+    pub(crate) fn staging_artifact(
+        &self,
+    ) -> std::io::Result<crate::setup::staging::prepared_setup::PreparedArtifact> {
+        (self.api.staging_artifact)(self)
+    }
+    pub(crate) fn validate_recovery_for_stage(
+        &self,
+        plan: &crate::setup::staging::plan::Plan,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> std::io::Result<()> {
+        (self.api.validate_recovery_for_stage)(self, plan, cancel)
+    }
+    pub(crate) fn deliver_desktop_preparation(
+        self: &Arc<Self>,
+        home: &std::path::Path,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> std::io::Result<()> {
+        (self.api.deliver_desktop_preparation)(self, home, cancel)
+    }
+    pub(crate) fn prepare_original_on_media(
+        self: &Arc<Self>,
+        image_review: &crate::setup::original_admission::ReviewedOriginalImage,
+        target: &imager_backend::imager_model::TargetDrive,
+        original: &super::portable_source::OriginalSource,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> std::io::Result<offline::PreparedOriginalMedia> {
+        (self.api.prepare_original_on_media)(self, image_review, target, original, cancel)
     }
     pub fn expectation(&self) -> &imager_backend::imager_model::PreparedSetupExpectation {
         (self.api.expectation)(self)
@@ -178,6 +242,9 @@ impl Navigation {
 pub(super) trait DeliveryState: std::any::Any {
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+    fn is_other_device(&self) -> bool {
+        false
+    }
     fn finish_close(&mut self) -> std::io::Result<()>;
     fn has_artifact(&self, artifact: &Arc<PreparedMedia>) -> bool;
     fn artifact(&self) -> Option<Arc<PreparedMedia>>;
@@ -218,6 +285,12 @@ impl Default for Delivery {
     }
 }
 impl Delivery {
+    pub fn is_other_device(&self) -> bool {
+        self.native
+            .get()
+            .is_ok_and(super::prepared_media::DeliveryState::is_other_device)
+    }
+
     pub(crate) fn start_awaiting_offline_export_automatic(
         &mut self,
         review: Arc<offline::OfflineMediaReview>,
@@ -611,6 +684,11 @@ pub(crate) use super::prepared_media_native::offline;
 pub(crate) mod offline {
     pub(crate) struct OfflineMediaReview {
         _private: (),
+    }
+    /// Never built: an original image is prepared only on Linux.
+    pub(crate) struct PreparedOriginalMedia {
+        pub artifact: Arc<super::PreparedMedia>,
+        pub review: Arc<OfflineMediaReview>,
     }
 }
 pub(in crate::setup) struct MailSelection {
