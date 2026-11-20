@@ -289,11 +289,18 @@ pub fn coalesce_damage(rects: Vec<FineDamageRect>, limit: usize) -> Vec<FineDama
 
 /// Merge only overlap/touching damage whose bounding union costs no more pixels than the independent
 /// passes.
+pub fn coalesce_regions(regions: Vec<FineDamageRect>) -> Vec<FineDamageRect> {
+    merge_regions(regions, 0)
+}
+
+/// Merge any two of `regions` whose bounding union costs no more than both apart and `slack`
+/// pixels more; a list longer than 128 is left as it is.
 #[allow(
     clippy::indexing_slicing,
     reason = "the bounded two-index scan checks i < j < len before every access"
 )]
-pub fn coalesce_regions(mut regions: Vec<FineDamageRect>) -> Vec<FineDamageRect> {
+#[inline(never)]
+pub(crate) fn merge_regions(mut regions: Vec<FineDamageRect>, slack: u64) -> Vec<FineDamageRect> {
     if regions.len() > 128 {
         return regions;
     }
@@ -303,7 +310,11 @@ pub fn coalesce_regions(mut regions: Vec<FineDamageRect>) -> Vec<FineDamageRect>
         'scan: for i in 0..regions.len() {
             for j in i.saturating_add(1)..regions.len() {
                 let union = damage_union(regions[i], regions[j]);
-                if area(union) <= area(regions[i]).saturating_add(area(regions[j])) {
+                if area(union)
+                    <= area(regions[i])
+                        .saturating_add(area(regions[j]))
+                        .saturating_add(slack)
+                {
                     regions[i] = union;
                     regions.swap_remove(j);
                     changed = true;
