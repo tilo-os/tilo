@@ -102,6 +102,11 @@ async fn a_stream_without_a_receiver_closes_what_the_peer_sends() {
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "current_thread")]
 async fn a_peer_that_cannot_be_traced_still_hands_over_its_descriptor() {
+    tilo_test_env::require_capability!(
+        NonRoot,
+        tilo_test_env::non_root_identity(),
+        "only an ordinary account is refused a non-dumpable peer's descriptor"
+    );
     let selected = tempfile::NamedTempFile::new().expect("selected object");
     let expected = identity(selected.as_file());
     let (child_end, service) = std::os::unix::net::UnixStream::pair().expect("connected pair");
@@ -153,13 +158,8 @@ async fn a_peer_that_cannot_be_traced_still_hands_over_its_descriptor() {
         let pidfd = i32::try_from(pidfd).expect("pidfd");
         let pulled = libc::syscall(libc::SYS_pidfd_getfd, pidfd, selected_fd, 0);
         let error = std::io::Error::last_os_error().raw_os_error();
-        if !rustix::process::geteuid().is_root() {
-            assert_eq!(pulled, -1, "a non-dumpable peer refuses pidfd_getfd");
-            assert_eq!(error, Some(libc::EPERM));
-        }
-        if pulled >= 0 {
-            libc::close(i32::try_from(pulled).expect("fd"));
-        }
+        assert_eq!(pulled, -1, "a non-dumpable peer refuses pidfd_getfd");
+        assert_eq!(error, Some(libc::EPERM));
         libc::close(pidfd);
     }
     drop(release_write);

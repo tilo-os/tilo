@@ -452,12 +452,15 @@ mod tests {
 
     #[test]
     fn only_a_root_owned_configuration_is_read() {
+        tilo_test_env::require_capability!(
+            NonRoot,
+            tilo_test_env::non_root_identity(),
+            "a configuration owned by another account is only refused to an ordinary account"
+        );
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hosted-jail.json");
         std::fs::write(&path, serde_json::to_string(&config()).unwrap()).unwrap();
-        if rustix::process::getuid().as_raw() != 0 {
-            let refused = JailConfig::load(&path).unwrap_err();
-            assert!(refused.contains("must be root's"), "{refused}");
-        }
+        let refused = JailConfig::load(&path).unwrap_err();
+        assert!(refused.contains("must be root's"), "{refused}");
     }
 }

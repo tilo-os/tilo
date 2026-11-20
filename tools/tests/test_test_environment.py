@@ -6,7 +6,6 @@ import json
 import re
 import os
 from pathlib import Path
-import pwd
 import shutil
 import subprocess
 import sys
@@ -39,58 +38,6 @@ def recorders(directory: Path, *more: str) -> tuple[Path, Path]:
             (programs / name).write_text(f'#!/bin/sh\necho {name} >>"{started}"\nexec "{real}" "$@"\n')
             (programs / name).chmod(0o755)
     return programs, started
-
-
-def effective_capabilities() -> int:
-    """The capabilities this shell holds. CAP_CHOWN (0) gives the tree, CAP_SETGID (6) and
-    CAP_SETUID (7) become the user: tools/as-test-user.sh needs all three."""
-    try:
-        for line in Path("/proc/self/status").read_text().splitlines():
-            if line.startswith("CapEff:"):
-                return int(line.split()[1], 16)
-    except OSError:
-        pass
-    return 0
-
-
-def initial_user_namespace() -> bool:
-    """Whether this shell is root of the initial user namespace, whose capabilities reach the
-    files a job inherits. A namespace of its own maps some range and no other, and its root can
-    name neither an id outside the map nor a file its parent namespace owns."""
-    for kind in ("uid_map", "gid_map"):
-        try:
-            maps = [line.split() for line in
-                    Path(f"/proc/self/{kind}").read_text().splitlines() if line.strip()]
-        except OSError:
-            return False
-        if maps != [["0", "0", "4294967295"]]:
-            return False
-    return True
-
-
-def handover_user() -> pwd.struct_passwd | None:
-    """The image's test user, where this suite is itself a job that hands tests over to one.
-
-    That is a job that starts as root in an image naming its test user (TILO_TEST_USER), holding
-    the capabilities to become it and give it the tree, in the initial user namespace. An
-    ordinary account hands nothing over, and neither does a root that may not change owners (a
-    job sandbox with one user id, or a check's own `unshare --user --map-root-user`): its tests
-    keep its user.
-    """
-    name = os.environ.get("TILO_TEST_USER")
-    if os.geteuid() != 0 or not name:
-        return None
-    caps = effective_capabilities()
-    if (caps & 1) == 0 or ((caps >> 6) & 3) != 3 or not initial_user_namespace():
-        return None
-    return pwd.getpwnam(name)
-
-
-def default_mode() -> str:
-    """The mode of a directory made with no mode named, as `stat -c %a` prints it."""
-    mask = os.umask(0)
-    os.umask(mask)
-    return f"{0o777 & ~mask:o}"
 
 
 def old_bash() -> bool:
@@ -366,7 +313,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "font-catalog": ["fonts"],
                                  "headless-audio": ["audio"],
-                                 "ntfs-fixtures": ["ntfs"], "as-root": ["root"],
+                                 "ntfs-fixtures": ["ntfs"],
                                  "swtpm": ["swtpm"], "pdf-sandbox": ["pdf-sandbox"],
                                  "video-render": ["video-render"],
                                  "throughput": ["throughput"],
@@ -403,10 +350,6 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                      "machine-siblings",
                                  "package(tilo-session-client) and binary(it) and "
                                  "(test(passkey_root::) or test(node_workspace::))": "page-bundle",
-                                 # Only the sandbox's tests that map host ids or
-                                 # make cgroups run as root.
-                                 "package(tilo-sandbox) and (test(/^host_ids::/) or "
-                                 "test(/^limits::/))": "as-root",
                                  # The values only some packages' tests need, for those packages:
                                  # given to the run's environment, each would key every build
                                  # script's and proc macro's cache entry by it.
@@ -491,9 +434,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                 log.write_text("")
                 for program in ("python3", "bash", "sh", "env"):
                     self.assertEqual(started[program], 0, started)
-                if handover_user() is None:
-                    # Where the tests run as another user, looking that user up starts more.
-                    self.assertEqual(started, expected)
+                self.assertEqual(started, expected)
 
     def mapped(self, manifest: str) -> tuple[list[str], list[str]]:
         """The capabilities the runtime step requires for MANIFEST as the shell reads it, and
@@ -503,7 +444,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
             tree = Path(tmp) / "tree"
             (tree / "tools/ci").mkdir(parents=True)
             (tree / ".config").mkdir()
-            for name in ("test-env-setup.sh", "as-test-user.sh", "ci/capability_filter.py"):
+            for name in ("test-env-setup.sh", "ci/capability_filter.py"):
                 shutil.copy(ROOT / "tools" / name, tree / "tools" / name)
             (tree / ".config/nextest-capabilities.toml").write_text(manifest)
             env_file = Path(tmp) / "env"
@@ -987,7 +928,6 @@ class CargoRunnerTests(unittest.TestCase):
 
     def build_tree(self, work: Path, test: str) -> tuple[Path, Path]:
         """A build directory as cargo leaves one, with TEST as a test binary in it."""
-        # The test user reaches the tree through this directory.
         work.chmod(0o755)
         target = work / "target"
         (target / "debug/deps").mkdir(parents=True)
@@ -1064,69 +1004,6 @@ class CargoRunnerTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(result.stdout.startswith("/tmp/tilo-test-env."), result.stdout)
 
-    def test_started_as_root_a_test_runs_as_the_test_user_in_a_tree_that_is_its_own(self) -> None:
-        user = handover_user()
-        if user is None:
-            self.skipTest("only a job that starts as root in an image naming its test user hands over")
-        # What the test is: who it runs as, whose its environment is, and that it can write
-        # beside the build's output and into the build directory's tmp, which root made.
-        report = ('set -e; id -u; stat -c "%u %a" "$TILO_TEST_ENVIRONMENT" "$HOME" "$XDG_RUNTIME_DIR"; '
-                  ': >"$1/debug/review/written"; : >"$1/tmp/written"; echo "$TILO_TEST_ENVIRONMENT"')
-        with tempfile.TemporaryDirectory() as tmp:
-            work = Path(tmp)
-            target, binary = self.build_tree(work, report)
-            programs, log = recorders(work)
-            path = f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}"
-            mine = [str(user.pw_uid), f"{user.pw_uid} 700", f"{user.pw_uid} {default_mode()}",
-                    f"{user.pw_uid} 700"]
-
-            result = self.start(binary, str(target), PATH=path, TILO_TEST_USER=user.pw_name)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            lines = result.stdout.splitlines()
-            self.assertEqual(lines[:4], mine)
-            self.assertFalse(Path(lines[4]).exists(), "the environment is removed")
-            self.assertTrue((target / f".handed-to-{user.pw_name}").exists(), "the job's mark")
-            for made in (target, target / "debug/review", target / "tmp", binary):
-                self.assertEqual(made.stat().st_uid, user.pw_uid, made)
-            # The first start of a job walks the tree, under the lock its other starts wait on.
-            cold = self.started(log)
-            self.assertEqual(cold, Counter(flock=1, chown=2, mktemp=1, mkdir=1, chmod=1, setpriv=1, rm=1))
-
-            # Every later start finds the mark, and a tmp that is the test user's already: it
-            # hands over the environment it made, and nothing else.
-            result = self.start(binary, str(target), PATH=path, TILO_TEST_USER=user.pw_name)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(self.started(log), Counter(chown=1, mktemp=1, mkdir=1, chmod=1, setpriv=1, rm=1))
-
-            # A build as root makes the tmp again after the job's walk: it goes over again.
-            shutil.rmtree(target / "tmp")
-            (target / "tmp").mkdir()
-            self.assertEqual((target / "tmp").stat().st_uid, 0)
-            result = self.start(binary, str(target), PATH=path, TILO_TEST_USER=user.pw_name)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual((target / "tmp").stat().st_uid, user.pw_uid)
-            self.assertEqual(self.started(log)["chown"], 2)
-
-            # A shell told another user id by its environment still knows it started as root.
-            result = self.start(binary, str(target), PATH=path, TILO_TEST_USER=user.pw_name,
-                                EUID=str(user.pw_uid), UID=str(user.pw_uid))
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.splitlines()[:4], mine)
-
-    def test_a_test_that_says_it_needs_root_stays_root(self) -> None:
-        user = handover_user()
-        if user is None:
-            self.skipTest("only a job that starts as root in an image naming its test user hands over")
-        report = 'id -u; stat -c "%u %a" "$TILO_TEST_ENVIRONMENT" "$HOME" "$XDG_RUNTIME_DIR"'
-        with tempfile.TemporaryDirectory() as tmp:
-            work = Path(tmp)
-            target, binary = self.build_tree(work, report)
-            result = self.start(binary, TILO_TEST_USER=user.pw_name, TILO_TEST_AS_ROOT="1")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.splitlines(), ["0", "0 700", f"0 {default_mode()}", "0 700"])
-            self.assertEqual(target.stat().st_uid, 0, "the tree stays root's")
-            self.assertEqual(list(target.glob(".handed-to-*")), [])
-
 
 class DesktopIsolationHelperTests(unittest.TestCase):
     """tools/desktop-isolation.sh stages packaged scripts away from the host."""
@@ -1173,114 +1050,20 @@ class DesktopIsolationHelperTests(unittest.TestCase):
                               f"{path} stages session code without tilo_test_isolate")
 
 
-class TestUserTests(unittest.TestCase):
-    """tools/as-test-user.sh gives the test user the build tree only in the image that has one."""
-
-    def run_helper(self, *arguments: str) -> subprocess.CompletedProcess[str]:
-        env = {
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "HOME": os.environ.get("HOME", "/"),
-        }
-        return subprocess.run(["bash", str(ROOT / "tools/as-test-user.sh"), *arguments], env=env,
-                              capture_output=True, text=True, check=False)
-
-    def test_a_developers_own_tree_is_left_to_them(self) -> None:
-        # A developer's account is the test user: handing the tree over must do nothing,
-        # and must not chown it to an empty owner.
-        with tempfile.TemporaryDirectory() as work:
-            tree = Path(work) / "target"
-            (tree / "debug").mkdir(parents=True)
-            owner = (tree.stat().st_uid, tree.stat().st_gid)
-            result = self.run_helper("--own-tree", str(tree))
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual((tree.stat().st_uid, tree.stat().st_gid), owner)
-            result = self.run_helper("--own", str(tree))
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual((tree.stat().st_uid, tree.stat().st_gid), owner)
-
-    def test_who_started_the_job_is_not_what_the_environment_says(self) -> None:
-        # bash's EUID answers without an `id`, but only bash's own. One the environment brings
-        # would make root of an ordinary account, or an ordinary account of root, whose tests
-        # would then run as root.
-        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ.get("HOME", "/")}
-        helper = ["bash", str(ROOT / "tools/as-test-user.sh"), "id", "-u"]
-        if os.geteuid() != 0:
-            # Told it is root, an ordinary account still runs the command as itself.
-            result = subprocess.run(helper, env=env | {"TILO_TEST_USER": "no-such-test-user",
-                                                       "EUID": "0", "UID": "0"},
-                                    capture_output=True, text=True, check=False)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.strip(), str(os.geteuid()))
-            return
-        # Told it is an ordinary account, root still knows it started as root: it hands the
-        # command over where it can become the test user, and keeps its user where it cannot
-        # (a sandbox with one user id, no capability), as every start does there.
-        user = handover_user()
-        if user is None:
-            self.skipTest("this root may not become another user, so it keeps its user")
-        result = subprocess.run(helper, env=env | {"TILO_TEST_USER": user.pw_name,
-                                                   "EUID": "4242", "UID": "4242"},
-                                capture_output=True, text=True, check=False)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), str(user.pw_uid), "the command ran as root")
-
-    def test_only_the_initial_namespace_s_root_hands_the_tree_over(self) -> None:
-        # A check that mounts FUSE runs `unshare --user --map-root-user`: root holding every
-        # capability, in a namespace whose map is one id. The image's test user is outside it,
-        # so handing the tree over makes chown say "Invalid argument" for every entry and no
-        # test binary starts.
-        with tempfile.TemporaryDirectory() as work:
-            uid, gid = Path(work) / "uid_map", Path(work) / "gid_map"
-            script = f'. "{ROOT}/tools/as-test-user.sh"; tilo_test_initial_namespace "$1" "$2"'
-            initial = "         0          0 4294967295\n"
-            for maps, expected in [
-                ((initial, initial), 0),
-                (("         0       1000          1\n", "         0       1000          1\n"), 1),
-                (("         0 1883832320      65536\n", "         0 1883832320      65536\n"), 1),
-                ((initial + "         1          1          1\n", initial), 1),
-                ((initial, initial + "         1          1          1\n"), 1),
-                ((initial, "         0          0          1\n"), 1),
-            ]:
-                uid.write_text(maps[0])
-                gid.write_text(maps[1])
-                result = subprocess.run(["bash", "-c", script, "_", str(uid), str(gid)],
-                                        capture_output=True, text=True, check=False)
-                self.assertEqual(result.returncode, expected, f"{maps}: {result.stderr}")
-
-    def test_a_root_in_a_check_s_namespace_keeps_its_user(self) -> None:
-        # The check's own `unshare --user --map-root-user` can name neither the image's test
-        # user (outside its map) nor the parent's files: it gives nothing away, and its tests
-        # run as its root, which is what mounting FUSE needs.
-        if subprocess.run(["unshare", "--user", "--map-root-user", "--", "true"],
-                          capture_output=True, check=False).returncode != 0:
-            self.skipTest("this sandbox may not make a user namespace")
-        with tempfile.TemporaryDirectory() as work:
-            tree = Path(work) / "target"
-            (tree / "debug").mkdir(parents=True)
-            (tree / "debug/file").write_text("x")
-            result = subprocess.run(
-                ["unshare", "--user", "--map-root-user", "--", "bash",
-                 str(ROOT / "tools/as-test-user.sh"), "--own-tree", str(tree)],
-                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/",
-                     "TILO_TEST_USER": "nobody"},
-                capture_output=True, text=True, check=False)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stderr, "", "root in a namespace of its own handed the tree over")
-            self.assertEqual(list(tree.glob(".handed-to-*")), [])
+class TestEnvironmentHelperTests(unittest.TestCase):
+    """tools/with-test-environment.sh is read into the runner's own shell."""
 
     def test_the_helpers_read_into_a_shell_only_define_their_functions(self) -> None:
-        # tools/cargo-runner.sh reads both into its own shell: they must start nothing there,
-        # and leave the shell's arguments alone.
+        # tools/cargo-runner.sh reads it into its own shell: it must start nothing there, and
+        # leave the shell's arguments alone.
         script = ('set -euo pipefail; source "$0/tools/with-test-environment.sh"; '
-                  'echo "$# $1 ${TILO_TEST_ENVIRONMENT:-none} [$tilo_test_user]"; '
-                  'declare -F tilo_test_environment_enter tilo_test_user_exec tilo_test_user_own_tree')
+                  'echo "$# $1 ${TILO_TEST_ENVIRONMENT:-none}"; '
+                  'declare -F tilo_test_environment_enter')
         result = subprocess.run(["bash", "-c", script, str(ROOT), "--check"], capture_output=True,
                                 text=True, check=False,
                                 env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/"})
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), [
-            "1 --check none []", "tilo_test_environment_enter", "tilo_test_user_exec",
-            "tilo_test_user_own_tree"])
+        self.assertEqual(result.stdout.splitlines(), ["1 --check none", "tilo_test_environment_enter"])
 
 
 if __name__ == "__main__":

@@ -179,38 +179,33 @@ mod retained_foundation_tests {
 
         phase observed_owner_requires_real_root_and_rechecks_held_permissions;
         {
+            tilo_test_env::require_capability!(
+                Root,
+                tilo_test_env::root_identity(),
+                "observing another account's directory is root's alone to check"
+            );
             let root = tempfile::tempdir().unwrap();
             std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
             let store = StorageDirectory::open(root.path()).unwrap();
             let owner = std::fs::metadata(root.path()).unwrap().uid();
-            if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
-                assert_eq!(
-                    store
-                        .validate_observed_owner(owner, Privacy::OwnerOnly)
-                        .unwrap_err()
-                        .kind(),
-                    io::ErrorKind::PermissionDenied
-                );
-            } else {
+            store
+                .validate_observed_owner(owner, Privacy::OwnerOnly)
+                .unwrap();
+            assert_eq!(
                 store
-                    .validate_observed_owner(owner, Privacy::OwnerOnly)
-                    .unwrap();
-                assert_eq!(
-                    store
-                        .validate_observed_owner(owner.checked_add(1).unwrap(), Privacy::OwnerOnly)
-                        .unwrap_err()
-                        .kind(),
-                    io::ErrorKind::PermissionDenied
-                );
-                std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o770)).unwrap();
-                assert_eq!(
-                    store
-                        .validate_observed_owner(owner, Privacy::Inherit)
-                        .unwrap_err()
-                        .kind(),
-                    io::ErrorKind::PermissionDenied
-                );
-            }
+                    .validate_observed_owner(owner.checked_add(1).unwrap(), Privacy::OwnerOnly)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o770)).unwrap();
+            assert_eq!(
+                store
+                    .validate_observed_owner(owner, Privacy::Inherit)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
         }
     }
 }

@@ -83,6 +83,210 @@ def package_targets() -> dict[str, set[str]]:
     return targets
 
 
+CAPABILITIES = REPO / ".config" / "nextest-capabilities.toml"
+sys.path.insert(0, str(REPO / "tools" / "policy"))
+import rust_source  # noqa: E402
+
+# Where an item, or the `scenario!` that compiles to one test, opens.
+ITEM = re.compile(
+    r"(?<!\w)#\s*\["
+    r"|(?<![\w:])mod\s+[A-Za-z_]\w*\s*[;{]"
+    r"|(?<![\w:])(?:tilo_test_env\s*::\s*)?scenario\s*!\s*\{"
+)
+ITEM_HEAD = re.compile(
+    r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:(?:unsafe|async|default|const|extern)\s+)*"
+    r"(fn|mod)\s+([A-Za-z_]\w*)"
+)
+PATH_VALUE = re.compile(r'path\s*=\s*"([^"]*)"')
+SCENARIO = re.compile(r"(?:tilo_test_env\s*::\s*)?scenario\s*!\s*\{")
+
+
+def package_dirs() -> dict[str, Path]:
+    """Each workspace package's directory, by package name."""
+    directories: dict[str, Path] = {}
+    for manifest_path in REPO.rglob("Cargo.toml"):
+        relative = manifest_path.relative_to(REPO)
+        if any(part in {"target", "vendor", "node_modules"} for part in relative.parts):
+            continue
+        try:
+            manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError:
+            continue
+        name = manifest.get("package", {}).get("name")
+        if name:
+            directories.setdefault(name, manifest_path.parent)
+    return directories
+
+
+def test_target_roots(directory: Path) -> list[Path]:
+    """The root file of each test target the package builds: its library, its binaries and its
+    integration tests, as Cargo lays them out or the manifest declares them."""
+    manifest = tomllib.loads((directory / "Cargo.toml").read_text(encoding="utf-8"))
+    package = manifest.get("package", {})
+    roots = [directory / manifest.get("lib", {}).get("path", "src/lib.rs")]
+    declared = manifest.get("bin", [])
+    roots += [directory / binary.get("path", f"src/bin/{binary['name']}.rs") for binary in declared]
+    if not any(binary.get("path") == "src/main.rs" for binary in declared):
+        roots.append(directory / "src" / "main.rs")
+    roots += sorted((directory / "src" / "bin").glob("*.rs"))
+    if package.get("autotests", True) is not False:
+        roots += sorted((directory / "tests").glob("*.rs"))
+    roots += [directory / target.get("path", f"tests/{target['name']}.rs")
+              for target in manifest.get("test", [])]
+    return [root for root in roots if root.is_file()]
+
+
+def test_names(directory: Path) -> set[str]:
+    """Every test name the package's test targets report, its module path included."""
+    names: set[str] = set()
+    seen: set[Path] = set()
+    for root in test_target_roots(directory):
+        walk_file(root, (), names, seen)
+    return names
+
+
+def walk_file(path: Path, prefix: tuple[str, ...], names: set[str], seen: set[Path]) -> None:
+    path = path.resolve()
+    if path in seen or not path.is_file():
+        return
+    seen.add(path)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    walk_module(text, rust_source.code_only(text), 0, len(text), prefix, path, names, seen)
+
+
+def walk_module(
+    text: str, code: str, start: int, end: int, prefix: tuple[str, ...], path: Path,
+    names: set[str], seen: set[Path],
+) -> None:
+    """Collect one module's tests: an inline module's under its name, a declared module's from
+    its file under its name, a `fn` with a test attribute, and a `scenario!` test."""
+    at = start
+    while found := ITEM.search(code, at, end):
+        open_at = found.start()
+        if code[open_at] == "#":
+            attributes, item_start = attributes_at(text, code, open_at)
+        else:
+            attributes, item_start = [], open_at
+        item_end = rust_source.item_extent(code, open_at)[1]
+        scenario = SCENARIO.match(code, item_start)
+        head = ITEM_HEAD.match(code, item_start)
+        if scenario:
+            # A `scenario!` test: the `fn` it opens with, after any attribute on it, is the
+            # name it reports.
+            name = scenario_fn(code, scenario.end(), end)
+            if name:
+                names.add("::".join((*prefix, name)))
+        elif head and head.group(1) == "fn":
+            if any(is_test_attribute(body) for body in attributes):
+                names.add("::".join((*prefix, head.group(2))))
+        elif head and head.group(1) == "mod":
+            brace = code.find("{", head.end(), item_end)
+            if brace < 0 or code.endswith(";", 0, brace):
+                declared_module(text, path, head.group(2), attributes, (*prefix, head.group(2)),
+                                names, seen)
+            else:
+                walk_module(text, code, brace + 1, rust_source.matching(code, brace) - 1,
+                            (*prefix, head.group(2)), path, names, seen)
+        at = max(item_end, found.end())
+
+
+def scenario_fn(code: str, start: int, end: int) -> str | None:
+    """The name of the `fn` item a `scenario!` opens with, past the attributes on it."""
+    at = start
+    while at < end and code[at].isspace():
+        at += 1
+    while attribute := rust_source.OUTER_ATTRIBUTE.match(code, at, end):
+        at = rust_source.matching(code, attribute.end() - 1)
+        while at < end and code[at].isspace():
+            at += 1
+    found = re.match(r"fn\s+([A-Za-z_]\w*)\s*;", code[at:end])
+    return found.group(1) if found else None
+
+
+def is_test_attribute(body: str) -> bool:
+    """Whether an attribute body is a test: `test`, `tokio::test(flavor = …)`, or a `cfg` that
+    holds only where tests run."""
+    stripped = re.sub(r"\s*\(.*\)\s*$", "", body.strip(), flags=re.DOTALL)
+    if rust_source.TEST_ITEM_ATTRIBUTE.fullmatch(stripped):
+        return True
+    return rust_source.attribute_is_test(body)
+
+
+def declared_module(
+    text: str, path: Path, name: str, attributes: list[str], prefix: tuple[str, ...],
+    names: set[str], seen: set[Path],
+) -> None:
+    """Walk the file a `mod name;` declaration names: its `#[path]`, or Cargo's layout."""
+    for attribute in attributes:
+        value = PATH_VALUE.search(attribute)
+        if value:
+            walk_file(path.parent / value.group(1), prefix, names, seen)
+            return
+    children = rust_source.module_children(path)
+    for candidate in (children / f"{name}.rs", children / name / "mod.rs"):
+        if candidate.is_file():
+            walk_file(candidate, prefix, names, seen)
+            return
+
+
+def attributes_at(text: str, code: str, position: int) -> tuple[list[str], int]:
+    """The attributes at `position` (their bodies read from `text`, so a `#[path]`'s literal
+    survives), and where the item they guard starts."""
+    bodies: list[str] = []
+    at = position
+    while attribute := rust_source.OUTER_ATTRIBUTE.match(code, at):
+        close = rust_source.matching(code, attribute.end() - 1)
+        bodies.append(text[attribute.end() : close - 1])
+        at = close
+        while at < len(code) and code[at].isspace():
+            at += 1
+    return bodies, at
+
+
+def top_level(expression: str, keyword: str) -> list[str]:
+    """`expression` split where `keyword` stands outside every parenthesis."""
+    parts, depth, start, index = [], 0, 0, 0
+    while index < len(expression):
+        char = expression[index]
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        elif (depth == 0 and expression.startswith(keyword, index)
+              and not (expression[index - 1].isalnum() or expression[index - 1] == "_")
+              and (index + len(keyword) >= len(expression)
+                   or not (expression[index + len(keyword)].isalnum()
+                           or expression[index + len(keyword)] == "_"))):
+            parts.append(expression[start:index])
+            start = index + len(keyword)
+            index += len(keyword) - 1
+        index += 1
+    parts.append(expression[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
+def exact_names_of(expression: str, packages: tuple[str, ...] = ()) -> list[tuple[str, str]]:
+    """Each `package(name)` and `test(=NAME)` a filter pairs, as `(package, test name)`."""
+    disjoined = top_level(expression, "or")
+    if len(disjoined) > 1:
+        return [pair for part in disjoined for pair in exact_names_of(part, packages)]
+    conjoint = top_level(expression, "and")
+    if len(conjoint) > 1:
+        found: list[tuple[str, str]] = []
+        carried = packages
+        for part in conjoint:
+            here = tuple(PACKAGE.findall(part))
+            if here:
+                carried = here
+            found += exact_names_of(part, carried)
+        return found
+    body = expression.strip()
+    if body.startswith("(") and rust_source.matching(body, 0) == len(body):
+        return exact_names_of(body[1:-1], packages)
+    here = tuple(PACKAGE.findall(expression)) or packages
+    return [(package, name) for package in here for name in TEST_EXACT.findall(expression)]
+
+
 class NextestPolicyTests(unittest.TestCase):
     def test_every_named_test_binary_exists(self) -> None:
         # nextest refuses a whole config whose filter names a binary no package
@@ -194,6 +398,30 @@ class NextestPolicyTests(unittest.TestCase):
         self.assertIn("tools/ci/capability_filter.py", text)
         # Into the filter the run was given, not beside it: nextest takes one.
         self.assertIn('(${arguments[index + 1]}) & ($left_out)', text)
+
+    def test_every_capability_names_a_test_that_exists(self) -> None:
+        # nextest reads `test(=NAME)` as the whole test name, the module path
+        # from the test target's root down included: an abbreviated name
+        # matches nothing, and the ci profile's promise of the capability makes
+        # each such test fail where the capability is missing rather than be
+        # left out. So every name is resolved against the package's sources.
+        # A test its target's features hide is out of a default listing too;
+        # the sources hold it either way.
+        manifest = tomllib.loads(CAPABILITIES.read_text(encoding="utf-8"))["capabilities"]
+        directories = package_dirs()
+        known: dict[str, set[str]] = {}
+        named = 0
+        for capability, groups in manifest.items():
+            for group in groups["tests"]:
+                for package, name in exact_names_of(group["filter"]):
+                    named += 1
+                    with self.subTest(capability=capability, package=package, name=name):
+                        self.assertIn(package, directories, "a package the tree has")
+                        if package not in known:
+                            known[package] = test_names(directories[package])
+                        self.assertIn(name, known[package],
+                                      f"{package} has no test named that")
+        self.assertGreater(named, 0, "the manifest's exact names are read")
 
     def test_every_composed_filter_is_defined_by_the_shared_file(self) -> None:
         # A removed key must not leave a `$..._FILTER` reference behind:

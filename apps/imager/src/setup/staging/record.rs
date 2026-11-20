@@ -840,13 +840,9 @@ mod tests {
                 tmp.path().join("op-user.json"),
             )
             .unwrap();
-            if tilo_process::effective_uid() == 0 {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o777))
-                    .unwrap();
-            } else {
-                assert!(store.load("op-user").is_err());
-            }
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(store.load("op-user").is_err());
             assert!(parent_open.load("op-user").is_err());
         }
     }

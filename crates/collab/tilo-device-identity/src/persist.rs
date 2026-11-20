@@ -1815,6 +1815,14 @@ mod tests {
     fn an_unreachable_device_key_is_an_error_not_a_fresh_machine() {
         use std::os::unix::fs::PermissionsExt as _;
 
+        #[cfg(target_os = "linux")]
+        tilo_test_env::require_capability!(
+            NonRoot,
+            tilo_test_env::non_root_identity(),
+            "an unreachable key directory is only unreachable to an ordinary account"
+        );
+        // The identity probes are Linux-only; elsewhere root still reads the directory.
+        #[cfg(not(target_os = "linux"))]
         if rustix::process::geteuid().as_raw() == 0 {
             return;
         }

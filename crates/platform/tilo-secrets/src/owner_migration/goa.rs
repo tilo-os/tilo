@@ -129,13 +129,14 @@ mod tests {
                 "account_1",
                 "person@example.test",
             );
-            if rustix::process::getuid().as_raw() == 0 {
-                assert!(ordinary.is_err());
-            } else {
-                let grant = ordinary.unwrap();
-                std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
-                assert!(matches!(grant.read_blocking(), Err(SecretError::Denied)));
-            }
+            tilo_test_env::require_capability!(
+                NonRoot,
+                tilo_test_env::non_root_identity(),
+                "a world-readable config root is only refused for an ordinary account"
+            );
+            let grant = ordinary.unwrap();
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(matches!(grant.read_blocking(), Err(SecretError::Denied)));
             let file = File::create(root.path().join("not-config")).unwrap();
             assert!(
                 GoaCredential::new(
