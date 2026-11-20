@@ -118,7 +118,8 @@ mod sealed_compaction;
 mod sealed_history;
 mod unsent_bases;
 pub use sealed_compaction::{
-    OpenedDocument, OpenedHistory, OpenedWrite, SealCheckpoint, UnmergedReason, UnmergedWrite,
+    HeldDocument, OpenedDocument, OpenedHistory, OpenedWrite, SealCheckpoint, UnmergedReason,
+    UnmergedWrite,
 };
 /// The peer's own subjects: how a replica is built and who joins it, the
 /// authority a device holds there, the records it keeps, what it takes in and

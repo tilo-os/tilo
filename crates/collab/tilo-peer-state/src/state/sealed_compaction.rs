@@ -1078,6 +1078,32 @@ pub(super) fn open_sealed(
     })
 }
 
+/// A document as a state held it once ([`PeerPublication::held_document`]),
+/// opened without the state.
+pub struct HeldDocument(super::backend::StoredDocument);
+
+impl HeldDocument {
+    /// The document as its key holder reads it
+    /// ([`PeerPublication::opened_document`]): one that is not encrypted reads
+    /// as it is saved.
+    ///
+    /// # Errors
+    ///
+    /// A sealed write's opening, or the merge of the writes, fails.
+    pub fn opened(
+        &self,
+        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+    ) -> Result<OpenedDocument, String> {
+        if !self.0.encryption_required {
+            return Ok(OpenedDocument {
+                document: self.0.doc.saved(),
+                unmerged: Vec::new(),
+            });
+        }
+        open_sealed(&self.0, open)
+    }
+}
+
 /// Everything a record's history holds, each write opened on its own and
 /// nothing merged ([`PeerPublication::opened_history`]): what an operator
 /// repairing a record that does not read whole reads it from.
@@ -1151,23 +1177,28 @@ impl PeerPublication<'_> {
         record: &str,
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
     ) -> Result<Option<OpenedDocument>, String> {
-        let route = Route {
-            app: app.into(),
-            record: record.into(),
-        };
-        let Some(document) = self.peer.core.documents.get(&route) else {
-            return Ok(None);
-        };
-        if !document.encryption_required {
-            return Ok(self
-                .peer
-                .document(app, record)
-                .map(|document| OpenedDocument {
-                    document,
-                    unmerged: Vec::new(),
-                }));
-        }
-        open_sealed(document, open).map(Some)
+        self.held_document(app, record)
+            .map(|held| held.opened(open))
+            .transpose()
+    }
+
+    /// The document `id` of `app` as this state holds it now, to be opened
+    /// apart from it ([`HeldDocument::opened`]): taking it costs a pointer per
+    /// chunk of its history, while opening a sealed one decrypts and merges
+    /// every write it holds. Whoever reads the state under a lock takes the
+    /// document, lets go of the lock and only then opens it, so the replica's
+    /// other readers and writers never wait on a document's whole history.
+    /// `None` for a document this state does not hold.
+    #[must_use]
+    pub fn held_document(self, app: &str, id: &str) -> Option<HeldDocument> {
+        self.peer
+            .core
+            .documents
+            .get(&Route {
+                app: app.into(),
+                record: id.into(),
+            })
+            .map(|document| HeldDocument(document.clone()))
     }
 
     /// Whether `record` of `app` is encrypted here: its writes are sealed,

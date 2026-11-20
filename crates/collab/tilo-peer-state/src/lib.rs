@@ -80,8 +80,8 @@ pub use state::{
 pub use state::{
     BOT_SCHEDULES_KEY, CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus,
     DEVICE_FACTS, DONE_KEY, DelegateInactive, DocumentRow, Done, ENROLLMENT_KIND, GovernedAccess,
-    GovernedAgent, GovernedDelegateRow, HELD_COPIES_KEY, HeldCopy, HolderCopy, InstalledApp,
-    InstalledBot, KeptDocument, LEASES_KEY, Lease, LeaseClaim, MAX_HELD_BYTES,
+    GovernedAgent, GovernedDelegateRow, HELD_COPIES_KEY, HeldCopy, HeldDocument, HolderCopy,
+    InstalledApp, InstalledBot, KeptDocument, LEASES_KEY, Lease, LeaseClaim, MAX_HELD_BYTES,
     MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS, Member, MemberId, MemberList,
     MembershipError, Missing, NativePublicationCut, NotAdmitted, OpenedDocument, OpenedHistory,
     OpenedWrite, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,

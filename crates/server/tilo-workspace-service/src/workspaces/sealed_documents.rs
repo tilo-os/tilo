@@ -352,12 +352,24 @@ pub(super) async fn readable_now(
     } else {
         None
     };
-    opened_readable(
-        &reading.replica.lock(),
-        keys.as_ref(),
+    let Some(keys) = keys else {
+        return Ok(reading.replica.read(|peer| peer.document(app, resource)));
+    };
+    // The document is taken as it stands and opened once the replica is let go: opening it
+    // decrypts and merges every write of its history, which grows with what it holds, and every
+    // policy read and commit of the workspace waited on it while a read held the replica.
+    let Some(held) = reading
+        .replica
+        .read(|peer| peer.publication().held_document(app, resource))
+    else {
+        return Ok(None);
+    };
+    let opened = held.opened(&mut keys.open())?;
+    Ok(Some(merged_or_named(
+        opened,
         &reading.workspace,
         (app, resource),
-    )
+    )))
 }
 
 /// `resource` of `app` as `peer` holds it, its sealed history opened with `keys` where it has
@@ -377,6 +389,15 @@ fn opened_readable(
     else {
         return Ok(None);
     };
+    Ok(Some(merged_or_named(opened, workspace, (app, resource))))
+}
+
+/// What `opened` reads as, its writes that do not merge named in the log.
+fn merged_or_named(
+    opened: tilo_peer_state::OpenedDocument,
+    workspace: &str,
+    (app, resource): (&str, &str),
+) -> Vec<u8> {
     if !opened.unmerged.is_empty() {
         // A write left out for any reason is a loss: nothing reads it, and
         // it is kept for an operator rather than dropped.
@@ -390,7 +411,7 @@ fn opened_readable(
             "a sealed resource is read without writes of its history that do not merge; they are kept"
         );
     }
-    Ok(Some(opened.document))
+    opened.document
 }
 
 /// `record` of `app` of `workspace` with every write of its history, saved,

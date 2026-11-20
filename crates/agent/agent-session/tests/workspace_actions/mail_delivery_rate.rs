@@ -1,9 +1,10 @@
 //! Mail brought into a hosted workspace one message at a time, as `tilo migrate start thunderbird
 //! -w` brings it: a key delivers each with `mail/mail.messages#deliver-message` through the API
 //! server. A message delivered into a mailbox holding thousands costs about what one delivered
-//! into an empty mailbox does, and the key's listings between deliveries answer at once: nothing a
-//! delivery does grows with what Mail already holds, so an import never slows down as it goes and
-//! never holds up the workspace's other calls.
+//! into a mailbox of a few dozen does, and the key's listings between deliveries answer at once:
+//! nothing a delivery does grows with what Mail already holds, and no read of the mailbox holds
+//! the workspace while it opens the mailbox's history, so an import never slows down as it goes
+//! and never holds up the workspace's other calls.
 
 use super::api::ISSUER;
 use super::api_on_server::{api_on_server, approved_key};
@@ -19,17 +20,23 @@ const DELIVER: &str = "deliver-message";
 /// its chain and start the next, so every size of part a delivery lands in is met.
 const DELIVERED: usize = 300;
 
-/// How many messages one timed window takes: the first after the mailbox is made, against the
-/// slowest of every later stretch of as many.
+/// How many messages one timed window takes: the one once the mailbox holds a few dozen
+/// messages, against the slowest of every later stretch of as many.
 const WINDOW: usize = 20;
+
+/// Where the window every later one is held to starts. The mailbox's first messages land in a
+/// part that holds next to nothing and cost about half what one landing in a part holding a few
+/// dozen does; past that a message costs the same into a mailbox of fifty or of thousands, as a
+/// part holds at most about a hundred and thirty.
+const SETTLED: usize = 2 * WINDOW;
 
 /// How many messages are delivered between two of the key's listings.
 const LISTED_EVERY: usize = 10;
 
 /// What one listing may take between deliveries. Listing the mail reads a few pages of its
-/// messages, which takes about half a second in a test build on a busy machine; a listing that
-/// waited behind the deliveries took many seconds.
-const LISTING_BUDGET: Duration = Duration::from_millis(2_000);
+/// messages, which takes under a second in a test build on a busy machine; a listing that waited
+/// for a read holding the workspace while it opened the mailbox took two seconds and more.
+const LISTING_BUDGET: Duration = Duration::from_millis(1_500);
 
 /// A message as the importer delivers one: its words about as long as a real message's, so the
 /// mailbox's parts fill as a real mailbox's do (about a hundred and thirty messages a part).
@@ -88,7 +95,7 @@ async fn deliver(key: &Key<'_>, path: &str, index: usize) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_message_delivered_into_a_full_mailbox_costs_what_one_into_an_empty_one_does() {
+async fn a_message_delivered_into_a_full_mailbox_costs_what_one_into_a_small_one_does() {
     if std::env::var_os("RUST_LOG").is_some() {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -142,20 +149,20 @@ async fn a_message_delivered_into_a_full_mailbox_costs_what_one_into_an_empty_on
         }
     }
     let window = |at: usize| took[at..at + WINDOW].iter().sum::<Duration>();
-    let empty = window(0);
-    let (worst_at, worst) = (WINDOW..=took.len() - WINDOW)
+    let settled = window(SETTLED);
+    let (worst_at, worst) = (SETTLED + WINDOW..=took.len() - WINDOW)
         .map(|at| (at, window(at)))
         .max_by_key(|(_, took)| *took)
         .unwrap();
     eprintln!(
-        "{WINDOW} messages took {empty:?} into an empty mailbox, {worst:?} at worst (the \
+        "{WINDOW} messages took {settled:?} into a mailbox of {SETTLED}, {worst:?} at worst (the \
          {worst_at}th timed on); {DELIVERED} in {:?}; slowest listing {slowest_listing:?}",
         took.iter().sum::<Duration>()
     );
     assert!(
-        worst <= empty * 2 + Duration::from_millis(250),
-        "a delivery grows with what the mailbox holds: {WINDOW} messages took {empty:?} into an \
-         empty mailbox, {worst:?} later on (the {worst_at}th timed on)"
+        worst <= settled * 2 + Duration::from_millis(250),
+        "a delivery grows with what the mailbox holds: {WINDOW} messages took {settled:?} into a \
+         mailbox of {SETTLED}, {worst:?} later on (the {worst_at}th timed on)"
     );
     assert!(
         slowest_listing < LISTING_BUDGET,
