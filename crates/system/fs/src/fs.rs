@@ -1241,6 +1241,19 @@ impl QuickFS {
                     Err(_) => {}
                 }
             }
+            // A commit that reported failure can have landed anyway: the file's version then holds
+            // exactly these bytes, and there is nothing to restore. Asked by the content id the
+            // bytes produce, so a file the version did reach is not copied beside itself.
+            if let Some(ino) = target
+                && let Ok(Some((staged, _))) =
+                    self.store_version_blocking(VersionSource::Bytes(&item.bytes), entry.base())
+            {
+                let current = self.ns().hash_for(ino);
+                if current == Some(staged) {
+                    let _ = store.remove(&entry.key);
+                    continue;
+                }
+            }
             let location = if let Some(ino) = target {
                 let mut ns = self.ns();
                 let name = ns.file_name_for(ino).map(|name| name.as_bytes().to_vec());
