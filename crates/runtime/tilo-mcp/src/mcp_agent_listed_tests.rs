@@ -240,3 +240,106 @@ async fn a_later_page_of_a_listing_resolves_no_path_again() {
         "the workspace's installed apps are not asked again: {asked:?}"
     );
 }
+
+/// Notes answering a page bounded in resources as a provider that builds the
+/// resources its page shows does ([`CatalogueQuery::max_resources`]): the
+/// rows of that many, saying more follow past them.
+#[derive(Clone)]
+struct Bounded(Notes);
+
+impl ActionProvider for Bounded {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        let bound = query
+            .provider
+            .is_some()
+            .then(|| query.resource_bound())
+            .flatten();
+        // The fixture's own cursor: the row it starts at.
+        let from = std::str::from_utf8(&query.cursor)
+            .ok()
+            .and_then(|cursor| cursor.parse::<usize>().ok())
+            .unwrap_or(0);
+        self.0.query(caller, query).map(move |page| {
+            page.map(move |mut page| {
+                if let Some(most) = bound {
+                    page.rows.drain(..from.min(page.rows.len()));
+                    if tilo_actions::remote::truncate_resources(&mut page.rows, most) {
+                        page.exhausted = false;
+                        page.next_cursor = from
+                            .saturating_add(page.rows.len())
+                            .to_string()
+                            .into_bytes();
+                    }
+                }
+                page
+            })
+        })
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.0.invoke(caller, request)
+    }
+
+    fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
+        self.0.observe(caller, id)
+    }
+
+    fn cancel(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Pending<Result<(), ActionCallError>> {
+        self.0.cancel(caller, id)
+    }
+}
+
+/// An app's own page lists what its notebook holds, merged into one level and
+/// paged by offset. A page is bounded in resources, so the notebook's read
+/// holds the notes the page shows and not the notebook; the cursor still
+/// leads through every note, and none past the bound is lost.
+#[tokio::test]
+async fn a_listing_of_an_apps_own_page_walks_its_notebook_whole() {
+    const NOTES: usize = 100;
+    let server = agent(&Bounded(Notes::new(true).with_notes(NOTES)));
+    let mut named: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut args = json!({"path": "notes", "limit": 100});
+        if let Some(cursor) = &cursor {
+            args["cursor"] = json!(cursor);
+        }
+        let (page, failed) = typed_calls::answer(&server, "tilo_ls", args).await;
+        assert!(!failed, "{page}");
+        named.extend(
+            page["rows"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|row| row["name"].as_str().map(str::to_owned)),
+        );
+        match page["next_cursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+        assert!(
+            named.len() <= NOTES.saturating_add(8),
+            "the cursor leads somewhere: {named:?}"
+        );
+    }
+    let noted: Vec<&String> = named
+        .iter()
+        .filter(|name| name.starts_with("Bench note"))
+        .collect();
+    assert_eq!(noted.len(), NOTES, "every note is listed: {noted:?}");
+    let distinct: std::collections::HashSet<&&String> = noted.iter().collect();
+    assert_eq!(distinct.len(), NOTES, "no note is listed twice: {noted:?}");
+}

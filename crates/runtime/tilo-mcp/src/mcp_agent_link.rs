@@ -132,11 +132,27 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         };
         let mut levels = Levels::new();
         let resolved = if pinned {
-            self.resolve_in(&parsed, app_id, provider, false, None, &mut levels)
-                .await?
+            self.resolve_in(
+                &parsed,
+                app_id,
+                provider,
+                false,
+                None,
+                &mut levels,
+                usize::MAX,
+            )
+            .await?
         } else {
-            self.resolve_published(&parsed, app_id, provider, false, None, &mut levels)
-                .await?
+            self.resolve_published(
+                &parsed,
+                app_id,
+                provider,
+                false,
+                None,
+                &mut levels,
+                usize::MAX,
+            )
+            .await?
         };
         let mut arguments = serde_json::Map::new();
         if let Some(mode) = args.mode {

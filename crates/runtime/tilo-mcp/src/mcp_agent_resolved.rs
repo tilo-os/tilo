@@ -167,6 +167,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 false,
                 forms.as_ref(),
                 &mut levels,
+                usize::MAX,
             )
             .await
             .map_err(|why| refused_as("not_found", why))?
@@ -178,17 +179,34 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 false,
                 forms.as_ref(),
                 &mut levels,
+                usize::MAX,
             )
             .await
             .map_err(|why| refused_as("not_found", why))?
         };
         if forms.is_some() && resolved.chain.is_empty() {
             resolved = if pinned {
-                self.resolve_in(&parsed, app_id, provider, false, None, &mut levels)
-                    .await?
+                self.resolve_in(
+                    &parsed,
+                    app_id,
+                    provider,
+                    false,
+                    None,
+                    &mut levels,
+                    usize::MAX,
+                )
+                .await?
             } else {
-                self.resolve_published(&parsed, app_id, provider, false, None, &mut levels)
-                    .await?
+                self.resolve_published(
+                    &parsed,
+                    app_id,
+                    provider,
+                    false,
+                    None,
+                    &mut levels,
+                    usize::MAX,
+                )
+                .await?
             };
         }
         self.keep_levels(&resolved.provider, &resolved.levels);

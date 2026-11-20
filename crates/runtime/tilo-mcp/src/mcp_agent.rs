@@ -1322,23 +1322,26 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .any(|segment| is_program_form(segment))
             && let Some(forms) = self.program_forms().await
         {
-            let by_type = self.resolve_with(parsed, Some(&forms)).await?;
+            let by_type = self.resolve_with(parsed, Some(&forms), usize::MAX).await?;
             // A path of segments resolves to a resource only when it walked every one: an
             // empty chain is a name no resource answered.
             if by_type.as_ref().is_ok_and(|found| !found.chain.is_empty()) {
                 return Ok((by_type, Some(forms)));
             }
         }
-        Ok((self.resolve_with(parsed, None).await?, None))
+        Ok((self.resolve_with(parsed, None, usize::MAX).await?, None))
     }
 
     /// [`Self::resolve`] reading the names a path segment may go by as `forms` says they are
     /// written: a segment names a type by the name a listing prints for it (`tasks.Task`),
-    /// which `forms` reads back as its kind.
+    /// which `forms` reads back as its kind. `reaching` is how many resources of an app's own
+    /// page to read its containers for: a listing reads the page's end and one past it, and
+    /// a read takes every one (`usize::MAX`).
     async fn resolve_with(
         &self,
         parsed: &ParsedPath,
         forms: Option<&ProgramForms>,
+        reaching: usize,
     ) -> Result<Result<Resolved, String>, String> {
         let mut levels = Levels::new();
         let reference = match self.app_ref(&parsed.app).await {
@@ -1346,7 +1349,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             Err(why) => match self.kind_app(&parsed.app).await {
                 Some((app_id, provider, _)) => {
                     return Ok(Ok(self
-                        .resolve_in(parsed, app_id, provider, true, forms, &mut levels)
+                        .resolve_in(parsed, app_id, provider, true, forms, &mut levels, reaching)
                         .await?));
                 }
                 None => return Err(why),
@@ -1358,12 +1361,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 provider,
                 pinned: true,
             } => Ok(Ok(self
-                .resolve_in(parsed, app_id, provider, true, forms, &mut levels)
+                .resolve_in(parsed, app_id, provider, true, forms, &mut levels, reaching)
                 .await?)),
             AppRef::Running {
                 app_id, provider, ..
             } => Ok(Ok(self
-                .resolve_published(parsed, app_id, provider, true, forms, &mut levels)
+                .resolve_published(parsed, app_id, provider, true, forms, &mut levels, reaching)
                 .await?)),
             // Reading what an installed app holds starts it without a window, as an action on
             // it does: a path names the app's resources, not one of its processes.
@@ -1373,7 +1376,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             } => {
                 let provider = self.started_provider(&app_id, None).await?;
                 Ok(Ok(self
-                    .resolve_published(parsed, app_id, provider, true, forms, &mut levels)
+                    .resolve_published(parsed, app_id, provider, true, forms, &mut levels, reaching)
                     .await?))
             }
             AppRef::Installed { opens: false, .. } => {
@@ -1396,12 +1399,21 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         list: bool,
         forms: Option<&ProgramForms>,
         levels: &mut Levels,
+        reaching: usize,
     ) -> Result<Resolved, String> {
         let published = |found: &Resolved| {
             !found.chain.is_empty() || !found.actions.is_empty() || !found.children.is_empty()
         };
         let first = self
-            .resolve_in(parsed, app_id.clone(), newest.clone(), list, forms, levels)
+            .resolve_in(
+                parsed,
+                app_id.clone(),
+                newest.clone(),
+                list,
+                forms,
+                levels,
+                reaching,
+            )
             .await;
         if first.as_ref().is_ok_and(published) {
             return first;
@@ -1423,7 +1435,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .collect();
         for provider in older {
             let resolved = self
-                .resolve_in(parsed, app_id.clone(), provider, list, forms, levels)
+                .resolve_in(
+                    parsed,
+                    app_id.clone(),
+                    provider,
+                    list,
+                    forms,
+                    levels,
+                    reaching,
+                )
                 .await;
             if resolved.as_ref().is_ok_and(published) {
                 return resolved;
@@ -1437,7 +1457,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// actions on it are read too; without, a resource on the path is only
     /// found (an action named on it is resolved by its address). `forms` is how
     /// a path segment may name a type the way a program types it
-    /// (`tasks.Task`), as a listing names it.
+    /// (`tasks.Task`), as a listing names it. `reaching` is how far what an
+    /// app's own page merges from its containers is read: a listing's end and
+    /// one resource past it, or every one ([`Self::app_children_listed`]).
     async fn resolve_in(
         &self,
         parsed: &ParsedPath,
@@ -1446,6 +1468,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         list: bool,
         forms: Option<&ProgramForms>,
         levels: &mut Levels,
+        reaching: usize,
     ) -> Result<Resolved, String> {
         let app = parsed.app.to_lowercase();
         // What an action answered is a path the next call takes as it is:
@@ -1486,7 +1509,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 // ([`Self::pick_action_in`]): `notes#create-page` is the notebook's, and
                 // reading every note to find it would grow with the notebook.
                 let mut root = if list {
-                    self.app_children_listed(&provider, levels).await?
+                    self.app_children_listed(&provider, levels, reaching)
+                        .await?
                 } else {
                     self.level(&provider, "", levels).await?
                 };
@@ -1764,6 +1788,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         };
         let offset = cursor.offset;
         let limit = args.limit.unwrap_or(LS_LINES).clamp(1, LS_PAGE_MAX);
+        // What this page lists up to: how far an app's own page is read for it.
+        let end = offset.saturating_add(limit);
         let (want_resources, want_actions) = match args.kind.as_deref() {
             None | Some("") => (true, true),
             Some("resources") => (true, false),
@@ -1795,9 +1821,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let mut resolved = match reused.take() {
             Some(resolved) => resolved,
             None => std::sync::Arc::new(if names_files(&parsed.app) && parsed.action.is_none() {
-                self.files_resolved(&parsed, &forms).await?
+                self.files_resolved(&parsed, &forms, end).await?
             } else {
-                match self.resolve_with(&parsed, Some(&forms)).await? {
+                match self.resolve_with(&parsed, Some(&forms), end).await? {
                     Ok(resolved) => resolved,
                     Err(note) => {
                         super::timing_done("ls.resolve", resolving);
@@ -1834,7 +1860,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // directory read stops at its bound, and a listing paging past it
         // reads on, so every resource is reachable and the cursor says
         // whether more follow.
-        let end = offset.saturating_add(limit);
         let mut children = resolved.children.clone();
         // The index of `children`'s first among everything listed: a page
         // read on from where the last one ended starts past the start.
@@ -1866,7 +1891,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if resumed.is_none() && cached && cursor.resume.is_some() {
                 // The app's directory moved on since that page was read, so this page lists
                 // what the path names now: resolved again, and read from its first page.
-                match self.resolve_with(&parsed, Some(&forms)).await? {
+                match self.resolve_with(&parsed, Some(&forms), end).await? {
                     Ok(fresh) => resolved = std::sync::Arc::new(fresh),
                     Err(note) => return Ok(Reply::ok(note)),
                 }
@@ -2192,7 +2217,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // which a path in the workspace does not name.
         let (mut resolved, forms) = if names_files(&parsed.app) {
             let forms = self.program_forms().await.unwrap_or_default();
-            let resolved = self.folder_resolved(&parsed, &forms).await?;
+            let resolved = self.folder_resolved(&parsed, &forms, usize::MAX).await?;
             (resolved, Some(forms))
         } else {
             match self.resolve(&parsed).await? {
