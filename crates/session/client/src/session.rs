@@ -2160,29 +2160,27 @@ impl Task {
         self.reports.set_fetch_proxy(Some(hex::encode(token)));
     }
 
-    /// Whether `envelope` is a member's ask for a workspace's record content, answered to that
-    /// member alone from what this device keeps of it; a workspace it keeps nothing of is left.
+    /// Whether `envelope` is an ask for a workspace's content, answered to the device
+    /// that asked from what this device keeps of it: a member asking this device directly, or
+    /// the server publishing its ask on its presence — how a server asks its members, as it has no
+    /// session with each of them — which every member that keeps the content answers. A
+    /// workspace this device keeps nothing of is left.
     fn content_wanted(&self, envelope: &Envelope, client: &ServerClient) -> bool {
-        let Envelope::DocumentContentWant {
-            workspace_id,
-            from_device_public_key: from,
-            frame,
-        } = envelope
-        else {
+        let device = self.config.cert.device_public_key;
+        let Some((workspace_id, from, frame)) = wanted(envelope) else {
             return false;
         };
-        let device = self.config.cert.device_public_key;
-        let Some(kept) = self.kept.get(workspace_id).filter(|_| *from != device) else {
+        let Some(kept) = self.kept.get(&workspace_id).filter(|_| from != device) else {
             return true;
         };
         let pieces =
-            neighbour_wire::content::answer(&device, from, frame, |app, workspace, hash| {
+            neighbour_wire::content::answer(&device, &from, &frame, |app, workspace, hash| {
                 kept.read(app, workspace, hash)
             });
         for piece in pieces {
             let _ = client.send(Envelope::DocumentContent {
-                workspace_id: *workspace_id,
-                to_device_public_key: *from,
+                workspace_id,
+                to_device_public_key: from,
                 from_device_public_key: device,
                 frame: piece,
             });
@@ -2472,6 +2470,40 @@ fn places_workspaces(cert: &DeviceCert, host: &DeviceCert) -> bool {
     cert.user_public_key == host.user_public_key
 }
 
+/// The workspace, the device that asked and the request frame `envelope` carries, when it asks
+/// this device for a workspace's content: a member's ask addressed to it, or the server's
+/// ask published on its presence — whose attributed body is the request, the server asking its
+/// members as a whole rather than each in a session — which every member that keeps the content
+/// answers. `None` for any other envelope, and for presence that is not such an ask (a person's
+/// presence passes as it always did).
+fn wanted(envelope: &Envelope) -> Option<(WorkspaceId, [u8; 32], Vec<u8>)> {
+    match envelope {
+        Envelope::DocumentContentWant {
+            workspace_id,
+            from_device_public_key: from,
+            frame,
+        } => Some((*workspace_id, *from, frame.clone())),
+        Envelope::Presence {
+            workspace_id,
+            payload,
+        } => {
+            let attributed = tilo_server_session::AttributedPresence::decode(payload)?;
+            let Ok(neighbour_wire::NeighbourMsg::DocumentContentWant {
+                requester,
+                cluster_id,
+                ..
+            }) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&attributed.body)
+            else {
+                return None;
+            };
+            (requester == tilo_peer_state::peer_handle(&attributed.author)
+                && cluster_id == workspace_id.to_string())
+            .then_some((*workspace_id, attributed.author, attributed.body))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2623,6 +2655,8 @@ mod tests {
 
 #[cfg(test)]
 mod behind_tests;
+#[cfg(test)]
+mod content_wanted_tests;
 #[cfg(test)]
 mod iroh_connect_tests;
 #[cfg(test)]
