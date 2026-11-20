@@ -330,6 +330,16 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
   // A newcomer at the entry sets Tilo up through their agent when the tour
   // has the command, and else skips: either way the page opens their own
   // workspace.
+  // The page's setup for an agent: its first screen again, with a fresh code to paste.
+  const agentSetup = `document.documentElement.dataset.firstScreen !== undefined`;
+  const leaveAgentSetup = async () => {
+    await tab.evaluate(`(() => {
+      const away = ['first-screen-back', 'first-screen-skip'].map(id => document.getElementById(id)).find(b => b?.offsetParent);
+      away?.click();
+    })()`).catch(() => {});
+    await tab.waitFor(`!(${agentSetup})`, {timeout: 15_000}).catch(() => {});
+    await quiet(300);
+  };
   let agent = null;
   if (agentEnv && name === 'shell' && await tab.evaluate(`!!document.getElementById('first-screen-agent')?.offsetParent`).catch(() => false)) {
     // The press makes the prompt (a first visit makes nothing while the
@@ -359,14 +369,10 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
           console.log('  no agent card on the empty shell');
           return;
         }
-        await tab.waitFor(`[...document.querySelectorAll('.tilo-entry-card')].length > 0`, {timeout: 60_000});
+        await tab.waitFor(agentSetup, {timeout: 60_000});
         await quiet();
         await shoot('agent-card');
-        await tab.evaluate(`for (const card of document.querySelectorAll('.tilo-entry-card')) {
-          const close = [...card.querySelectorAll('button')].find(b => /^(Close|Done)$/.test(b.textContent.trim()));
-          if (close) close.click(); else card.remove();
-        }`).catch(() => {});
-        await quiet(300);
+        await leaveAgentSetup();
       });
       agent = mcp();
       await agent.start();
@@ -417,8 +423,13 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
   // twice without loading the page again, and each press shows a sheet with a link of its own.
   // Where the first press showed none, a second has nothing more to say.
   if (paired) await step('add-a-device-again', () => sheet('Add a device', pairLink, 'add-a-device-again'));
-  await step('connect-an-agent', () => sheet('Connect an agent or computer',
-    `[...document.querySelectorAll('.tilo-entry-card')].some(card => card.dataset.card !== 'pair-link')`, 'connect-an-agent'));
+  await step('connect-an-agent', async () => {
+    if (!await press('Connect an agent or computer')) throw new Error('no “Connect an agent or computer” to press on Devices and access');
+    await tab.waitFor(agentSetup, {timeout: 60_000});
+    await quiet();
+    await shoot('connect-an-agent');
+    await leaveAgentSetup();
+  });
     await step('chat', async () => { await search('chat', 1); await quiet(); await shoot('chat'); });
     await tab.close().catch(() => {});
     return;
@@ -438,7 +449,10 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
   // the setup their agent pastes, never an error.
   await step('console-connect', async () => {
     await search('console', 1); await quiet();
-    if (!await press('Connect')) throw new Error('no Connect in Console');
+    if (!await press('Connect')) {
+      const near = (await names()).map(([, , n]) => n).filter(n => /connect|agents|sessions/i.test(n ?? ''));
+      throw new Error(`no Connect in Console; it shows ${JSON.stringify(near.slice(0, 20))}`);
+    }
     await quiet(1500);
     await shoot('console-connect');
     const said = JSON.stringify(await names());
