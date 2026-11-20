@@ -34,6 +34,7 @@ model-none-linked = Für diese Art von Arbeit ist kein Modell verknüpft. Verkn�
 model-choice-unusable = { $model } von { $provider } kann nicht mehr verwendet werden. Wähle in den Einstellungen ein anderes Modell.
 model-choice-gone = { $model } kann nicht mehr verwendet werden. Wähle in den Einstellungen ein anderes Modell.
 model-no-key = Für { $provider } ist hier noch kein API-Schlüssel hinterlegt. Füge ihn in den Einstellungen hinzu.
+model-signed-out = { $provider } braucht eine neue Anmeldung. Melde dich in den Einstellungen unter Modellanbieter erneut an.
 model-key-refused = { $provider } hat deinen API-Schlüssel nicht angenommen. Prüfe den Schlüssel oder verwende einen anderen Schlüssel für { $provider }.
 model-key-not-allowed = { $provider } lässt deinen API-Schlüssel das nicht tun. Prüfe bei { $provider }, was der Schlüssel darf, oder verwende einen anderen Schlüssel.
 model-key-no-credit = Das Konto deines Schlüssels für { $provider } hat kein Guthaben mehr. Lade bei { $provider } Guthaben auf oder verwende einen anderen Schlüssel.

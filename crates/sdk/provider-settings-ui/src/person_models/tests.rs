@@ -49,6 +49,8 @@ impl ModelBindings for Unbound {
 struct Kept {
     providers: ModelProviders,
     keys: HashMap<String, String>,
+    /// Whether the person entered the code of the sign-in under way.
+    code_entered: bool,
 }
 
 impl Kept {
@@ -123,6 +125,40 @@ impl Kept {
             }
         }
         Ok(())
+    }
+
+    /// Answer a sign-in's `action`: its code, then waiting until the code
+    /// was entered, then signed in.
+    fn sign_in(&mut self, action: &str) -> serde_json::Value {
+        match action {
+            person_models::BEGIN_SIGN_IN => serde_json::to_value(SignInStarted {
+                sign_in: "sign-in-1".into(),
+                code: "WXYZ-4821".into(),
+                page: "https://auth.example/codex/device".into(),
+            })
+            .unwrap(),
+            _ if !self.code_entered => serde_json::to_value(SignInState::Waiting).unwrap(),
+            _ => {
+                let signed_in = ProviderView {
+                    id: "chatgpt".into(),
+                    name: "ChatGPT".into(),
+                    configured: true,
+                    signs_in: true,
+                    models: vec![OfferedModel {
+                        id: "gpt-5.5".into(),
+                        label: "GPT-5.5".into(),
+                    }],
+                    default_model: Some("gpt-5.5".into()),
+                    ..ProviderView::default()
+                };
+                self.providers.providers.push(signed_in.clone());
+                self.providers.default_provider = Some("chatgpt".into());
+                serde_json::to_value(SignInState::Done {
+                    provider: signed_in,
+                })
+                .unwrap()
+            }
+        }
     }
 
     /// The requests that answer the one provider they changed.
@@ -202,6 +238,7 @@ impl Kept {
                 })
                 .unwrap())
             }
+            person_models::BEGIN_SIGN_IN | person_models::WAIT_SIGN_IN => Ok(self.sign_in(action)),
             person_models::ADD_MODEL => {
                 let provider = self.provider(&id)?;
                 provider.models.push(OfferedModel {
@@ -728,4 +765,78 @@ fn the_window_links_a_provider_through_its_own_controls() {
     ] {
         assert!(page.contains(words), "{words}: {page}");
     }
+}
+
+/// Signing in with an `OpenAI` account from a page: the server's one-time
+/// code and `OpenAI`'s page are shown while the server waits, and once the
+/// code was entered the plan is the model everything is asked on, with no key
+/// typed anywhere.
+#[test]
+fn a_page_signs_in_to_chatgpt_with_a_code_and_uses_the_plan() {
+    en();
+    let (provider, kept) = provider();
+    let mut models = PersonModels::new(remote(&provider));
+    settle(&mut models);
+    let offered = said(models.first_model_sections(&Unbound));
+    assert!(offered.contains("ChatGPT"), "{offered}");
+    assert!(offered.contains("no API key needed"), "{offered}");
+
+    models
+        .apply(PersonModelsEffect::SignInToOpenAi { using: None })
+        .unwrap();
+    // The server answers each wait at once here: a few passes are a few waits.
+    for _ in 0..4 {
+        models.poll();
+    }
+    assert!(models.busy());
+    let waiting = said(models.sections(&Unbound));
+    assert!(waiting.contains("Sign in to ChatGPT"), "{waiting}");
+    assert!(waiting.contains("WXYZ-4821"), "{waiting}");
+    assert!(waiting.contains("Open OpenAI's sign-in page"), "{waiting}");
+    assert!(!waiting.contains("Google Gemini"), "{waiting}");
+
+    kept.lock_recover().code_entered = true;
+    for _ in 0..4 {
+        models.poll();
+    }
+    settle(&mut models);
+    assert!(!models.busy());
+    assert_eq!(models.linked(), Some(true));
+    let signed_in = said(models.sections(&Unbound));
+    assert!(signed_in.contains("Signed in"), "{signed_in}");
+    assert!(!signed_in.contains("Add key"), "{signed_in}");
+    let asked = asked(&provider);
+    assert_eq!(asked.first().map(String::as_str), Some(person_models::LIST));
+    assert!(
+        asked.contains(&person_models::BEGIN_SIGN_IN.to_owned()),
+        "{asked:?}"
+    );
+    assert!(
+        !asked.contains(&person_models::SET_KEY.to_owned()),
+        "{asked:?}"
+    );
+}
+
+/// A sign-in let go of tells the server, and the page is back where it was.
+#[test]
+fn a_sign_in_is_cancelled_on_the_server_too() {
+    en();
+    let (provider, _kept) = provider();
+    let mut models = PersonModels::new(remote(&provider));
+    settle(&mut models);
+    models
+        .apply(PersonModelsEffect::SignInToOpenAi {
+            using: Some("api-usage".into()),
+        })
+        .unwrap();
+    for _ in 0..3 {
+        models.poll();
+    }
+    assert!(said(models.sections(&Unbound)).contains("API usage"));
+    models
+        .apply(PersonModelsEffect::CancelOpenAiSignIn)
+        .unwrap();
+    assert!(!models.busy());
+    assert!(asked(&provider).contains(&person_models::CANCEL_SIGN_IN.to_owned()));
+    assert!(said(models.sections(&Unbound)).contains("Choose a model provider"));
 }

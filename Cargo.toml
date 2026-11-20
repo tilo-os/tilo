@@ -300,6 +300,7 @@ members = [
     "crates/dev/copy-lint",
     "crates/dev/fake-discord",
     "crates/dev/fake-oauth",
+    "crates/dev/fake-model-providers",
     "crates/dev/nested-session-bus",
     "crates/dev/headless-schema",
     "crates/dev/test-env",

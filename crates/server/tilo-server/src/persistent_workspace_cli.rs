@@ -207,6 +207,19 @@ pub struct PersistentArgs {
     /// machine does.
     #[arg(long = "call-own-network")]
     pub call_own_network: bool,
+    /// Sign people in to `OpenAI` at this address in place of
+    /// `https://auth.openai.com`: a local stack's fake, or an operator's own
+    /// proxy in front of it.
+    #[arg(long = "openai-sign-in", value_name = "URL")]
+    pub openai_sign_in: Option<String>,
+    /// Ask a signed-in `ChatGPT` plan at this address in place of
+    /// `https://chatgpt.com/backend-api/codex`.
+    #[arg(long = "chatgpt-backend", value_name = "URL")]
+    pub chatgpt_backend: Option<String>,
+    /// Use an API key issued at an `OpenAI` sign-in at this address in place
+    /// of `https://api.openai.com/v1`.
+    #[arg(long = "openai-api", value_name = "URL")]
+    pub openai_api: Option<String>,
     /// An app authored into the workspace at its first start; repeatable.
     #[arg(long = "seed-app", value_name = "APP_ID")]
     pub seed_apps: Vec<String>,
@@ -1421,6 +1434,18 @@ pub(crate) async fn run(
         // invitation into it, let in: never for anyone holding a root alone.
         workspaces.admit_own_through(&workspace);
         workspaces.call_private_model_addresses(persistent.call_own_network);
+        if persistent.openai_sign_in.is_some()
+            || persistent.chatgpt_backend.is_some()
+            || persistent.openai_api.is_some()
+        {
+            let real = tilo_server::workspaces::OpenAiSignIn::default();
+            workspaces.sign_in_to_openai_at(tilo_server::workspaces::OpenAiSignIn {
+                issuer: persistent.openai_sign_in.clone().unwrap_or(real.issuer),
+                backend: persistent.chatgpt_backend.clone().unwrap_or(real.backend),
+                api: persistent.openai_api.clone().unwrap_or(real.api),
+                client_id: real.client_id,
+            });
+        }
         // The certificate this host serves the workspace with: a build renamed
         // the host's own after a workspace was made with it, and the host took
         // the record's back (`Workspaces::serving_certificate`). Every governed

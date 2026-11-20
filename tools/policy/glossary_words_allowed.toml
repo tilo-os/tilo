@@ -1849,3 +1849,29 @@ reason = "What a page waits for names its document through the waiting keys' exi
 words = ["record"]
 identifiers = ["record", "Record"]
 paths = ["crates/agent/agent-session/src/workspace_actions/pages.rs"]
+
+[[allow]]
+reason = "OAuth 2.0 token exchange (RFC 8693) names the token being exchanged its subject token; a request to OpenAI's token endpoint sends those field names."
+words = ["subject"]
+paths = [
+    "crates/dev/fake-model-providers/src/*",
+    "crates/server/tilo-workspace-service/src/workspaces/person_models/openai.rs",
+]
+
+[[allow]]
+reason = "tilo-net's existing proxy module, named for the network host names it checks."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/person_models/openai.rs"]
+
+[[allow]]
+reason = "The workspace service's existing test helper that starts a server."
+words = ["host"]
+identifiers = ["test_host"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/*"]
+
+[[allow]]
+reason = "The stack script's existing helper and directory for the processes it starts."
+words = ["run"]
+identifiers = ["run_native", "runs"]
+paths = ["os/containers/tilo-sh/stack.sh"]

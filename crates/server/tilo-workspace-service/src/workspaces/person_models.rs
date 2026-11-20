@@ -28,8 +28,8 @@ use agent_provider_config::{
 };
 use serde_json::Value;
 use tilo_actions::remote::person_models::{
-    self, AddModel, AddPreset, ListedModels, ListingProblem, ModelProviders, ProviderView,
-    SetAssignment, SetAssignments, SetDefault, SetKey, SetReasoning,
+    self, AddModel, AddPreset, BeginSignIn, ListedModels, ListingProblem, ModelProviders,
+    ProviderView, SetAssignment, SetAssignments, SetDefault, SetKey, SetReasoning, WaitSignIn,
 };
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_net::proxy::host::{
@@ -38,6 +38,7 @@ use tilo_net::proxy::host::{
 use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
+use super::person_model::Models;
 use super::person_settings::{
     ProviderKeys, add_provider, answer, argument, provider_argument, provider_config, providers,
     remove_key, remove_provider, save_provider_config, set_assignment, set_key, view_of,
@@ -60,19 +61,27 @@ pub(super) struct Reach {
     lookup: Lookup,
 }
 
-impl Workspaces {
-    /// What this host keeps and asks for its people's providers: https
-    /// addresses on the internet, and its own network too where its
-    /// operator lets it call there.
-    pub(super) fn model_reach(&self) -> Reach {
-        Reach {
-            destinations: if self.inner.models.private_addresses() {
+impl Reach {
+    /// What a server with `models` calls: https addresses on the internet,
+    /// and its own network too where its operator lets it.
+    pub(super) fn of(models: &Models) -> Self {
+        Self {
+            destinations: if models.private_addresses() {
                 Destinations::Any
             } else {
                 Destinations::Public
             },
             lookup: system_lookup(),
         }
+    }
+}
+
+impl Workspaces {
+    /// What this host keeps and asks for its people's providers: https
+    /// addresses on the internet, and its own network too where its
+    /// operator lets it call there.
+    pub(super) fn model_reach(&self) -> Reach {
+        Reach::of(&self.inner.models)
     }
 
     /// Answer a [`person_models::PROVIDER`] request.
@@ -93,6 +102,28 @@ impl Workspaces {
         let person = Self::asking_person(caller, certificate, workspace_id)?;
         let root = self.person_settings_root(&person);
         let reach = self.model_reach();
+        match request.target.address.action.as_str() {
+            person_models::BEGIN_SIGN_IN => {
+                // Named nothing, a sign-in is to the plan.
+                let beginning: BeginSignIn =
+                    if matches!(request.argument, tilo_actions::remote::InvokeArgument::None) {
+                        BeginSignIn::default()
+                    } else {
+                        argument(request, "a sign-in to begin")?
+                    };
+                return answer(&self.begin_openai_sign_in(person, beginning, reach).await);
+            }
+            person_models::WAIT_SIGN_IN => {
+                let waiting: WaitSignIn = argument(request, "a sign-in to wait for")?;
+                return answer(&self.wait_openai_sign_in(person, &waiting).await);
+            }
+            person_models::CANCEL_SIGN_IN => {
+                let cancelling: WaitSignIn = argument(request, "a sign-in to stop")?;
+                self.cancel_openai_sign_in(person, &cancelling);
+                return answer(&Ok(()));
+            }
+            _ => {}
+        }
         let changed = match request.target.address.action.as_str() {
             person_models::LIST => return answer(&Ok(providers(&root))),
             person_models::ADD_PROVIDER => {
@@ -198,6 +229,10 @@ fn not_kept() -> String {
     "That provider is not kept here".to_owned()
 }
 
+mod openai;
+pub use openai::OpenAiSignIn;
+pub(super) use openai::{Grant, SignIns};
+
 /// Where a provider at `endpoint` is, when this host keeps one there: an
 /// https address on the internet, or with [`Destinations::Any`] one on the
 /// host's own network too, which alone is reached without TLS.
@@ -287,6 +322,12 @@ pub(super) async fn take_key(
         .into_iter()
         .find(|profile| profile.id == setting.provider)
         .ok_or_else(not_kept)?;
+    if profile.sign_in.is_some() {
+        return Err(format!(
+            "{} is signed in to, not reached with a key.",
+            profile.display_label()
+        ));
+    }
     let kept = ProviderKeys::of(root).get(&profile)?;
     let replacing = kept.is_some();
     // The kept key typed again replaces nothing and asks nobody. The two
@@ -364,7 +405,13 @@ async fn refresh_models(
         .into_iter()
         .find(|profile| profile.id == provider)
         .ok_or_else(not_kept)?;
-    let key = ProviderKeys::of(root).get(&profile)?;
+    let mut key = ProviderKeys::of(root).get(&profile)?;
+    // A signed-in account's models are asked for with its access token.
+    if profile.sign_in.is_some() {
+        key = key
+            .and_then(|kept| Grant::read(&kept))
+            .map(|grant| grant.access());
+    }
     let listed = match listing(&profile, key.as_deref().map(String::as_str), reach).await {
         Ok(listed) => listed,
         Err(problem) => {

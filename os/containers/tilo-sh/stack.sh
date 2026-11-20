@@ -165,9 +165,13 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
   discord   with --discord, the fake Discord (crates/dev/fake-discord)
   oauth     with --fake-oauth, the fake provider sign-in page (crates/dev/fake-oauth),
             which the server's Google and Microsoft buttons sign in through
+  models    with TILO_SH_FAKE_MODELS=1, the fake OpenAI sign-in and model
+            providers (crates/dev/fake-model-providers) at
+            http://127.0.0.1:BASE+43, which the server signs people in to
+            OpenAI at; its sign-in page takes any code it showed
 
 TILO_SH_PORT_BASE gives the stack its ports, the numbers above from it up to
-BASE+42. They must lie outside the range the machine hands to outgoing
+BASE+43. They must lie outside the range the machine hands to outgoing
 connections (32768 and up on many machines; stack.sh reads
 /proc/sys/net/ipv4/ip_local_port_range there, also on the build server when
 the stack is there), and nothing may answer on them already: up refuses a
@@ -216,8 +220,9 @@ Already-built inputs, which a check hands the stack so its bring-up compiles
 and lays out nothing (see docs/testing-tilo-sh.md):
   TILO_SH_PROGRAMS  a directory of the programs the other services run
                     (tilo-api with tilolang-process beside it, which a task's
-                    tilolang programs start in, fake-discord for --discord and
-                    mail-stand-in for TILO_SH_MAIL_STAND_IN=1)
+                    tilolang programs start in, fake-discord for --discord,
+                    mail-stand-in for TILO_SH_MAIL_STAND_IN=1 and
+                    fake-model-providers for TILO_SH_FAKE_MODELS=1)
   TILO_SH_LOUNGE    the server's laid-out context, as lounge-context.sh makes it
                     (bin/, bots/, fonts/, surfaces/, entrypoint.sh)
   TILO_SH_SITE      the web entry's laid-out site, as web-entry-context.sh makes
@@ -284,7 +289,8 @@ fake_oauth_port=$((base + 26))  # the fake provider sign-in page, with --fake-oa
 discord_rest_port=$((base + 40))
 discord_gateway_port=$((base + 41))
 discord_control_port=$((base + 42))
-last_port=$discord_control_port  # the highest port a stack on this base takes
+models_port=$((base + 43))     # the fake OpenAI sign-in and model providers
+last_port=$models_port  # the highest port a stack on this base takes
 
 # Plain HTTP on this machine, which a browser treats as a secure context as it
 # does https://, so any browser profile opens the site with no certificate to
@@ -444,7 +450,7 @@ stack_tcp_ports() {
     "$live_port" "$caddy_http_port" "$api_port" "$site_port" "$web_port" \
     "$releases_port" "$mail_port" "$mail_stand_in_imap_port" \
     "$mail_stand_in_smtp_port" "$fake_oauth_port" "$discord_rest_port" "$discord_gateway_port" \
-    "$discord_control_port"
+    "$discord_control_port" "$models_port"
 }
 stack_udp_ports() { printf '%s\n' "$packet_port" "$iroh_port" "$link_port"; }
 
@@ -739,6 +745,13 @@ server_env() {
   # addresses: a model provider or another stack named by one is called
   # there.
   env+=(TILO_WORKSPACES_CALL_OWN_NETWORK=1)
+  if [[ ${TILO_SH_FAKE_MODELS:-0} == 1 ]]; then
+    env+=(
+      "TILO_WORKSPACES_OPENAI_SIGN_IN=http://127.0.0.1:$models_port/auth"
+      "TILO_WORKSPACES_CHATGPT_BACKEND=http://127.0.0.1:$models_port/backend-api/codex"
+      "TILO_WORKSPACES_OPENAI_API=http://127.0.0.1:$models_port/openai/v1"
+    )
+  fi
   # Not here: the moderation and summary model keys (no model is asked
   # locally), and the Discord bridge's real server unless --discord.
   if [[ -n ${discord_api:-} ]]; then
@@ -1532,9 +1545,9 @@ build_programs() {
     local oauth_programs=()
     [[ -z ${fake_oauth:-} ]] || oauth_programs=(-p fake-oauth --bin fake-oauth)
     (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-server/agents \
-      -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p tilo-cli -p tilolang-process \
+      -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilolang-process \
       "${oauth_programs[@]}" \
-      --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin tilo \
+      --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo \
       --bin tilolang-process >&2 \
       && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" \
         "${oauth_programs[@]}" \
@@ -1602,7 +1615,7 @@ bundle_stage() {
 copy_programs() {
   local from=$1 file stand_in=$1/examples/mail_stand_in
   mkdir -p "$programs"
-  for file in tilo-server discord-worker tilo-api fake-discord tilo tilolang-process; do
+  for file in tilo-server discord-worker tilo-api fake-discord fake-model-providers tilo tilolang-process; do
     [[ -x $from/$file ]] || die "the build left no $from/$file; TILO_SH_CARGO names another cargo drop-in to build with"
     cmp -s "$from/$file" "$programs/$file" && continue
     cp --reflink=auto "$from/$file" "$programs/.$file.next" || die "could not copy $file"
@@ -2015,6 +2028,19 @@ start_native_releases() {
   run_native releases "$state/releases" python3 -m http.server --bind 127.0.0.1 "$releases_port"
 }
 
+# The fake OpenAI sign-in and model providers, where TILO_SH_FAKE_MODELS=1
+# asks for them: the server signs people in to OpenAI there.
+start_native_models() {
+  : > "$state/logs/models.log"
+  private_env models "$programs" > "$runs/models.env"
+  run_native models "$runs/models" "$programs/fake-model-providers" --listen "127.0.0.1:$models_port"
+  local deadline=$((SECONDS + 60))
+  until grep -q '^OPENAI_ISSUER=' "$state/logs/models.log" 2>/dev/null; do
+    ((SECONDS < deadline)) || die "the fake model providers did not start within a minute: $(cat "$state/logs/models.log")"
+    sleep 0.2
+  done
+}
+
 start_native_discord() {
   : > "$state/logs/discord.log"
   private_env discord "$programs" > "$runs/discord.env"
@@ -2129,6 +2155,8 @@ up_native() {
   [[ ${TILO_SH_MAIL_STAND_IN:-0} != 1 ]] || start_mail_stand_in
   start_native_tls
   trust_bundle
+  # After the trust bundle, which every service reads.
+  [[ ${TILO_SH_FAKE_MODELS:-0} != 1 ]] || start_native_models
   say "tls up ($((SECONDS - phase))s)"
   phase=$SECONDS
   local vm_skipped
@@ -2493,7 +2521,7 @@ down() {
   local name
   # Both kinds: the native processes, and the image mode's containers and
   # VM host.
-  for name in web releases api server tls discord fake-oauth; do
+  for name in web releases api server tls discord fake-oauth models; do
     stop_native "$name"
   done
   if vm_host_running; then
@@ -2598,6 +2626,9 @@ status() {
   if running discord || { [[ -f $state/discord.pid ]] && kill -0 "$(cat "$state/discord.pid")" 2>/dev/null; }; then
     printf '%-9s %-8s %s\n' discord up "http://127.0.0.1:$discord_rest_port (control http://127.0.0.1:$discord_control_port)"
   fi
+  if running models; then
+    printf '%-9s %-8s %s\n' models up "http://127.0.0.1:$models_port (OpenAI's sign-in page: http://127.0.0.1:$models_port/auth/codex/device)"
+  fi
   if [[ $mode == native ]]; then
     printf '\nRunning this checkout'"'"'s programs; after a change, %s restart server (or api, web, …).\n' "$0"
   else
@@ -2658,10 +2689,11 @@ supervisor_pid() {
 
 # The ports this machine keeps: the server's public origin and the addresses a
 # page dials, the API server the SDKs and agents use, the web entry and the
-# releases, the mail sink and the stand-in mail server's two, and the fake
-# Discord when one runs.
+# releases, the mail sink and the stand-in mail server's two, the fake
+# provider sign-in page, the fake Discord when one runs, and the fake model
+# providers, whose sign-in page a person's browser opens.
 forward_tcp() {
-  printf '%s\n' "$server_port,$live_port,$plain_port,$routes_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$mail_stand_in_imap_port,$mail_stand_in_smtp_port,$fake_oauth_port,$discord_rest_port,$discord_gateway_port,$discord_control_port"
+  printf '%s\n' "$server_port,$live_port,$plain_port,$routes_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$mail_stand_in_imap_port,$mail_stand_in_smtp_port,$fake_oauth_port,$discord_rest_port,$discord_gateway_port,$discord_control_port,$models_port"
 }
 
 # The page reaches the server over QUIC (WebTransport, then iroh), which ssh

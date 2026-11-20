@@ -34,6 +34,7 @@ model-none-linked = No model is linked for this kind of work. Link one in Settin
 model-choice-unusable = { $model } from { $provider } can no longer be used. Choose another model in Settings.
 model-choice-gone = { $model } can no longer be used. Choose another model in Settings.
 model-no-key = { $provider } has no API key here yet. Add it in Settings.
+model-signed-out = { $provider } needs you to sign in again. Sign in to it in Settings, under Model providers.
 model-key-refused = { $provider } did not accept your API key. Check the key, or use another key for { $provider }.
 model-key-not-allowed = { $provider } does not let your API key do this. Check what the key may do at { $provider }, or use another key.
 model-key-no-credit = The account of your { $provider } key has no credit left. Add credit at { $provider }, or use another key.

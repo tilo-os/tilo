@@ -76,6 +76,19 @@ pub const SET_REASONING: &str = "set-reasoning";
 /// decides by (no provider yet, no key) and the words the person reads.
 pub const ASK: &str = "ask";
 
+/// Begin signing in with the person's `OpenAI` account ([`BeginSignIn`]),
+/// the way `OpenAI`'s own Codex signs in where it has no browser: the server
+/// asks `OpenAI` for a one-time code, and the person enters it on `OpenAI`'s
+/// page ([`SignInStarted`]). The server waits for `OpenAI` to grant it, keeps
+/// the grant in the person's vault and refreshes it there; no window ever
+/// holds a token. Only the person themselves may sign in.
+pub const BEGIN_SIGN_IN: &str = "begin-sign-in";
+/// How a sign-in begun with [`BEGIN_SIGN_IN`] goes ([`WaitSignIn`]),
+/// answered as a [`SignInState`] once it changed or after a while.
+pub const WAIT_SIGN_IN: &str = "wait-sign-in";
+/// Stop waiting for a sign-in begun with [`BEGIN_SIGN_IN`] ([`WaitSignIn`]).
+pub const CANCEL_SIGN_IN: &str = "cancel-sign-in";
+
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
 pub fn target(action: &str) -> RemoteActionTarget {
@@ -113,8 +126,13 @@ pub struct ProviderView {
     pub name: String,
     pub protocol: Protocol,
     pub endpoint: String,
-    /// Whether the person's vault keeps an API key for it.
+    /// Whether the person's vault keeps an API key for it, or the grant of
+    /// the account it signs in with.
     pub configured: bool,
+    /// Whether it is reached by signing in to an account ([`BEGIN_SIGN_IN`])
+    /// rather than with an API key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub signs_in: bool,
     pub models: Vec<OfferedModel>,
     /// The model this provider's agent runs when nothing else is chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -284,6 +302,58 @@ pub struct SetReasoning {
     pub effort: Option<String>,
 }
 
+/// What a person's `OpenAI` account is used for once they signed in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AccountUse {
+    /// Their `ChatGPT` plan: models answer on the subscription they pay for.
+    #[default]
+    Subscription,
+    /// Their `OpenAI` API organisation: models answer on API usage, billed per
+    /// token. The server has `OpenAI` issue an API key for the account.
+    ApiUsage,
+}
+
+/// A sign-in to begin.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BeginSignIn {
+    #[serde(default)]
+    pub using: AccountUse,
+}
+
+/// A sign-in begun: what the person enters, and where.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SignInStarted {
+    /// What [`WAIT_SIGN_IN`] and [`CANCEL_SIGN_IN`] name it by.
+    pub sign_in: String,
+    /// The one-time code the person enters on `page`.
+    pub code: String,
+    /// `OpenAI`'s page the code is entered on.
+    pub page: String,
+}
+
+/// A sign-in to wait for, or to stop.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WaitSignIn {
+    pub sign_in: String,
+}
+
+/// How a sign-in goes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "state")]
+pub enum SignInState {
+    /// The person has not entered the code yet.
+    Waiting,
+    /// Signed in: the provider that answers on the account now, its models
+    /// listed.
+    Done { provider: ProviderView },
+    /// It ended without a grant, for the reason a person reads.
+    Failed { reason: String },
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -317,6 +387,7 @@ mod tests {
             }],
             default_model: None,
             reasoning: None,
+            signs_in: false,
         };
         let json = serde_json::to_string(&view).unwrap();
         assert!(!json.contains("sk-live-secret"));

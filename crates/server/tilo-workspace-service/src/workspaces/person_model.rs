@@ -94,6 +94,12 @@ pub enum ModelRefusal {
         /// The provider, as the person named it.
         provider: String,
     },
+    /// The provider is reached by signing in to an account, and that
+    /// sign-in is gone: never made here, or ended by its account.
+    SignedOut {
+        /// The provider, as the person named it.
+        provider: String,
+    },
     /// The provider's address is not one this host calls: only a provider on
     /// the public internet, over TLS, unless the host's operator lets its
     /// people name others ([`Workspaces::call_private_model_addresses`]).
@@ -149,6 +155,7 @@ impl ModelRefusal {
             Self::NoModelLinked { .. } => "no-model-linked",
             Self::ChoiceUnusable { .. } => "choice-unusable",
             Self::NoKey { .. } => "no-key",
+            Self::SignedOut { .. } => "signed-out",
             Self::AddressRefused { .. } => "address-refused",
             Self::CannotTake { .. } => "cannot-take",
             Self::WorkspaceRefuses { .. } => "workspace-refuses",
@@ -194,6 +201,10 @@ impl ModelRefusal {
             Self::NoKey { provider } => {
                 args.set("provider", provider.as_str());
                 "model-no-key"
+            }
+            Self::SignedOut { provider } => {
+                args.set("provider", provider.as_str());
+                "model-signed-out"
             }
             Self::AddressRefused { provider } => {
                 args.set("provider", provider.as_str());
@@ -241,7 +252,7 @@ impl ModelRefusal {
     pub fn model_error(&self) -> ModelError {
         let kind = match self {
             Self::NoModelLinked { .. } | Self::ChoiceUnusable { .. } => ErrorKind::NoProvider,
-            Self::NoKey { .. } => ErrorKind::Authentication,
+            Self::NoKey { .. } | Self::SignedOut { .. } => ErrorKind::Authentication,
             Self::AddressRefused { .. }
             | Self::WorkspaceRefuses { .. }
             | Self::DayLimitReached { .. } => ErrorKind::PermissionDenied,
@@ -418,6 +429,10 @@ impl ModelProvider for NoProvider {
 /// calls for them.
 pub(super) struct Models {
     provider: std::sync::RwLock<Arc<dyn ModelProvider>>,
+    /// Where people sign in to `OpenAI` and reach their plan.
+    pub(super) openai: std::sync::RwLock<super::person_models::OpenAiSignIn>,
+    /// The sign-ins people are in the middle of.
+    pub(super) sign_ins: super::person_models::SignIns,
     private_addresses: AtomicBool,
     /// What each person's agents spent today.
     spend: spend::Log,
@@ -452,6 +467,8 @@ impl Models {
     pub(super) fn new() -> Self {
         Self {
             provider: std::sync::RwLock::new(host_provider()),
+            openai: std::sync::RwLock::default(),
+            sign_ins: super::person_models::SignIns::default(),
             private_addresses: AtomicBool::new(false),
             spend: spend::Log::default(),
             runtime: tokio::runtime::Handle::try_current().ok(),
@@ -683,25 +700,38 @@ impl PersonModel {
                 tracing::warn!(%error, "a person's model settings were not read");
                 ModelRefusal::SettingsUnreadable
             })??;
+        let mut resolved = resolved;
         resolved.takes(request)?;
         may_send(self.workspace.as_ref(), &resolved.profile)?;
+        let signed_in = resolved.profile.sign_in.is_some();
+        if signed_in {
+            resolved.key = Some(
+                self.models
+                    .fresh_access(&self.root, &resolved.profile, false)
+                    .await?,
+            );
+        }
         let provider = self.provider();
-        let call = ProviderCall {
-            profile: &resolved.profile,
-            model: &resolved.model,
-            request,
-            deadline,
-            private_addresses: self.models.private_addresses.load(Ordering::Acquire),
-            quiet: self.quiet_now(),
-            key: resolved.key.as_deref().map(String::as_str),
-        };
-        let response = tokio::time::timeout_at(
-            tokio::time::Instant::from_std(deadline),
-            self.noting_time_outs(provider.answer(call, events)),
-        )
-        .await
-        .map_err(|_| ModelRefusal::Provider(ModelError::new(ErrorKind::TimedOut)))?
-        .map_err(|error| ModelRefusal::of_provider(resolved.profile.display_label(), error))?;
+        let mut answered = self
+            .ask_provider(&*provider, &resolved, request, deadline, &mut *events)
+            .await;
+        // An access token the backend turned away is refreshed once and
+        // asked with again: it may have been revoked before it ran out.
+        if signed_in
+            && let Err(error) = &answered
+            && error.kind == ErrorKind::Authentication
+        {
+            resolved.key = Some(
+                self.models
+                    .fresh_access(&self.root, &resolved.profile, true)
+                    .await?,
+            );
+            answered = self
+                .ask_provider(&*provider, &resolved, request, deadline, events)
+                .await;
+        }
+        let response = answered
+            .map_err(|error| ModelRefusal::of_provider(resolved.profile.display_label(), error))?;
         // Counted on every day the call spends; the answer says the first.
         let mut spent_today_micros = None;
         for spender in &self.spenders {
@@ -716,6 +746,32 @@ impl PersonModel {
             linked: resolved.linked(),
             spent_today_micros,
         })
+    }
+
+    /// One call of `resolved`'s provider, held to `deadline`.
+    async fn ask_provider(
+        &self,
+        provider: &dyn ModelProvider,
+        resolved: &Resolved,
+        request: &ModelRequest,
+        deadline: Instant,
+        events: Events<'_>,
+    ) -> Result<ModelResponse, ModelError> {
+        let call = ProviderCall {
+            profile: &resolved.profile,
+            model: &resolved.model,
+            request,
+            deadline,
+            private_addresses: self.models.private_addresses.load(Ordering::Acquire),
+            quiet: self.quiet_now(),
+            key: resolved.key.as_deref().map(String::as_str),
+        };
+        tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            self.noting_time_outs(provider.answer(call, events)),
+        )
+        .await
+        .unwrap_or_else(|_| Err(ModelError::new(ErrorKind::TimedOut)))
     }
 
     /// How long the provider may show nothing on a call made now.
@@ -1007,10 +1063,23 @@ fn resolve(
     if !public && !private_addresses {
         return Err(ModelRefusal::AddressRefused { provider: named() });
     }
-    // A sign-in in place of a key is kept on the person's own computer, so
-    // this host holds nothing to ask such a provider with.
+    // A `ChatGPT` plan is asked with the access token of the grant the
+    // vault keeps, refreshed before the call ([`Models::fresh_access`]).
+    // Other sign-ins are made on the person's own computer, and this server
+    // holds nothing to ask them with.
     if profile.sign_in.is_some() {
-        return Err(ModelRefusal::NoKey { provider: named() });
+        if profile.sign_in_issuer() != Some(agent_provider_config::SignInIssuer::ChatGpt) {
+            return Err(ModelRefusal::NoKey { provider: named() });
+        }
+        let granted = kept
+            .of(root, profile)?
+            .and_then(|kept| super::person_models::Grant::read(&kept))
+            .ok_or_else(|| ModelRefusal::SignedOut { provider: named() })?;
+        return Ok(Resolved {
+            profile: profile.clone(),
+            model: model.clone(),
+            key: Some(granted.access()),
+        });
     }
     let key = kept.of(root, profile)?;
     // Only a server on the operator's own network may take no key.

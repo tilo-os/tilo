@@ -99,7 +99,9 @@ pub fn refused(refusal: &ModelRefusal, language: Option<&str>) -> (u16, &'static
         ModelRefusal::NoModelLinked { .. } | ModelRefusal::ChoiceUnusable { .. } => {
             (404, "not_found_error")
         }
-        ModelRefusal::NoKey { .. } => (401, "authentication_error"),
+        ModelRefusal::NoKey { .. } | ModelRefusal::SignedOut { .. } => {
+            (401, "authentication_error")
+        }
         ModelRefusal::AddressRefused { .. } | ModelRefusal::WorkspaceRefuses { .. } => {
             (403, "permission_error")
         }

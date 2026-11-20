@@ -105,6 +105,7 @@ mod writes;
 pub mod person_learned;
 #[cfg(not(target_arch = "wasm32"))]
 mod person_models;
+pub use person_models::OpenAiSignIn;
 #[cfg(not(target_arch = "wasm32"))]
 mod person_settings;
 #[cfg(not(target_arch = "wasm32"))]

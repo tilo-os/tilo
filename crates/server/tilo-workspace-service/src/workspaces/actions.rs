@@ -2982,6 +2982,8 @@ impl AppActionServer for GovernedServer {
     }
 }
 
+#[cfg(all(test, feature = "agents"))]
+mod openai_sign_in_tests;
 #[cfg(test)]
 mod person_learned_tests;
 #[cfg(test)]

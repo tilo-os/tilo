@@ -5083,6 +5083,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fake-model-providers"
+version = "0.1.0"
+dependencies = [
+ "agent-provider-config",
+ "base64 0.22.1",
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "percent-encoding",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "workspace-hack",
+]
+
+[[package]]
 name = "fake-oauth"
 version = "0.1.0"
 dependencies = [
@@ -24009,6 +24026,8 @@ dependencies = [
  "collab-types",
  "collaboration",
  "ed25519-dalek 3.0.0",
+ "fake-model-providers",
+ "form_urlencoded",
  "futures",
  "getrandom 0.4.3",
  "hex",

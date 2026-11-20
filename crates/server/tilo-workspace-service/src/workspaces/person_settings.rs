@@ -1590,6 +1590,7 @@ pub(super) fn view_of(
         },
         endpoint: profile.endpoint.clone(),
         configured: keys.kept(profile),
+        signs_in: profile.sign_in.is_some(),
         models: profile
             .models
             .iter()

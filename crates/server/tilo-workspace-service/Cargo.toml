@@ -60,6 +60,7 @@ tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true
+form_urlencoded.workspace = true
 tokio = { workspace = true, features = ["full"] }
 n0-future = "0.3.2"
 thiserror.workspace = true
@@ -151,6 +152,8 @@ rustix = { workspace = true, features = ["process"], optional = true }
 [dev-dependencies]
 # The stand-in authorization server a sign-in test walks the browser through.
 tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }
+# A fake OpenAI sign-in and model providers, for signing in on the real path.
+fake-model-providers = { path = "../../dev/fake-model-providers" }
 # The MCP tools a device's session takes for an agent whose turn is in its own process, taken as its session's
 # steps in the broker's tests.
 tilo-mcp = { path = "../../runtime/tilo-mcp" }

@@ -30,8 +30,9 @@ use ui::framework::{ActionControl, Actions};
 use ui::lock::MutexRecover as _;
 use ui::tilo_actions::InvocationUpdate;
 use ui::tilo_actions::remote::person_models::{
-    self, AddModel, AddPreset, AddProvider, ListedModels, ListingProblem, ModelProviders, Protocol,
-    ProviderView, SetAssignments, SetDefault, SetKey,
+    self, AccountUse, AddModel, AddPreset, AddProvider, BeginSignIn, ListedModels, ListingProblem,
+    ModelProviders, Protocol, ProviderView, SetAssignments, SetDefault, SetKey, SignInStarted,
+    SignInState, WaitSignIn,
 };
 use ui::tilo_actions::remote::{ActionCallError, InvokeArgument};
 use ui::tilo_resource::{self, Binds, Effect, Resource};
@@ -155,6 +156,18 @@ pub enum PersonModelsEffect {
         #[param("The provider's id")]
         provider: String,
     },
+    /// Sign in with an `OpenAI` account, to use models on its `ChatGPT`
+    /// plan, or with `api-usage` on its API organisation.
+    #[effect(kind = "outside")]
+    #[effect(job)]
+    SignInToOpenAi {
+        #[param("`subscription` (the ChatGPT plan, the default) or `api-usage`")]
+        using: Option<String>,
+    },
+    /// Stop the `OpenAI` sign-in that waits for its code.
+    #[effect(kind = "outside")]
+    #[effect(job)]
+    CancelOpenAiSignIn,
     /// Choose the model work runs on where no other is chosen.
     #[effect(kind = "outside")]
     #[effect(job, idempotent)]
@@ -265,6 +278,23 @@ enum Outcome {
     Unserved(String),
 }
 
+/// An `OpenAI` sign-in, as far as it got.
+enum SignIn {
+    /// None is under way.
+    Idle,
+    /// The server is asking `OpenAI` for a code.
+    Beginning(AccountUse, ui::InvocationCall),
+    /// The person enters `started`'s code on `OpenAI`'s page; the server is
+    /// asked how it goes.
+    Waiting {
+        using: AccountUse,
+        started: SignInStarted,
+        call: ui::InvocationCall,
+    },
+    /// It ended without a grant, for this reason.
+    Failed(String),
+}
+
 /// The key being typed.
 struct KeyEntry {
     /// The provider it is for.
@@ -307,6 +337,7 @@ pub struct PersonModels {
     /// Why each provider's models could not be listed, when last asked.
     problems: HashMap<String, ListingProblem>,
     key: KeyEntry,
+    sign_in: SignIn,
     naming_other: bool,
     form_name: LocalState<String>,
     form_endpoint: LocalState<String>,
@@ -345,6 +376,7 @@ impl PersonModels {
                 sending: false,
                 answers: KeyAnswers::new(),
             },
+            sign_in: SignIn::Idle,
             naming_other: false,
             form_name: LocalState::new(String::new()),
             form_endpoint: LocalState::new(String::new()),
@@ -394,6 +426,7 @@ impl PersonModels {
     #[must_use]
     pub fn busy(&self) -> bool {
         !self.asked.is_empty()
+            || matches!(self.sign_in, SignIn::Beginning(..) | SignIn::Waiting { .. })
     }
 
     /// The model used where no other is chosen, as a chooser's value;
@@ -541,6 +574,11 @@ impl PersonModels {
                 };
                 self.ask(Asked::Named(provider), person_models::ADD_MODEL, &adding)
             }
+            PersonModelsEffect::SignInToOpenAi { using } => self.begin_sign_in(using.as_deref()),
+            PersonModelsEffect::CancelOpenAiSignIn => {
+                self.cancel_sign_in();
+                Ok(())
+            }
             PersonModelsEffect::ChooseDefaultModel { provider, model } => self.ask(
                 Asked::Everything,
                 person_models::SET_DEFAULT,
@@ -566,16 +604,110 @@ impl PersonModels {
         }
     }
 
+    /// Begin signing in to `OpenAI`, for its plan or `api-usage`, letting
+    /// go of any sign-in under way.
+    fn begin_sign_in(&mut self, using: Option<&str>) -> Result<(), String> {
+        let using = match using {
+            None | Some("subscription") => AccountUse::Subscription,
+            Some("api-usage") => AccountUse::ApiUsage,
+            Some(_) => return Err(t("models-sign-in-use-unknown")),
+        };
+        self.cancel_sign_in();
+        let call = self.remote.invoke(
+            person_models::target(person_models::BEGIN_SIGN_IN),
+            json_argument(&BeginSignIn { using })?,
+            None,
+        );
+        self.sign_in = SignIn::Beginning(using, call);
+        Ok(())
+    }
+
+    /// Let go of the sign-in under way, telling the server.
+    fn cancel_sign_in(&mut self) {
+        if let SignIn::Waiting { started, .. } = &self.sign_in
+            && let Ok(argument) = json_argument(&WaitSignIn {
+                sign_in: started.sign_in.clone(),
+            })
+        {
+            // Nothing waits for the answer: the sign-in is let go here either way.
+            let _ = self.remote.invoke(
+                person_models::target(person_models::CANCEL_SIGN_IN),
+                argument,
+                None,
+            );
+        }
+        self.sign_in = SignIn::Idle;
+    }
+
+    /// Ask the server how the sign-in `started` goes.
+    fn wait_sign_in(&self, started: &SignInStarted) -> Result<ui::InvocationCall, String> {
+        Ok(self.remote.invoke(
+            person_models::target(person_models::WAIT_SIGN_IN),
+            json_argument(&WaitSignIn {
+                sign_in: started.sign_in.clone(),
+            })?,
+            None,
+        ))
+    }
+
+    /// Take what the server answered about the sign-in under way. Whether
+    /// anything changed.
+    fn poll_sign_in(&mut self) -> bool {
+        let outcome = match &self.sign_in {
+            SignIn::Beginning(_, call) | SignIn::Waiting { call, .. } => match settled(call) {
+                Some(outcome) => outcome,
+                None => return false,
+            },
+            SignIn::Idle | SignIn::Failed(_) => return false,
+        };
+        let state = std::mem::replace(&mut self.sign_in, SignIn::Idle);
+        self.sign_in = match (state, outcome) {
+            (_, Outcome::Refused(reason) | Outcome::Unserved(reason)) => SignIn::Failed(reason),
+            (SignIn::Beginning(using, _), Outcome::Answered(value)) => {
+                match serde_json::from_value::<SignInStarted>(value) {
+                    Ok(started) => match self.wait_sign_in(&started) {
+                        Ok(call) => SignIn::Waiting {
+                            using,
+                            started,
+                            call,
+                        },
+                        Err(reason) => SignIn::Failed(reason),
+                    },
+                    Err(_) => SignIn::Failed(t("models-unreadable")),
+                }
+            }
+            (SignIn::Waiting { using, started, .. }, Outcome::Answered(value)) => {
+                match serde_json::from_value::<SignInState>(value) {
+                    Ok(SignInState::Waiting) => match self.wait_sign_in(&started) {
+                        Ok(call) => SignIn::Waiting {
+                            using,
+                            started,
+                            call,
+                        },
+                        Err(reason) => SignIn::Failed(reason),
+                    },
+                    Ok(SignInState::Done { provider }) => {
+                        self.keep(provider);
+                        // Signing in may have chosen the default model too.
+                        self.read();
+                        SignIn::Idle
+                    }
+                    Ok(SignInState::Failed { reason }) => SignIn::Failed(reason),
+                    Err(_) => SignIn::Failed(t("models-unreadable")),
+                }
+            }
+            (other, Outcome::Answered(_)) => other,
+        };
+        true
+    }
+
     fn ask(
         &mut self,
         what: Asked,
         action: &str,
         argument: &impl serde::Serialize,
     ) -> Result<(), String> {
-        let argument = match serde_json::to_value(argument).map_err(|error| error.to_string())? {
-            serde_json::Value::Object(map) => InvokeArgument::Json(map),
-            _ => return Err("a request's arguments are a JSON object".into()),
-        };
+        let argument = json_argument(argument)?;
         let call = self
             .remote
             .invoke(person_models::target(action), argument, None);
@@ -586,7 +718,7 @@ impl PersonModels {
     /// Take what the person typed and what the host answered since the last
     /// pass. Whether what a window shows of this changed.
     pub fn poll(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = self.poll_sign_in();
         for (provider, key) in self.key.answers.take() {
             changed = true;
             let Some(mut key) = key else {
@@ -746,6 +878,14 @@ impl PersonModels {
             Some(kept) => *kept = provider,
             None => kept.providers.push(provider),
         }
+    }
+}
+
+/// `argument` as a request's arguments.
+fn json_argument(argument: &impl serde::Serialize) -> Result<InvokeArgument, String> {
+    match serde_json::to_value(argument).map_err(|error| error.to_string())? {
+        serde_json::Value::Object(map) => Ok(InvokeArgument::Json(map)),
+        _ => Err("a request's arguments are a JSON object".into()),
     }
 }
 

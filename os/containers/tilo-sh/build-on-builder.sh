@@ -53,8 +53,8 @@ labelled() {
 build_programs() {
   cd "$repo"
   cargo build --locked --profile lounge-local --features tilo-server/agents \
-    -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p tilo-cli -p tilolang-process \
-    --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin tilo \
+    -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilolang-process \
+    --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo \
     --bin tilolang-process || return
   # An example is built with its package's dev-dependencies, and Cargo turns their features on
   # for every package in the same build: built beside the server, it would build the server with
@@ -62,7 +62,7 @@ build_programs() {
   cargo build --locked --profile lounge-local -p tilo-account-probe --example mail_stand_in || return
   local dir=$CARGO_TARGET_DIR/$stage/programs program
   mkdir -p "$dir" "$dir/examples"
-  for program in tilo-server discord-worker tilo-api fake-discord tilo tilolang-process; do
+  for program in tilo-server discord-worker tilo-api fake-discord fake-model-providers tilo tilolang-process; do
     cmp -s "$CARGO_TARGET_DIR/lounge-local/$program" "$dir/$program" && continue
     cp --reflink=auto "$CARGO_TARGET_DIR/lounge-local/$program" "$dir/.$program.next"
     mv -f "$dir/.$program.next" "$dir/$program"

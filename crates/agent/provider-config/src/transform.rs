@@ -428,17 +428,25 @@ const COPILOT_HEADERS: [(&str, &str); 4] = [
     ("openai-intent", "conversation-panel"),
 ];
 
-/// The `ChatGPT` account a `ChatGPT` access token is for: the
-/// `chatgpt_account_id` its `https://api.openai.com/auth` claim names. Read,
-/// not verified: the token is the backend's to verify, and the account
-/// only routes the request.
-fn chatgpt_account_id(token: &str) -> Option<String> {
+/// The claims of a JSON Web Token (an `OpenAI` sign-in's access or id
+/// token), read and not verified: whoever issued it verifies it, and its
+/// holder only reads what it says of itself (whose account, until when).
+#[must_use]
+pub fn token_claims(token: &str) -> Option<Value> {
     use base64::Engine as _;
     let payload = token.split('.').nth(1)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload.trim_end_matches('='))
         .ok()?;
-    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// The `ChatGPT` account a `ChatGPT` access token is for: the
+/// `chatgpt_account_id` its `https://api.openai.com/auth` claim names. Read,
+/// not verified: the token is the backend's to verify, and the account
+/// only routes the request.
+fn chatgpt_account_id(token: &str) -> Option<String> {
+    let claims = token_claims(token)?;
     let account = claims
         .get("https://api.openai.com/auth")?
         .get("chatgpt_account_id")?

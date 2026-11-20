@@ -3,14 +3,17 @@
 use std::sync::Arc;
 
 use ui::LocalState;
-use ui::tilo_actions::remote::person_models::{ListingProblem, ProviderView};
+use ui::tilo_actions::remote::person_models::{AccountUse, ListingProblem, ProviderView};
+use ui::tokens::TextRole;
 use ui::widget::{
-    Button, ButtonRole, Dropdown, FieldRole, Presentation, Row, SecretKind, SecretPrompt, Spacer,
-    TextInput, TextInputKind,
+    Button, ButtonRole, Dropdown, FieldRole, Link, Presentation, Row, SecretKind, SecretPrompt,
+    Spacer, Text, TextInput, TextInputKind,
 };
 
 use super::key_field::KeyField;
-use super::{ModelBindings, ModelChoice, PersonModels, PersonModelsEffect, READY_MADE, Work};
+use super::{
+    ModelBindings, ModelChoice, PersonModels, PersonModelsEffect, READY_MADE, SignIn, Work,
+};
 use crate::i18n::{t, t_args};
 use crate::widgets::{
     El, Item, SettingsSection, block, caption, field_row, field_row_described, row, rows, section,
@@ -22,6 +25,9 @@ impl PersonModels {
     /// another, and the model each kind of work runs on. Before a model is
     /// linked it is the first minute alone.
     pub fn sections<B: ModelBindings>(&self, bind: &B) -> Vec<SettingsSection> {
+        if let Some(signing_in) = self.signing_in_section(bind) {
+            return vec![signing_in];
+        }
         if self.linked() != Some(true) {
             return self.first_model_sections(bind);
         }
@@ -52,10 +58,14 @@ impl PersonModels {
         if let Some(provider) = self.providers().iter().find(|provider| provider.configured) {
             return vec![self.choose_model_section(bind, provider)];
         }
+        if let Some(signing_in) = self.signing_in_section(bind) {
+            return vec![signing_in];
+        }
         let mut items = Vec::new();
         for provider in self.providers() {
             items.extend(self.provider_rows(bind, provider));
         }
+        items.extend(self.sign_in_rows(bind));
         items.extend(self.ready_made_rows(bind));
         items.extend(self.said());
         vec![section(&t("models-setup-title"), rows(items))]
@@ -113,7 +123,86 @@ impl PersonModels {
     }
 
     fn add_section<B: ModelBindings>(&self, bind: &B) -> SettingsSection {
-        section(&t("models-add-title"), rows(self.ready_made_rows(bind)))
+        let signed_in = self
+            .providers()
+            .iter()
+            .any(|provider| provider.signs_in && provider.configured);
+        let mut items = if signed_in {
+            Vec::new()
+        } else {
+            self.sign_in_rows(bind)
+        };
+        items.extend(self.ready_made_rows(bind));
+        section(&t("models-add-title"), rows(items))
+    }
+
+    /// Signing in with an `OpenAI` account: to its `ChatGPT` plan, or with
+    /// the smaller button to its API usage. A sign-in that failed says why
+    /// beneath.
+    fn sign_in_rows<B: ModelBindings>(&self, bind: &B) -> Vec<Item> {
+        let plan = Button::new("models.sign-in.chatgpt", &t("models-sign-in"))
+            .role(ButtonRole::Primary)
+            .with_accessible_name(&t("models-sign-in-chatgpt"));
+        let plan = bind.invoking(plan, PersonModelsEffect::SignInToOpenAi { using: None });
+        let usage = Button::new("models.sign-in.api-usage", &t("models-sign-in-api-usage"));
+        let usage = bind.invoking(
+            usage,
+            PersonModelsEffect::SignInToOpenAi {
+                using: Some("api-usage".to_owned()),
+            },
+        );
+        let trailing = Row::new().push(Box::new(usage)).push(Box::new(plan));
+        let mut items = vec![row(Box::new(thing_row(
+            "models.ready.chatgpt",
+            &t("models-chatgpt"),
+            &[t("models-chatgpt-description")],
+            Some(Box::new(trailing)),
+        )))];
+        if let SignIn::Failed(reason) = &self.sign_in {
+            items.push(block(caption(reason)));
+        }
+        items
+    }
+
+    /// While a sign-in is under way, it alone: the code, where it is
+    /// entered, and the way back out.
+    fn signing_in_section<B: ModelBindings>(&self, bind: &B) -> Option<SettingsSection> {
+        let cancel = || {
+            buttons(vec![bind.invoking(
+                Button::new("models.sign-in.cancel", &t("models-sign-in-cancel")),
+                PersonModelsEffect::CancelOpenAiSignIn,
+            )])
+        };
+        let title = |using: &AccountUse| match using {
+            AccountUse::Subscription => t("models-sign-in-title"),
+            AccountUse::ApiUsage => t("models-sign-in-api-usage-title"),
+        };
+        match &self.sign_in {
+            SignIn::Beginning(using, _) => Some(section(
+                &title(using),
+                rows(vec![
+                    block(caption(&t("models-sign-in-beginning"))),
+                    cancel(),
+                ]),
+            )),
+            SignIn::Waiting { using, started, .. } => Some(section(
+                &title(using),
+                rows(vec![
+                    block(Box::new(Text::new(&t("models-sign-in-enter")))),
+                    block(Box::new(
+                        Text::new(&started.code).with_role(TextRole::Title),
+                    )),
+                    block(Box::new(
+                        Link::new(&started.page)
+                            .with_label(&t("models-sign-in-open-page"))
+                            .with_id("models.sign-in.page"),
+                    )),
+                    block(caption(&t("models-sign-in-waiting"))),
+                    cancel(),
+                ]),
+            )),
+            SignIn::Idle | SignIn::Failed(_) => None,
+        }
     }
 
     /// The model each kind of work runs on, in a person's words, with the
@@ -160,12 +249,33 @@ impl PersonModels {
     fn provider_rows<B: ModelBindings>(&self, bind: &B, provider: &ProviderView) -> Vec<Item> {
         let id = provider.id.as_str();
         // A kept key the provider turns away is never shown as added.
-        let state = match (provider.configured, self.problems.get(id)) {
-            (true, Some(ListingProblem::KeyRefused)) => t("models-key-not-accepted"),
-            (true, _) => t("models-key-kept"),
-            (false, _) => t("models-key-none"),
+        let state = match (
+            provider.signs_in,
+            provider.configured,
+            self.problems.get(id),
+        ) {
+            (true, true, _) => t("models-signed-in"),
+            (true, false, _) => t("models-signed-out"),
+            (false, true, Some(ListingProblem::KeyRefused)) => t("models-key-not-accepted"),
+            (false, true, _) => t("models-key-kept"),
+            (false, false, _) => t("models-key-none"),
         };
-        let key = if provider.configured {
+        let key = if provider.signs_in && !provider.configured {
+            bind.invoking(
+                Button::new(
+                    &format!("models.sign-in.again.{id}"),
+                    &t("models-sign-in-again"),
+                ),
+                PersonModelsEffect::SignInToOpenAi { using: None },
+            )
+        } else if provider.signs_in {
+            bind.invoking(
+                Button::new(&format!("models.sign-out.{id}"), &t("models-sign-out")),
+                PersonModelsEffect::ForgetProviderKey {
+                    provider: id.to_owned(),
+                },
+            )
+        } else if provider.configured {
             bind.invoking(
                 Button::new(&format!("models.key.remove.{id}"), &t("models-key-remove")),
                 PersonModelsEffect::ForgetProviderKey {
