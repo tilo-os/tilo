@@ -1716,12 +1716,12 @@ impl FrameHarness {
     }
 
     /// Resize in logical pixels and settle geometry-dependent composition before exposing targets,
-    /// accessibility or a frame; equal sizes do nothing.
+    /// accessibility or a frame; equal sizes do nothing, and leave the next frame quiet.
     pub fn resize(&mut self, viewport: (u32, u32)) -> Result<(), crate::widget::WidgetLayoutError> {
-        self.invalidate_local();
         if self.viewport == viewport && self.last_layout_viewport == Some(viewport) {
             return Ok(());
         }
+        self.invalidate_local();
         self.viewport = viewport;
         self.try_relayout()
     }
@@ -2791,10 +2791,13 @@ impl FrameHarness {
 
     /// Whether a frame paints its scene into [`Self::scene`]. A page that
     /// shows a frame as its composition instead sets this false: its frames
-    /// skip the paint and keep every booking the paint makes.
+    /// skip the paint and keep every booking the paint makes. A host that
+    /// says the same each frame leaves the frame quiet.
     pub fn set_scene_drawn(&mut self, drawn: bool) {
-        self.invalidate_local();
-        self.scene_drawn = drawn;
+        if self.scene_drawn != drawn {
+            self.invalidate_local();
+            self.scene_drawn = drawn;
+        }
     }
 
     /// Which surface this tree is on the thread's motion clock: what moves for what it draws runs on
@@ -5986,7 +5989,14 @@ impl FrameHarness {
         }
         self.track_tooltip(event);
         crate::focus_visible::note(event);
-        if !(self.coalesce_input_frames && matches!(event, WindowEvent::MouseWheel { .. })) {
+        // Pointer motion, and a wheel on a host on its frame clock, are left to
+        // the dispatch to judge ([`Self::send_with_host_navigation`]): a move
+        // that changes nothing a frame reads keeps the next frame quiet, so a
+        // hover lays nothing out and syncs nothing. Every other event may
+        // change what the frame reads unseen.
+        let judged_by_dispatch = matches!(event, WindowEvent::CursorMoved { .. })
+            || (self.coalesce_input_frames && matches!(event, WindowEvent::MouseWheel { .. }));
+        if !judged_by_dispatch {
             self.invalidate_local();
         }
         if self.pump_component_wakes_checked().is_err() {
@@ -6008,6 +6018,7 @@ impl FrameHarness {
         let renamed = crate::latin_chord::renamed(event, self.modifiers.state());
         let event = renamed.as_ref().unwrap_or(event);
         if self.part_row_event(event) {
+            self.invalidate_local();
             return;
         }
         let history_input = self
@@ -6025,6 +6036,7 @@ impl FrameHarness {
             return;
         }
         if self.caller_palette_event(event) {
+            self.invalidate_local();
             return;
         }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
@@ -6393,10 +6405,12 @@ impl FrameHarness {
         }
         self.last_send_skipped_relayout = inert;
         // A host on its frame clock takes the frame of a wheel notch, a
-        // pinch, a key, a composed text or a pointer move there: they arrive faster
-        // than frames (a word typed, a drag), and each frame composed here
-        // would be replaced unseen by the next, before the host frame
-        // lays out and draws once more for the screen.
+        // pinch, a key, a composed text, a button or a pointer move there:
+        // they arrive faster than frames (a word typed, a drag), and each
+        // frame composed here would be replaced unseen by the next, before
+        // the host frame lays out and draws once more for the screen. A
+        // press laid out here was laid out again by that frame: a page
+        // switch cost two solves.
         let coalesced = self.coalesce_input_frames
             && !history_input
             && matches!(
@@ -6406,6 +6420,7 @@ impl FrameHarness {
                     | WindowEvent::KeyboardInput { .. }
                     | WindowEvent::Ime(_)
                     | WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseInput { .. }
             );
         if coalesced {
             self.input_frame_pending |= !inert;
@@ -6421,7 +6436,7 @@ impl FrameHarness {
         }
     }
 
-    /// Leave the frame a wheel, pinch, key, composed text or pointer move asks for
+    /// Leave the frame a wheel, pinch, key, composed text, button or pointer move asks for
     /// to the host's next [`Self::poll_frame`] instead of composing, laying
     /// out and drawing it inside [`Self::send_host_event`]. For a host that
     /// presents on its frame clock, as a browser page does on animation
@@ -7842,13 +7857,16 @@ impl FrameHarness {
         self.input_scale
     }
 
-    /// Set the display's scale: device pixels per logical pixel, by which input is scaled.
+    /// Set the display's scale: device pixels per logical pixel, by which input is scaled. A host
+    /// that says the same scale each frame leaves the frame quiet.
     pub fn set_input_scale(&mut self, scale: f64) -> Result<(), String> {
-        self.invalidate_local();
         if !scale.is_finite() || scale <= 0.0 {
             return Err("input scale must be finite and positive".into());
         }
-        self.input_scale = scale;
+        if scale.to_bits() != self.input_scale.to_bits() {
+            self.invalidate_local();
+            self.input_scale = scale;
+        }
         Ok(())
     }
 

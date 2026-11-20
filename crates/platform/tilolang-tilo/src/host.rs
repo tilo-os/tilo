@@ -1153,6 +1153,12 @@ impl Host {
         self.inner.suspended.borrow_mut().pop_front()
     }
 
+    /// Whether the outbox holds an outside effect this device has yet to carry out.
+    #[must_use]
+    pub fn outbox_waits(&self) -> bool {
+        self.inner.store.outbox_pending_count() > 0
+    }
+
     /// Carry out the outside effects of this device that wait in the document
     /// ([`Runtime::settle`]): each is marked as being handed over, then goes to the sink, and
     /// what became of it is queued for the API like any other change. What `delivery(r)`
@@ -1161,7 +1167,7 @@ impl Host {
     /// # Errors
     /// No sink is set, or the store failed.
     pub fn settle_outbox(&self) -> Result<OutboxSettled, String> {
-        if self.inner.store.outbox_pending_count() == 0 {
+        if !self.outbox_waits() {
             self.inner.runtime.refresh_deliveries();
             return Ok(OutboxSettled::default());
         }

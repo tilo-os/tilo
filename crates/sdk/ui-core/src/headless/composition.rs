@@ -424,9 +424,9 @@ impl FrameHarness {
     }
 
     /// Scroll the widget at `path` to `offset` logical pixels, as a host whose own scroller the person
-    /// moved asks; whether it took it.
+    /// moved asks; whether it moved. A scroll changes only where the view stands, as a wheel's pan
+    /// does: the frame after it places what came into view and syncs nothing.
     pub fn scroll_composed(&mut self, path: &str, offset: f64) -> bool {
-        self.invalidate_local();
         let Some(&node) = self.named_target_nodes().get(path) else {
             return false;
         };
@@ -445,8 +445,7 @@ impl FrameHarness {
         };
         matches!(
             scrolled,
-            Ok(crate::widget::scrollbar::PrimaryScrollResult::Changed(_)
-                | crate::widget::scrollbar::PrimaryScrollResult::Unchanged(_))
+            Ok(crate::widget::scrollbar::PrimaryScrollResult::Changed(_))
         )
     }
 }

@@ -349,7 +349,10 @@ impl ApplicationHandler<u64> for Runner {
                             desktop.shared.wake();
                         }
                         m.present_after_input();
-                    } else {
+                    } else if !(pointer_motion && m.frame.last_send_skipped_relayout()) {
+                        // Motion that moved nothing a frame shows (no hover,
+                        // no drag) asks for none: a frame of it composed what
+                        // the last one did.
                         m.pending = true;
                         m.window.request_redraw();
                     }

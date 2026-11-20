@@ -1360,10 +1360,10 @@ impl Instance {
         if self.mode == Mode::Past {
             return Vec::new();
         }
-        let Some(host) = self.host() else {
+        let Some(ready) = self.host() else {
             return Vec::new();
         };
-        let tickets = queue_commits(&host, &self.outgoing, 0, None);
+        let tickets = queue_commits(&ready, &self.outgoing, 0, None);
         self.settle_due = true;
         tickets
     }
@@ -2367,9 +2367,13 @@ impl Instance {
     }
 
     /// Whether the document's outbox owes a settlement a frame would take in: only a live window
-    /// settles it, and only once it reads the document.
+    /// settles it, only once it reads the document, and only while the outbox holds an effect (a
+    /// window that commits after every frame, and committed nothing, rests).
     fn settle_owed(&self) -> bool {
-        self.settle_due && !self.opening && self.mode == Mode::Live
+        self.settle_due
+            && !self.opening
+            && self.mode == Mode::Live
+            && self.host().is_some_and(|ready| ready.outbox_waits())
     }
 
     /// Wait for the work under way off the frame and take it in, so that what the window shows

@@ -169,14 +169,16 @@ pub(super) fn forget(id: u64) {
 
 /// The person scrolled the scroller of the widget at `path` of mount `id`
 /// to `offset` CSS pixels: the widget scrolls there, and the next frame
-/// composes what came into view. Returns whether the widget took it.
+/// composes what came into view. Returns whether the widget moved; one
+/// that stood there already asks for no frame.
 ///
 /// # Errors
 ///
 /// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn dom_scrolled(id: u64, path: &str, offset: f64) -> Result<bool, JsValue> {
-    with_mount(id, |m| {
+    // A scroll is the view moving, as a wheel is: it counts as no entry.
+    with_mount_quietly(id, |m| {
         let scrolled = m.frame.scroll_composed(path, offset);
         if scrolled {
             m.pending = true;

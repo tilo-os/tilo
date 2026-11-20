@@ -326,13 +326,33 @@ const QUIET_ENTRY_POINTS: &[QuietEntry] = &[
     },
     QuietEntry {
         file: "headless.rs",
+        entry: "set_scene_drawn",
+        why: "a frame reads it anew only when it changes, and then it invalidates.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "set_input_scale",
+        why: "a frame reads it anew only when it changes, and then it invalidates.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "resize",
+        why: "an equal size changes nothing a frame reads; another invalidates before it lays out.",
+    },
+    QuietEntry {
+        file: "headless/composition.rs",
+        entry: "scroll_composed",
+        why: "moves only where a view stands, as a wheel's pan does; a frame places what came into view.",
+    },
+    QuietEntry {
+        file: "headless.rs",
         entry: "send",
         why: "judged once dispatched, as the live App judges input: all but a wheel that only panned and inert input that moved nothing.",
     },
     QuietEntry {
         file: "headless.rs",
         entry: "send_host_event",
-        why: "a wheel coalesced into the next frame counts once dispatched.",
+        why: "pointer motion, and a wheel coalesced into the next frame, count once dispatched, as `send` judges them.",
     },
     QuietEntry {
         file: "headless.rs",
