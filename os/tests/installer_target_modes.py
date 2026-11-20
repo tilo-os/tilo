@@ -45,6 +45,7 @@ class InstallerTargetModeTests(unittest.TestCase):
 LOCAL_IMG=fixture
 OFFLINE_TARGET=1
 die() { echo "$*" >&2; exit 1; }
+phase() { :; }
 fixture_preflight() { return 0; }
 fixture_cmdline() {
   case "$1" in
