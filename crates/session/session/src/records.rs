@@ -433,7 +433,7 @@ pub(crate) mod testing {
             if held && !self.holds(workspace, app, resource) {
                 return Ok(DocumentRead::Absent);
             }
-            match self.0.record_update(workspace, app, resource, since)? {
+            match self.0.document_update(workspace, app, resource, since)? {
                 crate::engine::ResourceReading::Captured {
                     revision,
                     heads,
@@ -628,7 +628,7 @@ pub(crate) mod testing {
         /// The records `app`'s index of `workspace` names, as the workspace holds it.
         pub(crate) fn names(&self, app: &str, workspace: &str) -> Vec<String> {
             let Ok(crate::engine::ResourceReading::Captured { bytes, .. }) =
-                self.engine.record_update(workspace, app, "", None)
+                self.engine.document_update(workspace, app, "", None)
             else {
                 return Vec::new();
             };

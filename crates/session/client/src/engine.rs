@@ -356,7 +356,44 @@ impl Founders {
 /// keys that opened each. Each is behind a lock of its own, held while it is read: a second read
 /// of the same resource waits for the first and goes on from what it opened, rather than opening
 /// it whole beside it.
-type KeptResources = BTreeMap<(WorkspaceId, String, String), Arc<std::sync::Mutex<KeptResource>>>;
+#[derive(Default)]
+struct KeptResources {
+    /// Each kept resource, with when it was last read ([`Self::uses`] at the time).
+    by_route: BTreeMap<KeptRoute, (u64, Arc<std::sync::Mutex<KeptResource>>)>,
+    /// How many reads took a kept resource so far.
+    uses: u64,
+}
+
+/// A kept resource's workspace, app and document id.
+type KeptRoute = (WorkspaceId, String, String);
+
+impl KeptResources {
+    /// The resource at `route`, kept from now on. When [`KEPT_DOCUMENTS`] are kept already, the one
+    /// read longest ago is let go: a reader that goes back over a few resources again and again
+    /// (a folder's tree, its every document read each time a write lands) keeps them, where
+    /// letting go of whichever came first by name made it open whole a resource it had just read.
+    fn take(&mut self, route: KeptRoute) -> Arc<std::sync::Mutex<KeptResource>> {
+        if !self.by_route.contains_key(&route)
+            && self.by_route.len() >= KEPT_DOCUMENTS
+            && let Some(oldest) = self
+                .by_route
+                .iter()
+                .min_by_key(|(_, (used, _))| *used)
+                .map(|(route, _)| route.clone())
+        {
+            self.by_route.remove(&oldest);
+        }
+        self.uses = self.uses.wrapping_add(1);
+        let now = self.uses;
+        let (read_last, kept) = self.by_route.entry(route).or_default();
+        *read_last = now;
+        Arc::clone(kept)
+    }
+
+    fn remove(&mut self, route: &KeptRoute) {
+        self.by_route.remove(route);
+    }
+}
 
 /// One sealed resource as this device last opened it, with the keys that opened it; `None` until
 /// a read opened it.
@@ -401,7 +438,7 @@ type RouteKeys = BTreeMap<WorkspaceId, key_group::ContentKeys>;
 type OpenSealed<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>;
 
 /// How many sealed records [`Engine::read_resource`] keeps opened between reads.
-const KEPT_RECORDS: usize = 64;
+const KEPT_DOCUMENTS: usize = 64;
 
 /// The writes this device made that its replica has not taken in yet, by record, as document
 /// frames in the clear: they wait for their record's keys (nothing goes out unsealed) or for workspace
@@ -708,7 +745,7 @@ impl Engine {
     /// does not, so a reader that follows a record merges what changed rather than all of it.
     /// # Errors
     /// As [`Self::record`].
-    pub fn record_update(
+    pub fn document_update(
         &self,
         workspace: &str,
         app: &str,
@@ -861,6 +898,21 @@ impl Engine {
             .flatten())
     }
 
+    /// A digest of what this device's replica admitted of `workspace`'s `app`'s `document`, sealed
+    /// or in the clear, reading and opening nothing: equal at two moments, nothing was admitted
+    /// to it between them, so a reader that read it at the first need not read it again. `None`
+    /// for a document not held here. It says nothing of who may read it: the read does.
+    #[must_use]
+    pub fn admitted_digest(&self, workspace: &str, app: &str, document: &str) -> Option<[u8; 32]> {
+        let workspace = WorkspaceId::parse(workspace)?;
+        self.owner
+            .with_current(workspace, |view| {
+                Ok(view.peer().document_revision(app, document))
+            })
+            .ok()
+            .flatten()
+    }
+
     /// The first second after `now` at which a read of `workspace`'s records can be decided
     /// differently with nothing written ([`crate::workspace_keys::next_policy_change`]).
     ///
@@ -977,13 +1029,7 @@ impl Engine {
         // A sealed resource another read is opening now is waited for, and read on from what that
         // one opened: taking it out while it was read made the second reader open it whole, which
         // for a chain part of a thousand items costs the second caller most of a second.
-        let opening = sealed.then(|| {
-            let mut kept = self.kept.lock_recover();
-            if !kept.contains_key(&key) && kept.len() >= KEPT_RECORDS {
-                kept.pop_first();
-            }
-            Arc::clone(kept.entry(key).or_default())
-        });
+        let opening = sealed.then(|| self.kept.lock_recover().take(key));
         let read = opened_under(opening.as_deref(), &used, |kept| {
             read(
                 workspace,
@@ -1635,6 +1681,7 @@ impl Engine {
     pub fn delete(&self, workspace: WorkspaceId) -> Result<bool, String> {
         self.kept
             .lock_recover()
+            .by_route
             .retain(|(held, _, _), _| *held != workspace);
         self.owner.release_workspace(workspace)
     }
@@ -2178,6 +2225,25 @@ mod tests {
         assert_eq!(super::kept_under(Some(opened()), &rotated), None);
         assert_eq!(super::kept_under(Some(opened()), &handed), None);
         assert_eq!(super::kept_under::<Option<&str>>(None, &held), None);
+    }
+
+    /// A document read again between reads of more others than are kept stays opened: a folder's
+    /// tree of more parts than that reads back the parts it writes after every write, and letting
+    /// go of whichever came first by name made each of those reads open the part's whole history.
+    #[test]
+    fn a_document_read_again_and_again_stays_opened_among_more_than_are_kept() {
+        let workspace = WorkspaceId::from_u128(7);
+        let route = |document: &str| (workspace, "files".to_owned(), document.to_owned());
+        let mut kept = super::KeptResources::default();
+        let again = kept.take(route("a-read-again"));
+        for other in 0..super::KEPT_DOCUMENTS * 3 {
+            let _ = kept.take(route(&format!("z-{other}")));
+            assert!(
+                Arc::ptr_eq(&again, &kept.take(route("a-read-again"))),
+                "the document read again was let go after {other} others"
+            );
+        }
+        assert_eq!(kept.by_route.len(), super::KEPT_DOCUMENTS);
     }
 
     use super::*;

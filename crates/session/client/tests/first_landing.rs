@@ -156,7 +156,7 @@ impl Reader {
             if !self.watched.contains(&route) {
                 continue;
             }
-            match page.engine().record_update(
+            match page.engine().document_update(
                 &route.cluster_id,
                 &route.app_id,
                 &route.document,

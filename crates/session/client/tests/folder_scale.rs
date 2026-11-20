@@ -215,7 +215,7 @@ impl Reader {
         let chunks = std::mem::take(&mut self.unread);
         for chunk in chunks {
             let route = route(&self.workspace, chunk);
-            let reading = self.link.engine().record_update(
+            let reading = self.link.engine().document_update(
                 &route.cluster_id,
                 &route.app_id,
                 &route.document,

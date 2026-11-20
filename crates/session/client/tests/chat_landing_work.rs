@@ -196,7 +196,7 @@ async fn guest_takes_in(
             let route = if record == chat.document { chat } else { part };
             let heads = read_so_far.get(&record).map(|(heads, _)| heads.clone());
             work.reads += 1;
-            let read = page.engine().record_update(
+            let read = page.engine().document_update(
                 &route.cluster_id,
                 &route.app_id,
                 &route.document,

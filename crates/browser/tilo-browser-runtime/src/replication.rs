@@ -1328,7 +1328,7 @@ impl Joined {
     fn read_landed(&mut self, route: &DocumentRoute) -> Option<Result<ResourceReading, String>> {
         let kept = self.kept_heads(route);
         let read = tilo_automerge_isolate::away::deferring(|| {
-            self.peer.engine().record_update(
+            self.peer.engine().document_update(
                 &route.cluster_id,
                 &route.app_id,
                 &route.document,

@@ -165,23 +165,24 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let last =
-            match guest
-                .engine()
-                .record_update(&chat.cluster_id, &chat.app_id, &chat.document, None)
-            {
-                Ok(ResourceReading::Captured { bytes, .. }) => {
-                    let doc = AutoCommit::load(&bytes).unwrap();
-                    let keys: Vec<String> = doc.keys(automerge::ROOT).collect();
-                    if keys.len() == 3 {
-                        assert_eq!(keys, ["early-1", "early-2", "kind"]);
-                        break;
-                    }
-                    format!("read {keys:?}")
+        let last = match guest.engine().document_update(
+            &chat.cluster_id,
+            &chat.app_id,
+            &chat.document,
+            None,
+        ) {
+            Ok(ResourceReading::Captured { bytes, .. }) => {
+                let doc = AutoCommit::load(&bytes).unwrap();
+                let keys: Vec<String> = doc.keys(automerge::ROOT).collect();
+                if keys.len() == 3 {
+                    assert_eq!(keys, ["early-1", "early-2", "kind"]);
+                    break;
                 }
-                Ok(_) => "nothing to read yet".into(),
-                Err(error) => format!("refused: {error}"),
-            };
+                format!("read {keys:?}")
+            }
+            Ok(_) => "nothing to read yet".into(),
+            Err(error) => format!("refused: {error}"),
+        };
         assert!(
             Instant::now() < deadline,
             "the newcomer never read the record whole; last: {last}"

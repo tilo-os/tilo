@@ -322,7 +322,7 @@ async fn reads_whole(
     loop {
         let read =
             page.engine()
-                .record_update(&route.cluster_id, &route.app_id, &route.document, None);
+                .document_update(&route.cluster_id, &route.app_id, &route.document, None);
         if let Ok(ResourceReading::Captured { bytes, .. }) = &read {
             let doc = AutoCommit::load(bytes).unwrap();
             let has: BTreeSet<String> = doc.keys(automerge::ROOT).collect();
