@@ -85,9 +85,11 @@ out="$(cd "$out" && pwd)"
 evidence="$out/evidence"
 mkdir -p "$evidence"
 export TILO_VM_CYCLE="${TILO_VM_CYCLE:-server-plan-cycle-$$}"
-storage="${TILO_SERVER_CYCLE_STORAGE:-$(dirname "$out")/.$(basename "$out")-storage-$TILO_VM_CYCLE}"
+# Each VM's run directory holds Unix sockets, whose paths a kernel bounds at
+# 108 bytes, so keep this beside the artifacts under a short name.
+storage="${TILO_SERVER_CYCLE_STORAGE:-$(dirname "$out")/.plan-cycle-$TILO_VM_CYCLE}"
 mkdir -p "$storage"
-cycle_dir="$storage/vm-cycles/$TILO_VM_CYCLE"
+cycle_dir="$storage"
 mkdir -p "$cycle_dir"
 
 export TILO_MEM="${TILO_MEM:-8192}"
