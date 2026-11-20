@@ -137,6 +137,34 @@ tilo_test_env::scenario! {
         h.relayout_at((280, 360)).expect("layout");
         assert!(h.root::<NavList>().row_rect("design").is_none());
     }
+
+    phase the_keyboard_passes_a_row_a_press_chooses;
+    // A call's row joins the call when chosen: walking the list by key
+    // passes it, and Enter on it chooses it.
+    {
+        let chosen = Rc::new(Cell2::new(Vec::<String>::new()));
+        let seen = Rc::clone(&chosen);
+        let list = NavList::new(vec![NavSection::untitled(
+            "places",
+            vec![
+                NavItem::new("general", "general"),
+                NavItem::new("voice", "voice").chosen_by_press(),
+                NavItem::new("ada", "Ada"),
+            ],
+        )])
+        .selected("general")
+        .on_view("places", move |id| seen.borrow_mut().push(id));
+        let mut h = harness(list, Theme::dark());
+        focus(&mut h);
+        assert!(key(&mut h, Key::Named(NamedKey::ArrowDown)));
+        assert!(chosen.borrow().is_empty(), "passing it chooses nothing");
+        assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("general"));
+        assert!(key(&mut h, Key::Named(NamedKey::ArrowDown)));
+        assert_eq!(chosen.borrow().as_slice(), ["ada"], "the row beyond it is chosen");
+        assert!(key(&mut h, Key::Named(NamedKey::ArrowUp)));
+        key(&mut h, Key::Named(NamedKey::Enter));
+        assert_eq!(chosen.borrow().last().map(String::as_str), Some("voice"), "Enter chooses it");
+    }
 }
 
 fn harness(list: NavList, theme: Theme) -> FrameHarness {

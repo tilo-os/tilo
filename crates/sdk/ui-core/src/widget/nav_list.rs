@@ -249,6 +249,10 @@ pub struct NavItem {
     pub drop_target: bool,
     /// The label can be renamed in place ([`NavList::on_rename_action`]).
     pub editable_label: bool,
+    /// Choosing the row does something beyond showing a place (joining a
+    /// call), so a click or Enter chooses it and the arrow keys only pass it
+    /// ([`Self::chosen_by_press`]).
+    pub chosen_by_press: bool,
     pub secondary: Option<String>,
     pub meta: Option<String>,
     pub status: Option<NavItemStatus>,
@@ -324,6 +328,7 @@ impl NavItem {
             ensure_expanded: false,
             drop_target: false,
             editable_label: false,
+            chosen_by_press: false,
             secondary: None,
             meta: None,
             status: None,
@@ -402,6 +407,16 @@ impl NavItem {
     #[must_use]
     pub fn editable_label(mut self) -> Self {
         self.editable_label = true;
+        self
+    }
+
+    /// Choosing the row does something beyond showing a place, as a call's
+    /// row joins the call: a click or Enter chooses it, and the arrow
+    /// keys move past it to the rows beyond without choosing it, so walking
+    /// the list never joins a call on the way.
+    #[must_use]
+    pub fn chosen_by_press(mut self) -> Self {
+        self.chosen_by_press = true;
         self
     }
 
@@ -599,6 +614,9 @@ fn control_row(target: &str) -> Option<&str> {
 #[derive(Default)]
 struct NavShared {
     checkable: HashSet<String>,
+    /// The row keys of items a press chooses and the arrow keys only pass
+    /// ([`NavItem::chosen_by_press`]).
+    chosen_by_press: HashSet<String>,
     item_actions: Vec<String>,
     section_actions: HashMap<String, String>,
     view: Option<NavView>,
@@ -840,6 +858,11 @@ impl NavList {
             .filter_map(|index| model.row(index))
             .filter(|row| model.is_checkable(&row.key))
             .map(|row| row.key.clone())
+            .collect();
+        shared.chosen_by_press = all_items(&self.sections)
+            .into_iter()
+            .filter(|item| item.chosen_by_press)
+            .map(|item| format!("item:{}", item.id))
             .collect();
         shared.section_actions = self
             .sections
@@ -1621,10 +1644,18 @@ impl NavList {
             return;
         };
         self.list.reveal(&key);
-        if self.list.model().is_item(&key) {
-            self.list.select_only(Some(key.clone()));
-            self.shared.borrow_mut().choose(&key);
+        if !self.list.model().is_item(&key) {
+            return;
         }
+        if self.shared.borrow().chosen_by_press.contains(&key) {
+            // The keyboard rests on it; Enter chooses it.
+            let left = self.list.focused_key().cloned();
+            self.list.focus_row(key.clone());
+            self.list.invalidate_rows(left.into_iter().chain([key]));
+            return;
+        }
+        self.list.select_only(Some(key.clone()));
+        self.shared.borrow_mut().choose(&key);
     }
 
     /// The row a key on the row of `key` folds or leaves for: the item or
