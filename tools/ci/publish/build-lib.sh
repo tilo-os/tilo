@@ -138,12 +138,16 @@ archive_digest() {
 # (tools/ci/publish/bootc-helper.sh reseal) when TILO_BOOTC_RESEAL names it, else the published
 # build of these sources, else built here.
 bootc_helper() {
-  local key ref
+  local key ref context
   if [[ -n ${TILO_BOOTC_RESEAL:-} ]]; then
     [[ -f $TILO_BOOTC_RESEAL && -x $TILO_BOOTC_RESEAL ]] || die "TILO_BOOTC_RESEAL is not a built bootc: $TILO_BOOTC_RESEAL"
     ref=localhost/tilo-bootc-reseal:given
-    printf 'FROM scratch\nCOPY bootc /bootc\n' \
-      | podman build -q --network=none -t "$ref" -f - "$(dirname -- "$TILO_BOOTC_RESEAL")" >/dev/null
+    context=$(mktemp -d "${TMPDIR:-/var/tmp}/bootc-reseal.XXXXXX")
+    install -m 0755 "$TILO_BOOTC_RESEAL" "$context/bootc"
+    printf 'FROM scratch\nCOPY bootc /bootc\n' > "$context/Containerfile"
+    podman build -q --network=none -t "$ref" -f "$context/Containerfile" "$context" >/dev/null \
+      || die "could not make an image of $TILO_BOOTC_RESEAL"
+    rm -rf "$context"
     printf '%s' "$ref"
     return
   fi
