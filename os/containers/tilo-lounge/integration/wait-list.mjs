@@ -188,6 +188,7 @@ const phoneForm = await phone.waitFor(`document.documentElement.dataset.waitList
 report.phone = await phone.evaluate(`({
   waitList: document.documentElement.dataset.waitList ?? null,
   heading: document.getElementById('arrival-refusal-heading')?.textContent?.trim() ?? null,
+  body: document.getElementById('arrival-refusal-body')?.textContent?.trim() ?? null,
   button: document.querySelector('#arrival-wait button')?.textContent?.trim() ?? null,
   note: document.getElementById('arrival-wait-note')?.textContent?.trim() ?? null,
   stacked: (() => {
@@ -198,10 +199,11 @@ report.phone = await phone.evaluate(`({
 const phoneShot = await phone.screenshot().catch(() => null);
 if (phoneShot) writeFileSync(join(out, '4-phone-german.png'), phoneShot);
 if (!phoneForm) await finish(1, `the phone in German never offered the wait list's field: ${JSON.stringify(report.phone)}`);
-// The entry's refusal and its wait list speak the visitor's language: a
-// German phone reads German, with the same form under it.
-if (!/nur mit Einladung offen/.test(report.phone?.heading ?? '')) {
-  await finish(1, `the phone in German read the heading “${report.phone?.heading}”, not the German refusal`);
+// The entry's wait list speaks the visitor's language: a German phone reads
+// the German invitation and the German refusal beside it, with the same form
+// under it. The refusal is the body's: the heading is the invitation's.
+if (!/nur mit Einladung/.test(report.phone?.body ?? '')) {
+  await finish(1, `the phone in German read “${report.phone?.heading}” / “${report.phone?.body}”, not the German wait list`);
 }
 if (!/Auf die Warteliste/.test(report.phone?.button ?? '')) {
   await finish(1, `the phone in German read the button “${report.phone?.button}”, not the German wait list`);

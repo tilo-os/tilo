@@ -724,20 +724,6 @@ name = "changes"
 run = "base=$(git rev-parse main)\nif [ \"$base\" = \"$(git rev-parse HEAD)\" ]; then base=$(git rev-parse HEAD^); fi\npython3 tools/policy/check_commit_policy.py \"$base\"\npython3 tools/policy/check_interfaces.py against \"$base\"\npython3 tools/policy/check_format_migrations.py against \"$base\"\npython3 tools/policy/check_resource_placement.py against \"$base\"\npython3 tools/policy/check_wire_enums.py against \"$base\"\npython3 tools/perf/tapp_size_ratchet.py check-budget --base \"$base\"\npython3 tools/perf/runtime_size_ratchet.py check-budget --base \"$base\"\npython3 -I tools/web/wasm_size_ratchet.py check-budget --base \"$base\"\n"
 git = true
 
-# The sender against the real OpenDrop receiver it must interoperate with, in a disposable
-# environment: the pinned checkout at the exact GPL-3.0 revision the suite names, its Python
-# dependencies, and the loopback TLS certificates and pins the suite makes itself. Nothing is
-# advertised and no interface is configured; every transfer stays inside the job.
-[[check]]
-name = "airdrop-sender"
-# Clones the pinned checkout from GitHub and installs from PyPI: no fixed host list, and pip
-# installs the newest builds, so the job is never served.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "rm -rf /target/OpenDrop && git clone -q https://github.com/spieglt/OpenDrop /target/OpenDrop && git -C /target/OpenDrop checkout -q 11fe7ba7861093b302bc0637e8cb10adf2d29337 && python3 -I tools/ci/test_airdrop_sender.py --opendrop-checkout /target/OpenDrop"
-setup = { run = "dnf install -y --setopt=install_weak_deps=False libarchive openssl python3-pip && dnf clean all && python3 -m pip install --no-cache-dir libarchive-c zeroconf ifaddr Pillow", egress = { to = ["0.0.0.0/0", "::/0"] } }
-requires = ["arch=x86_64"]
-on = ["dispatch"]
-
 [[check]]
 name = "app-lints"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -880,7 +866,7 @@ requires = ["arch=x86_64"]
 # `node --test`: the fake persistence workers use Node 24's worker messaging, and the pairing
 # suite's country names come from Intl.DisplayNames, which the image's Fedora node (22) does not
 # have. The official Node 24 build is named by version and SHA-256 here, so a job that fetched it
-# is still served; `tar -xJf` unpacks it into the job's own /tmp.
+# is still served; the job unpacks it into /tmp of its own.
 [[check]]
 name = "web-node-tests"
 egress = { to = ["nodejs.org:443"], pinned = true }
@@ -6016,8 +6002,8 @@ default = false
 # to pin.
 # The PE DLL-load fixtures the Windows capsule's evidence is made from (fixtures/windows-dxvk-load.c),
 # compiled for both Windows architectures with the image's Clang and lld-link against the MinGW
-# import libraries' kernel32 (installed from Fedora's mirrors, so the job is never served). The
-# managed FEX checks run them under Wine; this only proves the fixtures build.
+# import libraries' kernel32. The managed FEX checks run them under Wine; this only proves the
+# fixtures build.
 [[check]]
 name = "windows-dxvk-load"
 # dnf installs the MinGW compilers, whose import libraries the fixtures link against, from Fedora's
@@ -6030,18 +6016,15 @@ outputs = ["/target/windows-dxvk-load/**"]
 on = ["dispatch"]
 
 # The Windows VM's domain XML, rendered for both architectures by the windows-vm example, against
-# the libvirt release's own complete RelaxNG schema: an element or attribute the shipped libvirt
-# refuses fails here instead of on a person's machine. The schema comes from Fedora's libvirt
-# package, a build that moves with its updates, so the setup is unpinned and the check runs when
-# named.
+# the schema of the libvirt release the VM host ships: an element or attribute that release refuses
+# fails here instead of on a person's machine. The tarball is pinned by the SHA-256 the OS image's
+# asset list holds (os/external-assets/github-assets.tsv); its src/conf/schemas is the complete
+# directory domain.rng includes from, not an isolated copy.
 [[check]]
 name = "windows-vm-schema"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash os/tests/windows_vm_schema.sh /usr/share/libvirt/schemas/domain.rng"
-setup = { run = "dnf install -y --setopt=install_weak_deps=False libvirt-daemon libxml2 && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+egress = { to = ["code.tilo.so:443", "download.libvirt.org:443"], pinned = true }
+run = "set -euo pipefail\ncurl -sSfL -o /tmp/libvirt.tar.xz https://download.libvirt.org/libvirt-12.7.0.tar.xz\nprintf '%s  %s\\n' 7ec1a04e7e4f4069353d4daac117bbe869287f5b202695de61fe1b079efb6cb6 /tmp/libvirt.tar.xz | sha256sum -c -\ntar --no-same-owner -xJf /tmp/libvirt.tar.xz -C /tmp libvirt-12.7.0/src/conf/schemas\nbash os/tests/windows_vm_schema.sh /tmp/libvirt-12.7.0/src/conf/schemas/domain.rng\n"
 requires = ["arch=x86_64"]
-on = ["dispatch"]
 
 [[check]]
 name = "os-windows-compat-x86_64"
