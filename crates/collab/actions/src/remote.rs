@@ -111,7 +111,7 @@ pub use catalogue::{
     CanonicalActionRoute, CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, MAX_BY_RESOURCE_PAGE, MAX_CATALOGUE_PAGE, Offered,
     ResourceViewLocator, RowVisibility, ViewResourceQuery, compact, expand, rows_weight,
-    truncate_rows,
+    truncate_resources, truncate_rows,
 };
 pub use changes::{CHANGE_FEED_UNAVAILABLE, ChangeFeed, ChangePage, ResourceChanged};
 pub use content_get::{CONTENT_GETS_UNAVAILABLE, ContentGetAnswer, ContentGets, ContentPiece};

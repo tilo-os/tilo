@@ -1033,6 +1033,7 @@ impl Replica {
             total: start_total,
             rows: Vec::new(),
             offering,
+            resources: 0,
         };
         let all_chained = level_in_chain;
         let visit = |placed: tilo_actions::api::PlacedAction,
@@ -1065,16 +1066,15 @@ impl Replica {
             }
             walk.total = walk.total.saturating_add(1);
             if walk.total > walk.offset && walk.rows.len() < walk.take {
-                walk.rows
-                    .push(tilo_actions::remote::CatalogueRow::for_placed_action(
-                        "",
-                        self.app_id(),
-                        tilo_actions::api::PlacedAction {
-                            parent,
-                            has_children,
-                            action,
-                        },
-                    ));
+                walk.keep(tilo_actions::remote::CatalogueRow::for_placed_action(
+                    "",
+                    self.app_id(),
+                    tilo_actions::api::PlacedAction {
+                        parent,
+                        has_children,
+                        action,
+                    },
+                ));
             }
             walk.total < walk.end
         };
@@ -1908,6 +1908,8 @@ struct SurveyWalk<'a> {
     /// The resources a row was admitted for: what the containers after the
     /// rows are decided by.
     offering: std::collections::HashSet<String>,
+    /// The resources the page holds rows of so far.
+    resources: usize,
 }
 
 impl SurveyWalk<'_> {
@@ -1920,10 +1922,33 @@ impl SurveyWalk<'_> {
         if !rendered && self.query.admits(&row) {
             self.total = self.total.saturating_add(1);
             if self.total > self.offset && self.rows.len() < self.take {
-                self.rows.push(row);
+                self.keep(row);
             }
         }
         self.total < self.end
+    }
+
+    /// Put `row` on the page. A page bounded in resources
+    /// ([`tilo_actions::remote::CatalogueQuery::max_resources`]) ends once it
+    /// holds a row of one past the bound: the caller sees from it that more
+    /// follow and cuts the page before it, and no resource further on is
+    /// built.
+    fn keep(&mut self, row: tilo_actions::remote::CatalogueRow) {
+        if self
+            .rows
+            .last()
+            .is_none_or(|last| last.resource.id != row.resource.id)
+        {
+            self.resources = self.resources.saturating_add(1);
+            if self
+                .query
+                .resource_bound()
+                .is_some_and(|most| self.resources > most)
+            {
+                self.end = self.total;
+            }
+        }
+        self.rows.push(row);
     }
 }
 

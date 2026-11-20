@@ -1696,6 +1696,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 max_depth: Some(args.max_depth.unwrap_or(16).min(16)),
             }),
             by_resource: false,
+            max_resources: None,
         };
         let detail = args.detail.unwrap_or_else(|| self.detail());
         let mut page = match self.ask(query.clone()).await {

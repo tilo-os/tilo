@@ -133,6 +133,12 @@ pub struct CatalogueQuery {
     /// by their ids. Cursors still count the rows each stands for.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub by_resource: bool,
+    /// Upper bound on the resources a page holds rows of, as well as on its
+    /// rows: the page ends after the last row of that many resources. What a
+    /// caller listing a number of resources asks, so that a provider builds
+    /// those and not as many rows as it guessed they offer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_resources: Option<u32>,
 }
 
 impl Default for CatalogueQuery {
@@ -152,6 +158,7 @@ impl Default for CatalogueQuery {
             max_results: default_page(),
             limits: None,
             by_resource: false,
+            max_resources: None,
         }
     }
 }
@@ -167,6 +174,14 @@ impl CatalogueQuery {
             max_results: 1,
             ..Self::default()
         }
+    }
+
+    /// The resources a page may hold rows of ([`Self::max_resources`]), at
+    /// least one: a page always moves the listing on.
+    #[must_use]
+    pub fn resource_bound(&self) -> Option<usize> {
+        self.max_resources
+            .map(|most| usize::try_from(most).unwrap_or(usize::MAX).max(1))
     }
 
     /// The page size a provider honours for this query.
@@ -303,6 +318,28 @@ pub fn truncate_rows(rows: &mut Vec<CatalogueRow>, count: usize) {
         kept = kept.saturating_add(weight.min(left));
     }
     rows.truncate(cut);
+}
+
+/// `rows` cut after the rows of their first `count` resources, each
+/// resource's rows next to each other: whether any were cut.
+pub fn truncate_resources(rows: &mut Vec<CatalogueRow>, count: usize) -> bool {
+    let mut seen = 0usize;
+    let mut last: Option<&str> = None;
+    let mut cut = rows.len();
+    for (at, row) in rows.iter().enumerate() {
+        let id = row.resource.id.as_str();
+        if last != Some(id) {
+            if seen == count {
+                cut = at;
+                break;
+            }
+            seen = seen.saturating_add(1);
+            last = Some(id);
+        }
+    }
+    let cutting = cut < rows.len();
+    rows.truncate(cut);
+    cutting
 }
 
 /// `rows` with each resource's consecutive action rows sent as one row
@@ -571,7 +608,11 @@ impl CataloguePage {
             .skip(query.offset())
             .take(query.page_size())
             .collect();
-        let more = matching.next().is_some();
+        let mut rows = rows;
+        let mut more = matching.next().is_some();
+        if let Some(most) = query.resource_bound() {
+            more |= truncate_resources(&mut rows, most);
+        }
         Self::window(revision, rows, query, more)
     }
 
@@ -723,6 +764,47 @@ mod tests {
             visibility: None,
             surface: None,
         }
+    }
+
+    /// A page bounded in resources ends after the last row of the last one
+    /// it may hold, says more follow, and its cursor goes on at the next
+    /// resource's first row: three resources of two actions each, asked two
+    /// at a time.
+    #[test]
+    fn a_page_bounded_in_resources_ends_after_its_last_resource() {
+        let rows: Vec<_> = ["note:a", "note:b", "note:c"]
+            .iter()
+            .flat_map(|note| [row(note, Some("open"), ""), row(note, Some("archive"), "")])
+            .collect();
+        let query = CatalogueQuery {
+            max_results: 64,
+            max_resources: Some(2),
+            ..CatalogueQuery::default()
+        };
+        let first = CataloguePage::from_rows("r1".into(), rows.clone(), &query);
+        let listed: Vec<_> = first
+            .rows
+            .iter()
+            .map(|row| row.resource.id.as_str())
+            .collect();
+        assert_eq!(listed, ["note:a", "note:a", "note:b", "note:b"]);
+        assert!(!first.exhausted, "a third resource follows");
+        let second = CataloguePage::from_rows(
+            "r1".into(),
+            rows,
+            &CatalogueQuery {
+                cursor: first.next_cursor,
+                revision: Some("r1".into()),
+                ..query
+            },
+        );
+        let listed: Vec<_> = second
+            .rows
+            .iter()
+            .map(|row| row.resource.id.as_str())
+            .collect();
+        assert_eq!(listed, ["note:c", "note:c"]);
+        assert!(second.exhausted);
     }
 
     /// The row `resource` of application `app`, with a `run` action.
