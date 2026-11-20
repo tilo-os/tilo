@@ -9,6 +9,7 @@
 //! snapshot, and a file without one is chunked as a stream.
 
 use std::fs::File;
+use std::io;
 use std::io::BufReader;
 use std::ops::Range;
 use std::path::Path;
@@ -20,6 +21,11 @@ use iroh_blobs::Hash;
 
 use super::{ContentStore, Retention};
 use crate::content::{self, ChunkTier, Manifest};
+
+/// The largest file a mount's staged bytes become an entry for by a link: above this the entry is
+/// cloned or copied from the stage as the capture paths do, and one photo-sized file is exactly
+/// what a copy of a photo library closes, so the link is what a copy pays.
+const ADOPT_MAX: u64 = 1024 * 1024;
 
 /// The largest file that is published by reading it into memory rather than chunking it as a
 /// stream: a version this size costs less held once than read from the disk twice.
@@ -97,11 +103,16 @@ impl ContentStore {
     }
 
     /// Stores the file at `path` as a version and returns its content id
-    /// and length (`None` for an empty file). `path` must not change while
+    /// and length (`None` for an empty file), and whether the file itself became
+    /// the stored entry. `path` must not change while
     /// this runs (a capture snapshot). `known` is the manifest a capture
     /// already computed for exactly these bytes; without one the file is
     /// chunked as a stream. Large content is cloned into the area, sharing
     /// extents with `path` where the filesystem can.
+    ///
+    /// `adopt` lets a file a mount staged become the stored entry itself, instead
+    /// of a second write, for sizes up to [`ADOPT_MAX`]. The caller must not
+    /// write it again: its bytes are the entry's.
     ///
     /// # Errors
     ///
@@ -111,11 +122,56 @@ impl ContentStore {
         path: &Path,
         known: Option<Arc<Manifest>>,
         previous: Option<Hash>,
-    ) -> Result<Option<(Hash, u64)>> {
+        adopt: bool,
+    ) -> Result<(Option<(Hash, u64)>, bool)> {
         let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
         let len = file.metadata()?.len();
         if len == 0 {
-            return Ok(None);
+            return Ok((None, false));
+        }
+        if adopt && known.is_none() && len <= ADOPT_MAX {
+            let data = std::fs::read(path)?;
+            anyhow::ensure!(
+                data.len() as u64 == len,
+                "{} changed while it was published",
+                path.display()
+            );
+            // The bytes are read once for their chunks and linked into the store as they stand:
+            // the write the mount already made is the write the entry holds.
+            let tier = self.tier_of(previous).await;
+            let (manifest, _) = content::build(&data, tier);
+            let key = manifest.id();
+            let encoded = manifest.encode();
+            let files = Arc::clone(&self.files);
+            if files.entry(&key).is_some_and(|e| e.complete()) {
+                // The bytes are already stored: only the naming is left, and a manifest some
+                // other path stored beside its entry may be missing after a crash in its window.
+                let hash = self.persist_manifest(&manifest).await?;
+                self.cache_insert(hash, Bytes::from(encoded));
+                return Ok((Some((hash, len)), true));
+            }
+            let chunks = content::chunk_locations(&manifest);
+            let staged = path.to_path_buf();
+            let inline = encoded.clone();
+            let linked = tokio::task::spawn_blocking(move || {
+                files
+                    .adopt_version_file(&key, &staged, len, Retention::LocalOnly, &chunks, &inline)
+                    .map(|()| true)
+                    .or_else(|error| match error.kind() {
+                        // The stage and the store are on different filesystems: the bytes are
+                        // already read, so they are written again as a content entry.
+                        io::ErrorKind::CrossesDevices => Ok(false),
+                        _ => Err(error),
+                    })
+            })
+            .await??;
+            if linked {
+                let hash = Hash::from_bytes(key);
+                self.cache_insert(hash, Bytes::from(encoded));
+                return Ok((Some((hash, len)), true));
+            }
+            let hash = self.write_content_after(&data, previous).await?;
+            return Ok((hash.map(|hash| (hash, len)), false));
         }
         // A file this size's bytes cost less to hold in memory once than to chunk from the disk
         // and read again: a mount staging writes on disk hands every closed file through here.
@@ -126,10 +182,8 @@ impl ContentStore {
                 "{} changed while it was published",
                 path.display()
             );
-            return Ok(self
-                .write_content_after(&data, previous)
-                .await?
-                .map(|hash| (hash, len)));
+            let hash = self.write_content_after(&data, previous).await?;
+            return Ok((hash.map(|hash| (hash, len)), false));
         }
         let tier = self.tier_of(previous).await;
         let manifest = match known {
@@ -154,7 +208,8 @@ impl ContentStore {
                 files.adopt_clone(&key, &file, len, Retention::LocalOnly, &chunks)
             })
             .await??;
-            return Ok(Some((self.persist_manifest(&manifest).await?, len)));
+            let hash = self.persist_manifest(&manifest).await?;
+            return Ok((Some((hash, len)), false));
         }
         let data = std::fs::read(path)?;
         anyhow::ensure!(
@@ -162,10 +217,8 @@ impl ContentStore {
             "{} changed while it was published",
             path.display()
         );
-        Ok(self
-            .write_content_after(&data, previous)
-            .await?
-            .map(|hash| (hash, len)))
+        let hash = self.write_content_after(&data, previous).await?;
+        Ok((hash.map(|hash| (hash, len)), false))
     }
 
     async fn persist_manifest(&self, manifest: &Manifest) -> Result<Hash> {
@@ -303,6 +356,49 @@ mod tests {
         assert!(store.has(Hash::from(first.hash)).await);
     }
 
+    /// A small file a mount staged is stored as one entry that is the staged file itself: its
+    /// chunks are ranges of it, and dropping the stage name leaves the entry whole.
+    #[tokio::test]
+    async fn a_staged_small_file_becomes_the_entry_itself() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = ContentStore::memory();
+        let path = dir.path().join("photo");
+        let bytes = pseudo(256 * 1024, 5);
+        std::fs::write(&path, &bytes).unwrap();
+        let staged = std::fs::metadata(&path).unwrap();
+        let (stored, adopted) = store.publish_file(&path, None, None, true).await.unwrap();
+        assert!(adopted);
+        let (hash, len) = stored.unwrap();
+        assert_eq!(len, bytes.len() as u64);
+        assert_eq!(
+            std::fs::metadata(store.files().path_of(hash.as_bytes()))
+                .unwrap()
+                .ino(),
+            staged.ino(),
+            "the entry is the staged file, moved in by a link rather than written again"
+        );
+        let manifest = store.manifest(hash).await.unwrap();
+        assert!(!content::is_file_backed(&manifest));
+        assert_eq!(
+            store.read_local(hash, &manifest, 0..len).await.unwrap(),
+            bytes
+        );
+        for chunk in manifest.chunks() {
+            assert!(
+                store.has(Hash::from(chunk.hash)).await,
+                "every chunk is served from the entry's ranges"
+            );
+        }
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            store.read_local(hash, &manifest, 0..len).await.unwrap(),
+            bytes,
+            "the stage name's removal leaves the entry whole"
+        );
+    }
+
     /// Pinning and unpinning a file only this device holds leaves it
     /// unevictable: a pin may only hold back what the budget could take.
     #[tokio::test]
@@ -330,18 +426,17 @@ mod tests {
         let path = dir.path().join("f");
         let mut bytes = pseudo(5 * 1024 * 1024, 3);
         std::fs::write(&path, &bytes).unwrap();
-        let (first, len) = store
-            .publish_file(&path, None, None)
-            .await
-            .unwrap()
-            .unwrap();
+        let (stored, adopted) = store.publish_file(&path, None, None, false).await.unwrap();
+        assert!(!adopted);
+        let (first, len) = stored.unwrap();
         assert_eq!(len, bytes.len() as u64);
         bytes[2_000_000] ^= 0xff;
         std::fs::write(&path, &bytes).unwrap();
         let (second, _) = store
-            .publish_file(&path, None, Some(first))
+            .publish_file(&path, None, Some(first), false)
             .await
             .unwrap()
+            .0
             .unwrap();
         let (a, b) = (
             store.manifest(first).await.unwrap(),

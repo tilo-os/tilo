@@ -84,6 +84,8 @@ struct Shape<'a> {
     kind: Kind,
     digest: Option<[u8; 32]>,
     chunks: &'a [([u8; 32], u64, u32)],
+    /// A version's encoded manifest, stored inline in the same commit as the entry's state.
+    manifest: Option<&'a [u8]>,
 }
 
 /// The most recently used cached entries, which the budget keeps even when an always-on device holds
@@ -365,6 +367,11 @@ fn apply(txn: &redb::WriteTransaction, write: &Write<'_>) -> io::Result<bool> {
                     };
                     index.remove(hash, location).map_err(db_error)?;
                 }
+            }
+        }
+        Write::Batch(writes) => {
+            for write in writes {
+                apply(txn, write)?;
             }
         }
     }
@@ -1197,6 +1204,7 @@ impl FileArea {
                 kind: Kind::Content,
                 digest: None,
                 chunks,
+                manifest: None,
             },
             true,
         )
@@ -1244,6 +1252,59 @@ impl FileArea {
                 kind: Kind::Content,
                 digest: None,
                 chunks,
+                manifest: None,
+            },
+            !windowed,
+        )
+    }
+
+    /// Makes `key` a complete entry holding the file at `path` as it already stands, linked in
+    /// (no second write) when both are on one filesystem. The caller's file is left as it was:
+    /// it still reads the same bytes, which are now the entry's too. `chunks` are indexed as by
+    /// [`Self::ensure`], so a peer is served their ranges of this entry, and `manifest`, the
+    /// encoded manifest those chunks are named by, is stored inline in the same commit.
+    ///
+    /// A store syncing on a window leaves the entry to the barrier, as [`Self::adopt_bytes`]
+    /// does, so a version a close answered for costs one write and the window's one sync rather
+    /// than a write, a copy and an fsync of each piece.
+    ///
+    /// # Errors
+    /// The file could not be linked in (another filesystem is `EXDEV`), or the entry could not be
+    /// stored. The caller's file is untouched unless the link succeeded.
+    pub fn adopt_version_file(
+        &self,
+        key: &AreaKey,
+        path: &Path,
+        len: u64,
+        retention: Retention,
+        chunks: &[([u8; 32], u64, u32)],
+        manifest: &[u8],
+    ) -> io::Result<()> {
+        let windowed = self.durable && !self.sync_writes.load(Ordering::Relaxed);
+        let staging = self.staging_path(key);
+        std::fs::hard_link(path, &staging)?;
+        let target = match OpenOptions::new().read(true).write(true).open(&staging) {
+            Ok(target) => target,
+            Err(error) => {
+                let _ = std::fs::remove_file(&staging);
+                return Err(error);
+            }
+        };
+        if !windowed && let Err(error) = self.sync(&target) {
+            let _ = std::fs::remove_file(&staging);
+            return Err(error);
+        }
+        self.install(
+            key,
+            &staging,
+            target,
+            len,
+            retention,
+            &Shape {
+                kind: Kind::Content,
+                digest: None,
+                chunks,
+                manifest: Some(manifest),
             },
             !windowed,
         )
@@ -1351,6 +1412,7 @@ impl FileArea {
                 kind: Kind::Content,
                 digest: Some(digest),
                 chunks: &[],
+                manifest: None,
             },
             true,
         )
@@ -1427,6 +1489,7 @@ impl FileArea {
                 kind: Kind::Blob,
                 digest: Some(*key),
                 chunks: &[],
+                manifest: None,
             },
             true,
         )?;
@@ -1449,6 +1512,7 @@ impl FileArea {
         synced: bool,
     ) -> io::Result<()> {
         let (kind, digest, chunks) = (shape.kind, shape.digest, shape.chunks);
+        let manifest = shape.manifest;
         let _create = self.create.lock_recover();
         if self.entry(key).is_some() {
             self.remove(key)?;
@@ -1483,8 +1547,26 @@ impl FileArea {
                 state.digests.insert(digest, *key);
             }
         }
-        self.index_chunks(key, chunks)?;
-        self.persist(key)
+        // One commit for everything a version stores: the entry's state, its chunk index, and the
+        // manifest naming them, so a closed file costs one transaction rather than three.
+        let stored = self
+            .lock()
+            .entries
+            .get(key)
+            .map(|entry| entry.stored_with(&entry.durable));
+        let Some(stored) = stored else {
+            return Ok(());
+        };
+        let bytes = postcard::to_allocvec(&stored).map_err(db_error)?;
+        let mut writes = Vec::with_capacity(3);
+        if !chunks.is_empty() {
+            writes.push(Write::Chunks(*key, Cow::Borrowed(chunks)));
+        }
+        if let Some(manifest) = manifest {
+            writes.push(Write::Inline(vec![(*key, Cow::Borrowed(manifest))]));
+        }
+        writes.push(Write::Entries(vec![(*key, Cow::Owned(bytes))]));
+        self.commit_write(&Write::Batch(writes)).map(drop)
     }
 
     fn share_extents(&self, digest: &[u8; 32], target: &File, len: u64) {
