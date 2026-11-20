@@ -1011,10 +1011,10 @@ final class EngineTests: XCTestCase {
         try await until("the question is gone") { if case .asking = self.engine.state { false } else { true } }
     }
 
-    func testTheWorkspacesAgentsAreAskedOfItsServerAsThePersonAndNothingElseOfChatsDocumentIs() async throws {
+    func testTheWorkspacesAgentsAreAskedOfItsServerAsThePersonAndNothingElseOfAssistantsDocumentIs() async throws {
         try await enterAsADevice()
         // This server offers none of it. Its own refusal comes back, and it was asked as the
-        // person, under Chat's own document of the workspace.
+        // person, under Assistant's own document of the workspace.
         do {
             try await engine.askAgents("read")
             XCTFail("a server that offers no agents answered")
@@ -1025,13 +1025,15 @@ final class EngineTests: XCTestCase {
         // Whatever record the page says it shows, the server is asked for the workspace's own.
         try await run("globalThis.tiloMount.state = () => ({record: 'uuid:1f0e'})")
         _ = try? await engine.askAgents("create-agent", ["name": "Assistant"])
+        _ = try? await engine.askAgents("stop-sub-agent", ["agent": "scout"])
         let targets = try await said("return JSON.stringify(window.asked.map(one => [one.target.provider, one.target.address.resource, one.target.address.action, one.argument]))")
-        // Chat's own document of the workspace, as its server names it: the app and nothing after it.
-        let chat = JSON.string("record:so.tilo.chat:")
+        // Assistant's own document of the workspace, as its server names it: the app and nothing after it.
+        let assistant = JSON.string("record:so.tilo.assistant:")
         XCTAssertEqual(JSON(text: targets), [
-            [chat, "chat.agent", "read", .null],
-            [chat, "chat.agent/agents/scout", "read", .null],
-            [chat, "chat.agent", "create-agent", ["name": "Assistant"]],
+            [assistant, "tilo.workspace.agent", "read", .null],
+            [assistant, "tilo.workspace.agent/agents/scout", "read", .null],
+            [assistant, "tilo.workspace.agent", "create-agent", ["name": "Assistant"]],
+            [assistant, "tilo.workspace.agent", "stop-sub-agent", ["agent": "scout"]],
         ])
         // Any other action, an action on one agent, a name that is none, and a script without
         // the engine's pass: the server is not asked at all.
@@ -1041,13 +1043,13 @@ final class EngineTests: XCTestCase {
                 try await engine.askAgents(action, agent: agent)
                 XCTFail("\(action) was asked of the server")
             } catch let problem as TiloEngine.Problem {
-                XCTAssertEqual(problem, .refused(code: "unknown_action", reason: "no action addressed by (chat.agent, \(action))"))
+                XCTAssertEqual(problem, .refused(code: "unknown_action", reason: "no action addressed by (tilo.workspace.agent, \(action))"))
             }
         }
         let bare = try await said("return await globalThis.__tiloLive.agents('', 'read', null, null)")
         XCTAssertTrue(bare.contains("unknown_action"), bare)
         let count = try await said("return String(window.asked.length)")
-        XCTAssertEqual(count, "3")
+        XCTAssertEqual(count, "4")
     }
 
     private func run(_ script: String) async throws {

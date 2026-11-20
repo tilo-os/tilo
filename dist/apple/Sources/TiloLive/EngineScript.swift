@@ -349,7 +349,7 @@ public enum EngineScript {
       // the person's providers. It stands here, in no function a page's script could print.
       const pass = %PASS%;
       const providers = new Set(%PROVIDERS%);
-      const agentActions = new Set(['read', 'create-agent', 'set-agent-on-host', 'retire-agent']);
+      const agentActions = new Set(['read', 'create-agent', 'set-agent-on-host', 'retire-agent', 'stop-sub-agent']);
       // An app's own document of the workspace, as the workspace's server names what it offers
       // of one: the app and nothing after it. Under any longer name the server offers nothing of it.
       const ownDocument = app => `record:${app}:`;
@@ -478,17 +478,18 @@ public enum EngineScript {
           (goOn === true ? found.go : found.stop).click();
           return true;
         },
-        // The agents the workspace keeps (Chat's `chat.agent`), asked of the workspace's server
-        // as the person on this device: their read, one agent's read, the two actions that
-        // make a person's assistant, and the one that takes back a second one made in the same
-        // moment. Nothing else of Chat's document is asked this way.
+        // The agents the workspace keeps (Assistant's `tilo.workspace.agent`), asked of the
+        // workspace's server as the person on this device: their read, one agent's read, the
+        // two actions that make a person's assistant, the one that takes back a second one made
+        // in the same moment, and the one that stops a sub-agent. Nothing else of Assistant's
+        // document is asked this way.
         async agents(given, action, argument, item) {
           const named = item === null || item === undefined || (typeof item === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(item));
-          if (!holds(given) || !agentActions.has(action) || !named || (item && action !== 'read')) return unknown('chat.agent', action);
+          if (!holds(given) || !agentActions.has(action) || !named || (item && action !== 'read')) return unknown('tilo.workspace.agent', action);
           if (!device) return noDevice();
-          const provider = ownDocument('so.tilo.chat');
+          const provider = ownDocument('so.tilo.assistant');
           try {
-            const answer = await device.invoke({provider, address: {resource: item ? `chat.agent/agents/${item}` : 'chat.agent', action}},
+            const answer = await device.invoke({provider, address: {resource: item ? `tilo.workspace.agent/agents/${item}` : 'tilo.workspace.agent', action}},
               argument && Object.keys(argument).length ? argument : null);
             return JSON.stringify({ok: without({state: answer?.state ?? null, value: answer?.output?.value ?? null,
               error: answer?.error ?? null}, '')});
