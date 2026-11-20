@@ -1,8 +1,8 @@
 //! Where you are, at the bar's left end: the workspace, then the strip
-//! shown ("Home › Research"). The strip's name is one target, and it opens
-//! the strip switcher on the right edge, the one place strips are picked,
-//! made, named and removed. The bar never lists the strips or counts who is
-//! on them: who is where shows as faces on the switcher's strips.
+//! shown ("Home › Research ⌄"). The strip's name is one target, a menu as the
+//! workspace's name is: it lists the workspace's strips under itself and makes
+//! a new one. The bar never counts who is on them: who is where shows as faces
+//! on the strip column's labels.
 use super::{Affine, BAR_CONTROL_PX, Rect, Scene, TextRenderer, TextRole, Theme, TopBarChrome};
 /// The strip's separator: the chevron that opens the strip switcher.
 static STRIP_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::ChevronRight];
@@ -83,7 +83,15 @@ impl TopBarChrome {
         };
         let style = Self::strip_text_style(theme);
         let name = text_renderer.measure_style(name, None, &style).0;
-        STRIP_CHEVRON_PX + f64::from(name) + 2.0 * Self::strip_name_gap(theme)
+        STRIP_CHEVRON_PX
+            + f64::from(name)
+            + 2.0 * Self::strip_name_gap(theme)
+            + Self::strip_menu_glyph_width(theme)
+    }
+
+    /// The glyph closing the strip's name, as the one closing the workspace's: it opens a menu.
+    fn strip_menu_glyph_width(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.metrics.icon_control) + f64::from(theme.tokens.spacing.rhythm.tight)
     }
 
     /// The strip's chip showing `name` with `label_width` of room for it.
@@ -95,6 +103,7 @@ impl TopBarChrome {
         ui::widget::BarChipFace::new(name, &[])
             .icons(STRIP_GLYPH)
             .label(name)
+            .trailing(Self::WORKSPACE_MENU_ICON)
             .label_width(label_width)
             .at_height(BAR_CONTROL_PX)
             .hovered(self.hovered_control().as_deref() == Some(Self::CONTROL_STRIP_NAME))
@@ -121,7 +130,8 @@ impl TopBarChrome {
         };
         let (x0, x1) = span;
         let gap = Self::strip_name_gap(theme);
-        let label_width = (x1 - x0 - gap - STRIP_CHEVRON_PX - gap).max(0.0);
+        let label_width =
+            (x1 - x0 - gap - STRIP_CHEVRON_PX - gap - Self::strip_menu_glyph_width(theme)).max(0.0);
         let width = self
             .strip_chip(&name, label_width)
             .width(text_renderer, theme);
