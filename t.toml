@@ -862,6 +862,26 @@ run = "cargo clippy --locked --target wasm32-unknown-unknown --lib --example acc
 env = { CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-D warnings" }
 requires = ["arch=x86_64"]
 
+# The web runtime's storage, transfer and pairing modules and the server's page handshake, run as
+# `node --test`: the fake persistence workers use Node 24's worker messaging, and the pairing
+# suite's country names come from Intl.DisplayNames, which the image's Fedora node (22) does not
+# have. The official Node 24 build is named by version and SHA-256 here, so a job that fetched it
+# is still served; `tar -xJf` unpacks it into the job's own /tmp.
+[[check]]
+name = "web-node-tests"
+egress = { to = ["nodejs.org:443"], pinned = true }
+run = "set -euo pipefail\nversion=24.22.3\ntarball=node-v$version-linux-x64\ncurl -sSfL -o /tmp/node.tar.xz \"https://nodejs.org/dist/v$version/$tarball.tar.xz\"\nprintf '%s  %s\\n' 4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb /tmp/node.tar.xz | sha256sum -c -\ntar --no-same-owner -xJf /tmp/node.tar.xz -C /tmp\nexport PATH=/tmp/$tarball/bin:$PATH\nnode --version\nnode --test crates/browser/tilo-browser-runtime/web/pairing.test.mjs crates/browser/tilo-browser-runtime/web/close-recovery.test.mjs crates/browser/tilo-browser-runtime/web/storage.test.mjs crates/browser/tilo-browser-runtime/web/transfer-staging.test.mjs crates/server/tilo-server/src/web/page/page.test.mjs\n"
+requires = ["arch=x86_64"]
+
+# The media editor's JavaScript and the mounted-resource accounts page, in a real browser: the
+# editor muxes and plays back media in the image's Chromium (CHROME), and the accounts page seeds
+# its two accounts in real browser storage. Both serve their pages on loopback only.
+[[check]]
+name = "web-page-tests"
+run = "node --test crates/platform/tilo-media/web/tilo-media-edit.test.mjs crates/agent/agent-session/tests/mounted_resource/accounts.test.mjs"
+requires = ["arch=x86_64"]
+timeout_secs = 900
+
 [[check]]
 name = "chromium-host"
 # The pinned CEF archive (SHA-256 in scripts/browser/cef-lock.json), and the build scripts' pinned assets.

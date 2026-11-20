@@ -1,6 +1,6 @@
 // The page's handshake, byte for byte as the server's types encode it
 // (`handshake.json`, which `tests.rs` checks against those types).
-import {test} from 'bun:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {ack2, blake3Block, hello, parseExact, serverNonce} from './page.mjs';
