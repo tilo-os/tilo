@@ -1071,9 +1071,6 @@ pub struct DesktopSurface {
     /// ([`Widget::take_app_activation`]): it waits while the tab's app is still loading, so a
     /// window opened before its app arrived still takes the keyboard once it does.
     activation: Option<(StripId, TabId)>,
-    /// The window a press landed in. When the press ends the strip pans it wholly into view: never
-    /// during the press, which would move what was pressed from under the pointer.
-    reveal_on_release: Option<(StripId, GroupId)>,
     /// The windows shared live, and the views windows embed of them.
     live_shares: live_shares::LiveShares,
     /// The strip or workspace change the frame draws as a slide, and where each strip stood when it
@@ -1169,7 +1166,6 @@ impl DesktopSurface {
             controls: None,
             keyboard_tab: None,
             activation: None,
-            reveal_on_release: None,
             live_shares: live_shares::LiveShares::default(),
             slides: std::cell::RefCell::new(slide::Slides::default()),
             motion: ui::tokens::EffectiveMotion::default(),
@@ -1709,8 +1705,8 @@ impl DesktopSurface {
     }
 
     /// A press anywhere in a window, its body included and not only its tab bar, makes that window
-    /// the active one. It stays where it is while pressed, since panning would move it from under
-    /// the pointer; the press's release brings it wholly into view.
+    /// the active one. It stays where it is: a click says what to work in, not where the strip
+    /// should rest, so a pointer never moves the windows the person is pointing at.
     fn focus_clicked_group(&self) {
         let Some(strip_id) = self.shown else {
             return;
@@ -2485,12 +2481,12 @@ impl Widget for DesktopSurface {
             for row in self.rows.values_mut() {
                 row.set_carry_press(carry);
             }
+            // A press makes the window under the pointer the active one. It stays where it is: a
+            // click says what to work in, not where the strip should rest, and moving the strip
+            // now would take the window, and the control the press focused, out from under the
+            // pointer before the person has finished with them.
             self.focus_pressed_display();
             self.focus_clicked_group();
-            self.reveal_on_release = self.shown.and_then(|strip| {
-                let group = self.rows.get(&strip)?.group_under_cursor()?;
-                Some((strip, group))
-            });
         }
         self.route_pointer(event, ctx, &children);
         for row in self.rows.values_mut() {
@@ -2499,22 +2495,6 @@ impl Widget for DesktopSurface {
         // A tab's name field opened or closed under the event: the shell holds the keyboard for it,
         // or gives it back to the window.
         self.publish_bar_typing();
-        if let WindowEvent::MouseInput {
-            state: ElementState::Released,
-            button: MouseButton::Left,
-            ..
-        } = event
-            && let Some((strip, group)) = self.reveal_on_release.take()
-            && self.shown == Some(strip)
-            && self
-                .shown_row_ref()
-                .is_some_and(|row| !row.groups.iter().any(|g| g.maximized))
-        {
-            // A window clicked while partly off screen comes into view, as focusing it from the
-            // keyboard brings it.
-            self.reveal = Some((strip, group));
-            self.relayout = true;
-        }
         if let WindowEvent::MouseWheel { delta, .. } = event
             && !ui::content_zoom::is_zoom_scroll(event, ctx.modifiers)
         {

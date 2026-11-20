@@ -943,6 +943,11 @@ impl Shell {
         self.driver.targets()[name]
     }
 
+    /// Where the shown strip rests, as the shell publishes it.
+    fn pan(&self) -> Option<f64> {
+        self.handle.presentation().pan.map(|pan| pan.offset)
+    }
+
     /// Search through a host that records what it is asked to cover.
     fn with_host(&self) -> Rc<HostLog> {
         let log = Rc::new(HostLog::default());
@@ -1098,6 +1103,100 @@ fn a_click_in_a_window_partly_off_screen_aims_typing_at_it() {
     );
     let first = shell.tabs[0];
     assert_eq!(shell.typed(&format!("field-{first}-1")), "");
+}
+
+/// A click in a window hanging off the right edge keeps the strip where it was: the window under
+/// the pointer stays under it, the field the click landed in keeps what follows, and no key
+/// reaches the window beside it.
+#[test]
+fn a_click_in_a_window_partly_off_screen_leaves_the_strip_where_it_was() {
+    let mut shell = Shell::new(2, 700);
+    let (first, second) = (shell.tabs[0], shell.tabs[1]);
+    let field = format!("field-{second}-2");
+    let rect = shell.rect(&field);
+    assert!(
+        rect.x0 < 1200.0 && rect.x1 > 1200.0,
+        "the second window's field stands past the right edge: {rect:?}"
+    );
+    let before = shell.pan();
+    let at = (f64::midpoint(rect.x0, 1200.0), rect.center().y);
+    shell
+        .driver
+        .send_host_event(&ui::synthetic_input::cursor_moved(at.0, at.1));
+    shell
+        .driver
+        .send_host_event(&ui::synthetic_input::mouse_input(
+            ElementState::Pressed,
+            MouseButton::Left,
+        ));
+    for _ in 0..2 {
+        shell.driver.relayout();
+    }
+    assert_eq!(
+        shell.pan(),
+        before,
+        "the press leaves the strip where it was"
+    );
+    shell
+        .driver
+        .send_host_event(&ui::synthetic_input::mouse_input(
+            ElementState::Released,
+            MouseButton::Left,
+        ));
+    shell.settle();
+    assert_eq!(
+        shell.pan(),
+        before,
+        "the click leaves the pressed window under the pointer"
+    );
+    assert!(
+        shell.rect(&field).x1 > 1200.0,
+        "the pressed field is where it was clicked"
+    );
+    shell.driver.type_text("buy milk");
+    assert_eq!(
+        shell.typed(&field),
+        "buy milk",
+        "what follows the click stays in the field it was clicked into: {:?}",
+        shell.focus_path()
+    );
+    assert_eq!(
+        shell.typed(&format!("field-{first}-1")),
+        "",
+        "no key reaches the window beside it"
+    );
+}
+
+/// A press in a window clipped at the edge, away from any control, still aims what is typed next
+/// at that window: its app takes the keyboard, never the window that had it before.
+#[test]
+fn a_press_in_a_window_partly_off_screen_aims_typing_at_it() {
+    let mut shell = Shell::new(2, 700);
+    let (first, second) = (shell.tabs[0], shell.tabs[1]);
+    let rect = shell.rect(&format!("field-{second}-2"));
+    assert!(rect.x0 < 1200.0 && rect.x1 > 1200.0, "{rect:?}");
+    // Its body below the fields, clear of every control.
+    let at = (f64::midpoint(rect.x0, 1200.0), rect.y1 + 120.0);
+    let before = shell.pan();
+    shell.driver.click_at(at.0, at.1);
+    shell.settle();
+    assert_eq!(
+        shell.pan(),
+        before,
+        "the click leaves the strip where it was"
+    );
+    shell.driver.type_text("a");
+    assert_eq!(
+        shell.typed(&format!("field-{second}-1")),
+        "a",
+        "typing reaches the window the press landed in: {:?}",
+        shell.focus_path()
+    );
+    assert_eq!(
+        shell.typed(&format!("field-{first}-1")),
+        "",
+        "the window beside it is handed nothing"
+    );
 }
 
 #[test]

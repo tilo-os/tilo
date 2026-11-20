@@ -1825,3 +1825,8 @@ reason = "The existing server instance holding the trust facts and the roster fi
 words = ["host"]
 identifiers = ["host", "on_host"]
 paths = ["crates/server/tilo-workspace-service/src/workspaces/agent_members.rs"]
+
+[[allow]]
+reason = "The frame harness's own name for an event the browser host hands the frame, which the desktop's tests drive as a page does."
+words = ["host"]
+identifiers = ["send_host_event"]
