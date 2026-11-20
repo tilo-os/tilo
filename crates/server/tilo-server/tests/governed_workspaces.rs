@@ -951,3 +951,6 @@ mod app_push;
 #[cfg(feature = "agents")]
 #[path = "governed_workspaces/member_files.rs"]
 mod member_files;
+
+#[path = "governed_workspaces/record_content.rs"]
+mod record_content;

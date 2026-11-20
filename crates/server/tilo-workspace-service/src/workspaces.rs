@@ -1665,6 +1665,18 @@ impl Workspaces {
         Ok(routes)
     }
 
+    /// Whether `record` of `app` in `workspace` is a member's own
+    /// ([`collab_types::OwnResource`]): their drafts and settings, which the
+    /// host keeps sealed to their devices and never reads. `false` for a
+    /// workspace not governed here.
+    pub async fn own_record(&self, workspace: &str, app: &str, record: &str) -> bool {
+        let Ok(state) = self.workspace(workspace).await else {
+            return false;
+        };
+        let governed = state.lock().await;
+        governed.peer().own_resource(app, record).is_some()
+    }
+
     /// The state of `workspace` as this host holds it now: what a channel
     /// service reads who may read the workspace's channels from.
     pub async fn state(&self, workspace: &str) -> Option<StatePeer> {

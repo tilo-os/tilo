@@ -321,7 +321,7 @@ fn texts_in(doc: &AutoCommit, obj: &ObjId, live: &mut BTreeSet<String>) {
 
 /// Add each run of exactly [`ADDRESS_LEN`] hex digits in `bytes` to `live`,
 /// in lower case; a longer run adds each address it could hold.
-fn addresses_in(bytes: &[u8], live: &mut BTreeSet<String>) {
+pub(crate) fn addresses_in(bytes: &[u8], live: &mut BTreeSet<String>) {
     let mut start = 0;
     while start < bytes.len() {
         let run = bytes

@@ -877,12 +877,12 @@ impl Server {
             governed.branch_content(Arc::new(crate::content::branch::StoresBranches(
                 Arc::clone(&content),
             )));
-            let files = crate::files_content::FilesContent::new(
+            let kept = crate::kept_content::KeptContent::new(
                 governed.clone(),
                 identity.device_cert.device_public_key,
                 Arc::clone(&content),
             );
-            push_background_task(&background_tasks, tokio::spawn(files.run()));
+            push_background_task(&background_tasks, tokio::spawn(kept.keep_content()));
             push_background_task(
                 &background_tasks,
                 tokio::spawn(crate::content::collection::run(

@@ -2,8 +2,8 @@
 //! ([`tilo_content::WorkspaceStores`]), under its state root.
 //!
 //! Everything this host keeps for a workspace goes there and is read from
-//! there: a file a caller uploaded and what an app made in a record the host
-//! runs, the files the workspace's members wrote ([`crate::files_content`]),
+//! there: a file a caller uploaded and what an app made in a record kept for
+//! it, what the workspace's records reference ([`crate::kept_content`]),
 //! what its bots fetched from outside and the files its members posted in
 //! Chat ([`crate::workspace_bots::attachments`]). Members read any of it by asking
 //! their workspace for the hash their record names

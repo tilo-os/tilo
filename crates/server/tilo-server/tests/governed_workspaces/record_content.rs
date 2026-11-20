@@ -1,0 +1,201 @@
+//! A picture a page kept for a record of an app the host has no keeper of its
+//! own for — its Photos library, a Camera capture — reaches the workspace's
+//! host, so a page that reloads, or a member that joins after the writer left,
+//! reads it from the workspace instead of waiting for a device that is gone.
+//!
+//! The record names the picture by reference alone, as every record does: a
+//! sealed reference names the ciphertext's address, which is what the host
+//! asks for and keeps; a page opens the ciphertext with the key the reference
+//! carries.
+use std::time::Duration;
+
+use super::*;
+
+const PHOTOS: &str = "so.tilo.photos";
+
+/// The host's next request for `address` of `PHOTOS`, as `session` hears it.
+async fn asked_for(session: &ServerCoeditSession, address: &str) -> Vec<u8> {
+    tilo_test_env::within("the host asks for the record's content", async {
+        loop {
+            let Ok(Some(Inbound::Presence { payload, .. })) =
+                tokio::time::timeout(Duration::from_millis(50), session.recv()).await
+            else {
+                continue;
+            };
+            if matches!(
+                postcard::from_bytes::<NeighbourMsg>(&payload),
+                Ok(NeighbourMsg::DocumentContentWant { hash, .. }) if hash == address
+            ) {
+                return payload;
+            }
+        }
+    })
+    .await
+}
+
+/// What the host serves a device asking `workspace` for `address` of `PHOTOS`,
+/// its pieces put together.
+fn served(server: &Server, workspace: &str, asking: &TestDevice, address: &str) -> Vec<u8> {
+    let want = postcard::to_allocvec(&NeighbourMsg::DocumentContentWant {
+        requester: tilo_peer_state::peer_handle(&asking.device_pubkey()),
+        app_id: PHOTOS.to_owned(),
+        cluster_id: workspace.to_owned(),
+        hash: address.to_owned(),
+        have: Vec::new(),
+    })
+    .unwrap();
+    let mut whole = Vec::new();
+    for frame in
+        server
+            .workspaces()
+            .unwrap()
+            .content_answer(workspace, &asking.device_pubkey(), &want)
+    {
+        let NeighbourMsg::DocumentContentPiece { offset, bytes, .. } =
+            postcard::from_bytes(&frame).unwrap()
+        else {
+            panic!("the host serves what it keeps");
+        };
+        assert_eq!(offset, u64::try_from(whole.len()).unwrap());
+        whole.extend(bytes);
+    }
+    whole
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_writer() {
+    let alice = TestUser::fresh("Alice");
+    let bob = TestUser::fresh("Bob");
+    let alice_home = alice.enrol("alice-home", DeviceCapabilities::member());
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = start(state.path(), &alice, &alice_home).await;
+    let workspace = create_and_enter(&server, &laptop, "Photos").await;
+    let mut peer = sealed_documents::join(
+        &server,
+        &laptop,
+        &workspace.workspace,
+        &bob,
+        &phone,
+        [7; 32],
+    )
+    .await
+    .unwrap();
+    let session = session(&server, &phone, workspace.workspace_id).await;
+    crate::common::wait_until_subscribed(&server, workspace.workspace_id, &phone.device_pubkey())
+        .await;
+
+    // Bob's page keeps the picture sealed in its record's store and names the
+    // reference: the host knows the ciphertext's address alone.
+    let picture: Vec<u8> = b"a picture only Bob's page kept. "
+        .iter()
+        .copied()
+        .cycle()
+        .take(700 * 1024)
+        .collect();
+    let store = tilo_content::ContentStore::memory().sealing();
+    let reference = store.put(&picture).unwrap();
+    assert!(tilo_content::is_sealed(&reference));
+    let address = tilo_content::content_address(&reference).unwrap();
+    let sealed = store.read(&address).unwrap();
+    let created = peer
+        .publication_mut()
+        .publish_document(
+            PHOTOS,
+            "",
+            AutoCommit::new().save(),
+            &phone.sk,
+            SystemTime::now(),
+        )
+        .unwrap();
+    publish(&session, &created);
+    let mut doc = AutoCommit::new();
+    doc.put(
+        ROOT,
+        "photo",
+        format!(
+            "blake3:{}:{}:{reference}",
+            blake3::hash(&picture).to_hex(),
+            picture.len()
+        ),
+    )
+    .unwrap();
+    doc.commit_edit("fixture", "photo");
+    let message = peer
+        .publication_mut()
+        .publish_incremental(
+            PHOTOS,
+            "",
+            doc.save_after(&[]),
+            &phone.sk,
+            SystemTime::now(),
+        )
+        .unwrap();
+    publish(&session, &message);
+
+    // The host asks for the address the store keys the ciphertext under, and
+    // Bob's page answers it as a page does.
+    let ask = asked_for(&session, &address).await;
+    match postcard::from_bytes::<NeighbourMsg>(&ask).unwrap() {
+        NeighbourMsg::DocumentContentWant {
+            app_id,
+            cluster_id,
+            hash,
+            ..
+        } => {
+            assert_eq!(
+                (app_id.as_str(), cluster_id.as_str(), hash.as_str()),
+                (PHOTOS, workspace.workspace.as_str(), address.as_str()),
+                "the host asks the record's app for the ciphertext's address"
+            );
+        }
+        _ => panic!("a content request"),
+    }
+    let pieces = neighbour_wire::content::answer(
+        &phone.device_pubkey(),
+        &alice_home.device_pubkey(),
+        &ask,
+        |app, cluster, wanted| {
+            (app == PHOTOS && cluster == workspace.workspace && wanted == address)
+                .then(|| sealed.clone())
+        },
+    );
+    assert!(!pieces.is_empty(), "the page answers what it keeps");
+    for piece in pieces {
+        session
+            .publish_record_content(alice_home.device_pubkey(), piece)
+            .expect("the session carries every piece");
+    }
+    tilo_test_env::wait_for("the host keeps the picture's ciphertext", || {
+        server
+            .content()
+            .get(&workspace.workspace)
+            .ok()?
+            .has(&address)
+            .then_some(())
+    });
+
+    // Bob's page is gone; a page that reloads reads the picture from the host,
+    // as ciphertext, and opens it with the key its record carries.
+    drop(session);
+    let carol = TestUser::fresh("Carol");
+    let carol_phone = carol.enrol("carol-phone", DeviceCapabilities::member());
+    sealed_documents::join(
+        &server,
+        &laptop,
+        &workspace.workspace,
+        &carol,
+        &carol_phone,
+        [8; 32],
+    )
+    .await
+    .unwrap();
+    let delivered = served(&server, &workspace.workspace, &carol_phone, &address);
+    assert_eq!(delivered, sealed, "the host serves the ciphertext alone");
+    let reloaded = tilo_content::ContentStore::memory().sealing();
+    reloaded.put_public(&delivered).unwrap();
+    assert_eq!(reloaded.read(&reference).as_deref(), Some(&picture[..]));
+
+    server.shutdown().await;
+}

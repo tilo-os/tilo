@@ -1,0 +1,684 @@
+//! The content the records of the workspaces this host governs reference,
+//! kept so that a member which comes up later reads it from this host alone.
+//!
+//! A record never carries its binaries: a picture, an attachment, a file's
+//! bytes live in the content store beside it, and the record names them by
+//! reference — a `Bytes` field as `blake3:<hash>:<len>` (sealed, the
+//! ciphertext's address and the key that opens it), a Files node by its hash.
+//! The device whose member stored them answers whoever asks the workspace,
+//! while it runs; a device that leaves — a page that reloads, a VM whose host
+//! was replaced, a laptop gone offline — takes the only copy with it.
+//!
+//! So the host keeps them. It reads each record as a write reaches this host
+//! ([`Workspaces::document_writes`]), and every record of a workspace when it
+//! starts governing it ([`Workspaces::workspace_document_routes`]), with the
+//! keys this host holds as a member of its channels
+//! ([`Workspaces::resource_document`]), for however the app laid it out: a
+//! `blake3:` reference, a 64-hex address a value holds whole, the text of a
+//! note. Only the written record is read, so a write costs one record.
+//!
+//! For each address it lacks the host asks the workspace's members on its own
+//! presence ([`Workspaces::ask_members`]), tagged by the record that named it
+//! so a page keeping it for that app answers. A file's content is its manifest
+//! and the chunks it lists, so a file over a megabyte arrives too. Each blob
+//! is kept only when its bytes hash to the address asked for
+//! ([`ContentWants`]). Sealed content is asked by its ciphertext's address,
+//! which the store keys it under: the host keeps and serves the ciphertext,
+//! and only a record's readers hold its key.
+//!
+//! A record the host cannot open yet — its workspace's channels hand it the
+//! keys after it joins them — is read again in a moment, further apart each
+//! time. A person's own record ([`collab_types::OwnResource`]) is theirs: the
+//! host keeps its ciphertext and never reads it. Two records are left to the
+//! keepers that own them: the shared desktop, whose layout names no content
+//! and is written with every window moved, and Chat's, whose members' files
+//! are kept within a quota ([`crate::workspace_bots::attachments`]).
+//!
+//! What it keeps goes into the workspace's store ([`crate::content`]), from
+//! where the host answers members asking for content
+//! ([`Workspaces::content_answer`]): a member that joins after the writer left
+//! hydrates the same bytes from this host. The disk bounds it
+//! ([`tilo_content::ContentError::DiskLow`]), and a blob a record dropped stays
+//! until nothing in the workspace references it ([`crate::content::collection`]).
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read as _;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _, ScalarValueRef, Value, ValueRef};
+use fs::content::Manifest;
+use fs_content::{FORMAT, HEADER_MAGIC};
+use neighbour_wire::content::ContentWants;
+use tilo_lock::MutexRecover as _;
+
+use crate::workspaces::{ContentKeeper, ResourceWrite, Workspaces};
+use tilo_content::{ContentStore, WorkspaceStores};
+
+/// A record of a governed workspace: the workspace's id, its app's and the
+/// record's wire name (`""` for the app's primary).
+type Route = (String, String, String);
+
+/// How often the records written to since the last pass are read: a workspace
+/// takes many writes a second, and one pass sees their content.
+const READ_EVERY: Duration = Duration::from_secs(2);
+/// How long the host waits before it asks again for content nobody answered.
+const ASK_AGAIN: Duration = Duration::from_secs(90);
+/// How often the content being gathered is looked at for the pieces a lost
+/// one left missing, so a member's answer arrives whole without waiting for
+/// the next write to the record that named it.
+const MISSING_EVERY: Duration = Duration::from_millis(100);
+/// How long a record that could not be read waits before it is read again, at
+/// first: each failed read waits twice as long, up to [`RETRY_LONGEST`].
+const RETRY_FIRST: Duration = Duration::from_secs(1);
+/// The longest wait between two reads of a record that does not open.
+const RETRY_LONGEST: Duration = Duration::from_secs(60);
+
+/// When a record the host could not read is read again, and how long it will
+/// wait after the next read that does not open either.
+struct Retry {
+    at: Instant,
+    wait: Duration,
+}
+
+/// What the host holds of the content its workspaces' records name.
+#[derive(Default)]
+struct State {
+    /// Content asked for and not whole yet, named by the record that
+    /// references it.
+    wants: ContentWants<Route>,
+    /// Records a member's write reached since the last pass: they are read
+    /// now rather than when the retry comes due.
+    written: BTreeSet<Route>,
+    /// Records whose content is to be looked over again: content arrived that
+    /// is itself made of more content (a file's manifest), and what a record
+    /// named was asked for a while ago and never answered.
+    again: BTreeSet<Route>,
+    /// Records with content the host lacks and was not answered about: read
+    /// again in a while, so content nobody holds now is asked for again.
+    unanswered: BTreeSet<Route>,
+    /// Records that did not open, and when to read them again: the keys of a
+    /// record a workspace seals arrive after its host joins the channel that
+    /// seals it.
+    reopened: BTreeMap<Route, Retry>,
+}
+
+/// The content a governed workspace's records reference, kept by the host that
+/// governs it.
+pub struct KeptContent {
+    workspaces: Workspaces,
+    /// This server's device: what its requests name, and what the answers to
+    /// them are addressed to.
+    device: [u8; 32],
+    store: Arc<WorkspaceStores>,
+    state: Mutex<State>,
+}
+
+fn now_ms() -> u64 {
+    tilo_clock::unix_now_ns() / 1_000_000
+}
+
+/// Whether the content a record of `app` names is kept by another keeper: the
+/// shared desktop's layout, which names none and is written with every window
+/// moved, and Chat's, whose members' files are kept within a quota
+/// ([`crate::workspace_bots::attachments`]).
+fn another_keeper(app: &str) -> bool {
+    app == tilo_desktop_model::ownership::DESKTOP_APP || app == tilo_app_id::apps::CHAT
+}
+
+impl KeptContent {
+    /// A host that keeps what the records of `workspaces` name, whose device is
+    /// `device`, in each workspace's store of `store`.
+    #[must_use]
+    pub fn new(workspaces: Workspaces, device: [u8; 32], store: Arc<WorkspaceStores>) -> Arc<Self> {
+        Arc::new(Self {
+            workspaces,
+            device,
+            store,
+            state: Mutex::default(),
+        })
+    }
+
+    /// Keep what the workspaces this host governs name from now on: what their
+    /// records hold already, then each record as it changes, until the
+    /// workspaces are no longer governed here.
+    pub async fn keep_content(self: Arc<Self>) {
+        let keeper: Arc<dyn ContentKeeper> = self.clone();
+        self.workspaces.keep_content(&keeper);
+        // Subscribed before the first read, so a write that lands while the
+        // records are read is read too.
+        let mut writes = self.workspaces.document_writes();
+        let mut governance = self.workspaces.governance_changes();
+        let mut reached = self.workspaces.holders_reached();
+        self.read_all().await;
+        let mut read = ticker(READ_EVERY);
+        let mut again = ticker(READ_EVERY);
+        let mut unanswered = ticker(ASK_AGAIN);
+        let mut reopen = ticker(RETRY_FIRST);
+        let mut missing = ticker(MISSING_EVERY);
+        loop {
+            tokio::select! {
+                write = writes.recv() => match write {
+                    Ok(write) => self.written(&write),
+                    // Missed writes are read from the records themselves.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        self.read_all().await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                },
+                // A workspace that appeared, or whose membership moved: its
+                // records are read, and one this host cannot open yet is asked
+                // about before its members write to it. The others did not move.
+                change = governance.recv() => match change {
+                    Ok(workspace) => self.keep_workspace(&workspace).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        self.read_all().await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                },
+                reached = reached.recv() => match reached {
+                    Ok(workspace) => self.holder_reached(&workspace).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        self.state.lock_recover().wants.forget_unanswered();
+                        self.read_all().await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                },
+                _ = read.tick() => {
+                    for route in self.written_since() {
+                        self.keep(&route).await;
+                    }
+                }
+                _ = again.tick() => {
+                    for route in self.again() {
+                        self.keep(&route).await;
+                    }
+                }
+                _ = unanswered.tick() => {
+                    for route in self.unanswered() {
+                        self.keep(&route).await;
+                    }
+                }
+                _ = reopen.tick() => {
+                    for route in self.reopening(Instant::now()) {
+                        self.keep(&route).await;
+                    }
+                }
+                _ = missing.tick() => self.ask_again_for_missing().await,
+            }
+        }
+    }
+
+    /// Note that `write` reached a record this host reads for its content, to
+    /// read once the writes it takes settle.
+    fn written(&self, write: &ResourceWrite) {
+        if another_keeper(&write.app) {
+            return;
+        }
+        self.state.lock_recover().written.insert((
+            write.workspace.clone(),
+            write.app.clone(),
+            write.record.clone(),
+        ));
+    }
+
+    /// Ask the workspaces again for the content being gathered that a lost
+    /// piece left short: an answer carries only so much of a file at a time,
+    /// and a piece a session could not deliver is not sent again by itself,
+    /// so the host asks within [`neighbour_wire::content::PIECE_PATIENCE_MS`]
+    /// of the last piece it got, naming what it holds.
+    async fn ask_again_for_missing(&self) {
+        let asks = {
+            let mut state = self.state.lock_recover();
+            state.wants.reask(&self.device, now_ms())
+        };
+        for ((workspace, _, _), ask) in asks {
+            if let Err(error) = self.workspaces.ask_members(&workspace, ask).await {
+                tracing::debug!(%workspace, %error, "could not ask a workspace for the content it is missing");
+            }
+        }
+    }
+
+    /// Read every record of every workspace governed here.
+    async fn read_all(&self) {
+        for summary in self.workspaces.list().await {
+            self.keep_workspace(&summary.workspace).await;
+        }
+    }
+
+    /// The records written to since the last pass, taken.
+    fn written_since(&self) -> Vec<Route> {
+        std::mem::take(&mut self.state.lock_recover().written)
+            .into_iter()
+            .collect()
+    }
+
+    /// The records whose content is to be looked over again, taken.
+    fn again(&self) -> Vec<Route> {
+        std::mem::take(&mut self.state.lock_recover().again)
+            .into_iter()
+            .collect()
+    }
+
+    /// The records with content the host was not answered about, taken.
+    fn unanswered(&self) -> Vec<Route> {
+        std::mem::take(&mut self.state.lock_recover().unanswered)
+            .into_iter()
+            .collect()
+    }
+
+    /// The records due to be read again, `now`.
+    fn reopening(&self, now: Instant) -> Vec<Route> {
+        self.state
+            .lock_recover()
+            .reopened
+            .iter()
+            .filter(|(_, retry)| retry.at <= now)
+            .map(|(route, _)| route.clone())
+            .collect()
+    }
+
+    /// Read every record of `workspace` the host can read, and ask for the
+    /// content they name: what a workspace that appeared, whose membership
+    /// moved or whose holder was reached leaves the host to look over again.
+    async fn keep_workspace(&self, workspace: &str) {
+        let routes = match self.workspaces.workspace_document_routes(workspace).await {
+            Ok(routes) => routes,
+            Err(error) => {
+                tracing::debug!(%workspace, %error, "a workspace's records are not readable here");
+                return;
+            }
+        };
+        let mut missing = 0_usize;
+        for (app, record) in routes {
+            if another_keeper(&app) {
+                continue;
+            }
+            missing = missing.saturating_add(self.keep(&(workspace.to_owned(), app, record)).await);
+        }
+        // Read over the whole workspace: what it lacks is all it lacks.
+        let blobs = u32::try_from(missing).unwrap_or(u32::MAX);
+        self.workspaces.lacks_content(workspace, blobs).await;
+    }
+
+    /// Ask again at once for all `workspace` lacks: its copy turned current
+    /// with another holder, which may keep what nobody answered before.
+    async fn holder_reached(&self, workspace: &str) {
+        self.state.lock_recover().wants.forget_unanswered();
+        self.keep_workspace(workspace).await;
+    }
+
+    /// Read `route`, note that it opened, and ask for the content it names:
+    /// what it lacks, as the number of blobs.
+    async fn keep(&self, route: &Route) -> usize {
+        let (workspace, app, record) = route;
+        let bytes = match self
+            .workspaces
+            .resource_document(workspace, app, record)
+            .await
+        {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                // Nobody wrote it: it is read when its first write lands.
+                self.state.lock_recover().reopened.remove(route);
+                return 0;
+            }
+            Err(error) => {
+                tracing::debug!(%workspace, %app, %record, %error, "a governed workspace's record is not readable yet");
+                if self.workspaces.own_record(workspace, app, record).await {
+                    // A person's own record is theirs: never asked to open.
+                    self.state.lock_recover().reopened.remove(route);
+                    return 0;
+                }
+                if self.workspaces.waits_for_keys(workspace, app, record).await {
+                    self.workspaces.ask_to_open(workspace, app, record).await;
+                }
+                self.reopen(route);
+                return 0;
+            }
+        };
+        self.state.lock_recover().reopened.remove(route);
+        let Ok(addresses) = content_of(&bytes) else {
+            tracing::debug!(%workspace, %app, %record, "a record of a governed workspace does not read");
+            return 0;
+        };
+        self.ask_for(route, addresses).await
+    }
+
+    /// Note that `route` did not read, and read it again shortly: further
+    /// apart each time it does not open.
+    fn reopen(&self, route: &Route) {
+        let mut state = self.state.lock_recover();
+        let wait = state.reopened.get(route).map_or(RETRY_FIRST, |retry| {
+            retry.wait.saturating_mul(2).min(RETRY_LONGEST)
+        });
+        state.reopened.insert(
+            route.clone(),
+            Retry {
+                at: Instant::now()
+                    .checked_add(wait)
+                    .unwrap_or_else(Instant::now),
+                wait,
+            },
+        );
+    }
+
+    /// The requests the host sends for the content of `route`'s record it
+    /// lacks and has not asked for lately; the number of blobs it lacks.
+    async fn ask_for(&self, route: &Route, addresses: Vec<String>) -> usize {
+        let (workspace, app, _) = route;
+        let Ok(store) = self.store.get(workspace) else {
+            return 0;
+        };
+        let (asks, missing) = {
+            let mut state = self.state.lock_recover();
+            let mut asks = Vec::new();
+            let mut missing = 0_usize;
+            for address in addresses {
+                for hash in missing_pieces(&store, &address) {
+                    missing = missing.saturating_add(1);
+                    if let Some(ask) = state.wants.ask(
+                        &self.device,
+                        route.clone(),
+                        (app.as_str(), workspace.as_str()),
+                        &hash,
+                        now_ms(),
+                    ) {
+                        asks.push(ask);
+                    }
+                }
+            }
+            if missing > 0 {
+                state.unanswered.insert(route.clone());
+            }
+            drop(state);
+            (asks, missing)
+        };
+        for ask in asks {
+            if let Err(error) = self.workspaces.ask_members(workspace, ask).await {
+                tracing::debug!(%workspace, %error, "could not ask a workspace for its content");
+            }
+        }
+        missing
+    }
+}
+
+impl ContentKeeper for KeptContent {
+    fn piece(&self, workspace: &str, _from: [u8; 32], frame: &[u8]) {
+        let mut state = self.state.lock_recover();
+        let Some(arrived) = state.wants.piece(&self.device, frame, now_ms()) else {
+            return;
+        };
+        let kept = self
+            .store
+            .get(workspace)
+            .and_then(|store| store.put(&arrived.bytes).map_err(|error| error.to_string()));
+        if let Err(error) = kept {
+            tracing::warn!(hash = %arrived.hash, %error, "a record's content could not be kept");
+            return;
+        }
+        // A manifest says what the file is made of: the chunks it lists are
+        // asked for when the record that named it is read again.
+        state.again.insert(arrived.tag);
+    }
+
+    fn expects(&self, _workspace: &str, frame: &[u8]) -> bool {
+        self.state.lock_recover().wants.expects(&self.device, frame)
+    }
+}
+
+/// The content `document`, a saved Automerge record, names now: the address of
+/// every `Bytes` field it holds, the address of every 64-hex value it holds
+/// whole, and the addresses a note's text names.
+///
+/// # Errors
+///
+/// Why it does not load.
+pub(crate) fn content_of(document: &[u8]) -> Result<Vec<String>, String> {
+    let doc = AutoCommit::load(document).map_err(|error| error.to_string())?;
+    let mut named = BTreeSet::new();
+    content_in(&doc, &ROOT, &mut named);
+    Ok(named.into_iter().collect())
+}
+
+/// Add the content the objects under `obj` of `doc` name to `named`.
+fn content_in(doc: &AutoCommit, obj: &ObjId, named: &mut BTreeSet<String>) {
+    let children: Vec<ObjId> = match doc.object_type(obj) {
+        Ok(ObjType::Map | ObjType::Table) => {
+            // A node the Files tree marks as in its trash holds no content to
+            // keep: the file is not the workspace's any more.
+            if in_trash(doc, obj) {
+                return;
+            }
+            doc.map_range(obj, ..)
+                .filter_map(|item| {
+                    // An app may key content by its address (a map of chunks).
+                    whole_address(&item.key, named);
+                    match item.value {
+                        ValueRef::Object(_) => Some(item.id()),
+                        ValueRef::Scalar(scalar) => {
+                            scalar_content(scalar, named);
+                            None
+                        }
+                    }
+                })
+                .collect()
+        }
+        Ok(ObjType::List) => doc
+            .list_range(obj, ..)
+            .filter_map(|item| match item.value {
+                ValueRef::Object(_) => Some(item.id()),
+                ValueRef::Scalar(scalar) => {
+                    scalar_content(scalar, named);
+                    None
+                }
+            })
+            .collect(),
+        // Text is written a character at a time: an address in it is whole
+        // only in the text it makes.
+        Ok(ObjType::Text) => {
+            if let Ok(text) = doc.text(obj) {
+                addresses_in(text.as_bytes(), named);
+            }
+            return;
+        }
+        Err(_) => return,
+    };
+    for child in children {
+        content_in(doc, &child, named);
+    }
+}
+
+/// Whether `obj` is a node the Files tree marks as in its trash.
+fn in_trash(doc: &AutoCommit, obj: &ObjId) -> bool {
+    matches!(
+        doc.get(obj, fs_protocol::tree::PARENT_KEY),
+        Ok(Some((Value::Scalar(parent), _)))
+            if matches!(
+                parent.as_ref(),
+                automerge::ScalarValue::Str(id) if id.as_str() == fs_protocol::tree::TRASH_ID
+            )
+    )
+}
+
+/// Add the content the scalar `value` names to `named`.
+fn scalar_content(value: ScalarValueRef<'_>, named: &mut BTreeSet<String>) {
+    match value {
+        ScalarValueRef::Str(text) => text_content(&text, named),
+        ScalarValueRef::Bytes(bytes) => {
+            if bytes.len() == 32 {
+                named.insert(hex::encode(&bytes));
+            } else {
+                addresses_in(&bytes, named);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Add the content the string `text` names to `named`: a `Bytes` field's
+/// reference, or the addresses it holds whole.
+fn text_content(text: &str, named: &mut BTreeSet<String>) {
+    if text.starts_with("blake3:") {
+        if let Some(address) = reference_address(text) {
+            named.insert(address);
+        }
+        return;
+    }
+    addresses_in(text.as_bytes(), named);
+}
+
+/// Add `text` to `named` when it is one content address whole.
+fn whole_address(text: &str, named: &mut BTreeSet<String>) {
+    if text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        named.insert(text.to_ascii_lowercase());
+    }
+}
+
+/// The address the stored `Bytes` value `text` names: its hash, or a sealed
+/// reference's ciphertext address, which is what the content store keys it
+/// under. `None` for text that is not a content reference ([`tilo_resource::Bytes`]'
+/// stored form, read by the same rules).
+fn reference_address(text: &str) -> Option<String> {
+    let rest = text.strip_prefix("blake3:")?;
+    let mut parts = rest.splitn(3, ':');
+    let hash = parts.next()?;
+    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    parts.next()?.parse::<u64>().ok()?;
+    match parts.next() {
+        Some(reference) if tilo_content::is_sealed(reference) => {
+            tilo_content::content_address(reference)
+        }
+        Some(_) => None,
+        None => Some(hash.to_ascii_lowercase()),
+    }
+}
+
+/// Add each stretch of exactly a content address's hex digits in `bytes` to
+/// `named`, in lower case. See [`crate::content::collection`].
+fn addresses_in(bytes: &[u8], named: &mut BTreeSet<String>) {
+    crate::content::collection::addresses_in(bytes, named);
+}
+
+/// The blobs of the content `address` names that `store` lacks: the content
+/// itself, or, when it keeps a file's manifest, the chunks the manifest lists.
+pub(crate) fn missing_pieces(store: &ContentStore, address: &str) -> Vec<String> {
+    let Some(mut item) = store.open(address) else {
+        return vec![address.to_owned()];
+    };
+    // Content kept whole that is not a file's manifest is never read past its
+    // first bytes.
+    let mut header = [0_u8; HEADER_MAGIC.len() + 1];
+    if item.read_exact(&mut header).is_err() || !is_manifest_header(&header) {
+        return Vec::new();
+    }
+    let Some(bytes) = store.read(address) else {
+        return Vec::new();
+    };
+    let Ok(manifest) = Manifest::decode(&bytes) else {
+        // A manifest that does not read names no chunk to ask for; the file
+        // stays with the members that wrote it.
+        tracing::debug!(%address, "a kept manifest does not read as one");
+        return Vec::new();
+    };
+    manifest
+        .chunks()
+        .iter()
+        .map(|chunk| hex::encode(chunk.hash))
+        .filter(|chunk| !store.has(chunk))
+        .collect()
+}
+
+/// Whether `bytes` begin a Files manifest header.
+fn is_manifest_header(bytes: &[u8]) -> bool {
+    bytes.get(..HEADER_MAGIC.len()) == Some(&HEADER_MAGIC[..])
+        && bytes.get(HEADER_MAGIC.len()) == Some(&FORMAT)
+}
+
+/// A timer that keeps no backlog: a pass that came late is not made twice.
+fn ticker(every: Duration) -> tokio::time::Interval {
+    let mut ticker = tokio::time::interval(every);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
+
+    use automerge::transaction::Transactable as _;
+    use automerge::{AutoCommit, ObjType, ROOT};
+
+    use super::*;
+
+    /// The saved document holding `fields`, each a string or bytes value.
+    fn record_of(fields: &[(&str, &str)]) -> Vec<u8> {
+        let mut doc = AutoCommit::new();
+        for (key, value) in fields {
+            doc.put(ROOT, *key, *value).unwrap();
+        }
+        doc.save()
+    }
+
+    tilo_test_env::scenario! {
+        fn a_record_names_the_content_its_values_reference;
+
+        phase a_bytes_field_names_the_address_its_reference_keeps;
+        {
+            let plain = "a1".repeat(32);
+            let stored = format!("blake3:{plain}:12");
+            let doc = record_of(&[("photo", stored.as_str())]);
+            assert_eq!(content_of(&doc).unwrap(), [plain]);
+        }
+
+        phase a_sealed_reference_names_its_ciphertext_address;
+        {
+            let plain = "d4".repeat(32);
+            let address = "e5".repeat(32);
+            let key = tilo_seal::SymmetricKey::generate().unwrap();
+            let reference = tilo_content::ContentRef::sealed(&address, key).to_string();
+            let stored = format!("blake3:{plain}:4096:{reference}");
+            let doc = record_of(&[("photo", stored.as_str())]);
+            assert_eq!(
+                content_of(&doc).unwrap(),
+                [address],
+                "the host keeps and serves the ciphertext, which is keyed by its address"
+            );
+        }
+
+        phase a_value_that_holds_an_address_whole_names_it;
+        {
+            let hash = "f6".repeat(32);
+            let doc = record_of(&[("file", hash.as_str())]);
+            assert_eq!(content_of(&doc).unwrap(), [hash]);
+        }
+
+        phase a_note_that_names_an_address_names_it;
+        {
+            let hash = "17".repeat(32);
+            let mut doc = AutoCommit::new();
+            let note = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+            doc.splice_text(&note, 0, 0, &format!("see blake3:{hash}:9"))
+                .unwrap();
+            assert_eq!(content_of(&doc.save()).unwrap(), [hash]);
+        }
+
+        phase a_file_in_the_trees_trash_names_no_content;
+        {
+            let hash = "28".repeat(32);
+            let mut doc = AutoCommit::new();
+            let nodes = doc.put_object(ROOT, fs_protocol::tree::NODES_KEY, ObjType::Map).unwrap();
+            let node = doc.put_object(&nodes, "device/0", ObjType::Map).unwrap();
+            doc.put(&node, fs_protocol::tree::PARENT_KEY, fs_protocol::tree::TRASH_ID).unwrap();
+            doc.put(&node, fs_protocol::tree::HASH_KEY, hash.as_str()).unwrap();
+            assert!(content_of(&doc.save()).unwrap().is_empty());
+        }
+
+        phase a_record_that_does_not_load_names_nothing;
+        {
+            assert!(content_of(b"not a document").is_err());
+        }
+    }
+}

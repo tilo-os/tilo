@@ -66,7 +66,6 @@ impl crate::workspaces::BranchContent for StoresBranches {
         tracing::debug!(
             %source,
             %branch,
-            tree_entries = ?tree_entries(records),
             named = count,
             copied,
             not_kept_here = lacking,
@@ -80,47 +79,19 @@ impl crate::workspaces::BranchContent for StoresBranches {
     }
 }
 
-/// The Files tree among `records`, read: its own record and each chunk of it the branch took.
-/// `None` when the branch took none of it.
-fn tree_of(records: &[((String, String), Vec<u8>)]) -> Option<fs_protocol::tree::TreeChunks> {
-    let mut tree = fs_protocol::tree::TreeChunks::default();
-    let mut read = false;
-    for ((app, record), document) in records {
-        if app == fs_protocol::tree::FILES_APP {
-            read |= tree.read_resource(record, document).unwrap_or(false);
-        }
-    }
-    read.then_some(tree)
-}
-
-/// How many pieces of the files the tree among `records` names now `store`
-/// lacks: each file's manifest, and every chunk of a manifest it keeps, as the
-/// host gathers them ([`crate::files_content`]). What only an earlier version of
-/// a record named is not counted: it may be long collected.
+/// How many pieces of the content the Files records among `records` name now
+/// `store` lacks: each file's manifest, and every chunk of a manifest it
+/// keeps, as the host gathers them ([`crate::kept_content`]). What only an
+/// earlier version of a record named is not counted: it may be long collected.
 fn not_whole_yet(
     store: &tilo_content::ContentStore,
     records: &[((String, String), Vec<u8>)],
 ) -> usize {
-    let Some(tree) = tree_of(records) else {
-        return 0;
-    };
-    crate::files_content::files_named(&tree)
+    records
         .iter()
-        .map(|manifest| match store.read(manifest) {
-            None => 1,
-            Some(listed) => fs::content::Manifest::decode(&listed).map_or(0, |manifest| {
-                manifest
-                    .chunks()
-                    .iter()
-                    .filter(|chunk| !store.has(&hex::encode(chunk.hash)))
-                    .count()
-            }),
-        })
+        .filter(|((app, _), _)| app == fs_protocol::tree::FILES_APP)
+        .filter_map(|(_, document)| crate::kept_content::content_of(document).ok())
+        .flatten()
+        .map(|address| crate::kept_content::missing_pieces(store, &address).len())
         .sum()
-}
-
-/// How many entries the Files tree among `records` holds: `None` when the
-/// branch took no tree, or it does not read.
-fn tree_entries(records: &[((String, String), Vec<u8>)]) -> Option<usize> {
-    tree_of(records).map(|tree| tree.tree().nodes.len())
 }
