@@ -881,18 +881,23 @@ impl ChatMessages {
         if row.author != me {
             return Err(Refusal::new("only the reply's author records its work"));
         }
-        let record = row.work.get_or_insert_with(Work::default);
-        let unchanged = record
+        let kept = row.work.get_or_insert_with(Work::default);
+        let unchanged = kept
             .state
             .as_ref()
             .is_some_and(|transition| transition.state == state);
         if !unchanged {
-            record.state = Some(Transition { state, since: now });
+            kept.state = Some(Transition { state, since: now });
         }
         // The run's working resource of a failure, kept beside the words the
         // reply shows; a later update without one leaves it as it was.
         if work.detail.is_some() {
-            record.failure_detail.clone_from(&work.detail);
+            kept.failure_detail.clone_from(&work.detail);
+        }
+        // What answered the turn is kept as its last word on it; a later
+        // update without one leaves it as it was.
+        if let Some(answered) = &work.answered {
+            kept.answered = Some(answered.clone());
         }
         for step in trace {
             let id = Id::from_raw(step.id.clone());
@@ -903,10 +908,10 @@ impl ChatMessages {
                 label: step.label,
                 outcome: Some(step.outcome),
             };
-            if let Some(known) = record.trace.find_mut(&id) {
+            if let Some(known) = kept.trace.find_mut(&id) {
                 *known = row;
             } else {
-                record.trace.push(row);
+                kept.trace.push(row);
             }
         }
         if let Some(say) = say

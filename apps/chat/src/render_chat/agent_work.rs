@@ -26,6 +26,9 @@ pub(super) struct AgentWorkPresentation {
     pub(super) did: Option<String>,
     /// The operations, each one line: only while their list is open.
     pub(super) steps: Vec<String>,
+    /// What answered the reply: its model, provider and what it cost. Kept
+    /// after the person switched models, so every answer names its own.
+    pub(super) answered: Option<String>,
     /// Whether a press opens and closes the list: there are operations.
     pub(super) opens: bool,
 }
@@ -94,12 +97,16 @@ impl AgentWorkPresentation {
         } else {
             Vec::new()
         };
-        (summary.is_some() || did.is_some() || !steps.is_empty()).then_some(Self {
-            summary,
-            did,
-            steps,
-            opens: !work.trace.is_empty(),
-        })
+        let answered = work.answered.as_ref().map(crate::chat::Answered::summary);
+        (summary.is_some() || did.is_some() || !steps.is_empty() || answered.is_some()).then_some(
+            Self {
+                summary,
+                did,
+                steps,
+                answered,
+                opens: !work.trace.is_empty(),
+            },
+        )
     }
 
     /// [`Self::of_turn`] of a reply nobody stopped.
@@ -108,9 +115,11 @@ impl AgentWorkPresentation {
         Self::of_turn(work, open, words, None)
     }
 
-    /// Whether it is drawn as a card: the work is still under way.
+    /// Whether it is drawn as a card: the work is still under way. A
+    /// finished answer's single line — what answered it — is a caption under
+    /// the words, not a card of its own.
     fn card(&self) -> bool {
-        self.did.is_none()
+        self.summary.is_some()
     }
 
     fn lines(&self) -> impl Iterator<Item = (&str, Line)> {
@@ -119,6 +128,11 @@ impl AgentWorkPresentation {
             .map(|summary| (summary.as_str(), Line::Summary))
             .chain(self.did.iter().map(|did| (did.as_str(), Line::Did)))
             .chain(self.steps.iter().map(|step| (step.as_str(), Line::Step)))
+            .chain(
+                self.answered
+                    .iter()
+                    .map(|line| (line.as_str(), Line::Answered)),
+            )
     }
 }
 
@@ -191,6 +205,7 @@ enum Line {
     Summary,
     Did,
     Step,
+    Answered,
 }
 
 fn line_style(line: Line, theme: &Theme) -> (ui::TextStyle, vello::peniko::Color) {
@@ -198,7 +213,7 @@ fn line_style(line: Line, theme: &Theme) -> (ui::TextStyle, vello::peniko::Color
     match line {
         Line::Summary => (theme.text(TextRole::Body).strong(), colors.text_primary),
         Line::Did => (theme.text(TextRole::Caption).strong(), colors.text_dim),
-        Line::Step => (theme.text(TextRole::Caption), colors.text_dim),
+        Line::Step | Line::Answered => (theme.text(TextRole::Caption), colors.text_dim),
     }
 }
 

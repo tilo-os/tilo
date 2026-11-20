@@ -438,6 +438,7 @@ fn work_row(work: &crate::chat::Work) -> Option<AgentWork> {
             ),
         since: transition.since,
         failure_detail: work.failure_detail.clone(),
+        answered: work.answered.clone(),
         trace,
     })
 }

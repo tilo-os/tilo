@@ -314,6 +314,7 @@ pub(crate) fn work_update(work: &crate::model::AgentWork) -> crate::chat::WorkUp
             })
             .collect(),
         detail: None,
+        answered: work.answered.clone(),
     }
 }
 

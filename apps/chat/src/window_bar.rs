@@ -4,10 +4,12 @@
 //! person or an agent's task) as the window's location, and what can be done
 //! to it: stopping a shared view, the call in progress, its microphone and
 //! leaving it, the pinned messages and the people; the host's
-//! model commands and creating a channel in its menu. Search is the bar's
-//! own. Each part runs the window's own [`Hit`], as a press on the control
-//! the conversation used to draw did. A thread that fills the window is the
-//! window's location, with Back to the conversation.
+//! model commands and creating a channel in its menu. A conversation with an
+//! agent adds the model its answers come from: every model of every provider the
+//! server keeps, changed mid-session through the workspace's agents resource, with what the conversation's answers cost so far. Search is
+//! the bar's own. Each part dispatches the window's own [`Hit`], as a press on the
+//! control the conversation used to draw did. A thread that fills the window
+//! is the window's location, with Back to the conversation.
 
 use ui::framework::BarCommands;
 use ui::window_toolbar::{
@@ -15,8 +17,16 @@ use ui::window_toolbar::{
     ToolbarNavigation, WindowToolbar,
 };
 
+use ui::tilo_resource::Id;
+use ui::tilo_workspace_agent::{Agent, WorkspaceAgents, workspace_agents};
+
 use crate::app::{ChatApp, Hit};
 use crate::model::{ChannelKind, Presence};
+
+/// The document the workspace keeps its agents in, as the window opens it.
+fn agents_document() -> String {
+    ui::resource::workspace::document_id(ui::tilo_workspace_agent::KIND)
+}
 
 /// The bar's entries, each carrying the window's own hit.
 pub(crate) type BarEntries = BarCommands<Hit>;
@@ -107,6 +117,12 @@ impl ChatApp {
                         .in_menu(),
                 );
             }
+        }
+        // The model every answer of an agent conversation comes from, across
+        // every provider the server keeps: changed here, mid-session,
+        // through the workspace's own agents resource.
+        if let Some(agent) = self.agent_in_view() {
+            actions.push(self.agent_model_action(&agent));
         }
         if self.keeps_layout() && self.direct_person().is_none() {
             actions.push(
@@ -245,5 +261,302 @@ impl ChatApp {
             self.on_hit(hit, doc);
             self.canonical_dirty = true;
         }
+    }
+}
+
+/// The model switcher of the conversation with an agent, and what changing
+/// it means for the workspace's agents resource.
+impl ChatApp {
+    /// The agent the conversation in view is with: one direct conversation
+    /// with exactly one agent.
+    pub(crate) fn conversation_agent(&self) -> Option<String> {
+        let members = match self.channel(&self.active_channel) {
+            Some(channel) => channel.direct.then(|| channel.members.clone()),
+            None => crate::chat::Chat::direct_members(&Id::from_raw(self.active_channel.clone())),
+        }?;
+        self.conversation_peer(&members)
+            .filter(ui::tilo_resource::MemberId::is_agent)
+            .map(|peer| peer.id().to_owned())
+    }
+
+    /// The agent `id` of the workspace's agents resource, once this
+    /// window holds it: what answers the conversation, its keeper and its
+    /// model.
+    pub(crate) fn agent(&self, id: &str) -> Option<Agent> {
+        let agents = self.agents.as_ref()?.open(&agents_document())?;
+        agents
+            .get()
+            .agents
+            .find(&Id::from_raw(id.to_owned()))
+            .cloned()
+    }
+
+    /// The agent whose conversation is in view, once the workspace's agents
+    /// resource reached this window.
+    fn agent_in_view(&self) -> Option<Agent> {
+        let id = self.conversation_agent()?;
+        self.agent(&id)
+    }
+
+    /// The switcher: the model the agent's answers answer on, every model of
+    /// every provider the server keeps, and — a conversation is one
+    /// session — what its answers cost so far.
+    fn agent_model_action(&self, agent: &Agent) -> ToolbarAction {
+        self.models.poll();
+        let chosen = agent.model.as_deref();
+        let label = self
+            .models
+            .label(chosen)
+            .or_else(|| chosen.map(str::to_owned))
+            .unwrap_or_else(|| crate::i18n::t("chat-agent-model"));
+        let label = match self.session_cost_micros() {
+            0 => label,
+            cost => format!("{label} · {}", ui::format::money(cost)),
+        };
+        let mine = self.me.id.person_id() == Some(agent.keeper.as_str());
+        let mut items = Vec::new();
+        if mine {
+            let current = chosen
+                .and_then(|named| self.models.find(named))
+                .or_else(|| {
+                    if chosen.is_none() {
+                        self.models.default_model()
+                    } else {
+                        None
+                    }
+                })
+                .map(|found| found.value);
+            for choice in self.models.choices().unwrap_or_default() {
+                let mut item = self.bar_entries.entry(
+                    "sparkles",
+                    choice.label,
+                    Hit::AgentModel(Some(choice.value.clone())),
+                );
+                if current.as_deref() == Some(choice.value.as_str()) {
+                    item = item.on(true);
+                }
+                items.push(item);
+            }
+            if chosen.is_some() {
+                items.push(self.bar_entries.entry(
+                    "rotate-ccw",
+                    crate::i18n::t("chat-agent-model-default"),
+                    Hit::AgentModel(None),
+                ));
+            }
+        }
+        let enabled = !items.is_empty();
+        ToolbarAction::new("chat-agent-model", "sparkles", label)
+            .with_items(items)
+            .labelled()
+            .enabled(enabled)
+    }
+
+    /// What the answers in the conversation in view cost so far, as each one
+    /// recorded it: the session's own total, which stays right across a
+    /// model switch.
+    pub(crate) fn session_cost_micros(&self) -> u64 {
+        self.messages
+            .iter()
+            .filter_map(|message| message.work.as_ref()?.answered.as_ref())
+            .map(|answered| answered.cost_micros)
+            .fold(0, u64::saturating_add)
+    }
+
+    /// Choose the model the agent of the conversation in view answers with,
+    /// through the workspace's agents resource: `None` follows its
+    /// keeper's default again.
+    pub(crate) fn choose_agent_model(&self, model: Option<String>) {
+        let Some(agent) = self.conversation_agent() else {
+            return;
+        };
+        let Some(agents) = self
+            .agents
+            .as_ref()
+            .and_then(|agents| agents.open(&agents_document()))
+        else {
+            return;
+        };
+        let _ = agents.invoke(&WorkspaceAgents::SET_AGENT_MODEL.with(
+            workspace_agents::SetAgentModel {
+                agent: Id::from_raw(agent),
+                model,
+            },
+        ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use tilo_actions::remote::person_models::{
+        ModelProviders, OfferedModel, Protocol, ProviderView,
+    };
+    use ui::framework::testing::TestApp;
+    use ui::tilo_resource::NonBlank;
+    use ui::tilo_workspace_agent::workspace_agents::CreateAgent;
+
+    use super::*;
+    use crate::testing::MountedChat;
+
+    /// The workspace the window is in.
+    const WORKSPACE: &str = "6f0c3a52-8e1b-4d6a-9c2f-3b7e5d1a4c90";
+
+    /// One provider, as the server lists it, with `models` as `(id, label)`.
+    fn provider(
+        id: &str,
+        name: &str,
+        default: Option<&str>,
+        models: &[(&str, &str)],
+    ) -> ProviderView {
+        ProviderView {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            protocol: Protocol::default(),
+            endpoint: "https://models.example.com/v1".to_owned(),
+            configured: true,
+            signs_in: false,
+            models: models
+                .iter()
+                .map(|(id, label)| OfferedModel {
+                    id: (*id).to_owned(),
+                    label: (*label).to_owned(),
+                })
+                .collect(),
+            default_model: default.map(str::to_owned),
+            reasoning: None,
+        }
+    }
+
+    /// A window on the conversation with an agent the person keeps, and the
+    /// providers the server keeps beside it.
+    fn window_with_agent() -> TestApp<crate::ChatShell> {
+        ui::i18n::I18nManager::init("en-US");
+        let mut window = TestApp::<crate::ChatShell>::in_workspace(WORKSPACE).expect("a window");
+        window.frame();
+        // The server's listing, as it answered before the conversation opened: a test asks no
+        // server for one.
+        {
+            let mut chat = window.chat();
+            chat.models = crate::model_choice::ModelChoices::answered(ModelProviders {
+                providers: vec![
+                    provider(
+                        "chatgpt",
+                        "ChatGPT",
+                        Some("gpt-5.5"),
+                        &[("gpt-5.5", "GPT-5.5")],
+                    ),
+                    provider(
+                        "anthropic",
+                        "Anthropic",
+                        Some("sonnet"),
+                        &[("sonnet", "Sonnet")],
+                    ),
+                ],
+                default_provider: Some("chatgpt".to_owned()),
+                assignments: Vec::new(),
+            });
+        }
+        let agents = window
+            .shared_workspace::<WorkspaceAgents>(ui::tilo_workspace_agent::OWNER)
+            .expect("the workspace's agents");
+        agents
+            .invoke(&WorkspaceAgents::CREATE_AGENT.with(CreateAgent {
+                name: NonBlank::parse("Assistant").expect("a name"),
+                keeper: None,
+                id: Some("assistant".to_owned()),
+                model: None,
+                mcp_client: None,
+            }))
+            .expect("the agent is made");
+        window.frame();
+        window
+            .call_on(
+                "chat.workspace",
+                "open-agent",
+                serde_json::json!({ "agent": "assistant" }),
+            )
+            .expect("the conversation with the agent opens");
+        window.settle();
+        window
+    }
+
+    /// The model an agent conversation answers on, as the window bar offers it:
+    /// every model of every provider the server keeps, the one in use
+    /// marked, and each choice its own command.
+    #[test]
+    fn the_conversation_with_an_agent_offers_every_model_and_chooses_one_through_its_own_action() {
+        let mut window = window_with_agent();
+        let chat = window.chat();
+        let action = chat
+            .window_bar_actions()
+            .into_iter()
+            .find(|action| action.id == "chat-agent-model")
+            .expect("the switcher is in the conversation's header");
+        assert_eq!(action.name, "GPT-5.5 · ChatGPT", "the model it answers on");
+        let names: Vec<&str> = action.items.iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(names, ["GPT-5.5 · ChatGPT", "Sonnet · Anthropic"]);
+        let used = action
+            .items
+            .iter()
+            .find(|item| item.on)
+            .expect("the model in use is marked");
+        assert_eq!(used.name, "GPT-5.5 · ChatGPT");
+
+        // A choice's press is the window's own command, which changes the
+        // agent's model through the resource's action.
+        let sonnet = action
+            .items
+            .iter()
+            .find(|item| item.name == "Sonnet · Anthropic")
+            .expect("the other model");
+        assert_eq!(
+            chat.bar_entries.pressed(&ToolbarEvent::Action {
+                id: sonnet.id.clone(),
+            }),
+            Some(Hit::AgentModel(Some("anthropic/sonnet".to_owned())))
+        );
+        chat.choose_agent_model(Some("anthropic/sonnet".to_owned()));
+        drop(chat);
+        window.frame();
+        window.settle();
+        let agents = window
+            .shared_workspace::<WorkspaceAgents>(ui::tilo_workspace_agent::OWNER)
+            .expect("the workspace's agents");
+        let agent = agents
+            .get()
+            .agents
+            .find(&Id::from_raw("assistant".to_owned()))
+            .cloned()
+            .expect("the agent");
+        assert_eq!(agent.model.as_deref(), Some("anthropic/sonnet"));
+    }
+
+    /// A conversation that is no agent's offers no model: a channel, and a
+    /// conversation with a person, never name one.
+    #[test]
+    fn only_a_conversation_with_an_agent_offers_a_model() {
+        let mut window = window_with_agent();
+        window
+            .chat()
+            .answer_effect(crate::effects::ChatEffect::OpenChannel {
+                channel: "c_chat".to_owned(),
+            })
+            .expect("a channel opens");
+        window.settle();
+        let chat = window.chat();
+        assert!(
+            !chat
+                .window_bar_actions()
+                .iter()
+                .any(|action| action.id == "chat-agent-model"),
+            "a channel uses no agent's model"
+        );
     }
 }

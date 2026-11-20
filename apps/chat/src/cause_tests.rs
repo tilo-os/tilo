@@ -120,6 +120,7 @@ fn work(message: &Id, state: &str) -> ui::tilo_resource::Invoke<ChatMessages> {
             about: None,
             trace: Vec::new(),
             detail: None,
+            answered: None,
         },
         say: None,
     })

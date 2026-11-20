@@ -324,6 +324,7 @@ tilo_test_env::scenario! {
                         why: None,
                     }],
                     detail: None,
+                    answered: None,
                 },
                 say: None,
             }),

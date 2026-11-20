@@ -352,6 +352,9 @@ pub struct ChatApp {
     pub(crate) bar: Option<WindowBarLink>,
     /// The window bar's entries of the conversation shown.
     pub(crate) bar_entries: crate::window_bar::BarEntries,
+    /// The person's model providers, as the server that keeps them listed them,
+    /// for the conversation with an agent's model switcher.
+    pub(crate) models: crate::model_choice::ModelChoices,
     /// The detail drawer: people, pins, or the open thread.
     pub(crate) right_flap: SidebarDrawer,
     /// The chrome metrics of the last painted theme.
@@ -384,8 +387,9 @@ pub struct ChatApp {
     /// What the workspace calls this window's person, numbered like anyone else.
     pub(crate) own_label: Option<String>,
     pub(crate) workspace_colors: HashMap<MemberId, (u8, u8, u8)>,
-    /// The workspace's own list of its agents, read for their names: an agent that works on
-    /// the workspace's server has no presence here, and that list is what calls it "Video agent".
+    /// The workspace's own list of its agents, read for their names (an agent that works on
+    /// the workspace's server has no presence here, and that list is what calls it "Video agent"),
+    /// and for the model a conversation with one gets its answers from, changed through the list's own action.
     pub(crate) agents:
         Option<ui::framework::ResourceOpener<ui::tilo_workspace_agent::WorkspaceAgents>>,
     /// Explicit shot fixture; never set on the live launch path.
@@ -765,6 +769,7 @@ impl ChatApp {
             shown_rows: ChannelRows::default(),
             bar: None,
             bar_entries: crate::window_bar::BarEntries::new(),
+            models: crate::model_choice::ModelChoices::default(),
             right_flap: Self::detail_drawer(),
             chrome: Chrome::default(),
             layout_text_scale: 1.0,
@@ -1204,6 +1209,14 @@ impl ChatApp {
                     .insert(MemberId::agent(agent.id.0.clone()), name.to_owned());
             }
         }
+    }
+
+    /// Ask the server for the person's model providers where `live` says this
+    /// window is a live one: a capture asks nothing and offers no choice.
+    #[must_use]
+    pub(crate) fn with_model_choices(mut self, live: bool) -> Self {
+        self.models = crate::model_choice::ModelChoices::new(live);
+        self
     }
 
     /// Follow this person's preferences from now on.

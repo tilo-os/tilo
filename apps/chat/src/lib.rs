@@ -78,6 +78,7 @@ pub mod mention;
 pub mod message_view;
 pub mod messages;
 pub mod model;
+mod model_choice;
 mod model_stream;
 mod moderation;
 pub mod paint;

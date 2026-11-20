@@ -25,6 +25,7 @@ use tilo_server::{
     },
 };
 use ui::tilo_resource::{Id, NonBlank, Resource as _};
+use ui::tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 
 const CHAT: &str = "so.tilo.chat";
 const EBOOK: &str = "so.tilo.ebook";
@@ -102,7 +103,7 @@ impl Hosted {
                     protocol: ProviderProtocol::OpenAiCompatible,
                     endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
                     key: Some("the-keepers-own-model-key"),
-                    models: &["gemini-main"],
+                    models: &["gemini-main", "gemini-pro"],
                 },
                 true,
             )
@@ -432,6 +433,81 @@ impl Hosted {
         self.replied(&told).await;
         assert_eq!(self.caused(&key).await.len(), 1, "told once");
         held
+    }
+
+    /// What the conversation's newest answer says answered it.
+    async fn last_answered(&self) -> chat::chat::Answered {
+        let part = conversation_part(&self.workspaces, &self.workspace).await;
+        let mut answered: Vec<(i64, chat::chat::Answered)> = part
+            .messages
+            .iter()
+            .filter(|(_, held)| held.author == MemberId::agent(SCOUT))
+            .filter_map(|(_, held)| Some((held.ts, held.work.as_ref()?.answered.clone()?)))
+            .collect();
+        answered.sort_by_key(|(ts, _)| *ts);
+        answered
+            .pop()
+            .map(|(_, answered)| answered)
+            .expect("an answer names the model that wrote it")
+    }
+
+    /// Choose the model the agent answers with, as their Agents settings do:
+    /// the workspace's own agents resource, changed by the person.
+    async fn set_agent_model(&self, model: Option<&str>) {
+        let document = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
+        let saved = self
+            .workspaces
+            .resource_document(&self.workspace, ui::tilo_workspace_agent::OWNER, &document)
+            .await
+            .unwrap()
+            .expect("the workspace's agents");
+        let mut agents = ui::tilo_resource::Replica::<WorkspaceAgents>::from_doc(
+            automerge::AutoCommit::load(&saved).unwrap(),
+        )
+        .as_author(&self.person());
+        agents
+            .apply(
+                WorkspaceAgents::SET_AGENT_MODEL.with(workspace_agents::SetAgentModel {
+                    agent: Id::from_raw(SCOUT.to_owned()),
+                    model: model.map(str::to_owned),
+                }),
+            )
+            .unwrap();
+        let route = DocumentRoute {
+            app_id: ui::tilo_workspace_agent::OWNER.into(),
+            cluster_id: self.workspace.clone(),
+            document: document.clone(),
+        };
+        let bytes = std::mem::take(agents.doc_mut()).save();
+        self.page
+            .peer
+            .write(route, &collab_types::DocumentMutation::Snapshot(bytes))
+            .unwrap();
+        // The next turn reads the agents resource the server holds: wait for it.
+        let wanted = model.map(str::to_owned);
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let bytes = self
+                .workspaces
+                .resource_document(&self.workspace, ui::tilo_workspace_agent::OWNER, &document)
+                .await
+                .unwrap()
+                .unwrap();
+            let held =
+                WorkspaceAgents::read(&automerge::AutoCommit::load(&bytes).unwrap()).unwrap();
+            let model = held
+                .agents
+                .find(&Id::from_raw(SCOUT.to_owned()))
+                .and_then(|agent| agent.model.clone());
+            if model == wanted {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the agent's model is not kept: {model:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     }
 
     /// Everything the model was shown of its tool calls, for a failed assertion to say.
@@ -1475,3 +1551,35 @@ async fn what_undo_cannot_take_back_asks_its_person_first_inside_a_group() {
 /// An action that asks its person, carried inside another.
 #[path = "hosted_question_in_carrier.rs"]
 mod in_a_carrier;
+
+/// Which model wrote each answer stays with the answer: a person switches the agent's model
+/// between two turns, and every reply names the provider and model that wrote it, what it cost
+/// and the tokens it used — the same conversation, read later, says both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_reply_names_the_model_that_wrote_it_across_a_switch() {
+    let hosted = Hosted::start().await;
+    hosted
+        .turn(
+            "Good morning",
+            vec![Reply::text("Good morning, Ada.").costing(1_200)],
+        )
+        .await;
+    let first = hosted.last_answered().await;
+    assert_eq!(first.provider, "Google");
+    assert_eq!(first.model, "gemini-main");
+    assert_eq!(first.cost_micros, 1_200);
+
+    hosted.set_agent_model(Some("Google/gemini-pro")).await;
+    hosted
+        .turn(
+            "And tomorrow?",
+            vec![Reply::text("Tomorrow too.").costing(300)],
+        )
+        .await;
+    let second = hosted.last_answered().await;
+    assert_eq!(second.provider, "Google");
+    assert_eq!(second.model, "gemini-pro");
+    assert_eq!(second.cost_micros, 300);
+    assert_eq!(first.model, "gemini-main", "the first answer keeps its own");
+    hosted.page.peer.close();
+}

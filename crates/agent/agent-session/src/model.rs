@@ -19,7 +19,7 @@ mod turns;
 
 pub use openai::{CLOUD_MODEL, ModelChoice};
 pub use scripted::ScriptedTurns;
-pub use turns::{GatewayTurns, PlanTurns};
+pub use turns::{Answered, GatewayTurns, PlanTurns};
 
 /// Makes the turns of the model a host's agents work with, on the thread
 /// that asks it; `None` when the host has no model they can work with.

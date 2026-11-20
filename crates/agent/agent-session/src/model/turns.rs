@@ -17,6 +17,18 @@ use tilo_model_gateway::host_backend::protocol::{
 /// The most characters of a refusal's own words kept in a usage line.
 const MOST_REFUSAL_CHARS: usize = 300;
 
+/// What answered a turn's calls: the provider as the person named it, and the
+/// model's id. A turn keeps it on its reply, so a conversation says which
+/// model wrote each answer even after the person switched models.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Answered {
+    pub provider: String,
+    /// The model's id, as its provider names it.
+    pub model: String,
+    /// The model as a person reads it, where its provider labels it.
+    pub label: String,
+}
+
 /// What carries a model's turns, holding the credential.
 pub trait PlanTurns: Send {
     /// Answer one turn's `request`. `key` names the turn, the same for
@@ -49,6 +61,13 @@ pub trait PlanTurns: Send {
 
     /// The model's name, for the usage log.
     fn model(&self) -> &str;
+
+    /// What answered the last call: a person's own provider and its model,
+    /// where the turns are theirs; `None` for a model the server provides itself,
+    /// which has no provider of the person's to name.
+    fn answered_by(&self) -> Option<Answered> {
+        None
+    }
 
     /// Whether the model is shown the pictures a tool answers with. One that
     /// is not reads that it was not shown them.

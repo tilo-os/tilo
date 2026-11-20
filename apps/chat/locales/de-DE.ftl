@@ -124,6 +124,18 @@ chat-agent-stopped-by = Von { $person } gestoppt
 # A stop of an agent's work that Chat did not take; $reason says why.
 chat-agent-not-stopped = Nicht gestoppt: { $reason }
 chat-agent-failed = Konnte nicht abgeschlossen werden
+
+# Was eine Antwort gegeben hat: das Modell ($model), sein Anbieter ($provider) und was der
+# Durchlauf gekostet hat ($cost), mit den verbrauchten Tokens ($tokens), sofern gezählt.
+chat-agent-answered = { $model } · { $provider } · { $cost }
+# Das Modell, auf dem ein Gespräch mit einem Agenten läuft, bevor der Host eines nennt, und die
+# Wahl, die wieder der Vorgabe folgt.
+chat-agent-model = Modell
+chat-agent-model-default = Dem Standardmodell folgen
+chat-agent-answered-tokens = { $model } · { $provider } · { $cost } · { $tokens ->
+    [one] 1 Token
+   *[other] { $tokens } Token
+}
 chat-model-ask = Assistent fragen
 chat-model-stop = Stoppen
 chat-model-retry = Erneut versuchen

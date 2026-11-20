@@ -333,6 +333,10 @@ pub struct AgentWork {
     /// Never the reply's words, and shown only behind a disclosure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_detail: Option<String>,
+    /// What answered the reply: the provider, the model, and what the turn
+    /// cost and used. None for a model the server provides itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered: Option<crate::chat::Answered>,
     /// One row per operation the agent **dispatched**, in the order it
     /// dispatched them.
     ///
@@ -493,6 +497,7 @@ impl AgentWork {
             state,
             since: 0,
             failure_detail: update.detail.clone(),
+            answered: update.answered.clone(),
             trace,
             stream: None,
         })
@@ -509,6 +514,7 @@ impl AgentWork {
             state,
             since,
             failure_detail: None,
+            answered: None,
             trace: Vec::new(),
             stream: None,
         }

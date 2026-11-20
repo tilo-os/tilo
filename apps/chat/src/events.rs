@@ -854,6 +854,7 @@ impl ChatApp {
             Hit::ModelStream(command) => {
                 self.activate_model_control(&command);
             }
+            Hit::AgentModel(model) => self.choose_agent_model(model),
             Hit::Send | Hit::RetrySend => self.send_focused(doc),
             Hit::ThreadSend => {
                 // The thread's box sends its own draft, to the message it

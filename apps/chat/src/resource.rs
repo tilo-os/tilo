@@ -145,6 +145,7 @@ impl ResourceApp for ChatShell {
         let drafts = cx.person::<crate::drafts::ChatDrafts>();
         let app = ChatApp::new(identity, runtime, content)
             .with_models(models)
+            .with_model_choices(live)
             .with_drafts(drafts)
             // The workspace's names for its agents, read from the list every app of the
             // workspace opens: an agent has no presence here to be named by.
@@ -635,6 +636,7 @@ pub(crate) fn went_on_part_steps() -> Vec<(ui::tilo_resource::MemberId, Invoke<C
                 about: None,
                 trace: Vec::new(),
                 detail: None,
+                answered: None,
             },
             Some(
                 "The note to Maya is drafted. It says that you bring the numbers on Friday.".into(),
@@ -662,6 +664,7 @@ pub(crate) fn agent_work(summons: &Id) -> Invoke<ChatMessages> {
                 why: None,
             }],
             detail: None,
+            answered: None,
         },
         None,
     )

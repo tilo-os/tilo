@@ -117,6 +117,7 @@
         }
       }
     ],
-    "failure_detail": null
+    "failure_detail": null,
+    "answered": null
   }
 }

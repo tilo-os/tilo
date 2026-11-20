@@ -49,7 +49,7 @@ use tilo_actions::remote::{
     RemoteActionMessage, RemoteActionTarget, WatchScope, pending,
 };
 use tilo_actions::{InvocationId, InvocationUpdate, api::ActionAddress};
-use tilo_agent_session::model::PlanTurns;
+use tilo_agent_session::model::{Answered as ModelAnswered, PlanTurns};
 use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_agent_session::{ModelChoice, record_provider};
 use tilo_lock::MutexRecover as _;
@@ -1586,15 +1586,16 @@ impl HostAgents {
             )
             .await;
         let keeping = learned::Keeping::of(&self.workspaces, workspace, &turn);
-        let (outcome, cost) = match (asked, limit) {
+        let (outcome, cost, usage) = match (asked, limit) {
             (_, Some(limit)) if spent_before >= limit => (
                 Outcome::Stopped(format!(
                     "I stopped before starting: today's limit of {} is reached.",
                     money(limit)
                 )),
                 0,
+                TurnUsage::default(),
             ),
-            (Err(why), _) => (Outcome::Failed(why), 0),
+            (Err(why), _) => (Outcome::Failed(why), 0, TurnUsage::default()),
             (Ok(model), _) => {
                 // The day's limit and the issue's own budget both bound the turn: the smaller.
                 let day_left = limit.map(|limit| limit.saturating_sub(spent_before));
@@ -1629,7 +1630,7 @@ impl HostAgents {
             self.charge(workspace, sub_agents::payer(&turn), &day, cost)
                 .await;
         }
-        let ended = reply.finished(&outcome).await;
+        let ended = reply.finished_with(&outcome, cost, &usage).await;
         crate::workspace_telling::turn_ended(
             &self.workspaces,
             self.events.as_ref(),
@@ -1792,6 +1793,7 @@ impl HostAgents {
                     model: theirs.clone(),
                     name: name.clone(),
                     stop: Arc::clone(&stop),
+                    answered: None,
                 }) as Box<dyn PlanTurns>)
             })),
             Err(refused @ ModelRefusal::NoModelLinked { .. }) => {
@@ -1865,6 +1867,8 @@ struct KeeperTurns {
     name: String,
     /// Set when the turn's person stopped it: a call under way ends on it.
     stop: Arc<AtomicBool>,
+    /// What answered the last call, as its person named the provider.
+    answered: Option<ModelAnswered>,
 }
 
 impl PlanTurns for KeeperTurns {
@@ -1886,20 +1890,39 @@ impl PlanTurns for KeeperTurns {
         _: bool,
         written: &mut (dyn FnMut(StreamEvent) + Send),
     ) -> Result<ModelResponse, ModelError> {
-        self.model
+        let answer = self
+            .model
             .answer_blocking(
                 request,
                 deadline,
                 &|| self.stop.load(Ordering::Relaxed),
                 written,
             )
-            .map(|answer| answer.response)
-            .map_err(|refused| refused.model_error())
+            .map_err(|refused| refused.model_error())?;
+        self.answered = Some(ModelAnswered {
+            provider: answer.linked.provider,
+            label: answer.linked.model.display_label().to_owned(),
+            model: answer.linked.model.id,
+        });
+        Ok(answer.response)
     }
 
     fn model(&self) -> &str {
         &self.name
     }
+
+    fn answered_by(&self) -> Option<ModelAnswered> {
+        self.answered.clone()
+    }
+}
+
+/// What answered a turn's calls and what they used, as its reply keeps it.
+#[derive(Clone, Debug, Default)]
+struct TurnUsage {
+    /// The provider and model of the last call, where a person's own model answered.
+    answered: Option<ModelAnswered>,
+    /// The tokens its calls counted: every input and output token.
+    tokens: u64,
 }
 
 /// How a turn ended.
@@ -2071,6 +2094,18 @@ impl Reply {
     /// not be finished ([`Self::unfinished`]), and whoever works the turn reads why. No reader
     /// takes such a reply for answered, so the message it answers is not asked twice.
     async fn finished(&self, outcome: &Outcome) -> Result<(), String> {
+        self.finished_with(outcome, 0, &TurnUsage::default()).await
+    }
+
+    /// [`Self::finished`], recording what the turn's model calls cost and what answered them on
+    /// the reply, so a conversation says which provider and model wrote each answer and what it
+    /// used — the same reply after its person switched models mid-session.
+    async fn finished_with(
+        &self,
+        outcome: &Outcome,
+        cost: u64,
+        usage: &TurnUsage,
+    ) -> Result<(), String> {
         match &self.ask {
             Ask::Message { .. } => {
                 let (state, words) = match outcome {
@@ -2079,17 +2114,33 @@ impl Reply {
                     Outcome::Failed(words) => ("provider_failed", words.as_str()),
                     Outcome::Cancelled => ("provider_cancelled", ""),
                 };
-                if self.grown_ends(outcome).await {
+                let grew = self.grown_ends(outcome).await;
+                // A reply that grew ended through its stream: only what answered it is kept
+                // there now, and a model the server provides itself has nothing to say.
+                if grew && usage.answered.is_none() {
                     return Ok(());
                 }
                 // A reply that grew and then lost a piece takes no more words into its text:
                 // the turn's words are kept with its work, so none of them is gone.
-                let work = if self.written.lacks_words() {
+                let mut work = if !grew && self.written.lacks_words() {
                     json!({"state": state, "detail": words})
                 } else {
                     json!({"state": state})
                 };
-                match self.work(work, Some(words)).await {
+                if let (Some(answered), Some(fields)) = (&usage.answered, work.as_object_mut()) {
+                    fields.insert(
+                        "answered".to_owned(),
+                        json!({
+                            "provider": answered.provider.clone(),
+                            "model": answered.model.clone(),
+                            "label": answered.label.clone(),
+                            "costMicros": cost,
+                            "tokens": usage.tokens,
+                        }),
+                    );
+                }
+                let say = (!grew).then_some(words);
+                match self.work(work, say).await {
                     Ok(()) => Ok(()),
                     Err(error) => Err(self.unfinished(&error).await),
                 }
@@ -2454,7 +2505,7 @@ async fn work(
     reply: &mut Reply,
     going: &going::Going,
     keeping: Option<&learned::Keeping>,
-) -> (Outcome, u64) {
+) -> (Outcome, u64, TurnUsage) {
     let Some(turns) = tokio::task::spawn_blocking(move || model())
         .await
         .ok()
@@ -2466,13 +2517,14 @@ async fn work(
                     .to_owned(),
             ),
             0,
+            TurnUsage::default(),
         );
     };
     let server = match McpServer::for_turn(reply.provider.clone(), reply.caller.clone())
         .map(|server| server.with_observation(steps::observed()))
     {
         Ok(server) => server,
-        Err(error) => return (Outcome::Failed(error.to_string()), 0),
+        Err(error) => return (Outcome::Failed(error.to_string()), 0, TurnUsage::default()),
     };
     // What the turn keeps about its keeper, and in a conversation the view it may answer with,
     // are its own tools beside the agent tools.
@@ -2490,7 +2542,11 @@ async fn work(
         ..tilo_agent_turn::Asked::new(instructions(turn, &scope.workspace), turn.request.clone())
     };
     let agent = turn.agent.id.0.clone();
-    let model = Arc::new(Mutex::new(Asking(asking::again(turns, going.stop_flag()))));
+    let usage = Arc::new(Mutex::new(TurnUsage::default()));
+    let model = Arc::new(Mutex::new(Asking {
+        usage: Arc::clone(&usage),
+        turns: asking::again(turns, going.stop_flag()),
+    }));
     let answering = Answering {
         scope,
         going,
@@ -2504,12 +2560,17 @@ async fn work(
     if let Outcome::Answered(words) = &outcome {
         tracing::info!(%agent, cost, said = words.len(), "an agent on the workspace's server answered");
     }
-    (outcome, cost)
+    let usage = usage.lock_recover().clone();
+    (outcome, cost, usage)
 }
 
 /// The host's model as a turn asks it: each call asked again where it fails for a moment
-/// ([`asking::again`]), and what it writes handed on as it comes.
-struct Asking(Box<dyn PlanTurns>);
+/// ([`asking::again`]), and what it writes handed on as it comes. What a call answered with
+/// and used is kept, for the reply that names it.
+struct Asking {
+    usage: Arc<Mutex<TurnUsage>>,
+    turns: Box<dyn PlanTurns>,
+}
 
 impl tilo_agent_turn::Model for Asking {
     fn turn(
@@ -2528,9 +2589,20 @@ impl tilo_agent_turn::Model for Asking {
         deadline: Instant,
         heard: &mut (dyn FnMut(StreamEvent) + Send),
     ) -> Result<ModelResponse, String> {
-        self.0
+        let answer = self
+            .turns
             .turn_streaming(request, key, deadline, false, heard)
-            .map_err(|error| format!("My model did not answer: {}", error.message))
+            .map_err(|error| format!("My model did not answer: {}", error.message))?;
+        let mut usage = self.usage.lock_recover();
+        if let Some(answered) = self.turns.answered_by() {
+            usage.answered = Some(answered);
+        }
+        usage.tokens = usage
+            .tokens
+            .saturating_add(answer.usage.input_tokens)
+            .saturating_add(answer.usage.output_tokens);
+        drop(usage);
+        Ok(answer)
     }
 }
 

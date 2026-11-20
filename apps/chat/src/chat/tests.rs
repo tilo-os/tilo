@@ -1348,6 +1348,7 @@ tilo_test_env::scenario! {
                         why: None,
                     }],
                     detail: None,
+                    answered: None,
                 },
                 Some("On it."),
             )
@@ -1384,6 +1385,7 @@ tilo_test_env::scenario! {
                         about: None,
                         trace: Vec::new(),
                         detail: None,
+                        answered: None,
                     },
                     say: None,
                 }))
@@ -1447,6 +1449,7 @@ tilo_test_env::scenario! {
                         about: None,
                         trace: Vec::new(),
                         detail: None,
+                        answered: None,
                     },
                     say: Some("The model connection closed".into()),
                 }),

@@ -26,7 +26,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use super::{Content, Message, ModelError, ModelRequest, ModelResponse, PlanTurns, StreamEvent};
+use super::{
+    Content, Message, ModelAnswered, ModelError, ModelRequest, ModelResponse, PlanTurns,
+    StreamEvent,
+};
 use crate::workspaces::person_model::protocol::Recovery;
 
 /// How long a turn waits before each further ask of a call that failed: three more asks, one,
@@ -163,6 +166,10 @@ impl PlanTurns for Again {
 
     fn model(&self) -> &str {
         self.turns.model()
+    }
+
+    fn answered_by(&self) -> Option<ModelAnswered> {
+        self.turns.answered_by()
     }
 }
 

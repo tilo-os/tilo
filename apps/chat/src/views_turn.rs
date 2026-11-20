@@ -129,6 +129,21 @@ pub(super) fn turn(t: &Turn, cx: &ViewCx) -> Node {
             ));
         }
         if let Some(work) = &reply.work
+            && let Some(answered) = &work.answered
+        {
+            // Which model wrote this answer, what it cost and used: kept with the reply, so a
+            // turn read later still names the model that wrote it.
+            column.push(
+                ui::TextBuilder::new(
+                    &cx.key(format!("answered-{}", reply.id)),
+                    answered.summary(),
+                )
+                .role(ui::TextRole::Caption)
+                .secondary(true)
+                .into(),
+            );
+        }
+        if let Some(work) = &reply.work
             && work.failed()
             && reply.text.trim().is_empty()
         {

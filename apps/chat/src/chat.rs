@@ -306,6 +306,56 @@ impl Quote {
     }
 }
 
+/// What answered an agent's reply: the provider as its keeper named it, the model, and what the
+/// turn's calls cost and used. Kept on the reply, so a conversation says which model wrote each
+/// answer even after the person switched models mid-session.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Answered {
+    /// The provider, as the person's settings name it (`ChatGPT`, `Google`).
+    pub provider: String,
+    /// The model's id, as its provider names it.
+    pub model: String,
+    /// The model as a person reads it, where its provider labels it.
+    #[serde(default)]
+    pub label: String,
+    /// What the turn's calls cost, in millionths of the currency.
+    pub cost_micros: u64,
+    /// The tokens the turn's calls counted: every input and output token.
+    #[serde(default)]
+    pub tokens: u64,
+}
+
+impl Answered {
+    /// The line a reply says it by: the model as a person reads it, its
+    /// provider, what the turn cost and, where its provider counted them,
+    /// the tokens it used.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        use crate::i18n::t_args;
+        let model = if self.label.trim().is_empty() {
+            self.model.clone()
+        } else {
+            self.label.clone()
+        };
+        let cost = ui::format::money(self.cost_micros);
+        let mut args: Vec<(&str, ui::i18n::ArgValue)> = vec![
+            ("model", model.into()),
+            ("provider", self.provider.clone().into()),
+            ("cost", cost.into()),
+        ];
+        if self.tokens == 0 {
+            t_args("chat-agent-answered", &args)
+        } else {
+            args.push((
+                "tokens",
+                ui::format::Formats::current().count(self.tokens).into(),
+            ));
+            t_args("chat-agent-answered-tokens", &args)
+        }
+    }
+}
+
 /// An agent's resource of its work on a message, written by that agent.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Work {
@@ -320,6 +370,8 @@ pub struct Work {
     /// transport's error, the partial answer, the provider's exposed reasoning.
     /// Never the reply's words, and shown only behind a disclosure.
     pub failure_detail: Option<String>,
+    /// What answered the reply's turn, and what it cost and used.
+    pub answered: Option<Answered>,
 }
 
 /// Received provider output, stored as fields and CRDT text, not a JSON snapshot.
@@ -395,6 +447,10 @@ pub struct WorkUpdate {
     /// never the reply's words. Absent when nothing failed.
     #[serde(default)]
     pub detail: Option<String>,
+    /// What answered the turn, and what it cost and used. Absent while the
+    /// turn goes on and for a model the server provides itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered: Option<Answered>,
 }
 
 /// One dispatched operation, as an agent reports it.

@@ -182,6 +182,10 @@ pub struct Work {
     /// never from what the model said it would do.
     #[serde(default)]
     pub steps: Vec<String>,
+    /// What answered the reply: the provider, the model, and what it cost. None for a model the
+    /// server provides itself, and while the answer is still being written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered: Option<crate::chat::Answered>,
 }
 
 impl Work {
@@ -540,6 +544,7 @@ fn work_of(work: &crate::model::AgentWork) -> Work {
         state,
         detail,
         failure_detail: work.failure_detail.clone().unwrap_or_default(),
+        answered: work.answered.clone(),
         // The projection keeps the trace in dispatch order already.
         steps: work.trace.iter().map(|step| step.label.clone()).collect(),
     }
@@ -994,6 +999,21 @@ fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
             &cx.key(format!("attachment-{}-{index}", message.id)),
             cx,
         ));
+    }
+    if let Some(work) = &message.work
+        && let Some(answered) = &work.answered
+    {
+        // Which model wrote this answer, what it cost and used: read from the reply itself,
+        // so a page says what the conversation's window says.
+        body.push(
+            ui::TextBuilder::new(
+                &cx.key(format!("answered-{}", message.id)),
+                answered.summary(),
+            )
+            .role(ui::TextRole::Caption)
+            .secondary(true)
+            .into(),
+        );
     }
     if message.edited {
         body.push(
@@ -2187,6 +2207,7 @@ mod tests {
                 state: state.to_owned(),
                 detail: String::new(),
                 failure_detail: String::new(),
+                answered: None,
                 steps: Vec::new(),
             }),
             ..Message::by(MemberId::agent("tide"))
@@ -2252,6 +2273,7 @@ mod tests {
                         state: state.to_owned(),
                         detail: "The provider connection closed".to_owned(),
                         failure_detail: String::new(),
+                        answered: None,
                         steps: Vec::new(),
                     });
                 }
@@ -2322,6 +2344,7 @@ mod tests {
                                  Let me read r4, r9.."
                         .to_owned(),
                     steps: Vec::new(),
+                    answered: None,
                 });
             }
             let cx = view_cx(&channel);
@@ -2389,6 +2412,7 @@ mod tests {
                     state: "provider_complete".to_owned(),
                     detail: String::new(),
                     failure_detail: String::new(),
+                    answered: None,
                     steps: Vec::new(),
                 }),
                 ..Message::by(MemberId::agent("tide"))
@@ -2470,6 +2494,7 @@ mod tests {
                     state: "provider_failed".to_owned(),
                     detail: "The model connection closed".to_owned(),
                     failure_detail: String::new(),
+                    answered: None,
                     steps: Vec::new(),
                 }),
                 "the page projects the resource's failed end and its reason"

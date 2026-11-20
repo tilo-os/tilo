@@ -14,6 +14,9 @@ use super::{ChatApp, MenuAction};
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Hit {
     ModelStream(String),
+    /// Choose the model the agent whose conversation is in view answers with;
+    /// `None` follows its keeper's default again.
+    AgentModel(Option<String>),
     Channel(Id),
     /// Make a channel in a category.
     AddChannel {
@@ -212,6 +215,9 @@ impl Hit {
             Self::FocusThread => "chat.thread-composer".into(),
             Self::FocusEdit => "chat.message-edit".into(),
             Self::ModelStream(command) => format!("chat.model.{command}"),
+            Self::AgentModel(model) => {
+                format!("chat.agent-model:{}", model.as_deref().unwrap_or("default"))
+            }
             Self::Send => "chat.send".into(),
             Self::RetrySend => "chat.retry-send".into(),
             Self::ThreadSend => "chat.thread-send".into(),
