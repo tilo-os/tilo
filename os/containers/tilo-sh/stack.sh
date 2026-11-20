@@ -2870,10 +2870,10 @@ start_supervisor() {
   control=${self%/*}/control.py
   start=$(printf '%q ' "$@")
   # The server sandboxes what it runs (bubblewrap): on t the program's job must be one that may
-  # start sandboxes of its own, as rcargo's build container always may.
+  # start sandboxes of its own, as a drop-in that builds on another machine always may.
   local nested=() forward=(--forward "$(forward_tcp)" --forward "udp:$(forward_udp)")
   [[ $(basename -- "$cargo") != t ]] || nested=(--nested)
-  # Run from the build server itself, the build container is in this machine's network: its
+  # Brought up from the build server itself, the build container is in this machine's network: its
   # ports are this machine's already, and a forward would take them before the stack could.
   if builder_shares_loopback; then forward=(); fi
   ( cd "$repo" && setsid env "TILO_SH_STATE=$remote_state" RCARGO_T=0 "$cargo" exec "${nested[@]}" \
