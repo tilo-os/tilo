@@ -325,26 +325,32 @@ function start() {
   // An event the page has heard nothing back for shows the page at work,
   // quietly: the person keeps typing and clicking meanwhile.
   let working = null;
-  const ask = value => {
+  const ask = (value, tries = 0) => {
     if (!link) return;
     unanswered++;
     working ??= setTimeout(() => { page.dataset.working = ''; }, 300);
-    sent.push({value, tries: 0});
+    sent.push({value, tries});
     link.send(value).catch(() => {});
   };
   // The app was still working on what was asked past the time the server
   // waits: it opened the document again from what the workspace holds, and
-  // what was asked did not reach it. The ask goes again, quietly — what the
-  // person typed stays in the field while it does, and lands on the document
-  // as it is now. A document that keeps reopening is shown again whole.
+  // nothing asked of it since that request was applied. An ask cannot land
+  // on a document no worker has rendered, so the page is shown again where
+  // it is, quietly — the field the person is typing in keeps its text, its
+  // caret and its focus — and what they typed is sent again from there.
+  let redrawing = false;
   const reopened = asked => {
-    if (!asked || !link) return;
-    if (asked.tries >= 2) { ask({open: addressOf()}); return; }
-    asked.tries++;
-    unanswered++;
-    working ??= setTimeout(() => { page.dataset.working = ''; }, 300);
-    sent.push(asked);
-    link.send(asked.value).catch(() => {});
+    if (!link) return;
+    // A page asked for again is asked for at most twice: one that keeps
+    // reopening is not shown here.
+    if (asked?.value?.open) {
+      if (asked.tries >= 2) { say('refused', 'This page is not available here.'); return; }
+      ask(asked.value, asked.tries + 1);
+      return;
+    }
+    if (redrawing) return;
+    redrawing = true;
+    ask({open: addressOf()});
   };
   const caughtUp = () => {
     if (unanswered > 0) return;
@@ -484,6 +490,10 @@ function start() {
     lastFocus = focus ?? null;
     if (focused && editing(focused)) focused.focus({preventScroll: true});
     typingBack(held);
+    // Shown again under a field being typed in: its text is sent from here,
+    // so what the person wrote lands on the document they are looking at.
+    const kept = held && page.querySelector(held.key);
+    if (kept && (kept.dataset.a === 'value' || kept.dataset.a === 'edit')) act(kept, {value: held.value});
     follow();
     if (!performance.getEntriesByName('tilo-page-shown').length) performance.mark('tilo-page-shown');
   };
@@ -502,7 +512,7 @@ function start() {
       reopened(asked);
       return;
     }
-    if (answer.shown) show(answer.shown);
+    if (answer.shown) { redrawing = false; show(answer.shown); }
     else if (answer.patched) patch(answer.patched);
     else if (answer.refused) {
       say('refused', 'This page is not available here.');
