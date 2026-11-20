@@ -302,8 +302,14 @@ class ChromeProcessCleanup(unittest.TestCase):
             home = Path(temporary)
             stale = home / 'tilo-chrome-stale'
             live = home / 'tilo-chrome-live'
+            # chrome.mjs marks every profile it makes and sweeps only marked ones: the shared
+            # throwaway directory also holds another launcher's start-up queue, which carries
+            # this prefix and is not the sweep's to remove.
+            unmarked = home / 'tilo-chrome-shared'
             for directory in (stale, live):
                 (directory / 'Default').mkdir(parents=True)
+                (directory / '.tilo-chrome-profile').write_text('')
+            (unmarked / 'Default').mkdir(parents=True)
             gone = subprocess.Popen(['true'])
             gone.wait()
             host = os.uname().nodename
@@ -324,9 +330,11 @@ class ChromeProcessCleanup(unittest.TestCase):
                 self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
                 self.assertFalse(stale.exists(), 'a profile whose browser is gone must not stay')
                 self.assertTrue(live.exists(), 'a profile whose browser is running must stay')
+                self.assertTrue(unmarked.exists(), 'an unmarked directory in the shared place must stay')
             finally:
                 self.stop_owned_fixture(root, homes=(home,))
                 shutil.rmtree(live, ignore_errors=True)
+                shutil.rmtree(unmarked, ignore_errors=True)
 
 
 if __name__ == '__main__':
