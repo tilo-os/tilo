@@ -171,7 +171,11 @@ pub enum ScreenEffect {
     #[effect(kind = "undoable", label = "session-lock")]
     Lock,
     /// Log out of the session
-    #[effect(kind = "undoable", label = "session-log-out")]
+    #[effect(
+        kind = "undoable",
+        label = "session-log-out",
+        keywords = "sign out, logout, log off"
+    )]
     LogOut,
     /// Open the power menu
     #[effect(kind = "undoable", label = "session-power-menu")]
