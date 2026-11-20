@@ -1511,8 +1511,16 @@ async fn serve(
         },
     )
     .await?;
+    let trace = |what: &str| {
+        if std::env::var_os("TILO_FS_BENCH_VERBOSE").is_some() {
+            eprintln!("shutdown: {what}");
+        }
+    };
+    trace("the mount returned; syncing content");
     let _ = store.sync_pending();
+    trace("content synced; flushing the tree");
     final_flush(keeper, &namespace, kept.as_ref()).await;
+    trace("tree flushed");
     if let Some(task) = authority_socket_task {
         task.abort();
     }
@@ -1757,12 +1765,21 @@ async fn final_flush(
     namespace: &Arc<Mutex<Namespace>>,
     kept: Option<&Arc<KeptTree>>,
 ) {
+    let trace = |what: &str| {
+        if std::env::var_os("TILO_FS_BENCH_VERBOSE").is_some() {
+            eprintln!("final flush: {what}");
+        }
+    };
     if let Some(keeper) = keeper {
+        trace("stopping the keeper");
         keeper.abort();
         let _ = keeper.await;
+        trace("keeper stopped");
     }
     if let Some(kept) = kept {
+        trace("saving the tree");
         keep_now(namespace, kept);
+        trace("tree saved");
     }
 }
 
