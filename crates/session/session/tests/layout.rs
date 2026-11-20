@@ -550,13 +550,18 @@ fn a_shell_a_session_ends_before_it_can_be_written_is_kept() {
     };
 
     let mut next = session_keeping(&state, None);
-    until(&mut next, "the shell is back", |session| {
+    let mut wanted = kept;
+    wanted.sort_unstable();
+    let arrived = crate::common::reached(&mut next, |session| {
         let mut back = tabs(session);
         back.sort_unstable();
-        let mut wanted = kept.clone();
-        wanted.sort_unstable();
         back == wanted
     });
+    if !arrived {
+        let mut back = tabs(&next);
+        back.sort_unstable();
+        panic!("giving up waiting for the shell is back: {wanted:?} wanted, {back:?} back");
+    }
     assert!(
         next.layout().borrow_mut().last_step().is_some(),
         "the shell is written as the person's steps"
