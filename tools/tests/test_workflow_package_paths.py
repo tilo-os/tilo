@@ -143,10 +143,16 @@ jobs:
             self.assertEqual(
                 [str(item) for item in violations],
                 [
-                    "paths block 1 keeps '- apps/app/**' by hand outside the "
-                    "generated region"
+                    "paths block 1 names 'apps/app/**' by hand outside the generated "
+                    "region, which already holds 'apps/app'"
                 ],
             )
+        with self.subTest(phase='an input outside the closure stands beside the region'):
+            beside = text.replace(
+                "      - Cargo.toml\n", "      - Cargo.toml\n      - dist/apple/**\n"
+            )
+            _, violations = regenerate(beside, {"apps/app"}, report_drift=False)
+            self.assertEqual(violations, [])
         with self.subTest(phase='a block that cannot be generated is reported'):
             _, violations = regenerate(
                 "on:\n  push:\n    paths:\n      - Cargo.toml\n", {"apps/app"}

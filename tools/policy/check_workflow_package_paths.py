@@ -4,7 +4,9 @@
 A workflow's `paths` lists decide when it runs, so they must cover every directory of the
 package's dependency closure. The closure entries are generated rather than kept by hand: a
 block marks where they stand, `--write` fills them from the package's closure, and the check
-fails when a hand-written list or a stale region would let the workflow be skipped.
+fails when a hand-written copy or a stale region would let the workflow be skipped. Entries
+beside the region that name no directory of the closure are inputs of the workflow outside
+the package, such as a source tree it also builds, and stay as written.
 """
 
 from __future__ import annotations
@@ -132,12 +134,19 @@ def regenerate(
             )
             continue
         for index in (i for i in range(start, end) if not begins[0] < i < ends[0]):
-            written = lines[index].strip()
-            if written.startswith("-") and "**" in written:
+            item = LIST_ITEM.match(lines[index])
+            if item is None:
+                continue
+            pattern = item.group("value").split(" #", 1)[0].strip().strip("'\"")
+            repeated = sorted(
+                directory for directory in directories if pattern_covers(directory, pattern)
+            )
+            if repeated:
                 violations.append(
                     Violation(
                         number,
-                        f"keeps {written!r} by hand outside the generated region",
+                        f"names {pattern!r} by hand outside the generated region, "
+                        f"which already holds {repeated[0]!r}",
                     )
                 )
         items = closure_items(directories, " " * (key_indent + 2))
