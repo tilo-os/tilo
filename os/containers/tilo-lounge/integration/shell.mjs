@@ -399,6 +399,11 @@ export const searcher = ({until, failed, dump}) => {
     // closing searches to make the one it wants the only one.
     const openScope = () => tab.evaluate("globalThis.tiloMount?.state()?.searchOpen ? (globalThis.tiloMount.state().searchCard?.scope ?? 'unknown') : null");
     const shellSearch = scope => scope === 'workspace' || scope === 'everywhere';
+    const opened = `(() => { const s = globalThis.tiloMount?.state?.() ?? null;
+      return !!s?.searchOpen && ['workspace', 'everywhere'].includes(s.searchCard?.scope); })()`;
+    // A shell still joining a workspace it just opened takes no key: a person
+    // pressed there would see nothing, and press again.
+    await tab.waitFor(`globalThis.tiloMount?.state?.()?.phase === 'presented'`, {timeout: stepLimit(3)}).catch(() => false);
     // The shell keeps the search up until what it opened has arrived, and the
     // chord toggles the shell's own: it is pressed only when the shell's is down.
     // A chord the page took while it was mounting a window (the workspace it
@@ -432,8 +437,7 @@ export const searcher = ({until, failed, dump}) => {
     // own, and the page of a busy node spends the fetch and its compile on the
     // very frames this waits for: six steps are what a page's join gets, and the
     // opening measured here was 48 s of them (load 335).
-    await until(tab, `(() => { const s = globalThis.tiloMount?.state?.() ?? null;
-      return !!s?.searchOpen && ['workspace', 'everywhere'].includes(s.searchCard?.scope); })()`,
+    await until(tab, opened,
       `the shell's search for "${query}"`, stepLimit(6), async () => {
       const trail = await tab.evaluate('JSON.stringify((globalThis.__pressTrail ?? []).slice(0, 40))').catch(() => '[]');
       const chords = await tab.evaluate('JSON.stringify((globalThis.__chordStates ?? []).slice(-6))').catch(() => '[]');
