@@ -927,7 +927,7 @@ export async function startEntryPage({mode}) {
     if (notes[step] && [loading, opening, drawing].includes(status.textContent)) status.textContent = notes[step];
   };
   // The arrival screen's line and bar follow those steps (arrival.mjs).
-  startArrival({mode});
+  startArrival();
   // Someone new at the site itself, whose home keeps a wait list: its
   // entry, at once, while the runtime loads behind it for signing in.
   if (mode === 'desktop' && !embed) void offerFront();

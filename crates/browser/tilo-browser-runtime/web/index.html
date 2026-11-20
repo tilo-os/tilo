@@ -388,7 +388,6 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     [data-arrival=stopped] #status { top: auto; bottom: calc(50% - 64px); }
     #arrival > p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity 240ms ease-out; }
     #arrival > p.shown { opacity: 1; }
-    #arrival > p .label { color: var(--e-quiet); margin-right: .5em; }
     #arrival-bar { position: fixed; left: 50%; top: calc(50% + 58px); width: 96px; margin-left: -48px; height: 2px; border-radius: 1px; background: var(--e-track); overflow: hidden; }
     #arrival-bar > span { display: block; height: 100%; background: var(--e-dim); transform-origin: left; transform: scaleX(var(--progress, 0)); transition: transform 200ms linear; }
     #arrival-retry, #arrival-own { display: none; position: fixed; z-index: 2; left: 50%; top: calc(50% + 80px); transform: translateX(-50%); font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #4a7dff; color: white; cursor: pointer; }

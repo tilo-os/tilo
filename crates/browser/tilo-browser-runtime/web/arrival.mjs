@@ -1,19 +1,16 @@
 /**
  * The arrival screen's presentation (index.html, `#arrival`): while the
  * desktop is on its way, a thin progress bar moved by the real steps of
- * getting in, and above it one rotating line, a joke or a tip, from the
- * locale files beside this module (`locales/<locale>.ftl`), in the
- * desktop's language.
+ * getting in, and above it one line saying which step that is.
  *
  * What it reads is what the page already says: `data-arrival` on the root
  * (`load`, `join`, `open`, `draw`, `done`, `stopped`; entry-page.mjs) and the
  * runtime module's fetch in the browser's resource timing. The step notes
- * the page writes to `#status` ("Loading Tilo…", "Joining…") stay for
- * screen readers and leave the screen; anything else said there (a
- * pairing code, waiting for the owner, a failure) is shown in plain words
- * in the line's place, and no joke runs beside it. Nothing shows in the
- * first second, so a fast load never flashes. Steps and their timings go
- * to the console for debugging.
+ * the page writes to `#status` ("Loading Tilo…", "Joining…") are the line;
+ * anything else said there (a pairing code, waiting for the owner, a
+ * failure) is shown in plain words in the line's place. Nothing shows in
+ * the first second, so a fast load never flashes. Steps and their timings
+ * go to the console for debugging.
  */
 import {sealedHandle, sealedKey} from './sealed-link.mjs';
 
@@ -120,65 +117,9 @@ export function parseMessages(text) {
   return messages;
 }
 
-/** Whether a page at `hostname` is on tilo.sh, the hosted Lounge,
- * whose own lines (`arrival-site-*`) are shown only there. */
-export function isHostedSite(hostname) {
-  const host = String(hostname ?? '').toLowerCase().replace(/\.$/, '');
-  return host === 'tilo.sh' || host.endsWith('.tilo.sh');
-}
-
-/**
- * The jokes and tips from `messages` for this page: `arrival-joke-*` for
- * everyone, `arrival-site-*` only on tilo.sh, `arrival-tip-*` in both
- * modes, `arrival-desktop-tip-*` only on the desktop. A tip's `-mac`
- * message replaces it on a Mac.
- */
-export function arrivalLines(messages, {mode = 'desktop', mac = false, hostname = ''} = {}) {
-  const jokes = [];
-  const tips = [];
-  for (const [id, value] of messages) {
-    if (id.endsWith('-mac')) continue;
-    const mine = mac && messages.has(`${id}-mac`) ? messages.get(`${id}-mac`) : value;
-    if (id.startsWith('arrival-joke-')) jokes.push(mine);
-    else if (id.startsWith('arrival-site-') && isHostedSite(hostname)) jokes.push(mine);
-    else if (id.startsWith('arrival-tip-')) tips.push(mine);
-    else if (id.startsWith('arrival-desktop-tip-') && mode === 'desktop') tips.push(mine);
-  }
-  return {jokes, tips};
-}
-
-/**
- * The lines of one visit, in random order and none twice: two jokes, then
- * a tip, opening with a joke. A pool that runs out leaves its turns to the
- * other; once both are spent, `next()` is `null` and the last line stays.
- * Each line is `{kind: 'joke' | 'tip', text}`.
- */
-export function createRotation({jokes, tips}, random = Math.random) {
-  const shuffled = list => {
-    const out = [...list];
-    for (let i = out.length - 1; i > 0; i--) {
-      const j = Math.floor(random() * (i + 1));
-      [out[i], out[j]] = [out[j], out[i]];
-    }
-    return out;
-  };
-  const pools = {joke: shuffled(jokes).map(text => ({kind: 'joke', text})),
-    tip: shuffled(tips).map(text => ({kind: 'tip', text}))};
-  let turn = 0;
-  return {
-    next() {
-      const want = turn % 3 === 2 ? 'tip' : 'joke';
-      const other = want === 'tip' ? 'joke' : 'tip';
-      const line = pools[want].shift() ?? pools[other].shift() ?? null;
-      if (line !== null) turn += 1;
-      return line;
-    },
-  };
-}
-
-/** The notes the page writes for its own steps: kept for screen readers,
- * never shown, since the bar says the same. Anything else in `#status` is
- * meant to be read. */
+/** The notes the page writes for its own steps: what the line says while
+ * that step runs. Anything else in `#status` is said in the line's place,
+ * apart from the bar's steps. */
 export const STEP_NOTES = new Set([
   'Loading Tilo…', 'Opening the workspace…', 'Opening the app…', 'Starting graphics…',
   'Connecting…', 'Asking to join…', 'Joining…', 'Asking to pair this device…',
@@ -203,9 +144,10 @@ export const STALLED = ['arrival-stalled', 'This is taking longer than it should
  * What the arrival screen shows at `now` (ms since the page started):
  * `{line, note, progress, bar, stalled}`. Feed it the page's state on every
  * tick (`{arrival, wasmFetched, statusShown, gpuStalled}`; `statusShown`
- * when `#status` says something other than a step note, `gpuStalled` when
- * the runtime says graphics start-up stopped moving on). Lines rotate every
- * `periodMs` from `delayMs`; before that, nothing. A step that runs past
+ * when `#status` says something other than a step note, `stepNote` the step
+ * note it says otherwise, `gpuStalled` when the runtime says graphics
+ * start-up stopped moving on). The line is the step note from `delayMs`;
+ * before that, nothing. A step that runs past
  * `slowMs` says so; one that has not moved on for `stallMs` (graphics:
  * once the runtime says so) is `stalled`, and the page offers Try again
  * while it keeps waiting. `slowNotes` may word each note (`stalled` too).
@@ -219,13 +161,9 @@ export const STALLED = ['arrival-stalled', 'This is taking longer than it should
  * real time replaces its estimate as the step completes, so a bar planned
  * from a slow arrival does not stall on a fast one.
  */
-export function createArrival({lines = {jokes: [], tips: []}, random = Math.random, reducedMotion = false,
-  measured = null, delayMs = 1000, periodMs = 2500,
+export function createArrival({reducedMotion = false, measured = null, delayMs = 1000,
   slowMs = {fetch: 8000, compile: 8000, join: 6000, open: 8000, draw: 10_000},
   stallMs = 30_000, slowNotes = {}} = {}) {
-  let rotation = createRotation(lines, random);
-  let line = null;
-  let shownAt = null;
   let segment = null;
   let since = 0;
   let progress = 0;
@@ -235,14 +173,12 @@ export function createArrival({lines = {jokes: [], tips: []}, random = Math.rand
   let seconds = {...FIRST_VISIT_SECONDS, ...measuredPlan(measured)};
   const spent = {};
   return {
-    /** New lines (the locale file arrived): the next turn draws from them. */
-    setLines(next) { rotation = createRotation(next, random); },
     get segment() { return segment; },
     /** The seconds each step is planned by now, measured ones included. */
     get seconds() { return seconds; },
     /** What this arrival's steps have taken so far, by step. */
     get spent() { return {...spent}; },
-    update({arrival, wasmFetched = false, statusShown = false, gpuStalled = false}, now) {
+    update({arrival, wasmFetched = false, statusShown = false, stepNote = null, gpuStalled = false}, now) {
       const current = segmentOf(arrival, wasmFetched);
       // The first segment runs from the page's start, before this module.
       if (current !== segment) {
@@ -264,18 +200,9 @@ export function createArrival({lines = {jokes: [], tips: []}, random = Math.rand
       const slow = slowMs[segment] !== undefined && now - since >= slowMs[segment] && !statusShown;
       const note = stalled ? (slowNotes.stalled ?? STALLED[1]) : slow ? (slowNotes[segment] ?? SLOW_NOTES[segment][1]) : null;
       if (statusShown || slow || stalled) return {line: null, note, progress, bar: true, stalled};
-      if (shownAt === null || now - shownAt >= periodMs) {
-        const next = rotation.next();
-        if (next !== null || line === null) { line = next; shownAt = next === null ? null : now; }
-      }
-      return {line, note: null, progress, bar: true, stalled: false};
+      return {line: stepNote || null, note: null, progress, bar: true, stalled: false};
     },
   };
-}
-
-/** How a line reads on screen: a tip after its dim label, a joke bare. */
-export function lineParts(line, tipLabel = 'Tip') {
-  return {label: line?.kind === 'tip' ? tipLabel : null, text: line?.text ?? ''};
 }
 
 /** `text` with each `{ $name }` filled from `args`; a placeholder `args`
@@ -438,7 +365,7 @@ export function localeMessagesSoon(waitMs = 1500, window = globalThis, language 
  * network's note (`#arrival-note`). Stops once the desktop is shown. Try
  * again (`#arrival-retry`, shown by index.html on a failure) reloads.
  */
-export function startArrival({mode = 'desktop', document = globalThis.document, window = globalThis} = {}) {
+export function startArrival({document = globalThis.document, window = globalThis} = {}) {
   const root = document.documentElement;
   const lineView = document.getElementById('arrival-line');
   const barView = document.getElementById('arrival-bar');
@@ -448,9 +375,7 @@ export function startArrival({mode = 'desktop', document = globalThis.document, 
   const retry = document.getElementById('arrival-retry');
   retry?.addEventListener('click', () => window.location.reload());
   const reducedMotion = Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
-  const mac = /Mac/.test(window.navigator?.platform ?? '');
   const slowNotes = {};
-  let tipLabel = 'Tip';
   // Planned from what getting in took here last time, where there was one.
   const arrival = createArrival({reducedMotion, slowNotes, measured: rememberedArrival(window)});
   const now = () => window.performance.now();
@@ -464,23 +389,23 @@ export function startArrival({mode = 'desktop', document = globalThis.document, 
   } catch { /* No resource timing: the load step is one segment. */ }
   void localeMessages(window)
     .then(messages => {
-      arrival.setLines(arrivalLines(messages, {mode, mac, hostname: window.location?.hostname}));
-      tipLabel = messages.get('arrival-label-tip') ?? tipLabel;
       for (const [segment, [id]] of Object.entries(SLOW_NOTES)) {
         if (messages.has(id)) slowNotes[segment] = messages.get(id);
       }
       if (retry && messages.has('arrival-retry')) retry.textContent = messages.get('arrival-retry');
       if (messages.has(STALLED[0])) slowNotes.stalled = messages.get(STALLED[0]);
     })
-    .catch(() => { /* No lines: the bar alone. */ });
+    .catch(() => { /* No locale file: its notes in English. */ });
   let shownLine = null;
   let logged = null;
   let swap = null;
   const tick = () => {
     const step = root.dataset.arrival;
-    const statusShown = status.textContent.trim() !== '' && !STEP_NOTES.has(status.textContent.trim());
+    const said = status.textContent.trim();
+    const statusShown = said !== '' && !STEP_NOTES.has(said);
     root.toggleAttribute('data-arrival-status', statusShown);
-    const view = arrival.update({arrival: step, wasmFetched, statusShown, gpuStalled: root.hasAttribute('data-gpu-stalled')}, now());
+    const view = arrival.update({arrival: step, wasmFetched, statusShown, stepNote: STEP_NOTES.has(said) ? said : null,
+      gpuStalled: root.hasAttribute('data-gpu-stalled')}, now());
     // Try again shows beside a stalled step (index.html) while it keeps waiting.
     root.toggleAttribute('data-arrival-stalled', view.stalled);
     if (arrival.segment !== logged) {
@@ -503,16 +428,7 @@ export function startArrival({mode = 'desktop', document = globalThis.document, 
       shownLine = view.line;
       clearTimeout(swap);
       const show = () => {
-        const {label, text} = lineParts(shownLine, tipLabel);
-        const words = document.createTextNode(text);
-        if (label) {
-          const tag = document.createElement('span');
-          tag.className = 'label';
-          tag.textContent = label;
-          lineView.replaceChildren(tag, words);
-        } else {
-          lineView.replaceChildren(words);
-        }
+        lineView.textContent = shownLine ?? '';
         lineView.classList.toggle('shown', shownLine !== null);
       };
       if (reducedMotion || !lineView.textContent || view.line === null) {

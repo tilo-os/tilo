@@ -3,51 +3,30 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 import {existsSync} from 'node:fs';
-import {arrivalLines, arrivalLocale, createArrival, createRotation, describeSpent, refusalCopy, fill,
-  FIRST_VISIT_SECONDS, entryLinkTarget, measuredPlan, isHostedSite, lineParts, measuredSeconds, plannedSegments, refusedByHost,
+import {arrivalLocale, createArrival, describeSpent, refusalCopy, fill,
+  FIRST_VISIT_SECONDS, entryLinkTarget, measuredPlan, measuredSeconds, plannedSegments, refusedByHost,
   rememberArrival, rememberedArrival, waitListFailure, MEASURED_KEY, parseMessages, progressIn, SEGMENTS, segmentOf,
   STEP_NOTES, stoppedInside, visitorLocale} from './arrival.mjs';
 
 const here = name => new URL(name, import.meta.url);
 const locale = name => parseMessages(readFileSync(here(`locales/${name}.ftl`), 'utf8'));
-/** A seeded generator, so a failing order can be replayed. */
-const seeded = seed => () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
-const jokes = Array.from({length: 12}, (_, i) => `joke ${i}`);
-const tips = Array.from({length: 4}, (_, i) => `tip ${i}`);
-const loading = {arrival: 'load'};
-const opening = {arrival: 'open'};
+const loading = {arrival: 'load', stepNote: 'Loading Tilo…'};
+const opening = {arrival: 'open', stepNote: 'Opening the workspace…'};
+const joining = {arrival: 'join', stepNote: 'Joining…'};
 
-test('a visit opens with a joke, mixes two jokes to a tip and never repeats a line', () => {
-  for (let seed = 1; seed < 50; seed++) {
-    const rotation = createRotation({jokes, tips}, seeded(seed));
-    const shown = [];
-    for (let line; (line = rotation.next()) !== null;) shown.push(line.text);
-    assert.equal(new Set(shown).size, shown.length, 'no repeats');
-    assert.equal(shown.length, jokes.length + tips.length, 'every line once');
-    assert.match(shown[0], /^joke/);
-    const kinds = shown.slice(0, 12).map(line => line.split(' ')[0]);
-    assert.deepEqual(kinds, ['joke', 'joke', 'tip', 'joke', 'joke', 'tip', 'joke', 'joke', 'tip', 'joke', 'joke', 'tip']);
-    assert.equal(rotation.next(), null, 'spent');
-  }
-});
-
-test('lines rotate every 2.5 s from the first second, and the last stays once all are shown', () => {
+test('the line says the step getting in is on, from the first second, and nothing else', () => {
   // A step that runs long says so instead (below); here none does.
-  const arrival = createArrival({lines: {jokes: ['a', 'b'], tips: ['c']}, random: seeded(3), slowMs: {}, stallMs: Infinity});
-  assert.equal(arrival.update(opening, 0).line, null);
-  assert.equal(arrival.update(opening, 999).line, null, 'nothing before a second');
-  assert.equal(arrival.update(opening, 999).bar, false, 'no bar before a second either');
-  const first = arrival.update(opening, 1000).line?.text;
-  assert.ok(['a', 'b'].includes(first));
-  assert.equal(arrival.update(opening, 3400).line.text, first);
-  const second = arrival.update(opening, 3500).line.text;
-  assert.notEqual(second, first);
-  assert.deepEqual(arrival.update(opening, 6000).line, {kind: 'tip', text: 'c'});
-  assert.deepEqual(arrival.update(opening, 20_000).line, {kind: 'tip', text: 'c'});
+  const arrival = createArrival({slowMs: {}, stallMs: Infinity});
+  assert.equal(arrival.update(loading, 0).line, null);
+  assert.equal(arrival.update(loading, 999).line, null, 'nothing before a second');
+  assert.equal(arrival.update(loading, 999).bar, false, 'no bar before a second either');
+  assert.equal(arrival.update(loading, 1000).line, 'Loading Tilo…');
+  assert.equal(arrival.update(joining, 1500).line, 'Joining…');
+  assert.equal(arrival.update(opening, 20_000).line, 'Opening the workspace…');
+  assert.equal(arrival.update({arrival: 'open'}, 20_100).line, null, 'a page that says no step shows no line');
 });
-
 test('a load done within the first second never shows a line or bar', () => {
-  const arrival = createArrival({lines: {jokes, tips}});
+  const arrival = createArrival();
   arrival.update(loading, 100);
   arrival.update({arrival: 'open'}, 400);
   const view = arrival.update({arrival: 'done'}, 900);
@@ -55,36 +34,37 @@ test('a load done within the first second never shows a line or bar', () => {
   assert.equal(arrival.update({arrival: 'done'}, 5000).line, null);
 });
 
-test('a failure, or anything the page says in its status, shows no joke', () => {
-  const arrival = createArrival({lines: {jokes, tips}});
+test('a failure, or anything the page says in its status, shows no step', () => {
+  const arrival = createArrival();
   assert.ok(arrival.update(loading, 1500).line);
-  const waiting = arrival.update({arrival: 'join', statusShown: true}, 2000);
+  const waiting = arrival.update({...joining, statusShown: true}, 2000);
   assert.equal(waiting.line, null);
   assert.equal(waiting.bar, true);
   const stopped = arrival.update({arrival: 'stopped', statusShown: true}, 2500);
   assert.deepEqual({line: stopped.line, note: stopped.note, bar: stopped.bar}, {line: null, note: null, bar: false});
 });
 
-test('a slow fetch or join says so in plain words instead of a joke', () => {
-  const arrival = createArrival({lines: {jokes, tips}, slowNotes: {join: 'Verbindet noch.'}});
+test('a slow fetch or join says so in plain words instead of the step', () => {
+  const arrival = createArrival({slowNotes: {join: 'Verbindet noch.'}});
   assert.ok(arrival.update(loading, 7999).line);
   const slow = arrival.update(loading, 8000);
   assert.equal(slow.line, null);
   assert.equal(slow.note, 'Still loading Tilo.');
-  assert.ok(arrival.update({arrival: 'load', wasmFetched: true}, 8100).line, 'compiling is not the network');
-  arrival.update({arrival: 'join'}, 9000);
-  assert.ok(arrival.update({arrival: 'join'}, 14_999).line);
-  assert.equal(arrival.update({arrival: 'join'}, 15_000).note, 'Verbindet noch.');
+  assert.ok(arrival.update({...loading, wasmFetched: true}, 8100).line, 'compiling is not the network');
+  arrival.update(joining, 9000);
+  assert.ok(arrival.update(joining, 14_999).line);
+  assert.equal(arrival.update(joining, 15_000).note, 'Verbindet noch.');
   assert.equal(arrival.update({arrival: 'join', statusShown: true}, 15_100).note, null,
     'what the page says (waiting for the owner) is said instead');
 });
 
 test('a first frame that is late says so instead of waiting in silence', () => {
-  const arrival = createArrival({lines: {jokes, tips}});
+  const arrival = createArrival();
   arrival.update(loading, 0);
-  arrival.update({arrival: 'draw'}, 2000);
-  assert.ok(arrival.update({arrival: 'draw'}, 11_999).line);
-  const slow = arrival.update({arrival: 'draw'}, 12_000);
+  const drawing = {arrival: 'draw', stepNote: 'Starting graphics…'};
+  arrival.update(drawing, 2000);
+  assert.ok(arrival.update(drawing, 11_999).line);
+  const slow = arrival.update(drawing, 12_000);
   assert.equal(slow.line, null);
   assert.equal(slow.note, 'Still starting graphics. Without a graphics card this takes longer.');
   assert.equal(slow.bar, true);
@@ -94,7 +74,7 @@ test('a first frame that is late says so instead of waiting in silence', () => {
 // Catches a page left on "Loading Tilo…" (or opening, or starting
 // graphics) with nothing to do but wait when a step never finishes.
 test('a step that does not move on offers Try again and keeps waiting', () => {
-  const arrival = createArrival({lines: {jokes, tips}, slowNotes: {stalled: 'Dauert länger.'}});
+  const arrival = createArrival({slowNotes: {stalled: 'Dauert länger.'}});
   let at = 0;
   for (const step of [loading, {arrival: 'load', wasmFetched: true}, {arrival: 'join'}, {arrival: 'open'}]) {
     assert.equal(arrival.update(step, at).stalled, false, `${step.arrival} starts unstalled`);
@@ -117,7 +97,7 @@ test('a step that does not move on offers Try again and keeps waiting', () => {
 });
 
 test('a slow start or opening says so too', () => {
-  const arrival = createArrival({lines: {jokes, tips}});
+  const arrival = createArrival();
   arrival.update({arrival: 'load', wasmFetched: true}, 2000);
   assert.equal(arrival.update({arrival: 'load', wasmFetched: true}, 10_000).note, 'Still starting Tilo.');
   arrival.update({arrival: 'open'}, 11_000);
@@ -173,7 +153,7 @@ test('the bar is planned from what getting in took here, not from a guess', () =
     assert.ok(at >= done.draw.start && at < done.draw.end, `${elapsed} ms stays inside its step`);
   }
   // A step's real time replaces its estimate as it completes.
-  const slowJoin = createArrival({lines: {jokes, tips}, measured});
+  const slowJoin = createArrival({measured});
   slowJoin.update({arrival: 'load'}, 0);
   slowJoin.update({arrival: 'load', wasmFetched: true}, 400);
   slowJoin.update({arrival: 'join'}, 1600);
@@ -210,48 +190,6 @@ test('with reduced motion the bar steps at each phase instead of creeping', () =
   assert.equal(progressIn('join', 900, {reducedMotion: true}), SEGMENTS.join.start);
 });
 
-test('tilo.sh lines show only on tilo.sh and its subdomains', () => {
-  for (const host of ['tilo.sh', 'eu1.tilo.sh', 'TILO.SH.']) assert.ok(isHostedSite(host), host);
-  for (const host of ['', 'localhost', 'tilo.so', 'notilo.sh', 'tilo.sh.example', 'tilo-sh.example']) {
-    assert.ok(!isHostedSite(host), host);
-  }
-  const messages = locale('en-US');
-  const elsewhere = arrivalLines(messages, {hostname: 'tilo.example'}).jokes;
-  const there = arrivalLines(messages, {hostname: 'eu1.tilo.sh'}).jokes;
-  assert.ok(!elsewhere.includes('Fluffing the Lounge cushions…'));
-  assert.deepEqual(there.filter(line => !elsewhere.includes(line)), ['Fluffing the Lounge cushions…']);
-});
-
-test('desktop tips stay off a full-tab app, and a Mac reads ⌘K', () => {
-  const messages = locale('en-US');
-  const desktop = arrivalLines(messages, {mode: 'desktop'}).tips;
-  assert.ok(desktop.includes('Ctrl+K finds any app'));
-  assert.ok(arrivalLines(messages, {mode: 'desktop', mac: true}).tips.includes('⌘K finds any app'));
-  assert.ok(!arrivalLines(messages, {mode: 'desktop', mac: true}).tips.includes('Ctrl+K finds any app'));
-  const app = arrivalLines(messages, {mode: 'app'}).tips;
-  assert.deepEqual(app, ['Everything here is saved as you go', 'Tilo is an operating system. This one runs in your browser.']);
-});
-
-test('both locales have jokes and the same tips, in lines short enough to read at a glance', () => {
-  // The owner's own lines, kept as written though longer.
-  const longer = new Set(['Best viewed in Netscape Navigator 4.0 at 800×600',
-    'I’d like to interrupt for a moment. What you are referring to as Li…',
-    'Tilo is an operating system. This one runs in your browser.',
-    'Tilo ist ein Betriebssystem. Dieses läuft in deinem Browser.']);
-  const tipIds = name => [...locale(name).keys()].filter(id => id.includes('tip-')).sort();
-  assert.deepEqual(tipIds('de-DE'), tipIds('en-US'));
-  for (const name of ['en-US', 'de-DE']) {
-    const messages = locale(name);
-    const {jokes: shipped, tips: told} = arrivalLines(messages, {hostname: 'tilo.sh'});
-    assert.ok(shipped.length >= 20, `${name} jokes`);
-    assert.ok(told.length >= 3, `${name} tips`);
-    for (const line of [...shipped, ...told]) {
-      if (!longer.has(line)) assert.ok([...line].length <= 44, `${name}: “${line}” is too long`);
-    }
-    assert.ok(!shipped.some(line => /No account needed/.test(line)));
-  }
-});
-
 test('the arrival screen speaks the desktop\'s language, the refusal the visitor\'s', () => {
   assert.equal(arrivalLocale(), 'en-US', 'the desktop starts in English, whatever the browser speaks');
   assert.equal(arrivalLocale('de-AT'), 'de-DE');
@@ -269,7 +207,7 @@ test('the arrival screen speaks the desktop\'s language, the refusal the visitor
   assert.equal(visitorLocale({}), 'en-US');
 });
 
-test('every step note the entry pages write is one the screen leaves to screen readers', () => {
+test('every step note the entry pages write is one the line shows', () => {
   const sources = ['entry.mjs', 'entry-page.mjs', 'index.html', 'app/index.html']
     .map(name => readFileSync(here(name), 'utf8')).join('\n');
   for (const note of STEP_NOTES) assert.ok(sources.includes(`${note}`), `${note} is no longer written`);
@@ -338,18 +276,6 @@ test('a pasted invite or pairing link opens as itself; anything else is not one'
     `https://tilo.sh/elsewhere#${'k'.repeat(43)}`, null]) {
     assert.equal(entryLinkTarget(text, base), null, String(text));
   }
-});
-
-test('a tip reads after its label, a joke bare', () => {
-  const rotation = createRotation({jokes: ['Herding agents…'], tips: ['Ctrl+K finds any app']});
-  const joke = rotation.next();
-  const tip = rotation.next();
-  assert.deepEqual(lineParts(joke, 'Tip'), {label: null, text: 'Herding agents…'});
-  assert.deepEqual(lineParts(tip, 'Tip'), {label: 'Tip', text: 'Ctrl+K finds any app'});
-  assert.equal(locale('en-US').get('arrival-label-tip'), 'Tip');
-  assert.equal(locale('de-DE').get('arrival-label-tip'), 'Tipp');
-  // The label is no tip of its own.
-  assert.ok(!arrivalLines(locale('de-DE')).tips.includes('Tipp'));
 });
 
 test('the entry says what Tilo is and asks for an email where there is a wait list, else names the workspace', () => {

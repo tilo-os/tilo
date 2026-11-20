@@ -53,13 +53,7 @@ LOCALE = re.compile(r'"([A-Za-z][A-Za-z0-9-]*)"')
 
 # Keys a locale adds on purpose: copy written for speakers of that language,
 # with no source-language original.
-LOCALE_ONLY: dict[tuple[str, str], set[str]] = {
-    ("crates/browser/tilo-browser-runtime/web", "de-DE"): {
-        "arrival-joke-fax",
-        "arrival-joke-form-a38",
-        "arrival-joke-recycling",
-    },
-}
+LOCALE_ONLY: dict[tuple[str, str], set[str]] = {}
 
 
 def catalogues(root: Path) -> list[Path]:
