@@ -665,7 +665,7 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
 
 /// The site `--site` or [`SITE_ENV`] names, else [`DEFAULT_SITE`], as an
 /// HTTPS origin.
-fn site_origin(flag: Option<&str>) -> Result<String> {
+pub(crate) fn site_origin(flag: Option<&str>) -> Result<String> {
     let named = flag
         .map(str::to_owned)
         .or_else(|| std::env::var(SITE_ENV).ok())
@@ -683,7 +683,7 @@ fn site_origin(flag: Option<&str>) -> Result<String> {
 ///
 /// A site that answers nothing, or nothing this tilo reads, is said as it
 /// is: Tilo cannot be reached from here right now.
-async fn home_server(site: &Origin) -> Result<String> {
+pub(crate) async fn home_server(site: &Origin) -> Result<String> {
     let (status, body) = site.get("/entry.json").await.map_err(|error| {
         debug_why(&format!("reading {}'s entry.json", site.name()), &error);
         anyhow!(UNREACHED)
@@ -1587,7 +1587,7 @@ fn held_device_cert(
 
 /// The workspace a held login enters: the one `asked` names (its id, or its name in any case),
 /// else the person's own one, else the only one they have.
-fn choose_workspace(
+pub(crate) fn choose_workspace(
     listed: &[tilo_server_session::workspaces::PersonalWorkspace],
     asked: Option<&str>,
 ) -> Result<(String, String)> {

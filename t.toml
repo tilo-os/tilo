@@ -6312,10 +6312,11 @@ default = false
 # Nested, because the stack's services are sandboxed with bwrap (stack.sh), which needs namespaces
 # of its own.
 # A stack holding data comes up on the next build (tools/ci/stack-upgrade/upgrade.sh): the commit
-# before fills a stack with a workspace's chat, tasks, a note, a file, Mail, a contact and an
-# event; this commit's programs bring the same state up and read each back. A change to what a
-# server stores that leaves an earlier build's data behind fails on the commit that made it. The
-# base's programs are built here, from its own checkout, beside the cached build of this commit.
+# before fills a stack with a workspace's chat, tasks, a note, a file, Mail, a contact, an event,
+# and its person's Passwords entry, vault item and mail account at a stand-in mail server; this
+# commit's programs bring the same state up and read each back. A change to what a server stores
+# that leaves an earlier build's data behind fails on the commit that made it. The base's
+# programs are built here, from its own checkout, beside the cached build of this commit.
 [[check]]
 name = "stack-upgrade"
 on = ["idle"]

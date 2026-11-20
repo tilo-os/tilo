@@ -45,6 +45,7 @@ mod migrate;
 mod nouns;
 mod os;
 mod peer;
+mod person;
 mod sdk;
 mod server;
 mod service;
@@ -1004,6 +1005,10 @@ fn run_do(
     let Some(workspace) = workspace else {
         return desktop::run_action(desktop::ActionCmd::Run { action, args }, json, spelling);
     };
+    let keyed = reach.key_file.is_some() || std::env::var_os(api::KEY_ENV).is_some();
+    if person::answers(&action, keyed) {
+        return person::run(&workspace, &action, &args, json);
+    }
     hosted::act(reach, &workspace, &action, &args)
 }
 

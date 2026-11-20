@@ -94,6 +94,11 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          exports it from then on
   stack.sh tilo ARGS...  tilo as that owner, with their key:
                          stack.sh tilo workspace people wait-list -w <lounge id>
+  stack.sh person ARGS...
+                         tilo as that owner on their own device, with no key:
+                         what the host answers the person alone, as their
+                         page asks it (their vault, their mail accounts):
+                         stack.sh person do person/vault#entries -w <workspace>
   stack.sh owner [KEY] [--name NAME]
                          an owner link: opening it in any browser (one with
                          no Tilo identity yet too) makes that person an owner
@@ -1218,6 +1223,14 @@ owner_tilo() {
   local api_key
   api_key=$(owner_api_key) || exit 1
   TILO_API_KEY=$api_key as_owner "$@"
+}
+
+# tilo as the stack's own person on the device their root certified, with no
+# key: a key is the person's agent, which the host refuses their vault and
+# their mail accounts.
+owner_person() {
+  stack_person >/dev/null
+  (unset TILO_API_KEY && as_owner "$@")
 }
 
 # owner --here [NAME]: the stack's own person, the Lounge's first owner,
@@ -3039,6 +3052,7 @@ if remote_here && [[ $cmd != up ]]; then
     owner) remote_cmd owner "$@" ;;
     invite) remote_cmd invite "$@" ;;
     tilo) remote_cmd tilo "$@" ;;
+    person) remote_cmd person "$@" ;;
     hold | unhold) remote_cmd "$cmd" "$@" ;;
     logs)
       if [[ ${1:-} == remote ]]; then cat "$state/logs/remote.log"; else remote_cmd logs "$@"; fi ;;
@@ -3068,6 +3082,7 @@ case $cmd in
   owner) declare_owner "$@" ;;
   invite) invite_link "$@" ;;
   tilo) owner_tilo "$@" ;;
+  person) owner_person "$@" ;;
   browser) browser "$@" ;;
   check)
     exec bash "$here/check.sh" "$@" ;;

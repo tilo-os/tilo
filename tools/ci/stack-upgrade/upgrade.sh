@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # A stack holding data comes up on the next build: the build before this commit
 # fills a local tilo.sh stack (os/containers/tilo-sh/stack.sh) with a workspace's
-# chat, tasks, a note, a file, Mail, a contact and an event, the stack goes
+# chat, tasks, a note, a file, Mail, a contact and an event, and its person's
+# own Passwords entry, vault item and mail account (at the stack's stand-in mail
+# server), the stack goes
 # down keeping its state, and this commit's programs bring the same state up and
 # read every one of them back (workspace_data.py). A change to what a server
 # stores that does not carry the data an earlier build wrote forward fails here,
@@ -53,12 +55,19 @@ git -C "$checkout" checkout -q --detach "$base"
 trap 'git -C "$repo" worktree remove --force "$checkout" >/dev/null 2>&1 || true' EXIT
 say "building $(git -C "$repo" log -1 --format='%h %s' "$base")"
 bash "$checkout/tools/ci/publish/tilo-sh-programs.sh" "$work/base-programs" >&2
+# The stand-in mail server is built beside them as an example; the stack starts it as
+# mail-stand-in.
+cp "$work/base-programs/examples/mail_stand_in" "$work/base-programs/mail-stand-in"
 TILO_LOUNGE_SURFACE_COMMIT=$base \
   bash "$checkout/tools/ci/publish/lounge-context.sh" "$work/base-lounge" "$work/base-programs" "$fonts" >/dev/null
 
 stack=$repo/os/containers/tilo-sh/stack.sh
 export TILO_SH_STATE=$work/state TILO_SH_HOME_APP= TILO_SH_ADMISSION=open
 export TILO_SH_PORT_BASE=${TILO_SH_PORT_BASE:-26100}
+# The stand-in mail server the person connects a mail account at, kept with the state; and
+# what the person's own requests are asked with (workspace_data.py): this stack.sh, and this
+# commit's tilo command, as the page that asks them is this commit's for both builds.
+export TILO_SH_MAIL_STAND_IN=1 STACK_SH=$stack PERSON_TILO=$now_tilo
 rm -rf "$TILO_SH_STATE" "$TILO_SH_STATE-keys"
 up() {
   TILO_SH_PROGRAMS=$1 TILO_SH_LOUNGE=$2 bash "$stack" up >&2
