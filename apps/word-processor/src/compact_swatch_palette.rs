@@ -105,7 +105,8 @@ impl CompactSwatchPalette {
         self.pointer = request.anchor;
         self.anchor = request.anchor;
         self.host = request.host;
-        self.layout(request.anchor, request.host, request.theme);
+        let mut text = TextRenderer::new();
+        self.layout(request.anchor, request.host, request.theme, &mut text);
     }
 
     pub(super) fn close(&mut self) {
@@ -185,7 +186,7 @@ impl CompactSwatchPalette {
         false
     }
 
-    fn layout(&mut self, anchor: Point, host: Rect, theme: &Theme) {
+    fn layout(&mut self, anchor: Point, host: Rect, theme: &Theme, text: &mut TextRenderer) {
         let Some(picker) = self.picker.as_mut() else {
             return;
         };
@@ -194,14 +195,24 @@ impl CompactSwatchPalette {
         let mut taffy = TaffyTree::new();
         let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = picker.build_layout(&mut taffy, theme, &mut nodes);
-        let _ = ui::widget::solve_layout(
-            &mut taffy,
-            node,
-            taffy::Size {
-                width: taffy::AvailableSpace::MaxContent,
-                height: taffy::AvailableSpace::MaxContent,
-            },
-        );
+        // The picker answers its size from its grid, which only a solve that
+        // asks the widgets measures: a bare Taffy solve gives every leaf no
+        // size, and the swatches then stack outside a stub of a panel.
+        // SAFETY: `picker`, the tree and its node map are one live tree this
+        // call exclusively owns for its duration.
+        let _ = unsafe {
+            ui::widget::solve_built_layout(
+                picker,
+                &mut taffy,
+                node,
+                &nodes,
+                text,
+                taffy::Size {
+                    width: taffy::AvailableSpace::MaxContent,
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            )
+        };
         let grid = taffy
             .layout(node)
             .map_or(taffy::Size::ZERO, |layout| layout.size);
@@ -231,7 +242,7 @@ impl CompactSwatchPalette {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.layout(self.anchor, self.host, theme);
+        self.layout(self.anchor, self.host, theme, text);
         let Some(picker) = self.picker.as_mut() else {
             return;
         };
