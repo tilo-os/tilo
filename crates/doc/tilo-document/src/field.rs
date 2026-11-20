@@ -8,10 +8,58 @@
 //! writes back; only a new value ([`RichText::from_markdown`]) writes its
 //! text when the record is stored.
 
-use automerge::{ObjId, ObjType, ReadDoc as _, Value};
+use std::cell::RefCell;
+
+use automerge::transaction::Transactable as _;
+use automerge::{ChangeHash, ObjId, ObjType, ReadDoc as _, Value};
 use tilo_resource::{ActionCx, Delta, Doc, EditOp, Model, ModelError, Operations, Segment, Slot};
 
 use crate::{RichText, RichTextAction, RichTextState};
+
+/// The body a new value's store wrote, each paragraph as reading it back
+/// gives it, kept for the read that follows the store ([`RichText::load`]):
+/// that read takes it instead of reading the paragraphs back, as long as the
+/// document is still as the store left it.
+struct Written {
+    /// The value's map.
+    obj: ObjId,
+    /// The document once written: its committed heads and how many
+    /// operations its open transaction held. A transaction only grows until
+    /// it commits, so the same heads and count are the same document.
+    heads: Vec<ChangeHash>,
+    pending: usize,
+    body: Vec<tilo_doc::model::BodyBlock>,
+}
+
+thread_local! {
+    static WRITTEN: RefCell<Option<Written>> = const { RefCell::new(None) };
+}
+
+/// The body kept for `obj` by the store that left `doc` as it is. One kept
+/// for another value stays, for that value's own read.
+pub(crate) fn take_written(doc: &Doc, obj: &ObjId) -> Option<Vec<tilo_doc::model::BodyBlock>> {
+    WRITTEN.with(|written| {
+        let mut written = written.borrow_mut();
+        let kept = written.as_ref()?;
+        if kept.obj != *obj {
+            return None;
+        }
+        let kept = written.take()?;
+        (kept.pending == doc.pending_ops() && kept.heads == doc.committed_heads())
+            .then_some(kept.body)
+    })
+}
+
+/// Keep `body`, read from `obj` in `doc` as it is, for a read that follows.
+pub(crate) fn keep_written(doc: &Doc, obj: &ObjId, body: Vec<tilo_doc::model::BodyBlock>) {
+    let written = Written {
+        obj: obj.clone(),
+        heads: doc.committed_heads(),
+        pending: doc.pending_ops(),
+        body,
+    };
+    WRITTEN.with(|kept| *kept.borrow_mut() = Some(written));
+}
 
 impl RichText {
     /// A new value holding `markdown`, written when the record holding it is
@@ -269,8 +317,12 @@ impl Model for RichText {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape("rich text"));
         }
+        let state = match take_written(doc, id) {
+            Some(body) => Self::read_written(doc, id, body)?,
+            None => Self::read_under(doc, id)?,
+        };
         Ok(Self {
-            state: Some(Self::read_under(doc, id)?),
+            state: Some(state),
             initial: None,
             pending: Vec::new(),
         })
@@ -302,12 +354,18 @@ impl Model for RichText {
                 tilo_doc::model::init(doc, &obj);
             }
         }
+        WRITTEN.with(|written| written.borrow_mut().take());
         if let Some(markdown) = &self.initial {
-            RichTextAction::ReplaceBody {
+            // A new value written whole is read back as it was written.
+            let keep = made && self.pending.is_empty();
+            let body = RichTextAction::ReplaceBody {
                 markdown: markdown.clone(),
             }
-            .apply_under(doc, &obj)
+            .apply_keeping(doc, &obj, keep)
             .map_err(refused)?;
+            if let Some(body) = body {
+                keep_written(doc, &obj, body);
+            }
         }
         for op in &self.pending {
             op.apply_under(doc, &obj).map_err(refused)?;
@@ -556,6 +614,60 @@ mod tests {
         }
         card.apply(Card::WRITE.with(read)).unwrap();
         assert_eq!(card.state().unwrap().body.to_json().as_str(), Some(read));
+    }
+
+    /// A value read right after its store wrote it is the value a read of
+    /// the document gives, paragraphs and the objects they are stored in
+    /// alike, without reading the body back.
+    #[test]
+    fn a_value_read_after_its_store_is_the_value_the_document_holds() {
+        let samples = [
+            "plain words",
+            "## Plan\n\n**bold**, *em* and a [link](https://example.com) in caf\u{e9} \u{6f22}\u{5b57} \u{1f642}\n\n- one\n- two\n  - nested\n\n1. first\n2. second\n\n- [ ] open\n- [x] done\n\n> quoted\n\n```rust\nfn main() {}\n```\n\n---\n\n# Title\n\nlast",
+            "| a | b |\n|---|---|\n| 1 | 2 |\n\nafter the table",
+            "a note[^1]\n\n[^1]: the note",
+            "",
+        ];
+        for markdown in samples {
+            let mut doc = Doc::new();
+            RichText::from_markdown(markdown)
+                .store(&mut doc, Slot::Key(&ROOT, "body"))
+                .unwrap();
+            let (value, id) = doc.get(ROOT, "body").unwrap().unwrap();
+            let kept = WRITTEN.with(|kept| kept.borrow().is_some());
+            let (written, observed) = tilo_resource::profiling::observe(|| {
+                let mut written = RichText::load(&doc, &value, &id).unwrap();
+                written.read_whole(&doc).unwrap();
+                written
+            });
+            if kept {
+                let reads: Vec<_> = observed
+                    .iter()
+                    .filter(|sample| {
+                        ["rich_text.read.spine", "rich_text.load.materialize"]
+                            .contains(&sample.phase)
+                    })
+                    .collect();
+                assert!(
+                    reads.is_empty(),
+                    "{markdown:?}: the body is read again: {reads:?}"
+                );
+            }
+            let mut read = RichText::load(&doc, &value, &id).unwrap();
+            read.read_whole(&doc).unwrap();
+            let (written, read) = (written.state.unwrap(), read.state.unwrap());
+            assert_eq!(written, read, "{markdown:?}");
+            assert_eq!(written.objects, read.objects, "{markdown:?}");
+            assert_eq!(
+                written.paragraph_objects, read.paragraph_objects,
+                "{markdown:?}"
+            );
+            assert_eq!(written.log.changed, read.log.changed, "{markdown:?}");
+            // Tables and notes are read back from the document.
+            let read_back =
+                markdown.is_empty() || markdown.contains('|') || markdown.contains("[^");
+            assert!(kept || read_back, "{markdown:?}: not kept");
+        }
     }
 
     /// A record holding short text reads all of it: its verbs and readers

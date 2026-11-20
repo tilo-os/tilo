@@ -2000,3 +2000,9 @@ paths = ["crates/doc/tilo-automerge/tests/new_text.rs"]
 reason = "The sign-in end-to-end harness's shell object, whose `run` sends one command to the live installer's root shell."
 words = ["run"]
 paths = ["tools/ci/signin_e2e.py"]
+
+[[allow]]
+reason = "The resource model's existing `Slot`, the place a value is written, which a test writing a value directly names."
+words = ["slot"]
+identifiers = ["Slot"]
+paths = ["crates/doc/tilo-document/src/field.rs"]

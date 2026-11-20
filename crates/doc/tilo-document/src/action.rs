@@ -2158,6 +2158,17 @@ impl RichTextAction {
     /// hold or targets that are not as the action read them, before anything is
     /// written.
     pub fn apply_under(&self, doc: &mut Doc, root: &ObjId) -> Result<(), ActionError> {
+        self.apply_keeping(doc, root, false).map(drop)
+    }
+
+    /// [`Self::apply_under`], and with `keep` the body paragraphs it
+    /// wrote, each as reading it back gives it, when they are all it wrote.
+    pub(crate) fn apply_keeping(
+        &self,
+        doc: &mut Doc,
+        root: &ObjId,
+        keep: bool,
+    ) -> Result<Option<Vec<tilo_doc::model::BodyBlock>>, ActionError> {
         // Bind to the canonical schema under `root`. Refuse an unbound
         // document explicitly so callers never mistake an unavailable target
         // for a successful edit.
@@ -2185,11 +2196,15 @@ impl RichTextAction {
         // marks exactly what the origin marked.
         let author = cx.author().cloned();
         let mut ids = tilo_doc::model::IdGen::for_action(cx);
+        if keep {
+            ids.keep_written();
+        }
         let mut dm = DocMut {
             doc,
             c: &c,
             ids: &mut ids,
         };
+        let before = dm.doc.pending_ops();
 
         match self.domain() {
             ActionDomain::Text => {
@@ -2220,8 +2235,16 @@ impl RichTextAction {
                 | RichTextAction::ReplaceFormatted { .. }
                 | RichTextAction::ReplaceImported { .. }
         );
+        // What was recorded is what was written only when it took every
+        // operation the action made.
+        let made = dm.doc.pending_ops().saturating_sub(before);
+        let written = dm
+            .ids
+            .take_written()
+            .filter(|written| written.ops == made)
+            .map(|written| written.blocks);
         dm.set_meta_flag(UNSAVED, !file_took_it);
-        Ok(())
+        Ok(written)
     }
 }
 

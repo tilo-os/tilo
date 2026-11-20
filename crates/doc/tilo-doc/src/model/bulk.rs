@@ -7,12 +7,17 @@
 //! history, as one batch object per block with marks applied as local operations
 //! afterwards.
 
-use super::{BLOCK_ATTRS, BLOCK_KIND, BLOCK_ORDER, BLOCK_TEXT, DocMut, ObjType, Value, block_obj};
+use super::{
+    BLOCK_ATTRS, BLOCK_KIND, BLOCK_ORDER, BLOCK_TEXT, BlockObjects, BodyBlock, DocMut, ObjType,
+    SpineEntry, Value, block_obj,
+};
+use crate::snapshot::BlockView;
 use automerge::marks::{ExpandMark, Mark};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, TextEncoding, hydrate};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use tilo_resource::batch::{self, ChangeWriter};
+use tilo_sort::CompactSort as _;
 
 #[cfg(any(test, feature = "bulk-instrumentation"))]
 thread_local! {
@@ -102,6 +107,43 @@ pub(super) struct Bulk {
     marked: HashSet<String>,
     /// Flushes in the open scope may write as changes; decided when the outermost scope opens.
     may_commit: bool,
+    /// What the scope wrote, kept when [`super::IdGen::keep_written`] asked.
+    written: Option<Written>,
+}
+
+/// The body blocks bulk scopes wrote, each as reading it back gives it, and how many operations
+/// writing them took ([`super::IdGen::keep_written`]).
+#[derive(Default)]
+pub struct Written {
+    pub blocks: Vec<BodyBlock>,
+    pub ops: usize,
+    /// Something was written that `blocks` does not say: a block outside the body, a mark set on
+    /// a text after it was written, blocks written as changes.
+    partial: bool,
+}
+
+impl super::IdGen {
+    /// Keep what bulk scopes write from now on, for [`Self::take_written`].
+    pub fn keep_written(&mut self) {
+        self.bulk.written = Some(Written::default());
+    }
+
+    /// The body blocks bulk scopes wrote since [`Self::keep_written`], in document order, when
+    /// that is all they wrote.
+    pub fn take_written(&mut self) -> Option<Written> {
+        let mut written = self
+            .bulk
+            .written
+            .take()
+            .filter(|written| !written.partial)?;
+        written.blocks.compact_sort_by(|a, b| {
+            tilo_automerge::rich_text::paragraph_cmp(
+                (a.entry.order.as_slice(), a.entry.id.as_str()),
+                (b.entry.order.as_slice(), b.entry.id.as_str()),
+            )
+        });
+        Some(written)
+    }
 }
 
 impl DocMut<'_> {
@@ -317,8 +359,12 @@ impl DocMut<'_> {
         let mut marks = std::mem::take(&mut bulk.marks);
         bulk.marked = HashSet::new();
         if !(bulk.may_commit || self.ids.commits_allowed) {
-            write_as_ops(self.doc, blocks, marks);
+            let written = self.ids.bulk.written.as_mut().map(|w| (w, &self.c.blocks));
+            write_as_ops(self.doc, blocks, marks, written);
             return;
+        }
+        if let Some(written) = &mut self.ids.bulk.written {
+            written.partial = true;
         }
         // A host still owns a commit boundary after the import, and decides from its transaction
         // whether the action it brackets changed anything, so the last block stays in the host's
@@ -341,12 +387,12 @@ impl DocMut<'_> {
         if !blocks.is_empty() && write_as_changes(self.doc, &blocks, &marks) {
             #[cfg(any(test, feature = "bulk-instrumentation"))]
             CHANGE_WRITES.with(|c| c.set(c.get().saturating_add(1)));
-            write_as_ops(self.doc, tail.into_iter().collect(), tail_marks);
+            write_as_ops(self.doc, tail.into_iter().collect(), tail_marks, None);
             return;
         }
         blocks.extend(tail);
         marks.extend(tail_marks);
-        write_as_ops(self.doc, blocks, marks);
+        write_as_ops(self.doc, blocks, marks, None);
     }
 }
 
@@ -362,7 +408,12 @@ impl DocMut<'_> {
     clippy::expect_used,
     reason = "the container ids were resolved by this API when the block was staged"
 )]
-fn write_as_ops(doc: &mut AutoCommit, blocks: Vec<StagedBlock>, marks: Vec<StagedMark>) {
+fn write_as_ops(
+    doc: &mut AutoCommit,
+    blocks: Vec<StagedBlock>,
+    marks: Vec<StagedMark>,
+    mut written: Option<(&mut Written, &ObjId)>,
+) {
     let encoding = doc.text_encoding();
     // A batch counts a mark's ends in the document's units; staged marks count
     // characters, which only code points count as.
@@ -387,10 +438,19 @@ fn write_as_ops(doc: &mut AutoCommit, blocks: Vec<StagedBlock>, marks: Vec<Stage
         .iter()
         .map(|m| (&m.container, m.block.as_str()))
         .collect();
-    let mut written: HashMap<(ObjId, String), ObjId> = HashMap::new();
+    if let Some((written, _)) = &mut written {
+        written.partial |= !after.is_empty();
+    }
+    let mut written_objs: HashMap<(ObjId, String), ObjId> = HashMap::new();
     for block in blocks {
         let key = (block.container.clone(), block.id.clone());
         let marks = made.remove(&key).unwrap_or_default();
+        // What reading the block back gives, while its parts are at hand.
+        let read = written
+            .as_ref()
+            .filter(|(_, body)| *body == &block.container)
+            .map(|_| read_back(&block, &marks));
+        let before = doc.pending_ops();
         let obj = doc
             .batch_create_object(
                 &key.0,
@@ -399,8 +459,28 @@ fn write_as_ops(doc: &mut AutoCommit, blocks: Vec<StagedBlock>, marks: Vec<Stage
                 false,
             )
             .expect("staged block container resolves");
+        if let Some((written, _)) = &mut written {
+            written.ops = written
+                .ops
+                .saturating_add(doc.pending_ops().saturating_sub(before));
+            match read {
+                Some((entry, view)) => {
+                    let fields = super::block_fields(doc, &obj);
+                    written.blocks.push(BodyBlock {
+                        entry,
+                        objects: BlockObjects {
+                            block: obj.clone(),
+                            text: fields.text,
+                            attrs: fields.attrs,
+                        },
+                        view: Some(view),
+                    });
+                }
+                None => written.partial = true,
+            }
+        }
         if marked.contains(&(&key.0, key.1.as_str())) {
-            written.insert(key, obj);
+            written_objs.insert(key, obj);
         }
     }
     let mut texts: HashMap<(ObjId, String), Option<ObjId>> = HashMap::new();
@@ -409,7 +489,7 @@ fn write_as_ops(doc: &mut AutoCommit, blocks: Vec<StagedBlock>, marks: Vec<Stage
         let text = texts
             .entry(key.clone())
             .or_insert_with(|| {
-                let obj = match written.get(&key) {
+                let obj = match written_objs.get(&key) {
                     Some(obj) => obj.clone(),
                     None => block_obj(doc, &m.container, &m.block)?,
                 };
@@ -420,6 +500,36 @@ fn write_as_ops(doc: &mut AutoCommit, blocks: Vec<StagedBlock>, marks: Vec<Stage
             apply_mark_op(doc, &text, m);
         }
     }
+}
+
+/// A body block about to be written with `marks` over its text, as [`super::read_body`] reads it
+/// back.
+fn read_back(block: &StagedBlock, marks: &[StagedMark]) -> (SpineEntry, BlockView) {
+    let text = block.text.clone().unwrap_or_default();
+    let marks = super::written_mark_spans(
+        block.text_len,
+        marks
+            .iter()
+            .map(|m| (m.name.as_str(), &m.value, m.start, m.end)),
+    );
+    let view = BlockView {
+        id: block.id.clone(),
+        kind: block.kind.clone(),
+        text,
+        marks,
+        attrs: block
+            .attrs
+            .iter()
+            .filter_map(|(key, value)| Some((key.clone(), super::attr_val(value)?)))
+            .collect(),
+        children: Vec::new(),
+    };
+    let entry = SpineEntry {
+        order: block.order.clone(),
+        id: block.id.clone(),
+        kind: block.kind.clone(),
+    };
+    (entry, view)
 }
 
 /// A block's text object, created if missing (as marking a block without text does op by op).

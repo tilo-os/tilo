@@ -683,29 +683,44 @@ impl RichTextState {
         let bulk = missing.len().saturating_mul(2) >= self.body.len();
         let mut wanted: HashSet<String> = missing.into_iter().collect();
         if bulk {
-            let featured = Rc::clone(&self.featured);
-            let read = tilo_resource::profiling::measure("rich_text.load.materialize", || {
-                model::read_body(doc, &self.containers, |kind| !Self::is_featured(kind))
+            let read = field::take_written(doc, &self.containers.root).unwrap_or_else(|| {
+                tilo_resource::profiling::measure("rich_text.load.materialize", || {
+                    model::read_body(doc, &self.containers, |kind| !Self::is_featured(kind))
+                })
             });
-            let _index = tilo_resource::profiling::Phase::start("rich_text.load.index");
-            for block in read {
-                if !wanted.remove(&block.entry.id) {
+            self.take_paragraphs(read, &mut wanted);
+        }
+        self.read_wanted(doc, wanted);
+    }
+
+    /// Of the body's paragraphs `read` holds, those `wanted` names, taken
+    /// out of it, with their objects indexed: a heading shares the outline's
+    /// view. One `read` holds no view of stays wanted.
+    fn take_paragraphs(&mut self, read: Vec<model::BodyBlock>, wanted: &mut HashSet<String>) {
+        let _index = tilo_resource::profiling::Phase::start("rich_text.load.index");
+        let featured = Rc::clone(&self.featured);
+        for block in read {
+            if !wanted.remove(&block.entry.id) {
+                continue;
+            }
+            let view = match (block.view, featured.get(&block.entry.id)) {
+                (Some(view), _) => Rc::new(view),
+                (None, Some(view)) => Rc::clone(view),
+                (None, None) => {
+                    // Not in the outline: read by id below.
+                    wanted.insert(block.entry.id);
                     continue;
                 }
-                let view = match (block.view, featured.get(&block.entry.id)) {
-                    (Some(view), _) => Rc::new(view),
-                    (None, Some(view)) => Rc::clone(view),
-                    (None, None) => {
-                        // Not in the outline: read by id below.
-                        wanted.insert(block.entry.id);
-                        continue;
-                    }
-                };
-                let id: Rc<str> = block.entry.id.into();
-                Rc::make_mut(&mut self.loaded).insert(id.to_string(), view);
-                self.index_objects(id, block.objects);
-            }
+            };
+            let id: Rc<str> = block.entry.id.into();
+            Rc::make_mut(&mut self.loaded).insert(id.to_string(), view);
+            self.index_objects(id, block.objects);
         }
+    }
+
+    /// Read the body paragraphs `wanted` names one by one, a heading
+    /// sharing the outline's view.
+    fn read_wanted(&mut self, doc: &Doc, wanted: HashSet<String>) {
         let mut missing = Vec::with_capacity(wanted.len());
         for id in wanted {
             match self.featured.get(&id).map(Rc::clone) {
@@ -1104,24 +1119,71 @@ impl RichText {
     /// # Errors
     /// Returns [`ModelError`] when `root` holds no rich text.
     pub fn read_under(doc: &Doc, root: &ObjId) -> Result<RichTextState, ModelError> {
-        let c = containers_of(doc, root)?;
         // One walk reads the spine and, whole, the outline's paragraphs.
-        let (spine, featured) = tilo_resource::profiling::measure("rich_text.read.spine", || {
-            let mut featured = HashMap::new();
-            let spine: Vec<model::SpineEntry> =
-                model::read_body(doc, &c, RichTextState::is_featured)
-                    .into_iter()
-                    .map(|block| {
-                        if let Some(view) = block.view {
-                            featured.insert(view.id.clone(), Rc::new(view));
-                        }
-                        block.entry
-                    })
-                    .collect();
-            (spine, featured)
+        let body = tilo_resource::profiling::measure("rich_text.read.spine", || {
+            containers_of(doc, root)
+                .map(|c| (model::read_body(doc, &c, RichTextState::is_featured), c))
         });
+        let (body, c) = body?;
+        Ok(Self::read_body_under(doc, c, body))
+    }
+
+    /// Rich text under `root` whose body is `body`, every paragraph of it
+    /// as reading it back gives it (what a store just wrote): read as
+    /// [`Self::read_under`] reads it, without reading the body again. Its
+    /// paragraphs are kept for the read of them that follows.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when `root` holds no rich text.
+    pub(crate) fn read_written(
+        doc: &Doc,
+        root: &ObjId,
+        body: Vec<model::BodyBlock>,
+    ) -> Result<RichTextState, ModelError> {
+        let c = containers_of(doc, root)?;
+        let mut state = Self::read_body_under(doc, c, Vec::new());
+        state.body = Rc::new(BodyOrder::from_spine(
+            body.iter().map(|block| block.entry.clone()).collect(),
+        ));
+        let mut featured = HashMap::new();
+        let body: Vec<model::BodyBlock> = body
+            .into_iter()
+            .map(|mut block| {
+                if RichTextState::is_featured(&block.entry.kind)
+                    && let Some(view) = block.view.take()
+                {
+                    featured.insert(view.id.clone(), Rc::new(view));
+                }
+                block
+            })
+            .collect();
+        state.featured = Rc::new(featured);
+        // The paragraphs stay kept for the read of them that follows
+        // (`read_paragraphs`): a value only some of whose paragraphs are
+        // asked for reads only those.
+        field::keep_written(doc, root, body);
+        Ok(state)
+    }
+
+    /// The state of rich text under `c` whose body read `body`: its spine,
+    /// the outline's paragraphs whole, and every part beside the body.
+    fn read_body_under(
+        doc: &Doc,
+        c: model::Containers,
+        body: Vec<model::BodyBlock>,
+    ) -> RichTextState {
+        let mut featured = HashMap::new();
+        let spine: Vec<model::SpineEntry> = body
+            .into_iter()
+            .map(|block| {
+                if let Some(view) = block.view {
+                    featured.insert(view.id.clone(), Rc::new(view));
+                }
+                block.entry
+            })
+            .collect();
         let _parts = tilo_resource::profiling::Phase::start("rich_text.read.parts");
-        Ok(RichTextState {
+        RichTextState {
             body: Rc::new(BodyOrder::from_spine(spine)),
             featured: Rc::new(featured),
             loaded: Rc::default(),
@@ -1139,7 +1201,7 @@ impl RichText {
             root_path: (c.root == automerge::ROOT).then(Vec::new),
             containers: c,
             log: ChangeLog::fresh(),
-        })
+        }
     }
 
     /// Start rich text under `root`: the shared schema and one empty

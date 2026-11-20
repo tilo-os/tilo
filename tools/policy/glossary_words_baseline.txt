@@ -8,7 +8,7 @@ host 63912
 relay 2501
 run 54491
 seat 1006
-record 52771
-slot 11050
+record 52607
+slot 11046
 plane 15
 seam 7
