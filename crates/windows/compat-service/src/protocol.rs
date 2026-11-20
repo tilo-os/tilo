@@ -10,6 +10,11 @@ use crate::{
 // someone chooses otherwise and whether this manager may choose.
 pub const PROTOCOL_VERSION: u16 = 10;
 
+/// The code of a launch refused because a program of the same capsule is open with the other
+/// runner: the answer names which program and which runner, and the manager keeps the refusal
+/// only as long as that program stays open.
+pub const OPEN_WITH_OTHER_RUNNER: &str = "open_with_other_runner";
+
 /// The inherited session service accepts only opaque server-owned entry IDs
 /// for launch. A query is preview-only and cannot select a launch plan.
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -52,8 +52,8 @@ pub use plan::{
     TakenBack, is_render_node,
 };
 pub use protocol::{
-    ManagedApplication, ManagedInstallation, PROTOCOL_VERSION, ProgramEnd, ProtocolError,
-    ProtocolRequest, ProtocolResponse, ResolveRequest,
+    ManagedApplication, ManagedInstallation, OPEN_WITH_OTHER_RUNNER, PROTOCOL_VERSION, ProgramEnd,
+    ProtocolError, ProtocolRequest, ProtocolResponse, ResolveRequest,
 };
 pub use resources::SystemResourceBroker;
 pub use saved::{EntryDirectory, ReopenAnswer, ReopenAsk, Reopenings};

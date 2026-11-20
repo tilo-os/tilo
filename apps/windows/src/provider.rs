@@ -528,7 +528,11 @@ enum WorkerEvent {
     },
     Unavailable(String),
     Notice(String),
-    Operation(Result<String, String>),
+    /// An operation's answer: what it says, and the service's code when it refused.
+    Operation {
+        result: Result<String, String>,
+        code: Option<String>,
+    },
     /// A setup started in a capsule: the line it came with stays until a list says the capsule is
     /// no longer installing.
     SetupStarted {
@@ -576,6 +580,19 @@ struct Setup {
     listed: bool,
 }
 
+/// A refusal a list can end: a launch stayed closed because a program of the same capsule was
+/// open with the other runner, and the line saying so goes once that program does.
+struct Conflict {
+    /// What the window says of it, so a notice something else replaced is not dropped by it.
+    said: String,
+    /// The capsule both programs share.
+    capsule: String,
+    /// The route the refused program would have opened with.
+    route: Route,
+    /// The program whose launch was refused.
+    refused: String,
+}
+
 pub struct LiveProvider {
     cached: Catalogue,
     commands: Sender<WorkerCommand>,
@@ -583,6 +600,8 @@ pub struct LiveProvider {
     notice: Option<String>,
     /// Whether the notice the last list brought is about something that went wrong.
     notice_error: bool,
+    /// The refusal a list may end, while its line is the one shown.
+    conflict: Option<Conflict>,
     /// The entry the person ended here: its end is what they asked for, and needs no sentence.
     stopping: Option<String>,
     operation_result: Option<Result<String, String>>,
@@ -648,6 +667,7 @@ impl LiveProvider {
             events: event_rx,
             notice: None,
             notice_error: false,
+            conflict: None,
             stopping: None,
             operation_result: None,
             pending_vm_install: None,
@@ -690,7 +710,7 @@ impl LiveProvider {
                     self.notice = Some(detail);
                     self.notice_error = false;
                 }
-                WorkerEvent::Operation(result) => {
+                WorkerEvent::Operation { result, code } => {
                     let said = match &result {
                         Ok(detail) | Err(detail) => detail.clone(),
                     };
@@ -701,8 +721,23 @@ impl LiveProvider {
                         self.notice = None;
                         self.notice_error = false;
                     } else {
-                        self.notice = Some(said);
+                        self.notice = Some(said.clone());
                         self.notice_error = result.is_err();
+                    }
+                    // A launch refused beside a program of its capsule opened with the other
+                    // runner is over once that program is no longer open; until then the line
+                    // stays. A launch that was refused never started.
+                    if code.as_deref() == Some(compat_service::OPEN_WITH_OTHER_RUNNER)
+                        && let Some(refused) = self.launched.take()
+                    {
+                        let conflict = self.cached.app(&refused).map(|app| Conflict {
+                            said: said.clone(),
+                            capsule: app.capsule.clone(),
+                            route: app.route,
+                            refused,
+                        });
+                        self.conflict = conflict;
+                        self.notice_cleared = false;
                     }
                     self.operation_result = Some(result);
                 }
@@ -792,6 +827,31 @@ impl LiveProvider {
                     self.notice = Some(detail);
                     self.notice_error = true;
                     self.notice_cleared = false;
+                }
+            }
+        }
+        // A refusal beside another runner named a program of the same capsule: once no program
+        // of it is open with the other route, nothing the line said is open any more, and the
+        // banner goes. A list whose programs are still open that way leaves it up.
+        if let Some(conflict) = self.conflict.take() {
+            // Something else is said now: the line this refusal named is gone already.
+            let still_its_line = self
+                .notice
+                .as_deref()
+                .is_none_or(|said| said == conflict.said);
+            if still_its_line {
+                let still_open = applications.iter().any(|application| {
+                    application.running
+                        && application.id != conflict.refused
+                        && application.capsule_id.as_deref() == Some(conflict.capsule.as_str())
+                        && route_from_kind(application.explanation.route) != conflict.route
+                });
+                if still_open {
+                    self.conflict = Some(conflict);
+                } else {
+                    self.notice = None;
+                    self.notice_error = false;
+                    self.notice_cleared = true;
                 }
             }
         }
@@ -1319,7 +1379,10 @@ fn list(client: &mut SessionClient) -> WorkerEvent {
 /// Reports a launch that started: its end comes later, with a list ([`ended_notice`]).
 fn launched(response: Result<ProtocolResponse, SessionError>, started: &str) -> WorkerEvent {
     match response {
-        Ok(ProtocolResponse::Launched { .. }) => WorkerEvent::Operation(Ok(started.into())),
+        Ok(ProtocolResponse::Launched { .. }) => WorkerEvent::Operation {
+            result: Ok(started.into()),
+            code: None,
+        },
         response => operation(response),
     }
 }
@@ -1373,9 +1436,11 @@ pub(crate) fn ended_notice(end: &ProgramEnd) -> Option<String> {
     }
 }
 
-/// Reports an install or management operation through the detail the service returned.
+/// Reports an install or management operation through the detail the service returned, with the
+/// code of a refusal so the window knows which state the line describes.
 fn operation(response: Result<ProtocolResponse, SessionError>) -> WorkerEvent {
-    WorkerEvent::Operation(match response {
+    let mut code = None;
+    let result = match response {
         Ok(
             ProtocolResponse::Installed { receipt }
             | ProtocolResponse::Retried { receipt }
@@ -1401,10 +1466,14 @@ fn operation(response: Result<ProtocolResponse, SessionError>) -> WorkerEvent {
             Some(RouteKind::Vm) | None => "It opens the recommended way from now on.",
         }
         .into()),
-        Ok(ProtocolResponse::Error { error }) => Err(error.message),
+        Ok(ProtocolResponse::Error { error }) => {
+            code = Some(error.code);
+            Err(error.message)
+        }
         Ok(_) => Err(UNEXPECTED_RESPONSE.into()),
         Err(error) => Err(error.to_string()),
-    })
+    };
+    WorkerEvent::Operation { result, code }
 }
 
 fn unavailable_catalogue(detail: &str) -> Catalogue {
@@ -1799,7 +1868,10 @@ mod tests {
         }));
         assert!(matches!(
             event,
-            WorkerEvent::Operation(Ok(detail)) if detail == "Example Editor was added to Windows Apps."
+            WorkerEvent::Operation {
+                result: Ok(detail),
+                code: None,
+            } if detail == "Example Editor was added to Windows Apps."
         ));
     }
 
@@ -2104,6 +2176,7 @@ mod tests {
                 events: event_rx,
                 notice: None,
                 notice_error: false,
+                conflict: None,
                 stopping: None,
                 operation_result: None,
                 pending_vm_install: None,
@@ -2135,6 +2208,7 @@ mod tests {
             events: event_rx,
             notice: None,
             notice_error: false,
+            conflict: None,
             stopping: None,
             operation_result: None,
             pending_vm_install: None,
@@ -2269,6 +2343,7 @@ mod tests {
             events: event_rx,
             notice: None,
             notice_error: false,
+            conflict: None,
             stopping: None,
             operation_result: None,
             pending_vm_install: None,
@@ -2416,6 +2491,74 @@ mod tests {
         assert!(provider.take_notice_cleared());
     }
 
+    /// A launch refused because a program of its capsule is open with the other runner stays on
+    /// screen only while that program does: a list that shows it closed takes the line down, and
+    /// one that still shows it open leaves it.
+    #[test]
+    fn a_refusal_beside_another_runner_goes_when_that_program_closes() {
+        let capsule = "wine-putty";
+        let program = |id: &str, name: &str, route: RouteKind, running: bool| {
+            let mut application = managed_vm();
+            application.id = id.into();
+            application.display_name = name.into();
+            application.capsule_id = Some(capsule.into());
+            application.explanation.route = route;
+            application.explanation.capsule_id = Some(capsule.into());
+            application.recommended_route = RouteKind::Wine;
+            application.running = running;
+            application
+        };
+        let list = |putty_running| {
+            WorkerEvent::Listed(Box::new(Listed {
+                applications: vec![
+                    program("windows-pageant", "Pageant", RouteKind::Wine, false),
+                    program("windows-putty", "PuTTY", RouteKind::Proton, putty_running),
+                ],
+                installations: Vec::new(),
+                vm_availability: VmAvailability::ready("Ready"),
+                vm_installation: None,
+                vm_uninstallation: None,
+                ended: Vec::new(),
+            }))
+        };
+        let (mut provider, events) = connected_to_nothing();
+        provider.cached = catalogue_from_managed(
+            vec![
+                program("windows-pageant", "Pageant", RouteKind::Wine, false),
+                program("windows-putty", "PuTTY", RouteKind::Proton, true),
+            ],
+            &[],
+            VmAvailability::ready("Ready"),
+            None,
+            None,
+        );
+        provider.launched = Some("windows-pageant".into());
+        let said = "PuTTY is open with Proton, and it shares its files with Pageant: close PuTTY \
+                    before opening Pageant with Wine.";
+        events
+            .send(WorkerEvent::Operation {
+                result: Err(said.into()),
+                code: Some(compat_service::OPEN_WITH_OTHER_RUNNER.into()),
+            })
+            .unwrap();
+        assert_eq!(provider.take_notice().as_deref(), Some(said));
+        assert!(provider.notice_is_error());
+
+        events.send(list(true)).unwrap();
+        provider.catalogue();
+        assert!(
+            !provider.take_notice_cleared(),
+            "the program the line named is still open"
+        );
+
+        events.send(list(false)).unwrap();
+        provider.catalogue();
+        assert!(
+            provider.take_notice_cleared(),
+            "the program closed: nothing the line said applies"
+        );
+    }
+
     /// An install answered with the setup still running is followed to the list that ends it; one
     /// that is already done is answered as its receipt says.
     #[test]
@@ -2441,8 +2584,9 @@ mod tests {
         match started_setup(Ok(ProtocolResponse::Retried {
             receipt: receipt(InstallationStatus::Failed),
         })) {
-            WorkerEvent::Operation(result) => {
+            WorkerEvent::Operation { result, code } => {
                 assert_eq!(result.as_deref(), Ok("Installation is running."));
+                assert_eq!(code, None);
             }
             _ => panic!("a setup that already ended is answered as its receipt says"),
         }
@@ -2483,6 +2627,7 @@ mod tests {
             events: event_rx,
             notice: None,
             notice_error: false,
+            conflict: None,
             stopping: None,
             operation_result: None,
             pending_vm_install: None,
