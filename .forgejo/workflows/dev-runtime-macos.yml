@@ -290,6 +290,17 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Look at the Mac's Swift
+        run: |
+          set -x
+          xcode-select -p
+          xcrun swift --version
+          ls /Applications
+          ls /Library/Developer/CommandLineTools/Library/Developer/Frameworks || true
+          ls /Library/Developer/CommandLineTools/Developer/Library/Frameworks || true
+          xcrun --find xctest || true
+          mdfind "kMDItemFSName == 'XCTest.framework'" | head -5 || true
+
       - name: Test the Swift client on macOS
         if: ${{ !cancelled() && steps.apple.outputs.changed == 'true' }}
         working-directory: ${{ env.SRC }}
