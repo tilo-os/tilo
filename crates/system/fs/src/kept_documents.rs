@@ -445,6 +445,37 @@ mod tests {
         assert_eq!(again.document_heads(), heads);
     }
 
+    /// A directory full of files, journaled and saved, opens again as the same tree: what a
+    /// stopped daemon must come back to.
+    #[test]
+    fn a_folder_of_files_saved_and_reopened_holds_every_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (kept, mut namespace) = open(dir.path());
+        let folder = namespace
+            .create_dir(ROOT_INO, "in", 1)
+            .expect("make the folder");
+        for n in 0..300 {
+            namespace
+                .create_file(folder, format!("f{n:07}"), None, 1, 1)
+                .unwrap();
+            kept.journal(&mut namespace).unwrap();
+        }
+        kept.keep(&Mutex::new(namespace)).unwrap();
+        drop(kept);
+
+        let (_, documents) = KeptDocuments::open(dir.path()).unwrap();
+        let (mut again, _) = Namespace::from_documents_read("reader", documents).unwrap();
+        let folder = again
+            .lookup(ROOT_INO, "in")
+            .expect("the folder is back")
+            .ino
+            .0;
+        assert_eq!(
+            again.readdir(folder).map(|entries| entries.len()),
+            Some(302)
+        );
+    }
+
     /// A frame cut off as the process was killed while adding it costs that frame alone.
     #[test]
     fn a_frame_cut_off_costs_only_itself() {
