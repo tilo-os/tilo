@@ -34,7 +34,17 @@ if [ -n "${TILO_TEST_USER:-}" ] && [ "${TILO_TEST_AS_ROOT:-0}" != 1 ]; then
     else
         tilo_test_euid=$(id -u)
     fi
-    [ "$tilo_test_euid" != 0 ] || tilo_test_user=$TILO_TEST_USER
+    # Root that holds no capability to change its user (a job sandbox such as t's, uid 0 in a user
+    # namespace of its own with every capability dropped) has nothing of root's to shed, and no way
+    # to become another user: its tests keep its user.
+    if [ "$tilo_test_euid" = 0 ]; then
+        tilo_test_caps=0
+        while IFS=$'\t' read -r tilo_test_key tilo_test_value; do
+            [ "$tilo_test_key" != CapEff: ] || tilo_test_caps=$((16#$tilo_test_value))
+        done </proc/self/status
+        # CAP_SETGID (6) and CAP_SETUID (7).
+        (( (tilo_test_caps >> 6 & 3) != 3 )) || tilo_test_user=$TILO_TEST_USER
+    fi
 fi
 
 # PATH ...: the paths, not their contents, are the test user's.
