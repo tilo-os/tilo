@@ -1028,8 +1028,7 @@ impl Roster {
     #[cfg(target_os = "linux")]
     /// Who is here, as the desktop lists them: `tree` places them where their focused record is
     /// shown — `records` (what each window shows, by tab) names the window each person works in —
-    /// and `app_name` names an app. The workspace's own record of when it admitted each of its
-    /// people numbers namesakes here, as it numbers them in the roster.
+    /// and `app_name` names an app.
     #[must_use]
     pub(crate) fn people(
         &self,
@@ -1037,10 +1036,6 @@ impl Roster {
         notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
-        let (joined, names) = tree
-            .active_workspace()
-            .map_or_else(Default::default, tilo_desktop::here::workspace_people);
-        self.here.borrow_mut().set_workspace_people(&joined, &names);
         self.here.borrow().people(
             tree,
             &crate::sync::layout::bindings_of(tree, &notes.windows()),

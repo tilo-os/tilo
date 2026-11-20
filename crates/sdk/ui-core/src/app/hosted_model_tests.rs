@@ -757,48 +757,6 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn the_roster_numbers_and_names_people_from_the_complete_context;
 
-    phase a_later_namesake_from_the_roster_never_takes_an_earlier_number;
-    // Namesakes are numbered by when the workspace admitted them, as the roster
-    // says, not by id: a newcomer whose id sorts first still takes the next
-    // number, and nobody already in the workspace is renumbered.
-    {
-        fn person(id: &str, joined_at: u64, is_self: bool) -> collab_types::Member {
-            let row = collab_types::Member::of_person(
-                &collab_types::Person::new(id, "Ada"),
-                None,
-            )
-            .joined_at(Some(joined_at));
-            if is_self { row.claiming_self() } else { row }
-        }
-        let mut app = hosted_directory_fixture();
-        let first = crate::permissions::MemberId::person("m");
-        app.apply_collab_event_for_test(CollabEvent::Context {
-            members: vec![
-                person("m", 2_000, true),
-                person("z", 5_000, false),
-            ],
-            permissions: vec![],
-            apps: Vec::new(),
-        });
-        let second = crate::permissions::MemberId::person("z");
-        assert_eq!(app.presence_ctx.self_label().as_deref(), Some("Ada (1)"));
-        assert_eq!(app.presence_ctx.display_name(&second), "Ada (2)");
-
-        app.apply_collab_event_for_test(CollabEvent::Context {
-            members: vec![
-                person("a", 9_000, false),
-                person("m", 2_000, true),
-                person("z", 5_000, false),
-            ],
-            permissions: vec![],
-            apps: Vec::new(),
-        });
-        let newcomer = crate::permissions::MemberId::person("a");
-        assert_eq!(app.presence_ctx.display_name(&first), "Ada (1)");
-        assert_eq!(app.presence_ctx.display_name(&second), "Ada (2)");
-        assert_eq!(app.presence_ctx.display_name(&newcomer), "Ada (3)");
-    }
-
     phase complete_context_replaces_the_people_a_member_list_names;
     {
         let mut app = hosted_directory_fixture();

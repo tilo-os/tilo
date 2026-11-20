@@ -16,9 +16,7 @@ use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::edges::{self, DockEdge, EdgeDrag, Item};
 use tilo_desktop::here::Screen;
 use tilo_desktop::launchpad::LaunchpadAppAction;
-use tilo_desktop::people::{
-    LazyPeopleOverlay, PeopleHit, PeopleModel, RosterRow, roster_rows_named,
-};
+use tilo_desktop::people::{LazyPeopleOverlay, PeopleHit, PeopleModel, RosterRow, roster_rows};
 use tilo_desktop::profile_card::{
     LazyProfileCard, OtherPerson, ProfileAction, ProfileChoice, ProfileGroup, ProfileModel,
 };
@@ -1111,14 +1109,10 @@ impl Panel {
     /// roster, each person's screen with its windows named by the records this session shows, and the
     /// workspace it is of: the panel's title, kept on screen or opened from the bar.
     fn read_roster(&self, shown: &mut Shown) {
-        let own = self
-            .sync
-            .as_ref()
-            .map_or_else(String::new, |sync| sync.publisher().to_string());
         let windows = (self.notes)();
         let mut tree = self.handle.read(Clone::clone);
         (self.here)(&mut tree);
-        let (rows, _) = roster_rows_named(&tree, &own, None);
+        let rows = roster_rows(&tree);
         let workspace = tree.active_workspace().map_or_else(
             || tilo_desktop_surface::names::workspace(""),
             |workspace| tilo_desktop_surface::names::workspace(&workspace.name),

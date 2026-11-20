@@ -81,7 +81,7 @@ pub fn members(
 /// person is doing.
 #[must_use]
 pub fn rows(desktop: &Layout, local_user: &str, own_id: &str) -> Vec<RosterRow> {
-    let mut rows: Vec<RosterRow> = crate::people::roster_rows(desktop, local_user)
+    let mut rows: Vec<RosterRow> = crate::people::roster_rows(desktop)
         .into_iter()
         .filter(|row| row.id != own_id && row.id != local_user)
         .collect();

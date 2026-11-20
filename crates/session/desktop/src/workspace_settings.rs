@@ -749,8 +749,7 @@ fn ordered_roster(ws: &Workspace) -> Vec<(UserId, CapRole)> {
     rows
 }
 
-/// A member by name, numbered when another member here shares it
-/// ([`ui::presence::MemberLabels`]), or by a shortened id.
+/// A member by name, or by a shortened id.
 fn member_name_or_short_id(ws: &Workspace, id: &MemberId) -> String {
     member_named(ws, id).map_or_else(|| short_id(id.id()), |member| member.name.trim().to_owned())
 }
@@ -1003,7 +1002,7 @@ mod members_tests {
 
         phase people_are_named_as_the_roster_names_them;
         {
-            use crate::people::{PeopleNames, roster_rows_named};
+            use crate::people::{PeopleNames, roster_rows};
             let owner_key = "fa4834147f".repeat(6) + "0123";
             let mut ws = Workspace::new(WorkspaceId::from_u128(9), "Studio");
             ws.set_owner(owner_key.as_str());
@@ -1020,7 +1019,7 @@ mod members_tests {
                 ..tilo_desktop_model::Layout::default()
             };
             let names = PeopleNames::of(&desktop, &owner_key, Some("Robin"));
-            let (roster, own) = roster_rows_named(&desktop, &owner_key, Some("Robin"));
+            let roster = roster_rows(&desktop);
             let roster_ada = roster
                 .iter()
                 .find(|row| row.id == "ada")
@@ -1032,7 +1031,6 @@ mod members_tests {
             );
             let owner_name =
                 member_row_name(&names, &ws, &owner_key, &MemberId::person(owner_key.clone()));
-            assert_eq!(Some(owner_name.clone()), own);
             assert_eq!(owner_name, "Robin", "the owner by their name");
             assert!(!owner_name.contains("fa48"), "never their key");
 

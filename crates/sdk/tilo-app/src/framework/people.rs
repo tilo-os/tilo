@@ -7,9 +7,8 @@
 //! with the people who are present. A view resolves an id when it shows it,
 //! so a renamed person, or one whose name arrived after their edit, reads
 //! correctly everywhere at once. Names are the workspace's labels: people who
-//! share a name carry the number presence tells them apart by
-//! ([`ui_core::presence::MemberLabels`]), and the member reading
-//! is shown their own name like anyone else's. A view no window draws (an
+//! share a name both go by it, and the member reading is shown their own name
+//! like anyone else's. A view no window draws (an
 //! agent's) reads the members lent to the app's code
 //! ([`tilo_resource::members`]) where no presence roster named them.
 
@@ -562,8 +561,8 @@ mod tests {
 
             presence.set_display_name(peer.clone(), "ada");
             assert!(people.follow(&presence));
-            assert_eq!(people.name(&me), "Ada (1)");
-            assert_eq!(people.name(&peer), "ada (2)");
+            assert_eq!(people.name(&me), "Ada", "a namesake is no reason to number a name");
+            assert_eq!(people.name(&peer), "ada");
         }
 
         // What someone is, a chip says with their face or an agent's own mark, never by joining

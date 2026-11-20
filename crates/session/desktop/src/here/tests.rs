@@ -239,7 +239,7 @@ tilo_test_env::scenario! {
         };
         tree.active = tree.workspaces[0].id();
         place_here(&mut tree, &people, None);
-        let rows = crate::people::roster_rows(&tree, "me-root");
+        let rows = crate::people::roster_rows(&tree);
         let row = rows
             .iter()
             .find(|row| row.id == helper)
@@ -692,12 +692,10 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn a_persons_devices_are_one_person_and_presence_is_placed;
 
-    phase people_sharing_a_name_take_the_rosters_numbers_on_every_page;
-    // Two people going by one name are numbered, this page included, by when the workspace
-    // admitted them: the numbers its roster gives them, on every page, never the order their ids
-    // sort in.
+    phase people_sharing_a_name_both_go_by_it_on_every_page;
+    // Two people going by one name are both called it, on every page and in the roster: their
+    // faces and colours tell them apart, never a number joined to the name.
     {
-        // The workspace admitted z before a, though a's id sorts first.
         let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Studio");
         for (person, admitted) in [("person-z", 10_u64), ("person-a", 20)] {
             workspace
@@ -712,54 +710,25 @@ tilo_test_env::scenario! {
             workspaces: vec![workspace],
             ..Layout::default()
         };
-        // The workspace's people as the host hands them over.
-        let (joined, names) = super::workspace_people(
-            tree.active_workspace().expect("the workspace is in front"),
-        );
         let alex = |publisher: &str, person: &str| LiveMember {
             user: Some(person.into()),
             ..member(publisher, "person", "Alex")
         };
-        let page = |own: (&str, &str), others: Vec<LiveMember>| {
-            let mut here = HereState::default();
-            here.set_workspace_people(&joined, &names);
-            here.set_members(Some(alex(own.0, own.1)), Some(others));
-            here
-        };
-        let roster: HashMap<String, String> = crate::people::roster_rows(&tree, "me-root")
+        let roster: HashMap<String, String> = crate::people::roster_rows(&tree)
             .into_iter()
             .map(|row| (row.id, row.label))
             .collect();
-        assert_eq!(roster["person-z"], "Alex (1)", "who joined first is (1)");
-        assert_eq!(roster["person-a"], "Alex (2)");
-
-        let mut mine = page(("dev-a", "person-a"), vec![alex("dev-z", "person-z")]);
-        let listed = |here: &HereState| -> HashMap<String, String> {
-            here.people(&tree, &[], &|_| None)
-                .into_iter()
-                .map(|person| (person.user.expect("certified"), person.label))
-                .collect()
-        };
-        let seen = listed(&mine);
-        assert_eq!(
-            seen["person-z"], roster["person-z"],
-            "as the roster has them"
-        );
-        assert_eq!(mine.own_shown().as_deref(), Some("Alex (2)"));
-
-        // Another page, hearing of them in the other order, numbers them alike.
-        let theirs = page(("dev-z", "person-z"), vec![alex("dev-a", "person-a")]);
-        assert_eq!(
-            listed(&theirs)["person-a"],
-            roster["person-a"],
-            "the same numbers on another page"
-        );
-        assert_eq!(theirs.own_shown().as_deref(), Some("Alex (1)"));
-
-        // A namesake away from here still numbers them: the roster lists both, and every surface
-        // reads the same number.
-        mine.set_members(Some(alex("dev-a", "person-a")), Some(Vec::new()));
-        assert_eq!(mine.own_shown().as_deref(), Some("Alex (2)"));
+        assert_eq!(roster["person-z"], "Alex");
+        assert_eq!(roster["person-a"], "Alex");
+        let mut mine = HereState::default();
+        mine.set_members(Some(alex("dev-a", "person-a")), Some(vec![alex("dev-z", "person-z")]));
+        let seen: HashMap<String, String> = mine
+            .people(&tree, &[], &|_| None)
+            .into_iter()
+            .map(|person| (person.user.expect("certified"), person.label))
+            .collect();
+        assert_eq!(seen["person-z"], "Alex", "as the roster has them");
+        assert_eq!(mine.own_shown().as_deref(), Some("Alex"));
     }
 
     phase a_persons_devices_are_one_person;
@@ -1018,7 +987,7 @@ tilo_test_env::scenario! {
             .find(|member| member.id == collab_types::MemberId::agent("scribe"))
             .expect("the agent is on the member list");
         assert!(!agent.id.is_person(), "an agent's row is software's");
-        let rows = crate::people::roster_rows(&tree, "me-root");
+        let rows = crate::people::roster_rows(&tree);
         assert!(rows[0].is_agent(), "the agent's face is software's");
     }
 }

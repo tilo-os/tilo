@@ -54,26 +54,15 @@ impl Mount {
         let Some(desktop) = &self.desktop else {
             return;
         };
-        // When the workspace admitted each of its people, and what it calls each, numbers the
-        // namesakes among them: the roster's own rows, which this page's people lists read too.
-        let tree = desktop.handle.read(Clone::clone);
-        let (joined, called) = tree
-            .workspaces
-            .iter()
-            .find(|held| held.id().to_string() == desktop.workspace)
-            .map_or_else(Default::default, tilo_desktop::here::workspace_people);
-        let numbered = desktop
-            .here
-            .borrow_mut()
-            .set_workspace_people(&joined, &called);
         let renamed = *desktop.shared.names.borrow() != self.presence.named;
         let members = desktop.shared.members.borrow().clone();
         let admitted = members != self.presence.members;
-        if !std::mem::take(&mut self.here_stale) && !numbered && !renamed && !admitted {
+        if !std::mem::take(&mut self.here_stale) && !renamed && !admitted {
             return;
         }
         self.presence.named = desktop.shared.names.borrow().clone();
         self.presence.members.clone_from(&members);
+        let tree = desktop.handle.read(Clone::clone);
         let people = crate::shell::here_people(&desktop.here, &desktop.shared, &tree);
         let mut here = desktop.here.borrow_mut();
         let own = here.own_user().map(str::to_owned);

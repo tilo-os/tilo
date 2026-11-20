@@ -16,62 +16,14 @@ use crate::i18n::{t, t_args};
 use super::{LineSource, RosterRow, RosterStatus, doing_line};
 
 /// Every member of the active workspace who is here now, as the roster lists them.
-pub fn roster_rows(desktop: &Layout, local_user: &str) -> Vec<RosterRow> {
-    roster_rows_named(desktop, local_user, None).0
+pub fn roster_rows(desktop: &Layout) -> Vec<RosterRow> {
+    desktop
+        .active_workspace()
+        .map_or_else(Vec::new, |workspace| rows_of(workspace, &workspace.present))
 }
 
-/// [`roster_rows`], with people who share a name numbered ([`ui::presence::MemberLabels`]) —
-/// `own_name`, this person's own, among them — and what this person is shown as.
-pub fn roster_rows_named(
-    desktop: &Layout,
-    local_user: &str,
-    own_name: Option<&str>,
-) -> (Vec<RosterRow>, Option<String>) {
-    let Some(workspace) = desktop.active_workspace() else {
-        return (Vec::new(), own_name.map(str::to_owned));
-    };
-    let labels = names_of(workspace, local_user, own_name);
-    let own_name = own_name
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(|name| labels.label(local_user, name));
-    let rows = rows_of(workspace, &workspace.present, &labels);
-    (rows, own_name)
-}
-
-/// What each member of `workspace` is called, numbered where two people share a name.
-fn names_of(
-    workspace: &Workspace,
-    local_user: &str,
-    own_name: Option<&str>,
-) -> ui::presence::MemberLabels {
-    let mut people: Vec<(String, String, Option<u64>)> = workspace
-        .members
-        .iter()
-        .filter_map(|member| Some((member.id.person_id()?, member)))
-        .filter(|(id, _)| *id != local_user)
-        .map(|(id, member)| {
-            let id = id.to_owned();
-            let joined = workspace.policy.joined_at(&id);
-            (id, member.name.clone(), joined)
-        })
-        .collect();
-    if let Some(name) = own_name.map(str::trim).filter(|name| !name.is_empty()) {
-        people.push((
-            local_user.to_owned(),
-            name.to_owned(),
-            workspace.policy.joined_at(local_user),
-        ));
-    }
-    let people: Vec<(&str, &str, Option<u64>)> = people
-        .iter()
-        .map(|(id, name, joined)| (id.as_str(), name.as_str(), *joined))
-        .collect();
-    ui::presence::MemberLabels::by_joining(people)
-}
-
-/// What each member in the active workspace is called, exactly as the roster calls them (numbered
-/// where two share a name), with this person by their own name: the one source every surface that
+/// What each member in the active workspace is called, exactly as the roster calls them, with this
+/// person by their own name: the one source every surface that
 /// names people reads, so a name is spelt and cased the same in People, the roster and settings.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PeopleNames(HashMap<MemberId, String>);
@@ -84,21 +36,14 @@ impl PeopleNames {
         let Some(workspace) = desktop.active_workspace() else {
             return Self::default();
         };
-        let labels = names_of(workspace, local_user, own_name);
         let mut names: HashMap<MemberId, String> = workspace
             .members
             .iter()
             .filter(|member| !member.name.trim().is_empty())
-            .map(|member| {
-                let name = match member.id.person_id() {
-                    Some(person) => labels.label(person, &member.name),
-                    None => member.name.clone(),
-                };
-                (member.id.clone(), name)
-            })
+            .map(|member| (member.id.clone(), member.name.clone()))
             .collect();
         if let Some(own) = own_name.map(str::trim).filter(|own| !own.is_empty()) {
-            names.insert(MemberId::person(local_user), labels.label(local_user, own));
+            names.insert(MemberId::person(local_user), own.to_owned());
         }
         Self(names)
     }
@@ -110,11 +55,7 @@ impl PeopleNames {
     }
 }
 
-fn rows_of(
-    workspace: &Workspace,
-    present: &[Present],
-    labels: &ui::presence::MemberLabels,
-) -> Vec<RosterRow> {
+fn rows_of(workspace: &Workspace, present: &[Present]) -> Vec<RosterRow> {
     workspace
         .members
         .iter()
@@ -122,24 +63,15 @@ fn rows_of(
             // Who is here is presence's to say: a member the workspace lists but no device here
             // speaks for is in Members, never in the roster of who is here.
             let here = present.iter().find(|here| here.member == member.id)?;
-            Some(row_of(workspace, member, here, labels))
+            Some(row_of(workspace, member, here))
         })
         .collect()
 }
 
-fn row_of(
-    workspace: &Workspace,
-    member: &Member,
-    here: &Present,
-    labels: &ui::presence::MemberLabels,
-) -> RosterRow {
+fn row_of(workspace: &Workspace, member: &Member, here: &Present) -> RosterRow {
     let is_agent = !member.id.is_person();
     let (red, green, blue) = identity_rgb(member.colour);
-    let label = if is_agent {
-        member.name.clone()
-    } else {
-        labels.label(member.id.id(), &member.name)
-    };
+    let label = member.name.clone();
     RosterRow {
         id: here.device.clone(),
         initial: roster_initial(&label),

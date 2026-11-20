@@ -42,8 +42,8 @@ impl PresenceCtx {
         self.members.contains(id)
     }
 
-    /// What this session's own member is shown as, numbered like
-    /// anyone else's name; `None` until the workspace has named them.
+    /// What this session's own member is shown as, as anyone else names them; `None` until the
+    /// workspace has named them.
     pub fn self_label(&self) -> Option<String> {
         self.self_name()?;
         self.self_id().map(|id| self.display_name(id))

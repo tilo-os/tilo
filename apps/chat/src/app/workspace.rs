@@ -144,7 +144,6 @@ impl ChatApp {
     /// that spelling are still this person's, so their name stays beside
     /// them.
     fn adopt_own_member(&mut self, presence: &PresenceCtx) {
-        self.workspace_labels.clone_from(presence.labels());
         self.own_label = presence.self_label();
         if let Some(self_id) = presence.self_id()
             && *self_id != self.me.id

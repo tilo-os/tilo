@@ -12,8 +12,7 @@ use super::ChatApp;
 impl ChatApp {
     /// What to call `id`: the workspace's answer first, the document's stored name
     /// as an offline fallback, and the raw id last so a label is never blank.
-    /// People who share a name carry the number the workspace tells them apart
-    /// by ("Ada (2)"), this window's own person included.
+    /// People who share a name both go by it, this window's own person included.
     ///
     /// The precedence is the point. A client that could name itself would be
     /// telling every other peer what to call it, and two peers disagreeing
@@ -31,17 +30,15 @@ impl ChatApp {
         if let Some(n) = self.workspace_names.get(id)
             && !n.trim().is_empty()
         {
-            let n = self.workspace_labels.label(id.id(), n);
             return if self.is_me(id) {
-                n
+                n.clone()
             } else {
-                crate::identity::shared_name_label(id, &n)
+                crate::identity::shared_name_label(id, n)
             };
         }
         // An app's code answers where no window heard the member list: the members the device
         // lends it answer in the same place.
         if let Some(n) = ui::tilo_resource::members::name_of(id) {
-            let n = self.workspace_labels.label(id.id(), &n);
             return if self.is_me(id) {
                 n
             } else {
@@ -51,11 +48,10 @@ impl ChatApp {
         if let Some(u) = self.users.iter().find(|u| u.id == *id)
             && !u.name.trim().is_empty()
         {
-            let name = self.workspace_labels.label(id.id(), &u.name);
             return if self.is_me(id) {
-                name
+                u.name.clone()
             } else {
-                crate::identity::shared_name_label(id, &name)
+                crate::identity::shared_name_label(id, &u.name)
             };
         }
         // Your own name, which this had no way to reach until the workspace named
@@ -130,7 +126,6 @@ impl ChatApp {
             return kept;
         }
         kept.or_else(|| self.known_agent_name(id.id()))
-            .map(|name| self.workspace_labels.label(id.id(), &name))
     }
 
     /// How a narrow line names someone: their given name, so a line that

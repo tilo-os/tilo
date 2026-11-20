@@ -1037,8 +1037,7 @@ pub(super) fn same_or_made_in(
             .is_some_and(|field| field.starts_with('.')))
 }
 
-/// What the roster calls the actor of `interaction`, by the one rule for a member's name
-/// ([`PresenceCtx::member_label`]); an automation by the group it runs in. A roster that knows a
+/// What the roster calls the actor of `interaction`, by the name it holds for them; an automation by the group it runs in. A roster that knows a
 /// member only by its key gives no name: a raw id is none, so it says what kind of member acts.
 fn actor_label(presence: &PresenceCtx, interaction: &SemanticInteraction) -> String {
     // An agent that named its session is called that: the roster's name for an agent working
@@ -1065,7 +1064,7 @@ fn actor_label(presence: &PresenceCtx, interaction: &SemanticInteraction) -> Str
     };
     let named = presence.names.get(member);
     match named.and_then(|name| crate::history_source::human_label(name, member.id())) {
-        Some(name) => presence.member_label(member, name),
+        Some(name) => name.to_owned(),
         None if member.is_person() => crate::i18n::widget_format("interaction-member", &[]),
         None => crate::i18n::widget_format("interaction-agent", &[]),
     }

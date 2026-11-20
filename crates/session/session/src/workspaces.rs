@@ -1081,17 +1081,6 @@ impl crate::Shared {
             self.handle.replace_tree(tree);
         }
         self.project_governance();
-        // Who is here is numbered in the order the workspace admitted them, as its governance,
-        // projected onto the shell, records it: the order the roster numbers them in too.
-        if let Some(sync) = &self.sync {
-            let (joined, names) = self.handle.read(|tree| {
-                tree.active_workspace()
-                    .map_or_else(Default::default, tilo_desktop::here::workspace_people)
-            });
-            sync.here()
-                .borrow_mut()
-                .set_workspace_people(&joined, &names);
-        }
     }
 
     /// Who the governance of a workspace names as its owner: its own, when this device holds it,

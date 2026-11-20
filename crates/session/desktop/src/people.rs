@@ -34,7 +34,7 @@ use crate::i18n::{t, t_args};
 mod roster;
 use roster::spoken_details;
 mod screen;
-pub use roster::{PeopleNames, in_app, roster_rows, roster_rows_named};
+pub use roster::{PeopleNames, in_app, roster_rows};
 
 /// Rows the roster shows before its list scrolls.
 const VISIBLE_ROWS: usize = 8;

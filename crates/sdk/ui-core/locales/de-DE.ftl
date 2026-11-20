@@ -541,7 +541,6 @@ history-invocation-step-separator = {", "}
 member-shortcut = { $name } · Kurzbefehl
 # Zwei oder mehr Personen in einem Arbeitsbereich tragen denselben Namen: jede
 # wird nummeriert, für alle im Arbeitsbereich gleich.
-member-numbered = { $name } ({ $number })
 interaction-agent = Agent
 interaction-member = Mitglied
 # Was jemand gerade tut: der Name, dann die Handlung im Präsens.

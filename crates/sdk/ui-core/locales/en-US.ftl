@@ -542,7 +542,6 @@ history-invocation-step-separator = {", "}
 member-shortcut = { $name } · Shortcut
 # Two or more people in a workspace go by the same name: each is numbered, the
 # same numbers for everyone in it.
-member-numbered = { $name } ({ $number })
 interaction-agent = Agent
 interaction-member = Member
 # What an actor is doing: its name, then the action in the present tense.

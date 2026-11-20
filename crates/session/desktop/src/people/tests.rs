@@ -447,7 +447,7 @@ tilo_test_env::scenario! {
             workspaces: vec![workspace],
             ..Layout::default()
         };
-        let rows = roster_rows(&desktop, "local");
+        let rows = roster_rows(&desktop);
         let agent = rows.iter().find(|row| row.id == "claude").unwrap();
         assert!(agent.is_agent());
         assert!(agent.followable, "the agent can be followed");
@@ -568,7 +568,7 @@ tilo_test_env::scenario! {
             ..Layout::default()
         };
 
-        let rows = roster_rows(&desktop, "local");
+        let rows = roster_rows(&desktop);
         let bot = rows.iter().find(|row| row.id == device).unwrap();
         assert!(bot.member.is_bot() && bot.is_agent(), "a bot is software, tagged Bot");
         let ada = rows.iter().find(|row| row.id == "ada").unwrap();
@@ -601,7 +601,7 @@ tilo_test_env::scenario! {
             workspaces: vec![workspace],
             ..Layout::default()
         };
-        let rows = roster_rows(&desktop, "local");
+        let rows = roster_rows(&desktop);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].label, "Release Notes Agent");
         assert!(
@@ -640,7 +640,7 @@ tilo_test_env::scenario! {
             ..Layout::default()
         };
 
-        let rows = roster_rows(&desktop, "local");
+        let rows = roster_rows(&desktop);
         let scribe = rows.iter().find(|row| row.id == "scribe").unwrap();
         let assigned = ui::presence::member_color(&ui::permissions::MemberId::agent("agent:scribe"));
         assert_eq!(
@@ -715,7 +715,7 @@ tilo_test_env::scenario! {
             ..Layout::default()
         };
 
-        let rows = roster_rows(&desktop, "local");
+        let rows = roster_rows(&desktop);
         let agent = rows.iter().find(|row| row.is_agent()).expect("the agent");
         assert_eq!(
             agent.activity, None,

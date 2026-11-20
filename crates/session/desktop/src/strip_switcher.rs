@@ -136,7 +136,7 @@ impl SwitcherModel {
         let Some(workspace) = desktop.active_workspace() else {
             return Self::default();
         };
-        let people: Vec<(StripId, Person)> = crate::people::roster_rows(desktop, local_user)
+        let people: Vec<(StripId, Person)> = crate::people::roster_rows(desktop)
             .into_iter()
             .filter(|row| row.id != own_id)
             .filter(|row| row.id != local_user)

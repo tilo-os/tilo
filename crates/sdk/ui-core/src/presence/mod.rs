@@ -36,8 +36,8 @@ pub use interaction::{
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
 pub use labels::{
-    MemberLabels, is_unnamed_person, name_key, person_label, shown_name, unnamed_label,
-    unnamed_person_label, unnamed_person_short_label,
+    is_unnamed_person, person_label, shown_name, unnamed_label, unnamed_person_label,
+    unnamed_person_short_label,
 };
 #[cfg(feature = "native")]
 pub use layer::LayerMarks;
@@ -497,13 +497,8 @@ pub struct PresenceCtx {
     self_member: Option<(MemberId, String)>,
     /// When the workspace admitted each member, this session's own
     /// included, Unix milliseconds, as the roster
-    /// (`CollabEvent::Context`) records it. Who shares a name is numbered
-    /// in this order.
+    /// (`CollabEvent::Context`) records it.
     joined: HashMap<MemberId, u64>,
-    /// The numbers people who share a name are told apart by, resolved from
-    /// [`Self::names`], [`Self::self_member`] and [`Self::joined`]
-    /// whenever one changes. See [`MemberLabels`].
-    labels: MemberLabels,
     /// The surface this process draws, spelled as [`crate::local_surface_id`] spells it, compared
     /// against a pointer's claimed surface to decide whether a content-space position is this
     /// process's to place. `None` fails closed: a pointer in the wrong window stays invisible
@@ -755,7 +750,6 @@ impl PresenceCtx {
     /// machine cannot mint this for itself.
     pub fn set_self_member(&mut self, id: MemberId, name: impl Into<String>) {
         self.self_member = Some((id, name.into()));
-        self.refresh_labels();
     }
 
     /// Clear the workspace-certified spelling of this session after a complete
@@ -764,7 +758,6 @@ impl PresenceCtx {
     /// authenticated answer.
     pub(crate) fn clear_self_member(&mut self) {
         self.self_member = None;
-        self.refresh_labels();
     }
 
     /// Which member in the workspace this session is, if the workspace has said.
@@ -1227,22 +1220,17 @@ impl PresenceCtx {
     }
 
     /// When the workspace admitted `user`, as its roster records it; `None` when
-    /// it has no time for them. People who share a name are numbered by it,
-    /// so a newcomer never takes an earlier member's number.
+    /// it has no time for them.
     pub fn set_joined_at(&mut self, user: MemberId, joined: Option<u64>) {
-        let changed = match joined {
-            Some(at) => self.joined.insert(user, at) != Some(at),
-            None => self.joined.remove(&user).is_some(),
+        match joined {
+            Some(at) => self.joined.insert(user, at),
+            None => self.joined.remove(&user),
         };
-        if changed {
-            self.refresh_labels();
-        }
     }
 
     /// Seeded from the collab roster. Overwrites any prior name.
     pub fn set_display_name(&mut self, user: MemberId, name: impl Into<String>) {
         self.names.insert(user.clone(), name.into());
-        self.refresh_labels();
         // Relabel any already-drawn pill too, in case the pointer arrived first.
         self.relabel_cursor(&user);
     }
@@ -1256,54 +1244,19 @@ impl PresenceCtx {
         }
     }
 
-    /// Re-resolve who needs a number to be told apart, over every member
-    /// the workspace names including this session's own, and relabel the pills
-    /// of anyone whose label that changed.
-    fn refresh_labels(&mut self) {
-        let own = self.self_member.as_ref().map(|(id, name)| (id, name));
-        let next = MemberLabels::by_joining(
-            self.names
-                .iter()
-                .chain(own)
-                .map(|(id, name)| (id.id(), name.as_str(), self.joined.get(id).copied())),
-        );
-        if next == self.labels {
-            return;
-        }
-        self.labels = next;
-        let named: Vec<MemberId> = self
-            .remote_cursors
-            .iter()
-            .map(|cursor| cursor.member.clone())
-            .filter(|user| self.names.contains_key(user))
-            .collect();
-        for user in named {
-            self.relabel_cursor(&user);
-        }
-    }
-
-    /// The numbers members who share a name are told apart by in this workspace.
-    /// [`Self::display_name`] already applies them; this is for a caller
-    /// that holds names of its own for the same members.
-    pub fn labels(&self) -> &MemberLabels {
-        &self.labels
-    }
-
     /// The friendly name to show for `user`, this session's own member included, falling back
-    /// to the raw id when the roster has not announced one. Never blank. Members sharing a name
-    /// carry their number ("Ada (2)", [`Self::member_label`]).
+    /// to the raw id when the roster has not announced one. Never blank. Two members who share a
+    /// name both go by it: their faces and colours tell them apart, never a number in the name.
     pub fn display_name(&self, user: &MemberId) -> String {
-        let name = self.name_beside_face(user);
-        self.member_label(user, &name)
+        self.name_beside_face(user)
     }
 
-    /// The name `user` goes by in a chip, beside their face: theirs, numbered among the people
-    /// who share it, and never joined with what they are. A face says a person, an agent's own
+    /// The name `user` goes by in a chip, beside their face: theirs, and never joined with what
+    /// they are. A face says a person, an agent's own
     /// mark says an agent, and a bot's tile says a bot, so a chip reads "Ada" and "Quill", never
     /// "Quill · Agent". A line of text with no face beside it says [`Self::display_name`].
     pub fn chip_name(&self, user: &MemberId) -> String {
-        let name = self.name_beside_face(user);
-        self.member_label(user, &name)
+        self.name_beside_face(user)
     }
 
     /// The name the roster holds for `user`, before what they are is said.
@@ -1320,15 +1273,6 @@ impl PresenceCtx {
             })
             .map(str::to_owned);
         name.unwrap_or_else(|| unnamed_label(user))
-    }
-
-    /// What every surface calls `user`, whose name is `name`: that name, numbered while another
-    /// member here goes by it too ([`MemberLabels`]). The one rule for a member's name, as
-    /// [`crate::tokens::PresenceHue::of_member`] is for their colour: a chip, a caret tag, a
-    /// presence card and a history row say the same name. What a member is shows in the face
-    /// beside it, and whom software acts for in a detail, never in the name.
-    pub(crate) fn member_label(&self, user: &MemberId, name: &str) -> String {
-        self.labels.label(user.id(), name)
     }
 
     /// One row of the roster: who `user` is here, in the colour they wear.
@@ -1573,12 +1517,7 @@ impl PresenceCtx {
             f32::from(b) / 255.0,
             alpha.clamp(0.0, 1.0),
         ];
-        // A name handed in still carries the number its owner is told apart
-        // by, when it is the name the workspace knows them by.
-        let label = display_name.map_or_else(
-            || self.display_name(&member),
-            |name| self.labels.label(member.id(), name),
-        );
+        let label = display_name.map_or_else(|| self.display_name(&member), str::to_owned);
         if let Some(existing) = self.remote_cursors.iter_mut().find(|c| c.member == member) {
             existing.position = position;
             existing.color = color;
@@ -1884,7 +1823,6 @@ impl PresenceCtx {
         self.statuses.remove(&uid);
         self.remove_interactions_for_actor(member);
         self.remove_remote_cursor(member);
-        self.refresh_labels();
     }
 
     /// Current status for a workspace member. Inferred statuses apply their
@@ -2550,71 +2488,26 @@ mod string_id_wrapper_tests {
             }
         }
 
-        phase people_sharing_a_name_are_numbered_alike_for_everyone_including_themselves;
+        phase people_sharing_a_name_both_go_by_it_for_everyone_including_themselves;
         {
             let ada = MemberId::person("key-a");
             let other_ada = MemberId::person("key-b");
-            let agent = MemberId::agent("claude");
-            // The workspace seen from Ada's machine: she is the self row.
+            let helper = MemberId::agent("helper");
+            let other_helper = MemberId::agent("helper-bea");
             let mut mine = PresenceCtx::empty();
-            mine.upsert_remote_cursor(MemberId::person("key-b"), [1.0, 1.0], Some("ada"));
+            mine.upsert_remote_cursor(other_ada.clone(), [1.0, 1.0], Some("ada"));
             mine.set_self_member(ada.clone(), "Ada");
             mine.set_display_name(other_ada.clone(), "ada");
-            mine.set_display_name(agent.clone(), "Claude");
-            // And from the other Ada's, who heard of everyone in another order.
-            let mut theirs = PresenceCtx::empty();
-            theirs.set_display_name(agent.clone(), "Claude");
-            theirs.set_display_name(ada.clone(), "Ada");
-            theirs.set_self_member(other_ada.clone(), "ada");
-
-            for ctx in [&mine, &theirs] {
-                assert_eq!(ctx.display_name(&ada), "Ada (1)");
-                assert_eq!(ctx.display_name(&other_ada), "ada (2)");
-                assert_eq!(ctx.display_name(&agent), "Claude", "a name nobody shares");
-            }
-            assert_eq!(mine.self_label().as_deref(), Some("Ada (1)"));
-            assert_eq!(theirs.self_label().as_deref(), Some("ada (2)"));
-            assert_eq!(
-                mine.remote_cursors[0].label, "ada (2)",
-                "a pill drawn before the collision was known is renumbered"
-            );
-            let listed: Vec<String> = mine.roster().into_iter().map(|u| u.name).collect();
-            assert_eq!(
-                listed,
-                [
-                    "Ada (1)".to_owned(),
-                    "ada (2)".to_owned(),
-                    "Claude".to_owned(),
-                ]
-            );
-
-            mine.set_display_name(other_ada.clone(), "Bea");
+            mine.set_display_name(helper.clone(), "Helper");
+            mine.set_display_name(other_helper.clone(), "Helper");
+            assert_eq!(mine.display_name(&ada), "Ada");
+            assert_eq!(mine.display_name(&other_ada), "ada");
             assert_eq!(mine.self_label().as_deref(), Some("Ada"));
-            assert_eq!(mine.remote_cursors[0].label, "Bea");
-            theirs.unregister_peer(&MemberId::person("key-a"));
-            assert_eq!(theirs.self_label().as_deref(), Some("ada"));
-        }
-
-        phase an_agent_is_its_own_name_on_every_surface_and_numbered_only_beside_a_namesake;
-        {
-            // Helper works for Ada, who reads the workspace: its chip, its caret tag and the card
-            // its step shows all say the name it goes by, never whom it works for or what it is.
-            let ada = MemberId::person("key-a");
-            let helper = MemberId::agent("helper");
-            let mut ctx = PresenceCtx::empty();
-            ctx.set_self_member(ada.clone(), "Ada");
-            ctx.set_display_name(helper.clone(), "Helper");
-            ctx.set_acting_for(helper.clone(), Some(ada.clone()));
-            ctx.upsert_remote_cursor(helper.clone(), [1.0, 1.0], None);
-            assert_eq!(ctx.display_name(&helper), "Helper");
-            assert_eq!(ctx.remote_cursors[0].label, "Helper");
-            assert_eq!(ctx.acting_for(&helper), Some(&ada), "whom it works for is kept");
-            // Bea's agent goes by the same name: both are numbered, alike for everyone.
-            let other = MemberId::agent("helper-bea");
-            ctx.set_display_name(other.clone(), "helper");
-            assert_eq!(ctx.display_name(&helper), "Helper (1)");
-            assert_eq!(ctx.display_name(&other), "helper (2)");
-            assert_eq!(ctx.remote_cursors[0].label, "Helper (1)");
+            assert_eq!(mine.remote_cursors[0].label, "ada", "a name is never numbered");
+            assert_eq!(mine.display_name(&helper), "Helper");
+            assert_eq!(mine.display_name(&other_helper), "Helper");
+            mine.set_display_name(other_ada.clone(), "Bea");
+            assert_eq!(mine.remote_cursors[0].label, "Bea", "a pill follows a new name");
         }
 
         phase typing_marks_fade_prune_and_coalesce;

@@ -381,10 +381,7 @@ pub struct ChatApp {
     pub(crate) workspace_presence_answers: bool,
     /// Who the workspace's presence places in each voice channel.
     pub(crate) workspace_voice: HashMap<Id, Vec<MemberId>>,
-    /// The numbers people who share a name are told apart by, as the workspace
-    /// resolves them, so every screen in it numbers the same people alike.
-    pub(crate) workspace_labels: ui::presence::MemberLabels,
-    /// What the workspace calls this window's person, numbered like anyone else.
+    /// What the workspace calls this window's person, as anyone else names them.
     pub(crate) own_label: Option<String>,
     pub(crate) workspace_colors: HashMap<MemberId, (u8, u8, u8)>,
     /// The workspace's own list of its agents, read for their names (an agent that works on
@@ -777,7 +774,6 @@ impl ChatApp {
             workspace_names: HashMap::new(),
             workspace_presence_answers: false,
             workspace_voice: HashMap::new(),
-            workspace_labels: ui::presence::MemberLabels::default(),
             own_label: None,
             workspace_colors: HashMap::new(),
             agents: None,

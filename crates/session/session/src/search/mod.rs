@@ -1060,7 +1060,7 @@ impl SessionSearch {
     /// message read: what its apps published (agents, people, conversations; the most recent
     /// first), the people present there, every person its governance lists and every agent it
     /// lists. Each member once, by kind and id, never the person searching, named by the
-    /// one rule every surface names a member by ([`ui::presence::MemberLabels`]).
+    /// one rule every surface names a member by ([`ui::presence::person_label`]).
     pub(crate) fn recipients(&self, workspace: &str) -> Vec<ui::floating_surface::Recipient> {
         use ui::floating_surface::Recipient;
         use ui::floating_surface::RecipientKind::{Agent, Conversation, Person};
@@ -1112,20 +1112,8 @@ impl SessionSearch {
                 None => out.push(recipient),
             }
         }
-        let joined = |id: &str| {
-            governed
-                .clone()
-                .find(|member| member.id.id() == id)
-                .and_then(|member| member.joined_at)
-        };
-        let labels = ui::presence::MemberLabels::by_joining(
-            out.iter()
-                .filter(|r| r.kind != Conversation)
-                .map(|r| (r.id.as_str(), r.name.as_str(), joined(&r.id))),
-        );
         for recipient in out.iter_mut().filter(|r| r.kind != Conversation) {
-            let name = ui::presence::person_label(&recipient.name);
-            recipient.name = labels.label(&recipient.id, &name);
+            recipient.name = ui::presence::person_label(&recipient.name);
         }
         out
     }

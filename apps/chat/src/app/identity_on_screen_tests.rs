@@ -183,7 +183,9 @@ tilo_test_env::scenario! {
         assert_eq!(app.user_name(&me), crate::identity::DEMO_NAME);
     }
 
-    phase people_sharing_a_name_are_numbered_as_the_workspace_numbers_them;
+    phase people_sharing_a_name_both_go_by_it;
+    // A name is only the name: two people called Sam are both "Sam" in every line, the @ list
+    // included, told apart by their faces and colours.
     {
         use ui::permissions::MemberId;
         let mut app = ChatApp::new_ephemeral();
@@ -193,22 +195,13 @@ tilo_test_env::scenario! {
         presence.set_display_name(MemberId::person("a-peer"), "sam");
         presence.set_display_name(MemberId::person("z-peer"), "Kim");
         app.adopt_workspace(&presence);
-        assert_eq!(app.user_name(&MemberId::person("a-peer")), "sam (1)");
-        assert_eq!(app.user_name(&me), "Sam (2)");
+        assert_eq!(app.user_name(&MemberId::person("a-peer")), "sam");
+        assert_eq!(app.user_name(&me), "Sam");
         assert_eq!(app.user_name(&MemberId::person("z-peer")), "Kim");
         let offered: Vec<String> = app.members().into_iter().map(|(_, name)| name).collect();
         assert!(
-            offered.contains(&"sam (1)".to_owned()),
-            "the @ picker offers the numbered name, got {offered:?}"
-        );
-
-        presence.set_display_name(MemberId::person("a-peer"), "Alex");
-        app.adopt_workspace(&presence);
-        assert_eq!(app.user_name(&MemberId::person("a-peer")), "Alex");
-        assert_eq!(
-            app.user_name(&me),
-            "Sam",
-            "the number goes once nobody shares it"
+            offered.contains(&"sam".to_owned()),
+            "the @ picker offers the name itself, got {offered:?}"
         );
     }
 }
