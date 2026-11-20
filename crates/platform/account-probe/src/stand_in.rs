@@ -1166,10 +1166,13 @@ fn smtp_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking) {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .keep("INBOX", Vec::new(), raw, received);
-                if kept.is_some() {
-                    lines.say("250 2.0.0 queued in the stand-in's inbox")
-                } else {
-                    lines.say("451 4.3.0 the stand-in's inbox is not there")
+                match kept {
+                    Some(uid) => {
+                        // Said, so a rehearsal sees the mail it was handed arrive.
+                        eprintln!("mail stand-in: took a message as its {uid}th in the inbox");
+                        lines.say("250 2.0.0 queued in the stand-in's inbox")
+                    }
+                    None => lines.say("451 4.3.0 the stand-in's inbox is not there"),
                 }
             }
             "MAIL" | "RCPT" => lines.say("530 5.7.0 sign in first"),
