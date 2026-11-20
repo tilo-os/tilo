@@ -1497,6 +1497,7 @@ package = "tilo-agent-session"
 # committed file. One flow starts the calendar server the holder's own tests
 # start, from its source.
 inputs = [
+  "apps/notes/surface.toml",
   "apps/pdf-viewer/surface.toml",
   "apps/tasks/surface.toml",
   "crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
@@ -1505,16 +1506,25 @@ inputs = [
   "tools/with-test-environment.sh",
 ]
 # One test binary includes the fixtures every file shares, the two examples
-# reuse the workspace-actions one, and the surface tests read the app's.
+# reuse the workspace-actions one, and the surface tests read the app's. The
+# update test carries the Notes and Tasks surfaces an earlier build wrote.
 readers = [
   "crates/agent/agent-session/src/workspace_actions/tests.rs",
   "crates/agent/agent-session/tests/it.rs",
   "crates/agent/agent-session/tests/workspace_actions/api.rs",
   "crates/agent/agent-session/tests/workspace_actions/meeting_rundown.rs",
   "crates/agent/agent-session/tests/workspace_actions/packaged_model.rs",
+  "crates/agent/agent-session/tests/workspace_actions/update_reads_older_writes.rs",
   "crates/agent/agent-session/examples/api-on-server.rs",
   "crates/agent/agent-session/examples/mounted-resource.rs",
 ]
+
+[[cargo]]
+package = "themes"
+# The studio's finished-theme test reads the toolkit's committed fixture, which
+# this package's own tests do not carry.
+inputs = ["crates/sdk/ui-core/tests/fixtures/finishes/"]
+readers = ["apps/themes/src/studio.rs"]
 
 [[cargo]]
 package = "tilo-workspace-service"
@@ -2336,3 +2346,11 @@ check = "sdk-python"
 [[unrequired]]
 suite = "sdk/python/src/tilo/types/speed_test.py"
 reason = "no test: the generated SDK types of the Speed Test app, named after it; sdk-types checks it is current"
+
+[[unrequired]]
+suite = "crates/server/tilo-server/src/web/page/page.test.mjs"
+reason = "imports bun:test, which node --test cannot run; the page's handshake is exercised by the server's Rust tests, and a bun runner for it is not in the ci-fast image"
+
+[[unrequired]]
+suite = "os/containers/tilo-lounge/test-user-stories.sh"
+reason = "walks a fresh tilo.sh stack in fresh browser profiles and judges each recording with a model at Anthropic's API; its checks run on the schedule and by dispatch, not on a change"
