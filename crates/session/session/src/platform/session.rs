@@ -715,7 +715,7 @@ impl Session {
             engine.clone(),
             (beside, &device_agents),
             Some(peer_documents.clone()),
-            workspace_service,
+            workspace_service.clone(),
         );
         // The records the session itself writes are the workspaces' own, and its writes reach this
         // device's apps as a member's do. Search finds the records the workspaces hold, and
@@ -1218,6 +1218,7 @@ impl Session {
                 sync: sync.as_deref(),
                 documents,
                 resources,
+                service: workspace_service,
                 engine: engine.as_ref().map(std::sync::Arc::clone),
                 sealed: crate::app_wire::Sealed {
                     broker: std::sync::Arc::clone(&channels_broker),

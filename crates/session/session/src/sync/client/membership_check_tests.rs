@@ -205,8 +205,11 @@ fn write(
     workspace_id: WorkspaceId,
     invocation: uuid::Uuid,
 ) {
-    let publisher =
-        crate::app_wire::owner_publisher(Some(std::sync::Arc::clone(&device.engine)), None);
+    let publisher = crate::app_wire::owner_publisher(
+        Some(std::sync::Arc::clone(&device.engine)),
+        tilo_workspace_service::service::ServiceSlot::default(),
+        None,
+    );
     assert!(
         publisher.records_effects_for(&workspace_id.to_string()),
         "the workspace's effect receipts are the owner's to commit"

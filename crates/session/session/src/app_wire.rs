@@ -404,6 +404,10 @@ pub struct Hosted {
     /// what it dials the hosts of its workspaces from. `None` when the
     /// session runs none.
     pub endpoint: Option<std::sync::Arc<std::sync::OnceLock<iroh::Endpoint>>>,
+    /// This device's own workspace service, where it holds the workspaces an app's window writes:
+    /// the write is committed by the service, into the copy the session's own writes reach and its
+    /// reads answer from, and the owner keeps only a workspace the service holds none of.
+    pub service: tilo_workspace_service::service::ServiceSlot,
     /// The resources of the workspaces this device's own service holds, as the broker reads them.
     pub documents: crate::broker_services::BrokerService<
         std::sync::Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>,
@@ -523,6 +527,9 @@ pub fn serve(
     // What search reads of the records themselves, for the changes this
     // session commits and takes in below.
     let records = hosted.records.clone();
+    // Where the broker's writes go: this device's workspace service takes the
+    // workspaces it holds, and the engine's owner the rest.
+    let publisher = owner_publisher(engine, hosted.service.clone(), records);
     let (services, hosting) = host_services_with_hosts(
         link,
         launches,
@@ -531,7 +538,6 @@ pub fn serve(
         Some(certificates),
         memberships,
     );
-    let publisher = owner_publisher(engine, records);
     let broker = tilo_workspace_service::apps::collab_broker::spawn_with_services(
         socket,
         Some(membership),
@@ -550,12 +556,14 @@ pub fn serve(
     Ok(broker)
 }
 
-/// Where the broker's writes go beyond this device's own apps: into the
-/// engine's owner, which publishes what it committed to each workspace's
-/// peers. A session that holds no workspaces keeps its apps' writes among
-/// them.
+/// Where the broker's writes go beyond this device's own apps: into this
+/// device's workspace service where it holds the workspace, which publishes
+/// what it committed to the workspace's peers, and into the engine's owner
+/// for a workspace only that one holds. A session that holds no workspaces
+/// keeps its apps' writes among them.
 pub(crate) fn owner_publisher(
     engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    service: tilo_workspace_service::service::ServiceSlot,
     records: Option<std::sync::Arc<crate::resource_index::RecordIndex>>,
 ) -> std::sync::Arc<PeerPublisher> {
     let records = records.map(|records| {
@@ -565,8 +573,8 @@ pub(crate) fn owner_publisher(
         PeerPublisher::with_optional_owner_commit(
             None,
             std::sync::Arc::new(
-                tilo_workspace_service::apps::owner_commits::NativeOwnerCommits::new(
-                    engine, records,
+                tilo_workspace_service::apps::owner_commits::NativeOwnerCommits::through_service(
+                    service, engine, records,
                 ),
             ),
         )
@@ -1116,6 +1124,7 @@ fn broker_services(
         own_device,
         engine,
         endpoint: _,
+        service: _,
         documents,
         resources,
         document_content,
@@ -1774,6 +1783,7 @@ mod tests {
             item_lending: std::sync::Arc::default(),
             fanout: std::sync::Arc::new(FanoutState::new()),
             endpoint: None,
+            service: tilo_workspace_service::service::ServiceSlot::default(),
             documents: crate::broker_services::document_reads(
                 tilo_workspace_service::service::ServiceSlot::default(),
                 None,

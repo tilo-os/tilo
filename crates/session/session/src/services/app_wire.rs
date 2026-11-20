@@ -136,6 +136,9 @@ pub(crate) struct Collaboration<'a> {
     pub resources: crate::broker_services::BrokerService<
         std::sync::Arc<dyn tilo_workspace_service::apps::services::ResourceServices>,
     >,
+    /// Where this device's own workspace service is installed: the workspaces it holds take an
+    /// app's window write, the one store the session's own writes and reads go through.
+    pub service: tilo_workspace_service::service::ServiceSlot,
     /// This session's own workspaces, as its engine holds them, when it has an identity to hold
     /// them with: what a change to a workspace's people is written through, whatever the session's
     /// peer network.
@@ -231,6 +234,7 @@ pub(crate) fn start_app_wire(
         documents,
         resources,
         engine,
+        service,
         sealed,
         fanout,
         content,
@@ -305,6 +309,7 @@ pub(crate) fn start_app_wire(
             engine: engine.or_else(|| sync.and_then(crate::sync::Client::engine).cloned()),
             documents,
             resources,
+            service,
             endpoint: sync.map(|sync| sync.endpoint_handle()),
             journal_root: options.state.as_deref().map(app_wire::journal_root),
             // What each installed app declares it may do on the action API,

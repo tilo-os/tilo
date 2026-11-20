@@ -1,10 +1,13 @@
-//! The broker's commits into this device's native durable owner, for every
-//! session that holds one.
+//! The broker's commits into this device's durable owner, for every session
+//! that holds one.
 //!
-//! What an app writes in a workspace whose records the owner commits, and
-//! the receipt of every effect an app's action had, is committed to the
-//! owner before anyone else hears of it: the owner is the canonical copy of
-//! the workspace on this device, and what it committed it publishes to the
+//! A document write is committed where the workspace is kept: the service a
+//! session's own writes reach, where it holds the workspace, so an app's
+//! window writes into the same copy the session reads, and the service keeps
+//! it and carries it to the workspace's peers. A workspace the service holds
+//! none of, and the receipt of every effect an app's action had, are
+//! committed to the owner before anyone else hears of it: the owner is then
+//! the canonical copy here, and what it committed it publishes to the
 //! workspace's other devices as its outgoing ownership. The questions only the
 //! session that holds the owner can answer — which workspaces it commits,
 //! where the owner is, whether this device still owns a
@@ -18,6 +21,8 @@ use tilo_peer_state::owner_commit::{
     CommitFuture, CommitOperation, LocalDocumentFuture, OwnerCommitRequest, OwnerCommitService,
 };
 
+use crate::service::ServiceSlot;
+
 pub use tilo_broker_core::owner_service::OwnerService;
 
 /// The broker's owner commits, through `ownership`.
@@ -27,6 +32,11 @@ pub struct NativeOwnerCommits {
     writes: OwnerWrites,
     /// What hears of a record committed here: search reads it again.
     changes: Option<Arc<dyn crate::apps::services::DocumentIndexChanges>>,
+    /// This device's workspace service, where it holds the workspace a write is for: the store a
+    /// session's own writes reach and its reads answer from. A document write there is committed
+    /// by the service's one commit path, so an app's window writes where the session reads, and
+    /// the owner's copy of the workspace is left to follow.
+    service: Option<ServiceSlot>,
 }
 
 impl NativeOwnerCommits {
@@ -40,7 +50,27 @@ impl NativeOwnerCommits {
             ownership,
             writes: OwnerWrites::default(),
             changes,
+            service: None,
         }
+    }
+
+    /// [`Self::new`], with the document writes of the workspaces `service` holds committed by the
+    /// service: the one store the embedder's own writes and reads go through.
+    #[must_use]
+    pub fn through_service(
+        service: ServiceSlot,
+        ownership: Arc<dyn OwnerService>,
+        changes: Option<Arc<dyn crate::apps::services::DocumentIndexChanges>>,
+    ) -> Self {
+        Self {
+            service: Some(service),
+            ..Self::new(ownership, changes)
+        }
+    }
+
+    /// The workspaces this device's service holds, once it opened one.
+    fn held(&self) -> Option<crate::workspaces::Workspaces> {
+        Some(self.service.as_ref()?.service()?.workspaces().clone())
     }
 }
 
@@ -115,6 +145,11 @@ impl OwnerCommitService for NativeOwnerCommits {
     /// The owner drafts it again past its record's floor when the device's
     /// several local writers signed out of the order its turns take them,
     /// for this device's key to sign.
+    ///
+    /// A workspace this device's service holds is written there instead: the
+    /// service keeps that workspace's copy and carries the write to its peers,
+    /// and it is the copy the session's own writes reach and its reads answer
+    /// from. The owner keeps only the workspaces the service holds none of.
     fn commit_local_document(
         &self,
         request: OwnerCommitRequest,
@@ -123,34 +158,53 @@ impl OwnerCommitService for NativeOwnerCommits {
         let ownership = Arc::clone(&self.ownership);
         let writes = self.writes.clone();
         let changes = self.changes.clone();
-        Box::pin(writes.run(move || {
-            let owner = ownership
-                .resolve_owner()
-                .map_err(|error| format!("native durable owner unavailable: {error}"))?;
-            let id = WorkspaceId::parse(&request.workspace).ok_or("invalid native workspace")?;
-            let signer = ownership.signer(&owner, id)?;
-            // The commit runs whole on this blocking thread, waiting here for the ownership's
-            // signatures.
-            let (committed, receipt) = tokio::runtime::Handle::current().block_on(
-                owner.commit_local_document(request, signer.as_ref(), tilo_clock::wall()),
-            )?;
-            // What search holds of the record is read again from what it now
-            // holds.
-            if let (
-                Some(changes),
-                CommitOperation::Document {
-                    app,
-                    document: record,
-                    ..
-                },
-            ) = (&changes, &committed.operation)
+        let held = self.held();
+        Box::pin(async move {
+            if let Some(workspaces) = held
+                && workspaces.holds_workspace(&request.workspace).await
             {
-                changes.changed(&committed.workspace, app, record);
+                let receipt = workspaces
+                    .commit_local_document(&request.workspace, request.clone())
+                    .await?;
+                if let (Some(changes), CommitOperation::Document { app, document, .. }) =
+                    (&changes, &request.operation)
+                {
+                    changes.changed(&request.workspace, app, document);
+                }
+                return Ok((request, receipt));
             }
-            // What the owner committed leaves for the workspace's peers from
-            // its ownership, the one copy every write goes through.
-            ownership.schedule_publication(id);
-            Ok((committed, receipt))
-        }))
+            writes
+                .run(move || {
+                    let owner = ownership
+                        .resolve_owner()
+                        .map_err(|error| format!("native durable owner unavailable: {error}"))?;
+                    let id =
+                        WorkspaceId::parse(&request.workspace).ok_or("invalid native workspace")?;
+                    let signer = ownership.signer(&owner, id)?;
+                    // The commit runs whole on this blocking thread, waiting here for the
+                    // ownership's signatures.
+                    let (committed, receipt) = tokio::runtime::Handle::current().block_on(
+                        owner.commit_local_document(request, signer.as_ref(), tilo_clock::wall()),
+                    )?;
+                    // What search holds of the record is read again from what it now
+                    // holds.
+                    if let (
+                        Some(changes),
+                        CommitOperation::Document {
+                            app,
+                            document: record,
+                            ..
+                        },
+                    ) = (&changes, &committed.operation)
+                    {
+                        changes.changed(&committed.workspace, app, record);
+                    }
+                    // What the owner committed leaves for the workspace's peers from
+                    // its ownership, the one copy every write goes through.
+                    ownership.schedule_publication(id);
+                    Ok((committed, receipt))
+                })
+                .await
+        })
     }
 }
