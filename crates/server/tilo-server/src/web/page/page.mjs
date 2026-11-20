@@ -298,14 +298,13 @@ function start() {
   const config = JSON.parse(document.getElementById('tilo-page-config').textContent);
   const page = document.getElementById('tilo-page');
   const style = document.getElementById('tilo-page-css');
-  const base = `/w/${config.address.workspace}/${config.address.app}`;
+  const base = `/w/${config.address.workspace}` + (config.address.app ? `/${config.address.app}` : '');
   let link = null;
   let composing = false;
   let unanswered = 0;
   let lastSelection = '';
-  // The element the view last put the person's focus in, and whether the
-  // page answers a Back or Forward of the browser's rather than the person.
-  let lastFocus = null;
+  // Whether the page answers a Back or Forward of the browser's rather than
+  // the person.
   let restoring = true;
   // The app's name, which a page with something open title-cases with what is open.
   let appTitle = config.address.app;
@@ -339,8 +338,11 @@ function start() {
   // nothing asked of it since that request was applied. An ask cannot land
   // on a document no worker has rendered, so the page is shown again where
   // it is, quietly — the field the person is typing in keeps its text, its
-  // caret and its focus — and what they typed is sent again from there.
+  // caret and its focus — and what they asked for is asked again from there.
+  // A click that opened nothing would otherwise be lost: the page shows
+  // what the workspace holds, not what the person pressed.
   let redrawing = false;
+  const redone = [];
   const reopened = asked => {
     if (!link) return;
     // A page asked for again is asked for at most twice: one that keeps
@@ -350,6 +352,7 @@ function start() {
       ask(asked.value, asked.tries + 1);
       return;
     }
+    if (asked?.value?.act) redone.push(asked.value.act);
     if (redrawing) return;
     redrawing = true;
     ask({open: addressOf()});
@@ -426,12 +429,18 @@ function start() {
   };
 
   // Where the view puts the focus (a new note's title), the page does too.
+  // The element's number is the same for the title of every note, so what
+  // was asked for before says nothing about a note opened since: the view's
+  // focus is taken whenever the person is not already in a field of their
+  // own. A title nobody's caret reached takes no typing, and the keys a
+  // person types land on the app's shortcuts instead.
   const focusAsked = () => {
     const focus = page.querySelector('[data-focus]')?.dataset.focus ?? null;
-    if (focus === lastFocus) return;
-    lastFocus = focus;
     const focused = focus && page.querySelector(`[data-p="${focus}"]`);
-    if (focused && editing(focused) && document.activeElement !== focused) focused.focus({preventScroll: true});
+    if (!focused || !editing(focused) || document.activeElement === focused) return;
+    const active = document.activeElement;
+    if (active && page.contains(active) && editing(active)) return;
+    focused.focus({preventScroll: true});
   };
 
   // The thing the view has open (the selected note) is the page's address:
@@ -494,10 +503,7 @@ function start() {
     delete page.dataset.state;
     page.innerHTML = body;
     editable(page);
-    const focus = page.querySelector('[data-focus]')?.dataset.focus;
-    const focused = focus && page.querySelector(`[data-p="${focus}"]`);
-    lastFocus = focus ?? null;
-    if (focused && editing(focused)) focused.focus({preventScroll: true});
+    focusAsked();
     typingBack(held);
     // Shown again under a field being typed in: its text is sent from here,
     // so what the person wrote lands on the document they are looking at.
@@ -521,8 +527,13 @@ function start() {
       reopened(asked);
       return;
     }
-    if (answer.shown) { redrawing = false; show(answer.shown); }
-    else if (answer.patched) patch(answer.patched);
+    if (answer.shown) {
+      redrawing = false;
+      show(answer.shown);
+      // What a reopen lost is asked again, in the order it was asked, now
+      // that the page is back where the person left it.
+      while (redone.length) ask({act: redone.shift()});
+    } else if (answer.patched) patch(answer.patched);
     else if (answer.refused) {
       say('refused', 'This page is not available here.');
       // Why, for whoever looks into it: the reason is the server's word.
@@ -618,6 +629,7 @@ function start() {
       link = null;
       unanswered = 0;
       sent.length = 0;
+      redone.length = 0;
       caughtUp();
       if (page.querySelector('[data-p]')) {
         // The session ended under an open page: open it again.
