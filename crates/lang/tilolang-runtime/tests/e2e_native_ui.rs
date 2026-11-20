@@ -354,8 +354,6 @@ default view summary for Tasks
 
 row view task_row for Task
 
-default view summary for Tasks
-
 view task_row(t: Task) {
     row(t.title)
 }
