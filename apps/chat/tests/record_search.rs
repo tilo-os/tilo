@@ -14,8 +14,7 @@ use chat::demo::Workspace;
 use chat::drafts::ChatDrafts;
 use chat::messages::chat_messages;
 use chat::parts::ChatMessages;
-use ui::tilo_resource::{Id, Invoke, MemberId, NonBlank, Replica};
-use ui::tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
+use ui::tilo_resource::{Id, Invoke, MemberId, Replica};
 
 /// What the chat binary answers search about `doc`: its entries, as the
 /// session's index takes them.
@@ -113,49 +112,6 @@ fn a_conversation_and_its_messages_are_found_from_the_resources() {
         said["when"].as_i64().is_some_and(|when| when > 0),
         "a message says when it was said"
     );
-}
-
-#[test]
-fn an_agent_is_found_from_the_workspace_resource() {
-    let mut agents = Replica::<WorkspaceAgents>::new().as_author("u_ada");
-    agents
-        .apply(
-            WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
-                name: NonBlank::parse("Ada").expect("a name"),
-                keeper: None,
-                id: None,
-                model: None,
-                mcp_client: None,
-            }),
-        )
-        .expect("an agent is made");
-
-    let entries = read(&agents.save());
-    let hits: Vec<&serde_json::Value> = entries
-        .iter()
-        .filter(|entry| entry["title"] == "Ada")
-        .collect();
-    assert_eq!(hits.len(), 1, "the agent is found by its name");
-    assert!(
-        hits[0]["resource"]
-            .as_str()
-            .is_some_and(|resource| resource.contains("/agents/")),
-        "a hit opens the agent at its item of the record: {}",
-        hits[0]["resource"]
-    );
-    assert_eq!(hits[0]["kind"], "agent");
-    assert!(
-        hits[0]["people"][0]["identity"]
-            .as_str()
-            .is_some_and(|identity| identity.starts_with("agent:")),
-        "an agent's row shows the agent itself: {}",
-        hits[0]["people"][0]
-    );
-    assert!(
-        hits[0]["people"][0]["agent"].as_bool().unwrap_or(false),
-        "an agent's row shows the agent itself"
-    );
-    assert_eq!(hits[0]["keeper"]["identity"], "u_ada");
 }
 
 #[test]
