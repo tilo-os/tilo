@@ -54,6 +54,11 @@ impl Deferred {
     /// The admitted changes did not apply here as they did in the worker
     /// that admitted them; the document is then as it was before them.
     pub fn settled(&mut self) -> Result<&mut AutoCommit, Rejected> {
+        self.settle_in(Isolate::shared())
+    }
+
+    /// [`Self::settled`], what waits unapplied applied in `isolate`'s workers.
+    fn settle_in(&mut self, isolate: &Isolate) -> Result<&mut AutoCommit, Rejected> {
         if !self.pending.is_empty() {
             let pending = std::mem::take(&mut self.pending);
             self.hashes.clear();
@@ -61,11 +66,8 @@ impl Deferred {
             if std::mem::take(&mut self.unchecked) {
                 // What waits unapplied is applied in a worker process first, as any untrusted
                 // change is, and only then here.
-                let applied = Isolate::shared().apply(
-                    &mut self.doc,
-                    &pending,
-                    Dependencies::RequireComplete,
-                )?;
+                let applied =
+                    isolate.apply(&mut self.doc, &pending, Dependencies::RequireComplete)?;
                 if applied == Applied::MissingDependencies {
                     return Err(Rejected::Invalid(
                         "changes admitted unapplied build on what the document lacks".into(),
@@ -183,6 +185,13 @@ impl Isolate {
         incoming: &[u8],
         dependencies: Dependencies,
     ) -> Result<Applied, Rejected> {
+        // What waits unapplied is applied first: a worker that does not hold the copy's state
+        // is handed it from the document settled ([`crate::pool::Base`]) while the worker is
+        // held, and settling then would ask a worker of this pool again, maybe that very one,
+        // which waited for itself for good and held every write of the copy behind it.
+        if deferred.unchecked {
+            deferred.settle_in(self)?;
+        }
         #[cfg(target_os = "linux")]
         if let Some((after, carried)) = deferred.heads_after(incoming) {
             crate::precheck::check(incoming, self.limits())?;
@@ -199,7 +208,7 @@ impl Isolate {
             }
             return Ok(applied);
         }
-        self.apply(deferred.settled()?, incoming, dependencies)
+        self.apply(deferred.settle_in(self)?, incoming, dependencies)
     }
 }
 

@@ -136,3 +136,43 @@ fn a_writers_own_changes_wait_unapplied_until_the_copy_is_read() {
     );
     assert_eq!(copy.settled().unwrap().save(), writer.save());
 }
+
+/// A copy holding a writer's own changes unapplied takes another's change the usual way, in the
+/// isolate every copy shares: what waits is applied first, never by asking a worker of the pool
+/// while one of its workers is held for the change, which waited for itself for good.
+#[test]
+fn a_change_after_unapplied_ones_never_waits_for_the_pool_it_holds() {
+    let finished = std::sync::Arc::new((std::sync::Mutex::new(None), std::sync::Condvar::new()));
+    let done = std::sync::Arc::clone(&finished);
+    std::thread::spawn(move || {
+        let mut writer = AutoCommit::new().with_actor(ActorId::from(vec![0x58; 16]));
+        writer.put(ROOT, "seed", "resident").unwrap();
+        writer.commit();
+        let mut copy = Deferred::from(writer.clone());
+        for round in 0..8_i64 {
+            let own = written(&mut writer, &format!("own{round}"));
+            assert_eq!(copy.admit_unapplied(&own), Ok(Applied::Changed(true)));
+            let other = written(&mut writer, &format!("other{round}"));
+            assert_eq!(
+                Isolate::shared().admit(&mut copy, &other, Dependencies::RequireComplete),
+                Ok(Applied::Changed(true)),
+                "round {round}"
+            );
+        }
+        *done.0.lock().unwrap() = Some(copy.settled().unwrap().save() == writer.save());
+        done.1.notify_all();
+    });
+    let (read, waited) = finished
+        .1
+        .wait_timeout_while(
+            finished.0.lock().unwrap(),
+            tilo_test_env::hang_bound(),
+            |read| read.is_none(),
+        )
+        .unwrap();
+    assert!(
+        !waited.timed_out(),
+        "every change is admitted, none waiting for the pool it holds"
+    );
+    assert_eq!(*read, Some(true), "the copy reads as the writer's document");
+}
