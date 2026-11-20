@@ -97,7 +97,13 @@ test('a certificate the host did not take is issued again once, then said', asyn
   const again = follow({peer: failing});
   failing.send(failed('certificate-rejected'));
   await settle();
-  assert.deepEqual(again.seen.refused, ['certificate-rejected']);
+  // Certifying again did not work: the browser is not connected, and the person is told so,
+  // not that the workspace turned them away.
+  assert.deepEqual(again.seen.refused, ['not-connected']);
+  assert.equal(failing.listening(), 0, 'stops following once it told');
+  assert.equal(refusalText('not-connected', 'Acme'),
+    'This browser isn’t connected to Acme anymore. Reload the page to connect again.');
+  assert.doesNotMatch(refusalText('not-connected'), /certificate|session|peer/i);
 });
 
 test('reachability and other failures are left to the session', async () => {

@@ -17,9 +17,12 @@
  * - `workspace-deleted`: the workspace's owner deleted it. Nothing brings it
  *   back, so the page never joins again: `refuse` says so, and the page
  *   forgets the workspace.
- * - `device-revoked`, a page with no entry to join through again, a second
- *   refusal soon after joining again, or a failed re-certification: `refuse`
- *   says what happened (`refusalText`); there is nothing to try again.
+ * - `device-revoked`, a page with no entry to join through again, or a second
+ *   refusal soon after joining again: `refuse` says what happened
+ *   (`refusalText`); there is nothing to try again.
+ * - A re-certification that failed: the workspace did not turn the person
+ *   away, this browser could not connect again. `refuse('not-connected')`
+ *   says so, and that reloading the page connects again.
  *
  * Joining again is remembered for `REJOIN_WINDOW_MS` in the tab's session
  * storage (`rejoinedRecently`), with the name the person went by
@@ -121,6 +124,9 @@ export function refusalText(code, name = null) {
   if (code === 'workspace-deleted') {
     return `${name || 'This workspace'} was deleted by its owner, so it can’t be opened anymore.`;
   }
+  if (code === 'not-connected') {
+    return `This browser isn’t connected to ${workspace} anymore. Reload the page to connect again.`;
+  }
   if (code === 'host-changed') {
     return `${name || 'This workspace'} was reset, so this browser can’t open it anymore. Ask the person who shared it for a new invitation.`;
   }
@@ -151,7 +157,13 @@ export function followRefusal({
           await peer.recover({kind: 'reauthenticate'});
           return;
         } catch (error) {
-          console.warn('session: certifying this browser again failed', error?.code ?? error?.name ?? 'error');
+          console.warn('session: certifying this browser again failed', error?.code ?? error?.name ?? 'error',
+            error?.message ?? '');
+          // The workspace did not turn the person away: this browser could not
+          // connect again, which is what they are told.
+          stop();
+          await refuse('not-connected');
+          return;
         }
       } else if (!FINAL.has(code) && canRejoin(code)
         && !rejoinedRecently({storage, now: now()})) {

@@ -282,7 +282,7 @@ test('a guest certificate from an invitation reaches the session byte for byte',
   runtime.hostInfo = async () => `{"address":${JSON.stringify(HOST_ADDRESS)},"hostCert":{"issued_at_ns":${NANOS}}}`;
   const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
   const peer = await joinWorkspace({
-    origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, admissionToken: 'token',
+    origin: 'https://acme.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, admissionToken: 'token',
     runtime, deviceKey, store: memoryStore(), storage: null,
     fetch: async () => { throw new Error('no network in tests'); },
   });
@@ -638,6 +638,74 @@ test('a page that certifies its device again keeps its peer id, which its mounte
   assert.equal(runtime.calls.started[0].disposed, true);
   assert.equal(runtime.calls.started[1].id, id, 'the replacement session opens as the same page');
   assert.equal(peer.runtimeId, id, 'so a desktop mounted before keeps reaching the workspace through it');
+  await peer.dispose();
+});
+
+test('a page an invitation let in certifies its device again with its own root and has a working session', async () => {
+  const runtime = fakeRuntime();
+  const identity = person();
+  const peer = await joinWorkspace({
+    origin: 'https://acme.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, admissionToken: 'token',
+    runtime, deviceKey, store: memoryStore(), storage: null,
+    fetch: async () => { throw new Error('no network in tests'); },
+  });
+  await peer.whenReady({timeoutMs: HANG_BOUND_MS});
+  const id = peer.runtimeId;
+  const first = runtime.peer;
+  first.phase = 'failed';
+  first.error = 'the certificate it showed was refused';
+  first.errorCode = 'certificate-rejected';
+  first.emit();
+  const seen = [];
+  const stop = peer.onStatus(snapshot => seen.push(snapshot.phase));
+  await peer.recover({kind: 'reauthenticate'});
+  stop();
+  // Certified by the person's own root, not through any approver, though the server is not theirs.
+  assert.equal(runtime.calls.certify.length, 1);
+  assert.equal(runtime.calls.certify[0].root, identity, 'the root the page holds certifies its device');
+  assert.equal(first.disposed, true);
+  const second = runtime.peer;
+  assert.notEqual(second, first, 'a new session replaced the one turned away');
+  assert.equal(second.id, id, 'under the page id its windows know');
+  assert.equal(second.config.entering, undefined, 'a member already: no invitation is spent again');
+  assert.deepEqual(second.config.cert, {device: 1, expires_at_ns: second.config.cert.expires_at_ns});
+  assert.equal(seen[0], 'authenticating', 'between the two sessions the page holds none, and never says ready');
+  second.emit('ready');
+  assert.equal((await peer.whenReady({timeoutMs: HANG_BOUND_MS})).phase, 'ready');
+  await peer.dispose();
+});
+
+test('a re-certification that fails leaves the session it was to replace, and a session that cannot start says the page is not connected', async () => {
+  const runtime = fakeRuntime();
+  const peer = await connect(options(runtime, memoryStore(), {identity: person(), userPublicKey: undefined}));
+  const first = runtime.peer;
+  const certify = runtime.certifyWithRoot;
+  runtime.certifyWithRoot = async () => { throw new Error('the root did not sign'); };
+  await assert.rejects(peer.recover({kind: 'reauthenticate'}), /did not sign/);
+  assert.equal(first.disposed, false, 'the session stands while no new certificate is at hand');
+  assert.equal(peer.getSnapshot().phase, 'ready');
+
+  // Certified, but the session under the new certificate cannot start: the page held none
+  // from the moment it let the old one go, and says it is not connected, never ready.
+  runtime.certifyWithRoot = certify;
+  const start = runtime.WasmPeer.start;
+  runtime.WasmPeer.start = () => { throw new Error('no session for you'); };
+  const seen = [];
+  const stop = peer.onStatus(snapshot => seen.push(snapshot));
+  await assert.rejects(peer.recover({kind: 'reauthenticate'}), /no session for you/);
+  stop();
+  assert.equal(first.disposed, true);
+  assert.deepEqual(seen.map(snapshot => snapshot.phase), ['authenticating', 'failed']);
+  const said = peer.getSnapshot();
+  assert.equal(said.phase, 'failed');
+  assert.equal(said.errorCode, 'not-connected');
+  assert.equal(said.error, 'This browser isn’t connected to the workspace. Reload the page to connect again.');
+  assert.match(said.cause, /no session for you/);
+
+  // Trying again later opens the page under the id it had.
+  runtime.WasmPeer.start = start;
+  await peer.recover({kind: 'reauthenticate'});
+  assert.equal(runtime.peer.id, first.id);
   await peer.dispose();
 });
 

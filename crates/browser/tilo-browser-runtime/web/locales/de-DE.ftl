@@ -16,6 +16,7 @@ arrival-stalled = Das dauert länger, als es sollte. Warte weiter oder versuch e
 # -unnamed steht, wo die Seite ihn nicht kennt.
 arrival-retry = Noch einmal versuchen
 arrival-failed-offline = Du bist offline. Änderungen bleiben auf diesem Gerät und gehen raus, sobald die Verbindung wieder da ist.
+arrival-failed-disconnected = Dieser Browser ist nicht mit dem Arbeitsbereich verbunden. Änderungen bleiben auf diesem Gerät. Lade die Seite neu, um dich wieder zu verbinden.
 arrival-failed-admission = Der Arbeitsbereich kann die Änderungen dieses Browsers gerade nicht annehmen. Die Änderungen bleiben auf diesem Gerät.
 arrival-failed-saving = Deine Änderungen sind noch nicht auf diesem Gerät gespeichert. Lass diesen Tab offen und versuch es noch einmal.
 # Ein privates Fenster oder eines, in dem Website-Daten aus sind: der Browser

@@ -292,6 +292,10 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
        page. */
     #bar { display: contents; }
     [data-arrival=done] #bar { display: block; position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    /* A page that holds no connection to its workspace any more says so where
+       the person sees it: nothing brings it back by itself, and reloading is
+       what to do (connection-status.mjs, `disconnected`). */
+    [data-arrival=done][data-connection=disconnected] #bar { left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 4; box-sizing: border-box; width: max-content; max-width: calc(100vw - 32px); height: auto; overflow: visible; clip-path: none; white-space: normal; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--e-line); background: var(--e-sheet); color: var(--e-text); box-shadow: 0 8px 28px rgb(0 0 0 / 35%); line-height: 1.5; }
     .tilo-entry-card { position: fixed; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%); box-sizing: border-box; width: min(360px, calc(100vw - 32px)); display: grid; gap: 20px; padding: 24px; border-radius: 14px; background: var(--e-sheet); border: 1px solid var(--e-line); box-shadow: 0 12px 40px rgb(0 0 0 / 45%); }
     .tilo-entry-card p { margin: 0; line-height: 1.5; color: var(--e-text); }
     .tilo-entry-card button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--e-edge); background: transparent; color: var(--e-button-ink); cursor: pointer; }

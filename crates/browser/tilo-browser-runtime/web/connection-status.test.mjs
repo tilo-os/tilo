@@ -32,10 +32,22 @@ test('a transport that dropped after the mount says off line, not connected', ()
 });
 
 test('a page the host stopped admitting says so, and its ending session says it is over', () => {
-  assert.equal(connectionStatus({...well, peer: snapshot({phase: 'failed', transport: 'connected', admission: 'failed'})}).state, 'offline');
+  assert.equal(connectionStatus({...well, peer: snapshot({phase: 'failed', transport: 'connected', admission: 'failed'})}).state, 'disconnected');
   const refused = connectionStatus({...well, peer: snapshot({phase: 'incomplete', admission: 'failed'})});
   assert.equal(refused.state, 'admission');
   assert.match(refused.sentence, /kept on this device/);
+});
+
+test('a session that is over while the network is fine says the browser is not connected, never offline', () => {
+  for (const transport of ['connected', 'failed', 'closed', null]) {
+    const reading = connectionStatus({...well, peer: {...snapshot({phase: 'failed', transport}), errorCode: 'not-connected'}});
+    assert.equal(reading.state, 'disconnected', String(transport));
+    assert.equal(reading.sentence, 'This browser isn’t connected to the workspace. Changes are kept on this device. Reload the page to connect again.');
+    assert.doesNotMatch(reading.sentence, /offline|session|peer|certificate/i);
+    assert.match(reading.detail, /not-connected/);
+  }
+  // A session that ended for want of a network says so instead.
+  assert.equal(connectionStatus({...well, peer: snapshot({phase: 'failed', transport: 'offline'})}).state, 'offline');
 });
 
 test('changes the store could not commit are said, from the store and from the session alike', () => {

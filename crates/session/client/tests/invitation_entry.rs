@@ -25,7 +25,9 @@ use tilo_session_client::device::{
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, UserIdentity};
 
-use crate::support::{enrol, enter_page, entry_grant, in_workspace, start_workspace_host};
+use crate::support::{
+    enrol, enter_page, entry_grant, in_workspace, start_page, start_workspace_host,
+};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -167,6 +169,73 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
 
     drop(host.web);
     host.server.shutdown().await;
+}
+
+/// A page let in by an invitation holds its own person's root, and the server that keeps the
+/// workspace is another person's. When that server turns the page's certificate away, the page
+/// certifies the same device key again with its root (`recover({kind: 'reauthenticate'})` in
+/// peer.mjs, through `certifyWithRoot`) and starts a session under the new certificate, with no
+/// invitation: the workspace takes it back as the member it already is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_an_invitation_let_in_certifies_itself_again_and_is_back_in_the_workspace() {
+    let (alice, _) = UserIdentity::generate("Alice", 1);
+    let alices_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let alices = start_workspace_host(&alice, &alices_device, state.path(), false).await;
+    let workspaces = alices.server.workspaces().unwrap();
+    let acme = workspaces.create("Acme").await.unwrap();
+    let server_cert = alices_device.cert.clone();
+    let bob = new_key();
+    let user = bob.verifying_key().to_bytes();
+    let page = new_key();
+
+    let (invitation, token) =
+        entry_grant(&alices, &alice, &alices_device, &acme.workspace, user).await;
+    let (cert, entry) = invitation_entry(
+        &server_cert,
+        &invitation,
+        &page,
+        entering(None, Some(&bob), &token),
+    )
+    .await
+    .unwrap();
+    let entered_peer = enter_page(
+        alices.iroh(),
+        cert.clone(),
+        server_cert.clone(),
+        page.clone(),
+        Arc::new(MemoryPeerStore::default()),
+        entry,
+    );
+    entered_peer.send(Cmd::Join(acme.workspace_id)).unwrap();
+    entered(&entered_peer).await.unwrap();
+    in_workspace(&entered_peer, acme.workspace_id).await;
+    entered_peer.close();
+
+    // The server is Alice's, the root Bob's: the root certifies Bob's own device all the same.
+    let (again, answered) =
+        tilo_server_client::certify_with_root(&*alices.https(), &bob, &page, "Firefox on Linux")
+            .await
+            .unwrap();
+    assert_eq!(answered, server_cert);
+    assert_eq!(again.user_public_key, user);
+    assert_eq!(again.device_public_key, page.verifying_key().to_bytes());
+    assert_ne!(again, cert, "a new certificate, not the one turned away");
+
+    // Under it, a session with no invitation is in the workspace again.
+    let back = start_page(
+        alices.iroh(),
+        again,
+        server_cert,
+        page,
+        Arc::new(MemoryPeerStore::default()),
+    );
+    back.send(Cmd::Join(acme.workspace_id)).unwrap();
+    in_workspace(&back, acme.workspace_id).await;
+    back.close();
+
+    drop(alices.web);
+    alices.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

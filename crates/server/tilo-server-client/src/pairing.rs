@@ -419,13 +419,21 @@ pub async fn decide_pairing(
 }
 
 /// Certify the device behind `signer` with the root the page holds, for the
-/// server at `client`: its certificate must be a server of the same root.
+/// server at `client`, and answer that server's own certificate beside it.
+///
+/// The root certifies a device of its own person, and whose server it goes to
+/// does not enter into it: the person's own node, a server that keeps a
+/// workspace they were invited into, and a hosted server that keeps their own
+/// workspace all take the person's devices by the person's root, as the
+/// workspaces they are a member of decide. The certificate names the person,
+/// never the server's owner. So a page that joined another person's workspace
+/// certifies its device again exactly as a page on its person's own node does.
 ///
 /// # Errors
 ///
 /// [`CertifyError::Transport`] when the server is not reached,
-/// [`CertifyError::Denied`] when it is not a device of this root, or the errors
-/// of [`issue_device_cert`].
+/// [`CertifyError::Denied`] when the server's own certificate does not verify,
+/// or the errors of [`issue_device_cert`].
 pub async fn certify_with_root(
     client: &dyn HttpClient,
     root: &dyn DeviceSigner,
@@ -433,23 +441,11 @@ pub async fn certify_with_root(
     label: &str,
 ) -> Result<(DeviceCert, DeviceCert), CertifyError> {
     let server_cert = https::server_info(client).await?.server_cert;
-    check_host(&server_cert, root.device_public_key())?;
+    verify_device_cert_at(&server_cert, tilo_clock::unix_now_ns())
+        .map_err(|error| CertifyError::Denied(format!("server certificate refused: {error}")))?;
     let cert =
         issue_device_cert(root, signer.device_public_key(), label, IssuedRole::Browser).await?;
     Ok((cert, server_cert))
-}
-
-fn check_host(server_cert: &DeviceCert, user_public_key: [u8; 32]) -> Result<(), CertifyError> {
-    verify_device_cert_at(server_cert, tilo_clock::unix_now_ns())
-        .map_err(|error| CertifyError::Denied(format!("server certificate refused: {error}")))?;
-    if server_cert.user_public_key != user_public_key
-        || !server_cert.capabilities.can_own_workspaces
-    {
-        return Err(CertifyError::Denied(
-            "the certificate is not a device of this person".into(),
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -522,6 +522,9 @@ async function connect({
   const statusListeners = new Set();
   const pendingRecordWaits = new Set();
   let peer;
+  /** The id the page's mounts know it by, kept while a session under it is
+   * replaced (`recover({kind: 'reauthenticate'})`). */
+  let pageId;
   let live;
   let admitted;
   let ready;
@@ -620,6 +623,10 @@ async function connect({
       live.pump(JSON.parse(peer.takeLiveEvents()));
     }
     voice?.pump(peer.takeVoiceEvents?.() ?? '[]');
+    announce();
+  };
+  /** Tell everyone who follows the page's state what it is now. */
+  const announce = () => {
     for (const listener of [...listeners]) listener(snapshot);
     onStatus?.(snapshot);
     for (const listener of [...statusListeners]) {
@@ -744,6 +751,17 @@ async function connect({
     keepProfileDevice(profile, slot, device, namespaces);
   }
 
+  /** A certificate for this device made now, for the server the page reaches:
+   * by the person's root where the page holds it, whoever that server belongs to (the
+   * person's own, or one that keeps a workspace they were invited into), else
+   * by one of their devices that holds it (pairing). */
+  async function certifyNow() {
+    return identity
+      ? await runtime.certifyWithRoot(post, identity, deviceKeyForWasm, label)
+      : await runtime.certifyDevice(userPublicKey, label, null, deviceKeyForWasm, code => onPairingCode?.(code),
+        JSON.stringify(host.address));
+  }
+
   async function certificate() {
     if (requireExistingCertificate && deviceCertificate) throw Error('Resource links require a previously certified device');
     let existing = await store.get(CERTIFICATE);
@@ -786,10 +804,7 @@ async function connect({
       }
       return existing;
     }
-    const issued = identity
-      ? await runtime.certifyWithRoot(post, identity, deviceKeyForWasm, label)
-      : await runtime.certifyDevice(userPublicKey, label, null, deviceKeyForWasm, code => onPairingCode?.(code),
-        JSON.stringify(host.address));
+    const issued = await certifyNow();
     if (saved && reconnecting(saved, issued, JSON.stringify(certServer(issued))) === 'adopt-host') {
       await adopt(issued);
     }
@@ -829,6 +844,7 @@ async function connect({
       channelVault,
       keep,
     );
+    pageId = peer.id;
     // Settings lists this browser's tabs' device keys as one entry.
     if (profile) rememberBrowserDevice(certified, namespaces);
     peer.subscribe(publish);
@@ -1363,7 +1379,7 @@ async function connect({
     /** The workspace's calls (`voice-peer.mjs`), or `undefined` without a workspace. */
     get voice() { return voice; },
     /** This peer in the wasm runtime, for mounts that replicate through it. */
-    get runtimeId() { return peer?.id; },
+    get runtimeId() { return peer?.id ?? pageId; },
     /** The desktop mount (`host.mjs`) in this peer's profile and workspace.
      * `options.surfaceId` names the surface in SessionHealth failures and
      * `retry-desktop`/`retry-asset` requests (default `surface-N`); the
@@ -1536,16 +1552,31 @@ async function connect({
           globalThis.location.reload();
           return {operationId: 'reauthenticate'};
         }
+        host = answering;
+        // The new certificate first, while the session it replaces still
+        // stands: a certification that fails leaves the page as it was, its
+        // session, and what that session says of itself, untouched.
+        const issued = await certifyNow();
         voice?.reset();
         stopLive();
         // The page stays the same page while the session under it is replaced:
         // its mounts' windows, documents and server all name it by this id.
-        const page = peer?.id;
-        peer.dispose();
+        const page = peer?.id ?? pageId;
+        peer?.dispose();
+        // Until the new session says otherwise, the page holds none: it is
+        // never "ready" on a session it let go.
+        peer = undefined;
+        snapshot = {phase: 'authenticating'};
+        announce();
         resetReady();
-        await store.delete(CERTIFICATE);
-        host = answering;
-        await start(page);
+        try {
+          await store.put(CERTIFICATE, issued);
+          await start(page);
+        } catch (error) {
+          snapshot = notConnected(error);
+          announce();
+          throw error;
+        }
         return {operationId: 'reauthenticate'};
       }
       throw new TypeError(`unsupported recovery ${request?.kind}`);
@@ -1724,6 +1755,18 @@ async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop
 function hostUnreached(origin, snapshot) {
   const why = snapshot?.error ? `: ${snapshot.error}` : '';
   return {phase: 'failed', errorCode: 'unanswered', error: `connection refused or lost before ${new URL(origin).origin} answered${why}`};
+}
+
+/** What a page says of itself once it let its session go and could not start
+ * the one that was to replace it: `failed`, `not-connected`, in words a person
+ * reads (`connection-status.mjs` says it in the bar), with the cause beside
+ * them for the console. */
+export function notConnected(error) {
+  return {
+    phase: 'failed', errorCode: 'not-connected',
+    error: 'This browser isn’t connected to the workspace. Reload the page to connect again.',
+    cause: String(error?.message ?? error ?? ''),
+  };
 }
 
 /** The codes an entry refuses with (`EntryRefusalCode`), and its entry when not reached. */

@@ -21,6 +21,7 @@ import {localized} from './arrival.mjs';
  * (`arrival-failed-<kind>` in the locale file, as the page's other failures). */
 export const WORDS = {
   offline: 'You’re offline. Changes are kept on this device and sent once the connection is back.',
+  disconnected: 'This browser isn’t connected to the workspace. Changes are kept on this device. Reload the page to connect again.',
   admission: 'The workspace can’t take this browser’s changes right now. Changes are kept on this device.',
   saving: 'Your changes aren’t saved on this device yet. Keep this tab open and try again.',
   files: 'This window keeps no files, so apps here can’t store files of their own. Open Tilo in a normal window to work with them.',
@@ -33,7 +34,7 @@ const presented = phase => phase === 'presented' || phase === 'gpu-pending';
 /**
  * The bar's reading of the session and the desktop: `{state, sentence,
  * detail}`, where `state` is `online`, `connecting` or the kind of trouble
- * (`offline`, `admission`, `saving`, `files`, `renderer`); `sentence` is what
+ * (`disconnected`, `offline`, `admission`, `saving`, `files`, `renderer`); `sentence` is what
  * the person reads (`null`: the bar stays empty) and `detail` the cause, for
  * the console.
  *
@@ -73,8 +74,20 @@ function failureOf({peer, desktop, saved, messages}) {
   const said = kind => localized(messages, `arrival-failed-${kind}`, WORDS[kind]);
   const health = peer?.health ?? null;
   const transport = health?.transport?.phase ?? null;
-  const cut = peer !== null
-    && (peer.phase === 'closed' || peer.phase === 'failed' || ['offline', 'failed', 'closed', 'reconnecting'].includes(transport));
+  const ended = peer !== null && (peer.phase === 'closed' || peer.phase === 'failed');
+  // The network between is what is wrong: the session waits for it.
+  const unreachable = ['offline', 'reconnecting'].includes(transport);
+  // The session is over while the network is fine: the workspace turned
+  // this browser away, or connecting again did not work. Never "offline",
+  // which tells the person to look at their network.
+  if (ended && !unreachable) {
+    return {
+      kind: 'disconnected',
+      detail: `session ${peer.phase}${peer.errorCode ? ` (${peer.errorCode})` : ''}${transport ? `, transport ${transport}` : ''}`,
+      sentence: said('disconnected'),
+    };
+  }
+  const cut = peer !== null && (ended || unreachable || ['failed', 'closed'].includes(transport));
   if (cut) {
     return {
       kind: 'offline',
@@ -156,7 +169,7 @@ export function followConnection({read, bar = {}}) {
 }
 
 /** The kinds of trouble, worst first. */
-const SEVERITY = ['offline', 'admission', 'saving', 'renderer'];
+const SEVERITY = ['disconnected', 'offline', 'admission', 'saving', 'renderer'];
 
 /** Whether `next` reads milder than the trouble `said`, and so waits for
  * the bar instead of taking it. */

@@ -21,6 +21,9 @@ arrival-retry = Try again
 # that dropped, an admission that ended, a store that stopped saving and a
 # renderer that stopped drawing, so the mount is no answer to it.
 arrival-failed-offline = You’re offline. Changes are kept on this device and sent once the connection is back.
+# The network is fine, but this browser holds no connection to the workspace:
+# the workspace turned it away, or connecting again did not work.
+arrival-failed-disconnected = This browser isn’t connected to the workspace. Changes are kept on this device. Reload the page to connect again.
 arrival-failed-admission = The workspace can’t take this browser’s changes right now. Changes are kept on this device.
 arrival-failed-saving = Your changes aren’t saved on this device yet. Keep this tab open and try again.
 # A private window, or one where site data is turned off: the browser hands the

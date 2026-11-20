@@ -1029,6 +1029,8 @@ export async function startEntryPage({mode}) {
   /** The bar's follower of the connection, once it is written below. The
    * desktop reports its first status while the page opens, before then. */
   let bar = null;
+  /** The line the connection bar wrote last, which it may replace. */
+  let barSaid = null;
   const diagnostics = {
     onHostAction: (id, value) => {
       if (id === SET_UP.id) void setUp?.();
@@ -1119,9 +1121,12 @@ export async function startEntryPage({mode}) {
         // The bar is the page's own note while it arrives, so only a line
         // still of its own is replaced: a visit message stays, and so does
         // the note about a desktop that stopped while the session was fine.
-        const own = [loading, opening, drawing].includes(status.textContent);
+        // An empty bar (the desktop drew) and a line it said itself are its
+        // own too: a connection lost after arrival is said there.
+        const own = [loading, opening, drawing, '', barSaid].includes(status.textContent);
         if (!own && !reading.cleared) return;
         status.textContent = reading.cleared ? '' : reading.sentence;
+        barSaid = status.textContent;
       },
     },
   });

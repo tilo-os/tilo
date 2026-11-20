@@ -1896,3 +1896,9 @@ reason = "The document index projections' own `record` and `records` fields (fs-
 words = ["record"]
 identifiers = ["record", "records"]
 paths = ["crates/system/fs/src/fs/tests.rs"]
+
+[[allow]]
+reason = "The browser-root test names the test server that the session tests' support helper `start_host` gives it `host`, as the helper does."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/session/client/tests/browser_root.rs"]

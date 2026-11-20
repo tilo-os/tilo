@@ -12,9 +12,7 @@
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_server_client::{
-    CertifyError, DeviceSigner as _, IssuedRole, certify_with_root, issue_device_cert,
-};
+use tilo_server_client::{DeviceSigner as _, IssuedRole, certify_with_root, issue_device_cert};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{Device, ready, start_host, start_peer};
@@ -56,11 +54,13 @@ async fn a_page_root_certifies_its_node_and_then_itself() {
     let peer = start_peer(host.iroh(), cert, server_cert, browser);
     ready(&[&peer]).await;
 
-    // Another person's root does not certify a page for this node.
+    // Another person's root certifies a device of its own person, not one of Ada's: whether
+    // that person is let in is for the workspaces they are a member of to decide.
     let (stranger, _) = UserIdentity::generate("Eve", 1);
     let other = SigningKey::generate(&mut UnwrapErr(SysRng));
-    assert!(matches!(
-        certify_with_root(&*host.https(), &stranger, &other, "Browser").await,
-        Err(CertifyError::Denied(_))
-    ));
+    let (theirs, _) = certify_with_root(&*host.https(), &stranger, &other, "Browser")
+        .await
+        .unwrap();
+    assert_eq!(theirs.user_public_key, stranger.device_public_key());
+    assert_ne!(theirs.user_public_key, node_cert.user_public_key);
 }
