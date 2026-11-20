@@ -444,3 +444,43 @@ test('a swatch is its colour, named for a reader and a tooltip, the chosen one r
   assert.match(blue.style.cssText, /box-shadow:inset 0 0 0 2px/);
   assert.doesNotMatch(red.style.cssText, /box-shadow/);
 });
+
+test('a widget handed over as the same keeps its elements, moved with its scroller, and a box its tick', () => {
+  const layer = new Node('div');
+  const presenter = createViewPresenter(layer);
+  const box = (path, y) => widget(path, [0, y, 200, 30], {tag: 'label', semantics: {role: 'Checkbox', name: 'Done', state: {}},
+    own: {kind: 'control', controls: [{kind: 'check', style: 'checkbox', checked: false, mixed: false}]}});
+  show(presenter, widget('List[0]', [0, 0, 200, 100], {scroll: [0, 1000, 100], children: [box('List[0]/Row[0]', 0), box('List[0]/Row[1]', 30)]}));
+  const row = byPath(layer, 'List[0]/Row[0]');
+  const input = byPath(layer, 'List[0]/Row[0]#control:0:input');
+  // The person ticked it, and the widget kept it unticked.
+  input.checked = true;
+  const writes = presenter.stats.writes;
+  // Scrolled by 40: the scroller in full, its rows named as moved with it.
+  show(presenter, widget('List[0]', [0, 0, 200, 100], {scroll: [40, 1000, 100], children: [
+    {path: 'List[0]/Row[0]', same: [0, -40]},
+    {path: 'List[0]/Row[1]', same: [0, -40]},
+  ]}));
+  assert.equal(byPath(layer, 'List[0]/Row[0]'), row, 'the same element');
+  assert.equal(byPath(layer, 'List[0]/Row[0]#control:0:input'), input, 'and the same input in it');
+  assert.equal(byPath(layer, 'List[0]').scrollTop, 40);
+  assert.equal(input.checked, false, 'the box shows the widget\'s tick');
+  assert.equal(presenter.stats.writes, writes, 'nothing written again');
+  // Unchanged as a whole, and then a row that changed: it stands where its moved rectangle puts
+  // it in the content.
+  show(presenter, {path: 'List[0]', same: [0, 0]});
+  assert.equal(byPath(layer, 'List[0]/Row[1]#control:0:input').localName, 'input');
+  show(presenter, widget('List[0]', [0, 0, 200, 100], {scroll: [40, 1000, 100], children: [
+    {path: 'List[0]/Row[0]', same: [0, 0]},
+    box('List[0]/Row[1]', -5),
+  ]}));
+  assert.equal(byPath(layer, 'List[0]/Row[0]'), row);
+  assert.match(byPath(layer, 'List[0]/Row[1]').style.cssText, /top:35px;/);
+  // A widget that moved in its parent is placed again from what the page holds of it.
+  show(presenter, widget('List[0]', [0, 0, 200, 100], {scroll: [40, 1000, 100], children: [
+    {path: 'List[0]/Row[0]', same: [0, 10]},
+    {path: 'List[0]/Row[1]', same: [0, 0]},
+  ]}));
+  assert.match(byPath(layer, 'List[0]/Row[0]').style.cssText, /top:10px;/);
+  assert.equal(byPath(layer, 'List[0]/Row[0]#control:0:input'), input);
+});

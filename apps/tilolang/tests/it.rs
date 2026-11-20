@@ -28,6 +28,8 @@ mod forms;
 mod gallery_close;
 #[path = "gallery_frames.rs"]
 mod gallery_frames;
+#[path = "gallery_html.rs"]
+mod gallery_html;
 #[path = "gallery_sidebar.rs"]
 mod gallery_sidebar;
 #[path = "gallery_start.rs"]

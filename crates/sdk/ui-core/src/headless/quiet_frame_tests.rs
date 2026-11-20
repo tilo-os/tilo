@@ -411,6 +411,11 @@ const QUIET_ENTRY_POINTS: &[QuietEntry] = &[
     },
     QuietEntry {
         file: "headless/composition.rs",
+        entry: "compose_frame",
+        why: "composes what the last frame laid out and clears the paint marks that frame left for it, as a drawing frame's paint clears them; nothing a frame reads.",
+    },
+    QuietEntry {
+        file: "headless/composition.rs",
         entry: "paint_composed",
         why: "draws the widget's paint; nothing a frame reads changes.",
     },

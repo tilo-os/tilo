@@ -1006,6 +1006,251 @@ impl Composition {
     }
 }
 
+/// A composition as a page that holds an earlier one is handed it ([`Composition::since`]): each
+/// widget that shows exactly what it showed then, perhaps moved as a whole (the rows of a scrolled
+/// list), is named by its path with how far it moved, `{"path": …, "same": [dx, dy]}`, and the
+/// page keeps the elements it made for it. Everything else is as [`Composition`] serializes it.
+/// A page shows nothing of a widget with no size, so what was in one then is handed in full.
+pub struct Since<'a> {
+    composition: &'a Composition,
+    before: std::collections::HashMap<&'a str, &'a Composed>,
+}
+
+impl Composition {
+    /// This composition for a page that shows `before`: see [`Since`]. With no `before`, the
+    /// whole of it.
+    #[must_use]
+    pub fn since<'a>(&'a self, before: Option<&'a Composition>) -> Since<'a> {
+        // What the page showed of it: a widget with no size shows nothing, nor anything in it,
+        // so the page holds nothing of them to keep.
+        fn index<'a>(
+            node: &'a Composed,
+            into: &mut std::collections::HashMap<&'a str, &'a Composed>,
+        ) {
+            into.insert(node.path.as_str(), node);
+            for child in &node.children {
+                if child.rect[2] > 0.0 && child.rect[3] > 0.0 {
+                    index(child, into);
+                }
+            }
+        }
+        let mut indexed = std::collections::HashMap::new();
+        if let Some(before) = before {
+            for root in std::iter::once(&before.root).chain(&before.layers) {
+                index(root, &mut indexed);
+            }
+        }
+        Since {
+            composition: self,
+            before: indexed,
+        }
+    }
+}
+
+impl Serialize for Since<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        let Composition {
+            viewport,
+            focus,
+            root,
+            layers,
+        } = self.composition;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("viewport", viewport)?;
+        map.serialize_entry("focus", focus)?;
+        map.serialize_entry(
+            "root",
+            &SinceNode {
+                node: root,
+                before: &self.before,
+            },
+        )?;
+        if !layers.is_empty() {
+            let layers: Vec<_> = layers
+                .iter()
+                .map(|node| SinceNode {
+                    node,
+                    before: &self.before,
+                })
+                .collect();
+            map.serialize_entry("layers", &layers)?;
+        }
+        map.end()
+    }
+}
+
+/// One widget of a [`Since`].
+struct SinceNode<'a> {
+    node: &'a Composed,
+    before: &'a std::collections::HashMap<&'a str, &'a Composed>,
+}
+
+impl Serialize for SinceNode<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        let node = self.node;
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(moved) = self
+            .before
+            .get(node.path.as_str())
+            .and_then(|before| node.moved_from(before))
+        {
+            map.serialize_entry("path", &node.path)?;
+            map.serialize_entry("same", &moved)?;
+            return map.end();
+        }
+        // Every field, so a field added to `Composed` is a field to hand over here too.
+        let Composed {
+            tag,
+            fallback,
+            path,
+            widget,
+            rect,
+            clip,
+            layout,
+            scroll,
+            semantics,
+            ground,
+            floats,
+            shadow_side,
+            attrs,
+            own,
+            focusable,
+            flows,
+            children,
+            surfaces,
+        } = node;
+        if let Some(tag) = tag {
+            map.serialize_entry("tag", tag)?;
+        }
+        if *fallback {
+            map.serialize_entry("fallback", fallback)?;
+        }
+        map.serialize_entry("path", path)?;
+        map.serialize_entry("widget", widget)?;
+        map.serialize_entry("rect", rect)?;
+        if let Some(clip) = clip {
+            map.serialize_entry("clip", clip)?;
+        }
+        if let Some(layout) = layout {
+            map.serialize_entry("layout", layout)?;
+        }
+        if let Some(scroll) = scroll {
+            map.serialize_entry("scroll", scroll)?;
+        }
+        if let Some(semantics) = semantics {
+            map.serialize_entry("semantics", semantics)?;
+        }
+        if let Some(ground) = ground {
+            map.serialize_entry("ground", ground)?;
+        }
+        if *floats {
+            map.serialize_entry("floats", floats)?;
+        }
+        if let Some(side) = shadow_side {
+            map.serialize_entry("shadow_side", side)?;
+        }
+        if !attrs.is_empty() {
+            map.serialize_entry("attrs", attrs)?;
+        }
+        if let Some(own) = own {
+            map.serialize_entry("own", own)?;
+        }
+        if *focusable {
+            map.serialize_entry("focusable", focusable)?;
+        }
+        if *flows {
+            map.serialize_entry("flows", flows)?;
+        }
+        if !children.is_empty() {
+            let children: Vec<_> = children
+                .iter()
+                .map(|node| SinceNode {
+                    node,
+                    before: self.before,
+                })
+                .collect();
+            map.serialize_entry("children", &children)?;
+        }
+        if !surfaces.is_empty() {
+            map.serialize_entry("surfaces", surfaces)?;
+        }
+        map.end()
+    }
+}
+
+impl Composed {
+    /// How far this widget moved from `before` when it shows all `before` showed, every part of
+    /// it moved alike: `[dx, dy]`, logical pixels. `None` when anything else differs.
+    #[must_use]
+    pub fn moved_from(&self, before: &Self) -> Option<[f64; 2]> {
+        let by = [self.rect[0] - before.rect[0], self.rect[1] - before.rect[1]];
+        self.same_moved(before, by).then_some(by)
+    }
+
+    fn same_moved(&self, before: &Self, by: [f64; 2]) -> bool {
+        // Far below a device pixel: what moved by a scroll offset differs only in rounding.
+        const NEAR: f64 = 1e-3;
+        let moved = |now: &[f64; 4], then: &[f64; 4]| {
+            (now[0] - then[0] - by[0]).abs() < NEAR
+                && (now[1] - then[1] - by[1]).abs() < NEAR
+                && (now[2] - then[2]).abs() < NEAR
+                && (now[3] - then[3]).abs() < NEAR
+        };
+        let Composed {
+            tag,
+            fallback,
+            path,
+            widget,
+            rect,
+            clip,
+            layout,
+            scroll,
+            semantics,
+            ground,
+            floats,
+            shadow_side,
+            attrs,
+            own,
+            focusable,
+            flows,
+            children,
+            surfaces,
+        } = self;
+        moved(rect, &before.rect)
+            && match (clip, &before.clip) {
+                (Some(now), Some(then)) => moved(now, then),
+                (None, None) => true,
+                _ => false,
+            }
+            && *tag == before.tag
+            && *fallback == before.fallback
+            && *path == before.path
+            && *widget == before.widget
+            && *layout == before.layout
+            && *scroll == before.scroll
+            && *semantics == before.semantics
+            && *ground == before.ground
+            && *floats == before.floats
+            && *shadow_side == before.shadow_side
+            && *attrs == before.attrs
+            && *own == before.own
+            && *focusable == before.focusable
+            && *flows == before.flows
+            && surfaces.len() == before.surfaces.len()
+            && surfaces
+                .iter()
+                .zip(&before.surfaces)
+                .all(|((now, kind), (then, was))| kind == was && moved(now, then))
+            && children.len() == before.children.len()
+            && children
+                .iter()
+                .zip(&before.children)
+                .all(|(now, then)| now.same_moved(then, by))
+    }
+}
+
 /// What a widget's [`html`](crate::widget::Widget::html) renders into: the element it is, what it shows
 /// of it, and its children.
 pub struct HtmlCx<'a> {
@@ -1449,6 +1694,64 @@ mod tests {
             Some(Own::Control { controls }) => controls,
             other => panic!("{} composes {other:?}, not controls", node.widget),
         }
+    }
+
+    #[test]
+    fn a_page_is_handed_only_what_changed_since_what_it_shows() {
+        use super::Composition;
+        let row = |key: &str, y: f64, words: &str| {
+            let mut row = Composed::new(format!("list#{key}"), "Row", [0.0, y, 200.0, 20.0]);
+            row.clip = Some([0.0, y, 200.0, 20.0]);
+            let mut label = Composed::new(
+                format!("list#{key}#label"),
+                "Text",
+                [8.0, y + 2.0, 100.0, 16.0],
+            );
+            label.attrs.push(("title", words.to_owned()));
+            row.children.push(label);
+            row
+        };
+        let window = |offset: f64, third: &str| {
+            let mut list = Composed::new("list".into(), "List", [0.0, 0.0, 200.0, 60.0]);
+            list.scroll = Some([offset, 300.0, 60.0]);
+            list.children = vec![
+                row("a", 0.0 - offset, "one"),
+                row("b", 20.0 - offset, "two"),
+                row("c", 40.0 - offset, third),
+            ];
+            Composition {
+                viewport: [200, 60],
+                focus: None,
+                root: list,
+                layers: Vec::new(),
+            }
+        };
+        let before = window(0.0, "three");
+        // With nothing held, all of it, as it serializes.
+        assert_eq!(
+            serde_json::to_value(before.since(None)).expect("serializes"),
+            serde_json::to_value(&before).expect("serializes"),
+        );
+        // Scrolled, with one row's words changed: the scroller and that row in full, the rest
+        // named with how far they moved.
+        let now = window(10.5, "four");
+        let handed = serde_json::to_value(now.since(Some(&before))).expect("serializes");
+        let rows = handed["root"]["children"].as_array().expect("rows");
+        assert_eq!(handed["root"]["scroll"][0], 10.5);
+        assert_eq!(
+            rows[0],
+            serde_json::json!({"path": "list#a", "same": [0.0, -10.5]})
+        );
+        assert_eq!(
+            rows[1],
+            serde_json::json!({"path": "list#b", "same": [0.0, -10.5]})
+        );
+        assert_eq!(rows[2]["children"][0]["attrs"][0][1], "four");
+        // What did not change at all is named in one.
+        assert_eq!(
+            serde_json::to_value(now.since(Some(&now))).expect("serializes")["root"],
+            serde_json::json!({"path": "list", "same": [0.0, 0.0]}),
+        );
     }
 
     #[test]

@@ -670,6 +670,8 @@ pub struct FrameHarness {
     placed_focus: Option<NodeId>,
     /// Completed relayout frames since construction.
     relayout_frames: u64,
+    /// What a page was last handed of the frame ([`Self::compose_frame`]).
+    presented: composition::Presented,
     /// Layout nodes built since construction: every node of each rebuilt tree, and those a change
     /// carried out in place mounted.
     layout_nodes_built: u64,
@@ -1568,6 +1570,7 @@ impl FrameHarness {
             placed_all: false,
             placed_focus: None,
             relayout_frames: 0,
+            presented: composition::Presented::default(),
             layout_nodes_built: 0,
             retained_frames: 0,
             retained_geometry_check_every: 0,
@@ -3755,6 +3758,7 @@ impl FrameHarness {
         self.last_layout_scale = Some(self.input_scale);
         stats.placed_partly = !placed_all_widgets;
         self.last_relayout = stats;
+        self.presented.note_layout(&stats, viewport_changed);
         if stats.rebuilt
             || stats.remounted
             || viewport_changed
@@ -4030,7 +4034,9 @@ impl FrameHarness {
                     &self.presence,
                 );
             }
-            self.root.mark_drawn();
+            if self.presented.clears_marks(paint) {
+                self.root.mark_drawn();
+            }
         }
         self.drawn_input = crate::input_generation::generation();
         self.drawn_outside = crate::outside_paint::on_screen();
@@ -5383,7 +5389,7 @@ impl FrameHarness {
             }
             self.poll_control_invocations();
             self.service_pending_history_commands();
-            self.relayout();
+            self.frame_for_input();
             return Ok(());
         }
         let owns_document = self.bindings.owns_document(node);
@@ -5421,7 +5427,7 @@ impl FrameHarness {
                 self.state.record_committed_action(before, None, None);
             }
             self.host_tick();
-            self.relayout();
+            self.frame_for_input();
             return Ok(());
         }
 
@@ -5446,7 +5452,7 @@ impl FrameHarness {
             if rect.width() > 0.0 && rect.height() > 0.0 {
                 let center = rect.center();
                 self.click_at(center.x, center.y);
-                self.relayout();
+                self.frame_for_input();
                 return Ok(());
             }
         }
@@ -5454,7 +5460,7 @@ impl FrameHarness {
         match action {
             SemanticAction::Focus => {
                 self.set_focused(Some(node));
-                self.relayout();
+                self.frame_for_input();
                 Ok(())
             }
             SemanticAction::Activate | SemanticAction::ToggleCheck if semantic_target.is_none() => {
@@ -6120,11 +6126,7 @@ impl FrameHarness {
         self.interaction = environment;
         self.root.set_interaction_environment(environment);
         self.invalidate_layout_tree();
-        if self.coalesce_input_frames {
-            self.input_frame_pending = true;
-        } else {
-            self.relayout();
-        }
+        self.frame_for_input();
     }
 
     /// Switch to touch once every gesture begun has landed, as the live
@@ -6440,6 +6442,15 @@ impl FrameHarness {
     pub fn set_coalesce_input_frames(&mut self, coalesce: bool) {
         self.invalidate_local();
         self.coalesce_input_frames = coalesce;
+    }
+
+    /// The frame an input that changed the widgets asks for ([`Self::set_coalesce_input_frames`]).
+    fn frame_for_input(&mut self) {
+        if self.coalesce_input_frames {
+            self.input_frame_pending = true;
+        } else {
+            self.relayout();
+        }
     }
 
     fn is_view_only_scroll(&self, event: &WindowEvent) -> bool {
