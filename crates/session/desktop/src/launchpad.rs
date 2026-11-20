@@ -132,7 +132,19 @@ impl LaunchpadAction {
     /// lists and an agent invokes.
     #[must_use]
     pub fn host_id(self) -> String {
-        format!("launchpad-{}", self.slug())
+        match self {
+            // Connecting an agent is the person's own action, which their card and search offer
+            // already: the card asks for that one, so it is one thing wherever it is chosen.
+            Self::Agent => tilo_actions::remote::session_actions::CONNECT_AGENT.to_owned(),
+            _ => format!("launchpad-{}", self.slug()),
+        }
+    }
+
+    /// Whether the verb publishes a row of its own for search and agents: connecting an agent is
+    /// the person's own action, offered as theirs, so its card adds no second row.
+    #[must_use]
+    pub const fn has_own_row(self) -> bool {
+        !matches!(self, Self::Agent)
     }
 
     /// The verb the host action `id` names, when it is one of the shell's.
@@ -1515,7 +1527,8 @@ mod tests {
                 assert!(!action.destructive, "no card takes anything away");
                 assert_eq!(action.unasked, card.unasked());
                 assert_eq!(action.source, None, "a card is no menu's row");
-                assert_eq!(LaunchpadAction::from_host_id(&action.id), Some(card));
+                let own = card.has_own_row().then_some(card);
+                assert_eq!(LaunchpadAction::from_host_id(&action.id), own);
             }
             assert_eq!(
                 LaunchpadAction::from_host_id("launchpad-open-app"),

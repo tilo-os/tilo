@@ -2050,3 +2050,33 @@ fn search_finds_what_an_installed_app_offers_before_it_ever_ran() {
         .count();
     assert_eq!(found, 1, "what the app published stands in for its offer");
 }
+
+/// Connecting an agent is one thing to find: typing it lists one row, however many ways the shell
+/// offers it (the empty shell's card, the person's own card, Console's place).
+#[test]
+fn connecting_an_agent_is_one_row() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_installing(
+        Rc::new(Asked::default()),
+        &[
+            ("so.tilo.console", "Console"),
+            ("so.tilo.notes", "Notes"),
+            ("so.tilo.chat", "Chat"),
+        ],
+    );
+    session.step(Duration::from_millis(1)).expect("step");
+    search_for(&mut session, "connect");
+    let found: Vec<String> = rows(&session)
+        .into_iter()
+        .filter(|row| row.kind == SEARCH_ROW_KIND)
+        .map(|row| row.label)
+        .collect();
+    assert_eq!(
+        found
+            .iter()
+            .filter(|label| label.to_lowercase().contains("connect an agent"))
+            .count(),
+        1,
+        "one row connects an agent: {found:?}"
+    );
+}

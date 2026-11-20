@@ -118,6 +118,7 @@ pub fn desktop_set_host_actions(id: u64, actions: &str) -> Result<(), JsValue> {
     actions.extend(
         crate::desktop::page_cards(sets_up_agents)
             .into_iter()
+            .filter(|card| card.has_own_row())
             .map(|card| card.host_action(tilo_desktop::launchpad::WorkspaceScope::default())),
     );
     with_mount(id, |m| {

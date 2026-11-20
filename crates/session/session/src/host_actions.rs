@@ -141,6 +141,7 @@ pub fn publish(
     actions.extend(
         cards(lists)
             .into_iter()
+            .filter(|card| card.has_own_row())
             .map(|card| card.host_action(WorkspaceScope::default())),
     );
     // A report about Tilo itself goes where this computer is told, so a computer told nowhere is
