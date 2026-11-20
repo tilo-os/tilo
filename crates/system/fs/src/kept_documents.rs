@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use fs_protocol::TreeChunk;
 use tilo_lock::MutexRecover as _;
@@ -45,6 +46,9 @@ pub struct KeptDocuments {
     /// Held for a whole save: two saves that ran at once would each set a journal aside, and the
     /// older one landing last would drop the newer one's changes with the journal it removed.
     keep: Mutex<()>,
+    /// Whether a frame was added since the last [`Self::sync`]: a sync with nothing new to sync
+    /// touches no file, so a mount's window costs nothing while nothing is written.
+    unsynced: AtomicBool,
 }
 
 /// Where each document stands on disk.
@@ -91,6 +95,7 @@ impl KeptDocuments {
                 dir: dir.to_path_buf(),
                 heads: Mutex::default(),
                 keep: Mutex::default(),
+                unsynced: AtomicBool::new(true),
             },
             documents,
         ))
@@ -163,6 +168,7 @@ impl KeptDocuments {
                 && !write.changes.is_empty()
             {
                 append_frame(&file(&self.dir, chunk, JOURNAL), &write.changes)?;
+                self.unsynced.store(true, Ordering::Release);
             }
             kept.journaled.insert(chunk, heads);
         }
@@ -176,6 +182,14 @@ impl KeptDocuments {
     /// # Errors
     /// A journal or the directory could not be synced.
     pub fn sync(&self) -> io::Result<()> {
+        if !self.unsynced.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+        self.sync_all()
+            .inspect_err(|_| self.unsynced.store(true, Ordering::Release))
+    }
+
+    fn sync_all(&self) -> io::Result<()> {
         for entry in std::fs::read_dir(&self.dir)? {
             let entry = entry?;
             let path = entry.path();

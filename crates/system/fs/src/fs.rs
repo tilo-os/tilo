@@ -74,6 +74,10 @@ pub type WriteStages = HashMap<u64, Arc<Stage>>;
 /// ([`QuickFS::set_durability_hook`]).
 pub type DurabilityHook = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
 
+/// How long a mount syncing on a window ([`QuickFS::sync_on_window`]) lets its writes wait for
+/// the disk: what a power loss may take of what `close` answered for, never what `fsync` did.
+pub const SYNC_WINDOW: Duration = Duration::from_millis(200);
+
 /// Keeps on disk what the namespace changed since it last did, the moment the mount changed
 /// it ([`QuickFS::with_change_journal`]): handed the namespace under the lock the change was
 /// made in, before the request that made it is answered. What a request was answered for then
@@ -1585,6 +1589,42 @@ impl QuickFS {
 
     pub fn set_durability_hook(&self, hook: DurabilityHook) {
         let _ = self.durability_hook.set(hook);
+    }
+
+    /// Make the mount's writes durable on a window rather than each on its own. `content`'s
+    /// commits stop waiting for the disk: its log of them keeps each for a process killed before
+    /// the next sync, so a closed file is kept the moment `close` answers. Every
+    /// [`SYNC_WINDOW`] while anything was written, and on `fsync`, `fsyncdir` and unmount, one
+    /// barrier syncs the content first and then `names`, the journals that name it, so a power
+    /// loss never leaves a name whose bytes are missing. A checkout of thousands of files pays
+    /// one sync per window instead of one per file.
+    ///
+    /// The window ends with the mount. Must be called on a tokio runtime.
+    pub fn sync_on_window(&self, content: Arc<crate::ContentStore>, names: Option<DurabilityHook>) {
+        content.set_sync_writes(false);
+        let barrier: DurabilityHook = Arc::new(move || {
+            content.sync_pending()?;
+            if let Some(names) = &names {
+                names()?;
+            }
+            Ok(())
+        });
+        let window = Arc::downgrade(&barrier);
+        self.set_durability_hook(barrier);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(SYNC_WINDOW).await;
+                let Some(barrier) = window.upgrade() else {
+                    break;
+                };
+                let error = match tokio::task::spawn_blocking(move || barrier()).await {
+                    Ok(Ok(())) => continue,
+                    Ok(Err(error)) => error.to_string(),
+                    Err(error) => error.to_string(),
+                };
+                eprintln!("the workspace's writes could not be synced: {error}");
+            }
+        });
     }
 
     /// `release` of kernel handle `fh`: commit a writable handle's bytes if `flush` did
@@ -4457,6 +4497,8 @@ impl Filesystem for QuickFS {
 
     fn destroy(&mut self) {
         self.persist_all_buffers();
+        // What the window had not synced yet is on disk once the mount is gone.
+        let _ = self.sync_namespace();
     }
 
     fn setattr(

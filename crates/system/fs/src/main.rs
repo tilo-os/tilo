@@ -1759,31 +1759,6 @@ fn spawn_keeper(
     })
 }
 
-/// Syncs content and journals every [`CONTENT_SYNC_INTERVAL`] while anything was written, so a
-/// person's copy costs one sync per window rather than one per file.
-const CONTENT_SYNC_INTERVAL: Duration = Duration::from_millis(200);
-
-async fn content_flusher(content: Arc<ContentStore>, kept: Option<Arc<KeptTree>>) {
-    loop {
-        tokio::time::sleep(CONTENT_SYNC_INTERVAL).await;
-        let content = Arc::clone(&content);
-        let kept = kept.clone();
-        let flushed = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-            content.sync_pending()?;
-            if let Some(kept) = kept.as_ref() {
-                kept.sync()?;
-            }
-            Ok(())
-        })
-        .await;
-        match flushed {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => eprintln!("the workspace content could not be synced: {error}"),
-            Err(error) => eprintln!("the workspace content could not be synced: {error}"),
-        }
-    }
-}
-
 /// The last save of a mount, on shutdown and unmount: stops its keeper (waiting, so the two never
 /// save at once), then saves what changed.
 async fn final_flush(
@@ -2122,25 +2097,14 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     // Content and journal reach the disk on one barrier: content first, then the journals that
     // name it, so a crash never leaves a journaled tree entry whose bytes are missing. A copy of
     // thousands of small files pays one sync per window instead of one per file; `fsync`,
-    // `fsyncdir` and unmount still sync at once.
-    let barrier = {
-        let content = Arc::clone(&content);
-        let kept = kept.clone();
-        move || -> std::io::Result<()> {
-            content.sync_pending()?;
-            if let Some(kept) = kept.as_ref() {
-                kept.sync()?;
-            }
-            Ok(())
-        }
-    };
-    // A mount whose store syncs on a window: one barrier every few milliseconds instead of one
-    // per file. `TILO_FS_CONTENT_WINDOW=0` keeps the per-write sync, for isolating a problem.
-    let windowed = std::env::var("TILO_FS_CONTENT_WINDOW").as_deref() != Ok("0");
-    if windowed {
-        content.set_sync_writes(false);
-        let _content_flusher = tokio::spawn(content_flusher(Arc::clone(&content), kept.clone()));
-        fs.set_durability_hook(Arc::new(barrier));
+    // `fsyncdir` and unmount still sync at once. `TILO_FS_CONTENT_WINDOW=0` keeps the per-write
+    // sync, for isolating a problem.
+    if std::env::var("TILO_FS_CONTENT_WINDOW").as_deref() != Ok("0") {
+        fs.sync_on_window(
+            Arc::clone(&content),
+            kept.clone()
+                .map(|kept| Arc::new(move || kept.sync()) as fs::fs::DurabilityHook),
+        );
     }
     #[cfg(target_os = "linux")]
     if let Some((args, device)) = backend.as_ref()

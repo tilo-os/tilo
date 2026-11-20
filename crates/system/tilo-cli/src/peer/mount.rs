@@ -109,7 +109,12 @@ pub(crate) fn filesystem(parts: &Parts<'_>) -> std::io::Result<QuickFS> {
             fs
         }
     };
-    Ok(fs.with_write_stage_dir(parts.state.join("write-stage")))
+    let fs = fs.with_write_stage_dir(parts.state.join("write-stage"));
+    // A closed file is kept the moment `close` answers, whatever ends this process next, and
+    // reaches the disk with the journal naming it on a short window: a checkout of thousands of
+    // files waits for the disk once a window, not once a file.
+    fs.sync_on_window(Arc::clone(&parts.store), Some(parts.replica.sync_journal()));
+    Ok(fs)
 }
 
 /// Show the filesystem `make` makes at `at`: mounted when `mount` and this

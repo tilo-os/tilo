@@ -309,6 +309,13 @@ impl TreeReplica {
         Arc::new(move |namespace: &mut Namespace| kept.journal(namespace))
     }
 
+    /// What makes the journals [`Self::journal`] adds to durable, for the mount's barrier: it
+    /// is called after the content they name is synced.
+    pub(crate) fn sync_journal(&self) -> tilo_fs::fs::DurabilityHook {
+        let kept = Arc::clone(&self.kept);
+        Arc::new(move || kept.sync())
+    }
+
     pub(crate) fn status(&self) -> TreeStatus {
         self.status.lock_recover().clone()
     }
