@@ -219,6 +219,47 @@ async fn unacceptable_or_uncommitted_bytes_survive_as_copies_and_across_crashes(
     }
 }
 
+/// A commit can land while the staged copy of its bytes survives: recovery must then drop
+/// them, not copy them beside their own file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_commit_that_landed_despite_a_reported_failure_is_not_copied_beside_itself() {
+    let fixture = Fixture::new().await;
+    let ino = {
+        let fs = fixture.mount(true);
+        let (ino, fh) = create_open(&fs, "accounts.db");
+        fs.write_buffer(ino, 0, b"before").unwrap();
+        assert_eq!(fs.release_handle(ino, fh), Ok(()));
+        let fh = open_handle(&fs, ino, true);
+        fs.write_buffer(ino, 0, b"after!").unwrap();
+        // A sync stages; the close would commit. This one never closes, as a stop leaves it.
+        assert_eq!(fs.fsync_inode(ino), Ok(()));
+        let _ = fh;
+        ino
+    };
+    assert_eq!(
+        fixture.staged().len(),
+        1,
+        "the synced bytes were staged for the next commit"
+    );
+    {
+        // The version reached the file after all, and the staged entry outlived it: what a
+        // cancellation between the commit and its cleanup leaves behind.
+        let fs = fixture.mount(true);
+        fs.commit_content(ino, b"after!").unwrap();
+    }
+    let fs = fixture.mount(true);
+    assert_eq!(fs.recover_unsaved_writes(), 0, "nothing needed restoring");
+    assert_eq!(committed_bytes(&fs, ino).await, b"after!");
+    let copy_name = unsaved_copy_name(b"accounts.db", b"after!");
+    assert!(
+        fs.ns()
+            .lookup(crate::namespace::ROOT_INO, &copy_name)
+            .is_none(),
+        "the file already held those bytes, so no copy sits beside it"
+    );
+    assert!(fixture.staged().is_empty(), "the staged entry is gone");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
     let bytes: Vec<u8> = (0..2_500_000_u32).map(|i| (i % 253) as u8).collect();
