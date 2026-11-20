@@ -73,9 +73,6 @@ tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-ide
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-# `tilo-identity approve` on a device without the identity's key asks the
-# session, which reaches the devices that hold it.
-tilo-control = { path = "../../session/control-cli" }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -95,3 +92,8 @@ workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process", "termios"] }
+# `tilo-identity approve` on a device without the identity's key asks the
+# session, which reaches the devices that hold it. The session, its control
+# sockets and the `tilo-identity` command are Unix-only, so the client is
+# neither built nor needed elsewhere.
+tilo-control = { path = "../../session/control-cli" }
