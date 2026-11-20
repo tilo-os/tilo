@@ -3,7 +3,7 @@ import Foundation
 import TiloLive
 
 /// The assistant's day as the assistant view says it, read from the assistant's own item among
-/// the workspace's agents (Chat's `chat.agent`).
+/// the workspace's agents (Assistant's `tilo.workspace.agent`).
 ///
 /// Every figure is one the person's server counted. Nothing here counts anything: what their
 /// server keeps no count of is said as not counted, never as nought.
@@ -73,7 +73,7 @@ final class AssistantDay {
 }
 
 /// Where the assistant and its sub-agents work, as the assistant view says it, read from the
-/// workspace's agents as Chat keeps them. A place is named only where an agent's own item puts
+/// workspace's agents as Assistant keeps them. A place is named only where an agent's own item puts
 /// that agent: nothing is assumed of a place no item says.
 ///
 /// An agent's item says whether the workspace's server works it, around the clock and with

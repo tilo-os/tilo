@@ -284,9 +284,10 @@ What keeps it the app's alone:
   the page keeps nothing of such a call (`actions.once`).
 
 **The assistant's source** (`TiloSource`, `Sources/AssistantTilo`) is `AssistantSource` on all
-of this: the app as a device of its person. The conversation, a question that waits,
-sub-agents and what was learned are what Chat keeps, read through the page's mount at the
-page's word of a change. A page whose read of Chat's messages names a conversation and the
+of this: the app as a device of its person. The conversation, a question that waits and what
+was learned are what Chat keeps, read through the page's mount at the
+page's word of a change; the sub-agents are the workspace's agents, which Assistant keeps
+(`tilo.workspace.agent`). A page whose read of Chat's messages names a conversation and the
 fields it wants answers each conversation whole in one read; an older page is read message by
 message. Chat names who wrote a message by their kind (`{"person": …}`, `{"agent": …}`) and
 spells the conversation of a person and an agent from the two (`ChatMember`,
@@ -320,14 +321,15 @@ own name, when it was added and how many commands it offers, or that nobody is s
 
 **Which agent is the assistant, and the first time.** When its device gets in, the app asks
 the workspace's server, as the person on this device, which agents the workspace keeps
-(`chat.agent`, through the device's entry: `TiloEngine.askAgents`). The assistant is the
+(`tilo.workspace.agent`, which Assistant keeps, through the device's entry:
+`TiloEngine.askAgents`). The assistant is the
 active agent the person keeps that no outside client connects as and that is nobody's
 sub-agent, the earliest made. Where the server answers that the person keeps none, the app
-makes one through that same resource, with Chat's own `create-agent` and then the action
+makes one through that same resource, with its own `create-agent` and then the action
 that has the server answer for it, as Tilo's own Assistant window does. Only the server's
 word makes one: a page that just got in may not hold the workspace's agents yet. On a page
-that hands an app no way to its server, the assistant is found in what the page's own window
-of Chat publishes, and nothing is made. No setting names an agent. What is in the way is
+that hands an app no way to its server, the assistant is found in what the page publishes of
+the workspace's agents, and nothing is made. No setting names an agent. What is in the way is
 said in the main chat (`AssistantSource.setup()`): that the assistant is being set up, or
 the server's own sentence where it refused, with Try again.
 
