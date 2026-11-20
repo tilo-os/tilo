@@ -191,6 +191,16 @@ impl Resources {
         self.ask(mcp_server::target(action), mcp_server::argument(value));
     }
 
+    /// Show the person how their agent connects as them: the setup their own card shows, with
+    /// the one line that sets Tilo up on the agent's computer.
+    pub(crate) fn show_connect(&self) {
+        use ui::tilo_actions::remote::session_actions;
+        self.ask(
+            session_actions::target(session_actions::SHOW_CONNECT),
+            InvokeArgument::Json(serde_json::Map::new()),
+        );
+    }
+
     /// Follow the history's read `action` with `value` as its argument.
     pub(crate) fn follow_history<T>(&self, action: &str, value: &impl serde::Serialize) -> Query<T>
     where

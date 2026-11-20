@@ -1,6 +1,7 @@
 //! Connect: the one line that connects an MCP client to the person's workspaces, and every
 //! agent the MCP server let in, with Revoke.
 
+use ui::framework::ReadFailure;
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::tilo_actions::remote::mcp_server;
@@ -18,9 +19,38 @@ const fn client_label(client: mcp_server::Client) -> &'static str {
 }
 
 pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
-    let records = Resources::of(cx);
-    let read = &reads.server;
-    Box::new(cx.arriving(&read.answer(), move |_, server| {
+    let resources = Resources::of(cx);
+    let answer = reads.server.answer();
+    // A server that keeps no MCP grants for this person (someone else's, which a page in a
+    // workspace there reaches) answers no read of them: their agent connects by setting Tilo up
+    // on its computer and signing in as them, the setup their own card shows.
+    cx.switch(&answer.state(), move |cx, read| match read {
+        Arrival::Failed(_) => set_up(&resources),
+        Arrival::Pending { .. } | Arrival::Ready(_) => connected(cx, &resources, &answer),
+    })
+}
+
+/// Setting Tilo up on the computer of the person's agent, which signs it in as them.
+fn set_up(resources: &Resources) -> Element {
+    let resources = resources.clone();
+    page(vec![
+        Box::new(Text::new(&tr("console-connect-setup-lead"))),
+        Box::new(
+            Button::new("console-connect-setup", "console-connect-setup")
+                .role(ButtonRole::Primary)
+                .on_view(move || resources.show_connect()),
+        ),
+    ])
+}
+
+/// The commands that connect an agent to the MCP server, and every agent it let in.
+fn connected(
+    cx: &ViewCx<Console>,
+    resources: &Resources,
+    answer: &Arriving<mcp_server::Server, ReadFailure>,
+) -> Element {
+    let resources = resources.clone();
+    Box::new(cx.arriving(answer, move |_, server| {
         let commands = mcp_server::Client::ALL
             .into_iter()
             .map(|client| {
@@ -49,7 +79,7 @@ pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
                 .grants
                 .iter()
                 .enumerate()
-                .map(|(index, grant)| grant_row(&records, index, grant))
+                .map(|(index, grant)| grant_row(&resources, index, grant))
                 .collect()
         };
         parts.push(Box::new(Section::titled(

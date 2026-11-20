@@ -109,6 +109,34 @@ fn not_in_the_browser(app: &str) -> String {
     tilo_desktop_search::availability::runs_elsewhere(app, "the browser")
 }
 
+thread_local! {
+    /// Whether the page offers its agent setup, as it last said ([`set_agent_setup`]).
+    static AGENT_SETUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Note whether the page offers its agent setup: the prompt that sets Tilo up on an agent's
+/// computer and signs it in as the person.
+pub(crate) fn set_agent_setup(offered: bool) {
+    AGENT_SETUP.with(|setup| setup.set(offered));
+}
+
+/// Whether the page offers its agent setup ([`set_agent_setup`]).
+pub(crate) fn sets_up_agents() -> bool {
+    AGENT_SETUP.with(std::cell::Cell::get)
+}
+
+/// The welcome verbs this page offers: the ones whose apps it carries, and connecting an agent
+/// only where the page can set one up (`sets_up_agents`). A page reached by an invitation alone,
+/// with no web address to ask a sign-in code at, cannot, so its card would do nothing.
+pub(crate) fn page_cards(sets_up_agents: bool) -> Vec<tilo_desktop::launchpad::LaunchpadAction> {
+    use tilo_desktop::launchpad::LaunchpadAction;
+    LaunchpadAction::ALL
+        .into_iter()
+        .filter(|card| card.offered(|app| known_application(app).is_some()))
+        .filter(|card| sets_up_agents || *card != LaunchpadAction::Agent)
+        .collect()
+}
+
 pub(crate) fn known_application(app: &str) -> Option<&'static str> {
     known_applications()
         .into_iter()

@@ -459,6 +459,48 @@ fn the_connected_agents_list_says_when_a_key_operates_web_pages() {
     );
 }
 
+/// A server that keeps no MCP grants for this person (someone else's, which their page is in)
+/// answers no read of them: Connect offers the setup that signs their agent in as them, the one
+/// their own card shows, instead of a failure.
+#[test]
+fn connect_on_a_server_that_keeps_no_grants_for_the_person_offers_their_setup() {
+    use ui::tilo_actions::remote::{
+        ActionCallError, InvocationReceipt, ReceiptStatus, session_actions,
+    };
+    english();
+    let mut app = TestApp::<App>::for_person("ada").expect("open");
+    let requests = asked(&mut app);
+    let server_read = find(&requests, &mcp_server::target(mcp_server::SERVER));
+    app.harness()
+        .handle_collaboration_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation: server_read.invocation,
+                status: ReceiptStatus::Rejected {
+                    error: ActionCallError::UnknownAction,
+                },
+            }),
+        });
+    app.frame();
+    let targets: Vec<String> = app.harness().targets().into_keys().collect();
+    let connect = targets
+        .iter()
+        .find(|target| target.ends_with("NavList[0]/NavRow[2]"))
+        .cloned()
+        .unwrap_or_else(|| panic!("the sidebar offers Connect among {targets:?}"));
+    app.harness().click_named(&connect).unwrap();
+    app.frame();
+    assert!(
+        !says(&mut app, "no such action is offered"),
+        "the refusal is no failure the person reads"
+    );
+    app.harness().click_named("console-connect-setup").unwrap();
+    let requests = asked(&mut app);
+    find(
+        &requests,
+        &session_actions::target(session_actions::SHOW_CONNECT),
+    );
+}
+
 #[test]
 fn revoking_a_grant_names_it_to_the_server() {
     english();

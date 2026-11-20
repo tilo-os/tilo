@@ -65,6 +65,8 @@ console-workspace-open = In Tilo öffnen
 
 console-connect-lead = Führe einen dieser Befehle dort aus, wo dein Agent läuft. Er bittet dich einmal um Anmeldung und arbeitet dann als er selbst in deinen Arbeitsbereichen. Alles, was er tut, erscheint unter Agenten, wo du es stoppen oder rückgängig machen kannst.
 console-connect-heading = Einen Agenten verbinden
+console-connect-setup-lead = Dein Agent arbeitet hier als du, sobald Tilo auf seinem Computer eingerichtet ist. Eine Zeile, die du ihm gibst, richtet es ein und meldet ihn als dich an.
+console-connect-setup = Agenten einrichten
 console-client-claude-code = Claude Code
 console-client-codex = Codex
 console-client-other = Jeder MCP-Client

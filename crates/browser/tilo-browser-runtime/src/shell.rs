@@ -2390,14 +2390,9 @@ fn page_layer(surface: DesktopSurface, handle: &DesktopHandle) -> BackgroundLaye
         Box::new(surface),
         handle.clone(),
         launchpad,
-        // The page offers the verbs whose apps it carries: a card for an
-        // app this page does not have would open nothing.
-        Rc::new(|| {
-            LaunchpadAction::ALL
-                .into_iter()
-                .filter(|card| card.offered(|app| crate::desktop::known_application(app).is_some()))
-                .collect()
-        }),
+        // The page offers the verbs whose apps it carries, and connecting an agent where it can
+        // set one up: a card that would open nothing is not drawn.
+        Rc::new(|| crate::desktop::page_cards(crate::desktop::sets_up_agents())),
         // The page has no widget layer of its own under the shell, so the
         // layer keeps the asks to itself; `follow_asks` reads them back.
         Rc::default(),
