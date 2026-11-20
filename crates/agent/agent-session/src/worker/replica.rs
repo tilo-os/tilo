@@ -602,6 +602,7 @@ impl ConfinedReplica {
     /// The worker could not show it.
     pub fn page_show(&self, show: Option<&str>) -> Result<(String, String, String), AppError> {
         let mut inner = self.lock();
+        self.supply_before_rendering(&mut inner);
         let reply = self.call(
             &mut inner,
             &Request::PageShow {
@@ -639,6 +640,7 @@ impl ConfinedReplica {
             None => Request::PagePatch,
         };
         let mut inner = self.lock();
+        self.supply_before_rendering(&mut inner);
         let reply = self.call(&mut inner, &request);
         if reply.is_ok() {
             inner.dirty = true;
@@ -731,7 +733,10 @@ impl ConfinedReplica {
     /// [`crate::Replica::survey`]. Empty when the worker cannot answer.
     #[must_use]
     pub fn survey(&self) -> Vec<ActionDescriptor> {
-        let reply = self.call(&mut self.lock(), &Request::Survey);
+        let mut inner = self.lock();
+        self.supply_before_rendering(&mut inner);
+        let reply = self.call(&mut inner, &Request::Survey);
+        drop(inner);
         match reply {
             Ok(Reply::Descriptors(text)) => {
                 crate::render::offered(serde_json::from_str(&text).unwrap_or_default())
@@ -744,7 +749,10 @@ impl ConfinedReplica {
     /// resource holding it: [`crate::Replica::survey_rows`].
     #[must_use]
     pub fn survey_rows(&self) -> Vec<tilo_actions::remote::CatalogueRow> {
-        let reply = self.call(&mut self.lock(), &Request::SurveyRows);
+        let mut inner = self.lock();
+        self.supply_before_rendering(&mut inner);
+        let reply = self.call(&mut inner, &Request::SurveyRows);
+        drop(inner);
         match reply {
             Ok(Reply::Page { rows, .. }) => serde_json::from_str(&rows).unwrap_or_default(),
             _ => Vec::new(),
@@ -764,8 +772,10 @@ impl ConfinedReplica {
         let Ok(query) = serde_json::to_string(query) else {
             return (0, Vec::new());
         };
+        let mut inner = self.lock();
+        self.supply_before_rendering(&mut inner);
         let reply = self.call(
-            &mut self.lock(),
+            &mut inner,
             &Request::SurveyPage {
                 query,
                 can_render: crate::render::can_render(),
@@ -773,6 +783,7 @@ impl ConfinedReplica {
                 take: u64::try_from(take).unwrap_or(u64::MAX),
             },
         );
+        drop(inner);
         match reply {
             Ok(Reply::Page { total, rows }) => (
                 usize::try_from(total).unwrap_or(usize::MAX),
@@ -822,7 +833,10 @@ impl ConfinedReplica {
     #[must_use]
     pub fn descriptor(&self, address: &ActionAddress) -> Option<ActionDescriptor> {
         let address = serde_json::to_string(address).ok()?;
-        let answered = self.call(&mut self.lock(), &Request::Resolve { address });
+        let mut inner = self.lock();
+        self.supply_before_rendering(&mut inner);
+        let answered = self.call(&mut inner, &Request::Resolve { address });
+        drop(inner);
         match answered {
             Ok(Reply::Descriptors(text)) => crate::render::offered(
                 serde_json::from_str::<Vec<ActionDescriptor>>(&text).unwrap_or_default(),
@@ -872,7 +886,10 @@ impl ConfinedReplica {
             policy: serde_json::to_string(policy)
                 .map_err(|error| worker_error(error.to_string()))?,
         };
-        let answered = self.call(&mut self.lock(), &request)?;
+        let mut inner = self.lock();
+        self.supply_before_rendering(&mut inner);
+        let answered = self.call(&mut inner, &request)?;
+        drop(inner);
         match answered {
             Reply::Descriptors(text) => {
                 serde_json::from_str(&text).map_err(|error| worker_error(error.to_string()))
@@ -1132,10 +1149,27 @@ impl ConfinedReplica {
         }
     }
 
-    /// Before an effect or view runs, put into the worker the content the
-    /// record's document refers to that the workspace has and the worker does
-    /// not hold: what an effect reads of the record (an export's pictures)
-    /// may have been placed by another member, in another worker.
+    /// Put into the worker the content the document refers to, before its view
+    /// renders: a view reads what its document names (the PDF a PDF document
+    /// pins), and the operation that named it may have taken it by reference
+    /// alone, so no byte of it crossed to the worker. Best effort, as an
+    /// effect's referenced content is: a view that lacks what it reads says so
+    /// itself.
+    fn supply_before_rendering(&self, inner: &mut Inner) {
+        let Some(content) = &self.content else {
+            return;
+        };
+        if let Err(error) = self.supply_held_content(inner, content) {
+            tracing::warn!(app = %self.app_id, %error,
+                "app worker: the content a view reads was not put");
+        }
+    }
+
+    /// Before an effect runs, put into the worker the content the document
+    /// refers to that the workspace has and the worker does not hold: what an
+    /// effect reads of it (an export's pictures) may have been placed by
+    /// another member, in another worker. A view's own read is supplied by
+    /// [`Self::supply_before_rendering`], before it renders.
     /// Document operations take nothing more than they name. Bounded by
     /// [`REFERENCED_CONTENT_ITEMS`] and [`REFERENCED_CONTENT_BYTES`]; what
     /// is left out is logged.
