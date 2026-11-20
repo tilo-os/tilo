@@ -321,6 +321,12 @@ impl Display {
         std::mem::take(&mut self.kept.asked.lock_recover().asks)
     }
 
+    /// This desktop took up what the keepers held, `following_restart` an in-place restart or
+    /// not.
+    pub(crate) fn took_up_kept(&self, following_restart: bool) {
+        self.kept.asked.lock_recover().started_fresh = Some(!following_restart);
+    }
+
     /// The launch `id` is the program the service waits on through `end`.
     pub(crate) fn started(&self, id: u64, end: Arc<Ending>) {
         self.kept.asked.lock_recover().ends.insert(id, end);
@@ -451,6 +457,10 @@ impl LaunchDisplays for Display {
     fn taken_back(&self) -> Vec<TakenBack> {
         std::mem::take(&mut self.kept.asked.lock_recover().taken)
     }
+
+    fn started_fresh(&self) -> Option<bool> {
+        self.kept.asked.lock_recover().started_fresh
+    }
 }
 
 /// The service's side of the programs the session keeps: what it asked the session's loop, and
@@ -469,6 +479,8 @@ struct Asked {
     ends: BTreeMap<u64, Arc<Ending>>,
     /// The programs taken back after a restart, until the service takes them.
     taken: Vec<TakenBack>,
+    /// Whether this desktop started fresh, once it took up what the keepers held.
+    started_fresh: Option<bool>,
 }
 
 impl Kept {

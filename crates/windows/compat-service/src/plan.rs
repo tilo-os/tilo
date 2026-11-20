@@ -427,6 +427,12 @@ pub trait LaunchDisplays: Send + Sync + 'static {
     fn taken_back(&self) -> Vec<TakenBack> {
         Vec::new()
     }
+
+    /// Whether this desktop started fresh, not after an in-place restart, once it knows: then
+    /// nothing was kept, and every program the desktop before had open ended with it.
+    fn started_fresh(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// A program a launch keeps open through a desktop restart.

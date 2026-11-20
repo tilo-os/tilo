@@ -330,7 +330,8 @@ where
     V: VmDelegate + 'static,
 {
     /// Take up the programs the desktop kept through its last restart: each is open again, ended
-    /// and reported as one this service started.
+    /// and reported as one this service started. A setup none of them is ended with the desktop
+    /// before.
     fn take_back(self: &Arc<Self>) {
         for taken in self.service.taken_back() {
             let release = self.service.release_taken_back();
@@ -353,6 +354,7 @@ where
                 tracing::warn!(%error, "a kept Windows program is not watched");
             }
         }
+        self.service.settle_lost_setups();
     }
 
     /// `program`, the setup or uninstaller of `capsule`, closing its transaction when it ended.

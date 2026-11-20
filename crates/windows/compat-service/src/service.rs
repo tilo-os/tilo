@@ -575,6 +575,8 @@ pub struct CompatibilityService<R, B, E, V> {
     /// The capsules whose setup or uninstaller is open: it goes on after the request that
     /// started it, and nothing else changes the capsule until it ended.
     setups: Mutex<std::collections::BTreeSet<String>>,
+    /// The setups the desktop before left open are closed: once, as this desktop starts fresh.
+    lost_setups_settled: std::sync::atomic::AtomicBool,
 }
 
 impl<R, B, E, V> CompatibilityService<R, B, E, V>
@@ -605,6 +607,7 @@ where
             capsule_lock: Mutex::new(()),
             installation_lock: Mutex::new(()),
             setups: Mutex::default(),
+            lost_setups_settled: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -923,6 +926,38 @@ where
         })();
         self.unclaim_setup(capsule_id);
         finished
+    }
+
+    /// Close the setup and uninstaller transactions the desktop before left open, once this
+    /// desktop knows it started fresh: such a setup ended with that desktop (a logout, a crash),
+    /// nothing else finishes it, and it would show as in progress forever, with nothing to retry
+    /// or remove. After an in-place restart each is kept, and finishes as it ends.
+    pub(crate) fn settle_lost_setups(&self) {
+        use std::sync::atomic::Ordering;
+        if self.lost_setups_settled.load(Ordering::Acquire)
+            || self.displays.started_fresh() != Some(true)
+            || self.lost_setups_settled.swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        let Ok(states) = self.store.installations() else {
+            return;
+        };
+        for state in states {
+            let open = state.installation.as_ref().is_some_and(|installation| {
+                matches!(
+                    installation.status,
+                    InstallationStatus::Installing | InstallationStatus::Uninstalling
+                )
+            });
+            if !open || self.claim_setup(&state.id).is_err() {
+                continue;
+            }
+            let ended = Err("It ended when the desktop stopped".to_string());
+            if let Err(error) = self.finish_setup(&state.id, ended) {
+                tracing::warn!(%error, "a lost Windows setup is not closed");
+            }
+        }
     }
 
     /// Launch a row from the authenticated guest publication. This bypasses

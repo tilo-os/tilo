@@ -809,6 +809,7 @@ impl Apps {
             state.stopped_away = state.spawner.stopped_away();
         }
         self.took_up(adopted, true);
+        self.windows_display().took_up_kept(following_restart);
     }
 
     /// Show the keepers a service started since the last pass.

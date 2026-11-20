@@ -2563,4 +2563,20 @@ fn a_windows_setup_stays_open_through_an_in_place_restart_and_never_holds_it_up(
         logout.elapsed()
     );
     KeptRig::gone([pid]);
+    // The next desktop shows that setup as ended, so it can be retried or removed.
+    let mut third = rig.start(false);
+    let answers = third.manage(&rig, "fifth", &["list"]);
+    let installations = answers[0]["installations"].as_array().expect("the list");
+    assert!(
+        installations
+            .iter()
+            .all(|installation| installation["status"] != "installing"),
+        "no setup is left in progress: {answers:?}"
+    );
+    assert!(
+        installations
+            .iter()
+            .any(|installation| installation["status"] == "failed"),
+        "{answers:?}"
+    );
 }
