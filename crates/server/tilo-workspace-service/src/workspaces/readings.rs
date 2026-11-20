@@ -11,7 +11,7 @@ use tilo_server_protocol::WorkspaceId;
 
 use tilo_peer_state::direct::Replica;
 
-use super::{DeviceKeys, GovernedWorkspace, Workspaces};
+use super::{DeviceKeys, GovernedWorkspace, StatePeer, Workspaces};
 
 /// What a governed workspace is read through without its lock.
 #[derive(Clone)]
@@ -85,4 +85,29 @@ impl Workspaces {
             .keep(workspace, &governed, reading.clone());
         Some(reading)
     }
+
+    /// `answer` of the governance of the workspace `workspace` governed here,
+    /// as its replica holds it now; `None` for a workspace not governed here.
+    pub(super) async fn governing<T>(
+        &self,
+        workspace: WorkspaceId,
+        answer: impl FnOnce(&Governance<'_>) -> T,
+    ) -> Option<T> {
+        let reading = self.reading(workspace).await?;
+        let peer = reading.replica.lock();
+        Some(answer(&Governance {
+            peer: &peer,
+            #[cfg(feature = "agents")]
+            workspace: &reading.workspace,
+        }))
+    }
+}
+
+/// A governed workspace's governance as its replica holds it now: what every
+/// decision of who reads what is made against.
+pub(super) struct Governance<'a> {
+    pub(super) peer: &'a StatePeer,
+    /// The workspace's name, which only the views pages read ask for.
+    #[cfg(feature = "agents")]
+    pub(super) workspace: &'a str,
 }

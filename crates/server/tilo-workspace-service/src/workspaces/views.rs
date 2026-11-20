@@ -1,4 +1,5 @@
 //! Exact-source discovery using the governor's already-owned channel state.
+use super::readings::Governance;
 use super::{GovernedWorkspace, StatePeer, SystemTime, Workspaces};
 use tilo_action_policy::MemberAccess;
 use tilo_actions::remote::Caller;
@@ -7,13 +8,6 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 
 const MAX_VIEW_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
-
-/// A governed workspace's governance as its replica holds it now: what every
-/// decision of who reads what is made against.
-pub(super) struct Governance<'a> {
-    pub(super) peer: &'a StatePeer,
-    workspace: &'a str,
-}
 
 impl Governance<'_> {
     /// The access `caller` holds here now: only a person on a device this
@@ -117,21 +111,6 @@ pub fn bot_shows_personas(peer: &StatePeer, installation: &str, now: SystemTime)
 }
 
 impl Workspaces {
-    /// `answer` of the governance of the workspace `workspace` governed here,
-    /// as its replica holds it now; `None` for a workspace not governed here.
-    pub(super) async fn governing<T>(
-        &self,
-        workspace: WorkspaceId,
-        answer: impl FnOnce(&Governance<'_>) -> T,
-    ) -> Option<T> {
-        let reading = self.reading(workspace).await?;
-        let peer = reading.replica.lock();
-        Some(answer(&Governance {
-            peer: &peer,
-            workspace: &reading.workspace,
-        }))
-    }
-
     /// [`bot_shows_personas`] in the workspace of `workspace` governed here;
     /// false for a workspace not governed here.
     pub async fn bot_personas(&self, workspace: WorkspaceId, installation: &str) -> bool {
