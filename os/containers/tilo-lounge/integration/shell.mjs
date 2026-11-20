@@ -153,15 +153,23 @@ export const pressWidget = async (tab, id, nth = 0) => {
   return pressBox(tab, node.bounds);
 };
 /** Every node the desktop publishes, with what a driver reads it by: the role
- * a screen reader gets it, its name and value, its test id, and where it is. */
+ * a screen reader gets it, its name and value, its test id, and where it is as
+ * four edges — a node of the shell writes its own bounds as edges, a window's
+ * own node writes a rect as its corner, width and height. */
 export const nodesOf = tab => tab.evaluate(`(() => {
+  const edges = b => Array.isArray(b)
+    ? {x0: b[0], y0: b[1], x1: b[2], y1: b[3]}
+    : {x0: b.x0 ?? b.x, y0: b.y0 ?? b.y, x1: b.x1 ?? b.x + b.width, y1: b.y1 ?? b.y + b.height};
+  const sized = r => Array.isArray(r)
+    ? {x0: r[0], y0: r[1], x1: r[0] + r[2], y1: r[1] + r[3]}
+    : {x0: r.x, y0: r.y, x1: r.x + r.width, y1: r.y + r.height};
   const out = [];
   const walk = n => {
     if (!n) return;
     const s = n.semantics;
     if (s) out.push({role: s.role ?? null, name: s.name ?? '', value: s.value ?? null,
       id: n.test_id ?? null, widget: n.widget ?? null, focused: s.state?.focused ?? null,
-      bounds: s.bounds ?? s.rect ?? n.rect ?? null});
+      bounds: s.bounds ? edges(s.bounds) : (s.rect ?? n.rect) ? sized(s.rect ?? n.rect) : null});
     (n.children || []).forEach(walk);
   };
   walk(globalThis.tiloMount?.state()?.semantics?.root);
