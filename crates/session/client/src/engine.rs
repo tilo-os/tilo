@@ -1702,6 +1702,12 @@ impl Engine {
         self.handed.lock_recover().insert(workspace, keys);
     }
 
+    /// The keys `workspace`'s host handed this device, when it handed any.
+    #[must_use]
+    pub fn handed_keys(&self, workspace: WorkspaceId) -> Option<key_group::ContentKeys> {
+        self.handed.lock_recover().get(&workspace).cloned()
+    }
+
     pub fn keys(&self) -> KeyProvider {
         self.keys.clone()
     }

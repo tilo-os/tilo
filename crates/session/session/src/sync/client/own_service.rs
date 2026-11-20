@@ -49,6 +49,7 @@ pub(super) async fn open(
     let groups = DeviceKeyGroups {
         keys: Arc::new(DeviceGroupKeys {
             keys: engine.keys(),
+            engine: Arc::downgrade(engine),
         }),
         sink: Some(Arc::new(DeviceKeySink {
             engine: Arc::downgrade(engine),
@@ -131,9 +132,11 @@ pub(super) async fn note_open_links(engine: &Arc<Engine>) {
     }
 }
 
-/// This device's key service, as its workspace service asks it for a workspace's keys.
+/// This device's keys, as its workspace service asks for a workspace's: those the workspace's host
+/// handed this device, else its key service's.
 struct DeviceGroupKeys {
     keys: KeyProvider,
+    engine: std::sync::Weak<Engine>,
 }
 
 impl GroupKeys for DeviceGroupKeys {
@@ -152,6 +155,12 @@ impl GroupKeys for DeviceGroupKeys {
         create: bool,
     ) -> tilo_workspace_service::workspaces::GroupKeysAnswerFuture<'a> {
         Box::pin(async move {
+            if readers == collab_types::EVERY_MEMBER
+                && let Some(keys) = tilo_desktop_model::WorkspaceId::parse(workspace)
+                    .and_then(|id| self.engine.upgrade()?.handed_keys(id))
+            {
+                return Some(Ok(keys));
+            }
             if self.keys.get().is_none() {
                 return Some(Err("this device's key service is not up".into()));
             }
