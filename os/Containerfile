@@ -500,7 +500,7 @@ ENV CARGO_INCREMENTAL=0 \
 # upstream's composefs space check counted the whole image, so a laptop with
 # most of the new image's layers already stored refused to upgrade.
 # It builds in the OS builder (the base's own libraries, Fedora's Rust), with
-# the ostree headers it links against from the frozen RPM snapshot: the CI
+# the ostree, zstd and OpenSSL headers it links against from the frozen RPM snapshot: the CI
 # builder image is an older Fedora, whose installed libraries the snapshot's
 # headers cannot be installed beside. So every input is pinned (the crates by
 # bootc's Cargo.lock) and the build is served from t's cache while they are as
@@ -531,7 +531,7 @@ COPY vendor/zlink-macros /tilo-vendor/zlink-macros
 # only its own), and the CI runners' egress serves those unreliably.
 RUN --network=host --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     --mount=type=bind,from=rpms,source=/repo,target=/repo \
-    dnf install -y --setopt=reposdir=/repo ostree-devel patch \
+    dnf install -y --setopt=reposdir=/repo ostree-devel libzstd-devel openssl-devel patch \
     && dnf clean all \
     && echo "${BOOTC_SHA256}  /tilo-assets/${BOOTC_SOURCE}" | sha256sum -c - \
     && echo "${COMPOSEFS_SHA256}  /tilo-assets/${COMPOSEFS_SOURCE}" | sha256sum -c - \
