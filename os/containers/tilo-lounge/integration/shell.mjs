@@ -83,8 +83,18 @@ export const click = async (tab, x, y) => {
 // control, and a person's press is the one they can reach.
 // [`find`] as the page-side expression a wait reads: the node's JSON, or ''.
 export const found = (name, nth = 0) => `(() => {
+  const edges = b => Array.isArray(b)
+    ? {x0: b[0], y0: b[1], x1: b[2], y1: b[3]}
+    : {x0: b.x0 ?? b.x, y0: b.y0 ?? b.y, x1: b.x1 ?? b.x + b.width, y1: b.y1 ?? b.y + b.height};
+  const sized = r => Array.isArray(r)
+    ? {x0: r[0], y0: r[1], x1: r[0] + r[2], y1: r[1] + r[3]}
+    : {x0: r.x, y0: r.y, x1: r.x + r.width, y1: r.y + r.height};
   const found = [];
-  const node = n => { found.push({name: n.name ?? '', bounds: n.bounds ?? n.rect ?? null}); (n.children || []).forEach(node); };
+  const node = n => {
+    const box = n.bounds ? edges(n.bounds) : n.rect ? sized(n.rect) : null;
+    found.push({name: n.name ?? '', bounds: box});
+    (n.children || []).forEach(node);
+  };
   const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
   const root = globalThis.tiloMount?.state()?.semantics?.root;
   if (root) walk(root);

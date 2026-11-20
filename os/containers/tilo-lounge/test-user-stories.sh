@@ -118,6 +118,14 @@ fcntl.ioctl(sock, SIOCSIFFLAGS, struct.pack("16sH", b"lo", flags | IFF_UP))
   if bash "$tilo_sh/stack.sh" up --fresh > "$out/stack.log" 2>&1; then
     # shellcheck source=tilo-sh/stack.sh
     . "$tilo_sh/stack.sh"
+    # What a client inside this namespace is given of the provider: the names,
+    # and the document they answer with, as the stack's own services asked from
+    # their sandboxes see it.
+    if [[ ${private_network:-0} == 1 ]]; then
+      echo "the namespace: getent says $(getent hosts "autoconfig.$domain" 2>&1 | head -1)"
+      echo "the namespace: in a sandbox, getent says $(bwrap --dev-bind / / -- getent hosts "autoconfig.$domain" 2>&1 | head -1)"
+      echo "the namespace: the document answers $(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 --cacert "$TILO_SH_STATE/trust-bundle.pem" "https://autoconfig.$domain/mail/config-v1.1.xml" 2>&1)"
+    fi
     status=0
     STORY_STACK=$tilo_sh/stack.sh node "$stories/$driver" "$site_origin" "$out" "$TILO_SH_STATE"/logs/{server,api,web}.log 2>&1 | tee "$out/driver.log" || status=$?
   else
