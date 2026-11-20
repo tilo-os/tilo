@@ -118,6 +118,12 @@ GUID_TILO_STORE=0B6C5D38-8BA9-40AA-A1F6-DCC035F5438D
 ESP_SIZE=${TILO_ESP_SIZE:-2G}
 BOOT_SIZE=${TILO_BOOT_SIZE:-1G}
 STORE_VOLUME="${TILO_STORE_VOLUME:-/usr/libexec/tilo-store-volume}"
+# The throwaway install key is 64 random bytes and is removed by `finish`.
+# Stretching a key with that much entropy buys nothing, while every Argon2
+# keyslot costs each unlock that names it (all the enrolments below) about two
+# seconds, so its slot uses the cheapest KDF. A person's passphrase keeps
+# cryptsetup's default Argon2 cost.
+INSTALL_KEY_KDF=(--pbkdf pbkdf2 --pbkdf-force-iterations 1000)
 MIN_ALONGSIDE_ESP_BYTES=2147483648
 MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824
 
@@ -257,7 +263,7 @@ cmd_prepare_partition() {
   install -d -m 0700 "$(dirname "$key")"
   ( umask 0077; head -c 64 /dev/urandom > "$key" )
   log "  formatting LUKS2 only on $part; preserving the shared ESP $esp"
-  cryptsetup luksFormat --type luks2 --batch-mode --key-file "$key" "$part"
+  cryptsetup luksFormat --type luks2 --batch-mode "${INSTALL_KEY_KDF[@]}" --key-file "$key" "$part"
   local luks_uuid mapper root_fs_uuid
   luks_uuid="$(cryptsetup luksUUID "$part")"
   mapper="luks-$luks_uuid"
@@ -383,7 +389,7 @@ EOF
   ( umask 0077; head -c 64 /dev/urandom > "$key" )
 
   log "  formatting LUKS2 on $luks_part"
-  cryptsetup luksFormat --type luks2 --batch-mode --key-file "$key" "$luks_part"
+  cryptsetup luksFormat --type luks2 --batch-mode "${INSTALL_KEY_KDF[@]}" --key-file "$key" "$luks_part"
   local luks_uuid mapper
   luks_uuid="$(cryptsetup luksUUID "$luks_part")"
   [ -n "$luks_uuid" ] || die "prepare: could not read the LUKS UUID"
@@ -585,10 +591,11 @@ cmd_enrol() {
   # The store unlocks from its key file inside the root. Should the root ever
   # be unreadable, the same recovery key opens the store from any rescue
   # system, so the person's workspaces are never behind a factor they were not
-  # shown. A passphrase slot, so it gets cryptsetup's default Argon2 cost.
+  # shown. The recovery key carries 256 random bits, so, as systemd-cryptenroll
+  # does for the root's recovery slot, stretching it buys nothing.
   if [ -n "$store_part" ]; then
     log "  adding the recovery key to the store volume…"
-    cryptsetup luksAddKey --batch-mode --key-file "$store_key" \
+    cryptsetup luksAddKey --batch-mode "${INSTALL_KEY_KDF[@]}" --key-file "$store_key" \
       --new-keyfile "$scratch/recovery" "$store_part" \
       || die "could not add the recovery key to the store volume $store_part"
     cryptsetup open --test-passphrase --key-file "$scratch/recovery" "$store_part" 2>/dev/null \
