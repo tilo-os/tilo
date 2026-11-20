@@ -206,6 +206,9 @@ for entry in declared_entries:
 # services that re-export the clipboard crate. The Wayland clipboard backend
 # consumes Unix file descriptors, so it must stay on the Linux target of
 # `tilo-clipboard` and never enter non-Linux builds through ui or tilo-host.
+# The worker attaches to the app's own display through `wayland-backend`'s
+# system (libwayland) client backend, so that dependency is declared on the
+# Linux target as well.
 for manifest in (
     "crates/sdk/ui-core/Cargo.toml",
     "crates/sdk/tilo-process-services/Cargo.toml",

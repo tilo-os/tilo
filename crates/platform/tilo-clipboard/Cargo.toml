@@ -40,6 +40,10 @@ arboard = { workspace = true, features = ["image-data"] }
 arboard = { workspace = true, features = ["image-data"], optional = true }
 image = { workspace = true, features = ["png"] }
 libc.workspace = true
+# The worker attaches to the app's own `wl_display` through the system
+# (libwayland) client backend, which only the `client_system` feature builds.
+# Nothing here writes `wayland_backend::`; see the cargo-machete ignore below.
+wayland-backend = { version = "0.3", default-features = false, features = ["client_system"] }
 # Without default features: `xkbcommon` makes sctk's build script demand the
 # libxkbcommon development package, and the clipboard never decodes keys.
 smithay-client-toolkit = { version = "0.20.0", default-features = false, features = ["calloop"] }
@@ -60,6 +64,13 @@ wayland-server = "=0.31.13"
 
 [lints]
 workspace = true
+
+# `wayland-backend` is named for its `client_system` feature alone: the worker
+# reaches the app's foreign `wl_display` through `Backend::from_foreign_display`,
+# which exists only on the system backend. Nothing here writes
+# `wayland_backend::`, so an unused-dependency scan can only see it as unused.
+[package.metadata.cargo-machete]
+ignored = ["wayland-backend"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
