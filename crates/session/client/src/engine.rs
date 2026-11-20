@@ -358,10 +358,19 @@ impl Founders {
 /// it whole beside it.
 #[derive(Default)]
 struct KeptResources {
-    /// Each kept resource, with when it was last read ([`Self::uses`] at the time).
-    by_route: BTreeMap<KeptRoute, (u64, Arc<std::sync::Mutex<KeptResource>>)>,
+    /// Each kept resource, with when it was last read ([`Self::uses`] at the time) and the bytes
+    /// it kept after that read ([`KeptDocument::size`]).
+    by_route: BTreeMap<KeptRoute, Kept>,
     /// How many reads took a kept resource so far.
     uses: u64,
+}
+
+/// One kept resource: when it was last read, the bytes it kept, and the resource.
+#[derive(Default)]
+struct Kept {
+    read_last: u64,
+    size: usize,
+    resource: Arc<std::sync::Mutex<KeptResource>>,
 }
 
 /// A kept resource's workspace, app and document id.
@@ -373,21 +382,39 @@ impl KeptResources {
     /// (a folder's tree, its every document read each time a write lands) keeps them, where
     /// letting go of whichever came first by name made it open whole a resource it had just read.
     fn take(&mut self, route: KeptRoute) -> Arc<std::sync::Mutex<KeptResource>> {
-        if !self.by_route.contains_key(&route)
-            && self.by_route.len() >= KEPT_DOCUMENTS
-            && let Some(oldest) = self
-                .by_route
-                .iter()
-                .min_by_key(|(_, (used, _))| *used)
-                .map(|(route, _)| route.clone())
-        {
-            self.by_route.remove(&oldest);
+        if !self.by_route.contains_key(&route) && self.by_route.len() >= KEPT_DOCUMENTS {
+            self.let_go_oldest(&route);
         }
         self.uses = self.uses.wrapping_add(1);
         let now = self.uses;
-        let (read_last, kept) = self.by_route.entry(route).or_default();
-        *read_last = now;
-        Arc::clone(kept)
+        let kept = self.by_route.entry(route).or_default();
+        kept.read_last = now;
+        Arc::clone(&kept.resource)
+    }
+
+    /// The resource at `route` keeps `size` bytes after a read. While all kept take more than
+    /// [`KEPT_BYTES`], the one read longest ago is let go, never this one: a reader going over
+    /// many large resources (a folder's tree of a hundred thousand files) keeps the few it reads
+    /// most, where keeping the last [`KEPT_DOCUMENTS`] of them held hundreds of megabytes.
+    fn sized(&mut self, route: &KeptRoute, size: usize) {
+        let Some(kept) = self.by_route.get_mut(route) else {
+            return;
+        };
+        kept.size = size;
+        while self.by_route.values().map(|kept| kept.size).sum::<usize>() > KEPT_BYTES
+            && self.let_go_oldest(route)
+        {}
+    }
+
+    /// Let go of the resource read longest ago but the one at `keep`; false when there is none.
+    fn let_go_oldest(&mut self, keep: &KeptRoute) -> bool {
+        let oldest = self
+            .by_route
+            .iter()
+            .filter(|(route, _)| *route != keep)
+            .min_by_key(|(_, kept)| kept.read_last)
+            .map(|(route, _)| route.clone());
+        oldest.is_some_and(|oldest| self.by_route.remove(&oldest).is_some())
     }
 
     fn remove(&mut self, route: &KeptRoute) {
@@ -414,21 +441,24 @@ fn kept_under<K: Default>(kept: Option<(KeysUsed, K)>, used: &KeysUsed) -> K {
 
 /// Read a document with what this device kept of it, holding `opening`, the lock a second read
 /// of the same resource waits on, until what the read opened is kept under `used`.
+/// Says with it the bytes it keeps then ([`KeptDocument::size`]).
 fn opened_under<T>(
     opening: Option<&std::sync::Mutex<KeptResource>>,
     used: &KeysUsed,
     read: impl FnOnce(&mut KeptDocument) -> T,
-) -> T {
+) -> (T, usize) {
     let Some(opening) = opening else {
-        return read(&mut KeptDocument::default());
+        return (read(&mut KeptDocument::default()), 0);
     };
     let mut held = opening.lock_recover();
     let mut kept = kept_under(held.take(), used);
     let value = read(&mut kept);
+    let size = kept.size();
     if kept.is_open() {
         *held = Some((*used, kept));
     }
-    value
+    drop(held);
+    (value, size)
 }
 
 /// Keys, by workspace.
@@ -439,6 +469,10 @@ type OpenSealed<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u
 
 /// How many sealed records [`Engine::read_resource`] keeps opened between reads.
 const KEPT_DOCUMENTS: usize = 64;
+
+/// The most bytes ([`KeptDocument::size`]) the sealed documents [`Engine::read_resource`] keeps
+/// opened between reads take together; in memory they take several times as much.
+const KEPT_BYTES: usize = 8 * 1024 * 1024;
 
 /// The writes this device made that its replica has not taken in yet, by record, as document
 /// frames in the clear: they wait for their record's keys (nothing goes out unsealed) or for workspace
@@ -1029,8 +1063,8 @@ impl Engine {
         // A sealed resource another read is opening now is waited for, and read on from what that
         // one opened: taking it out while it was read made the second reader open it whole, which
         // for a chain part of a thousand items costs the second caller most of a second.
-        let opening = sealed.then(|| self.kept.lock_recover().take(key));
-        let read = opened_under(opening.as_deref(), &used, |kept| {
+        let opening = sealed.then(|| self.kept.lock_recover().take(key.clone()));
+        let (read, kept_size) = opened_under(opening.as_deref(), &used, |kept| {
             read(
                 workspace,
                 &mut |write| {
@@ -1050,6 +1084,9 @@ impl Engine {
                 kept,
             )
         });
+        if opening.is_some() {
+            self.kept.lock_recover().sized(&key, kept_size);
+        }
         // The person's other devices may hold the key the workspace's server has not handed this
         // one yet, or cannot, being away: they are asked for the group's frames from the epoch
         // held.
@@ -2244,6 +2281,41 @@ mod tests {
             );
         }
         assert_eq!(kept.by_route.len(), super::KEPT_DOCUMENTS);
+    }
+
+    /// Large documents are kept only up to a budget of bytes, the ones read longest ago let go
+    /// first, and never the one just read: a folder's tree of a hundred thousand files kept
+    /// opened in its last 64 parts held hundreds of megabytes it seldom read again.
+    #[test]
+    fn large_documents_are_kept_within_a_budget_of_bytes() {
+        let workspace = WorkspaceId::from_u128(7);
+        let route = |document: &str| (workspace, "files".to_owned(), document.to_owned());
+        let part = super::KEPT_BYTES / 4;
+        let mut kept = super::KeptResources::default();
+        for n in 0..10 {
+            let _ = kept.take(route(&format!("part-{n}")));
+            kept.sized(&route(&format!("part-{n}")), part);
+            let held: usize = kept.by_route.values().map(|kept| kept.size).sum();
+            assert!(
+                held <= super::KEPT_BYTES,
+                "{held} bytes kept after part {n}"
+            );
+        }
+        let left: Vec<_> = kept
+            .by_route
+            .keys()
+            .map(|(_, _, document)| document.clone())
+            .collect();
+        assert_eq!(left, ["part-6", "part-7", "part-8", "part-9"]);
+        // One larger than the whole budget is still kept while it is the one read last.
+        let _ = kept.take(route("whole"));
+        kept.sized(&route("whole"), super::KEPT_BYTES * 2);
+        let left: Vec<_> = kept
+            .by_route
+            .keys()
+            .map(|(_, _, document)| document.clone())
+            .collect();
+        assert_eq!(left, ["whole"]);
     }
 
     use super::*;

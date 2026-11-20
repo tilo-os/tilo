@@ -181,6 +181,17 @@ impl KeptDocument {
         self.0.is_some()
     }
 
+    /// The bytes kept: what was opened of the history, and the last whole capture of it. The
+    /// opened document takes several times as much in memory again, in proportion.
+    #[must_use]
+    pub fn size(&self) -> usize {
+        self.0.as_ref().map_or(0, |opened| {
+            opened
+                .size
+                .saturating_add(opened.captured.as_ref().map_or(0, |(bytes, _)| bytes.len()))
+        })
+    }
+
     /// Let go of what is kept.
     pub fn forget(&mut self) {
         self.0 = None;
