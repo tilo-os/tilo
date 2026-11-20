@@ -83,6 +83,45 @@ impl SurfaceSource for Source {
     }
 }
 
+/// A surface like a mailbox's: a send queues work for a device in the
+/// outbox, and a device of the workspace settles the entries it carries out.
+struct Mailbox;
+
+impl ReceiptSurface for Mailbox {
+    fn kind(&self) -> &str {
+        KIND
+    }
+    fn verb(&self, action: &str) -> Option<(ActionKind, Option<String>)> {
+        (action == "send").then_some((ActionKind::Outside, None))
+    }
+    fn editable(&self, _: &[PathStep]) -> bool {
+        true
+    }
+    fn footprint(&self, _: &ClaimedAction) -> Vec<UnitPath> {
+        vec![Vec::new()]
+    }
+    fn outboxes(&self) -> Vec<UnitPath> {
+        vec![vec![
+            PathStep::Field("outbox".into()),
+            PathStep::Item(collab_types::surface::ANY_ITEM.into()),
+        ]]
+    }
+}
+
+/// Finds the mailbox's surface.
+struct MailboxSource;
+
+impl SurfaceSource for MailboxSource {
+    fn surface(
+        &self,
+        _: &WrittenDocument<'_>,
+        _: Option<&str>,
+        _: Option<&[u8; 32]>,
+    ) -> Option<Arc<dyn ReceiptSurface>> {
+        Some(Arc::new(Mailbox))
+    }
+}
+
 /// A workspace whose record keeps its comments as units, and a member of
 /// another person holding `role` in it.
 fn workspace_with(role: Role) -> (StatePeer, SigningKey, DeviceCert) {
@@ -102,22 +141,28 @@ fn workspace_keeping(role: Role, units: &[&str]) -> (StatePeer, SigningKey, Devi
         now(),
     )
     .unwrap();
-    let mut record = AutoCommit::new();
+    let mut body = AutoCommit::new();
     if !units.is_empty() {
-        let index = record
+        let index = body
             .put_object(ROOT, collab_types::units::UNIT_INDEX, ObjType::List)
             .unwrap();
         for (at, unit) in units.iter().enumerate() {
-            record.insert(&index, at, *unit).unwrap();
+            body.insert(&index, at, *unit).unwrap();
         }
     }
-    record.put_object(ROOT, "comments", ObjType::Map).unwrap();
-    record.put(ROOT, "value", "seed").unwrap();
-    let meta = record
-        .put_object(ROOT, "tilo:record", ObjType::Map)
-        .unwrap();
-    record.put(&meta, "surface", hex::encode(PINNED)).unwrap();
-    record.commit_with(
+    body.put_object(ROOT, "comments", ObjType::Map).unwrap();
+    if units.contains(&"outbox/*") {
+        // A resource that queues work for a device: one entry waiting to be
+        // carried out.
+        let outbox = body.put_object(ROOT, "outbox", ObjType::Map).unwrap();
+        let entry = body.put_object(&outbox, "m1", ObjType::Map).unwrap();
+        let value = body.put_object(&entry, "v", ObjType::Map).unwrap();
+        body.put(&value, "to", "ada@example.test").unwrap();
+    }
+    body.put(ROOT, "value", "seed").unwrap();
+    let meta = body.put_object(ROOT, "tilo:record", ObjType::Map).unwrap();
+    body.put(&meta, "surface", hex::encode(PINNED)).unwrap();
+    body.commit_with(
         CommitOptions::default()
             .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
     );
@@ -129,7 +174,7 @@ fn workspace_keeping(role: Role, units: &[&str]) -> (StatePeer, SigningKey, Devi
                 app_id: APP.into(),
                 document_id: RECORD.into(),
                 kind: KIND.into(),
-                bytes: record.save(),
+                bytes: body.save(),
             }],
         },
         &owner_key,
@@ -568,6 +613,47 @@ tilo_test_env::scenario! {
         );
         let written = signed_write(&mut doc, &heads, &key);
         receive(&mut peer, &guest, written).expect("the notes edit wrote the notes alone");
+    }
+
+    phase a_settled_outbox_entry_is_no_reach_outside;
+    // A resource the workspace owns that queues work for a device: only what
+    // a change queued reaches outside it. A device settling the entry it
+    // carried out writes inside it, not a new one, so its edit is what its
+    // author may make of the resource, not a reach outside.
+    {
+        let (mut peer, key, guest) = workspace_keeping(Role::Editor, &["outbox/*"]);
+        peer.set_surfaces(Surfaces::from_source(Arc::new(MailboxSource)));
+        let settle = Did::Edit(FieldEdit {
+            ty: KIND.into(),
+            field: "outbox".into(),
+            path: vec![
+                PathStep::Field("outbox".into()),
+                PathStep::Item("m1".into()),
+            ],
+            op: EditOp::Settle,
+            old: None,
+            new: None,
+            args: std::collections::BTreeMap::new(),
+        });
+        let recorded = guest_write(
+            &peer,
+            &key,
+            |doc| {
+                let Some((_, outbox)) = doc.get(ROOT, "outbox").unwrap() else {
+                    panic!("the resource queues work")
+                };
+                let Some((_, entry)) = doc.get(&outbox, "m1").unwrap() else {
+                    panic!("the outbox holds m1")
+                };
+                let Some((_, value)) = doc.get(&entry, "v").unwrap() else {
+                    panic!("m1 keeps its value")
+                };
+                doc.put(&value, "settled", "done").unwrap();
+            },
+            settle,
+            None,
+        );
+        receive(&mut peer, &guest, recorded).expect("settling an entry queues nothing");
     }
 
     phase an_item_stored_as_its_order_key_writes_its_own_unit;
