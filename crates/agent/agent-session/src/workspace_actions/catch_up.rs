@@ -73,7 +73,7 @@ const WANTED_ROUNDS: usize = 4;
 /// the last round handed it one, so a chain held whole takes all of its
 /// parts in the second round; the bound only keeps a mistake from asking
 /// forever.
-const HOLD_ROUNDS: usize = 4;
+pub(super) const HOLD_ROUNDS: usize = 4;
 
 /// Hand the record mounted at `holder` the parts of its chains that the
 /// workspace holds and it does not: the newest part of each chain kept
@@ -272,7 +272,7 @@ fn hold_wanted(
 /// Each of `routes` as the workspace holds it, read side by side: a part opened first
 /// after the service started is read from its sealed writes, which costs about a second
 /// for a part of a few hundred issues, and the parts of one chain do not wait on each other.
-fn read_parts(
+pub(super) fn read_parts(
     routes: Vec<DocumentRoute>,
     state: &WorkspaceState,
 ) -> Vec<(DocumentRoute, Result<super::Saved, String>)> {
@@ -312,7 +312,11 @@ fn read_parts(
 /// How many parts [`read_parts`] reads at once at most.
 const PART_READERS: usize = 8;
 
-fn hold(route: DocumentRoute, saved: Result<super::Saved, String>, mounted: &mut Mounted) {
+pub(super) fn hold(
+    route: DocumentRoute,
+    saved: Result<super::Saved, String>,
+    mounted: &mut Mounted,
+) {
     let Ok(record) = reads::document_id(&route.document) else {
         return;
     };
@@ -595,7 +599,7 @@ fn release_heads(holder: &DocumentRoute, mounted: &mut Mounted, state: &Workspac
     });
 }
 
-fn chains_untold(
+pub(super) fn chains_untold(
     holder: &DocumentRoute,
     mounted: &Mounted,
     state: &WorkspaceState,

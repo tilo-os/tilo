@@ -357,15 +357,14 @@ impl TxOp {
         }
     }
 
-    pub(crate) fn insert_val(
+    /// A letter of a text: its op's value is the letter as a string.
+    pub(crate) fn insert_letter(
         id: OpId,
         obj: ObjMeta,
         pos: usize,
-        value: types::ScalarValue,
+        value: ScalarValue<'static>,
         elemid: ElemId,
     ) -> Self {
-        let _action = types::OpType::Put(value);
-        let (action, value, expand, mark_name) = _action.clone().decompose();
         TxOp {
             pos,
             index: 0,
@@ -376,10 +375,10 @@ impl TxOp {
             bld: OpBuilder {
                 id,
                 obj: obj.id,
-                action,
+                action: Action::Set,
                 value,
-                expand,
-                mark_name,
+                expand: false,
+                mark_name: None,
                 key: KeyRef::Seq(elemid),
                 insert: true,
                 pred: vec![],

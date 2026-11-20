@@ -53,13 +53,15 @@ impl Reads {
         })
     }
 
-    /// Whether the record can be read now: here, and its keys arrived.
+    /// Whether the document can be read now: here, and its keys arrived. Decided without
+    /// reading it out: a sealed document's first read after a start opens its whole history.
     pub(crate) fn readable(&self, route: &DocumentRoute) -> bool {
-        match self.document_revision(route) {
-            Ok(Some(_)) => true,
-            Ok(None) => self.record(route).ok().flatten().is_some(),
-            Err(_) => self.holds(route),
+        #[cfg(feature = "test-support")]
+        if crate::workspace_actions::held_back::hidden(&route.cluster_id, &route.document) {
+            return false;
         }
+        self.0
+            .readable(&route.cluster_id, &route.app_id, &route.document)
     }
 
     /// What the workspace holds of the record, readable or still sealed.

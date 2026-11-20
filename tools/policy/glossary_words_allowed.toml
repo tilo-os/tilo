@@ -677,6 +677,12 @@ identifiers = ["channel"]
 paths = ["crates/agent/agent-session/src/workspace_actions/index.rs"]
 
 [[allow]]
+reason = "The standard library's hand-off between the thread that serves requests and the thread that takes a document's parts in."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/agent/agent-session/src/workspace_actions/part_load.rs"]
+
+[[allow]]
 reason = "The session engine's own name for what it saved of a document, which the search index reads to publish its entries."
 words = ["record"]
 identifiers = ["record_since"]
@@ -1992,6 +1998,16 @@ reason = "The replica seed's existing field naming the document a replica opens,
 words = ["record"]
 identifiers = ["record"]
 paths = ["crates/agent/agent-session/tests/*"]
+
+[[allow]]
+reason = "A run of a run-length encoding: equal values side by side in one of Automerge's columns, as the vendored crate's work count names it."
+words = ["run"]
+paths = ["crates/doc/tilo-automerge/tests/new_text.rs"]
+
+[[allow]]
+reason = "The sign-in end-to-end harness's shell object, whose `run` sends one command to the live installer's root shell."
+words = ["run"]
+paths = ["tools/ci/signin_e2e.py"]
 
 [[allow]]
 reason = "The toolkit enum for a live or historical window."

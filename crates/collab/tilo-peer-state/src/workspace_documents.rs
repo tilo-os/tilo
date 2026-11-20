@@ -57,6 +57,27 @@ pub trait DeviceDocuments: Send + Sync + 'static {
         since: Option<&[[u8; 32]]>,
     ) -> Result<DocumentRead, String>;
 
+    /// Whether `app`'s `resource` of `workspace` reads now: held here, and nothing it waits for
+    /// (its keys, its checkpoint, a write it lacks) still on its way. A service decides it without
+    /// opening the resource, which costs a sealed resource its whole history the first time; this
+    /// default reads it.
+    fn readable(&self, workspace: &str, app: &str, resource: &str) -> bool {
+        match self.read(workspace, app, resource, None) {
+            Ok(
+                DocumentRead::Whole { .. }
+                | DocumentRead::Changes { .. }
+                | DocumentRead::Unchanged(_),
+            ) => true,
+            Ok(DocumentRead::Absent | DocumentRead::Pending) => false,
+            // A resource that does not read here is still the device's to answer for: what it
+            // holds decides, as before it read.
+            Err(error) => {
+                tracing::warn!(%error, resource, "a resource did not read to decide whether it can");
+                self.holds(workspace, app, resource)
+            }
+        }
+    }
+
     /// Every document `workspace` holds, by its app and route.
     ///
     /// # Errors

@@ -13,6 +13,46 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::ops::Range;
 
+/// TILO(run-splice): adjacent equal values, as runs.
+fn runs<V: PartialEq>(values: impl Iterator<Item = V>) -> impl Iterator<Item = hexane::Run<V>> {
+    let mut values = values.peekable();
+    std::iter::from_fn(move || {
+        let value = values.next()?;
+        let mut count = 1;
+        while values.next_if(|next| *next == value).is_some() {
+            count += 1;
+        }
+        crate::work::wrote_column_run(); // TILO(work-count)
+        Some(hexane::Run { count, value })
+    })
+}
+
+/// TILO(run-splice): the values of a delta column, as runs of equal steps.
+/// Each run carries the value before it, so a run reads the same wherever
+/// it is spliced.
+fn delta_runs(values: impl Iterator<Item = Option<i64>>) -> Vec<hexane::DeltaRun> {
+    let mut runs: Vec<hexane::DeltaRun> = Vec::new();
+    let mut running = 0;
+    for value in values {
+        let delta = value.map(|value| value - running);
+        match runs.last_mut() {
+            Some(run) if run.delta == delta => run.count += 1,
+            _ => {
+                crate::work::wrote_column_run(); // TILO(work-count)
+                runs.push(hexane::DeltaRun {
+                    prefix: running,
+                    delta,
+                    count: 1,
+                });
+            }
+        }
+        if let Some(value) = value {
+            running = value;
+        }
+    }
+    runs
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct Columns {
     pub(super) id_actor: hexane::Column<ActorIdx>,
@@ -420,73 +460,90 @@ impl Columns {
     where
         O: OpLike,
     {
+        // TILO(run-splice): each column takes the ops' values as runs of
+        // equal values (equal steps in a delta column), so a run of like ops
+        // (the letters of a text written at once) costs each column a
+        // comparison per op and one write per run, not an encoder step per op.
         let ops = ops.iter().filter(|o| O::action(o) != Action::Delete);
 
         let value_pos = self.value_meta.get_prefix(pos) as usize;
         let succ_pos = self.succ_count.get_prefix(pos) as usize;
 
-        self.id_actor.splice(pos, 0, ops.clone().map(O::id_actor));
+        self.id_actor.splice_runs(pos, 0, runs(ops.clone().map(O::id_actor)));
         self.id_ctr
-            .splice(pos, 0, ops.clone().map(|o| O::id_ctr(o) as u32));
-        self.obj_actor.splice(pos, 0, ops.clone().map(O::obj_actor));
-        self.obj_ctr
-            .splice(pos, 0, ops.clone().map(|o| O::obj_ctr(o).map(|v| v as u32)));
-        self.key_actor.splice(pos, 0, ops.clone().map(O::key_actor));
+            .splice_runs(pos, 0, delta_runs(ops.clone().map(|o| Some(O::id_ctr(o)))));
+        self.obj_actor
+            .splice_runs(pos, 0, runs(ops.clone().map(O::obj_actor)));
+        self.obj_ctr.splice_runs(
+            pos,
+            0,
+            runs(ops.clone().map(|o| O::obj_ctr(o).map(|v| v as u32))),
+        );
+        self.key_actor
+            .splice_runs(pos, 0, runs(ops.clone().map(O::key_actor)));
         self.key_ctr
-            .splice(pos, 0, ops.clone().map(|o| O::key_ctr(o).map(|v| v as u32)));
-        self.key_str.splice(pos, 0, ops.clone().map(O::key_str));
-        self.insert.splice(pos, 0, ops.clone().map(O::insert));
-        self.action.splice(pos, 0, ops.clone().map(O::action));
-        self.expand.splice(pos, 0, ops.clone().map(O::expand));
-        self.mark_name.splice(pos, 0, ops.clone().map(O::mark_name));
+            .splice_runs(pos, 0, delta_runs(ops.clone().map(O::key_ctr)));
+        self.key_str.splice_runs(pos, 0, runs(ops.clone().map(O::key_str)));
+        self.insert.splice_runs(pos, 0, runs(ops.clone().map(O::insert)));
+        self.action.splice_runs(pos, 0, runs(ops.clone().map(O::action)));
+        self.expand.splice_runs(pos, 0, runs(ops.clone().map(O::expand)));
+        self.mark_name
+            .splice_runs(pos, 0, runs(ops.clone().map(O::mark_name)));
 
         self.value_meta
-            .splice(pos, 0, ops.clone().map(|o| o.meta_value()));
+            .splice_runs(pos, 0, runs(ops.clone().map(|o| o.meta_value())));
 
-        self.value
-            .splice(value_pos, 0, ops.clone().filter_map(|o| o.raw_value()));
+        let mut raw = Vec::new();
+        for op in ops.clone() {
+            if let Some(value) = op.raw_value() {
+                raw.extend_from_slice(&value);
+            }
+        }
+        self.value.splice_slice(value_pos, 0, &raw);
 
         self.succ_count
-            .splice(pos, 0, ops.clone().map(|o| o.succ().len() as u32));
+            .splice_runs(pos, 0, runs(ops.clone().map(|o| o.succ().len() as u32)));
 
-        let succ_actor = ops
-            .clone()
-            .flat_map(|o| o.succ().map(|id| id.actoridx()))
-            .collect::<Vec<_>>();
+        if ops.clone().any(|o| o.succ().len() > 0) {
+            let succ_actor = ops
+                .clone()
+                .flat_map(|o| o.succ().map(|id| id.actoridx()))
+                .collect::<Vec<_>>();
 
-        self.succ_actor
-            .splice(succ_pos, 0, succ_actor.iter().copied());
+            self.succ_actor
+                .splice(succ_pos, 0, succ_actor.iter().copied());
 
-        let succ_ctr = ops
-            .clone()
-            .flat_map(|o| o.succ().map(|id| id.icounter()))
-            .collect::<Vec<_>>();
+            let succ_ctr = ops
+                .clone()
+                .flat_map(|o| o.succ().map(|id| id.icounter()))
+                .collect::<Vec<_>>();
 
-        self.succ_ctr
-            .splice(succ_pos, 0, succ_ctr.iter().map(|&v| v as u32));
+            self.succ_ctr
+                .splice(succ_pos, 0, succ_ctr.iter().map(|&v| v as u32));
 
-        self.index
-            .inc
-            .splice(succ_pos, 0, ops.clone().flat_map(O::succ_inc));
+            self.index
+                .inc
+                .splice(succ_pos, 0, ops.clone().flat_map(O::succ_inc));
+        }
 
         self.index
             .mark
-            .extend(pos, ops.clone().map(O::mark_index).collect());
-        self.index.text.splice(
+            .extend(pos, ops.clone().map(O::mark_index));
+        self.index.text.splice_runs(
             pos,
             0,
-            ops.clone().map(|s| {
+            runs(ops.clone().map(|s| {
                 if O::top(s) {
                     Some(O::width(s, SequenceType::Text, text_encoding) as u32)
                 } else {
                     None
                 }
-            }),
+            })),
         );
-        self.index.top.splice(pos, 0, ops.clone().map(O::top));
+        self.index.top.splice_runs(pos, 0, runs(ops.clone().map(O::top)));
         self.index
             .visible
-            .splice(pos, 0, ops.clone().map(O::visible));
+            .splice_runs(pos, 0, runs(ops.clone().map(O::visible)));
 
         ops.count()
     }

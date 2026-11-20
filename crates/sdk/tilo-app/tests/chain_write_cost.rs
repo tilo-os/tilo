@@ -225,3 +225,34 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+tilo_test_env::scenario! {
+    fn a_part_handed_whole_to_a_copy_that_holds_none_of_it_is_loaded_once;
+
+    phase the_copy_opens_it_from_what_it_was_handed_and_merges_nothing_again;
+    {
+        // A copy taking a chain's parts in after a start is handed each whole: it opens the
+        // part from those bytes, and merging the same bytes into what it just opened loaded
+        // the part a second time, a second for a part of a large tracker.
+        let app = TestApp::<BoardApp>::new().unwrap();
+        let mut writer = copy_for(&app, "ada");
+        let mut keeper = copy_for(&app, "bo");
+        let put = tilo_actions::ActionAddress::new(chain_resource_id(&BoardPart::chain()), "put");
+        let cards: Vec<String> = (0..200).map(|n| format!("card {n}")).collect();
+        writer.invoke(&put, &putting(&cards), false).unwrap();
+        let handed = writer.take_resources_beside_changes().unwrap();
+        assert_eq!(handed.len(), 1, "every card went into the one part");
+        tilo_automerge::shared::clear();
+        for (part, whole) in &handed {
+            assert!(
+                keeper.merge_resource(part, whole).unwrap(),
+                "the part is new to the copy"
+            );
+        }
+        assert_eq!(
+            tilo_automerge::shared::decoded(),
+            0,
+            "the copy loads the part it was handed once, as it opens it"
+        );
+    }
+}

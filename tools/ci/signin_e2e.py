@@ -566,6 +566,12 @@ class Run:
         _, log = sh.run("tail -n 40 /run/e2e/unattended.log; rm -f /run/e2e/recipe.json", 30, quiet=True)
         self.save("unattended.log", log)
         self.facts["install_seconds"] = round(time.monotonic() - started)
+        # The installer's per-phase wall clock: stable phase names and seconds, no secret.
+        _, timing = sh.run("grep '^TILO_INSTALL_TIMING ' /run/e2e/unattended.log || true", 30, quiet=True)
+        timing = [line.strip() for line in timing.splitlines() if line.startswith("TILO_INSTALL_TIMING ")]
+        self.save("install-timing.log", "\n".join(timing) + "\n")
+        for line in timing:
+            say(line)
         if rc.strip() != "0" or "Unattended installation finished" not in log:
             raise Failed(f"the unattended install failed (exit {rc.strip() or 'none'}): "
                          + SECRETS.redact(log.strip())[-800:])

@@ -110,6 +110,15 @@ impl DeviceDocuments for ServiceDocuments {
         })
     }
 
+    fn readable(&self, workspace: &str, app: &str, resource: &str) -> bool {
+        let Some(workspaces) = self.0.copies() else {
+            return false;
+        };
+        let (workspace, app, resource) =
+            (workspace.to_owned(), app.to_owned(), resource.to_owned());
+        on_its_own(async move { workspaces.own_readable(&workspace, (&app, &resource)).await })
+    }
+
     fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
         let workspaces = self
             .0

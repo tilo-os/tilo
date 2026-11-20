@@ -2191,8 +2191,6 @@ up_native() {
   # at the server, whose home relay is that TLS origin, so the host is given the
   # authority that signed it — which this makes. The host starts before the
   # server, which reads where to place a workspace once, when it starts.
-  [[ -z ${discord:-} ]] || start_native_discord
-  [[ -z ${fake_oauth:-} ]] || start_native_fake_oauth
   start_mail
   # Before the TLS and the bundle, so its certificate is trusted by the server
   # that signs a mail account in.
@@ -2200,6 +2198,8 @@ up_native() {
   start_native_tls
   trust_bundle
   # After the trust bundle, which every service reads.
+  [[ -z ${discord:-} ]] || start_native_discord
+  [[ -z ${fake_oauth:-} ]] || start_native_fake_oauth
   [[ ${TILO_SH_FAKE_MODELS:-0} != 1 ]] || start_native_models
   say "tls up ($((SECONDS - phase))s)"
   phase=$SECONDS
@@ -2857,7 +2857,7 @@ start_supervisor() {
   [[ $(basename -- "$cargo") != t ]] || nested=(--nested)
   ( cd "$repo" && setsid env "TILO_SH_STATE=$remote_state" RCARGO_T=0 "$cargo" exec "${nested[@]}" \
       --forward "$(forward_tcp)" --forward "udp:$(forward_udp)" \
-      -- env "${envs[@]}" bash -c "exec python3 $(printf '%q' "$control") serve --port $(printf '%q' "$control_port") --token $(printf '%q' "$stack_token") --repo . --self $(printf '%q' "$self") --start $start" ) \
+      -- env "${envs[@]}" bash -c "exec python3 $(printf '%q' "$control") serve --port $(printf '%q' "$control_port") --token $(printf '%q' "$stack_token") --repo . --self $(printf '%q' "$self") -- $start" ) \
     >> "$state/logs/remote.log" 2>&1 < /dev/null 9>&- &
   printf '%s\n' "$!" > "$state/supervisor.pid"
 }

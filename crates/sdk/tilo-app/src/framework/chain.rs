@@ -60,7 +60,7 @@
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use tilo_actions::{ActionContext, ActionError, ActionInvoker};
@@ -94,6 +94,7 @@ mod shares;
 mod tree;
 mod waiting;
 pub(crate) use waiting::QueuedWrites;
+mod whole;
 
 use super::made::Made;
 use dispatching::detached_dispatch;
@@ -526,6 +527,11 @@ pub(crate) struct ChainCore {
     /// yet: held from their genesis, or not open at all while the workspace
     /// sends them.
     waiting: RefCell<BTreeMap<u64, PartArrival>>,
+    /// Earlier parts of a chain held whole that this device keeps and has
+    /// not opened: each opens in a turn of its own ([`whole`]), waited for
+    /// as on its way meanwhile.
+    queued: RefCell<BTreeSet<u64>>,
+    turns: whole::Turns,
     revision: Cell<u64>,
     part_published: RefCell<PartsPublished>,
     /// The items of the parts before the newest, as last gathered ([`EarlierItems`]).
@@ -1098,6 +1104,8 @@ impl ChainCore {
             chain,
             parts: RefCell::default(),
             waiting: RefCell::default(),
+            queued: RefCell::default(),
+            turns: whole::Turns::of_running_window(),
             revision: Cell::new(0),
             part_published: RefCell::default(),
             earlier: RefCell::new(None),
@@ -1217,6 +1225,16 @@ impl ChainCore {
         let mut moved = false;
         for (index, arrival) in waiting {
             let held = self.parts.borrow().contains_key(&index);
+            // A part kept here opens in its turn, not with those that arrive;
+            // one held meanwhile (read back to) is no longer waited for.
+            if self.waits_its_turn(index) {
+                if held {
+                    self.queued.borrow_mut().remove(&index);
+                    self.waiting.borrow_mut().remove(&index);
+                    moved = true;
+                }
+                continue;
+            }
             if !held {
                 match self.open_or_start(index) {
                     // Here now, with what the workspace sent of it.
@@ -1415,39 +1433,6 @@ impl ChainCore {
                         .workspace_answered(&self.chain.part(index))
             }
         })
-    }
-
-    /// Hold every part before the head that is neither held nor asked for:
-    /// a chain whose views list all of it ([`Chained::HELD_WHOLE`]).
-    fn hold_earlier(&self) {
-        let missing: Vec<u64> = {
-            let parts = self.parts.borrow();
-            let waiting = self.waiting.borrow();
-            let Some(&head) = parts.keys().next_back() else {
-                return;
-            };
-            (0..head)
-                .filter(|index| !parts.contains_key(index) && !waiting.contains_key(index))
-                .collect()
-        };
-        for index in missing {
-            // A part before the head was started before it, so it exists
-            // somewhere: one not on this device is asked for, never started
-            // here empty.
-            let checkout = self.checkout(index);
-            if !self.workspace.store.is_ready(&checkout.id)
-                && matches!(
-                    self.workspace.store.try_open_resource(&checkout),
-                    Err(ResourceOpenError::MissingResource)
-                )
-            {
-                self.workspace.store.want(checkout.id);
-                continue;
-            }
-            if let Err(reason) = self.hold(index) {
-                tracing::warn!(kind = self.part.kind, part = index, %reason, "earlier part not held");
-            }
-        }
     }
 
     /// Where part `index`, asked for and not read here yet, stands; `None`

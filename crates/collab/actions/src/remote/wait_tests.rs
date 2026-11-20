@@ -252,7 +252,10 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_waiting_observe_hears_only_a_move_not_a_clock;
+    phase a_following_wait_answers_by_its_deadline_and_leaves_nothing_parked;
+    // A page gives up on a held ask that is not answered in its own deadline and asks again: a
+    // wait that only a move ended would still be parked then, and answer that move a second
+    // time, to an asker that takes it for the answer to its latest ask.
     {
         let provider = Stepped::running(Signals::OnDemand, id());
         let mut at_once = serve(&provider, &alice(), waiting_observe(id(), 0)).unwrap();
@@ -260,25 +263,25 @@ tilo_test_env::scenario! {
         assert_eq!(UpdateMark::of(&state.unwrap().update), UpdateMark::Accepted);
 
         let mut waiting = serve(&provider, &alice(), waiting_observe(id(), 1)).unwrap();
-        assert!(answered(&mut waiting).is_none());
+        assert!(answered(&mut waiting).is_none(), "nothing moved yet");
         let past = tilo_clock::now()
             .checked_add(std::time::Duration::from_millis(2))
             .unwrap();
         while tilo_clock::now() < past {
             std::hint::spin_loop();
         }
-        // Nothing moved: the provider says when it changes, so the wait goes
-        // on rather than waking its caller with what it already showed.
+        // The provider's bounded change interval: nothing moved, and the wait is over.
         provider.signal();
-        assert!(
-            answered(&mut waiting).is_none(),
-            "a clock is not news while the state stands"
-        );
-        assert_eq!(provider.parked(), 1, "still parked on the next change");
+        let state = state_of(answered(&mut waiting).expect("answered once its wait ran out"));
+        assert_eq!(UpdateMark::of(&state.unwrap().update), UpdateMark::Accepted);
+        assert_eq!(provider.parked(), 0, "nothing stays parked after the answer");
 
+        // What moves later is answered once, to the ask that waits for it then.
+        let mut next = serve(&provider, &alice(), waiting_observe(id(), 60_000)).unwrap();
+        assert_eq!(provider.parked(), 1);
         provider.step(succeeded(id()));
         provider.signal();
-        let state = state_of(answered(&mut waiting).expect("answered on the move"));
+        let state = state_of(answered(&mut next).expect("answered on the move"));
         assert_eq!(state.unwrap().update, succeeded(id()));
         assert_eq!(provider.parked(), 0, "nothing stays parked after the answer");
     }

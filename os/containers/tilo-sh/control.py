@@ -182,7 +182,8 @@ def main():
         if name == 'serve':
             mode.add_argument('--repo', required=True)
             mode.add_argument('--self', required=True)
-            mode.add_argument('--start', nargs='*', default=[])
+            # What `stack.sh up` starts with, after `--`: its flags begin with dashes.
+            mode.add_argument('start', nargs='*')
         else:
             mode.add_argument('argv', nargs='*')
     args = parser.parse_args()
