@@ -523,14 +523,18 @@ impl ColorSwatchPicker {
         self.swatches.len().div_ceil(self.fit)
     }
 
-    /// The swatches a row of `width` takes: as many whole cells as fit, at most `columns`.
+    /// The swatches a row of `width` takes: at most as many whole cells as fit and at most
+    /// `columns`, spread evenly over the lines that needs, so thirteen swatches wrap seven
+    /// and six rather than nine and four.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "a row holds a handful of on-screen cells"
     )]
     fn fit_in(&self, width: f64) -> usize {
-        (((width + self.pad) / self.cell).floor().max(1.0) as usize).min(self.columns)
+        let fits = (((width + self.pad) / self.cell).floor().max(1.0) as usize).min(self.columns);
+        let count = self.swatches.len().max(1);
+        count.div_ceil(count.div_ceil(fits))
     }
 
     #[allow(
@@ -1239,7 +1243,8 @@ mod tests {
                 tops.dedup();
                 tops.len()
             };
-            assert_eq!(rows(&picker), 3, "four a line, so nine take three lines");
+            assert_eq!(rows(&picker), 3, "four fit a line, so nine take three lines of three");
+            assert_eq!(picker.fit, 3, "the lines are even");
             assert!(picker.rect.width() <= cell * 4.5, "the grid stays in its row");
             lay_out(&mut picker);
             assert_eq!(rows(&picker), 1, "wide enough, every swatch stands on one line");
