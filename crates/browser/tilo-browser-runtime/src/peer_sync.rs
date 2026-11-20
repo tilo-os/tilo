@@ -207,6 +207,23 @@ pub(crate) fn actions_of(id: u32, workspace: WorkspaceId) -> Option<SessionActio
     })
 }
 
+/// The action API to `workspace`'s server through whichever session the page `id` holds as it is
+/// asked: what a window that outlives one session asks, and follows across the session that
+/// replaces it ([`tilo_session_actions::CurrentSession`]).
+pub(crate) fn current_session(
+    id: u32,
+    workspace: WorkspaceId,
+) -> tilo_session_actions::CurrentSession {
+    tilo_session_actions::CurrentSession::new(
+        move || {
+            let generation = generation(id)?;
+            let api = actions_of(id, workspace)?;
+            Some((generation, std::sync::Arc::new(api) as _))
+        },
+        no_server,
+    )
+}
+
 /// `id`'s session's sync, which says this page's word and reads who is here: the session's own
 /// roster reads it too.
 pub(crate) fn client(id: u32) -> Option<Rc<Client>> {

@@ -147,7 +147,7 @@ pub(super) fn serve_session(
     surface.serve_activity(openings.activity());
     // What a window asks of a resource of the workspace, and what the workspace's server keeps
     // for its people, is that server's to answer.
-    if let Some(server) = super::session_asks::record_calls::WorkspaceServer::of(config) {
+    if let Some(server) = super::session_asks::record_calls::workspace_server(config) {
         session.serve_workspace_api(server);
     }
     let revoked = config.mcp_server(&session, &shared.woken);

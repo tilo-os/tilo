@@ -283,6 +283,9 @@ struct PageIdentity {
     /// with the session (`peer_sync::generation`) whose link carries them: a
     /// page that certified its device again hears the new session instead.
     sent: std::sync::Mutex<Option<(u64, tilo_session_client::Events)>>,
+    /// The session whose devices the list was last followed on (0 before any): a list read on
+    /// a session another one replaced since is read again from the new one.
+    followed: std::sync::atomic::AtomicU64,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -310,6 +313,7 @@ pub(crate) fn serve(
         woken: Arc::clone(woken),
         live,
         sent: std::sync::Mutex::default(),
+        followed: std::sync::atomic::AtomicU64::new(0),
     };
     identity.follow_server();
     session.serve_person_api(identity_admin::PROVIDER, Arc::new(identity));
@@ -364,6 +368,15 @@ impl PageIdentity {
         // Each list the server sends wakes the reads, which take it.
         link.on_event(&events, Arc::new(move || told.wake()));
         *sent = Some((generation, events));
+        drop(sent);
+        let before = self
+            .followed
+            .swap(generation, std::sync::atomic::Ordering::Relaxed);
+        // The list an open Devices pane shows came from the session before: it is read again
+        // from this one, as a change of the page's own would have it read.
+        if before != 0 && before != generation {
+            self.live.moved();
+        }
     }
 
     /// Name the device `request` names as the person asked it: the host's own

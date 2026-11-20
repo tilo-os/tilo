@@ -29,8 +29,11 @@ use tilo_lock::MutexRecover as _;
 mod gets;
 #[cfg(not(target_arch = "wasm32"))]
 mod puts;
+pub mod replaced;
 pub mod upload;
 mod workspace;
+
+pub use replaced::CurrentSession;
 
 /// How long a request waits for the device's answer.
 pub const REPLY_DEADLINE: Duration = Duration::from_secs(30);

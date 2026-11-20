@@ -12,71 +12,21 @@
 
 use std::sync::Arc;
 
-use tilo_actions::InvocationId;
-use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeRequest, Pending,
-};
-use tilo_server_protocol::WorkspaceId;
-use tilo_session_actions::SessionActions;
+use tilo_session_actions::CurrentSession;
 
-/// The workspace's host as this page reaches it now. The page's session with its host comes and
-/// goes, so the host's action API is looked up for every request.
-pub(in crate::browser) struct WorkspaceServer {
-    peer: u32,
-    workspace: WorkspaceId,
-}
-
-impl WorkspaceServer {
-    /// The host of the workspace `config`'s page shows; `None` for a page with no workspace host.
-    pub(in crate::browser) fn of(config: &super::super::Config) -> Option<Arc<Self>> {
-        Some(Arc::new(Self {
-            peer: config.peer?,
-            workspace: crate::peer::workspace_id(&config.workspace).ok()?,
-        }))
-    }
-
-    fn api(&self) -> Result<SessionActions, ActionCallError> {
-        crate::peer_sync::actions_of(self.peer, self.workspace)
-            .ok_or_else(crate::peer_sync::no_server)
-    }
-}
-
-impl ActionProvider for WorkspaceServer {
-    fn query(
-        &self,
-        caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        match self.api() {
-            Ok(api) => api.query(caller, query),
-            Err(error) => Pending::ready(Err(error)),
-        }
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        match self.api() {
-            Ok(api) => api.invoke(caller, request),
-            Err(error) => Pending::ready(Err(error)),
-        }
-    }
-
-    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.api().ok()?.observe(caller, id)
-    }
-
-    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        self.api().ok()?.next_change(caller, id)
-    }
-
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        match self.api() {
-            Ok(api) => api.cancel(caller, id),
-            Err(error) => Pending::ready(Err(error)),
-        }
-    }
+/// The server of the workspace `config`'s page shows, as the page reaches it now; `None` for a
+/// page with no workspace server.
+///
+/// The page's session with its server comes and goes: a page that certifies its device again
+/// keeps its id while a new session replaces the one under it. So the server's action API is
+/// looked up for every request, and what a window follows (a Settings pane's reading of the
+/// person's accounts, an action still running) is asked again of the session that replaced the
+/// one it was asked of ([`CurrentSession`]): a pane open across the replacement hears the new
+/// session's answers, not the last answer of the one before.
+pub(in crate::browser) fn workspace_server(
+    config: &super::super::Config,
+) -> Option<Arc<CurrentSession>> {
+    let peer = config.peer?;
+    let workspace = crate::peer::workspace_id(&config.workspace).ok()?;
+    Some(Arc::new(crate::peer_sync::current_session(peer, workspace)))
 }
