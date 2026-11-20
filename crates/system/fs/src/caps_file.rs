@@ -84,15 +84,46 @@ impl CapabilityFile {
     ///
     /// Returns [`CapsError::Read`] when `path` cannot be opened or stat'd,
     /// [`CapsError::Parse`] when its contents are not an [`collab_types::FsAuthority`],
-    /// and [`CapsError::Superseded`] when they were seeded by an image whose
-    /// schema named a capability's lifetime an `expiry`.
+    /// A list an older image seeded in a schema this build no longer reads is not a refusal: it is
+    /// set aside beside itself and the image's own default ([`IMAGE_DEFAULT`]) takes its place, so
+    /// an update never leaves the mount (and the session that needs it) down on state it cannot
+    /// read. Only that recognised older schema is replaced; any other malformed list still fails
+    /// closed, since it may be an administrator's edit.
     pub fn load(
         path: impl Into<PathBuf>,
         identity: IdentityKey,
         members: Vec<MemberId>,
     ) -> Result<Self, CapsError> {
+        Self::load_with_default(path, Path::new(IMAGE_DEFAULT), identity, members)
+    }
+
+    /// [`Self::load`] with the image default read from `default`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::load`]; also [`CapsError::Reseed`] when an older list cannot be set aside or the
+    /// default cannot take its place.
+    pub fn load_with_default(
+        path: impl Into<PathBuf>,
+        default: &Path,
+        identity: IdentityKey,
+        members: Vec<MemberId>,
+    ) -> Result<Self, CapsError> {
         let path = path.into();
-        let (caps, stamp) = read_capabilities(&path)?;
+        let (caps, stamp) = match read_capabilities(&path) {
+            Err(CapsError::Superseded { .. }) => {
+                let kept = reseed_from_default(&path, default)?;
+                eprintln!(
+                    "capability list {} was in an older image's schema; kept it as {} and seeded \
+                     the image's default from {}",
+                    path.display(),
+                    kept.display(),
+                    default.display()
+                );
+                read_capabilities(&path)?
+            }
+            read => read?,
+        };
         let acl = build(identity, &caps, &members);
         Ok(Self {
             path,
@@ -197,6 +228,29 @@ impl CapabilityFile {
 }
 
 /// Build the ACL for one identity from a capability list. `now: None` ⇒ every check reads the live clock, so a time-limited capability expires.
+/// Where the image keeps the capability list it seeds (`tmpfiles.d/tilo.conf` copies it to
+/// `/var/lib/tilo/fs-capabilities.json` when that is absent).
+pub const IMAGE_DEFAULT: &str = "/usr/share/tilo/fs-capabilities.json";
+
+/// Move the list at `path` aside (to `<path>.older-image-<unix seconds>`) and put a copy of
+/// `default` in its place, the way tmpfiles seeds it; returns where the old list went.
+fn reseed_from_default(path: &Path, default: &Path) -> Result<PathBuf, CapsError> {
+    let reseed = |source| CapsError::Reseed {
+        path: path.to_path_buf(),
+        source,
+    };
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let mut kept = path.as_os_str().to_owned();
+    kept.push(format!(".older-image-{secs}"));
+    let kept = PathBuf::from(kept);
+    let fresh = std::fs::read(default).map_err(reseed)?;
+    std::fs::rename(path, &kept).map_err(reseed)?;
+    tilo_files::native::atomic::write(path, &fresh).map_err(reseed)?;
+    Ok(kept)
+}
+
 fn build(identity: IdentityKey, caps: &[CapOverride], members: &[MemberId]) -> WorkspaceAcl {
     WorkspaceAcl::from_capabilities(identity, caps, members, None)
 }
@@ -279,6 +333,14 @@ pub enum CapsError {
          the current schema"
     )]
     Superseded { path: PathBuf },
+    #[error(
+        "capability list {path} is an older image's and could not be replaced by the image's default: {source}"
+    )]
+    Reseed {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 #[cfg(test)]
@@ -459,27 +521,64 @@ mod tests {
                 assert!(!file.handle().permits(&ALICE, "/", Access::Read));
             }
             {
-                // What tmpfiles' `C` leaves on a machine installed before a
-                // capability said how long it stands as a `lifetime`.
+                // What tmpfiles' `C` leaves on a machine installed before a capability said how
+                // long it stands as a `lifetime`: both an image's shape with `grantee` and the one
+                // a laptop installed in October kept (an older name for the grantee, and `expiry`). An update reads the
+                // image's default in its place and keeps the old list beside it, so the mount (and
+                // the session that needs it) comes up.
+                let older = [
+                    &br#"{"capabilities":[{"grantee":{"member":{"person":"local"}},
+                        "scope":{"FsPath":"/"},"effect":"Grant","access":"Write",
+                        "id":"seeded","expiry":"Never"}]}"#[..],
+                    &br#"{"capabilities":[{"subject":{"Principal":{"Person":"local"}},
+                        "scope":{"FsPath":"/"},"effect":"Grant","access":"Write",
+                        "id":"local-session-workspace","expiry":"Never","granted_by":null}]}"#[..],
+                ];
+                for old in older {
+                    let dir = tempfile::tempdir().unwrap();
+                    let path = dir.path().join("caps.json");
+                    let default = dir.path().join("image-default.json");
+                    std::fs::write(&path, old).unwrap();
+                    write_caps(&default, &[read_grant("/")]);
+                    let file = CapabilityFile::load_with_default(&path, &default, ALICE, Vec::new())
+                        .expect("an older image's list gives way to the image's default");
+                    assert!(
+                        file.handle().permits(&ALICE, "/w/a.md", Access::Read),
+                        "the default's grant is enforced"
+                    );
+                    assert_eq!(
+                        std::fs::read(&path).unwrap(),
+                        std::fs::read(&default).unwrap(),
+                        "the list in place is the image's default"
+                    );
+                    let kept: Vec<_> = std::fs::read_dir(dir.path())
+                        .unwrap()
+                        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                        .filter(|name| name.starts_with("caps.json.older-image-"))
+                        .collect();
+                    assert_eq!(kept.len(), 1, "the older list is kept beside it: {kept:?}");
+                    assert_eq!(
+                        std::fs::read(dir.path().join(&kept[0])).unwrap(),
+                        old,
+                        "kept as it was"
+                    );
+                }
+            }
+            {
+                // Anything else this build cannot read is still refused, never replaced: it may
+                // be an administrator's edit.
                 let dir = tempfile::tempdir().unwrap();
                 let path = dir.path().join("caps.json");
-                std::fs::write(
-                    &path,
-                    br#"{"capabilities":[{"grantee":{"member":{"person":"local"}},
-                        "scope":{"FsPath":"/"},"effect":"Grant","access":"Write",
-                        "id":"seeded","expiry":"Never"}]}"#,
-                )
-                .unwrap();
-                let error = CapabilityFile::load(&path, ALICE, Vec::new())
-                    .expect_err("a superseded schema must be refused, not read");
-                assert!(
-                    matches!(error, CapsError::Superseded { .. }),
-                    "got {error:?}"
-                );
-                let message = error.to_string();
-                assert!(
-                    message.contains("older image") && message.contains("remove it"),
-                    "the refusal must say how a machine re-seeds the list: {message}"
+                let default = dir.path().join("image-default.json");
+                std::fs::write(&path, br#"{"capabilities":[{"scope":"#).unwrap();
+                write_caps(&default, &[read_grant("/")]);
+                let error = CapabilityFile::load_with_default(&path, &default, ALICE, Vec::new())
+                    .expect_err("a malformed list fails closed");
+                assert!(matches!(error, CapsError::Parse { .. }), "got {error:?}");
+                assert_eq!(
+                    std::fs::read(&path).unwrap(),
+                    br#"{"capabilities":[{"scope":"#,
+                    "a malformed list is left as it is"
                 );
             }
         }

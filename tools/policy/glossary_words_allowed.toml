@@ -1439,3 +1439,8 @@ reason = "The app framework's own API names the page's Files window calls: `Work
 words = ["record", "host"]
 identifiers = ["record", "window_host_effects"]
 paths = ["apps/file-explorer/src/tree.rs"]
+
+[[allow]]
+reason = "The field an older image's capability list named its grantee with; the test reads such a list as it was written."
+words = ["subject", "principal"]
+paths = ["crates/system/fs/src/caps_file.rs"]
