@@ -950,8 +950,9 @@ start_mail_stand_in() {
   autoconfig_document "$dir/config-v1.1.xml"
   : > "$log"
   # The settings document is served over https on the port every mail program
-  # asks for. Binding it takes root; a stack brought up without it rehearses a
-  # person naming the servers by hand.
+  # asks for, which a machine allows only to root or inside a network namespace
+  # of its own (the story check brings the stack up in one). Where it cannot be
+  # bound, a rehearsal names the servers by hand.
   setsid "$programs/mail-stand-in" --name localhost --name "$site_host" \
     --name "autoconfig.$site_host" --login "$login" \
     --password-file "$dir/password" --write-certificate "$dir/certificate.pem" \
@@ -970,7 +971,7 @@ start_mail_stand_in() {
     sleep 0.1
   done
   if grep -q 'no autoconfig document' "$log" 2>/dev/null; then
-    say "the stand-in cannot serve the settings document on port $mail_stand_in_document_port (it takes root): Mail asks for the servers, which stack.sh mail-account prints"
+    say "the stand-in cannot serve the settings document on port $mail_stand_in_document_port (that takes root, or a namespace of the stack's own): Mail asks for the servers, which stack.sh mail-account prints"
   fi
   say "mail stand-in on $mail_stand_in_imap_port (IMAP) and $mail_stand_in_smtp_port (SMTP); stack.sh mail-account prints the account"
 }

@@ -53,18 +53,59 @@ if ((stacked)); then
   bash "$repo/tools/ci/publish/cli-release.sh" pack "$tilo_bin" "$release/tilo-linux-x86_64.tar.gz"
   export TILO_SH_CLI_DIR=$release TILO_SH_TILO_BIN=$tilo_bin
 fi
-# A story says how its stack's entry takes people and whether it starts the
-# stand-in mail server: `admission` (the stack's TILO_SH_ADMISSION, `open` unless
-# the story asks) and `mailStandIn`. People arrive as strangers, the entry open
-# to anyone; no app opened in front of them and no VM host.
+# A story says how its stack's entry takes people, whether it starts the
+# stand-in mail server, and whether its stack gets a network namespace of its
+# own: `admission` (the stack's TILO_SH_ADMISSION, `open` unless the story asks),
+# `mailStandIn`, and `privateNetwork`. In a namespace of its own a stack may bind
+# the low ports a mail provider publishes on, which an unprivileged check may
+# not on the machine it shares, and it reaches nothing but its own loopback.
+# The browsers are started in that namespace too, so they reach the stack it
+# holds. People arrive as strangers, the entry open to anyone; no app opened in
+# front of them and no VM host.
 stacks_for_story() { python3 -I -c '
 import json, sys
 story = next(s for s in json.load(open(sys.argv[1]))["stories"] if s["id"] == sys.argv[2])
 print(story.get("admission", "open"))
 print(1 if story.get("mailStandIn") else 0)
+print(1 if story.get("privateNetwork") else 0)
 ' "$stories/stories.json" "$1"; }
 export TILO_SH_HOME_APP= TILO_SH_VM_HOST=${TILO_SH_VM_HOST:-0}
 export TILO_SH_PORT_BASE=${TILO_SH_PORT_BASE:-25400}
+
+# A story's stack, brought up fresh, walked by its driver, and taken down: the
+# whole of it in the namespace the caller is in, so that the browsers the driver
+# starts reach the stack and nothing else.
+walk_story_stack() {
+  : > "$out/walked"
+  export TILO_SH_STATE=$out/state
+  # A namespace of the story's own starts with its loopback down, where nothing
+  # of the stack answers.
+  if [[ ${private_network:-0} == 1 ]]; then
+    ip link set lo up 2>/dev/null || python3 -I -c '
+import fcntl, socket, struct
+SIOCGIFFLAGS, SIOCSIFFLAGS, IFF_UP = 0x8913, 0x8914, 0x1
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+flags = struct.unpack("16sH", fcntl.ioctl(sock, SIOCGIFFLAGS, struct.pack("16sH", b"lo", 0)))[1]
+fcntl.ioctl(sock, SIOCSIFFLAGS, struct.pack("16sH", b"lo", flags | IFF_UP))
+'
+  fi
+  trap 'bash "$tilo_sh/stack.sh" down || true' EXIT
+  if bash "$tilo_sh/stack.sh" up --fresh > "$out/stack.log" 2>&1; then
+    # shellcheck source=tilo-sh/stack.sh
+    . "$tilo_sh/stack.sh"
+    status=0
+    STORY_STACK=$tilo_sh/stack.sh node "$stories/$driver" "$site_origin" "$out" "$TILO_SH_STATE"/logs/{server,api,web}.log 2>&1 | tee "$out/driver.log" || status=$?
+  else
+    echo "FAIL: $story: the stack did not come up"
+    tail -40 "$out/stack.log"
+    printf '{"id": "%s", "at": "%s", "seconds": 0, "completed": false, "withinBudget": false, "brokeAt": null, "error": "the stack did not come up", "steps": [], "timings": {}, "videos": []}\n' \
+      "$story" "$(date -u +%FT%TZ)" > "$out/story.json"
+    status=1
+  fi
+  bash "$tilo_sh/stack.sh" down > /dev/null 2>&1 || true
+  trap - EXIT
+  return "$status"
+}
 
 red=()
 for story in "${asked[@]}"; do
@@ -72,34 +113,35 @@ for story in "${asked[@]}"; do
   rm -rf "$out"
   mkdir -p "$out"
   driver=$(python3 -I -c 'import json, sys; print(next(s["driver"] for s in json.load(open(sys.argv[1]))["stories"] if s["id"] == sys.argv[2]))' "$stories/stories.json" "$story")
-  { read -r TILO_SH_ADMISSION; read -r TILO_SH_MAIL_STAND_IN; } < <(stacks_for_story "$story")
-  export TILO_SH_ADMISSION TILO_SH_MAIL_STAND_IN
+  { read -r TILO_SH_ADMISSION; read -r TILO_SH_MAIL_STAND_IN; read -r private_network; } < <(stacks_for_story "$story")
+  export TILO_SH_ADMISSION TILO_SH_MAIL_STAND_IN private_network
   if ! on_stack "$story"; then
     # A story with no stack walks what it drives itself (its driver says what).
     status=0
     node "$stories/$driver" "" "$out" 2>&1 | tee "$out/driver.log" || status=$?
   else
-    # A stack of the story's own, fresh, its state beside the recording.
-    export TILO_SH_STATE=$out/state
-    trap 'bash "$tilo_sh/stack.sh" down || true' EXIT
-    if bash "$tilo_sh/stack.sh" up --fresh > "$out/stack.log" 2>&1; then
-      # shellcheck source=tilo-sh/stack.sh
-      . "$tilo_sh/stack.sh"
-      status=0
-      STORY_STACK=$tilo_sh/stack.sh node "$stories/$driver" "$site_origin" "$out" "$TILO_SH_STATE"/logs/{server,api,web}.log 2>&1 | tee "$out/driver.log" || status=$?
+    # A stack of the story's own, fresh, its state beside the recording, and,
+    # where the story asks, in a network namespace of its own.
+    status=0
+    if [[ $private_network == 1 ]]; then
+      # The stack, its browsers and everything they reach share one namespace:
+      # a host of the check's own would not answer inside it, and the ports a
+      # provider publishes on are bound there as root may.
+      export story driver out tilo_sh stories
+      export -f walk_story_stack
+      unshare --user --map-root-user --net -- bash -c 'walk_story_stack; exit $?' || status=$?
+      if [[ ! -f $out/walked ]]; then
+        echo "FAIL: $story: its stack could not be given a network namespace of its own (unshare --user --map-root-user --net exited $status)"
+        printf '{"id": "%s", "at": "%s", "seconds": 0, "completed": false, "withinBudget": false, "brokeAt": null, "error": "the stack could not be given a network namespace of its own", "steps": [], "timings": {}, "videos": []}\n' \
+          "$story" "$(date -u +%FT%TZ)" > "$out/story.json"
+      fi
     else
-      echo "FAIL: $story: the stack did not come up"
-      tail -40 "$out/stack.log"
-      printf '{"id": "%s", "at": "%s", "seconds": 0, "completed": false, "withinBudget": false, "brokeAt": null, "error": "the stack did not come up", "steps": [], "timings": {}, "videos": []}\n' \
-        "$story" "$(date -u +%FT%TZ)" > "$out/story.json"
-      status=1
+      walk_story_stack || status=$?
     fi
-    bash "$tilo_sh/stack.sh" down > /dev/null 2>&1 || true
-    trap - EXIT
     # The stack's logs stay with the story; its state does not.
     mkdir -p "$out/logs"
-    cp "$TILO_SH_STATE"/logs/*.log "$out/logs/" 2>/dev/null || true
-    rm -rf "$TILO_SH_STATE"
+    cp "$out/state"/logs/*.log "$out/logs/" 2>/dev/null || true
+    rm -rf "$out/state"
   fi
   python3 -I "$stories/judge.py" "$out" || echo "FAIL: $story: the judge did not answer"
   # The model's verdict: 1 accepted (or nothing on screen to judge), 0 rejected, 2 no model

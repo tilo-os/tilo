@@ -1,5 +1,5 @@
 {
-  "about": "The user stories: what a person sets out to do with Tilo, in their words, and the steps they take. `driver` names the page driver that walks a story as that person; a story with none is listed as not yet automated, and `needs` says what walking it still takes. `stack: false` marks a story walked without a tilo.sh stack of its own; `admission` is what that stack's entry admits (`open` unless the story asks for production's `invite`), and `mailStandIn` starts the stack's stand-in mail server. `credentials` marks a story that cannot run without an outside account.",
+  "about": "The user stories: what a person sets out to do with Tilo, in their words, and the steps they take. `driver` names the page driver that walks a story as that person; a story with none is listed as not yet automated, and `needs` says what walking it still takes. `stack: false` marks a story walked without a tilo.sh stack of its own; `admission` is what that stack's entry admits (`open` unless the story asks for production's `invite`), `mailStandIn` starts the stack's stand-in mail server, and `privateNetwork` gives the stack a network namespace of its own, where the low ports a provider publishes on may be bound. `credentials` marks a story that cannot run without an outside account.",
   "stories": [
     {
       "id": "invite-live",
@@ -98,13 +98,14 @@
       "intent": "A person connects their mail account with only their address and password, then reads, searches and sends mail.",
       "steps": [
         "Ada opens Mail and enters their address and password",
-        "Ada names the server when Mail cannot find it, and connects",
+        "Mail finds the server by itself and connects",
         "Ada reads the newest mail",
         "Ada searches for an older one",
         "Ada sends a reply, and it arrives"
       ],
       "driver": "mail-password.mjs",
-      "mailStandIn": true
+      "mailStandIn": true,
+      "privateNetwork": true
     },
     {
       "id": "calendar-invite",

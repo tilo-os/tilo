@@ -1,14 +1,16 @@
 // The story of a mail account a person connects with only its address and password: Ada opens
 // Mail and tells it the address alone. Mail works out where the account's mail lives from the
-// address (the settings document the provider publishes for mail programs); where that
-// document is not reachable the page asks for the servers, and she names them. The account
-// signs in, and she reads the newest message, searches for an older one, and answers it.
+// address (the settings document the provider publishes for mail programs), she types the
+// password for the servers it found, and the account signs in; she reads the newest message,
+// searches for an older one, and answers it.
 //
 // The account is the stack's stand-in mail provider (TILO_SH_MAIL_STAND_IN=1), which holds a
 // few made-up messages, keeps the mail it is handed, and publishes the settings document where
 // Mail looks: `stack.sh mail-account` prints what a person types. The document is at
-// https://autoconfig.<domain>/, which takes a port a check may not bind, so there the page
-// asks for the servers and the step says so.
+// https://autoconfig.<domain>/, on the port a mail program asks, so the story's stack is
+// brought up in a network namespace of its own where that port may be bound. Where a
+// rehearsal's namespace cannot serve it, the page asks for the servers instead, and the
+// measure says which happened.
 //
 // usage: node mail-password.mjs SITE_URL OUT_DIR [SERVICE_LOG…]
 // Writes OUT_DIR/story.json (stories/recorder.mjs) and exits non-zero when a step failed or
@@ -39,12 +41,6 @@ const account = () => {
     smtp: said.match(/Outgoing \(SMTP\):\s*(localhost:\d+)/)?.[1] ?? '',
   };
 };
-// A server as the accounts page writes it: "localhost, port 25424".
-const at = server => {
-  const [host, port] = server.split(':');
-  return `${host}, port ${port}`;
-};
-
 // What a wait that runs out says: what it waited for, and what the page showed.
 const visible = async tab => {
   const nodes = await nodesOf(tab);
@@ -177,16 +173,33 @@ try {
     if (!await pressWidget(ada.tab, 'settings.web.accounts.find')) fail('the accounts page offers no Set up');
   });
 
-  await story.step('Ada names the server when Mail cannot find it, and connects', async () => {
-    // Mail works the servers out from the address alone where the provider's
-    // settings document is reachable; where it is not, the page asks for them
-    // and a person names them. The measure says which happened.
-    const asked = await poll(ada.tab, `(${TREE_TEXT}).includes(${JSON.stringify(at(mail.imap))})
-      ? ${JSON.stringify(at(mail.imap))} : ''`, stepLimit(1));
+  await story.step('Mail finds the server by itself and connects', async () => {
+    // Mail works the servers out from the address alone, from the settings
+    // document its provider publishes; where a rehearsal cannot serve that
+    // document the page asks for them and a person names them. The measure says
+    // which happened.
+    // What the page says of itself: the servers Mail found are shown and no
+    // field asks for them; where it found none, the fields are there instead.
     let byMail = 0;
-    if (asked) {
-      byMail = 1;
-      console.log(`Mail found the servers by itself: ${mail.imap} and ${mail.smtp}`);
+    for (const deadline = Date.now() + stepLimit(2);;) {
+      const nodes = await nodesOf(ada.tab);
+      const asking = nodes.some(node => node.id === 'settings.web.accounts.incoming');
+      const password = nodes.some(node => node.id === 'settings.web.accounts.password');
+      if (password && !asking) {
+        byMail = 1;
+        break;
+      }
+      if (asking) break;
+      if (Date.now() > deadline) fail(`the accounts page neither named the servers nor asked for them (${await visible(ada.tab)})`);
+      await sleep(300);
+    }
+    if (byMail) {
+      const shown = (await nodesOf(ada.tab)).filter(node => node.name === 'Incoming server (IMAP)').map(node => node.value).join(' ');
+      const port = mail.imap.split(':')[1];
+      // The row is read where the page publishes its value; the fields the page
+      // no longer asks for are what say the servers were found at all.
+      if (shown && !shown.includes(port)) fail(`Mail shows “${shown}” as the incoming server, not the provider's on port ${port}`);
+      console.log(`Mail found the servers by itself: ${mail.imap} and ${mail.smtp} (${shown})`);
       await scrollTo(ada.tab, 'settings.web.accounts.password');
       if (!await pressWidget(ada.tab, 'settings.web.accounts.password')) fail('the found step offers no password field');
       await story.web.type(ada, mail.password);
