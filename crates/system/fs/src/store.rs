@@ -391,16 +391,17 @@ impl ContentStore {
 
     /// Make every write this store accepted so far durable with one sync, when anything was
     /// written since the last one; a mount that syncs on a short window calls this from its
-    /// flusher and from `fsync`. Its writes are committed with `Durability::None`, so until this
-    /// returns they survive the process but not a power loss.
+    /// flusher and from `fsync`. Its writes are committed without waiting for the disk and kept in
+    /// the area's log of such commits, so until this returns they survive the process being
+    /// killed but not a power loss.
     ///
     /// # Errors
     /// The database could not be synced; the next call tries again.
     pub fn sync_pending(&self) -> std::io::Result<()> {
-        if !self
+        let pending = self
             .pending
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
-        {
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        if !pending && !self.files.has_unsynced() {
             return Ok(());
         }
         match self.files.sync_db() {

@@ -17,6 +17,9 @@
 //! Nothing here verifies content: callers write only verified bytes, and chunks are re-verified
 //! against their hash before being served.
 
+mod commit_log;
+
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
@@ -31,6 +34,8 @@ use fs_content::RangeSet;
 use redb::{Database, MultimapTableDefinition, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
+
+use self::commit_log::{CommitLog, Write};
 
 const ENTRIES: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new("area_entries");
 /// Small blobs, keyed by their own hash, their bytes the value: manifests, the chunks of small
@@ -58,6 +63,9 @@ pub const META_CACHE_BYTES: usize = 32 * 1024 * 1024;
 /// Newly resident bytes of one entry that may be recorded in memory only: a crash loses at most this
 /// much of a transfer's progress.
 const SYNC_BATCH: u64 = 256 * 1024 * 1024;
+/// How large the log of commits not yet on disk may grow before a commit syncs the database and
+/// empties it, when nothing syncs on a window: what opening after a kill applies again.
+const LOG_MAX: u64 = 64 * 1024 * 1024;
 
 pub type AreaKey = [u8; 32];
 
@@ -267,6 +275,96 @@ pub struct FileArea {
     /// Whether each write's commit waits for the disk; a deferred-durability group clears this and
     /// syncs once at its end.
     sync_writes: AtomicBool,
+    /// The commits that did not wait for the disk since the last one that did, so a process killed
+    /// before the next sync keeps them; `None` for an ephemeral area. Its lock is held across
+    /// each commit, so the log's order is the database's.
+    log: Mutex<Option<CommitLog>>,
+}
+
+/// Makes `write` in `txn`, answering whether it removed anything ([`Write::RemoveInline`]): what a
+/// commit does and what opening does again for each commit the log kept.
+fn apply(txn: &redb::WriteTransaction, write: &Write<'_>) -> io::Result<bool> {
+    match write {
+        Write::Inline(blobs) => {
+            let mut table = txn.open_table(INLINE).map_err(db_error)?;
+            for (key, bytes) in blobs {
+                table.insert(*key, bytes.as_ref()).map_err(db_error)?;
+            }
+        }
+        Write::RemoveInline(key) => {
+            let mut table = txn.open_table(INLINE).map_err(db_error)?;
+            return Ok(table.remove(*key).map_err(db_error)?.is_some());
+        }
+        Write::Outboard(key, data) => {
+            let mut table = txn.open_table(OUTBOARDS).map_err(db_error)?;
+            table.insert(*key, data.as_ref()).map_err(db_error)?;
+        }
+        Write::Reference(tag, hash) => {
+            let mut table = txn.open_table(REFERENCE_TAGS).map_err(db_error)?;
+            table.insert(tag.as_ref(), *hash).map_err(db_error)?;
+        }
+        Write::Chunks(key, chunks) => {
+            let mut members = Vec::with_capacity(chunks.len().saturating_mul(76));
+            let mut index = txn.open_multimap_table(CHUNKS).map_err(db_error)?;
+            for (hash, offset, len) in chunks.iter() {
+                let location = ChunkLocation {
+                    key: *key,
+                    offset: *offset,
+                    len: *len,
+                }
+                .encode();
+                index.insert(*hash, location).map_err(db_error)?;
+                members.extend_from_slice(hash);
+                members.extend_from_slice(&location);
+            }
+            let mut table = txn.open_table(MEMBERS).map_err(db_error)?;
+            table.insert(*key, members.as_slice()).map_err(db_error)?;
+        }
+        Write::Origin(key, origin) => {
+            txn.open_table(ORIGINS)
+                .map_err(db_error)?
+                .insert(*key, origin.as_ref())
+                .map_err(db_error)?;
+        }
+        Write::Entries(states) => {
+            let mut table = txn.open_table(ENTRIES).map_err(db_error)?;
+            for (key, bytes) in states {
+                table.insert(*key, bytes.as_ref()).map_err(db_error)?;
+            }
+        }
+        Write::Unpersist(key) => {
+            txn.open_table(ENTRIES)
+                .map_err(db_error)?
+                .remove(*key)
+                .map_err(db_error)?;
+            txn.open_table(OUTBOARDS)
+                .map_err(db_error)?
+                .remove(*key)
+                .map_err(db_error)?;
+            txn.open_table(ORIGINS)
+                .map_err(db_error)?
+                .remove(*key)
+                .map_err(db_error)?;
+            let mut members = txn.open_table(MEMBERS).map_err(db_error)?;
+            let list = members
+                .remove(*key)
+                .map_err(db_error)?
+                .map(|v| v.value().to_vec());
+            if let Some(list) = list {
+                let mut index = txn.open_multimap_table(CHUNKS).map_err(db_error)?;
+                for member in list.chunks_exact(76) {
+                    let (hash, location) = member.split_at(32);
+                    let (Ok(hash), Ok(location)) =
+                        (<[u8; 32]>::try_from(hash), <[u8; 44]>::try_from(location))
+                    else {
+                        continue;
+                    };
+                    index.remove(hash, location).map_err(db_error)?;
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn db_error(error: impl std::fmt::Display) -> io::Error {
@@ -311,7 +409,7 @@ impl FileArea {
             .set_cache_size(META_CACHE_BYTES)
             .create(dir.join("area.redb"))
             .map_err(db_error)?;
-        Self::open_with(dir, db, budget, true)
+        Self::open_with(dir, db, budget, Some(CommitLog::open(dir)?))
     }
 
     /// An area whose files live under `dir` but whose index is in memory and whose data is never
@@ -320,10 +418,16 @@ impl FileArea {
         let db = Database::builder()
             .create_with_backend(redb::backends::InMemoryBackend::new())
             .map_err(db_error)?;
-        Self::open_with(dir, db, budget, false)
+        Self::open_with(dir, db, budget, None)
     }
 
-    fn open_with(dir: &Path, db: Database, budget: u64, durable: bool) -> io::Result<Self> {
+    fn open_with(
+        dir: &Path,
+        db: Database,
+        budget: u64,
+        log: Option<CommitLog>,
+    ) -> io::Result<Self> {
+        let durable = log.is_some();
         let data = data_dir(dir);
         std::fs::create_dir_all(&data)?;
         {
@@ -335,7 +439,18 @@ impl FileArea {
             txn.open_multimap_table(CHUNKS).map_err(db_error)?;
             txn.open_table(MEMBERS).map_err(db_error)?;
             txn.open_table(ORIGINS).map_err(db_error)?;
+            // What a killed process committed without waiting for the disk goes in again, in the
+            // order it was committed, before anything reads the index.
+            if let Some(log) = &log {
+                for write in log.read()? {
+                    apply(&txn, &write)?;
+                }
+            }
             txn.commit().map_err(db_error)?;
+        }
+        let mut log = log;
+        if let Some(log) = &mut log {
+            log.clear()?;
         }
         let area = Self {
             data,
@@ -349,6 +464,7 @@ impl FileArea {
             held_elsewhere: std::sync::RwLock::new(None),
             durable,
             sync_writes: AtomicBool::new(true),
+            log: Mutex::new(log),
         };
         area.load()?;
         Ok(area)
@@ -422,23 +538,64 @@ impl FileArea {
         self.state.lock_recover()
     }
 
-    /// A write transaction at the area's current durability: a deferred-durability group lets it
-    /// commit without waiting for the disk, and the group's end flushes once.
-    fn write_txn(&self) -> io::Result<redb::WriteTransaction> {
+    /// Commits `write` at the area's current durability, answering whether it removed anything
+    /// ([`Write::RemoveInline`]). A commit that waits for the disk empties the log; one that does
+    /// not (a deferred-durability group, a store syncing on a window) is added to the log first, so
+    /// a process killed before the next sync still holds it, and the group's end or the window
+    /// syncs once.
+    fn commit_write(&self, write: &Write<'_>) -> io::Result<bool> {
+        self.commit_at(write, self.sync_writes.load(Ordering::Relaxed))
+    }
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the log's lock is held across the commit, so the log's order is the database's"
+    )]
+    fn commit_at(&self, write: &Write<'_>, sync: bool) -> io::Result<bool> {
+        let mut log = self.log.lock_recover();
         let mut txn = self.database()?.begin_write().map_err(db_error)?;
-        if !self.sync_writes.load(Ordering::Relaxed) {
+        let sync = sync || log.as_ref().is_some_and(|log| log.len() >= LOG_MAX);
+        if !sync {
             txn.set_durability(redb::Durability::None)
                 .map_err(db_error)?;
         }
-        Ok(txn)
+        let removed = apply(&txn, write)?;
+        match log.as_mut() {
+            Some(log) if !sync => log.append(write)?,
+            _ => {}
+        }
+        txn.commit().map_err(db_error)?;
+        if sync && let Some(log) = log.as_mut() {
+            log.clear()?;
+        }
+        Ok(removed)
     }
 
-    /// Makes the commits made since [`Self::set_sync_writes`]`(false)` durable with one flush.
+    /// Makes the commits made since [`Self::set_sync_writes`]`(false)` durable with one flush, and
+    /// empties the log that kept them for a killed process.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the log's lock is held across the commit, so the log's order is the database's"
+    )]
     pub fn sync_db(&self) -> io::Result<()> {
+        let mut log = self.log.lock_recover();
         let mut txn = self.database()?.begin_write().map_err(db_error)?;
         txn.set_durability(redb::Durability::Immediate)
             .map_err(db_error)?;
-        txn.commit().map_err(db_error)
+        txn.commit().map_err(db_error)?;
+        if let Some(log) = log.as_mut() {
+            log.clear()?;
+        }
+        Ok(())
+    }
+
+    /// Whether a commit that did not wait for the disk is in the log, not yet synced
+    /// ([`Self::sync_db`]).
+    pub fn has_unsynced(&self) -> bool {
+        self.log
+            .lock_recover()
+            .as_ref()
+            .is_some_and(|log| log.len() > 0)
     }
 
     /// Whether each commit waits for the disk; see [`Self::sync_db`] for the deferred group's end.
@@ -534,14 +691,14 @@ impl FileArea {
     /// database, so the budget never evicts it: a manifest or a chunk an entry needs stays readable
     /// while the entry does.
     pub fn put_inline(&self, blobs: impl IntoIterator<Item = (AreaKey, Bytes)>) -> io::Result<()> {
-        let txn = self.write_txn()?;
-        {
-            let mut table = txn.open_table(INLINE).map_err(db_error)?;
-            for (key, bytes) in blobs {
-                table.insert(key, bytes.as_ref()).map_err(db_error)?;
-            }
-        }
-        txn.commit().map_err(db_error)
+        let blobs: Vec<_> = blobs.into_iter().collect();
+        let write = Write::Inline(
+            blobs
+                .iter()
+                .map(|(key, bytes)| (*key, Cow::Borrowed(bytes.as_ref())))
+                .collect(),
+        );
+        self.commit_write(&write).map(drop)
     }
 
     /// The inline bytes of `key`.
@@ -586,13 +743,7 @@ impl FileArea {
 
     /// Removes `key`'s inline bytes. Returns whether it held any.
     pub fn remove_inline(&self, key: &AreaKey) -> io::Result<bool> {
-        let txn = self.write_txn()?;
-        let removed = {
-            let mut table = txn.open_table(INLINE).map_err(db_error)?;
-            table.remove(*key).map_err(db_error)?.is_some()
-        };
-        txn.commit().map_err(db_error)?;
-        Ok(removed)
+        self.commit_write(&Write::RemoveInline(*key))
     }
 
     /// The persisted BAO outboard of whole blob `key`.
@@ -603,12 +754,8 @@ impl FileArea {
     }
 
     fn put_outboard(&self, key: &AreaKey, data: &[u8]) -> io::Result<()> {
-        let txn = self.write_txn()?;
-        {
-            let mut table = txn.open_table(OUTBOARDS).map_err(db_error)?;
-            table.insert(*key, data).map_err(db_error)?;
-        }
-        txn.commit().map_err(db_error)
+        self.commit_write(&Write::Outboard(*key, Cow::Borrowed(data)))
+            .map(drop)
     }
 
     /// The blob `tag` names, if any.
@@ -620,12 +767,8 @@ impl FileArea {
 
     /// Makes `tag` a name for blob `hash`.
     pub fn set_reference(&self, tag: &str, hash: &AreaKey) -> io::Result<()> {
-        let txn = self.write_txn()?;
-        {
-            let mut table = txn.open_table(REFERENCE_TAGS).map_err(db_error)?;
-            table.insert(tag, *hash).map_err(db_error)?;
-        }
-        txn.commit().map_err(db_error)
+        self.commit_write(&Write::Reference(Cow::Borrowed(tag), *hash))
+            .map(drop)
     }
 
     /// `key`'s size and the ranges of it that are resident.
@@ -761,25 +904,8 @@ impl FileArea {
             return Ok(());
         }
         let _commit = self.commit.lock_recover();
-        let mut members = Vec::with_capacity(chunks.len().saturating_mul(76));
-        let txn = self.write_txn()?;
-        {
-            let mut index = txn.open_multimap_table(CHUNKS).map_err(db_error)?;
-            for (hash, offset, len) in chunks {
-                let location = ChunkLocation {
-                    key: *key,
-                    offset: *offset,
-                    len: *len,
-                }
-                .encode();
-                index.insert(*hash, location).map_err(db_error)?;
-                members.extend_from_slice(hash);
-                members.extend_from_slice(&location);
-            }
-            let mut table = txn.open_table(MEMBERS).map_err(db_error)?;
-            table.insert(*key, members.as_slice()).map_err(db_error)?;
-        }
-        txn.commit().map_err(db_error)
+        self.commit_write(&Write::Chunks(*key, Cow::Borrowed(chunks)))
+            .map(drop)
     }
 
     pub fn find_chunk(&self, hash: &[u8; 32]) -> Option<ChunkLocation> {
@@ -1366,12 +1492,8 @@ impl FileArea {
     pub fn adopt_fetched(&self, key: &AreaKey, bytes: &[u8], origin: &str) -> io::Result<()> {
         self.adopt_bytes(key, bytes, Retention::Fetchable, &[])?;
         let _commit = self.commit.lock_recover();
-        let txn = self.write_txn()?;
-        txn.open_table(ORIGINS)
-            .map_err(db_error)?
-            .insert(*key, origin)
-            .map_err(db_error)?;
-        txn.commit().map_err(db_error)
+        self.commit_write(&Write::Origin(*key, Cow::Borrowed(origin)))
+            .map(drop)
     }
 
     /// Where the bytes of a [`Retention::Fetchable`] entry are fetched from.
@@ -1505,49 +1627,13 @@ impl FileArea {
             return Ok(());
         }
         let bytes = postcard::to_allocvec(stored).map_err(db_error)?;
-        let txn = self.write_txn()?;
-        txn.open_table(ENTRIES)
-            .map_err(db_error)?
-            .insert(*key, bytes.as_slice())
-            .map_err(db_error)?;
-        txn.commit().map_err(db_error)
+        self.commit_write(&Write::Entries(vec![(*key, Cow::Owned(bytes))]))
+            .map(drop)
     }
 
     fn unpersist(&self, key: &AreaKey) -> io::Result<()> {
         let _commit = self.commit.lock_recover();
-        let txn = self.write_txn()?;
-        {
-            txn.open_table(ENTRIES)
-                .map_err(db_error)?
-                .remove(*key)
-                .map_err(db_error)?;
-            txn.open_table(OUTBOARDS)
-                .map_err(db_error)?
-                .remove(*key)
-                .map_err(db_error)?;
-            txn.open_table(ORIGINS)
-                .map_err(db_error)?
-                .remove(*key)
-                .map_err(db_error)?;
-            let mut members = txn.open_table(MEMBERS).map_err(db_error)?;
-            let list = members
-                .remove(*key)
-                .map_err(db_error)?
-                .map(|v| v.value().to_vec());
-            if let Some(list) = list {
-                let mut index = txn.open_multimap_table(CHUNKS).map_err(db_error)?;
-                for member in list.chunks_exact(76) {
-                    let (hash, location) = member.split_at(32);
-                    let (Ok(hash), Ok(location)) =
-                        (<[u8; 32]>::try_from(hash), <[u8; 44]>::try_from(location))
-                    else {
-                        continue;
-                    };
-                    index.remove(hash, location).map_err(db_error)?;
-                }
-            }
-        }
-        txn.commit().map_err(db_error)
+        self.commit_write(&Write::Unpersist(*key)).map(drop)
     }
 
     /// Syncs and records every entry's residency and last use, so progress and eviction order survive a
@@ -1585,16 +1671,12 @@ impl FileArea {
             }
         }
         let _commit = self.commit.lock_recover();
-        let stored = stored_before_sync;
-        let txn = self.database()?.begin_write().map_err(db_error)?;
-        {
-            let mut table = txn.open_table(ENTRIES).map_err(db_error)?;
-            for (key, stored) in stored {
-                let bytes = postcard::to_allocvec(&stored).map_err(db_error)?;
-                table.insert(key, bytes.as_slice()).map_err(db_error)?;
-            }
+        let mut states = Vec::with_capacity(stored_before_sync.len());
+        for (key, stored) in stored_before_sync {
+            let bytes = postcard::to_allocvec(&stored).map_err(db_error)?;
+            states.push((key, Cow::Owned(bytes)));
         }
-        txn.commit().map_err(db_error)
+        self.commit_at(&Write::Entries(states), true).map(drop)
     }
 }
 
@@ -1777,6 +1859,79 @@ mod tests {
 
     fn key(n: u8) -> AreaKey {
         [n; 32]
+    }
+
+    /// What a process killed now leaves on disk: the area's files as they are while it is open.
+    fn left_by_a_kill(from: &Path, to: &Path) {
+        std::fs::create_dir_all(data_dir(to)).unwrap();
+        for name in ["area.redb", "area.log"] {
+            std::fs::copy(from.join(name), to.join(name)).unwrap();
+        }
+        for file in std::fs::read_dir(data_dir(from)).unwrap() {
+            let file = file.unwrap();
+            std::fs::copy(file.path(), data_dir(to).join(file.file_name())).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_commit_that_does_not_wait_for_the_disk_outlives_a_kill() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("live");
+        let area = FileArea::open(&live, u64::MAX).unwrap();
+        area.set_sync_writes(false);
+        area.put_inline([(key(1), Bytes::from_static(b"a closed file"))])
+            .unwrap();
+        area.set_reference("media/one", &key(1)).unwrap();
+        area.adopt_bytes(
+            &key(2),
+            &[9; 4096],
+            Retention::LocalOnly,
+            &[([3; 32], 0, 4096)],
+        )
+        .unwrap();
+        assert!(area.has_unsynced());
+
+        let killed = dir.path().join("killed");
+        left_by_a_kill(&live, &killed);
+        let reopened = FileArea::open(&killed, u64::MAX).unwrap();
+        assert_eq!(reopened.get_inline(&key(1)).unwrap(), b"a closed file");
+        assert_eq!(reopened.reference("media/one"), Some(key(1)));
+        assert!(reopened.entry(&key(2)).unwrap().complete());
+        assert_eq!(reopened.find_chunk(&[3; 32]).unwrap().key, key(2));
+        assert!(
+            !reopened.has_unsynced(),
+            "opening applies the log and empties it"
+        );
+
+        // The database alone does not hold those commits: the log is what keeps them.
+        let without_log = dir.path().join("without-log");
+        left_by_a_kill(&live, &without_log);
+        std::fs::remove_file(without_log.join("area.log")).unwrap();
+        let reopened = FileArea::open(&without_log, u64::MAX).unwrap();
+        assert!(reopened.get_inline(&key(1)).is_none());
+
+        area.sync_db().unwrap();
+        assert!(!area.has_unsynced(), "a sync empties the log");
+        let synced = dir.path().join("synced");
+        left_by_a_kill(&live, &synced);
+        std::fs::remove_file(synced.join("area.log")).unwrap();
+        let reopened = FileArea::open(&synced, u64::MAX).unwrap();
+        assert_eq!(reopened.get_inline(&key(1)).unwrap(), b"a closed file");
+    }
+
+    #[test]
+    fn a_commit_that_waits_for_the_disk_adds_nothing_to_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let area = FileArea::open(dir.path(), u64::MAX).unwrap();
+        area.put_inline([(key(1), Bytes::from_static(b"synced"))])
+            .unwrap();
+        assert!(!area.has_unsynced());
+        assert_eq!(
+            std::fs::metadata(dir.path().join("area.log"))
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     #[test]
