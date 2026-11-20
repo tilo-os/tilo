@@ -78,6 +78,7 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
             &manifest.sandbox.net.mode,
             &manifest.sandbox.net.hosts,
             &[],
+            package_store::layout::image_shipped(&app.payload_root),
         ),
         inherit_fds,
         env,
@@ -247,7 +248,7 @@ pub(super) fn verify_installed(
             "its payload holds a file the package did not ship ({unexpected})"
         )));
     }
-    let record = integrity::read_resource(
+    let signed = integrity::read_record(
         &integrity::record_dir(&package),
         &package.id,
         &package.package_id_hex,
@@ -259,7 +260,7 @@ pub(super) fn verify_installed(
             .map_err(|error| refuse(format!("the revocation list is unreadable ({error})")))?,
         None => tilo_app_package::RevocationList::default(),
     };
-    if let Some(entry) = revoked.find(&record.root.publisher_identity) {
+    if let Some(entry) = revoked.find(&signed.root.publisher_identity) {
         return Err(refuse(format!(
             "its publisher's key is revoked ({})",
             entry.reason

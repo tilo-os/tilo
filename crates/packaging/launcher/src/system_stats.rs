@@ -49,23 +49,6 @@ pub fn grants(manifest: &ManifestView, plan: &CapabilityPlan, image_shipped: boo
     grants.within(ceiling(manifest))
 }
 
-/// Whether `payload_root` lies in the image's own store, which only an image update writes.
-#[must_use]
-pub fn image_shipped(payload_root: &Path) -> bool {
-    let Ok(payload) = payload_root.canonicalize() else {
-        return false;
-    };
-    let roots = [
-        Some(package_store::layout::system_payload_dir()),
-        package_store::layout::system_data_dir(),
-    ];
-    roots
-        .into_iter()
-        .flatten()
-        .filter_map(|root| root.canonicalize().ok())
-        .any(|root| payload.starts_with(root))
-}
-
 /// In-sandbox descriptor slot of the system information connection.
 pub const CHILD_FD: i32 = 33;
 
@@ -86,7 +69,11 @@ pub fn resolve_bind(
         protocol: PROTOCOL,
         app_id: manifest.package_id.clone(),
         workspace_id: workspace_id.map(str::to_owned),
-        grants: grants(manifest, plan, image_shipped(payload_root)),
+        grants: grants(
+            manifest,
+            plan,
+            package_store::layout::image_shipped(payload_root),
+        ),
         ceiling,
     };
     resolve_bind_at(&socket_for(tilo_system_stats::SERVICE), &handoff)

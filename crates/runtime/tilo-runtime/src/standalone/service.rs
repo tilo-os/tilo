@@ -245,6 +245,8 @@ impl ServiceWorkspaces {
 
     /// Keep `commit`, this device's own membership change (a lease it claims),
     /// in the member copy `workspace` and send it to the device serving it.
+    /// Linux only: the VM leases it claims are the hosted-VM service's.
+    #[cfg(target_os = "linux")]
     pub(super) async fn claim_lease(
         &self,
         workspace: WorkspaceId,

@@ -71,7 +71,7 @@ impl Apps {
         let Some(hosts) = workspace.unanswered_reach(
             app,
             &installed.manifest.sandbox.net,
-            launcher::system_stats::image_shipped(&installed.payload_root),
+            package_store::layout::image_shipped(&installed.payload_root),
         ) else {
             return false;
         };

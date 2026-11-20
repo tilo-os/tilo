@@ -737,7 +737,7 @@ pub fn egress_decision(
         &manifest.sandbox.net.mode,
         &manifest.sandbox.net.hosts,
         &capabilities.net_hosts,
-        crate::system_stats::image_shipped(payload_root),
+        package_store::layout::image_shipped(payload_root),
     );
     // Applied here, not at the check: the namespace decision and the check must come from the same
     // answer, or the app gets an empty namespace with nothing to reach through it.

@@ -60,10 +60,14 @@ pub const SERVER_ENDPOINT_ENV: &str = "TILO_TAKE_WORK_ENDPOINT";
 
 /// What a member keeps of its shells, under the profile, and where each
 /// workspace's files are below it.
+#[cfg(target_os = "linux")]
 const STATE: &str = "state/take-work";
 /// How long a VM lease this member claims lasts unrenewed, and how often it
-/// renews the leases of the VMs it keeps.
+/// renews the leases of the VMs it keeps. Linux only, as the hosted-VM service
+/// is ush's.
+#[cfg(target_os = "linux")]
 const VM_LEASE: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(target_os = "linux")]
 const VM_RENEWAL: std::time::Duration = std::time::Duration::from_secs(10);
 const FILES: &str = "state/take-work/files";
 
@@ -194,12 +198,8 @@ pub(in crate::standalone) fn action_service(
     replicas: Option<super::files::ReplicaSlot>,
     browsers: Option<PathBuf>,
 ) -> std::io::Result<ActionService> {
-    let vms = browsers
-        .clone()
-        .or_else(|| std::env::var_os(ush::hosted_vm::SOCKET_ENV).map(PathBuf::from));
-    if let Some(vms) = vms {
-        keep_vm_leases(workspaces, vms);
-    }
+    #[cfg(target_os = "linux")]
+    keep_hosted_vms(workspaces, browsers.clone());
     let dispatcher = shell_runs(profile, workspaces, replicas, browsers).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -222,12 +222,23 @@ pub(in crate::standalone) fn action_service(
     Ok(action_service)
 }
 
+/// Claim the leases of the VMs the hosted-VM service named by `browsers`
+/// keeps. Linux only: the service, and the workspaces' shells, are ush's.
+#[cfg(target_os = "linux")]
+fn keep_hosted_vms(workspaces: &Arc<ServiceWorkspaces>, browsers: Option<PathBuf>) {
+    let vms = browsers.or_else(|| std::env::var_os(ush::hosted_vm::SOCKET_ENV).map(PathBuf::from));
+    if let Some(vms) = vms {
+        keep_vm_leases(workspaces, vms);
+    }
+}
+
 /// Claim and renew, for as long as `joined` is held, the lease of each VM the
 /// hosted-VM service at `vms` keeps, in the VM's workspace where this member
 /// holds it: a VM is kept where its disk is, so the member ranks itself as
 /// the machine that holds it ([`tilo_peer_state::vm_rank`]). A workspace
 /// this member enters is looked at once it holds it, so a VM it was entered
 /// for is claimed at once.
+#[cfg(target_os = "linux")]
 fn keep_vm_leases(holding: &Arc<ServiceWorkspaces>, vms: PathBuf) {
     let entered = holding.entered();
     let held = Arc::downgrade(holding);

@@ -2972,14 +2972,14 @@ pub(crate) fn launch_with_context(
         crate::seccomp::syscall_grants(
             manifest,
             &capabilities,
-            crate::system_stats::image_shipped(payload_root),
+            package_store::layout::image_shipped(payload_root),
         ),
     )?;
     // Whether the app opens the GPU itself, or its workspace's render service draws it.
     let gpu_granted = crate::gpu::granted(
         manifest,
         &capabilities,
-        crate::system_stats::image_shipped(payload_root),
+        package_store::layout::image_shipped(payload_root),
     );
     tilo_startup_metrics::handoff_mark("seccomp-staged");
 
@@ -3760,14 +3760,14 @@ fn launch_with_capture_spawn<T>(
         crate::seccomp::syscall_grants(
             manifest,
             &capabilities,
-            crate::system_stats::image_shipped(payload_root),
+            package_store::layout::image_shipped(payload_root),
         ),
     )?;
     // Whether the app opens the GPU itself, or its workspace's render service draws it.
     let gpu_granted = crate::gpu::granted(
         manifest,
         &capabilities,
-        crate::system_stats::image_shipped(payload_root),
+        package_store::layout::image_shipped(payload_root),
     );
 
     // As in `launch_with_context`: held from before the lookup until the sandbox has exited.
