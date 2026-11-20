@@ -11,15 +11,20 @@
 //!
 //! # The pool
 //!
-//! Workers are long-lived and few: a pool of [`pool_size`] processes,
-//! started ahead ([`prestart`]), each holding the slots of many records of
-//! many workspaces. A worker costs its process once (its runtime, the app
-//! catalogue, the fonts), so the host's memory follows the pool and what the
-//! records hold, not how many workspaces it serves, and no request waits for
-//! a process to start. A worker that stops takes its slots with it; each
-//! record is given to a worker again from the supervisor's mirror when it is
-//! next asked, and only a record whose own requests keep stopping workers is
-//! given up on.
+//! Workers are few: a pool of at most [`pool_size`] processes, each holding
+//! the slots of many documents of many workspaces. A worker costs its process
+//! once (its runtime, the app catalogue, the fonts), so the server's memory
+//! follows the workers started and what the documents hold, not how many
+//! workspaces it serves. A worker starts when a slot is first asked of it and
+//! ends once it has held none for a while: a server with nothing open keeps
+//! none. A worker that stops takes its slots with it; each document is given
+//! to a worker again from the supervisor's mirror when it is next asked, and
+//! only a document whose own requests keep stopping workers is given up on.
+//!
+//! A worker answers its slots side by side, each on a thread of its own: a
+//! request that takes long holds up its own slot, never the other documents
+//! in the worker. A caller that waits for one past a minute lets that slot go
+//! and holds the document again in another; the worker is not stopped.
 //!
 //! The confinement stands between the host (its keys, its state, its
 //! network) and every app's code. The slots of one worker share its
@@ -59,8 +64,8 @@ mod read;
 mod replica;
 mod serve;
 
-pub(crate) use process::Process;
-pub use process::{pool_size, prestart, set_affinity};
+pub(crate) use process::Lease;
+pub use process::{affinity, pool_size, running, set_affinity};
 pub use proto::{PageAction, ProbeReport};
 pub(crate) use read::{ConfinedRead, ConfinedTitles, ConfinedViews};
 pub use replica::ConfinedReplica;
@@ -139,7 +144,7 @@ pub fn serve_test_worker() {
 /// Start a worker and report what its confinement still lets it do at
 /// `path`. Every field of the report is `false` for a confined worker.
 pub fn probe_confinement(path: &std::path::Path) -> Result<ProbeReport, String> {
-    let mut process = process::Process::start(proto::Mode::Replica)?;
+    let process = process::Process::start(proto::Mode::Replica)?;
     match process.call(&proto::Request::Probe {
         path: path.to_string_lossy().into_owned(),
     })? {

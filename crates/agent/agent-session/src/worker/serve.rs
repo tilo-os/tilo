@@ -37,6 +37,10 @@ use crate::workspace_actions::ViewReadPolicy;
 /// [`Request::Close`]. What the process prepares before it confines itself
 /// (the app catalogue, the fonts) is shared by every slot, so a worker costs
 /// its process once and each record only what the record holds.
+///
+/// Each slot answers on a thread of its own, its requests in the order they
+/// came, every reply sent with its slot: a request that takes long holds up
+/// its own slot and no other.
 pub(super) fn serve() -> i32 {
     // The views read here render dates and clocks in the person's formats, as the session's
     // windows do; the supervisor hands them with the locale, and their zone as `TZ`.
@@ -47,6 +51,9 @@ pub(super) fn serve() -> i32 {
     // as stdin; it is taken over here and nothing else in the worker reads
     // stdin.
     let socket = UnixStream::from(unsafe { OwnedFd::from_raw_fd(0) });
+    // Each slot answers on a thread of its own: without a bound, the
+    // allocator would give each its own arena, and keep what each freed.
+    tilo_sandbox::confine::share_allocator_arenas();
     let catalogue = AppCatalogue::native();
     // The app's view lays out text once the filesystem is gone.
     let catalog_held = ui::text_render::hold_catalog_fonts_in_memory();
@@ -62,49 +69,123 @@ pub(super) fn serve() -> i32 {
     // The confinement denies the GPU driver its IOKit and Mach services, so
     // no adapter starts here: an app's pictures are drawn on the CPU.
     ui::offscreen::disable_gpu();
+    // Read here and written from every slot's thread: the confinement
+    // closes every other descriptor, a copy of this one too.
+    let replies = Arc::new(ReplySocket {
+        socket,
+        writing: std::sync::Mutex::new(()),
+    });
+    let answer = |slot: Slot, reply: &Reply| answer(&replies, slot, reply);
     if let Err(reason) = super::confine::confine() {
-        let _ = FRAMING.write_value(&mut &socket, &Reply::Unconfined(reason));
+        let _ = answer(0, &Reply::Unconfined(reason));
         return 1;
     }
-    if FRAMING
-        .write_value(
-            &mut &socket,
-            &Reply::Ready {
-                version: PROTOCOL_VERSION,
-            },
-        )
-        .is_err()
-    {
+    if !answer(
+        0,
+        &Reply::Ready {
+            version: PROTOCOL_VERSION,
+        },
+    ) {
         return 1;
     }
-    let mut slots: HashMap<Slot, Held> = HashMap::new();
+    let mut slots: HashMap<Slot, std::sync::mpsc::Sender<Request>> = HashMap::new();
     loop {
         let (slot, slot_mode, request): (Slot, Mode, Request) =
-            match FRAMING.read_value(&mut &socket) {
+            match FRAMING.read_value(&mut &replies.socket) {
                 Ok(Some(request)) => request,
                 // The supervisor went away or spoke garbage: nothing left to do.
                 Ok(None) | Err(_) => return 0,
             };
-        let reply = match request {
+        match request {
+            // The slot's thread lets go of what it holds once what it was
+            // asked before is answered; no one waits for that.
             Request::Close => {
                 slots.remove(&slot);
-                Reply::Done
             }
-            Request::Probe { path } => Reply::Probe(probe(&path)),
+            Request::Probe { path } => {
+                if !answer(slot, &Reply::Probe(probe(&path))) {
+                    return 0;
+                }
+            }
             request => {
-                let held = slots
-                    .entry(slot)
-                    .or_insert_with(|| Held::new(slot_mode, &catalogue, &mut fonts));
-                // The app's code finds the slot's content store wherever it
-                // runs, in or out of its view's own scope.
-                let _entered = held.scope.enter();
-                held.worker.handle(request)
+                let sent = match slots.entry(slot) {
+                    std::collections::hash_map::Entry::Occupied(held) => held.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(free) => {
+                        let text = (slot_mode == Mode::Read)
+                            .then(|| fonts.renderer())
+                            .flatten();
+                        match open_slot(slot, slot_mode, &catalogue, text, &replies) {
+                            Ok(sender) => free.insert(sender),
+                            Err(reason) => {
+                                if !answer(slot, &Reply::Failed(reason)) {
+                                    return 0;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
+                .send(request);
+                if sent.is_err() && !answer(slot, &Reply::Failed("the slot has ended".into())) {
+                    return 0;
+                }
             }
-        };
-        if FRAMING.write_value(&mut &socket, &reply).is_err() {
-            return 0;
         }
     }
+}
+
+/// The socket to the supervisor: requests are read from it on the main
+/// thread, and replies written to it, one whole frame at a time, from
+/// whichever slot's thread answers.
+struct ReplySocket {
+    socket: UnixStream,
+    writing: std::sync::Mutex<()>,
+}
+
+type Replies = Arc<ReplySocket>;
+
+/// Send `reply` for `slot`; `false` once the supervisor is gone.
+fn answer(replies: &Replies, slot: Slot, reply: &Reply) -> bool {
+    let _writing = replies
+        .writing
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    FRAMING
+        .write_value(&mut &replies.socket, &(slot, reply))
+        .is_ok()
+}
+
+/// Start `slot`'s thread: it holds what the slot holds and answers its
+/// requests in order until the slot is closed.
+fn open_slot(
+    slot: Slot,
+    mode: Mode,
+    catalogue: &AppCatalogue,
+    text: Option<ui::TextRenderer>,
+    replies: &Replies,
+) -> Result<std::sync::mpsc::Sender<Request>, String> {
+    let (sender, requests) = std::sync::mpsc::channel::<Request>();
+    let catalogue = catalogue.clone();
+    let replies = Arc::clone(replies);
+    std::thread::Builder::new()
+        .name(format!("app-worker-slot-{slot}"))
+        .stack_size(super::WORKER_STACK)
+        .spawn(move || {
+            let mut held = Held::new(mode, catalogue, text);
+            for request in requests {
+                // The app's code finds the slot's content store wherever it
+                // runs, in or out of its view's own scope.
+                let reply = {
+                    let _entered = held.scope.enter();
+                    held.worker.handle(request)
+                };
+                if !answer(&replies, slot, &reply) {
+                    return;
+                }
+            }
+        })
+        .map(|_| sender)
+        .map_err(|error| format!("no thread for the slot: {error}"))
 }
 
 /// How a reader's slots get the renderer their component lays its text out
@@ -137,13 +218,9 @@ struct Held {
 }
 
 impl Held {
-    fn new(mode: Mode, catalogue: &AppCatalogue, fonts: &mut Fonts) -> Self {
+    fn new(mode: Mode, catalogue: AppCatalogue, text: Option<ui::TextRenderer>) -> Self {
         let scope = ui::WakeScope::new();
-        let worker = Worker::new(
-            mode,
-            catalogue.clone(),
-            (mode == Mode::Read).then(|| fonts.renderer()).flatten(),
-        );
+        let worker = Worker::new(mode, catalogue, text);
         ui::tilo_resource::content::register(&scope.handle(), worker.content.store.clone());
         Self { worker, scope }
     }
@@ -240,6 +317,11 @@ impl Worker {
         match request {
             Request::PutContent { reference, bytes } => self.content.put(&reference, &bytes),
             Request::TakeContent => self.content.take(),
+            #[cfg(test)]
+            Request::Stall { millis } => {
+                std::thread::sleep(std::time::Duration::from_millis(millis));
+                Reply::Done
+            }
             Request::Open {
                 app_id,
                 workspace,

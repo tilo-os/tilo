@@ -1908,3 +1908,14 @@ reason = "The browser-root test names the test server that the session tests' su
 words = ["host"]
 identifiers = ["host"]
 paths = ["crates/session/client/tests/browser_root.rs"]
+
+[[allow]]
+reason = "An app worker process's place for one document, view or read it holds, by the number each request names (`Slot`): the process's own multiplexing, not a Tilo concept."
+words = ["slot"]
+paths = ["crates/agent/agent-session/src/worker.rs", "crates/agent/agent-session/src/worker/*"]
+
+[[allow]]
+reason = "The standard library's hand-off between an app worker's threads: the requests each slot's thread answers and the replies routed back to their callers."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/agent/agent-session/src/worker/*"]

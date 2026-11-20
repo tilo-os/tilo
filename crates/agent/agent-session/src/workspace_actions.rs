@@ -249,8 +249,9 @@ impl WorkspaceActions {
     }
 
     /// Start serving `link`'s workspaces on the service's threads, one for
-    /// each worker of the app worker pool ([`crate::worker::pool_size`]),
-    /// and start the pool's workers. A second call is ignored.
+    /// each worker of the app worker pool ([`crate::worker::pool_size`]);
+    /// each worker starts when a document is first held in it. A second call is
+    /// ignored.
     pub fn attach(&self, link: Arc<dyn WorkspaceDocumentsLink>) -> Result<(), String> {
         if self.shared.link.set(Arc::clone(&link)).is_err() {
             return Ok(());
@@ -264,7 +265,6 @@ impl WorkspaceActions {
         if let Some(writes) = link.writes() {
             let _ = self.shared.writes.set(writes);
         }
-        crate::worker::prestart();
         let jobs = Jobs::start(&self.shared, &self.catalogue, &link)?;
         // Each thread holds its own handle on the link.
         drop(link);

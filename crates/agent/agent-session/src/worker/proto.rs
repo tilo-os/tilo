@@ -35,7 +35,7 @@ pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 11;
+pub(crate) const PROTOCOL_VERSION: u32 = 12;
 
 /// What a worker is started to do, and what each of its slots does. The
 /// process's mode decides what it prepares before it confines itself (a
@@ -82,7 +82,9 @@ impl Mode {
 pub(crate) type Slot = u64;
 
 /// The supervisor's requests, each sent as `(Slot, Mode, Request)`: the
-/// slot it is for and what that slot does.
+/// slot it is for and what that slot does. Each reply comes back as
+/// `(Slot, Reply)`, a slot's in the order it was asked; [`Request::Close`] is
+/// not answered.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum Request {
     /// Let go of everything the slot holds.
@@ -248,6 +250,10 @@ pub(crate) enum Request {
     /// What changed on the page since it was last answered, after the document
     /// took others' changes; answered with [`Reply::Patches`].
     PagePatch,
+    /// Hold the slot's thread for `millis`, then answer [`Reply::Done`]: a
+    /// request that takes long, for the tests of how one is borne.
+    #[cfg(test)]
+    Stall { millis: u64 },
 }
 
 /// What a person does on a page, as the view's semantic action it stands for.
@@ -310,6 +316,8 @@ impl Request {
             Self::PageShow { .. } => "page-show",
             Self::PageAct { .. } => "page-act",
             Self::PagePatch => "page-patch",
+            #[cfg(test)]
+            Self::Stall { .. } => "stall",
         }
     }
 }

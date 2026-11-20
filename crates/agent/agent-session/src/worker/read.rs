@@ -28,6 +28,7 @@ fn sent(lease: &mut Lease, request: &Request) -> Result<Reply, String> {
         // again from the source.
         Stopped::Lost => "the app worker holding this was replaced; ask again".to_owned(),
         Stopped::Failed(reason) => reason,
+        stopped @ Stopped::Slow => stopped.to_string(),
     })
 }
 

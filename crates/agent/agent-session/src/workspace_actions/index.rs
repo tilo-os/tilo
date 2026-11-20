@@ -13,8 +13,9 @@
 //! is the one every workspace of the service's share is served on: a request
 //! that arrived while such a document was read waited for it, and a write
 //! made a listing of another app take a second more than it does. So the
-//! entries are read on a thread of their own ([`Warm`]), in a confined worker
-//! of its own, and the serving thread only takes what was read between
+//! entries are read on a thread of their own ([`Warm`]), in a lease on the
+//! serving thread's own app worker, which answers it beside the thread's
+//! requests, and the serving thread only takes what was read between
 //! requests and asks for the next. A workspace's folder is small enough to
 //! read here, in the short pass [`Worker::warm_files`] takes.
 
@@ -87,14 +88,20 @@ impl Warm {
         !self.in_flight.is_empty()
     }
 
-    /// Start the index's thread: it reads one document at a time in a confined worker of its
-    /// own, which no thread serving requests waits for.
+    /// Start the index's thread: it reads one document at a time in a lease on this thread's
+    /// app worker, which answers it beside this thread's requests, so no request waits for it.
     pub(super) fn start() -> Self {
         let (jobs, asked) = mpsc::channel::<WarmJob>();
         let (read, reading) = mpsc::channel::<WarmRead>();
+        let member = crate::worker::affinity();
         let spawned = std::thread::Builder::new()
             .name("search-warm".into())
-            .spawn(move || warm(asked, &read));
+            .spawn(move || {
+                if let Some(member) = member {
+                    crate::worker::set_affinity(member);
+                }
+                warm(&asked, &read);
+            });
         if let Err(error) = spawned {
             tracing::warn!(%error, "workspace actions: the search index has no thread to read on");
         }
@@ -109,11 +116,12 @@ impl Warm {
 
 /// Read the documents asked for, one at a time, and hand back what each publishes: the
 /// index's thread's own loop.
-fn warm(jobs: mpsc::Receiver<WarmJob>, read: &mpsc::Sender<WarmRead>) {
-    let mut worker: Option<crate::worker::Process> = None;
-    for job in jobs {
+fn warm(jobs: &mpsc::Receiver<WarmJob>, read: &mpsc::Sender<WarmRead>) {
+    let mut lease: Option<crate::worker::Lease> = None;
+    let mut next = jobs.recv().ok();
+    while let Some(job) = next {
         let started = Instant::now();
-        let entries = read_entries(&mut worker, &job);
+        let entries = read_entries(&mut lease, &job);
         if read
             .send(WarmRead {
                 workspace: job.workspace,
@@ -126,6 +134,16 @@ fn warm(jobs: mpsc::Receiver<WarmJob>, read: &mpsc::Sender<WarmRead>) {
         {
             return;
         }
+        next = match jobs.try_recv() {
+            Ok(job) => Some(job),
+            // Nothing more to read now: the lease is let go, so a worker that
+            // holds nothing else can end.
+            Err(mpsc::TryRecvError::Empty) => {
+                lease = None;
+                jobs.recv().ok()
+            }
+            Err(mpsc::TryRecvError::Disconnected) => None,
+        };
     }
 }
 
@@ -133,23 +151,19 @@ fn warm(jobs: mpsc::Receiver<WarmJob>, read: &mpsc::Sender<WarmRead>) {
 /// `worker`: `None` when the document cannot be read now (its keys have not arrived), or the
 /// app cannot be asked.
 fn read_entries(
-    worker: &mut Option<crate::worker::Process>,
+    lease: &mut Option<crate::worker::Lease>,
     job: &WarmJob,
 ) -> Option<Vec<IndexEntry>> {
     let read = Instant::now();
     let Ok(Some(bytes)) = job.reads.record(&job.route) else {
         return None;
     };
-    let process = match worker.as_mut() {
-        Some(process) => process,
-        None => match crate::worker::Process::start(crate::worker::proto::Mode::Views) {
-            Ok(started) => worker.insert(started),
-            Err(reason) => {
-                tracing::debug!(%reason, "workspace actions: the index's worker did not start");
-                return None;
-            }
-        },
-    };
+    let process = lease.get_or_insert_with(|| {
+        crate::worker::Lease::new(
+            crate::worker::proto::Mode::Views,
+            &job.workspace.to_string(),
+        )
+    });
     let request = crate::worker::proto::Request::Entries {
         app_id: job.app.clone(),
         doc: bytes,
@@ -169,9 +183,13 @@ fn read_entries(
             tracing::debug!(%reason, document = %job.route.document, "workspace actions: a document is not read for search");
             None
         }
-        // A worker that answered out of turn is started again next time.
-        _ => {
-            *worker = None;
+        // A lease that answered out of turn, or whose worker stopped, is taken
+        // again next time.
+        answer => {
+            if let Err(stopped) = answer {
+                tracing::debug!(%stopped, "workspace actions: the index's worker answered nothing");
+            }
+            *lease = None;
             None
         }
     };
