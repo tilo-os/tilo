@@ -160,6 +160,12 @@ that identity.
 - Validate the complete nested runtime under Tilo Landlock, syscall policy,
   network grants, and graphics selection before changing production launch
   plans. The offline console test does not establish those integration checks.
+  On x86 the check failed: pressure-vessel starts Bubblewrap of its own, whose
+  new mounts a capsule's Landlock refuses, so Proton never started in a
+  capsule. x86 capsules now start Proton's own script directly on the
+  system's libraries (`docs/windows-compatibility.md`, "Opening a program with
+  Proton"); the runtime below serves the ARM route alone, which still awaits
+  this check.
 
 ## Production runtime mount preparation
 

@@ -4,7 +4,8 @@ Tilo presents Windows programs as applications, not as prefixes, compatibility
 tools, or a second desktop, in three execution layers:
 
 1. Wine for ordinary desktop programs.
-2. Proton through UMU for games whose catalogue record asks for it.
+2. Proton for games whose catalogue record asks for it, and for any program an
+   administrator chose to open with it.
 3. One managed Windows appliance for programs with an explicit VM fallback.
 
 Search, the window's system menu and the Windows Apps manager all show the layer
@@ -16,8 +17,10 @@ because it changes the program's state and its security boundary.
 Tilo owns the policy and presentation around existing engines:
 
 - Wine owns Win32 compatibility and prefixes.
-- UMU owns the non-Steam Proton invocation contract, the Steam Runtime, game
-  identifiers and protonfix integration.
+- Proton's own script owns bringing a prefix up to its version and applying
+  protonfixes, keyed by the UMU database's game identifiers. On x86 a capsule
+  starts that script directly on the system's libraries; only ARM, which
+  translates Proton, goes through UMU and the Steam Runtime.
 - Steam owns Proton selection for games installed through Steam.
 - libvirt and QEMU/KVM own the appliance lifecycle.
 - FreeRDP RemoteApp is the appliance's normal presentation path.
@@ -57,7 +60,7 @@ containing sandbox access; a Windows path alone never does.
 
 ### Audio
 
-Each Wine or UMU launch gets its own short-lived PipeWire daemon and Pulse
+Each Wine or Proton launch gets its own short-lived PipeWire daemon and Pulse
 server. It does not bind the session's `pipewire-0`, `pulse/native` or
 `/dev/snd`: the broker creates a virtual output sink that tunnels playback only
 to the session's audio server, so ordinary PulseAudio and native PipeWire
@@ -122,17 +125,30 @@ with" choice in Windows Apps. The choice is per program: it is the shared
 service as the `SetOpensWith` request. The service checks the desktop's own
 account, never the client's word, refuses everyone else with the
 reason, and saves the choice with the program in its capsule's state. The
-program's next start starts the pinned UMU-Proton with UMU's recipe for any
+program's next start starts the pinned UMU-Proton with the fixes for any
 program (`umu-default`), so no game's fixes apply to it.
 
 The program keeps its files: Proton opens the same prefix its Wine setup
-filled. A capsule's prefix already sits where Proton looks for one
-(`STEAM_COMPAT_DATA_PATH` is the capsule, `WINEPREFIX` its prefix), and Proton
-takes a prefix without its version stamp as one to bring up to date rather than
-replace. Proton opens only 64-bit prefixes, so the choice is refused for a
-32-bit one and the program keeps opening with Wine. Back to Wine, Wine brings
-the prefix up to date for itself the same way. Other programs of the same
-capsule keep opening as they did.
+filled. `STEAM_COMPAT_DATA_PATH` is the prefix itself, which gets the layout
+Proton expects before each start (`pfx` naming the prefix, a `steamuser`
+profile linked to the capsule's own). Proton takes a prefix without its version
+stamp as one to bring up to date rather than replace: it keeps the registry and
+the installed programs and writes its version. Tilo takes the prefix's `Z:`
+drive away before every start, and Proton's script adds it back for `/`, which
+inside the capsule is only what its sandbox shows. Back to Wine, Wine opens
+the prefix as Proton left it. Proton opens only 64-bit prefixes, so the choice
+is refused for a 32-bit one and the program keeps opening with Wine. Other programs of the same capsule keep opening as
+they did, but never at the same time as one on the other runner: Wine and
+Proton cannot share a live prefix, so a start is refused with the reason while
+a program of the setup is open on the other one.
+
+In a capsule Proton uses Wine's own synchronization: its esync and fsync keep
+shared memory in `/dev/shm`, which a capsule cannot write, and this Proton's
+Wine has no ntsync. Proton's script reads two kernel limits
+(`/proc/sys/fs/file-max`, `/proc/sys/vm/max_map_count`), the only files of
+`/proc` the capsule lets it read. Every library Proton loads comes from the
+image or the Windows extension, which `os/dev/proton_libraries.py` checks when
+the extension is built.
 
 For the appliance, the service streams the same digest-pinned descriptor over
 the certificate-pinned, HMAC-authenticated host-only bridge. Guest staging is
@@ -232,6 +248,13 @@ shows on an X display of the keeper's own: UMU-Proton carries no Wayland driver,
 so it opens its window through Xwayland, and the keeper gives its sandbox that
 display's socket and authority file. Both stay open across an in-place restart;
 each is shut down with the desktop only when the login ends.
+
+An X11 window tells its size limits where Wine's Wayland driver does not, so a
+Proton window of a fixed size (PuTTY's settings, for one) floats as a dialog in
+front of the tabs rather than taking a tab of its own; under Wine the same
+window takes a tab. Proton
+loads Vulkan only for a program that draws with Direct3D: PuTTY draws with GDI,
+and Proton said nothing about Vulkan for it.
 
 A program shown from the Windows appliance stays open the same way: its RAIL or
 SPICE presentation starts behind a keeper of its own
