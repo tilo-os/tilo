@@ -183,6 +183,13 @@ impl LiveSessions {
                 joined.members.len(),
                 joined.live_session.heard_total()
             );
+            for (device, (said, left)) in joined.live_session.presence_from() {
+                let device = hex::encode(device.get(..4).unwrap_or_default());
+                let _ = write!(
+                    line,
+                    "\n  presence from {device}: {said} said, left {left} time(s)"
+                );
+            }
             for (reason, count) in joined.live_session.refusals() {
                 let _ = write!(line, "\n  refused {count}: {reason}");
             }

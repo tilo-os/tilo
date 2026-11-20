@@ -304,6 +304,9 @@ pub(crate) struct Shared {
     /// open what a reader got: the answer a member needs when it hears nobody
     /// who is in the roster.
     heard_total: AtomicU64,
+    /// Per device, how many presence objects were opened from it and how many times it was
+    /// heard leaving: whether a member that lists nobody hears that device at all.
+    presence_from: Mutex<BTreeMap<[u8; 32], (u64, u64)>>,
     refusals: Mutex<BTreeMap<String, usize>>,
     ended: Mutex<bool>,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -372,6 +375,7 @@ impl Shared {
             demand_revision: AtomicU64::new(0),
             heard: Mutex::new(VecDeque::new()),
             heard_total: AtomicU64::new(0),
+            presence_from: Mutex::new(BTreeMap::new()),
             refusals: Mutex::new(BTreeMap::new()),
             ended: Mutex::new(false),
             wake: Mutex::new(None),
@@ -537,6 +541,17 @@ impl Shared {
         }
     }
     fn deliver(&self, heard: Heard) {
+        if heard.track == Track::Presence {
+            let left = heard.body.is_empty();
+            let mut from = self.presence_from.lock_recover();
+            let counts = from.entry(heard.sender).or_default();
+            if left {
+                counts.1 = counts.1.saturating_add(1);
+            } else {
+                counts.0 = counts.0.saturating_add(1);
+            }
+            drop(from);
+        }
         {
             let mut queue = self.heard.lock_recover();
             if queue.len() >= QUEUE {
@@ -1012,6 +1027,12 @@ impl LiveSession {
     #[must_use]
     pub fn heard_total(&self) -> u64 {
         self.shared.heard_total.load(Ordering::Relaxed)
+    }
+
+    /// Per device, the presence objects opened from it and how many times it was heard leaving.
+    #[must_use]
+    pub fn presence_from(&self) -> BTreeMap<[u8; 32], (u64, u64)> {
+        self.shared.presence_from.lock_recover().clone()
     }
 
     /// Why this live session could not open what it read, by reason and count: what a

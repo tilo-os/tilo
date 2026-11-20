@@ -672,6 +672,64 @@ async fn a_device_that_joins_the_roster_after_the_live_session_started_is_heard(
     );
 }
 
+/// A device the roster names before it has joined is heard as soon as it says itself: the member
+/// already here waits for its broadcast and reads it when it comes, not when it comes back. An
+/// invited person's page is in the workspace's governance a moment before it reaches the live
+/// session, and the member who invited them sees them arrive at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_the_roster_names_before_it_joins_is_heard_once_it_says_itself() {
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (a_key, b_key) = (*a_endpoint.id().as_bytes(), *b_endpoint.id().as_bytes());
+    let (a_cert, b_cert) = (authority.admit_device(a_key), authority.admit_device(b_key));
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let keys = keys();
+
+    let a = LiveSession::join(
+        Arc::new(native::Iroh::new(a_endpoint, addr(&relay_endpoint))),
+        &grant_for(&a_cert),
+        join(a_key, Roster::new([a_key]), keys.clone()),
+    )
+    .await
+    .unwrap();
+    wait_until("the first device is admitted", || {
+        relay.counters().accepted == 1
+    });
+    // The governance names `b` before `b` reaches the live session.
+    a.set_roster(Roster::new([a_key, b_key]));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let b = LiveSession::join(
+        Arc::new(native::Iroh::new(b_endpoint, addr(&relay_endpoint))),
+        &grant_for(&b_cert),
+        join(b_key, Roster::new([a_key, b_key]), keys),
+    )
+    .await
+    .unwrap();
+    b.publish(Track::Presence, 1, b"arrived").unwrap();
+    // Said once, as a page says itself as it joins: the next restatement is seconds away, so
+    // what is heard within one came from that word.
+    let since = std::time::Instant::now();
+    let mut drawn = Vec::new();
+    while since.elapsed() < Duration::from_secs(1) {
+        drawn.extend(heard(&a, Track::Presence));
+        if drawn.iter().any(|object| object.sender == b_key) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        drawn
+            .iter()
+            .any(|object| object.body == b"arrived" && object.sender == b_key),
+        "the member here did not hear the device its roster named once it joined, in {:?}: \
+         {drawn:?}",
+        since.elapsed()
+    );
+}
+
 /// A device that joins after another has said its presence hears it
 /// within one frame of subscribing: the reader starts at the track's latest
 /// group, not at whatever is said next. Nothing is published again here, so a
