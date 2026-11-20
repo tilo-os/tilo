@@ -254,12 +254,13 @@ tilo_test_env::scenario! {
         let mut tree = shell(WORKSPACE);
         let people = sync.show(&mut tree, &no_records(), &|_| None);
         assert_eq!(people.len(), 1);
-        assert_eq!(people[0].label, "Framework 16");
+        // A person who gave no name is someone without a name yet, never their device's label.
+        assert_eq!(people[0].label, ui::presence::unnamed_person_label());
         assert_eq!(people[0].user, Some(person(0xaa)));
 
         let members = &tree.workspaces[0].members;
         assert_eq!(members.len(), 1);
-        assert_eq!(members[0].name, "Framework 16");
+        assert_eq!(members[0].name, ui::presence::unnamed_person_label());
         assert!(members[0].id.is_person());
         let here = &tree.workspaces[0].present;
         assert_eq!(here.len(), 1);
@@ -641,7 +642,8 @@ tilo_test_env::scenario! {
 
         let people = sync.show(&mut shell(WORKSPACE), &no_records(), &|_| None);
         assert_eq!(people.len(), 1);
-        assert_eq!(people[0].label, "Framework 16");
+        assert_eq!(people[0].user, Some(person(0xaa)));
+        assert_eq!(people[0].label, ui::presence::unnamed_person_label());
     }
 
     phase another_device_of_this_person_is_this_person;
