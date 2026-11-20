@@ -2329,6 +2329,12 @@ impl QuickFS {
             return None;
         }
         let end = offset.saturating_add(page_entries).min(records);
+        // The rows' paths are derived under the tree's lock, which is let go before the page is
+        // built; the pairs are what crosses that boundary.
+        #[allow(
+            clippy::needless_collect,
+            reason = "the paths are derived under the lock the page is built without"
+        )]
         let candidates: Vec<(IndexedDocument, Option<String>)> = namespace
             .indexed_document_page(offset, page_entries)
             .into_iter()
