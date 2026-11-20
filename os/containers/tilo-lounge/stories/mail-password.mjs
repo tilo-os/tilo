@@ -291,6 +291,11 @@ try {
   await story.step('Ada sends a reply, and it arrives', async () => {
     const pressed = Date.now();
     if (!await pressNamed(ada.tab, 'Reply')) fail('the message offers no Reply');
+    // The bar's own Reply, or the message's menu of actions it opened: a person
+    // takes whichever is in front of them.
+    if (await poll(ada.tab, `(${TREE_TEXT}).includes('Reply all')`, 2500)) {
+      if (!await pressNamed(ada.tab, 'Reply', -1)) fail('the message’s menu offers no Reply');
+    }
     await shows(ada.tab, 'Send', 'the composer', stepLimit(4));
     const words = `Thanks, see you Monday ${Date.now().toString(36)}`;
     // The composer's own field, as a person writes in it: the field that says
