@@ -1910,15 +1910,6 @@ impl tilo_broker_core::owner_service::OwnerService for Engine {
         self.ownership.check(owner, workspace_id, &self.identity)
     }
 
-    fn signer(
-        &self,
-        owner: &NativeWorkspaceOwner,
-        workspace_id: WorkspaceId,
-    ) -> Result<Arc<dyn collab_types::signer::DeviceSigner>, String> {
-        self.check_ownership(owner, workspace_id)?;
-        Ok(Arc::clone(&self.identity.signer))
-    }
-
     /// Send the owner's outgoing ownership of `workspace` to its peers soon: what was just committed
     /// leaves this device. Queued, never awaited.
     fn schedule_publication(&self, workspace_id: WorkspaceId) {

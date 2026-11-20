@@ -232,12 +232,6 @@ impl Workspaces {
         }
     }
 
-    /// Whether this service holds `workspace` itself, governed or as a member copy.
-    #[cfg(feature = "apps")]
-    pub(crate) async fn holds_workspace(&self, workspace: &str) -> bool {
-        self.inner.workspaces.lock().await.contains_key(workspace)
-    }
-
     /// The revision `app`'s `resource` of `workspace` stands at for the device `reader`: decided
     /// as a read is, handing nothing out. `None` while a checkpoint is arriving, which only a
     /// capture answers.

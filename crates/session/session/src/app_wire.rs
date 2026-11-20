@@ -556,11 +556,10 @@ pub fn serve(
     Ok(broker)
 }
 
-/// Where the broker's writes go beyond this device's own apps: into this
-/// device's workspace service where it holds the workspace, which publishes
-/// what it committed to the workspace's peers, and into the engine's owner
-/// for a workspace only that one holds. A session that holds no workspaces
-/// keeps its apps' writes among them.
+/// Where the broker's writes go beyond this device's own apps: an app's
+/// documents into this device's workspace service, and its effect receipts
+/// into the engine's owner. A session that holds no workspaces keeps its
+/// apps' writes among them.
 pub(crate) fn owner_publisher(
     engine: Option<std::sync::Arc<crate::engine::Engine>>,
     service: tilo_workspace_service::service::ServiceSlot,
@@ -573,8 +572,8 @@ pub(crate) fn owner_publisher(
         PeerPublisher::with_optional_owner_commit(
             None,
             std::sync::Arc::new(
-                tilo_workspace_service::apps::owner_commits::NativeOwnerCommits::through_service(
-                    service, engine, records,
+                tilo_workspace_service::apps::owner_commits::NativeOwnerCommits::new(
+                    engine, service, records,
                 ),
             ),
         )

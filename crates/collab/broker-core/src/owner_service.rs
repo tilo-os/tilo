@@ -25,15 +25,6 @@ pub trait OwnerService: collab_types::signer::MaybeSendSync + 'static {
         owner: &NativeWorkspaceOwner,
         workspace: WorkspaceId,
     ) -> Result<(), String>;
-    /// This device's ownership of its key, which signs its own changes of `workspace`.
-    ///
-    /// # Errors
-    /// This device holds no ownership of `workspace`.
-    fn signer(
-        &self,
-        owner: &NativeWorkspaceOwner,
-        workspace: WorkspaceId,
-    ) -> Result<std::sync::Arc<dyn collab_types::signer::DeviceSigner>, String>;
     /// Send the owner's outgoing ownership of `workspace` to its peers soon:
     /// what was just committed leaves this device. Queued, never awaited.
     fn schedule_publication(&self, workspace: WorkspaceId);

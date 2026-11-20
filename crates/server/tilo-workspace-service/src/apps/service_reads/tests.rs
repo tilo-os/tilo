@@ -10,7 +10,6 @@
 
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
-use std::sync::Arc;
 
 use super::*;
 use crate::apps::route::CrdtRoute;
