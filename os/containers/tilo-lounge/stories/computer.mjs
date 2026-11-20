@@ -9,10 +9,31 @@
 // the story runs there goes through one shell in that one namespace, so the
 // mount `tilo login` makes is the same folder `cp` writes into.
 import {spawn} from 'node:child_process';
-import {mkdirSync} from 'node:fs';
+import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 
 const quote = text => `'${String(text).replace(/'/g, `'\\''`)}'`;
+
+/** Claude Code, as far as `tilo login` reaches it: its `mcp add` writes the
+ * server into the configuration the command reads back afterwards. */
+const AGENT_SCRIPT = `#!/bin/sh
+[ "$1 $2" = "mcp add" ] || exit 0
+shift 2
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --scope|-s) shift 2 ;;
+    --*) shift ;;
+    *) break ;;
+  esac
+done
+name=$1; shift
+[ "$1" = "--" ] && shift
+program=$1; shift
+args=
+for arg in "$@"; do args="$args\\"$arg\\","; done
+printf '{"mcpServers":{"%s":{"type":"stdio","command":"%s","args":[%s],"env":{}}}}\\n' \\
+  "$name" "$program" "\${args%,}" > "$HOME/.claude.json"
+`;
 
 /** A shell that runs one command at a time, answering what it said. */
 class Shell {
@@ -85,7 +106,7 @@ class Shell {
  * `run(args)` for `tilo …`, and `mcp()` for the agent's server. With
  * `namespace`, every command runs in one user and mount namespace, so the
  * workspace folder `tilo login` mounts can be written into. */
-export function computerAt(out, {namespace = false, env: extra = {}} = {}) {
+export function computerAt(out, {namespace = false, env: extra = {}, agent = null} = {}) {
   const bin = process.env.TILO_CLI_BIN;
   if (!bin) throw new Error('TILO_CLI_BIN names no tilo command');
   const home = join(out, 'computer');
@@ -105,6 +126,17 @@ export function computerAt(out, {namespace = false, env: extra = {}} = {}) {
     TMPDIR: dirs.tmp,
     ...extra,
   };
+  // A computer whose agent runs `tilo login` there (`agent: 'claude'`): the
+  // tool it is run from, which records the server the command adds into the
+  // configuration the command then reads back, as Claude Code's own `mcp add`
+  // does — and the marker Claude Code runs its commands with.
+  if (agent) {
+    const tool = join(home, 'bin', agent);
+    mkdirSync(join(home, 'bin'), {recursive: true});
+    writeFileSync(tool, AGENT_SCRIPT, {mode: 0o755});
+    env.PATH = `${join(home, 'bin')}:${env.PATH}`;
+    env.CLAUDECODE = '1';
+  }
   const shell = namespace
     ? new Shell('unshare', ['--user', '--map-root-user', '--mount', '--', 'bash', '--noprofile', '--norc', '-s'], env)
     : new Shell('bash', ['--noprofile', '--norc', '-s'], env);

@@ -131,6 +131,25 @@ const drop = async (tab, paths, {x, y}) => {
   await tab.send('Input.dispatchDragEvent', {type: 'drop', x, y, data});
 };
 
+// A press on a button of the page's own first screen (plain HTML over the
+// desktop), where a person's pointer would land.
+const pressPageButton = async (tab, id, what) => {
+  const box = JSON.parse(await tab.evaluate(`(() => {
+    const element = document.getElementById(${JSON.stringify(id)});
+    if (!element || element.disabled) return '';
+    const rect = element.getBoundingClientRect();
+    if (!rect.width || !rect.height) return '';
+    const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+    const top = document.elementFromPoint(x, y);
+    return JSON.stringify({x, y, covered: top && element.contains(top) ? null : top?.tagName ?? null});
+  })()`).catch(() => '""'));
+  if (!box) fail(`${what} is not on the page`);
+  if (box.covered) fail(`${what} is covered by ${box.covered}: a person's press would land there`);
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await tab.send('Input.dispatchMouseEvent', {type, x: box.x, y: box.y, button: 'left', clickCount: 1});
+  }
+};
+
 const story = recorder({id: 'files-in', out, logs});
 const WORKSPACE = 'Studio';
 const computer = computerAt(out, {namespace: true});
@@ -192,7 +211,13 @@ try {
     const loggedIn = await computer.run(['login', code, '--site', site], {timeout: stepLimit(12)});
     if (loggedIn.code !== 0) fail(`tilo login failed (${loggedIn.code}): ${loggedIn.stderr}${loggedIn.stdout}`);
     if (!/Logged in/.test(loggedIn.stdout)) fail(`tilo login did not say it logged in: ${loggedIn.stdout.slice(-600)}`);
-    // The tab the code came from follows it: the screen goes and the workspace shows.
+    // The tab the code came from follows it and says the computer is in. With
+    // no agent tool there, the screen stays on the step after that, and the
+    // person closes it to get back to their workspace.
+    await until(ada.tab,
+      `(document.getElementById('first-screen-steps')?.textContent ?? '').includes('logged in as you')`,
+      'the screen saying this computer logged in', stepLimit(6));
+    await pressPageButton(ada.tab, 'first-screen-skip', 'the screen’s Skip for now');
     await until(ada.tab, `document.documentElement.dataset.firstScreen === undefined`, 'the setup screen leaving', stepLimit(6));
     await until(ada.tab, `globalThis.tiloMount?.state?.()?.phase === 'presented'`, 'Ada’s workspace on screen again', stepLimit(6));
     // The workspace's folder, mounted on her computer: what `tilo folders` says.

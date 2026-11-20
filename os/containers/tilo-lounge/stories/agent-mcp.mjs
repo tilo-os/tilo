@@ -44,7 +44,7 @@ const NOTE = 'Spring plans';
 const CHAT = 'I filed the budget under Spring.';
 const QUESTION = 'Shall I file the budget under Spring?';
 const ANSWER = 'Yes, file it';
-const computer = computerAt(out);
+const computer = computerAt(out, {agent: 'claude'});
 let agent = null;
 let error = null;
 
@@ -55,7 +55,7 @@ const act = async (paths, args = {}) => {
     try {
       return await agent.call('tilo_do', {path, args});
     } catch (problem) {
-      if (!/unknown action|no such|UnknownAction|unavailable/i.test(String(problem))) throw problem;
+      if (!/has no action|no resource|unknown action|unknown|no such|unavailable/i.test(String(problem))) throw problem;
       refused = problem;
     }
   }
