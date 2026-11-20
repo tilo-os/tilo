@@ -2520,6 +2520,7 @@ mod listing_stream_tests {
             for i in 0..3_u64 {
                 ns.create_file(flat, format!("f{i}"), None, 0, i).unwrap();
             }
+            drop(ns);
             flat
         };
         let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
@@ -2532,7 +2533,10 @@ mod listing_stream_tests {
         let next = fs
             .listing_page(flat, u64::try_from(first.len()).unwrap())
             .unwrap();
-        assert_eq!(next, first, "a listing's pages are one pass over its folder");
+        assert_eq!(
+            next, first,
+            "a listing's pages are one pass over its folder"
+        );
         let fresh = fs.listing_page(flat, 0).unwrap();
         assert_eq!(fresh.len(), 6, "the next listing sees the new name");
     }

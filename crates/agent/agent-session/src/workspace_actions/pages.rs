@@ -57,7 +57,8 @@ pub(super) enum HeldPage {
     /// An app's page: the record it shows, and who opened it.
     App {
         workspace_id: WorkspaceId,
-        who: bounded::Bounded,
+        /// Boxed: who opened it is most of the page's size, and the front page holds none.
+        who: Box<bounded::Bounded>,
         route: DocumentRoute,
     },
     /// The workspace's front page: the apps a member opens here. Nothing is
@@ -280,7 +281,7 @@ impl Worker {
             page,
             HeldPage::App {
                 workspace_id,
-                who,
+                who: Box::new(who),
                 route,
             },
         );
@@ -316,12 +317,12 @@ impl Worker {
             let name = app
                 .app_id()
                 .rsplit_once('.')
-                .map_or(app.app_id(), |(_, last)| last);
+                .map_or_else(|| app.app_id(), |(_, last)| last);
             let icon = match &app.icon {
                 ui::IconDescriptor::Named(icon) => {
                     ui::icons::Icon::from_name(icon).map_or_else(String::new, ui::icons::icon_svg)
                 }
-                _ => String::new(),
+                ui::IconDescriptor::Glyph(_) => String::new(),
             };
             let _ = write!(
                 body,
@@ -362,7 +363,10 @@ impl Worker {
                 workspace_id,
                 who,
                 route,
-            } => (None, Some((*workspace_id, who.clone(), route.clone()))),
+            } => (
+                None,
+                Some((*workspace_id, bounded::Bounded::clone(who), route.clone())),
+            ),
             HeldPage::Home { workspace_id } => (Some(*workspace_id), None),
         };
         // The workspace's front page holds no document and nothing acts on
