@@ -50,6 +50,9 @@ pub struct Present {
     /// narrow to show everyone.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub followed: bool,
+    /// They follow this session's view: their face in the bar says so.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub follows_you: bool,
 }
 
 impl Present {
@@ -66,6 +69,7 @@ impl Present {
             call: None,
             session: None,
             followed: false,
+            follows_you: false,
         }
     }
 }

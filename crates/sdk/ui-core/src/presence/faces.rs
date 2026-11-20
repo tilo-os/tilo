@@ -25,6 +25,9 @@ pub struct Face<'a> {
     pub active: Option<crate::motion::Sweep>,
     /// A wave's bounce, as a scale (1 at rest; `ui::motion::Attention`).
     pub scale: f64,
+    /// They follow the view of the person looking: a small eye on the face's lower edge, in
+    /// their colour, says so where their face already stands, with nothing to read or answer.
+    pub follows_you: bool,
 }
 
 impl<'a> Face<'a> {
@@ -60,6 +63,7 @@ impl<'a> Face<'a> {
             dimmed: false,
             active: None,
             scale: 1.0,
+            follows_you: false,
         }
     }
 }
@@ -328,6 +332,36 @@ fn paint_face(ctx: &mut PaintCtx<'_>, rect: Rect, face: &Face<'_>, ground: Color
         face.avatar
     };
     avatar.paint(ctx, rect);
+    if face.follows_you {
+        paint_follows_you(ctx, rect, colour, ground);
+    }
+}
+
+/// How wide the eye that says a face follows the person looking is, against the face's side.
+const FOLLOWS_YOU: f64 = 0.5;
+
+/// The eye on the lower right of the face in `rect`: a disc in the face's `colour`, separated from
+/// it by `ground`, with the eye drawn in `ground` on it.
+fn paint_follows_you(ctx: &mut PaintCtx<'_>, rect: Rect, colour: Color, ground: Color) {
+    let radius = rect.width() * FOLLOWS_YOU / 2.0;
+    let center = Point::new(rect.x1 - radius / 2.0, rect.y1 - radius / 2.0);
+    let transform = ctx.transform;
+    ctx.scene.fill(
+        Fill::NonZero,
+        transform,
+        ground,
+        None,
+        &Circle::new(center, radius + GAP),
+    );
+    ctx.scene.fill(
+        Fill::NonZero,
+        transform,
+        colour,
+        None,
+        &Circle::new(center, radius),
+    );
+    let glyph = Rect::from_center_size(center, (radius * 1.5, radius * 1.5));
+    crate::icons::Icon::Eye.draw(ctx.scene, transform, glyph, ground);
 }
 
 #[cfg(test)]
@@ -592,6 +626,45 @@ mod tests {
             assert!(
                 bar.width(4) < 4.0 * outer,
                 "four faces stand narrower than four rings"
+            );
+        }
+    }
+
+    #[test]
+    fn a_face_that_follows_you_wears_an_eye_on_its_lower_edge() {
+        let theme = crate::theme::Theme::dark();
+        let bar = theme.tokens.colors.surfaces.base;
+        let colour = Color::from_rgb8(0xd9, 0xa4, 0x1e);
+        let plain = Face::new("Grace Hopper", "grace", colour);
+        let following = Face {
+            follows_you: true,
+            ..plain
+        };
+        let (still, marked) = (
+            render(&theme, &[plain], bar),
+            render(&theme, &[following], bar),
+        );
+        // The face stands with its middle 12 px left of the stack's end at 60, 30.
+        let (x1, y1) = (60.0 - FaceStack::BAR.width(1) / 2.0 + 12.0, 42.0);
+        let radius = 24.0 * FOLLOWS_YOU / 2.0;
+        let (cx, cy) = (x1 - radius / 2.0, y1 - radius / 2.0);
+        let changed: Vec<(u32, u32)> = (0..80u32)
+            .flat_map(|x| (0..60u32).map(move |y| (x, y)))
+            .filter(|&(x, y)| {
+                crate::offscreen::OffscreenRenderer::sample(&still, 80, x, y)
+                    != crate::offscreen::OffscreenRenderer::sample(&marked, 80, x, y)
+            })
+            .collect();
+        assert!(
+            changed.len() > 40,
+            "the eye shows: {} pixels changed",
+            changed.len()
+        );
+        for (x, y) in changed {
+            let (dx, dy) = (f64::from(x) + 0.5 - cx, f64::from(y) + 0.5 - cy);
+            assert!(
+                dx.hypot(dy) <= radius + GAP + 1.0,
+                "only the eye's corner of the face changes, not {x}, {y}"
             );
         }
     }

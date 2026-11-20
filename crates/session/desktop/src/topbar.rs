@@ -191,6 +191,8 @@ struct CacheFingerprint {
     activity_visible: bool,
     /// Whether the middle area is the following banner's rather than the clock's.
     following: bool,
+    /// Which faces wear the eye of someone following this person.
+    follows_you: Vec<bool>,
     time_bucket: u64,
     /// Quantised, not [`SystemStatus`] itself — it carries an `f32` volume that would never match
     /// frame to frame at full precision.
@@ -383,6 +385,8 @@ pub struct TopBarChrome {
     /// Same index as `face_initials` : how available each face said they are and whether their
     /// ring breathes (in a call, or an agent at work), as the roster they were read from says.
     face_presence: Vec<(ui::Availability, bool)>,
+    /// Whether each face here follows this person's view, by roster index.
+    face_follows: Vec<bool>,
     /// How many of the people present the last draw stood a face for: the rest the "+N" badge
     /// counts. The bar stands as many as it has room for, the one this person follows first.
     faces_shown: usize,
@@ -563,6 +567,7 @@ impl TopBarChrome {
             face_members: Vec::new(),
             face_ids: Vec::new(),
             face_presence: Vec::new(),
+            face_follows: Vec::new(),
             face_looks: Vec::new(),
             face_rects: Vec::new(),
             shown_faces: Vec::new(),
@@ -675,6 +680,7 @@ impl TopBarChrome {
             activity_unread: self.activity_unread,
             activity_visible,
             following: self.following,
+            follows_you: self.face_follows.clone(),
             time_bucket,
             status_key: self.status_key(),
             media_key: self.media_signature.clone(),
@@ -1046,6 +1052,7 @@ impl TopBarChrome {
         self.face_members.clear();
         self.face_ids.clear();
         self.face_presence.clear();
+        self.face_follows.clear();
         // Everyone here, the one this person follows first, then people, then agents, as every
         // list of who is here orders them: the bar stands as many faces as fit and
         // folds the rest into the count badge, so a narrow bar keeps the face being watched and
@@ -1082,6 +1089,7 @@ impl TopBarChrome {
             let breathing =
                 present.call.is_some() || (present.member.is_agent() && present.status.is_some());
             self.face_presence.push((present.availability, breathing));
+            self.face_follows.push(present.follows_you);
         }
         self.sync_strips(tree);
     }
@@ -1568,6 +1576,13 @@ impl Widget for TopBarChrome {
                         "topbar-app-tray-unread",
                         &[("count", unread.min(99).into())],
                     ));
+                }
+                // A face wearing the eye says to a reader what it says on screen.
+                if let Some(index) =
+                    Self::face_target_id(&target).and_then(|id| self.face_index(id))
+                    && self.face_follows.get(index).copied().unwrap_or(false)
+                {
+                    node = node.with_description(t("people-follows-you"));
                 }
                 // The control that opens everyone is the button or the "+N" badge: it says how
                 // many it counts, as the badge paints them.

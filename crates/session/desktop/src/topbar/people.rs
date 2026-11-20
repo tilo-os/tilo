@@ -400,6 +400,7 @@ impl TopBarChrome {
             dimmed: look.is_some_and(|look| look.dimmed),
             active: look.and_then(|look| look.active),
             scale: look.map_or(1.0, |look| look.scale),
+            follows_you: self.face_follows.get(i).copied().unwrap_or(false),
             ..face
         }
     }
@@ -851,6 +852,48 @@ mod tests {
         assert_eq!(
             chrome.borrow().intents.last(),
             Some(&ChromeIntent::TogglePeople)
+        );
+    }
+
+    /// Someone following this person wears an eye on their face, and a reader hears it on the
+    /// face's own control; nobody else does.
+    #[test]
+    fn a_face_following_you_wears_the_eye() {
+        let mut tree = shell(&[
+            (MemberId::person("ada"), "Ada Lovelace"),
+            (MemberId::person("bo"), "Bo Brave"),
+        ]);
+        let (unmarked, _chrome) = bar_over(&tree, true);
+        crate::here::mark_followers(&mut tree, &["bo".to_owned()]);
+        let (bar, _chrome) = bar_over(&tree, true);
+        assert!(
+            unmarked.current_fingerprint() != bar.current_fingerprint(),
+            "the eye repaints the bar"
+        );
+        let theme = Theme::default();
+        let index = |id: &str| bar.face_index(id).expect("a face");
+        assert!(
+            bar.face_of(index("bo"), &theme).follows_you,
+            "Bo follows: the eye"
+        );
+        assert!(
+            !bar.face_of(index("ada"), &theme).follows_you,
+            "Ada does not: no eye"
+        );
+        let said: Vec<(Option<String>, Option<String>)> = face_nodes(&bar)
+            .into_iter()
+            .map(|node| (node.name, node.description))
+            .collect();
+        assert!(
+            said.contains(&(Some("Bo Brave".into()), Some(t("people-follows-you")))),
+            "Bo's face says Bo follows: {said:?}"
+        );
+        assert!(
+            said.iter().any(
+                |(name, description)| name.as_deref() == Some("Ada Lovelace")
+                    && description.is_none()
+            ),
+            "Ada's says nothing of it: {said:?}"
         );
     }
 

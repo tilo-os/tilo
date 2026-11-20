@@ -1056,6 +1056,9 @@ impl Roster {
         // Whose view this person follows, so the bar keeps that face when it has room for only one.
         let following = self.here.borrow().following().map(str::to_owned);
         tilo_desktop::here::place_here(tree, &people, following.as_deref());
+        // Who follows this person: their faces in the bar say so.
+        let followers = self.here.borrow().followers(&people);
+        tilo_desktop::here::mark_followers(tree, &followers);
         people
     }
 

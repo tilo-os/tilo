@@ -59,6 +59,19 @@ impl HereState {
     }
 }
 
+impl HereState {
+    /// Who here follows this person's view, each by the roster id `people` lists them under.
+    #[must_use]
+    pub fn followers(&self, people: &[Person]) -> Vec<String> {
+        let own = self.own_id();
+        self.following_pairs(people)
+            .into_iter()
+            .filter(|(_, followed)| own == Some(followed.as_str()))
+            .map(|(follower, _)| follower)
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::LiveMember;
@@ -129,6 +142,11 @@ mod tests {
                 ("cy".into(), "me".into()),
                 ("me".into(), "ben".into()),
             ]
+        );
+        assert_eq!(
+            here.followers(&people),
+            vec!["cy".to_owned()],
+            "only Cy follows this person: Ben follows Ada, and this person's own follow is theirs"
         );
         here.set_following(None);
         assert_eq!(here.following(), None);

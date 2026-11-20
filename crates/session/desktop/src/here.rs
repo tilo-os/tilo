@@ -1063,6 +1063,22 @@ pub fn place_here(tree: &mut Layout, people: &[Person], following: Option<&str>)
     }
 }
 
+/// Mark the faces in `tree`'s active workspace of everyone following this person (`followers`,
+/// by roster id), so the bar shows who watches their view where their faces already stand.
+pub fn mark_followers(tree: &mut Layout, followers: &[String]) {
+    let active = tree.active;
+    let Some(workspace) = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id() == active)
+    else {
+        return;
+    };
+    for present in &mut workspace.present {
+        present.follows_you = followers.contains(&present.device);
+    }
+}
+
 /// The workspace's members, each in the colour it wears everywhere: its people with their roles,
 /// the agents admitted in it, its bots and anyone here its policy does not list yet. A person here
 /// now wears the colour they show by here; everyone else the one who they are gives them.
@@ -1167,6 +1183,7 @@ fn present_of(person: &Person, following: Option<&str>) -> Present {
         followed: following.is_some_and(|followed| {
             followed == person.id || person.devices.iter().any(|device| device.id == followed)
         }),
+        follows_you: false,
     }
 }
 
