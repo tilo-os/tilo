@@ -40,6 +40,9 @@ impl FrameHarness {
         };
         outcome.answer(Ok(()));
         self.poll_control_invocations();
+        // What the outgoing component wrote commits on the store's thread: a window showing the
+        // next document never waits on the disk.
+        let _started_only = durable_store::waiting::forbid_on_this_thread();
         self.take_component_root(mounted);
     }
 

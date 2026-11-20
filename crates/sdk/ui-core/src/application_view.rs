@@ -390,9 +390,10 @@ impl InstanceViewStore {
             .store
             .write(&key, WriteOp::Replace(bytes), None)
             .map_err(storage_error)?;
-        // Never waits on the frame loop: there the store commits on its
-        // thread, and a later read already sees the saved View.
-        match self.store.flush_where_allowed(&key) {
+        // Never waits: a View is saved while a window opens or closes, and the store commits it
+        // on its own thread. A later read already sees it, and a caller that must know it
+        // landed asks the returned landing.
+        match self.store.flush_without_waiting(&key) {
             Ok(()) | Err(StoreError::Pending(_)) => {
                 Ok(Some(crate::resource::transfer::Landing::new(key, revision)))
             }

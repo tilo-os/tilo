@@ -71,6 +71,7 @@ impl App {
     /// and move the window's collaboration to the new record's route.
     /// Whether the window now shows another record.
     pub fn swap_requested_component(&mut self) -> bool {
+        let _phase = tilo_resource::profiling::Phase::start("ui.swap_component");
         let _entry = self.enter_wake_scope();
         let Some(replacement) =
             crate::component_lifecycle::take_replacement(self.root_widget.as_mut())
@@ -107,8 +108,12 @@ impl App {
         outcome.answer(Ok(()));
         self.poll_directed_invocations();
         // The outgoing component is closed whole: its controls, its
-        // semantic mount and its writer.
-        self.close_components();
+        // semantic mount and its writer. Its writes commit on the store's
+        // thread: a window showing the next document never waits on the disk.
+        {
+            let _started_only = durable_store::waiting::forbid_on_this_thread();
+            self.close_components();
+        }
         self.retirement = retirement;
         let control_domain = crate::control_domain::ControlDomain::outer();
         crate::widget::controls::attach_controls(

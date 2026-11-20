@@ -415,6 +415,20 @@ fn durable_publish_syncs_the_directory_and_regenerable_does_not() {
         count(&backend.probes().dir_syncs) > 0,
         "durable content syncs the directory that gained it"
     );
+    let (dirs, files) = (
+        count(&backend.probes().dir_syncs),
+        count(&backend.probes().file_syncs),
+    );
+    assert!(files > 0, "durable content syncs what it gained");
+    store.put(b"first").unwrap();
+    assert_eq!(
+        (
+            count(&backend.probes().dir_syncs),
+            count(&backend.probes().file_syncs)
+        ),
+        (dirs, files),
+        "content already kept is put again without waiting on the disk"
+    );
     let cache = tempfile::tempdir().unwrap();
     let (store, backend) = probed(DirBackend::new(cache.path()).regenerable());
     store.put(b"first").unwrap();

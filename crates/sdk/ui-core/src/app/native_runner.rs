@@ -2368,6 +2368,7 @@ impl AppHandler {
         // redraw so the user doesn't see a stale image.
         let mut needs_followup_redraw = false;
         let mut surface_gone = false;
+        let admit_phase = slow_event::phase("admit");
         while let Ok(outcome) = render.frame_complete.try_recv() {
             self.primary_frames_completed = self.primary_frames_completed.saturating_add(1);
             if let Some(markers) = self.app.floating.complete_action_marker_frame(
@@ -2465,6 +2466,7 @@ impl AppHandler {
                 return;
             }
         }
+        drop(admit_phase);
         let chrome = slow_event::phase("chrome");
         sync_safe_area(&mut self.app, window);
         // The app's own row of parts, then the frame around it: where the row
@@ -2572,7 +2574,10 @@ impl AppHandler {
         // and assistive technology say the page or record the window is at. Named after the
         // frame took in its changes: a page that came with them names the window in the frame
         // that draws it, not in a next frame an idle window never draws.
-        app.refresh_window_title(window);
+        {
+            let _title = slow_event::phase("title");
+            app.refresh_window_title(window);
+        }
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, __prof_frame_start);
         }
@@ -3149,10 +3154,12 @@ impl AppHandler {
             // and its next `RedrawRequested` waits for that callback.
             self.undrawn.presented();
             frame_demand::submitted(full_redraw_required.then_some(repaint_why));
+            let submit_phase = slow_event::phase("submit");
             let (send_result, send_bounds) = crate::render_thread::timing::around(
                 crate::render_thread::timing::enabled(),
                 || render.render_tx.send(req),
             );
+            drop(submit_phase);
             if let Some(bounds) = send_bounds {
                 crate::native_scenario::log::emit_timing_json(
                     "tilo-native-send",

@@ -100,6 +100,7 @@ pub(crate) struct Probes {
     pub(crate) verifications: AtomicUsize,
     pub(crate) scans: AtomicUsize,
     pub(crate) dir_syncs: AtomicUsize,
+    pub(crate) file_syncs: AtomicUsize,
 }
 
 /// Held around every mutation and the quota scan before it. Separate from [`Index`]: two backends
@@ -335,6 +336,8 @@ impl DirBackend {
             }
             if sync {
                 file.sync_all()?;
+                #[cfg(test)]
+                self.probes.file_syncs.fetch_add(1, Ordering::Relaxed);
             }
             Ok((hasher.finalize().to_hex().to_string(), len))
         })();
@@ -556,7 +559,9 @@ fn note(
 
 impl ContentBackend for DirBackend {
     fn put(&self, reader: &mut dyn Read, _mime: &str) -> Result<Stored, ContentError> {
-        let (tmp, hash, len) = self.receive(reader, self.durable)?;
+        // Flushed only once it is known to be new: content already here, as most of what a
+        // warm start puts again, costs no wait on the disk.
+        let (tmp, hash, len) = self.receive(reader, false)?;
         let stored = Stored {
             hash: hash.clone(),
             len: u64::try_from(len).unwrap_or(u64::MAX),
@@ -597,6 +602,15 @@ impl ContentBackend for DirBackend {
             std::fs::create_dir_all(dir)?;
             if created_shard {
                 self.sync_dir(&self.root)?;
+            }
+            if self.durable {
+                // Write access, which some platforms need to flush a file.
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&tmp)?
+                    .sync_all()?;
+                #[cfg(test)]
+                self.probes.file_syncs.fetch_add(1, Ordering::Relaxed);
             }
             std::fs::rename(&tmp, &path)?;
             // A file under this name that failed verification above was not retained content;
