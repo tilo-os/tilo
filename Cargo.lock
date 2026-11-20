@@ -17834,6 +17834,7 @@ dependencies = [
  "themes",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-agent-session",
  "tilo-agent-turn",
  "tilo-api",
  "tilo-app",

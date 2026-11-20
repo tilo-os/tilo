@@ -64,6 +64,10 @@ impl Reads {
 
     /// What the workspace holds of the record, readable or still sealed.
     pub(crate) fn holds(&self, route: &DocumentRoute) -> bool {
+        #[cfg(feature = "test-support")]
+        if crate::workspace_actions::held_back::hidden(&route.document) {
+            return false;
+        }
         self.0
             .holds(&route.cluster_id, &route.app_id, &route.document)
     }
@@ -83,6 +87,10 @@ impl Reads {
         route: &DocumentRoute,
         since: Option<&[[u8; 32]]>,
     ) -> Result<DocumentRead, String> {
+        #[cfg(feature = "test-support")]
+        if crate::workspace_actions::held_back::hidden(&route.document) {
+            return Ok(DocumentRead::Absent);
+        }
         self.0
             .read(&route.cluster_id, &route.app_id, &route.document, since)
     }
@@ -169,6 +177,10 @@ pub(crate) struct WorkspaceDocuments {
     /// same set for asking whether one is in it. Thrown away when a document
     /// that was not here lands, or an open replica takes one.
     known: Option<(Arc<[DocumentRoute]>, HashSet<DocumentRoute>)>,
+    /// Where a test held a document back or let one go when [`Self::known`] was listed: a
+    /// document let go arrives, and is listed again ([`crate::workspace_actions::held_back`]).
+    #[cfg(feature = "test-support")]
+    held_back: u64,
     /// What search finds in each record, as its app reads it: the entries it
     /// publishes to the search index, one per resource of the record.
     entries: Read<Arc<[IndexEntry]>>,
@@ -195,6 +207,8 @@ impl WorkspaceDocuments {
             landings: 0,
             app_landings: Arc::default(),
             known: None,
+            #[cfg(feature = "test-support")]
+            held_back: 0,
             entries: HashMap::new(),
             unreadable: HashMap::new(),
             moved: HashMap::new(),
@@ -364,6 +378,15 @@ impl WorkspaceDocuments {
     /// Listed once, and again only once a document that was not here lands or
     /// an open replica takes one.
     pub(crate) fn known(&mut self) -> Arc<[DocumentRoute]> {
+        #[cfg(feature = "test-support")]
+        {
+            let moved = crate::workspace_actions::held_back::moved();
+            if moved != self.held_back {
+                self.held_back = moved;
+                self.known = None;
+                self.landings = self.landings.wrapping_add(1);
+            }
+        }
         if let Some((known, _)) = &self.known {
             return Arc::clone(known);
         }

@@ -64,6 +64,8 @@ mod files_listing;
 mod follow;
 mod found;
 mod found_files;
+#[cfg(feature = "test-support")]
+pub mod held_back;
 mod host_actions;
 mod index;
 mod invocation_log;

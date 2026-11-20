@@ -58,6 +58,10 @@ struct Awaiting {
     tried: Tried,
     /// When it is applied again at the latest.
     at: Instant,
+    /// How many writes had landed in its workspace when it was held: a change of the
+    /// workspace that landed none (a person arriving, a listing) brings no part, and the write
+    /// is not applied again for it, which held the next request behind it every time.
+    landings: u64,
     job: Job,
 }
 
@@ -198,8 +202,10 @@ impl Worker {
         let at = Instant::now()
             .checked_add(tried.look)
             .unwrap_or_else(Instant::now);
+        let landings = self.landings(workspace_id);
         self.part_waits.awaiting.push_back(Awaiting {
             workspace_id,
+            landings,
             tried: Tried {
                 look: tried.look.saturating_mul(2).min(PART_LOOK_MAX),
                 ..tried
@@ -212,13 +218,20 @@ impl Worker {
     }
 
     /// Apply again the writes waiting for their part whose pause is over, and
-    /// every one of `changed`, the workspace that just changed.
+    /// every one of `changed`, the workspace that just changed, once a write
+    /// landed in it since they were held.
     pub(super) fn try_parts_again(&mut self, changed: Option<WorkspaceId>) {
         let now = Instant::now();
+        let landed = changed.map(|workspace_id| (workspace_id, self.landings(workspace_id)));
         let (due, waiting): (VecDeque<_>, VecDeque<_>) =
             std::mem::take(&mut self.part_waits.awaiting)
                 .into_iter()
-                .partition(|awaiting| awaiting.at <= now || Some(awaiting.workspace_id) == changed);
+                .partition(|awaiting| {
+                    awaiting.at <= now
+                        || landed.is_some_and(|(workspace_id, landings)| {
+                            awaiting.workspace_id == workspace_id && awaiting.landings != landings
+                        })
+                });
         self.part_waits.awaiting = waiting;
         for Awaiting {
             workspace_id,
@@ -231,6 +244,14 @@ impl Worker {
             self.timed(tried.queued, job);
             self.stop_waiting_if_idle(workspace_id);
         }
+    }
+
+    /// How many writes landed in `workspace_id` as this service holds it.
+    fn landings(&self, workspace_id: WorkspaceId) -> u64 {
+        self.workspaces
+            .get(&workspace_id)
+            .and_then(|workspace| workspace.documents.as_ref())
+            .map_or(0, crate::workspace_documents::WorkspaceDocuments::landings)
     }
 
     /// [`Self::invoke_on`] once: `invoked` on what is mounted at `holder`.

@@ -256,6 +256,9 @@ mod workspace_find;
 mod search_beside_requests;
 
 #[cfg(test)]
+#[path = "workspace_actions/part_held_back.rs"]
+mod part_held_back;
+#[cfg(test)]
 #[path = "workspace_actions/person_before_agent.rs"]
 mod person_before_agent;
 

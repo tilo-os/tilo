@@ -140,6 +140,12 @@ impl Workspace {
     ) -> bool {
         let mut owing = false;
         for route in routes {
+            // A part a test holds back: owed, and not asked for until it is let go.
+            #[cfg(feature = "test-support")]
+            if super::held_back::hidden(&route.document) {
+                owing = true;
+                continue;
+            }
             if !self.holds(&route)
                 && !self.answered.contains(&route)
                 && !self.asked.contains(&route)
