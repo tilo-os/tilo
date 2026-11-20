@@ -54,7 +54,10 @@ COPY --from=component-files /image/extension-files/ /
 # Settings. Everything the compositor's quick-settings popover cannot
 # reach lives here — Wi-Fi profiles, audio device routing, display scale,
 # keyboard layout, power policy, touchpad — so an image without it is an
-# image where those are unreachable on real hardware.
+# image where those are unreachable on real hardware. Copied from where the
+# manifest installed them, not through the side builds' overlay below: a copy
+# of a tree this size takes minutes, and it was made twice.
+COPY --from=component-files /image/desktop-binaries/ /
 COPY --from=desktop-binaries / /
 COPY --from=component-files /image/windows/ /
 # ---- Baked signed runtime bundle -------------------------------------------

@@ -1,7 +1,8 @@
-# The side builds come through image-tool-stages, so a build of the binaries
-# given that stage as an image (t's, os/image/layers.toml) doesn't build them again.
+# The side builds beside the desktop binaries, which the binaries piece copies
+# from component-files itself. They come through image-tool-stages, so a build of
+# the binaries given that stage as an image (t's, os/image/layers.toml) doesn't
+# build them again.
 FROM scratch AS desktop-binaries
-COPY --from=component-files /image/desktop-binaries/ /
 COPY --from=image-tool-stages /doubletake/doubletake /usr/libexec/tilo-doubletake
 COPY --from=image-tool-stages /doubletake/doubletake-test-receiver /usr/libexec/tilo-doubletake-test-receiver
 COPY --from=image-tool-stages /joycond/usr/bin/joycond /usr/bin/joycond

@@ -1041,10 +1041,11 @@ RUN --network=none \
       --from /out \
       --dest /image --by-layer --all
 
-# The side builds come through image-tool-stages, so a build of the binaries
-# given that stage as an image (t's, os/image/layers.toml) doesn't build them again.
+# The side builds beside the desktop binaries, which the binaries piece copies
+# from component-files itself. They come through image-tool-stages, so a build of
+# the binaries given that stage as an image (t's, os/image/layers.toml) doesn't
+# build them again.
 FROM scratch AS desktop-binaries
-COPY --from=component-files /image/desktop-binaries/ /
 COPY --from=image-tool-stages /doubletake/doubletake /usr/libexec/tilo-doubletake
 COPY --from=image-tool-stages /doubletake/doubletake-test-receiver /usr/libexec/tilo-doubletake-test-receiver
 COPY --from=image-tool-stages /joycond/usr/bin/joycond /usr/bin/joycond
@@ -3040,7 +3041,10 @@ COPY --from=component-files /image/extension-files/ /
 # Settings. Everything the compositor's quick-settings popover cannot
 # reach lives here — Wi-Fi profiles, audio device routing, display scale,
 # keyboard layout, power policy, touchpad — so an image without it is an
-# image where those are unreachable on real hardware.
+# image where those are unreachable on real hardware. Copied from where the
+# manifest installed them, not through the side builds' overlay below: a copy
+# of a tree this size takes minutes, and it was made twice.
+COPY --from=component-files /image/desktop-binaries/ /
 COPY --from=desktop-binaries / /
 COPY --from=component-files /image/windows/ /
 # ---- Baked signed runtime bundle -------------------------------------------
