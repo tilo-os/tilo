@@ -2857,7 +2857,7 @@ start_supervisor() {
   [[ $(basename -- "$cargo") != t ]] || nested=(--nested)
   ( cd "$repo" && setsid env "TILO_SH_STATE=$remote_state" RCARGO_T=0 "$cargo" exec "${nested[@]}" \
       --forward "$(forward_tcp)" --forward "udp:$(forward_udp)" \
-      -- env "${envs[@]}" bash -c "exec python3 $(printf '%q' "$control") serve --port $(printf '%q' "$control_port") --token $(printf '%q' "$stack_token") --repo . --self $(printf '%q' "$self") --start $start" ) \
+      -- env "${envs[@]}" bash -c "exec python3 $(printf '%q' "$control") serve --port $(printf '%q' "$control_port") --token $(printf '%q' "$stack_token") --repo . --self $(printf '%q' "$self") -- $start" ) \
     >> "$state/logs/remote.log" 2>&1 < /dev/null 9>&- &
   printf '%s\n' "$!" > "$state/supervisor.pid"
 }
