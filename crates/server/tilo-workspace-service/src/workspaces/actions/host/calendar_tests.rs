@@ -1314,7 +1314,9 @@ async fn what_she_always_allows_is_put_unasked_until_she_takes_it_back() {
     ada.nobody_was_mailed("an entry she always allows");
 
     assert_eq!(
-        ada.workspaces.take_back_permission(&person, &permission.id),
+        ada.workspaces
+            .take_back_permission(&person, &permission.id)
+            .await,
         Ok(true)
     );
     let again = ada.put(&assistant, &dinner("dinner-4@example.org")).await;
