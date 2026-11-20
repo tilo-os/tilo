@@ -17,6 +17,10 @@
 //!
 //! The same actions answer a device that keeps its own accounts, so the page
 //! and the device read and change accounts through one vocabulary.
+//!
+//! A page open in a tab keeps the build it loaded while its server moves
+//! on, so every message here reads past a field it does not know: a field
+//! is added as an optional one, and an older page reads the newer answer.
 
 use serde::{Deserialize, Serialize};
 
@@ -182,7 +186,7 @@ impl Provider {
 /// Which of an account's services the person uses. One account feeds every
 /// app: Mail reads it where `mail` is on, Calendar where `calendar` is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct Services {
     #[serde(default)]
     pub mail: bool,
@@ -224,7 +228,7 @@ impl Services {
 
 /// One account, as [`LIST`] and [`ADD_MAIL`] answer it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct MailAccount {
     /// The account's id, as [`REMOVE`] names it.
     pub id: String,
@@ -254,7 +258,7 @@ pub struct MailAccount {
 
 /// A sign-in begun with [`BEGIN_SIGN_IN`] that has not made an account yet.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SigningIn {
     /// The sign-in's id, as [`CANCEL_SIGN_IN`] names it.
     pub id: String,
@@ -269,7 +273,7 @@ pub struct SigningIn {
 
 /// Every mail account the person's vault keeps.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct MailAccounts {
     pub accounts: Vec<MailAccount>,
     /// The account the person chose last, when the store names one; the
@@ -288,14 +292,14 @@ pub struct MailAccounts {
 
 /// An address whose servers to find ([`FIND_SERVERS`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct FindServers {
     pub address: String,
 }
 
 /// One server and its port.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerAt {
     /// The server's name.
     pub name: String,
@@ -304,7 +308,7 @@ pub struct ServerAt {
 
 /// Where an address's mail lives ([`FIND_SERVERS`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct FoundServers {
     /// Who provides it. A provider that signs in on its own page
     /// ([`Provider::signs_in_on_its_page`]) is signed in to there, never with
@@ -319,7 +323,7 @@ pub struct FoundServers {
 
 /// A sign-in to begin on a provider's own page ([`BEGIN_SIGN_IN`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct BeginSignIn {
     /// Google, Microsoft or Nextcloud.
     pub provider: Provider,
@@ -337,7 +341,7 @@ pub struct BeginSignIn {
 
 /// Where the person's browser goes to sign in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SignInStep {
     /// The sign-in's id, as [`MailAccounts::signing_in`] and
     /// [`CANCEL_SIGN_IN`] name it.
@@ -348,14 +352,14 @@ pub struct SignInStep {
 
 /// A sign-in to stop waiting for ([`CANCEL_SIGN_IN`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CancelSignIn {
     pub sign_in: String,
 }
 
 /// The services one account feeds ([`SET_SERVICES`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SetServices {
     pub account: String,
     pub services: Services,
@@ -364,7 +368,7 @@ pub struct SetServices {
 /// A mail account to add. The password travels here and nowhere back: the
 /// host keeps it in the person's vault and answers only [`MailAccount`].
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct AddMailAccount {
     pub address: String,
     #[serde(default)]
@@ -424,7 +428,7 @@ const fn default_submissions_port() -> u16 {
 /// that belongs to both servers (`imap://<incoming host>:<port>` and
 /// `smtp://<outgoing host>:<port>`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct AddMailWithItem {
     pub address: String,
     #[serde(default)]
@@ -448,7 +452,7 @@ pub struct AddMailWithItem {
 
 /// One address as mail carries it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct MailAddress {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -457,7 +461,7 @@ pub struct MailAddress {
 
 /// A file a message carries beside its words.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct MailAttachment {
     pub filename: String,
     /// The part's media type.
@@ -472,7 +476,7 @@ pub struct MailAttachment {
 /// One message as a server holds it, read by the host that keeps the
 /// account.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct FetchedMessage {
     /// The server's `UID`, which names the message within its folder.
     pub uid: u32,
@@ -506,7 +510,7 @@ pub struct FetchedMessage {
 
 /// What the reader did to a message the server no longer reports as such.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct MailFlag {
     pub uid: u32,
     pub read: bool,
@@ -515,7 +519,7 @@ pub struct MailFlag {
 
 /// Ask one folder of one account, by its key (`inbox`, `sent`, …).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct FetchMail {
     /// The account's id, as [`LIST`] names it.
     pub account: String,
@@ -539,7 +543,7 @@ pub struct FetchMail {
 
 /// A folder as its server answered it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct FetchedMail {
     /// The account's id, as the request named it.
     pub account: String,
@@ -562,7 +566,7 @@ pub struct FetchedMail {
 
 /// Ask for one message, by where its server holds it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ReadMail {
     /// The account's id, as [`LIST`] names it.
     pub account: String,
@@ -579,7 +583,7 @@ pub const MAX_FOUND: u32 = 25;
 /// Ask an account's server which messages it holds that match. Every part
 /// that is given has to match; at least one is.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchMail {
     /// The account's id, as [`LIST`] names it.
     pub account: String,
@@ -607,14 +611,14 @@ pub struct SearchMail {
 
 /// What a search found, folder by folder.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct FoundMail {
     pub folders: Vec<FoundFolder>,
 }
 
 /// The messages a search found in one folder, newest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct FoundFolder {
     /// The folder's key, as the search named it.
     pub folder: String,
@@ -626,7 +630,7 @@ pub struct FoundFolder {
 /// what it is about, and where its server holds it. The message itself
 /// stays on its server, and [`READ`] answers it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct MailArrival {
     /// Its place in the person's arrival log, which only grows.
     pub seq: u64,
@@ -711,7 +715,7 @@ impl MailArrival {
 /// each for the accounts it was named for alone. A message it would send
 /// ([`SEND`]) is put to its person first.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct AssistantAccess {
     /// The account's id, as [`LIST`] names it.
     pub account: String,
@@ -724,7 +728,7 @@ pub struct AssistantAccess {
 /// The agents of the person's that may read, search and draft through one
 /// account, by the ids they act under.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct AccountAssistants {
     /// The account's id, as [`LIST`] names it.
     pub account: String,
@@ -734,7 +738,7 @@ pub struct AccountAssistants {
 /// Ask what arrived after a place in the person's arrival log: everything
 /// the log still keeps when no place is named.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ArrivedAfter {
     #[serde(default)]
     pub after: u64,
@@ -742,7 +746,7 @@ pub struct ArrivedAfter {
 
 /// What arrived, oldest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct MailArrivals {
     pub arrivals: Vec<MailArrival>,
     /// The newest place the log has given out: what the next ask names as
@@ -753,7 +757,7 @@ pub struct MailArrivals {
 /// A message to send through one of the person's accounts. The host writes
 /// it as mail and hands it to the server; nothing of it comes back.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SendMail {
     /// The account's id, as [`LIST`] names it.
     pub account: String,
@@ -796,7 +800,7 @@ pub const MAX_SEND_PIECE_BYTES: usize = 256 * 1024;
 /// mail — a page has no clock to make a MIME boundary with — and hands it to
 /// the account's server once [`SEND`] says so.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct BeginSend {
     pub message: SendMail,
     /// Bounded RFC 5545 `METHOD:REQUEST` payload for a calendar invitation.
@@ -809,7 +813,7 @@ pub struct BeginSend {
 /// A file a begun message carries. Its bytes follow in [`SEND_PIECE`]s, in
 /// order, until the host holds `size` of them.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SendFile {
     pub filename: String,
     pub mime: String,
@@ -819,7 +823,7 @@ pub struct SendFile {
 /// What [`BEGIN_SEND`] answers: the id [`SEND`] and [`SEND_PIECE`] name the
 /// message by.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct StartedSend {
     pub send: String,
 }
@@ -827,7 +831,7 @@ pub struct StartedSend {
 /// One piece of one of a begun message's files: its bytes at `offset`,
 /// hex-encoded so the frame stays self-describing text.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SendPiece {
     pub send: String,
     /// The file's place in the message's `files`.
@@ -839,21 +843,21 @@ pub struct SendPiece {
 /// What [`SEND_PIECE`] answers: the bytes the host holds of that file, so a
 /// piece that went astray resumes where it got to.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct PieceKept {
     pub written: u64,
 }
 
 /// The message [`SEND`] sends.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SendId {
     pub send: String,
 }
 
 /// What [`SEND`] answers once the message left.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SentMail {
     /// Why the account's Sent folder holds no copy of the message, when the
     /// host tried to file one and could not. The message left all the same.
@@ -865,7 +869,7 @@ pub struct SentMail {
 
 /// What one message's server is told.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct MarkMail {
     /// The account's id, as [`LIST`] names it.
     pub account: String,
@@ -901,6 +905,28 @@ mod tests {
     )]
 
     use super::*;
+
+    /// A tab whose page is older than its server reads the server's answer
+    /// past a field added since, so updating the server breaks no open tab.
+    #[test]
+    fn an_older_page_reads_past_a_field_added_since() {
+        let mut answered = serde_json::to_value(MailAccounts {
+            accounts: vec![MailAccount {
+                address: "ada@example.test".into(),
+                ..MailAccount::default()
+            }],
+            ..MailAccounts::default()
+        })
+        .unwrap();
+        answered["accounts"][0]["addedLater"] = serde_json::json!("anything");
+        answered["addedLater"] = serde_json::json!(1);
+        let read: MailAccounts = serde_json::from_value(answered).unwrap();
+        assert_eq!(read.accounts[0].address, "ada@example.test");
+
+        // No message of a person's accounts refuses what it does not know.
+        let source = include_str!("person_accounts.rs");
+        assert!(!source.contains(concat!("deny_unknown", "_fields")));
+    }
 
     /// A password never reaches a log: the account read for a person hides
     /// it, and the reading the host answers has no field to carry one.
