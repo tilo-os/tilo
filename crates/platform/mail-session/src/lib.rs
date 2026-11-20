@@ -1763,8 +1763,7 @@ mod tests {
 
     /// An account a provider signed in on its own page carries a bearer
     /// token, and both of its servers take it by XOAUTH2: the session reads
-    /// its folder and can send, and the stand-in's refusal is its own rule
-    /// about mail, not a refused sign-in.
+    /// its inbox, sends, and finds what it sent arrived there.
     #[test]
     fn an_oauth_account_signs_in_and_sends_with_its_bearer_token() {
         use tilo_account_probe::stand_in::{Serving, started};
@@ -1801,14 +1800,18 @@ mod tests {
             .enable_all()
             .build()
             .expect("a runtime");
-        runtime.block_on(async {
-            let mut session = sign_in(Some(Arc::clone(&tls)), Some(&reach), &account, &secret)
-                .await
-                .expect("the bearer token signs in");
-            let inbox = session.select("INBOX").await.expect("an inbox");
-            assert_eq!(inbox.exists, 0);
-            let _ = session.logout().await;
-        });
+        let inbox_holds = || {
+            runtime.block_on(async {
+                let mut session =
+                    sign_in(Some(Arc::clone(&tls)), Some(&reach), &account, &secret)
+                        .await
+                        .expect("the bearer token signs in");
+                let inbox = session.select("INBOX").await.expect("an inbox");
+                let _ = session.logout().await;
+                inbox.exists
+            })
+        };
+        let before = inbox_holds();
 
         let leaving = Leaving::read(SendMail {
             account: "ada@example.test".into(),
@@ -1820,7 +1823,7 @@ mod tests {
         })
         .expect("a message");
         let mime = write_leaving(&leaving, &[], None).expect("its text");
-        let refused = runtime
+        runtime
             .block_on(send_message(
                 Some(&reach),
                 &account,
@@ -1829,12 +1832,9 @@ mod tests {
                 &mime,
                 std::slice::from_ref(&up.certificate),
             ))
-            .expect_err("the stand-in sends no mail");
-        assert!(refused.contains("554"), "{refused}");
-        assert!(
-            !refused.contains("535"),
-            "the sign-in was refused: {refused}"
-        );
+            .expect("the bearer token sends");
+        // The stand-in delivers what its SMTP server takes to the inbox.
+        assert_eq!(inbox_holds(), before.saturating_add(1));
     }
 
     /// A folder is found by its special-use mark before its name, and a
