@@ -516,7 +516,11 @@ fn browse_and_select(
         .ok_or("mounted Files surface")?;
     assert_action_bindings(&bindings);
     for id in [document, plain] {
-        files.call_on(&row(id), "select", serde_json::json!({}))?;
+        files.call_on(
+            &row(id),
+            file_explorer::effects::FilesEffect::SELECT_CLOUD.id,
+            serde_json::json!({}),
+        )?;
     }
     capture(files, "files-selected-export")?;
     for id in [document, plain] {
@@ -957,11 +961,9 @@ fn assert_read_only_row(actions: &[tilo_actions::ActionDescriptor], id: &str) {
     let row_actions = actions
         .iter()
         .filter(|action| action.address.resource.as_str() == row(id));
-    assert!(
-        row_actions
-            .clone()
-            .any(|action| action.address.action == "select")
-    );
+    assert!(row_actions.clone().any(
+        |action| action.address.action == file_explorer::effects::FilesEffect::SELECT_CLOUD.id
+    ));
     assert!(
         row_actions.clone().all(|action| !matches!(
             action.address.action.as_str(),
