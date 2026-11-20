@@ -94,6 +94,37 @@ const KEPT: &str = "tree";
 /// itself) and its size.
 pub(crate) type FileBytes = (Option<iroh_blobs::Hash>, u64);
 
+/// Read each document `due`: what the session holds of it past the heads this namespace merged.
+fn read_due(
+    engine: &tilo_session_client::engine::Engine,
+    workspace: &str,
+    due: Vec<DueRead>,
+) -> Vec<DueReading> {
+    due.into_iter()
+        .map(|(chunk, route, merged, digest)| {
+            let reading = engine.document_update(
+                workspace,
+                &route.app_id,
+                &route.document,
+                merged.as_deref(),
+            );
+            (chunk, digest, reading)
+        })
+        .collect()
+}
+
+/// A document of the tree read: its chunk, what the session had admitted of it, and the read.
+type DueReading = (TreeChunk, Option<[u8; 32]>, Result<ResourceReading, String>);
+
+/// A document of the tree due a read: its chunk, its route, the heads this namespace merged of it
+/// last, and what the session had admitted of it when the read was decided on.
+type DueRead = (
+    TreeChunk,
+    DocumentRoute,
+    Option<Vec<[u8; 32]>>,
+    Option<[u8; 32]>,
+);
+
 /// When a step whose cost grows with the tree may run again.
 #[derive(Debug)]
 struct Paced {
@@ -381,6 +412,10 @@ struct Held {
     /// The record exists at the workspace (merged from it, or founded here), so
     /// a write of it is a change.
     founded: bool,
+    /// What the session had admitted of the document when this device last read it whole or
+    /// its changes ([`tilo_session_client::engine::Engine::admitted_digest`]): while that is still what it admitted, a read
+    /// would bring nothing, and is not made.
+    read_at: Option<[u8; 32]>,
     /// How many frames the host said it holds of the record when this session opened it;
     /// `None` until it answered. None at all: the workspace has no such record yet.
     answered: Option<DocumentAnswer>,
@@ -720,30 +755,29 @@ impl Sync {
     /// Merge what each opened record holds that this namespace has not merged yet, and open
     /// the chunks the tree's own record lists that this device has not opened.
     async fn pull_all(&mut self) {
-        let link = self.link.clone();
-        let engine = link.engine();
+        let engine = Arc::clone(self.link.engine());
         let workspace = self.workspace.to_string();
         let now = Instant::now();
         let paced = self.pulling.due(now);
-        let mut readings = Vec::new();
-        let chunks = std::mem::take(&mut self.unread);
-        for chunk in chunks {
-            if self.holding(chunk) && !paced {
-                // Read it with the next paced pass.
-                self.unread.insert(chunk);
-                continue;
+        let due = self.due_reads(&engine, &workspace, paced);
+        if due.is_empty() {
+            if paced {
+                self.pulling.ran(now, Instant::now());
             }
-            let route = route(self.workspace, chunk);
-            let merged = self
-                .documents
-                .get(&chunk)
-                .and_then(|held| held.merged.clone());
-            let reading = engine.record_update(
-                &workspace,
-                &route.app_id,
-                &route.document,
-                merged.as_deref(),
-            );
+            return;
+        }
+        // The reads happen away from the runtime's workers: opening a sealed history takes as long
+        // as it is, and a worker inside it leaves the tasks it would take up next (the session's) waiting.
+        let read = tokio::task::spawn_blocking(move || read_due(&engine, &workspace, due)).await;
+        if paced {
+            self.pulling.ran(now, Instant::now());
+        }
+        let Ok(read) = read else {
+            tracing::warn!(workspace = %self.workspace, "the workspace's tree could not be read");
+            return;
+        };
+        let mut readings = Vec::new();
+        for (chunk, digest, reading) in read {
             match reading {
                 Ok(
                     ResourceReading::Captured { heads, bytes, .. }
@@ -753,22 +787,21 @@ impl Sync {
                         tracing::info!(chunk, workspace = %self.workspace, "a document of the workspace's tree reads here now");
                     }
                     self.again.remove(&chunk);
-                    readings.push((chunk, heads, bytes));
+                    readings.push((chunk, heads, bytes, digest));
                 }
-                Ok(ResourceReading::Unchanged(_)) => {}
+                Ok(ResourceReading::Unchanged(_)) => {
+                    self.documents.entry(chunk).or_default().read_at = digest;
+                }
                 Ok(ResourceReading::Pending) => self.not_read(chunk, None),
                 Err(error) => self.not_read(chunk, Some(&error)),
             }
-        }
-        if paced {
-            self.pulling.ran(now, Instant::now());
         }
         if readings.is_empty() {
             return;
         }
         let records: Vec<(TreeChunk, Vec<u8>)> = readings
             .iter()
-            .map(|(chunk, _, bytes)| (*chunk, bytes.clone()))
+            .map(|(chunk, _, bytes, _)| (*chunk, bytes.clone()))
             .collect();
         // The merge runs away from the runtime's workers: a tree's first merge walks every
         // node it brings, and a worker inside it stops answering agents, mounts and stops for
@@ -793,7 +826,7 @@ impl Sync {
                 return;
             }
         };
-        for (chunk, heads, _) in readings {
+        for (chunk, heads, _, digest) in readings {
             if chunk == 0 {
                 self.status.lock_recover().opened = true;
             }
@@ -811,12 +844,49 @@ impl Sync {
             }
             held.merged = Some(heads);
             held.founded = true;
+            held.read_at = digest;
         }
         for chunk in listed {
             if !self.documents.contains_key(&chunk) {
                 self.open(chunk);
             }
         }
+    }
+
+    /// The documents of the tree to read now, each with its route, the heads this namespace
+    /// merged of it last and what the session admitted of it: those a write landed on since they
+    /// were read, but for this device's own writes still on their way, which wait for a paced
+    /// pass.
+    fn due_reads(
+        &mut self,
+        engine: &tilo_session_client::engine::Engine,
+        workspace: &str,
+        paced: bool,
+    ) -> Vec<DueRead> {
+        let mut due = Vec::new();
+        for chunk in std::mem::take(&mut self.unread) {
+            if self.holding(chunk) && !paced {
+                // Read it with the next paced pass.
+                self.unread.insert(chunk);
+                continue;
+            }
+            let route = route(self.workspace, chunk);
+            let held = self.documents.get(&chunk);
+            // A document the session admitted nothing to since it was read brings nothing: the
+            // look now and then at every document of the tree costs a digest each, where reading
+            // a sealed one opens what the session kept of it, or its whole history.
+            let digest = engine.admitted_digest(workspace, &route.app_id, &route.document);
+            if digest.is_some() && held.and_then(|held| held.read_at) == digest {
+                continue;
+            }
+            due.push((
+                chunk,
+                route,
+                held.and_then(|held| held.merged.clone()),
+                digest,
+            ));
+        }
+        due
     }
 
     /// Document `chunk` of the tree did not read here, with `error` when its read failed.
