@@ -47,6 +47,14 @@ impl ResourceApi for ChainState {
         ChainState::item(self, id)
     }
 
+    fn past_page_len(&self) -> usize {
+        ChainState::past_page_len(self)
+    }
+
+    fn past_page_window(&self, offset: usize, take: usize) -> Vec<tilo_actions::ResourceSpec> {
+        ChainState::past_page_window(self, offset, take)
+    }
+
     fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
         ChainState::read(self, payload)
     }

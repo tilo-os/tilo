@@ -472,6 +472,31 @@ impl ViewStorage {
             .collect()
     }
 
+    /// How many items the chain `parent` keeps past the page each of its
+    /// parts publishes ([`super::chain::ChainState::past_page_len`]): what a
+    /// listing of the chain reaches past those pages.
+    pub(crate) fn chain_past_page_len(&self, parent: &str) -> usize {
+        self.chain_api(parent).map_or(0, |api| api.past_page_len())
+    }
+
+    /// [`Self::chain_past_page_len`] from `offset` on, at most `take`, each
+    /// built alone: what a page of a listing past the parts' pages costs.
+    pub(crate) fn chain_past_page_window(
+        &self,
+        parent: &str,
+        offset: usize,
+        take: usize,
+    ) -> Vec<tilo_actions::ResourceSpec> {
+        self.chain_api(parent)
+            .map(|api| api.past_page_window(offset, take))
+            .unwrap_or_default()
+    }
+
+    /// The chain `id`, among the chains the views opened.
+    fn chain_api(&self, id: &str) -> Option<Rc<dyn super::resources::ResourceApi>> {
+        self.chains.apis().into_iter().find(|api| api.id() == id)
+    }
+
     /// The chain `id` as its head part publishes it, without the items it
     /// holds: what an address on the chain itself (its `create`, the kind of
     /// its parts) is answered from, at the head's cost.

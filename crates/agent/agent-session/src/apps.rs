@@ -667,6 +667,16 @@ impl Replica {
     /// holder pushed last), when there are any.
     fn survey_resources(&self) -> (Vec<tilo_actions::ResourceSpec>, Option<(usize, String)>) {
         let mut resources = self.view.resources();
+        // The items each chain keeps past the page each of its parts
+        // publishes, under the chain: a listing reaches every one of them.
+        for resource in &mut resources {
+            let id = resource.id.as_str().to_owned();
+            if ui::resource::chain_of_resource_id(&id).is_some() {
+                resource
+                    .children
+                    .extend(self.view.past_page_range_under(&id, 0, usize::MAX));
+            }
+        }
         // The items past each collection's published page, under the
         // record's resource: a listing reaches every one of them.
         let past = self.view.resources_past_page();
@@ -1043,17 +1053,22 @@ impl Replica {
             }
         }
         // The items past the published pages, built only as far as the page
-        // reaches; `past_root` is the record's own resource, which holds them.
-        let past_root = resources
-            .iter()
-            .find(|resource| resource.id.as_str() == self.kind.kind())
-            .map(|resource| resource.id.as_str().to_owned());
-        // Items past the published pages are rows under the record's own
-        // resource, so only a query pinned to that level (or to an exact
-        // target, answered alone in [`Self::looked_up`]) can list one of
-        // them. Any other query — a top-level name, a level inside the record
-        // — would walk every item the record holds to admit none, so it is
-        // not walked.
+        // reaches; `past_root` is the app's own resource, which holds them,
+        // or the chain a level it keeps is listed under, whose parts each
+        // publish a page of what they hold.
+        let past_root = if ui::resource::chain_of_resource_id(parent).is_some() {
+            Some(parent.to_owned())
+        } else {
+            resources
+                .iter()
+                .find(|resource| resource.id.as_str() == self.kind.kind())
+                .map(|resource| resource.id.as_str().to_owned())
+        };
+        // Items past the published pages are rows under that resource, so
+        // only a query pinned to its level (or to an exact target, answered
+        // alone in [`Self::looked_up`]) can list one of them. Any other query
+        // — a top-level name, a level inside it — would walk every item it
+        // holds to admit none, so it is not walked.
         let past_wanted = query
             .parent_resource
             .as_deref()
@@ -1070,21 +1085,45 @@ impl Replica {
             let mut next_child = 0usize;
             if plain {
                 // The items before the last page's are not walked again: the
-                // page starts where that one ended.
-                if offset.saturating_sub(level_rows) < past_rows {
+                // page starts at the item its offset falls in, counted by the
+                // pages before as a level item is. A page that starts in the
+                // level walks the past items from the first, as the tree's,
+                // and counts them again.
+                if offset >= level_rows {
+                    let past_offset = offset.saturating_sub(level_rows);
+                    let mut rows = 0usize;
+                    let mut at = 0usize;
+                    for (index, count) in past_counts.iter().enumerate() {
+                        if rows.saturating_add(*count) > past_offset {
+                            at = index;
+                            break;
+                        }
+                        rows = rows.saturating_add(*count);
+                        at = index.saturating_add(1);
+                    }
+                    next_child = at;
+                    past_rows = rows;
+                    walk.total = level_rows.saturating_add(past_rows);
+                } else {
                     past_at = 0;
                     past_rows = 0;
                     past_counts.clear();
                     past_containers.clear();
+                    next_child = 0;
                 }
-                next_child = past_at;
-                walk.total = level_rows.saturating_add(past_rows);
             }
             // A query naming a resource is answered by the labels of the
             // items past the page, building only those that match: a note
-            // named by its title costs its title, not the notebook.
+            // named by its title costs its title, not the notebook. A chain
+            // names its items past the parts' pages in [`Self::looked_up`],
+            // from whichever part keeps one.
             if let Some(name) = query.resource_name.as_deref() {
-                for child in self.view.past_page_named(name) {
+                let named = if level_in_chain {
+                    Vec::new()
+                } else {
+                    self.view.past_page_named(name)
+                };
+                for child in named {
                     in_chains.extend(chain_resources(std::slice::from_ref(&child)));
                     complete =
                         tilo_actions::api::survey_placed_under(&child, root, &mut |placed| {
@@ -1099,13 +1138,13 @@ impl Replica {
             let past_len = if query.resource_name.is_some() || without_layout {
                 0
             } else {
-                self.view.past_page_len()
+                self.view.past_page_len_under(root)
             };
             while complete && walk.total < walk.end && next_child < past_len {
                 // The rows the page still needs: each item may offer none, so
                 // the walk asks again from where this window ended.
                 let room = walk.end.saturating_sub(walk.total).max(1);
-                let children = self.view.past_page_range(next_child, room);
+                let children = self.view.past_page_range_under(root, next_child, room);
                 if children.is_empty() {
                     break;
                 }
@@ -1115,10 +1154,14 @@ impl Replica {
                     // page of the record it is listed on.
                     in_chains.extend(chain_resources(std::slice::from_ref(&child)));
                     let before = walk.total;
-                    complete =
-                        tilo_actions::api::survey_placed_under(&child, root, &mut |placed| {
-                            visit(placed, &mut walk, &in_chains)
-                        });
+                    // As the page's items are walked: the item's own actions,
+                    // and none further down its nested resources.
+                    complete = tilo_actions::api::survey_placed_level(
+                        std::slice::from_ref(&child),
+                        root,
+                        &mut |placed| visit(placed, &mut walk, &in_chains),
+                    );
+                    let offers = walk.offering.contains(child.id.as_str());
                     if plain && complete {
                         let admitted = walk.total.saturating_sub(before);
                         past_counts.resize(next_child, 0);
@@ -1129,7 +1172,9 @@ impl Replica {
                         while past_containers.len() <= next_child {
                             past_containers.push(Vec::new());
                         }
-                        if let Some(found) = past_containers.get_mut(next_child) {
+                        if let Some(found) = past_containers.get_mut(next_child)
+                            && !offers
+                        {
                             containers_into(&child, root, &walk.offering, self.app_id(), found);
                         }
                     } else {
@@ -1175,13 +1220,17 @@ impl Replica {
                     }
                 } else {
                     for child in &past_built {
-                        containers_into(
-                            child,
-                            root,
-                            &walk.offering,
-                            self.app_id(),
-                            &mut containers,
-                        );
+                        // A row of its own only for one that offers nothing
+                        // itself, as the level's items stand.
+                        if !walk.offering.contains(child.id.as_str()) {
+                            containers_into(
+                                child,
+                                root,
+                                &walk.offering,
+                                self.app_id(),
+                                &mut containers,
+                            );
+                        }
                     }
                 }
             }

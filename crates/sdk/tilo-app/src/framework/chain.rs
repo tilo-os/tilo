@@ -83,6 +83,7 @@ mod follow;
 mod listing;
 mod named;
 mod part;
+mod past_page;
 mod place;
 mod reading;
 mod routing;

@@ -740,6 +740,45 @@ impl AttachedView {
             .is_some_and(|root| root.storage.chain_item(id).is_some())
     }
 
+    /// [`Self::past_page_len`] of the items the level `parent` leaves out
+    /// past the page its publication carries: the app's own collections, or,
+    /// for a chain, the items past the page each of its parts publishes.
+    #[must_use]
+    pub fn past_page_len_under(&self, parent: &str) -> usize {
+        if super::chain_of_resource_id(parent).is_none() {
+            return self.past_page_len();
+        }
+        self.frame
+            .borrow_mut()
+            .widget_mut::<super::root::ResourceRoot>()
+            .map_or(0, |root| root.storage.chain_past_page_len(parent))
+    }
+
+    /// [`Self::past_page_range`] of the level `parent`: the app's own items,
+    /// or a chain's items past the page each of its parts publishes, and only
+    /// those the member may reach.
+    #[must_use]
+    pub fn past_page_range_under(
+        &self,
+        parent: &str,
+        offset: usize,
+        take: usize,
+    ) -> Vec<tilo_actions::ResourceSpec> {
+        if super::chain_of_resource_id(parent).is_none() {
+            return self.past_page_range(offset, take);
+        }
+        let built = self
+            .frame
+            .borrow_mut()
+            .widget_mut::<super::root::ResourceRoot>()
+            .map(|root| root.storage.chain_past_page_window(parent, offset, take))
+            .unwrap_or_default();
+        built
+            .into_iter()
+            .filter_map(|resource| self.permitted(resource))
+            .collect()
+    }
+
     /// The items the view's tree leaves out past each collection's published
     /// page from `offset` on, built alone as [`Self::resources_past_page`]
     /// builds them, and only those the member may reach: what a page

@@ -371,6 +371,17 @@ pub(crate) trait ResourceApi {
     fn item(&self, _id: &str) -> Option<tilo_actions::ResourceSpec> {
         None
     }
+    /// How many items the resource keeps past the page its publication
+    /// carries, across the parts it is kept in: what a listing of it reaches
+    /// past that page, counted without building them.
+    fn past_page_len(&self) -> usize {
+        0
+    }
+    /// [`Self::past_page_len`] from `offset` on, at most `take`, each built
+    /// alone: what a page of a listing past the published page costs.
+    fn past_page_window(&self, _offset: usize, _take: usize) -> Vec<tilo_actions::ResourceSpec> {
+        Vec::new()
+    }
     fn apply_encoded(&self, action: &EncodedAction, invoker: &ActionInvoker) -> Result<(), String>;
     /// [`Self::apply_encoded`], answering its invoker with what it made.
     fn apply_answering(
