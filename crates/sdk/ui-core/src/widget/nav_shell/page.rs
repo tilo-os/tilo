@@ -113,6 +113,10 @@ impl NavShell {
                 ),
                 &header,
             );
+            // A press on the page lands where the shell laid its parts out, so each header row
+            // and each column stands at the rect the shell gave it, not at the bounds of what it
+            // holds: a header row shorter than the shell's would lift every row under it.
+            place(cx, &format!("{key}-header"), g.header(column));
             if column == Column::Content {
                 self.compose_narrow_back(cx, &format!("{}#{key}-header", cx.composed.path));
             }
@@ -168,6 +172,7 @@ impl NavShell {
                 &format!("display:flex;flex-direction:column;{size}min-height:0;{ground}{edge}"),
                 |child| paths.iter().position(|path| *path == child.path),
             ) {
+                place(cx, key, area);
                 regions += 1;
             }
         }
@@ -257,5 +262,19 @@ impl NavShell {
             back.rect = row.rect;
             row.children.insert(0, back);
         }
+    }
+}
+
+/// The region of the shell's element keyed `key` stands at `rect`.
+fn place(cx: &mut crate::composition::HtmlCx<'_>, key: &str, rect: vello::kurbo::Rect) {
+    let path = format!("{}#{key}", cx.composed.path);
+    if rect.width() > 0.0
+        && let Some(region) = cx
+            .composed
+            .children
+            .iter_mut()
+            .find(|child| child.path == path)
+    {
+        region.rect = [rect.x0, rect.y0, rect.width(), rect.height()];
     }
 }

@@ -1394,7 +1394,18 @@ impl<'a> HtmlCx<'a> {
             return;
         };
         if let Some(child) = find_mut(&mut self.composed.children, &path) {
-            child.layout = Some(css(child.layout.as_deref().unwrap_or_default()));
+            // A child kept from the frame before holds the style given it then: a declaration
+            // given again replaces the one before rather than piling up behind it.
+            let styled = css(child.layout.as_deref().unwrap_or_default());
+            let declarations: Vec<&str> = styled.split(';').filter(|d| !d.is_empty()).collect();
+            let mut layout = String::new();
+            for (at, declaration) in declarations.iter().enumerate() {
+                if !declarations[at + 1..].contains(declaration) {
+                    layout.push_str(declaration);
+                    layout.push(';');
+                }
+            }
+            child.layout = Some(layout);
         }
     }
 
