@@ -2168,7 +2168,7 @@ impl RichTextAction {
         doc: &mut Doc,
         root: &ObjId,
         keep: bool,
-    ) -> Result<Option<Vec<tilo_doc::model::BodyBlock>>, ActionError> {
+    ) -> Result<Option<crate::WrittenBody>, ActionError> {
         // Bind to the canonical schema under `root`. Refuse an unbound
         // document explicitly so callers never mistake an unavailable target
         // for a successful edit.
@@ -2242,7 +2242,11 @@ impl RichTextAction {
             .ids
             .take_written()
             .filter(|written| written.ops == made)
-            .map(|written| written.blocks);
+            .map(|written| crate::WrittenBody {
+                blocks: written.blocks,
+                containers: c.clone(),
+                body_only: true,
+            });
         dm.set_meta_flag(UNSAVED, !file_took_it);
         Ok(written)
     }

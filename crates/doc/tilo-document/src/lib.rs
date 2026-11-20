@@ -41,6 +41,19 @@ use tilo_doc::snapshot::{AttrVal, BlockView, ChangeView, CommentView, NoteView};
 pub use action::{RICH_TEXT_ACTION_TYPE, RichTextAction};
 pub use anchor::TextAnchor;
 
+/// What a store of a new rich text wrote: its body paragraphs, each as
+/// reading it back gives it, the containers they were stored in, and whether
+/// the body is all the value holds ([`RichText::read_written`]).
+#[derive(Clone, Debug)]
+pub(crate) struct WrittenBody {
+    pub blocks: Vec<model::BodyBlock>,
+    pub containers: model::Containers,
+    /// The body is all the store wrote, and the map it went into was made
+    /// with it: every part beside the body is empty, so the read that
+    /// follows does not read them.
+    pub body_only: bool,
+}
+
 /// The styles every document has; they cannot be deleted.
 pub const BUILTIN_STYLES: [&str; 6] = ["body", "heading1", "heading2", "heading3", "list", "quote"];
 
@@ -683,11 +696,14 @@ impl RichTextState {
         let bulk = missing.len().saturating_mul(2) >= self.body.len();
         let mut wanted: HashSet<String> = missing.into_iter().collect();
         if bulk {
-            let read = field::take_written(doc, &self.containers.root).unwrap_or_else(|| {
-                tilo_resource::profiling::measure("rich_text.load.materialize", || {
-                    model::read_body(doc, &self.containers, |kind| !Self::is_featured(kind))
-                })
-            });
+            let read = field::take_written(doc, &self.containers.root).map_or_else(
+                || {
+                    tilo_resource::profiling::measure("rich_text.load.materialize", || {
+                        model::read_body(doc, &self.containers, |kind| !Self::is_featured(kind))
+                    })
+                },
+                |written| written.blocks,
+            );
             self.take_paragraphs(read, &mut wanted);
         }
         self.read_wanted(doc, wanted);
@@ -1132,16 +1148,18 @@ impl RichText {
     /// as reading it back gives it (what a store just wrote): read as
     /// [`Self::read_under`] reads it, without reading the body again. Its
     /// paragraphs are kept for the read of them that follows.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when `root` holds no rich text.
-    pub(crate) fn read_written(
-        doc: &Doc,
-        root: &ObjId,
-        body: Vec<model::BodyBlock>,
-    ) -> Result<RichTextState, ModelError> {
-        let c = containers_of(doc, root)?;
-        let mut state = Self::read_body_under(doc, c, Vec::new());
+    pub(crate) fn read_written(doc: &Doc, root: &ObjId, written: WrittenBody) -> RichTextState {
+        let _read = tilo_resource::profiling::Phase::start("rich_text.read.written");
+        let WrittenBody {
+            blocks: body,
+            containers: c,
+            body_only,
+        } = written;
+        let mut state = if body_only {
+            Self::read_made(doc, c)
+        } else {
+            Self::read_body_under(doc, c, Vec::new())
+        };
         state.body = Rc::new(BodyOrder::from_spine(
             body.iter().map(|block| block.entry.clone()).collect(),
         ));
@@ -1161,8 +1179,41 @@ impl RichText {
         // The paragraphs stay kept for the read of them that follows
         // (`read_paragraphs`): a value only some of whose paragraphs are
         // asked for reads only those.
-        field::keep_written(doc, root, body);
-        Ok(state)
+        field::keep_written(
+            doc,
+            root,
+            WrittenBody {
+                blocks: body,
+                containers: state.containers.clone(),
+                body_only,
+            },
+        );
+        state
+    }
+
+    /// The state of rich text made just now whose body is all it holds: the
+    /// parts beside the body are the empty maps it was made with, so none of
+    /// them is read.
+    fn read_made(doc: &Doc, c: model::Containers) -> RichTextState {
+        RichTextState {
+            body: Rc::default(),
+            featured: Rc::default(),
+            loaded: Rc::default(),
+            objects: Rc::default(),
+            paragraph_objects: Rc::default(),
+            header: Rc::default(),
+            footer: Rc::default(),
+            notes: Rc::default(),
+            comments: Rc::default(),
+            changes: Rc::default(),
+            styles: Rc::default(),
+            content: Rc::default(),
+            file_digest: file_digest(doc, &c),
+            unsaved: unsaved(doc, &c),
+            root_path: (c.root == automerge::ROOT).then(Vec::new),
+            containers: c,
+            log: ChangeLog::fresh(),
+        }
     }
 
     /// The state of rich text under `c` whose body read `body`: its spine,

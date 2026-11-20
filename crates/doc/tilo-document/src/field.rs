@@ -28,7 +28,10 @@ struct Written {
     /// it commits, so the same heads and count are the same document.
     heads: Vec<ChangeHash>,
     pending: usize,
-    body: Vec<tilo_doc::model::BodyBlock>,
+    /// The body the store wrote, the containers it wrote it into, and
+    /// whether the body is all the value holds: then nothing beside it is
+    /// worth reading, and the read that follows does not.
+    body: crate::WrittenBody,
 }
 
 thread_local! {
@@ -37,7 +40,7 @@ thread_local! {
 
 /// The body kept for `obj` by the store that left `doc` as it is. One kept
 /// for another value stays, for that value's own read.
-pub(crate) fn take_written(doc: &Doc, obj: &ObjId) -> Option<Vec<tilo_doc::model::BodyBlock>> {
+pub(crate) fn take_written(doc: &Doc, obj: &ObjId) -> Option<crate::WrittenBody> {
     WRITTEN.with(|written| {
         let mut written = written.borrow_mut();
         let kept = written.as_ref()?;
@@ -51,7 +54,7 @@ pub(crate) fn take_written(doc: &Doc, obj: &ObjId) -> Option<Vec<tilo_doc::model
 }
 
 /// Keep `body`, read from `obj` in `doc` as it is, for a read that follows.
-pub(crate) fn keep_written(doc: &Doc, obj: &ObjId, body: Vec<tilo_doc::model::BodyBlock>) {
+pub(crate) fn keep_written(doc: &Doc, obj: &ObjId, body: crate::WrittenBody) {
     let written = Written {
         obj: obj.clone(),
         heads: doc.committed_heads(),
@@ -318,7 +321,7 @@ impl Model for RichText {
             return Err(ModelError::shape("rich text"));
         }
         let state = match take_written(doc, id) {
-            Some(body) => Self::read_written(doc, id, body)?,
+            Some(body) => Self::read_written(doc, id, body),
             None => Self::read_under(doc, id)?,
         };
         Ok(Self {
@@ -332,10 +335,18 @@ impl Model for RichText {
         Ok(Self::default())
     }
 
+    /// The schema, made with the map holding the value: the body is
+    /// written into it when the value is stored, rather than under a map
+    /// inserted on its own.
+    fn fresh(&self, _: automerge::TextEncoding) -> tilo_resource::Fresh {
+        tilo_resource::Fresh::Made(tilo_doc::model::schema())
+    }
+
     fn store(&self, doc: &mut Doc, at: Slot<'_>) -> Result<(), ModelError> {
-        // A new value is made holding the schema at once.
+        // A new value is made holding the schema at once: its own insert,
+        // unless the map holding it made it with itself (`fresh`).
         let (obj, made) = match at.current(doc)? {
-            Some((Value::Object(ObjType::Map), obj)) => (obj, false),
+            Some((Value::Object(ObjType::Map), obj)) => (obj, tilo_resource::model::storing_made()),
             _ => (at.make(doc, &tilo_doc::model::schema())?, true),
         };
         if made || tilo_doc::model::open(doc, &obj).is_err() {
@@ -364,7 +375,14 @@ impl Model for RichText {
             .apply_keeping(doc, &obj, keep)
             .map_err(refused)?;
             if let Some(body) = body {
-                keep_written(doc, &obj, body);
+                keep_written(
+                    doc,
+                    &obj,
+                    crate::WrittenBody {
+                        body_only: made && body.body_only,
+                        ..body
+                    },
+                );
             }
         }
         for op in &self.pending {

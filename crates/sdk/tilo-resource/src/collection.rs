@@ -719,34 +719,62 @@ pub(crate) fn order_only(item: &ModelTable) -> bool {
 
 /// Write the entry of the item `id` under the order key `key` into the
 /// collection map `map`: the key itself for an item stored as its order key
-/// alone (`order_only`), else a map `{ k, v }` whose value `store` writes.
+/// alone (`order_only`), else a map `{ k, v }` holding the item. Answers the
+/// entry's map, or `None` for an item stored as its order key alone.
+///
+/// An item that can be made whole goes in with its entry, in one batch
+/// ([`Stores::made_to`]): the entry, the item's fields and the maps they
+/// hold are one insert, where a store after the entry's would be another.
 pub(crate) fn put_entry(
     doc: &mut Doc,
     map: &ObjId,
     id: &Id,
     key: String,
     order_only: bool,
-    store: &dyn Fn(&mut Doc, Slot<'_>) -> Result<(), ModelError>,
-) -> Result<(), ModelError> {
+    item: &dyn Stores,
+) -> Result<Option<ObjId>, ModelError> {
     if order_only {
         crate::action::note_entry(map, id.as_str());
-        return Slot::Key(map, id.as_str()).put_scalar(doc, ScalarValue::Str(key.into()));
+        Slot::Key(map, id.as_str()).put_scalar(doc, ScalarValue::Str(key.into()))?;
+        return Ok(None);
     }
     let at = Slot::Key(map, id.as_str());
     let entry = if let Some((Value::Object(ObjType::Map), entry)) = at.current(doc)? {
         Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
+        item.store_to(doc, Slot::Key(&entry, VALUE))
+            .located(id.as_str())?;
         entry
     } else {
         crate::action::note_entry(map, id.as_str());
-        // A new entry is made with its order key at once.
-        let mut made = std::collections::HashMap::with_capacity(1);
-        made.insert(
-            ORDER.to_owned(),
-            automerge::hydrate::Value::Scalar(ScalarValue::Str(key.into())),
-        );
-        at.make(doc, &automerge::hydrate::Value::Map(made.into()))?
+        if let Some((fields, later)) = item.made_to(doc.text_encoding()) {
+            // The entry is made with its order key and the item whole: one
+            // batch, the item's maps included.
+            let mut entry = std::collections::HashMap::with_capacity(2);
+            entry.insert(
+                ORDER.to_owned(),
+                automerge::hydrate::Value::Scalar(ScalarValue::Str(key.into())),
+            );
+            entry.insert(VALUE.to_owned(), automerge::hydrate::Value::Map(fields));
+            let made = at.make(doc, &automerge::hydrate::Value::Map(entry.into()))?;
+            let Some((Value::Object(ObjType::Map), value)) = doc.get(&made, VALUE)? else {
+                return Err(ModelError::invalid("an entry holds no item"));
+            };
+            item.write_later_to(doc, &value, &later)?;
+            made
+        } else {
+            // A new entry is made with its order key at once.
+            let mut made = std::collections::HashMap::with_capacity(1);
+            made.insert(
+                ORDER.to_owned(),
+                automerge::hydrate::Value::Scalar(ScalarValue::Str(key.into())),
+            );
+            let entry = at.make(doc, &automerge::hydrate::Value::Map(made.into()))?;
+            item.store_to(doc, Slot::Key(&entry, VALUE))
+                .located(id.as_str())?;
+            entry
+        }
     };
-    store(doc, Slot::Key(&entry, VALUE)).located(id.as_str())
+    Ok(Some(entry))
 }
 
 /// Write `items`, in this order, as the map from id to `{ k, v }` a
@@ -778,14 +806,11 @@ pub(crate) fn store_in_order(
     let keys = order_keys(items.iter().map(|(id, _)| *id), &by_id);
     for (index, ((id, item), key)) in items.iter().zip(keys).enumerate() {
         let new = !by_id.contains_key(id);
-        put_entry(doc, &map, id, key, order_only, &|doc, value| {
-            item.store_to(doc, value)?;
-            if new {
-                let doc = &*doc;
-                note_stored(value, &|entry| shared(index, doc, entry));
-            }
-            Ok(())
-        })?;
+        let entry = put_entry(doc, &map, id, key, order_only, *item)?;
+        if new && let Some(entry) = &entry {
+            let doc = &*doc;
+            note_stored(Slot::Key(entry, VALUE), &|value| shared(index, doc, value));
+        }
     }
     Ok(())
 }
@@ -867,7 +892,8 @@ pub(crate) type EditWhole<'a> =
 type WriteChanged<'a> =
     dyn Fn(usize, usize, &mut Doc, &ObjId, &Delta) -> Result<(), ModelError> + 'a;
 /// Store the item at a position, or the whole value, into a slot.
-type StoreAt<'a> = dyn Fn(usize, &mut Doc, Slot<'_>) -> Result<(), ModelError> + 'a;
+type Created<'a> =
+    dyn Fn(usize, &mut Doc, &ObjId, &Id, String, bool) -> Result<Option<ObjId>, ModelError> + 'a;
 type StoreWhole<'a> = dyn Fn(&mut Doc, Slot<'_>) -> Result<(), ModelError> + 'a;
 
 pub(crate) fn edit_entries(
@@ -903,9 +929,7 @@ pub(crate) fn edit_entries(
             }
             let stored = stored_entries(doc, &map);
             let key = key_at(&stored, at, None)?;
-            put_entry(doc, &map, &id, key, edits.order_only, &|doc, slot| {
-                item.store_to(doc, slot)
-            })
+            put_entry(doc, &map, &id, key, edits.order_only, item.as_ref()).map(drop)
         }
         (
             None,
@@ -979,7 +1003,11 @@ pub(crate) fn edit_entries(
 pub(crate) struct EntryWrites<'a> {
     /// Whether the item now would store as the one it was.
     pub(crate) same: &'a dyn Fn(usize, usize) -> bool,
-    pub(crate) store: &'a StoreAt<'a>,
+    /// Write the item at a position into a new entry of the collection map,
+    /// under the id and order key given: the item made with its entry in one
+    /// batch when it can be. Answers the entry's map, and keeps what was
+    /// written for the read that follows.
+    pub(crate) created: &'a Created<'a>,
     /// Write the item now over the value of the entry that held it.
     pub(crate) changed: &'a WriteChanged<'a>,
     /// Store the whole collection, when only the document can say.
@@ -1027,9 +1055,7 @@ pub(crate) fn store_entries_changed(
         let touched = dirty.key(&map, id.as_str());
         let Some(&(at, stored_key)) = was.get(id).filter(|_| touched != Touch::Written) else {
             // New here, or replaced by someone else: written whole.
-            put_entry(doc, &map, id, key, writes.order_only, &|doc, slot| {
-                (writes.store)(now, doc, slot)
-            })?;
+            (writes.created)(now, doc, &map, id, key, writes.order_only)?;
             continue;
         };
         let kept = touched == Touch::Untouched && stored_key == key;
@@ -1045,9 +1071,7 @@ pub(crate) fn store_entries_changed(
                 Some((Value::Object(ObjType::Map), _))
             )
         {
-            put_entry(doc, &map, id, key, false, &|doc, slot| {
-                (writes.store)(now, doc, slot)
-            })?;
+            (writes.created)(now, doc, &map, id, key, false)?;
             continue;
         }
         if writes.order_only {
@@ -1939,14 +1963,29 @@ fn listed(table: &ModelTable) -> Result<&'static CollectionDesc, ModelError> {
 }
 
 /// An item as [`store_in_order`] writes it, through its table.
-struct TableItem<'a> {
-    table: &'static ModelTable,
-    value: &'a dyn Any,
+pub(crate) struct TableItem<'a> {
+    pub(crate) table: &'static ModelTable,
+    pub(crate) value: &'a dyn Any,
 }
 
 impl Stores for TableItem<'_> {
     fn store_to(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         (self.table.ops.store)(self.table, self.value, doc, slot)
+    }
+
+    fn made_to(&self, encoding: automerge::TextEncoding) -> Option<crate::table::Fields> {
+        let desc = crate::table::described(self.table).ok()?;
+        crate::table::fresh::fields_made_of(desc, self.value, encoding)
+    }
+
+    fn write_later_to(
+        &self,
+        doc: &mut Doc,
+        value: &ObjId,
+        later: &[(usize, bool)],
+    ) -> Result<(), ModelError> {
+        let desc = crate::table::described(self.table)?;
+        crate::table::fresh::write_later(desc, self.value, doc, value, later)
     }
 }
 
@@ -1961,6 +2000,23 @@ impl Stores for StagedItem {
     fn store_to(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let value = (self.unstage)(self.staged.as_ref()).ok_or_else(crate::table::mismatch)?;
         (self.table.ops.store)(self.table, value, doc, slot)
+    }
+
+    fn made_to(&self, encoding: automerge::TextEncoding) -> Option<crate::table::Fields> {
+        let desc = crate::table::described(self.table).ok()?;
+        let value = (self.unstage)(self.staged.as_ref())?;
+        crate::table::fresh::fields_made_of(desc, value, encoding)
+    }
+
+    fn write_later_to(
+        &self,
+        doc: &mut Doc,
+        value: &ObjId,
+        later: &[(usize, bool)],
+    ) -> Result<(), ModelError> {
+        let desc = crate::table::described(self.table)?;
+        let item = (self.unstage)(self.staged.as_ref()).ok_or_else(crate::table::mismatch)?;
+        crate::table::fresh::write_later(desc, item, doc, value, later)
     }
 }
 
@@ -2234,14 +2290,19 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
                     }
                     _ => false,
                 },
-                store: &|at_now, doc, into| {
+                created: &|at_now, doc, map, id, key, order_only| {
                     let Some(value) = now.item_at(at_now) else {
-                        return Ok(());
+                        return Ok(None);
                     };
-                    (item.ops.store)(item, value, doc, into)?;
-                    let doc = &*doc;
-                    note_stored(into, &|entry| shared_item(item, now, at_now, (doc, entry)));
-                    Ok(())
+                    let made = TableItem { table: item, value };
+                    let entry = put_entry(doc, map, id, key, order_only, &made)?;
+                    if let Some(entry) = &entry {
+                        let doc = &*doc;
+                        note_stored(Slot::Key(entry, VALUE), &|value| {
+                            shared_item(item, now, at_now, (doc, value))
+                        });
+                    }
+                    Ok(entry)
                 },
                 changed: &|at_now, at_was, doc, entry, dirty| match (
                     now.item_at(at_now),

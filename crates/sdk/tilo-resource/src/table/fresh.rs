@@ -23,19 +23,20 @@ pub(super) fn stored_after(_: &ModelTable, _: &dyn Any, _: automerge::TextEncodi
 
 /// What the fields of a map made just now hold, made with the map at once
 /// ([`Model::fresh`]): the fields that can be, and, by position, those its
-/// `store` writes once the map is made. A scalar field holding what its
+/// `store` writes once the map is made, with whether the field itself was
+/// made with the map ([`Fresh::Made`]). A scalar field holding what its
 /// absent key reads as ([`Model::missing`]) is left out: it reads the same.
 pub(super) fn fresh_fields(
     desc: &ResourceDesc,
     value: &dyn Any,
     encoding: automerge::TextEncoding,
-) -> Result<(automerge::hydrate::Map, Vec<usize>), ModelError> {
+) -> Result<super::Fields, ModelError> {
     let mut staged = (desc.empty)();
     let absent = missing(desc, staged.as_mut())
         .ok()
         .and_then(|()| (desc.unwrap)(staged.as_ref()));
     let mut fields = std::collections::HashMap::with_capacity(desc.fields.len());
-    let mut later = Vec::new();
+    let mut later: Vec<(usize, bool)> = Vec::new();
     for (index, field) in desc.fields.iter().enumerate() {
         let inner = field_of(desc, value, index)?;
         if field.table.scalar
@@ -50,7 +51,11 @@ pub(super) fn fresh_fields(
             Fresh::Value(made) => {
                 fields.insert(field.key.to_owned(), made);
             }
-            Fresh::Store => later.push(index),
+            Fresh::Made(made) => {
+                fields.insert(field.key.to_owned(), made);
+                later.push((index, true));
+            }
+            Fresh::Store => later.push((index, false)),
         }
     }
     Ok((fields.into(), later))
@@ -67,16 +72,46 @@ pub(super) fn store_made(
 ) -> Result<(), ModelError> {
     let (fields, later) = fresh_fields(desc, value, automerge::ReadDoc::text_encoding(doc))?;
     let obj = at.make(doc, &automerge::hydrate::Value::Map(fields))?;
-    for index in later {
+    write_later(desc, value, doc, &obj, &later)
+}
+
+/// Store the fields `later`, by position, of `value` into the map `obj` made
+/// with them just now: each as a map made with it, which its own
+/// store starts from.
+pub(crate) fn write_later(
+    desc: &ResourceDesc,
+    value: &dyn Any,
+    doc: &mut Doc,
+    obj: &automerge::ObjId,
+    later: &[(usize, bool)],
+) -> Result<(), ModelError> {
+    for &(index, made) in later {
         let field = desc
             .fields
             .get(index)
             .ok_or_else(|| ModelError::invalid("a field out of range"))?;
         let inner = field_of(desc, value, index)?;
-        (field.table.ops.store)(field.table, inner, doc, Slot::Key(&obj, field.key))
-            .located(field.key)?;
+        let mut store = || {
+            (field.table.ops.store)(field.table, inner, doc, Slot::Key(obj, field.key))
+                .located(field.key)
+        };
+        if made {
+            crate::model::storing_made_around(store)?;
+        } else {
+            store()?;
+        }
     }
     Ok(())
+}
+
+/// The fields `desc` describes of `value`, made with a map holding
+/// it in one batch, and what its `store` writes into it after.
+pub(crate) fn fields_made_of(
+    desc: &ResourceDesc,
+    value: &dyn Any,
+    encoding: automerge::TextEncoding,
+) -> Option<super::Fields> {
+    fresh_fields(desc, value, encoding).ok()
 }
 
 /// [`Model::fresh`] of a nested map of fields: made with its parent when all
@@ -115,7 +150,7 @@ pub(super) fn list_made(
         };
         match (list.item.ops.fresh)(list.item, item, encoding) {
             Fresh::Value(value) => made.push(value),
-            Fresh::Nothing | Fresh::Store => return Fresh::Store,
+            Fresh::Nothing | Fresh::Made(_) | Fresh::Store => return Fresh::Store,
         }
     }
     Fresh::Value(automerge::hydrate::Value::List(made.into()))

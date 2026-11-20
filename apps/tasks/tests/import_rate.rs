@@ -3,9 +3,10 @@
 //! A list of them fills a part of the tracker, so each list starts the next.
 //!
 //! Each list reads back each description it wrote once, to keep the issue as
-//! it reads for whoever reads the tracker next, and that reader takes it: no
-//! issue is read back from the tracker, not on a part's first read and not
-//! when a list is too large to follow change by change.
+//! it reads for whoever reads the tracker next, and that reader takes what
+//! the write kept: no description is read section by section, and no issue is
+//! read back from the tracker, not on a part's first read and not when a list
+//! is too large to follow change by change.
 //!
 //! The rate is printed for reading, at 400 issues and at 10,000:
 //! `cargo test --profile fast -p tasks --test import_rate -- --ignored --nocapture`.
@@ -55,6 +56,7 @@ fn each_list_reads_back_each_description_it_wrote_once() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<App>::for_person("ada").expect("open");
     let mut read = Vec::new();
+    let mut sections = Vec::new();
     let mut items = Vec::new();
     let mut again = Vec::new();
     for first in (0..3 * LIST).step_by(LIST) {
@@ -69,7 +71,8 @@ fn each_list_reads_back_each_description_it_wrote_once() {
                 .find(|sample| sample.phase == phase)
                 .map_or(0, |sample| sample.calls)
         };
-        read.push(calls("rich_text.read.parts"));
+        read.push(calls("rich_text.read.written"));
+        sections.push(calls("rich_text.read.parts"));
         items.push(calls("collection.read_item"));
         again.push(calls("rich_text.read.spine") + calls("rich_text.load.materialize"));
     }
@@ -79,6 +82,10 @@ fn each_list_reads_back_each_description_it_wrote_once() {
         "a list starts a part"
     );
     assert_eq!(read, [LIST; 3], "each list reads its own descriptions once");
+    assert_eq!(
+        sections, [0; 3],
+        "a description just written is not read section by section"
+    );
     assert_eq!(
         again, [0; 3],
         "a description just written is not read back from the document"

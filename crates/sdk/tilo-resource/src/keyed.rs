@@ -1443,9 +1443,8 @@ fn store_arranged_changed_in(
         let Some((_, item)) = now.item(changes.held.saturating_add(offset)) else {
             continue;
         };
-        put_entry(doc, &map, id, key, false, &|doc, slot| {
-            (table.ops.store)(table, item, doc, slot)
-        })?;
+        let made = crate::collection::TableItem { table, value: item };
+        put_entry(doc, &map, id, key, false, &made)?;
     }
     Ok(true)
 }

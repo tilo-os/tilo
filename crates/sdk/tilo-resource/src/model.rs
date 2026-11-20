@@ -113,8 +113,40 @@ pub enum Fresh {
     /// This value, made with the map. A text in it is made with the marks
     /// [`Model::store`] would set on it (a `String` field's author).
     Value(automerge::hydrate::Value),
+    /// This value, made with the map too, whose [`Model::store`] writes into
+    /// it once the map is made: a rich text's schema, which its body is
+    /// written into, goes in with the map holding it rather than as an
+    /// insert of its own. [`storing_made`] is true while that store writes.
+    Made(automerge::hydrate::Value),
     /// Written by [`Model::store`] once the map is made.
     Store,
+}
+
+thread_local! {
+    /// Whether the value being stored at this moment was made with its map
+    /// in one batch ([`Fresh::Made`]).
+    static STORING_MADE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the value [`Model::store`] is writing now was made with its map in
+/// one batch ([`Fresh::Made`]): it starts from the map as made, with no
+/// earlier content to keep.
+#[must_use]
+pub fn storing_made() -> bool {
+    STORING_MADE.with(std::cell::Cell::get)
+}
+
+/// Call `store` with [`storing_made`] true, and leave it as it was.
+pub(crate) fn storing_made_around<T>(store: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            STORING_MADE.with(|made| made.set(self.0));
+        }
+    }
+    let was = STORING_MADE.with(|made| made.replace(true));
+    let _restore = Restore(was);
+    store()
 }
 
 impl Fresh {
@@ -813,11 +845,50 @@ impl<T> LocatedAt<T> for Result<T, ModelError> {
 /// (the items of every collection) compiles once rather than per type.
 pub(crate) trait Stores {
     fn store_to(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError>;
+
+    /// The value's fields as a map made with the collection's entry in one
+    /// batch, when the value can be made so (a value whose fields can): the
+    /// map, and by position the fields whose `store` writes into it after,
+    /// with whether the field itself was made with the map
+    /// ([`crate::table::Fields`]). `None` when it is written by `store_to`
+    /// whole.
+    fn made_to(&self, _: automerge::TextEncoding) -> Option<crate::table::Fields> {
+        None
+    }
+
+    /// Store the fields `later`, by position, of a value made with its entry
+    /// at `value`, into it.
+    ///
+    /// # Errors
+    /// The store's own error, located at the field.
+    fn write_later_to(
+        &self,
+        _: &mut Doc,
+        _: &ObjId,
+        _: &[(usize, bool)],
+    ) -> Result<(), ModelError> {
+        Ok(())
+    }
 }
 
 impl<T: Model> Stores for T {
     fn store_to(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         self.store(doc, slot)
+    }
+
+    fn made_to(&self, encoding: automerge::TextEncoding) -> Option<crate::table::Fields> {
+        let desc = crate::table::described(T::TABLE).ok()?;
+        crate::table::fresh::fields_made_of(desc, self, encoding)
+    }
+
+    fn write_later_to(
+        &self,
+        doc: &mut Doc,
+        value: &ObjId,
+        later: &[(usize, bool)],
+    ) -> Result<(), ModelError> {
+        let desc = crate::table::described(T::TABLE)?;
+        crate::table::fresh::write_later(desc, self, doc, value, later)
     }
 }
 

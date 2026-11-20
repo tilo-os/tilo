@@ -23,9 +23,14 @@ use crate::model::{Doc, Fresh, LocatedAt as _, Model, ModelError, Slot};
 use crate::path::{Edit, EditOp, OpDescription, Segment};
 use crate::resource::Place;
 
-mod fresh;
+pub(crate) mod fresh;
 mod item_paths;
 pub use item_paths::{holds_nested_items, item_json, names_item, reads_item};
+
+/// A value's fields made with the map holding it in one batch, and the
+/// fields its `store` writes into it after, by position, with whether each
+/// was made with the map ([`Fresh::Made`](crate::Fresh::Made)).
+pub(crate) type Fields = (automerge::hydrate::Map, Vec<(usize, bool)>);
 
 /// A model type's [`Model`] functions, its type erased. Each takes the table
 /// it was reached through, which for a record carries its [`ResourceDesc`].
