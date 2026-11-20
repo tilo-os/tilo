@@ -154,9 +154,18 @@ impl People {
 
     /// What whoever lent this view its members calls `member`
     /// ([`tilo_resource::members::name_of`]): the names the app's code reads, which a view no
-    /// window draws (an agent's) shows where no presence roster named them.
+    /// window draws (an agent's) shows where no presence roster named them. A person the list
+    /// holds unnamed reads as the page says someone unnamed, never as their key; software it
+    /// holds unnamed goes by its own name where one names it, else its id
+    /// ([`ui_core::presence::unnamed_label`]).
     fn lent(member: &MemberId) -> Option<String> {
-        tilo_resource::members::name_of(member)
+        let name = tilo_resource::members::name_of(member)?;
+        if !name.trim().is_empty() {
+            return Some(name);
+        }
+        member
+            .is_person()
+            .then(ui_core::presence::unnamed_person_label)
     }
 
     /// The hue `member` wears: the one the workspace announced for them, else
@@ -218,9 +227,9 @@ impl People {
     /// names the computer whose session vouched for the writer.
     pub fn registry(&self) -> ui_core::history_source::AuthorDirectory {
         let mut registry = self.roster.borrow().registry.clone();
-        let named = tilo_resource::members::named();
-        if !named.is_empty() {
-            registry.register_roster(named.iter().map(|(member, name)| (member, name.as_str())));
+        let listed = tilo_resource::members::listed();
+        if !listed.is_empty() {
+            registry.register_roster(listed.iter().map(|(member, name)| (member, name.as_str())));
         }
         registry
     }
@@ -627,6 +636,30 @@ mod tests {
                 "ada-key",
                 "a view lent nothing leaves the id"
             );
+        }
+
+        // Someone the workspace lists but nobody named reads as the window names someone unnamed,
+        // the same in a lent view as on the page: never as their key.
+        phase an_unnamed_lent_member_reads_as_the_unnamed_label;
+        {
+            let me = MemberId::person("me-id");
+            let nobody = MemberId::person("b".repeat(64).as_str());
+            let people = People::new(Some(&me));
+            tilo_resource::members::know([(nobody.clone(), "  ".to_owned())]);
+            assert_eq!(
+                people.name(&nobody),
+                ui_core::presence::unnamed_person_label()
+            );
+            assert_eq!(
+                people.registry().resolve_entry(nobody.id(), None).name,
+                ui_core::presence::unnamed_person_label(),
+                "a row an unnamed member wrote reads as the unnamed, not as their key"
+            );
+            assert!(
+                people.members().iter().all(|candidate| candidate.id != nobody),
+                "a picker offers the named alone"
+            );
+            tilo_resource::members::know([]);
         }
     }
 }

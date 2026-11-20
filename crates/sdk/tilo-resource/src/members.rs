@@ -16,27 +16,41 @@ thread_local! {
 }
 
 /// Take `members`, each with what the workspace calls them, as the members the record's code
-/// reads from now on; those the workspace removed among them.
+/// reads from now on; those the workspace removed among them. A member nobody named is kept,
+/// with an empty name: a view shows them by the same name the rest of the window shows someone
+/// unnamed, and a picker leaves them out ([`named`]).
 pub fn know(members: impl IntoIterator<Item = (MemberId, String)>) {
     let members: BTreeMap<MemberId, String> = members
         .into_iter()
         .map(|(id, name)| (id, name.trim().to_owned()))
-        .filter(|(_, name)| !name.is_empty())
         .collect();
     MEMBERS.with_borrow_mut(|held| *held = members);
 }
 
-/// What the workspace calls `member`; `None` for one it names not.
+/// What the workspace calls `member`: its name, empty for one nobody named; `None` for one the
+/// workspace does not list at all.
 #[must_use]
 pub fn name_of(member: &MemberId) -> Option<String> {
     MEMBERS.with_borrow(|held| held.get(member).cloned())
 }
 
-/// Every member the workspace names, with their name, in id order.
+/// Every member the workspace lists, named or not, with the name it gives them, in id order.
+#[must_use]
+pub fn listed() -> Vec<(MemberId, String)> {
+    MEMBERS.with_borrow(|held| {
+        held.iter()
+            .map(|(id, name)| (id.clone(), name.clone()))
+            .collect()
+    })
+}
+
+/// Every member the workspace names, with their name, in id order: those it lists unnamed are
+/// left out.
 #[must_use]
 pub fn named() -> Vec<(MemberId, String)> {
     MEMBERS.with_borrow(|held| {
         held.iter()
+            .filter(|(_, name)| !name.is_empty())
             .map(|(id, name)| (id.clone(), name.clone()))
             .collect()
     })
@@ -55,7 +69,13 @@ mod tests {
             (MemberId::agent("x"), " ".to_owned()),
         ]);
         assert_eq!(name_of(&ada).as_deref(), Some("Ada"));
-        assert_eq!(named().len(), 1, "an unnamed member is not listed");
+        assert_eq!(
+            name_of(&MemberId::agent("x")).as_deref(),
+            Some(""),
+            "a member nobody named is listed with no name"
+        );
+        assert_eq!(named().len(), 1, "a picker offers the named alone");
+        assert_eq!(listed().len(), 2, "a view knows every member there is");
         know([]);
         assert_eq!(name_of(&ada), None);
     }

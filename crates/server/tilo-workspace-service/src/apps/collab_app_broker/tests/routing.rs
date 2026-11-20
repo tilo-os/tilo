@@ -156,6 +156,11 @@ async fn a_connection_calls_its_own_person_what_the_member_list_calls_them() {
         &collab_types::Person::new(person, "Ada"),
         None,
     ));
+    // A person nowhere near, whose own device named them and the workspace's governance keeps
+    // that name: no member row here names them.
+    let absent = "b".repeat(64);
+    workspace.admit(absent.clone(), crate::apps::test_support::Role::Editor);
+    assert!(workspace.named_people([(absent.as_str(), "Ben")]));
     let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
@@ -184,6 +189,14 @@ async fn a_connection_calls_its_own_person_what_the_member_list_calls_them() {
         .find(|row| row.is_self)
         .expect("the person's own row");
     assert_eq!(me.name, "Ada", "never their key: {roster:?}");
+    let row = roster
+        .iter()
+        .find(|row| row.id == collab_types::MemberId::person(absent.clone()))
+        .expect("the absent person's row");
+    assert_eq!(
+        row.name, "Ben",
+        "someone who is not here is called what the governance names them"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

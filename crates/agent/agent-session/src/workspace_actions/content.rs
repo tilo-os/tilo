@@ -771,6 +771,16 @@ impl Worker {
             Some(held) => replica.knowing(std::sync::Arc::clone(held.peer.engine())),
             None => replica,
         };
+        // The names the workspace's member list gives its people and agents: what the person's
+        // page is told, so a view rendered here names its rows as the page does.
+        let replica = match self.shared.link.get() {
+            Some(link) => {
+                let link = std::sync::Arc::clone(link);
+                let workspace = workspace.to_owned();
+                replica.naming(std::sync::Arc::new(move || link.members(&workspace)))
+            }
+            None => replica,
+        };
         match id.and_then(|id| self.workspace_content(id)) {
             Some(store) => replica.lending(store),
             None => replica,

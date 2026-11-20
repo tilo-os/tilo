@@ -108,6 +108,12 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     fn key_revoked(&self, _workspace: WorkspaceId, _caller: &Caller) -> bool {
         false
     }
+    /// What `workspace`'s member list calls each of its people and agents: the names a view this
+    /// device renders for an agent shows for the authors it draws, from the same list the person's
+    /// own page is told. Empty where it names none.
+    fn members(&self, _workspace: &str) -> Vec<(ui::permissions::MemberId, String)> {
+        Vec::new()
+    }
     /// The agent `caller` is, which a person's own device handed its session to, works in
     /// `workspace`: the server adds it to the workspace's list of its agents where that list
     /// does not name it yet, and answers the bound the list keeps for it, which narrows

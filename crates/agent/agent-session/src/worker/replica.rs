@@ -69,6 +69,9 @@ pub struct ConfinedReplica {
     content: Option<ContentStore>,
     /// Who the workspace's members are, read again for each operation.
     members: Option<Members>,
+    /// Who the workspace's member list calls its people and agents, read again for each
+    /// operation: the same names the person's page is told.
+    naming: Option<Members>,
     inner: Mutex<Inner>,
 }
 
@@ -231,6 +234,7 @@ impl ConfinedReplica {
             record,
             content: None,
             members: None,
+            naming: None,
             inner: Mutex::new(Inner {
                 process: Some(process),
                 revivals: 0,
@@ -283,6 +287,54 @@ impl ConfinedReplica {
                 .unwrap_or_default()
         }));
         self
+    }
+
+    /// Lend the replica the names the workspace's member list gives its people and agents,
+    /// beside those its governance knows ([`Self::knowing`]): what a view this worker renders for
+    /// an agent shows its rows' authors by, as the person's page does.
+    #[must_use]
+    pub fn naming(
+        mut self,
+        names: std::sync::Arc<dyn Fn() -> Vec<(tilo_actions::MemberId, String)> + Send + Sync>,
+    ) -> Self {
+        self.naming = Some(names);
+        self
+    }
+
+    /// What each of the workspace's members is called here: its governance's names, then the
+    /// workspace's member list's.
+    fn member_names(&self) -> Vec<(tilo_actions::MemberId, String)> {
+        let mut names = self.members.as_ref().map(|read| read()).unwrap_or_default();
+        if let Some(extra) = &self.naming {
+            names.extend(extra());
+        }
+        names
+    }
+
+    /// The members a worker is told of before it performs an action `invoker` asks for: the
+    /// workspace's member list's names, and the acting agent's own where the list names it not
+    /// — the name its admission gave it, which the person's page is told for the same change.
+    /// A name the list holds wins: it is the one every surface shows.
+    fn members_for(
+        &self,
+        invoker: Option<&tilo_actions::ActionInvoker>,
+    ) -> Vec<(tilo_actions::MemberId, String)> {
+        let mut names = self.member_names();
+        let admitted = invoker.and_then(|invoker| {
+            Some((invoker.acting.agent_id()?, invoker.name.as_deref()?.trim()))
+        });
+        if let Some((agent, name)) = admitted
+            && !name.is_empty()
+            && !names
+                .iter()
+                .any(|(member, known)| member.id() == agent && !known.trim().is_empty())
+        {
+            names.push((
+                tilo_actions::MemberId::agent(agent.to_owned()),
+                name.to_owned(),
+            ));
+        }
+        names
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -838,11 +890,7 @@ impl ConfinedReplica {
                 .map(serde_json::to_string)
                 .transpose()
                 .map_err(|e| unavailable(e.to_string()))?,
-            members: self
-                .members
-                .as_ref()
-                .map(|members| members())
-                .unwrap_or_default(),
+            members: self.members_for(invoker),
             given: given.clone(),
         };
         let mut reply = self.call(&mut inner, &request);
@@ -2010,6 +2058,34 @@ mod tests {
         assert!(
             recorded(&replica, &waiting),
             "the change applies once what it builds on arrives"
+        );
+    }
+
+    /// A view this worker renders is lent the names the workspace's member list gives its
+    /// people and agents, beside those its governance knows: the same names the person's own
+    /// page is told, so a row's author and writer chip read alike in both.
+    #[test]
+    fn a_view_the_worker_renders_is_lent_the_workspace_member_lists_names() {
+        let ada = tilo_actions::MemberId::person("ada");
+        let stack = tilo_actions::MemberId::agent("6f1d3a521c7e4b8e");
+        let listed = {
+            let (ada, stack) = (ada.clone(), stack.clone());
+            move || {
+                vec![
+                    (ada.clone(), "Ada Stack".to_owned()),
+                    (stack.clone(), "Local stack".to_owned()),
+                ]
+            }
+        };
+        let replica = begun().naming(std::sync::Arc::new(listed));
+        let names = replica.member_names();
+        assert!(
+            names.contains(&(ada, "Ada Stack".to_owned())),
+            "the person is lent the name the page shows: {names:?}"
+        );
+        assert!(
+            names.contains(&(stack, "Local stack".to_owned())),
+            "and so is the agent whose session wrote for them: {names:?}"
         );
     }
 }

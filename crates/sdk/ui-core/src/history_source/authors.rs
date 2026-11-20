@@ -105,13 +105,20 @@ impl AuthorDirectory {
         // agent it is, for the person it acts for.
         for (id, name) in &presence.names {
             let name = name.trim();
-            if name.is_empty() {
+            // A person the roster holds unnamed is named as the window names someone unnamed,
+            // never left to read as their key; software nobody named keeps its own name.
+            let shown = if name.is_empty() && id.is_person() {
+                crate::presence::unnamed_person_label()
+            } else {
+                name.to_owned()
+            };
+            if shown.is_empty() {
                 continue;
             }
             match id {
                 MemberId::Person(key) => {
-                    directory.register_member(id, author_for_identity(name.to_owned(), key));
-                    directory.register_device(key, name.to_owned());
+                    directory.register_member(id, author_for_identity(shown.clone(), key));
+                    directory.register_device(key, shown);
                 }
                 MemberId::Agent(_) | MemberId::Bot(_) => {
                     let (red, green, blue) = crate::presence::member_color(id);
@@ -120,12 +127,12 @@ impl AuthorDirectory {
                         .and_then(MemberId::person_id)
                         .unwrap_or_default()
                         .to_owned();
-                    directory.register_device(id.id(), name.to_owned());
+                    directory.register_device(id.id(), shown.clone());
                     directory.register_agent(
                         id.id(),
                         HistoryAgent {
                             agent: id.clone(),
-                            label: name.to_owned(),
+                            label: shown.clone(),
                             rgb: (red, green, blue),
                             person,
                         },
@@ -171,14 +178,21 @@ impl AuthorDirectory {
     ) {
         for (member, name) in people {
             let name = name.trim();
-            if name.is_empty() {
-                continue;
-            }
+            // Someone the roster holds unnamed reads as the window names someone unnamed; software
+            // nobody named keeps its own name.
+            let name = if name.is_empty() {
+                if !member.is_person() {
+                    continue;
+                }
+                crate::presence::unnamed_person_label()
+            } else {
+                name.to_owned()
+            };
             let rgb = match member.person_id() {
                 Some(person) => self.colour_for(person),
                 None => crate::presence::member_color(member),
             };
-            let author = author_coloured(name, short_id(member.id()), rgb);
+            let author = author_coloured(name.clone(), short_id(member.id()), rgb);
             if let Some(person) = member.person_id() {
                 self.register(person, author.clone());
                 // The handle string an action's context names the person by,
@@ -526,6 +540,9 @@ impl AuthorDirectory {
         let actor = hex::encode(member.actor_bytes());
         let known = self.is_registered(&actor);
         let named = self.resolve_identity(&actor);
+        // The workspace's roster names the agent, which every viewer is lent
+        // ([`Self::register_roster`]): the name a connection gave itself is its session's title,
+        // never the agent's.
         let label = match crate::history_source::sentence::agent_tool_name(agent) {
             Some(tool) if !known => tool.to_owned(),
             _ => named.name.clone(),
@@ -1231,5 +1248,52 @@ mod tests {
         let author = AuthorDirectory::new().resolve_entry(&hex::encode([9_u8; 32]), Some(&entry));
         assert_ne!(author.name, "Tidy the intro");
         assert!(!author.name.contains("Tidy"), "{}", author.name);
+    }
+
+    /// A change an agent made for a person reads as the workspace's roster names both of them:
+    /// the person it acted for and the agent that wrote, which is what a person's page and an
+    /// agent's view of the same row show when both are lent the workspace's members.
+    #[test]
+    fn a_change_an_agent_made_for_a_person_reads_as_the_roster_names_both() {
+        let person = "ada-root";
+        let agent = tilo_actions::MemberId::agent("a4b05b334073f7dc3c31652f1b0143be");
+        let mut authors = AuthorDirectory::new();
+        authors.register_roster([
+            (&tilo_actions::MemberId::person(person), "Ada Stack"),
+            (&agent, "Local stack"),
+        ]);
+        let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::handed_agent(
+            agent.id(),
+            person,
+        ));
+        let entry = tilo_actions::ActionContext::default().with_invoker(invoker);
+        let author = authors.resolve_entry(&hex::encode([9_u8; 32]), Some(&entry));
+        let parts = crate::history_source::sentence::author_parts(&author);
+        assert_eq!(parts.person, "Ada Stack", "the roster names the person");
+        assert_eq!(
+            parts.writer.as_deref(),
+            Some("Local stack"),
+            "and the agent that wrote for them"
+        );
+
+        // A roster that names only the person: the agent it does not list reads as nobody the
+        // workspace names, never as what its connection called itself.
+        let mut only_people = AuthorDirectory::new();
+        only_people.register_roster([(&tilo_actions::MemberId::person(person), "Ada Stack")]);
+        let entry = tilo_actions::ActionContext::default().with_invoker(
+            tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::handed_agent(
+                agent.id(),
+                person,
+            ))
+            .named(Some("Local stack".into())),
+        );
+        let author = only_people.resolve_entry(&hex::encode([9_u8; 32]), Some(&entry));
+        let parts = crate::history_source::sentence::author_parts(&author);
+        assert_eq!(parts.person, "Ada Stack");
+        assert_ne!(
+            parts.writer.as_deref(),
+            Some("Local stack"),
+            "an agent nobody on the roster names is not named by its connection"
+        );
     }
 }

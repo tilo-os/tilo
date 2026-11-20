@@ -889,6 +889,61 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
             .block_on(workspaces.key_revoked(workspace, caller))
     }
 
+    /// The workspace's members as its roster tells a person's page of them: its people, as its
+    /// governance names them, and its agents, as their delegations name them and its list of
+    /// them does. What a view this device renders for an agent names its rows' authors and
+    /// writers by, so they read as they do on the person's own page.
+    fn members(&self, workspace: &str) -> Vec<(tilo_actions::MemberId, String)> {
+        let Some(workspaces) = self.workspaces.clone() else {
+            return Vec::new();
+        };
+        self.own_device().runtime.block_on(async move {
+            let mut named = Vec::new();
+            if let Ok(summary) = workspaces.summary(workspace).await {
+                named.extend(
+                    summary
+                        .members
+                        .into_iter()
+                        .filter(|member| !member.removed)
+                        .map(|member| (member.id, member.name)),
+                );
+            }
+            // A delegated agent is called what its delegation names it
+            // ([`tilo_peer_state::workspace::GovernedAgent::label`]): the name the workspace's
+            // roster shows it by, whether or not its app's list of agents names it too.
+            if let Ok(agents) = workspaces.agents(workspace).await {
+                named.extend(
+                    agents
+                        .into_iter()
+                        .filter(|agent| agent.withdrawn_at_ns.is_none())
+                        .map(|agent| (tilo_actions::MemberId::agent(agent.agent_id), agent.label)),
+                );
+            }
+            let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+            if let Ok(Some(bytes)) = workspaces
+                .resource_document(workspace, "so.tilo.chat", &list)
+                .await
+                && let Ok(mut doc) = automerge::AutoCommit::load(&bytes)
+                && let Ok(agents) =
+                    crate::workspace_bots::opened::<tilo_workspace_agent::WorkspaceAgents>(&mut doc)
+            {
+                named.extend(
+                    agents
+                        .agents
+                        .iter()
+                        .filter(|agent| agent.is_active())
+                        .map(|agent| {
+                            (
+                                tilo_actions::MemberId::agent(agent.id.0.clone()),
+                                agent.name.clone(),
+                            )
+                        }),
+                );
+            }
+            named
+        })
+    }
+
     fn view_document(
         &self,
         workspace: WorkspaceId,

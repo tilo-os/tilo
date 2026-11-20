@@ -454,6 +454,17 @@ fn describe(workspace: WorkspaceId, name: &str, peer: &StatePeer) -> Option<Work
     let mut described = Workspace::new(workspace, name.to_owned());
     tilo_peer_state::workspace::adopt_workspace(&mut described, document, &[]);
     described.sandbox = peer.governance().governed_sandbox().ok()?;
+    // The names the workspace's governance keeps for its people: what every surface showing
+    // someone who is not here reads, from the same list the agent worker's members come from.
+    if let Ok(people) = peer.governance().governed_members(tilo_clock::wall()) {
+        described.named_people(
+            people
+                .members
+                .iter()
+                .filter(|member| !member.removed)
+                .filter_map(|member| Some((member.id.person_id()?, member.name.as_str()))),
+        );
+    }
     Some(described)
 }
 

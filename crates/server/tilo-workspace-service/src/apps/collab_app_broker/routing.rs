@@ -850,9 +850,14 @@ impl AppBrokerState {
                     .members
                     .iter()
                     .find(|member| member.id == collab_types::MemberId::person(person.clone()));
-                // Someone presence has not named is unnamed here, never named by their key: an
-                // app calls them as it calls anyone it has no name for.
-                let name = row.map_or_else(String::new, |row| row.name.clone());
+                // Someone the workspace's governance names is called that here, whoever is
+                // present: the same names the agent worker's members are given name them too.
+                // Someone nobody named is unnamed, never named by their key: an app calls them as
+                // it calls anyone it has no name for.
+                let name = workspace
+                    .person_name(&person)
+                    .unwrap_or_default()
+                    .to_owned();
                 // The colour their member row stores: the one they chose, else the one their
                 // identity derives.
                 let colour = row.map_or_else(
