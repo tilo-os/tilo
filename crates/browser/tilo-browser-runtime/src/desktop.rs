@@ -1455,16 +1455,22 @@ impl Tiles {
         Unready::Notice(error.to_string())
     }
 
-    /// What a tab no record is bound to opens: the workspace's default record
-    /// while no other window of the app shows it (the record a native
-    /// launch into the workspace opens too), otherwise a new one. The second
-    /// value names the default record when it has to be created.
+    /// What a tab no resource is bound to opens: a new one for a file handed to it, else the
+    /// workspace's default resource while no other window of the app shows it (the one a
+    /// native launch into the workspace opens too), otherwise a new one. The second
+    /// value names the default resource when it has to be created.
     fn unbound_target(
         &self,
         definition: &'static ApplicationDefinition,
         store: &ResourceStore,
         tab: TabId,
     ) -> Result<(LaunchTarget, Option<DocumentId>), Unready> {
+        // A file another window handed over is a document of its own, which the app's launch
+        // fills from it: the default holds whatever was opened there before, and a launch onto
+        // it imports nothing, so the window would show another file than the one opened.
+        if self.shared.opened_content.borrow().contains_key(&tab) {
+            return Ok((LaunchTarget::New, None));
+        }
         let default = DocumentCheckout::new(
             DocumentId::workspace_default(),
             definition.resource_type.clone(),
