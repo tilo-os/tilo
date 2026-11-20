@@ -138,6 +138,14 @@ impl PartWaits {
         ChainWait::Held
     }
 
+    /// Whether the request being served may wait off this thread, for `wait` from when it
+    /// was asked: a write or a listing within it.
+    pub(super) fn may_wait(&self, wait: Duration) -> bool {
+        self.serving
+            .filter(|_| self.holdable)
+            .is_some_and(|tried| tried.queued.elapsed() < wait)
+    }
+
     /// Whether the request being served waits for its part: its caller is not
     /// answered now, and what it did is not recorded as its outcome.
     pub(super) const fn held(&self) -> bool {

@@ -675,6 +675,12 @@ identifiers = ["channel"]
 paths = ["crates/agent/agent-session/src/workspace_actions/index.rs"]
 
 [[allow]]
+reason = "The standard library's hand-off between the thread that serves requests and the thread that takes a document's parts in."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/agent/agent-session/src/workspace_actions/part_load.rs"]
+
+[[allow]]
 reason = "The session engine's own name for what it saved of a document, which the search index reads to publish its entries."
 words = ["record"]
 identifiers = ["record_since"]

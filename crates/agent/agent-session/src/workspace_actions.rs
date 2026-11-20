@@ -84,6 +84,7 @@ mod opened_file;
 mod outcome;
 mod packaged;
 mod pages;
+mod part_load;
 mod part_wait;
 mod person_ask;
 mod placed;
@@ -817,6 +818,7 @@ pub(super) type Saved = (Vec<u8>, Vec<[u8; 32]>);
 type Update = (DocumentMutation, Vec<[u8; 32]>);
 
 /// A workspace as the session's replica holds it when a request is served.
+#[derive(Clone)]
 struct WorkspaceState {
     workspace: Option<String>,
     /// Its documents not held open, as the replica last listed them: read
@@ -1277,6 +1279,8 @@ struct Worker {
     part_waits: part_wait::PartWaits,
     /// Requests whose operation goes on off the thread, and what waits for them ([`call_wait`]).
     call_waits: call_wait::CallWaits,
+    /// Callers' replicas taking in their parts off the thread ([`part_load`]).
+    part_loads: part_load::PartLoads,
     /// The caller's device whose request it serves now ([`publish::Worker::writer`](publish)).
     writing_as: Option<Caller>,
     clock: u64,
@@ -1408,6 +1412,7 @@ impl Worker {
             joining: HashMap::new(),
             part_waits: part_wait::PartWaits::default(),
             call_waits: call_wait::CallWaits::default(),
+            part_loads: part_load::PartLoads::default(),
             writing_as: None,
             pages: pages::Pages::default(),
             clock: 0,

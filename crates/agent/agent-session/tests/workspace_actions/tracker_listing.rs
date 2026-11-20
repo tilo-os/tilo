@@ -413,3 +413,74 @@ async fn a_listing_right_after_a_person_is_admitted_costs_what_any_listing_does(
         "the listing right after an admission took {after:?}, any other {usual:?}"
     );
 }
+
+/// A listing of another app, asked while a tracker of thousands of issues is first listed after
+/// its server restarts, answers within a few times what it costs on its own and far within
+/// what the tracker takes. The tracker's parts were read and handed to its app on the thread
+/// serving the workspace, and the other app's listing waited behind all of them: half a
+/// minute here, beside a listing of its own that takes tens of milliseconds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn another_apps_listing_waits_for_no_tracker_taking_in_its_parts_after_a_restart() {
+    let on_server = api_on_server(super::api::ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let browser = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let token = approved_key(&on_server, &ada, &browser, "Mover").await;
+    let base = {
+        let agent = V1 {
+            api: &on_server.api,
+            token: token.clone(),
+        };
+        let (status, workspace) = agent
+            .send(
+                hyper::Method::POST,
+                "/v1/workspaces",
+                json!({"name": "Company"}).to_string().as_bytes(),
+            )
+            .await;
+        assert_eq!(status, 201, "{workspace}");
+        let base = format!("/v1/workspaces/{}", workspace["id"].as_str().unwrap());
+        agent.act(&base, "tasks", "open", &json!({})).await;
+        agent.act(&base, "notes", "open", &json!({})).await;
+        fill(&agent, &base, SIZES[1]).await;
+        base
+    };
+    let on_server = on_server.restart(false).await;
+    let agent = V1 {
+        api: &on_server.api,
+        token,
+    };
+    let notes = format!("{base}/resources?path=notes&limit=40");
+    let list_notes = || async {
+        let began = Instant::now();
+        let (status, page) = agent.get(&notes).await;
+        assert_eq!(status, 200, "{page}");
+        began.elapsed()
+    };
+    // The first listing after the restart joins the workspace.
+    list_notes().await;
+    let mut alone = Vec::new();
+    for _ in 0..5 {
+        alone.push(list_notes().await);
+    }
+    let alone = quantile(&alone, 0.5);
+    let issues = format!("{base}/resources?path=tasks/Issues&limit=40");
+    let tracker = async {
+        let began = Instant::now();
+        let (status, page) = agent.get(&issues).await;
+        assert_eq!(status, 200, "{page}");
+        began.elapsed()
+    };
+    let beside = async {
+        // The tracker's listing starts taking in its parts first.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        list_notes().await
+    };
+    let (tracker, beside) = tokio::join!(tracker, beside);
+    eprintln!(
+        "the tracker's first listing after a restart took {tracker:?}; the notes listed beside it in {beside:?}, alone in {alone:?}"
+    );
+    assert!(
+        beside <= alone * 8 + Duration::from_secs(2),
+        "the notes listed in {beside:?} beside the tracker's first listing ({tracker:?}), alone in {alone:?}"
+    );
+}
