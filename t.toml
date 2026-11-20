@@ -7015,9 +7015,11 @@ default = false
 run = "bash os/containers/tilo-sh/test-peer-kill-midwrite.sh /target/peer-long-change long"
 needs = ["tilo-sh-programs", "lounge-fonts", "tilo-sh-caddy"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
-# changes as updates land, from mirrors no fixed list names.
-setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
-env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh-programs", TILO_SH_FONTS = "/target/publish/lounge/fonts", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy" }
+# changes as updates land, from mirrors no fixed list names. elfutils is the stack reader a
+# process that stalled logs its threads' stacks with.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl elfutils && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+# The server times its own phases at debug, so a stall is told apart from what it waited on.
+env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh-programs", TILO_SH_FONTS = "/target/publish/lounge/fonts", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SERVER_LOG = "info,tilo_server::timing=debug" }
 requires = ["arch=x86_64", "/dev/fuse"]
 isolation = "nested"
 # The stack lays the server's context out itself, from the apps' history (lounge-context.sh).
