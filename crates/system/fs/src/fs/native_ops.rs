@@ -200,6 +200,7 @@ impl QuickFS {
             super::VersionSource::File {
                 path: snapshot,
                 manifest,
+                adopt: false,
             },
             mtime_ms,
             attrs,
@@ -269,10 +270,10 @@ impl QuickFS {
                 .commit_version_at(ino, source, mtime_ms, fence, workspace)
                 .map_err(|e| to_errno(&e));
         }
-        let (hash, byte_len) = self
+        let (stored, _) = self
             .store_version_blocking(source, None, workspace)
-            .map_err(|e| to_errno(&e))?
-            .map_or((None, 0), |(hash, len)| (Some(hash), len));
+            .map_err(|e| to_errno(&e))?;
+        let (hash, byte_len) = stored.map_or((None, 0), |(hash, len)| (Some(hash), len));
         let ino = self.create_file_stamped(parent, name, mtime_ms, hash, byte_len)?;
         self.publish();
         self.set_posix(ino, attrs, false)

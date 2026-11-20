@@ -37,6 +37,8 @@ pub(super) enum Write<'a> {
     Entries(Vec<(AreaKey, Cow<'a, [u8]>)>),
     /// An entry gone: its stored state, outboard, origin and chunk index.
     Unpersist(AreaKey),
+    /// Writes committed as one, as an entry and its chunk index are.
+    Batch(Vec<Write<'a>>),
 }
 
 const INLINE: u8 = 1;
@@ -47,6 +49,7 @@ const CHUNKS: u8 = 5;
 const ORIGIN: u8 = 6;
 const ENTRIES: u8 = 7;
 const UNPERSIST: u8 = 8;
+const BATCH: u8 = 9;
 
 /// A frame's length and checksum before its writes.
 const HEADER: usize = 8;
@@ -101,6 +104,13 @@ impl Write<'_> {
                 out.push(UNPERSIST);
                 out.extend_from_slice(key);
             }
+            Self::Batch(writes) => {
+                out.push(BATCH);
+                out.extend_from_slice(&(writes.len() as u64).to_le_bytes());
+                for write in writes {
+                    write.encode(out);
+                }
+            }
         }
     }
 
@@ -129,6 +139,14 @@ impl Write<'_> {
                 Write::Origin(key, Cow::Owned(origin))
             }
             UNPERSIST => Write::Unpersist(frame.key()?),
+            BATCH => {
+                let count = frame.count(1)?;
+                let mut writes = Vec::with_capacity(count);
+                for _ in 0..count {
+                    writes.push(Write::decode(frame)?);
+                }
+                Write::Batch(writes)
+            }
             _ => return None,
         })
     }

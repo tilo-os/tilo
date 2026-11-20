@@ -329,14 +329,15 @@ impl Hydrator {
         known: Option<Arc<Manifest>>,
         previous: Option<Hash>,
         workspace: Option<WorkspaceId>,
-    ) -> Result<Option<(Hash, u64)>> {
+        adopt: bool,
+    ) -> Result<(Option<(Hash, u64)>, bool)> {
         let Some(source) = self.file_writer(workspace)? else {
-            return self.store.publish_file(path, known, previous).await;
+            return self.store.publish_file(path, known, previous, adopt).await;
         };
         let file = std::fs::File::open(path)?;
         let len = file.metadata()?.len();
         if len == 0 {
-            return Ok(None);
+            return Ok((None, false));
         }
         let manifest = match known {
             Some(manifest) if manifest.total_len() == len && manifest.sealed().is_none() => {
@@ -355,7 +356,7 @@ impl Hydrator {
         };
         let file = tokio::fs::File::open(path).await?;
         let hash = source.save(&self.store, &manifest, file).await?;
-        Ok(Some((hash, len)))
+        Ok((Some((hash, len)), false))
     }
 
     async fn previous_tier(&self, previous: Option<Hash>) -> Option<content::ChunkTier> {
@@ -600,6 +601,7 @@ mod tests {
             return;
         }
 
+        assert_staged_workspace_content_is_sealed(&hydrator, workspace).await;
         policy.replace(acl(false));
         assert!(fs.read_path(&path).is_err());
         #[cfg(target_os = "linux")]
@@ -619,6 +621,40 @@ mod tests {
                 .write_file_content(data, Some(hash), Some(workspace))
                 .await
                 .is_err()
+        );
+    }
+
+    async fn assert_staged_workspace_content_is_sealed(
+        hydrator: &Hydrator,
+        workspace: WorkspaceId,
+    ) {
+        let stage = tempfile::NamedTempFile::new().unwrap();
+        let clear = b"staged workspace bytes";
+        std::fs::write(stage.path(), clear).unwrap();
+        let (stored, adopted) = hydrator
+            .publish_file_content(stage.path(), None, None, Some(workspace), true)
+            .await
+            .unwrap();
+        let (hash, len) = stored.unwrap();
+        assert!(
+            !adopted,
+            "the content store must not adopt the plaintext stage"
+        );
+        assert!(
+            hydrator
+                .store
+                .manifest(hash)
+                .await
+                .unwrap()
+                .sealed()
+                .is_some()
+        );
+        assert_eq!(
+            hydrator
+                .read_scoped(hash, 0, len, Some(workspace))
+                .await
+                .unwrap(),
+            clear
         );
     }
 

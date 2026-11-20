@@ -207,6 +207,9 @@ pub(crate) enum VersionSource<'a> {
     File {
         path: &'a std::path::Path,
         manifest: Option<Arc<crate::content::Manifest>>,
+        /// The file is a write stage's, handed over: a store may take it as the content entry
+        /// itself instead of reading it again.
+        adopt: bool,
     },
 }
 
@@ -767,7 +770,7 @@ impl QuickFS {
     ) -> io::Result<()> {
         let (key, document_id) = self.unsaved_key(ino);
         let path = self.ns().path_for(ino);
-        match stage.source()? {
+        match stage.source(false)? {
             VersionSource::Bytes(data) => {
                 let entry = crate::unsaved::UnsavedEntry::describe(
                     key,
@@ -832,7 +835,7 @@ impl QuickFS {
     ///
     /// Ranges nobody wrote are read from the committed content first, outside the stage
     /// lock; the commit then runs under this inode's stage lock only.
-    fn persist_buffer(&self, ino: u64, intent: PersistIntent) -> Result<(), i32> {
+    fn persist_buffer(&self, ino: u64, intent: PersistIntent, adopt: bool) -> Result<(), i32> {
         let lock = self.commit_lock_for(ino);
         let _serialised = lock.lock_recover();
         let Some(staged) = self.stage(ino) else {
@@ -886,7 +889,7 @@ impl QuickFS {
                 }
             };
         }
-        match self.commit_buffer(ino, &mut guard) {
+        match self.commit_buffer(ino, &mut guard, adopt) {
             Ok(()) => {
                 let committed_hash = self.ns().hash_for(ino);
                 if let Some(current) = self.buffer_states().get_mut(&ino) {
@@ -1085,7 +1088,7 @@ impl QuickFS {
         let mut guard = stage.lock();
         let workspace = guard.workspace();
         let committed = guard
-            .source()
+            .source(true)
             .and_then(|source| self.commit_version_at(ino, source, now_ms(), None, workspace));
         drop(guard);
         committed
@@ -1105,7 +1108,7 @@ impl QuickFS {
         let digest = stage.digest().map_err(|_| EIO)?;
         let copy_name = unsaved_copy_name_for(name.as_bytes(), &digest);
         let workspace = stage.workspace();
-        let source = stage.source().map_err(|_| EIO)?;
+        let source = stage.source(false).map_err(|_| EIO)?;
         self.create_preserved_copy(parent, &copy_name, source, workspace)
     }
 
@@ -1179,7 +1182,7 @@ impl QuickFS {
     pub fn persist_all_buffers(&self) {
         let inos: Vec<u64> = self.buffers().keys().copied().collect();
         for ino in inos {
-            let _ = self.persist_buffer(ino, PersistIntent::Close);
+            let _ = self.persist_buffer(ino, PersistIntent::Close, true);
         }
     }
 
@@ -1217,19 +1220,63 @@ impl QuickFS {
         if let Some(offset) = position {
             offset.checked_add(data.len() as u64).ok_or(EINVAL)?;
         }
-        let (stage, opened, base) = self.stage_for_write(ino)?;
-        let mut guard = stage.lock();
-        let outcome = match position {
-            Some(offset) => guard.write(offset, data),
-            None => guard.append(data),
+        loop {
+            let (stage, opened, base) = self.stage_for_write(ino)?;
+            let mut guard = stage.lock();
+            if guard.retired() {
+                drop(guard);
+                self.replace_retired_stage(ino, &stage)?;
+                continue;
+            }
+            let outcome = match position {
+                Some(offset) => guard.write(offset, data),
+                None => guard.append(data),
+            };
+            outcome.map_err(|error| error.raw_os_error().unwrap_or(EIO))?;
+            stage.note_len(&guard);
+            // The generation moves under the stage lock, so a commit's
+            // generation always describes the bytes it committed.
+            self.note_buffer_mutation(ino, opened, base);
+            drop(guard);
+            return Ok(u32::try_from(data.len()).unwrap_or(u32::MAX));
+        }
+    }
+
+    /// Give an inode a stage of its own when a commit made its file a content entry: the old
+    /// stage still reads the committed bytes, but a write opens a stage over them rather than
+    /// change bytes a version is named by.
+    fn replace_retired_stage(&self, ino: u64, retired: &SharedStage) -> Result<(), i32> {
+        let (base, len) = {
+            let ns = self.ns();
+            (
+                ns.hash_for(ino),
+                ns.getattr_including_unlinked(ino)
+                    .map_or(0, |attr| attr.size),
+            )
         };
-        outcome.map_err(|error| error.raw_os_error().unwrap_or(EIO))?;
-        stage.note_len(&guard);
-        // The generation moves under the stage lock, so a commit's
-        // generation always describes the bytes it committed.
-        self.note_buffer_mutation(ino, opened, base);
-        drop(guard);
-        Ok(u32::try_from(data.len()).unwrap_or(u32::MAX))
+        let fresh = WriteStage::over(
+            base,
+            len,
+            self.stage_dir.as_deref(),
+            Arc::clone(&self.memory_stage_budget),
+        )
+        .map_err(|error| {
+            eprintln!(
+                "inode {ino}: could not open a write stage over its committed content: {error}"
+            );
+            EIO
+        })?;
+        let fresh = fresh.shared();
+        {
+            let mut stages = self.buffers();
+            if stages
+                .get(&ino)
+                .is_some_and(|stage| Arc::ptr_eq(stage, retired))
+            {
+                stages.insert(ino, fresh);
+            }
+        }
+        Ok(())
     }
 
     /// `setattr(size)` after its access check. A file that is open stages it; any other
@@ -1241,15 +1288,22 @@ impl QuickFS {
                 .commit_resized(ino, new_size)
                 .map_err(|error| commit_errno(&error));
         }
-        let (stage, opened, base) = self.stage_for_write(ino)?;
-        let mut guard = stage.lock();
-        guard
-            .set_len(new_size)
-            .map_err(|error| error.raw_os_error().unwrap_or(EIO))?;
-        stage.note_len(&guard);
-        self.note_buffer_mutation(ino, opened, base);
-        drop(guard);
-        Ok(())
+        loop {
+            let (stage, opened, base) = self.stage_for_write(ino)?;
+            let mut guard = stage.lock();
+            if guard.retired() {
+                drop(guard);
+                self.replace_retired_stage(ino, &stage)?;
+                continue;
+            }
+            guard
+                .set_len(new_size)
+                .map_err(|error| error.raw_os_error().unwrap_or(EIO))?;
+            stage.note_len(&guard);
+            self.note_buffer_mutation(ino, opened, base);
+            drop(guard);
+            return Ok(());
+        }
     }
 
     /// Create the file `name` in `parent` with `mode` as a FUSE `create` does, open for
@@ -1310,7 +1364,7 @@ impl QuickFS {
     }
 
     fn flush_inode(&self, ino: u64) -> Result<(), i32> {
-        self.persist_buffer(ino, PersistIntent::Close)
+        self.persist_buffer(ino, PersistIntent::Close, true)
     }
 
     /// `fsync`: make the buffer durable, and the name it is reached by.
@@ -1320,7 +1374,7 @@ impl QuickFS {
     /// within the persister's settle time (`namespace_persist::QUIET`). So the namespace
     /// is made durable too.
     fn fsync_inode(&self, ino: u64) -> Result<(), i32> {
-        self.persist_buffer(ino, PersistIntent::Sync)?;
+        self.persist_buffer(ino, PersistIntent::Sync, false)?;
         self.sync_namespace()
     }
 
@@ -1392,7 +1446,7 @@ impl QuickFS {
         };
         let live = self.ns().getattr(ino).is_some();
         let result = if live && released_writable {
-            self.persist_buffer(ino, PersistIntent::Close)
+            self.persist_buffer(ino, PersistIntent::Close, true)
         } else {
             Ok(())
         };
@@ -1533,14 +1587,31 @@ impl QuickFS {
     }
 
     /// Commit a complete stage: ingest it as chunked content (a file-backed stage straight
-    /// from its file). Returns the errno the writer should see when the bytes did not become
-    /// the file's committed content.
-    fn commit_buffer(&self, ino: u64, stage: &mut WriteStage) -> Result<(), i32> {
+    /// from its file). With `adopt`, a stage file becomes the content entry itself and the
+    /// stage is retired: reads still answer from it, writes open a stage of their own.
+    /// Returns the errno the writer should see when the bytes did not become the file's
+    /// committed content.
+    fn commit_buffer(&self, ino: u64, stage: &mut WriteStage, adopt: bool) -> Result<(), i32> {
         let workspace = stage.workspace();
+        let previous = self
+            .version_base(ino, workspace)
+            .map_err(|error| commit_errno(&error))?;
+        let source = stage
+            .source(adopt && stage.is_file_backed())
+            .map_err(|error| commit_errno(&error))?;
+        let (stored, adopted) = self
+            .store_version_blocking(source, previous, workspace)
+            .map_err(|error| {
+                eprintln!("storing a version of inode {ino} failed: {error}");
+                commit_errno(&error)
+            })?;
+        if adopted {
+            stage.retire();
+        }
+        // The bytes are stored once; only the namespace step is retried when a revision moved
+        // under it, since the stage's file has belonged to the store since it was moved.
         Self::commit_retrying(ino, || {
-            stage
-                .source()
-                .and_then(|source| self.commit_version_at(ino, source, now_ms(), None, workspace))
+            self.install_version(ino, stored, now_ms(), None, workspace)
         })?;
         self.remember_staged_metadata(ino, stage);
         Ok(())
@@ -3003,27 +3074,37 @@ impl QuickFS {
             .and_then(|path| self.hydrator.scoped_workspace(&path))
     }
 
-    /// Stores one version's content and returns its content id and length (`None` when empty).
+    /// Stores one version's content, answering its content id and length (`None` when empty)
+    /// and whether a staged file became the entry itself.
     /// `previous` is the file's current content, whose chunk tier the new version keeps.
     fn store_version_blocking(
         &self,
         source: VersionSource<'_>,
         previous: Option<Hash>,
         workspace: Option<collab_types::WorkspaceId>,
-    ) -> io::Result<Option<(Hash, u64)>> {
-        let stored = match source {
+    ) -> io::Result<(Option<(Hash, u64)>, bool)> {
+        let wrap = |error: anyhow::Error| io::Error::other(error.to_string());
+        match source {
             VersionSource::Bytes(data) => {
                 let len = data.len() as u64;
-                self.hydrator
+                let hash = self
+                    .hydrator
                     .block_on(self.hydrator.write_file_content(data, previous, workspace))
-                    .map(|hash| hash.map(|hash| (hash, len)))
+                    .map_err(wrap)?;
+                Ok((hash.map(|hash| (hash, len)), false))
             }
-            VersionSource::File { path, manifest } => self.hydrator.block_on(
-                self.hydrator
-                    .publish_file_content(path, manifest, previous, workspace),
-            ),
-        };
-        stored.map_err(|e| io::Error::other(e.to_string()))
+            VersionSource::File {
+                path,
+                manifest,
+                adopt,
+            } => self
+                .hydrator
+                .block_on(
+                    self.hydrator
+                        .publish_file_content(path, manifest, previous, workspace, adopt),
+                )
+                .map_err(wrap),
+        }
     }
 
     /// Current full content of an inode: its stage if any, else the hydrated blob. `Ok(empty)` only for an empty or hashless file; a hydration failure is
@@ -3063,14 +3144,54 @@ impl QuickFS {
 
     /// [`Self::commit_content_at`] with the version's content from `source`, and for a version
     /// written under a write lease its tenancy (`fence`), published in the same change.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "content publication and namespace replacement must preserve the previous committed revision on failure"
-    )]
     fn commit_version_at(
         &self,
         ino: u64,
         source: VersionSource<'_>,
+        mtime_ms: u64,
+        fence: Option<crate::namespace::VersionFence>,
+        workspace: Option<collab_types::WorkspaceId>,
+    ) -> io::Result<()> {
+        let previous = self.version_base(ino, workspace)?;
+        let (stored, _) = self.store_version_blocking(source, previous, workspace)?;
+        self.install_version(ino, stored, mtime_ms, fence, workspace)
+    }
+
+    fn version_base(
+        &self,
+        ino: u64,
+        workspace: Option<collab_types::WorkspaceId>,
+    ) -> io::Result<Option<Hash>> {
+        let ns = self.ns();
+        self.check_version_scope(&ns, ino, workspace)?;
+        Ok(ns.hash_for(ino))
+    }
+
+    fn check_version_scope(
+        &self,
+        ns: &crate::namespace::Namespace,
+        ino: u64,
+        workspace: Option<collab_types::WorkspaceId>,
+    ) -> io::Result<()> {
+        let current = ns
+            .path_for(ino)
+            .and_then(|path| self.hydrator.scoped_workspace(&path));
+        if current != workspace {
+            return Err(io::Error::from_raw_os_error(libc::EXDEV));
+        }
+        Ok(())
+    }
+
+    /// Make the stored version `stored` the content of `ino`, published in one change with the
+    /// node's size and mtime. `EBUSY` when the committed revision moved under it.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "content publication and namespace replacement must preserve the previous committed revision on failure"
+    )]
+    fn install_version(
+        &self,
+        ino: u64,
+        stored: Option<(Hash, u64)>,
         mtime_ms: u64,
         fence: Option<crate::namespace::VersionFence>,
         workspace: Option<collab_types::WorkspaceId>,
@@ -3081,17 +3202,7 @@ impl QuickFS {
         {
             return Err(io::Error::from_raw_os_error(errno));
         }
-        let previous = {
-            let ns = self.ns();
-            let actual = ns
-                .path_for(ino)
-                .and_then(|path| self.hydrator.scoped_workspace(&path));
-            if actual != workspace {
-                return Err(io::Error::from_raw_os_error(libc::EXDEV));
-            }
-            ns.hash_for(ino)
-        };
-        let (hash, byte_len) = match self.store_version_blocking(source, previous, workspace)? {
+        let (hash, byte_len) = match stored {
             Some((hash, len)) => (Some(hash), len),
             None => (None, 0),
         };
@@ -3101,6 +3212,7 @@ impl QuickFS {
         }
         let (expected_hash, expected_len, stamp) = {
             let ns = self.ns();
+            self.check_version_scope(&ns, ino, workspace)?;
             let expected_hash = ns.hash_for(ino);
             let attr = ns
                 .getattr(ino)
@@ -3118,12 +3230,7 @@ impl QuickFS {
         };
         {
             let mut ns = self.ns();
-            let current_workspace = ns
-                .path_for(ino)
-                .and_then(|path| self.hydrator.scoped_workspace(&path));
-            if current_workspace != workspace {
-                return Err(io::Error::from_raw_os_error(libc::EXDEV));
-            }
+            self.check_version_scope(&ns, ino, workspace)?;
             let current_len = ns.getattr(ino).map(|attr| attr.size);
             let installed = ns.hash_for(ino) == hash && current_len == Some(byte_len);
             if !installed
@@ -4171,6 +4278,7 @@ impl Filesystem for QuickFS {
         reply: ReplyCreate,
     ) {
         let _answering = self.activity.begin();
+        note_request("create");
         let writer =
             match self.admit_writer(req.pid(), None, fs_protocol::file_action::verbs::NEW_FILE) {
                 Ok(writer) => writer,
@@ -4233,6 +4341,7 @@ impl Filesystem for QuickFS {
         reply: ReplyWrite,
     ) {
         let _answering = self.activity.begin();
+        note_request("write");
         if let Err(e) = self.check_open_handle_access(ino.0, fh, Access::Write) {
             reply.error(to_errno(e));
             return;
@@ -4252,6 +4361,7 @@ impl Filesystem for QuickFS {
         reply: ReplyEmpty,
     ) {
         let _answering = self.activity.begin();
+        note_request("flush");
         let _writer = self.note_writer(req.pid());
         match self.flush_inode(ino.0) {
             Ok(()) => reply.ok(),
@@ -4308,6 +4418,7 @@ impl Filesystem for QuickFS {
         reply: ReplyEmpty,
     ) {
         let _answering = self.activity.begin();
+        note_request("release");
         if let Some(passthrough) = &self.passthrough {
             passthrough.release(fh.0);
         }
@@ -4404,6 +4515,7 @@ impl Filesystem for QuickFS {
         reply: ReplyEntry,
     ) {
         let _answering = self.activity.begin();
+        note_request("mkdir");
         let _writer =
             match self.admit_writer(req.pid(), None, fs_protocol::file_action::verbs::NEW_FOLDER) {
                 Ok(writer) => writer,

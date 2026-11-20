@@ -68,6 +68,10 @@ pub struct WriteStage {
     valid: RangeSet,
     base: Option<Hash>,
     workspace: Option<collab_types::WorkspaceId>,
+    /// The stage's file is now a content entry: a commit moved it into the store. The stage's
+    /// open file still reads the committed bytes, so reads answer from it, but a write must open
+    /// a stage of its own rather than change bytes a version is named by.
+    retired: bool,
 }
 
 /// Shared by all memory stages of one mount. Reservations include deferred
@@ -165,6 +169,7 @@ impl WriteStage {
             valid: RangeSet::new(),
             base: None,
             workspace: None,
+            retired: false,
         }
     }
 
@@ -217,6 +222,7 @@ impl WriteStage {
             valid: RangeSet::new(),
             base,
             workspace: None,
+            retired: false,
         })
     }
 
@@ -246,9 +252,19 @@ impl WriteStage {
     }
 
     /// Whether the stage keeps its bytes in a file rather than in memory.
-    #[cfg(test)]
     pub(super) const fn is_file_backed(&self) -> bool {
         matches!(self.backing, Backing::File(_))
+    }
+
+    /// Whether this stage handed its file to the store as a content entry: it reads the committed
+    /// bytes and a write opens a stage of its own.
+    pub(super) const fn retired(&self) -> bool {
+        self.retired
+    }
+
+    /// The stage's file is a content entry now; nothing may write it again.
+    pub(super) const fn retire(&mut self) {
+        self.retired = true;
     }
 
     /// Ranges below `len` that are still the base's.
@@ -435,8 +451,9 @@ impl WriteStage {
         }))
     }
 
-    /// The complete content as a version source; the stage must be complete.
-    pub(super) fn source(&mut self) -> io::Result<VersionSource<'_>> {
+    /// The complete content as a version source; the stage must be complete. `adopt` lets the
+    /// store take a file-backed stage's file as the content entry itself.
+    pub(super) fn source(&mut self, adopt: bool) -> io::Result<VersionSource<'_>> {
         if !self.is_complete() {
             return Err(io::Error::other("staged file still lacks base content"));
         }
@@ -457,6 +474,7 @@ impl WriteStage {
                 Ok(VersionSource::File {
                     path: file.path(),
                     manifest: None,
+                    adopt,
                 })
             }
         }
@@ -469,7 +487,7 @@ impl WriteStage {
     /// As [`Self::source`], or when the file cannot be read.
     #[cfg(test)]
     pub(super) fn contiguous(&mut self) -> io::Result<std::borrow::Cow<'_, [u8]>> {
-        match self.source()? {
+        match self.source(false)? {
             VersionSource::Bytes(bytes) => Ok(std::borrow::Cow::Borrowed(bytes)),
             VersionSource::File { path, .. } => std::fs::read(path).map(std::borrow::Cow::Owned),
         }
@@ -481,7 +499,7 @@ impl WriteStage {
     ///
     /// As [`Self::source`], or when the file cannot be read.
     pub(super) fn digest(&mut self) -> io::Result<blake3::Hash> {
-        match self.source()? {
+        match self.source(false)? {
             VersionSource::Bytes(bytes) => Ok(blake3::hash(bytes)),
             VersionSource::File { path, .. } => {
                 crate::unsaved::file_digest(path).map(|(digest, _)| digest)
@@ -683,7 +701,7 @@ mod tests {
                 };
                 assert_eq!(missing.gaps, vec![0..4, 6..8]);
                 assert_eq!(missing.bytes.len(), 11);
-                assert!(stage.source().is_err(), "an incomplete stage never commits");
+                assert!(stage.source(false).is_err(), "an incomplete stage never commits");
                 stage.write(0, b"W").unwrap();
                 stage.fill(0, b"basebase").unwrap();
                 assert!(stage.is_complete());

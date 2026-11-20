@@ -2428,6 +2428,75 @@ mod read_lock_tests {
         drop(fs);
         endpoint.close().await;
     }
+
+    /// A closed file's stage becomes its content entry by a link, and a write after that close
+    /// gets a stage of its own rather than changing the bytes the first version is named by.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_closed_stage_becomes_the_entry_and_a_later_write_leaves_it_alone() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        use crate::test_bytes::pseudo;
+
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), Arc::clone(&store)));
+        let namespace = Arc::new(Mutex::new(Namespace::new("adopt").unwrap()));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
+            .with_write_stage_dir(dir.path().join("stage"));
+        let ino = fs.create_empty_file(ROOT_INO, "photo.jpg").unwrap();
+        fs.publish();
+
+        let original = pseudo(256 * 1024, 9);
+        assert_eq!(
+            fs.write_buffer(ino, 0, &original),
+            Ok(u32::try_from(original.len()).unwrap())
+        );
+        assert_eq!(fs.flush_inode(ino), Ok(()));
+        let first = fs.ns().hash_for(ino).unwrap();
+        assert_eq!(
+            store.files().entry(first.as_bytes()).unwrap().size,
+            original.len() as u64,
+            "the closed file is stored as one entry, not loose chunks"
+        );
+        let entry = std::fs::metadata(store.files().path_of(first.as_bytes())).unwrap();
+
+        let changed = pseudo(256 * 1024, 10);
+        assert_eq!(
+            fs.write_buffer(ino, 0, &changed),
+            Ok(u32::try_from(changed.len()).unwrap())
+        );
+        assert_eq!(fs.flush_inode(ino), Ok(()));
+        let second = fs.ns().hash_for(ino).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            std::fs::metadata(store.files().path_of(first.as_bytes()))
+                .unwrap()
+                .ino(),
+            entry.ino(),
+            "the second version did not write the first version's entry"
+        );
+        let m1 = store.manifest(first).await.unwrap();
+        assert_eq!(
+            store
+                .read_local(first, &m1, 0..original.len() as u64)
+                .await
+                .unwrap(),
+            original,
+            "the first version still reads its own bytes"
+        );
+        let m2 = store.manifest(second).await.unwrap();
+        assert_eq!(
+            store
+                .read_local(second, &m2, 0..changed.len() as u64)
+                .await
+                .unwrap(),
+            changed
+        );
+        drop(fs);
+        endpoint.close().await;
+    }
 }
 
 mod listing_stream_tests {

@@ -58,7 +58,7 @@ impl QuickFS {
             // exactly these bytes, and there is nothing to restore. Asked by the content id the
             // bytes produce, so a file the version did reach is not copied beside itself.
             if let Some(ino) = target
-                && let Ok(Some((staged, _))) = self.store_version_blocking(
+                && let Ok((Some((staged, _)), _)) = self.store_version_blocking(
                     VersionSource::Bytes(&item.bytes),
                     entry.base(),
                     workspace,
@@ -95,7 +95,7 @@ impl QuickFS {
                             workspace,
                         )
                         .ok()
-                        .flatten()
+                        .and_then(|(stored, _)| stored)
                         .map(|(hash, _)| hash);
                     eprintln!(
                         "staged bytes for {label} were restored as {path} (inode {target:?}, from \

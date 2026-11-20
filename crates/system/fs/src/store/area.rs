@@ -84,6 +84,8 @@ struct Shape<'a> {
     kind: Kind,
     digest: Option<[u8; 32]>,
     chunks: &'a [([u8; 32], u64, u32)],
+    /// A version's encoded manifest, stored inline in the same commit as the entry's state.
+    manifest: Option<&'a [u8]>,
 }
 
 /// The most recently used cached entries, which the budget keeps even when an always-on device holds
@@ -366,6 +368,13 @@ fn apply(txn: &redb::WriteTransaction, write: &Write<'_>) -> io::Result<bool> {
                     index.remove(hash, location).map_err(db_error)?;
                 }
             }
+        }
+        Write::Batch(writes) => {
+            let mut removed = false;
+            for write in writes {
+                removed |= apply(txn, write)?;
+            }
+            return Ok(removed);
         }
     }
     Ok(false)
@@ -1197,6 +1206,7 @@ impl FileArea {
                 kind: Kind::Content,
                 digest: None,
                 chunks,
+                manifest: None,
             },
             true,
         )
@@ -1244,6 +1254,59 @@ impl FileArea {
                 kind: Kind::Content,
                 digest: None,
                 chunks,
+                manifest: None,
+            },
+            !windowed,
+        )
+    }
+
+    /// Makes `key` a complete entry holding the file at `path` as it already stands, linked in
+    /// (no second write) when both are on one filesystem. The caller's file is left as it was:
+    /// it still reads the same bytes, which are now the entry's too. `chunks` are indexed as by
+    /// [`Self::ensure`], so a peer is served their ranges of this entry, and `manifest`, the
+    /// encoded manifest those chunks are named by, is stored inline in the same commit.
+    ///
+    /// A store syncing on a window leaves the entry to the barrier, as [`Self::adopt_bytes`]
+    /// does, so a version a close answered for costs one write and the window's one sync rather
+    /// than a write, a copy and an fsync of each piece.
+    ///
+    /// # Errors
+    /// The file could not be linked in (another filesystem is `EXDEV`), or the entry could not be
+    /// stored. The caller's file is untouched unless the link succeeded.
+    pub fn adopt_version_file(
+        &self,
+        key: &AreaKey,
+        path: &Path,
+        len: u64,
+        retention: Retention,
+        chunks: &[([u8; 32], u64, u32)],
+        manifest: &[u8],
+    ) -> io::Result<()> {
+        let windowed = self.durable && !self.sync_writes.load(Ordering::Relaxed);
+        let staging = self.staging_path(key);
+        std::fs::hard_link(path, &staging)?;
+        let target = match OpenOptions::new().read(true).write(true).open(&staging) {
+            Ok(target) => target,
+            Err(error) => {
+                let _ = std::fs::remove_file(&staging);
+                return Err(error);
+            }
+        };
+        if !windowed && let Err(error) = self.sync(&target) {
+            let _ = std::fs::remove_file(&staging);
+            return Err(error);
+        }
+        self.install(
+            key,
+            &staging,
+            target,
+            len,
+            retention,
+            &Shape {
+                kind: Kind::Content,
+                digest: None,
+                chunks,
+                manifest: Some(manifest),
             },
             !windowed,
         )
@@ -1278,22 +1341,58 @@ impl FileArea {
         // fsyncs is either in the bytes below or in a record that waits for the next barrier.
         let _commit = self.commit.lock_recover();
         let pending = std::mem::take(&mut *self.written.lock_recover());
-        let mut first = None;
-        let mut unsynced = Vec::new();
-        for key in pending {
-            // An entry removed or replaced since it was written has nothing left to sync; one
-            // replaced before this barrier queued its bytes again under the same key.
-            if self.entry(&key).is_none() {
-                continue;
-            }
-            match self.file(&key).and_then(|file| self.sync(&file)) {
-                Ok(()) => {}
-                Err(error) => {
-                    unsynced.push(key);
-                    first.get_or_insert(error);
+        // A window of a copy closes one small entry per file, and syncing them one after another
+        // makes the window cost their count. The filesystem batches the fsyncs of a group into one
+        // commit anyway, so a few syncers take the same window in a fraction of the time.
+        let syncers = std::thread::available_parallelism()
+            .map_or(4, |cores| cores.get().clamp(2, 8))
+            .min(pending.len().max(1));
+        let per = pending.len().div_ceil(syncers).max(1);
+        let (unsynced, first) = std::thread::scope(|scope| {
+            let workers: Vec<_> = pending
+                .chunks(per)
+                .map(|chunk| {
+                    scope.spawn(move || {
+                        let mut unsynced = Vec::new();
+                        let mut first = None;
+                        for key in chunk {
+                            // An entry removed or replaced since it was written has nothing left
+                            // to sync; one replaced before this barrier queued its bytes again
+                            // under the same key.
+                            if self.entry(key).is_none() {
+                                continue;
+                            }
+                            match self.file(key).and_then(|file| self.sync(&file)) {
+                                Ok(()) => {}
+                                Err(error) => {
+                                    unsynced.push(*key);
+                                    first.get_or_insert(error);
+                                }
+                            }
+                        }
+                        (unsynced, first)
+                    })
+                })
+                .collect();
+            let mut unsynced = Vec::new();
+            let mut first = None;
+            for worker in workers {
+                match worker.join() {
+                    Ok((failed, error)) => {
+                        unsynced.extend(failed);
+                        if first.is_none() {
+                            first = error;
+                        }
+                    }
+                    Err(_) => {
+                        first.get_or_insert_with(|| {
+                            io::Error::other("a barrier's sync worker did not finish")
+                        });
+                    }
                 }
             }
-        }
+            (unsynced, first)
+        });
         if let Some(error) = first {
             self.written.lock_recover().extend(unsynced);
             return Err(error);
@@ -1351,6 +1450,7 @@ impl FileArea {
                 kind: Kind::Content,
                 digest: Some(digest),
                 chunks: &[],
+                manifest: None,
             },
             true,
         )
@@ -1427,6 +1527,7 @@ impl FileArea {
                 kind: Kind::Blob,
                 digest: Some(*key),
                 chunks: &[],
+                manifest: None,
             },
             true,
         )?;
@@ -1449,6 +1550,7 @@ impl FileArea {
         synced: bool,
     ) -> io::Result<()> {
         let (kind, digest, chunks) = (shape.kind, shape.digest, shape.chunks);
+        let manifest = shape.manifest;
         let _create = self.create.lock_recover();
         if self.entry(key).is_some() {
             self.remove(key)?;
@@ -1483,8 +1585,26 @@ impl FileArea {
                 state.digests.insert(digest, *key);
             }
         }
-        self.index_chunks(key, chunks)?;
-        self.persist(key)
+        // One commit for everything a version stores: the entry's state, its chunk index, and the
+        // manifest naming them, so a closed file costs one transaction rather than three.
+        let stored = self
+            .lock()
+            .entries
+            .get(key)
+            .map(|entry| entry.stored_with(&entry.durable));
+        let Some(stored) = stored else {
+            return Ok(());
+        };
+        let bytes = postcard::to_allocvec(&stored).map_err(db_error)?;
+        let mut writes = Vec::with_capacity(3);
+        if !chunks.is_empty() {
+            writes.push(Write::Chunks(*key, Cow::Borrowed(chunks)));
+        }
+        if let Some(manifest) = manifest {
+            writes.push(Write::Inline(vec![(*key, Cow::Borrowed(manifest))]));
+        }
+        writes.push(Write::Entries(vec![(*key, Cow::Owned(bytes))]));
+        self.commit_write(&Write::Batch(writes)).map(drop)
     }
 
     fn share_extents(&self, digest: &[u8; 32], target: &File, len: u64) {

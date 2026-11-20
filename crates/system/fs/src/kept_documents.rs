@@ -58,6 +58,11 @@ struct Heads {
     journaled: BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>,
     /// The heads each document's save holds.
     saved: BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>,
+    /// Each journal a change was added to, open for appending: a copy of a photo library
+    /// journals the tree and its chunk with every file, and opening and closing them each
+    /// time would cost more than the changes. Set aside when the save that covers one is
+    /// written, so nothing is added to a journal already on its way out.
+    journals: BTreeMap<TreeChunk, std::sync::Arc<std::fs::File>>,
 }
 
 impl KeptDocuments {
@@ -167,7 +172,7 @@ impl KeptDocuments {
             if let Some(write) = namespace.document_write(chunk, &known, usize::MAX)
                 && !write.changes.is_empty()
             {
-                append_frame(&file(&self.dir, chunk, JOURNAL), &write.changes)?;
+                append_frame(&self.dir, &mut kept, chunk, &write.changes)?;
                 self.unsynced.store(true, Ordering::Release);
             }
             kept.journaled.insert(chunk, heads);
@@ -190,12 +195,39 @@ impl KeptDocuments {
     }
 
     fn sync_all(&self) -> io::Result<()> {
+        // The journals this process added to are synced through their open files: a copy
+        // journals every few milliseconds, and opening each journal again to sync it would
+        // cost what appending it did. A journal nothing added to here (one a killed process
+        // left frames in) is still read from disk and synced.
+        let held: Vec<(TreeChunk, std::sync::Arc<std::fs::File>)> = {
+            let kept = self.heads.lock_recover();
+            kept.journals
+                .iter()
+                .map(|(chunk, journal)| (*chunk, std::sync::Arc::clone(journal)))
+                .collect()
+        };
+        // The syncs run outside the heads lock: a change waits for it to journal, and a copy
+        // makes one every few milliseconds.
+        for (_, journal) in &held {
+            journal.sync_all()?;
+        }
+        let held: Vec<TreeChunk> = held.into_iter().map(|(chunk, _)| chunk).collect();
         for entry in std::fs::read_dir(&self.dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension() == Some(std::ffi::OsStr::new(JOURNAL)) {
-                std::fs::File::open(&path)?.sync_all()?;
+            if path.extension() != Some(std::ffi::OsStr::new(JOURNAL)) {
+                continue;
             }
+            let chunk = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(JOURNAL))
+                .and_then(|number| number.strip_suffix('.'))
+                .and_then(|number| number.parse::<TreeChunk>().ok());
+            if chunk.is_some_and(|chunk| held.contains(&chunk)) {
+                continue;
+            }
+            std::fs::File::open(&path)?.sync_all()?;
         }
         std::fs::File::open(&self.dir)?.sync_all()
     }
@@ -226,6 +258,9 @@ impl KeptDocuments {
                 let Some(bytes) = namespace.save_document(chunk) else {
                     continue;
                 };
+                // The journal is renamed, so nothing may add to it through a file opened
+                // before the rename: the next change opens the new one.
+                kept.journals.remove(&chunk);
                 set_aside(&self.dir, chunk)?;
                 kept.journaled.insert(chunk, heads.clone());
                 saved.push((chunk, heads, bytes));
@@ -315,18 +350,29 @@ fn set_aside(dir: &Path, chunk: TreeChunk) -> io::Result<()> {
     remove_or_none(&journal)
 }
 
-/// Add `changes` to the journal at `path` as one frame.
-fn append_frame(path: &Path, changes: &[u8]) -> io::Result<()> {
+/// Add `changes` to `chunk`'s journal as one frame, through the file kept open for it. A write
+/// that fails drops that file, so the next append opens the journal again rather than adding to
+/// one whose frame may be cut off.
+fn append_frame(dir: &Path, kept: &mut Heads, chunk: TreeChunk, changes: &[u8]) -> io::Result<()> {
     let length = u32::try_from(changes.len())
         .map_err(|_| io::Error::other("changes too long for one frame"))?;
     let mut frame = Vec::with_capacity(changes.len().saturating_add(4));
     frame.extend_from_slice(&length.to_le_bytes());
     frame.extend_from_slice(changes);
-    let mut out = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    out.write_all(&frame)
+    let journal = match kept.journals.entry(chunk) {
+        std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+        std::collections::btree_map::Entry::Vacant(entry) => entry.insert(std::sync::Arc::new(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file(dir, chunk, JOURNAL))?,
+        )),
+    };
+    if let Err(error) = (&**journal).write_all(&frame) {
+        kept.journals.remove(&chunk);
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// The changes a journal's frames hold, one after another; a frame cut off ends them.
@@ -393,7 +439,12 @@ mod tests {
     #[test]
     fn a_new_chunk_is_journaled_before_the_tree_that_lists_it() {
         let dir = tempfile::tempdir().unwrap();
-        let (kept, mut namespace) = open(dir.path());
+        let (kept, namespace) = open(dir.path());
+        // A save covers what opening journaled and lets go of the journals opened for it, so
+        // the tree's journal is opened fresh below, where the test has made it unwritable.
+        let shared = Mutex::new(namespace);
+        kept.keep(&shared).unwrap();
+        let mut namespace = shared.into_inner().unwrap();
         let before = namespace.document_heads().len();
         let mut n = 0;
         while namespace.document_heads().len() == before {
