@@ -4,7 +4,8 @@
 //! - `workspace/servers#list` (or `tilo_read workspace/servers`) answers the
 //!   servers keeping it: the one asked first;
 //! - `workspace/servers#add {origin}` has the server whose site is at `origin`
-//!   (`https://tilo.sh`) keep it as well: both keep it, a change on either
+//!   (`https://tilo.sh`), or a server that serves no site at its Iroh address
+//!   (`iroh:<device key>@<endpoint id>`), keep it as well: both keep it, a change on either
 //!   reaches the other, and its members reach it at either. That server takes
 //!   it as its own rules say: only for an owner of it it let in, if it has capacity;
 //! - `workspace/servers#remove {server}` has a server, named by its site or by
