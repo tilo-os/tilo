@@ -274,8 +274,9 @@ try {
     ];
     for (const file of files) {
       // Searched for by its name and opened from the palette: what a person
-      // does when they know what they are after.
-      await search(ada.tab, adaKeys, file.name, file.name, null, {mayStayUp: true});
+      // does when they know what they are after. The search goes with the
+      // choice, leaving the file it opened on screen.
+      await search(ada.tab, adaKeys, file.name, file.name);
       const opened = `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(file.app)})`;
       await until(ada.tab, opened, `${file.name} opening in ${file.app}`, stepLimit(4));
       if (file.words) await shows(ada.tab, file.words, `${file.name} shown in its window`, stepLimit(4));
