@@ -1526,7 +1526,57 @@ pub fn create_person(
         ));
     }
     let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-    import_single_device_root(identity_dir, &root, display_name, storage)?;
+    keep_person(
+        identity_dir,
+        paths,
+        &root,
+        display_name,
+        device_label,
+        storage,
+    )
+}
+
+/// Become the person whose 24-word recovery key `words` is, on an account
+/// that holds no identity yet: their root kept as this account's identity in
+/// `identity_dir` and this device certified by it as `device_label` in
+/// `paths`, as [`create_person`] keeps a new one. What a new device's
+/// "Enter your recovery key" does, for `tilo login --recovery-key`. Answers
+/// the person's user public key.
+///
+/// # Errors
+///
+/// The words are not a recovery key (a [`crate::store::RecoveryWordsError`]
+/// inside the error), or as [`create_person`].
+pub fn restore_person(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    words: &str,
+    device_label: &str,
+    storage: IdentityStorage,
+) -> io::Result<[u8; 32]> {
+    if let Some(existing) = tilo_identity_client::resolve_active_identity(identity_dir) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "this account already has a Tilo identity ({})",
+                existing.display()
+            ),
+        ));
+    }
+    let root = crate::store::recovery_words_root(words)?;
+    // The words carry no name: the person keeps the one their workspaces know them by.
+    keep_person(identity_dir, paths, &root, "", device_label, storage)
+}
+
+fn keep_person(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    root: &ed25519_dalek::SigningKey,
+    display_name: &str,
+    device_label: &str,
+    storage: IdentityStorage,
+) -> io::Result<[u8; 32]> {
+    import_single_device_root(identity_dir, root, display_name, storage)?;
     ensure_collaboration_identity_with_device_label(identity_dir, paths, storage, device_label)?;
     Ok(root.verifying_key().to_bytes())
 }
