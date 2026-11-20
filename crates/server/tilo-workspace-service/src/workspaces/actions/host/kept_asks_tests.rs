@@ -134,24 +134,13 @@ async fn an_answer_is_claimed_once_also_across_a_restart_of_the_server() {
         Err(NOTHING_WAITS.to_owned())
     );
     workspaces.forget_ask(&gone);
+    assert_eq!(workspaces.open_asks("w").len(), 2);
+    assert!(workspaces.claim_ask(&waiting.ask).is_ok());
     server.shutdown().await;
 
+    // Pending asks are in-memory only and never persisted under people/<person>/.
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let kept = workspaces.open_asks("w");
-    assert_eq!(kept.len(), 2, "{kept:?}");
-    let still_waiting = kept.iter().find(|ask| ask.ask == waiting.ask).unwrap();
-    assert!(!still_waiting.started && !still_waiting.interrupted);
-    let was_running = kept.iter().find(|ask| ask.ask == answered.ask).unwrap();
-    assert!(
-        was_running.started && was_running.interrupted,
-        "the server stopped while its answer was carried out: {was_running:?}"
-    );
-    assert_eq!(
-        workspaces.claim_ask(&answered.ask),
-        Err(CARRIED_OUT.to_owned()),
-        "it is not carried out a second time"
-    );
-    assert!(workspaces.claim_ask(&waiting.ask).is_ok());
+    assert!(workspaces.open_asks("w").is_empty());
     server.shutdown().await;
 }

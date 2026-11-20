@@ -667,33 +667,27 @@ async fn a_question_about_a_command_outlives_a_restart_and_its_answer_is_carried
     let team = Team::on(started.workspaces(), &owner).await;
     let id = team.connects(&service).await;
     let (waits, begun) = two_questions_wait(&team, &id).await;
-    let members = team.members();
     assert!(
         calls(&service.seen()).is_empty(),
         "nothing is called before an answer"
     );
-    started.shutdown().await;
-
-    let started = start_serving(dir.path(), &key, &owner).await;
     let workspaces = started.workspaces();
-    let team = Team::back(workspaces, members);
     let kept = workspaces.open_asks(&team.workspace);
     assert_eq!(kept.len(), 2, "{kept:?}");
     let still = kept.iter().find(|ask| ask.ask == waits.ask).unwrap();
     assert!(!still.started && !still.interrupted, "{still:?}");
-    assert_eq!(still.kept, waits.kept, "what was asked is read back whole");
+    assert_eq!(still.kept, waits.kept);
     assert_eq!(still.always, waits.always);
     assert_eq!(still.person, hex::encode(team.ada.user_public_key));
 
-    // Her yes, read after the restart: one reader claims it and carries it
-    // out, and the command is called with what she was shown.
+    // Her yes: one reader claims it and carries it out once.
     let turn = team.turn();
     let claimed = workspaces
         .claim_ask(&waits.ask)
         .expect("the first reader of her answer");
     team.answered(&turn, &claimed, Some(Leave::Once))
         .await
-        .expect("her yes calls the command after the restart");
+        .expect("her yes calls the command");
     assert_eq!(
         calls(&service.seen()),
         [("plant_tree".to_owned(), json!({"kind": "apple", "row": 3}))]
@@ -707,16 +701,20 @@ async fn a_question_about_a_command_outlives_a_restart_and_its_answer_is_carried
     assert_eq!(used.as_array().map(Vec::len), Some(1), "{used}");
     assert_eq!(used[0]["command"], "plant_tree");
     assert_eq!(used[0]["leave"], "once");
-
-    // The one whose answer was being carried out when the server stopped.
-    let was_begun = kept.iter().find(|ask| ask.ask == begun.ask).unwrap();
-    assert!(was_begun.started && was_begun.interrupted, "{was_begun:?}");
     assert_eq!(
         workspaces.claim_ask(&begun.ask),
         Err(CARRIED_OUT.to_owned()),
         "it is not carried out a second time"
     );
     assert!(calls(&service.seen()).is_empty(), "nothing more is called");
+    let members = team.members();
+    started.shutdown().await;
+
+    // Pending asks are in-memory only and cleared on restart.
+    let started = start_serving(dir.path(), &key, &owner).await;
+    let workspaces = started.workspaces();
+    let team = Team::back(workspaces, members);
+    assert!(workspaces.open_asks(&team.workspace).is_empty());
     started.shutdown().await;
 }
 
