@@ -115,9 +115,17 @@ under their own numbers:
 A page reaches its relay over QUIC, which SSH cannot carry, so the drop-in
 carries UDP through the build server's own helper: one channel per client that
 sends anything, each datagram framed. The forwards end with the stack's
-bring-up process; `stack.sh status` says whether they are up, and a port
-already used here stops the command with the port named instead of leaving a
-stack nobody can reach.
+bring-up process; `stack.sh status` says whether they are up.
+
+`up` refuses a base whose ports already answer, here or on the build server,
+naming what holds them (a second worktree's stack, or a forward left from
+one). It also refuses a base whose ports reach into the range the machine
+hands to outgoing connections (`32768` and up on many machines; read from
+`/proc/sys/net/ipv4/ip_local_port_range` there), naming a safe one: such a
+port can be taken from the stack at any moment, and a service that cannot bind
+it fails while the stack looks up. A remote bring-up then checks that what
+answers through the forward is its own stack, by a token only its releases
+serve, so another stack on the same base cannot pass for it.
 
 The commands that act on the stack — `owner`, `invite`, `tilo`, `hold`,
 `mail`, `logs`, `restart` — run where the stack is, so the owner and the

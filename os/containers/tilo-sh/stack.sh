@@ -98,7 +98,7 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          other. That stack takes it only for a person it let
                          in: make this stack's owner one of its people there
                          first (stack.sh owner KEY there, KEY this stack's
-                         $TILO_SH_STATE/owner/key). servers ls and servers
+                         \$TILO_SH_STATE/owner/key). servers ls and servers
                          remove ORIGIN too
   stack.sh browser       a Chromium on a fresh profile, opened on the local site
   stack.sh check
@@ -147,6 +147,17 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
   mail      the mail sink the entry's mail goes to (production: Resend),
             http://127.0.0.1:BASE+23; stack.sh mail lists what it kept
   discord   with --discord, the fake Discord (crates/dev/fake-discord)
+
+TILO_SH_PORT_BASE gives the stack its ports, the numbers above from it up to
+BASE+42. They must lie outside the range the machine hands to outgoing
+connections (32768 and up on many machines; stack.sh reads
+/proc/sys/net/ipv4/ip_local_port_range there, also on the build server when
+the stack is there), and nothing may answer on them already: up refuses a
+base inside that range, naming a safe one, and a base another stack holds (on
+this machine or the build server: a second worktree's stack, or a forward left
+from one), naming what holds it. A remote stack's bring-up then checks that
+what answers through the forward is its own, by a token only this bring-up's
+releases serve.
 
 Reached from elsewhere: TILO_SH_REACHED_THROUGH=https://live-eu1.tilo.sh (any
 packet relay's URL) has the server start no packet relay of its own and be
@@ -242,6 +253,7 @@ mail_port=$((base + 23))       # the mail sink the entry's mail goes to instead 
 discord_rest_port=$((base + 40))
 discord_gateway_port=$((base + 41))
 discord_control_port=$((base + 42))
+last_port=$discord_control_port  # the highest port a stack on this base takes
 
 # Plain HTTP on this machine, which a browser treats as a secure context as it
 # does https://, so any browser profile opens the site with no certificate to
@@ -287,6 +299,12 @@ esac
 # The cargo drop-in that builds: the one TILO_SH_CARGO names, else $CARGO's,
 # else this machine's cargo.
 cargo=${TILO_SH_CARGO:-${CARGO:-cargo}}
+# A drop-in that wraps rcargo hands `exec` to another builder by default
+# (rcargo routes to t), whose container knows nothing of this stack: every
+# call below is this stack's, in this checkout's build container, so that
+# routing is off here (RCARGO_T is rcargo's own switch, and no one else's
+# call is affected).
+export RCARGO_T=0
 # Whether the cargo drop-in runs a program on the build server and serves this
 # machine's ports from there (`$cargo exec --forward`), which is what a remote
 # stack needs. Asked once.
@@ -379,6 +397,90 @@ use_mode() {
   fi
 }
 use_mode "$(cat "$state/mode" 2>/dev/null || echo native)"
+
+# -- this base's ports ---------------------------------------------------------
+
+# Every port a stack answers on where it is (and, for one on the build
+# server, here as a forward), by the kind of socket: the ones a base reserves,
+# whether or not this bring-up uses each (the fake Discord's are forwarded).
+stack_tcp_ports() {
+  printf '%s\n' "$server_port" "$plain_port" "$routes_port" "$server_web_port" \
+    "$live_port" "$caddy_http_port" "$api_port" "$site_port" "$web_port" \
+    "$releases_port" "$mail_port" "$discord_rest_port" "$discord_gateway_port" \
+    "$discord_control_port"
+}
+stack_udp_ports() { printf '%s\n' "$packet_port" "$iroh_port" "$link_port"; }
+
+# check_ports: refuse a base this machine cannot give the stack whole.
+#
+# Two ways a base is not the stack's own. The kernel hands free ports from its
+# temporary-port range to outgoing connections (ip_local_port_range: 32768 and
+# up on many machines), so a port of the stack's inside it can be taken at any
+# moment, and the service that wanted it cannot bind (a base of 38500 put the
+# relay's 38502 there). And something already listening there is another
+# stack's, or a forward left from one: a bring-up then never binds, while the
+# forward answers for the other one, which once passed for success (base 34900,
+# another worktree's stack on the build server). The same check answers on this
+# machine and, from the stack's own `up` there, on the build server: it reads
+# that machine's /proc, so it names what the kernel there says, and the holder.
+check_ports() {
+  local attempt=0 out line where='this machine'
+  local -a tcp_ports=() udp_ports=() held=()
+  local low='' high='' port span=$((last_port - base))
+  # The stack's own `up` on the build server is given this (remote_env).
+  [[ -z ${TILO_SH_REMOTE_COMMIT:-} ]] || where='the build server'
+  mapfile -t tcp_ports < <(stack_tcp_ports)
+  mapfile -t udp_ports < <(stack_udp_ports)
+  command -v python3 >/dev/null || die 'needs python3 to check which ports its base needs'
+  while :; do
+    out=$(python3 -I "$here/port-check.py" --range \
+      --tcp "$(join_comma "${tcp_ports[@]}")" --udp "$(join_comma "${udp_ports[@]}")") \
+      || die "could not check which ports base $base needs ($here/port-check.py)"
+    low='' high='' held=()
+    while IFS= read -r line; do
+      case $line in
+        'range unknown') ;;
+        'range '*) read -r _ low high <<< "$line" ;;
+        'held '*) held+=("${line#held }") ;;
+      esac
+    done <<< "$out"
+    # Something may still be letting go of a stack just stopped.
+    ((${#held[@]})) || break
+    ((attempt < 10)) || break
+    attempt=$((attempt + 1))
+    sleep 0.5
+  done
+  if [[ -n $low ]]; then
+    for port in "${tcp_ports[@]}" "${udp_ports[@]}"; do
+      ((port >= low && port <= high)) || continue
+      local below=$((low - span - 1)) above=$((65535 - span))
+      die "TILO_SH_PORT_BASE=$base puts this stack on port $port, inside the range $where hands to outgoing connections ($low-$high): any connection can take that port from the stack, and the service that wanted it cannot bind. Use a base at or below $below (24100 is the default) or between $((high + 1)) and $above."
+    done
+  fi
+  if ((${#held[@]})); then
+    die "base $base is already someone else's: these ports answer before this stack starts on $where —
+$(printf '  %s\n' "${held[@]}")
+Stop what holds them (another checkout's stack.sh down, or the forward it left), or give this checkout its own TILO_SH_PORT_BASE and TILO_SH_STATE, then stack.sh up again."
+  fi
+}
+
+join_comma() { local IFS=,; printf '%s' "$*"; }
+
+# -- one stack's own ports ----------------------------------------------------
+
+# The mark this bring-up leaves where the stack's releases serve it
+# (`/tilo-cli/latest/stack-token` on its releases port): what answers on the
+# base's ports is this stack's only if it serves this token. An opaque mark,
+# not a secret: it names the stack's state, it opens nothing. A remote stack's
+# forward once reached another stack holding the same base, and a bring-up
+# that never came up was called up.
+stack_token=${TILO_SH_STACK_TOKEN:-}
+write_stack_token() {
+  [[ -n $stack_token ]] || return 0
+  local dir=$state/releases/tilo-cli/latest
+  mkdir -p "$dir"
+  printf '%s\n' "$stack_token" > "$dir/stack-token"
+}
 
 podman_() { podman "$@"; }
 
@@ -1958,7 +2060,14 @@ up() {
   [[ -z $fresh ]] || down_any --wipe
   # One stack at a time: what the other mode left running goes first.
   if [[ -f $state/mode ]]; then down_any >/dev/null 2>&1 || true; fi
+  if [[ -z $stack_token ]]; then
+    stack_token=$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')
+  fi
+  # Its base must be this stack's here, before anything builds; a stack on the
+  # build server makes the same check there, where its services bind.
+  check_ports
   mkdir -p "$state/logs"
+  write_stack_token
   if [[ -n $images ]]; then
     up_images "$discord"
   elif [[ $remote == 1 ]]; then
@@ -2359,7 +2468,7 @@ remote_env() {
   local line
   while IFS= read -r line; do
     case ${line%%=*} in
-      TILO_SH_STATE|TILO_SH_PORT_BASE|TILO_SH_REMOTE|TILO_SH_CARGO|TILO_SH_REMOTE_STATE) continue ;;
+      TILO_SH_STATE|TILO_SH_PORT_BASE|TILO_SH_REMOTE|TILO_SH_CARGO|TILO_SH_REMOTE_STATE|TILO_SH_STACK_TOKEN) continue ;;
       TILO_SH_*) printf '%s\n' "$line" ;;
     esac
   done < <(env | grep '^TILO_SH_' || true)
@@ -2369,6 +2478,7 @@ remote_env() {
   printf 'TILO_SH_STATE=%s\n' "$remote_state"
   printf 'TILO_SH_PORT_BASE=%s\n' "$base"
   printf 'TILO_SH_REMOTE=0\n'
+  [[ -z $stack_token ]] || printf 'TILO_SH_STACK_TOKEN=%s\n' "$stack_token"
   printf 'TILO_SH_CARGO=%s\n' "${TILO_SH_REMOTE_CARGO:-cargo}"
   printf 'TILO_SH_REMOTE_COMMIT=%s\n' "$commit"
 }
@@ -2454,6 +2564,18 @@ wait_remote_up() {
     fi
     sleep 0.5
   done
+  # What answered is this stack's only if its releases serve the token this
+  # bring-up made. A forward that reached another stack on the same base
+  # answered for a bring-up that never came up, and `up` printed success.
+  local answered
+  answered=$(curl -fsS --max-time 2 \
+    "http://127.0.0.1:$releases_port/tilo-cli/latest/stack-token" 2>/dev/null) || answered=''
+  if [[ $answered != "$stack_token" ]]; then
+    printf -- '--- %s, its last lines:\n' "$state/logs/remote.log" >&2
+    tail -20 "$state/logs/remote.log" >&2
+    say "the stack answering on base $base is not this one (its releases serve '${answered:-nothing}' at $releases_port/tilo-cli/latest/stack-token, not this bring-up's token): another stack holds these ports here or on the build server, and this bring-up stops. Give this checkout its own TILO_SH_PORT_BASE and TILO_SH_STATE, then stack.sh up"
+    return 1
+  fi
   wait_for 'API server (its health check)' "$api_origin/health" 30
 }
 
