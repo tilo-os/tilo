@@ -4,7 +4,9 @@
 // waits for: from each input to the end of the rendering update after it (`p50`/`max`, ms),
 // the long tasks it caused, and the work behind it: frames presented, the runtime's time in
 // wasm (update and layout, then the composition encoded) and the presenter's, elements
-// written and made, and the browser's style and layout passes.
+// written and made, and the browser's style and layout passes. A click on a place of the
+// sidebar that leaves another page showing (the sidebar marking another, or the page beside it
+// titled otherwise) fails, whatever the numbers.
 //
 // usage: node tools/web/html-renderer/tilolang-perf.mjs BUNDLE_DIR [OUT_DIR] [--package tl/<id>/]
 //                                                      [--budget] [--pin] [--attempts N] [--cpu N]
@@ -101,6 +103,9 @@ const PICKED = `(() => {
   const row = document.querySelector('#app [data-widget=NavList] [aria-selected=true], #app [data-widget=NavList] [aria-current]');
   return (row?.getAttribute('aria-label') ?? row?.textContent ?? '').trim();
 })()`;
+// The page's titles: the headings beside the sidebar, the window's and the page's own.
+const TITLES = `JSON.stringify([...document.querySelectorAll('#app h1, #app h2, #app [role=heading]')]
+  .filter(element => !element.closest('[data-widget=NavList]')).map(element => element.textContent.trim()))`;
 // The sidebar's edge: its grip stands just past the column its rows fill.
 const EDGE = `(() => {
   const list = document.querySelector('#app [data-widget=NavList]');
@@ -229,8 +234,10 @@ async function measure() {
       const point = await at(place);
       if (!point) { result.interactions[`open ${place}`] = {missing: true}; continue; }
       await step(`open ${place}`, () => click(point));
-      // The page a click picked is the one shown once its frames settled, not the one before.
+      // The page a click picked is the one shown once its frames settled, not the one before:
+      // the sidebar marks it, and the page beside it is titled with it.
       result.interactions[`open ${place}`].picked = await tab.evaluate(PICKED);
+      result.interactions[`open ${place}`].titled = JSON.parse(await tab.evaluate(TITLES)).includes(place);
       if (place === 'Basics') {
         // Rows of the page hovered, top to bottom, and its menu opened and closed.
         await step('hover Basics', () => sweep({x: 700, y: 120}, {x: 700, y: 760}, 40));
@@ -320,9 +327,21 @@ function overFrame(result) {
   for (const [name, step] of Object.entries(result.interactions)) {
     if (step.missing) continue;
     if (step.max > INPUT_BUDGET_MS * cpu) said.push(`${name}: an input took ${step.max} ms`);
-    if (step.picked !== undefined && step.picked !== name.replace(/^open /, '')) said.push(`${name}: the sidebar shows ${JSON.stringify(step.picked)} picked`);
     const longest = Math.max(0, ...step.longTasks.map(([, duration]) => duration));
     if (longest > LONG_TASK_MS * cpu) said.push(`${name}: a ${longest} ms task`);
+  }
+  return said;
+}
+
+// Where a click on a place in the sidebar left another page showing: a wrong page is no
+// matter of speed, and fails every measurement, pinned or not.
+function wrongPages(result) {
+  const said = [];
+  for (const [name, step] of Object.entries(result.interactions)) {
+    if (step.picked === undefined) continue;
+    const place = name.replace(/^open /, '');
+    if (step.picked !== place) said.push(`${name}: the sidebar shows ${JSON.stringify(step.picked)} picked`);
+    if (!step.titled) said.push(`${name}: the page beside the sidebar is not ${JSON.stringify(place)}`);
   }
   return said;
 }
@@ -362,7 +381,7 @@ let result;
 let missed = [];
 for (let attempt = 1; attempt <= attempts; attempt++) {
   result = await measure();
-  missed = budget ? regressions(result, JSON.parse(readFileSync(PINNED, 'utf8'))) : [];
+  missed = [...wrongPages(result), ...(budget ? regressions(result, JSON.parse(readFileSync(PINNED, 'utf8'))) : [])];
   if (!missed.length) break;
 }
 if (process.argv.includes('--pin')) writeFileSync(PINNED, `${JSON.stringify(pin(result), null, 2)}\n`);
@@ -383,6 +402,6 @@ for (const [name, step] of Object.entries(result.interactions)) {
 for (const line of result.log ?? []) console.log(line);
 for (const line of overFrame(result)) console.log(`over a frame: ${line}`);
 if (missed.length) {
-  console.error(`past the pinned numbers:\n  ${missed.join('\n  ')}`);
+  console.error(`failed:\n  ${missed.join('\n  ')}`);
   process.exit(1);
 }
