@@ -69,8 +69,19 @@ impl NativeOwnerCommits {
     }
 
     /// The workspaces this device's service holds, once it opened one.
-    fn held(&self) -> Option<crate::workspaces::Workspaces> {
-        Some(self.service.as_ref()?.service()?.workspaces().clone())
+    /// The workspaces this device's service holds, and the runtime it makes its writes on.
+    fn held(
+        &self,
+    ) -> (
+        Option<crate::workspaces::Workspaces>,
+        Option<tokio::runtime::Handle>,
+    ) {
+        self.service
+            .as_ref()
+            .and_then(ServiceSlot::service)
+            .map_or((None, None), |service| {
+                (Some(service.workspaces().clone()), service.writes_runtime())
+            })
     }
 }
 
@@ -158,14 +169,21 @@ impl OwnerCommitService for NativeOwnerCommits {
         let ownership = Arc::clone(&self.ownership);
         let writes = self.writes.clone();
         let changes = self.changes.clone();
-        let held = self.held();
+        let (held, runtime) = self.held();
         Box::pin(async move {
             if let Some(workspaces) = held
                 && workspaces.holds_workspace(&request.workspace).await
             {
-                let receipt = workspaces
-                    .commit_local_document(&request.workspace, request.clone())
-                    .await?;
+                let committing = request.clone();
+                let receipt = super::service_resources::on_the_service(
+                    runtime,
+                    Box::pin(async move {
+                        workspaces
+                            .commit_local_document(&committing.workspace, committing.clone())
+                            .await
+                    }),
+                )
+                .await?;
                 if let (Some(changes), CommitOperation::Document { app, document, .. }) =
                     (&changes, &request.operation)
                 {
