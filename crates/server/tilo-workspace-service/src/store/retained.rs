@@ -108,6 +108,40 @@ fn replaces(
     })
 }
 
+/// What a retained checkpoint compacts, when it is a sealed compaction: the
+/// writes it replaces, as each author's highest superseded sequence, and its
+/// own place in the author's sequence, which the segments it names share.
+struct Compacting {
+    author: [u8; 32],
+    seq: u64,
+    covered: Vec<([u8; 32], u64)>,
+}
+
+impl Compacting {
+    /// Whether `op` is the compaction or one of the segments it names: the
+    /// compaction's own author and sequence, the one it restates.
+    fn holds(&self, op: &collab_types::SignedOp) -> bool {
+        op.kind == collab_types::OpKind::Compaction
+            && op.author.as_bytes() == &self.author
+            && op.seq == self.seq
+    }
+}
+
+impl WorkspaceStore {
+    /// What `bytes`, a retained checkpoint, compacts: `None` for every
+    /// checkpoint that is no sealed compaction.
+    fn compacting(&self, bytes: &[u8]) -> Option<Compacting> {
+        let body = body_of(bytes, self.workspace_id)?;
+        let covered = self.payloads().compaction_covers(&body)?;
+        let (_, op) = self.payloads().open_document(&body)?;
+        Some(Compacting {
+            author: *op.author.as_bytes(),
+            seq: op.seq,
+            covered,
+        })
+    }
+}
+
 /// Frame the pinned Automerge chunk format only; Automerge itself validates
 /// checksums, columns, operations and document heads. Unknown future formats
 /// fail closed. The length must be canonical ULEB128 with checked arithmetic.
@@ -554,6 +588,9 @@ pub struct RetainBuild {
     /// Digest of `bytes`, which a prior record must share to be read.
     digest: [u8; 32],
     checkpoint: bool,
+    /// The writes this checkpoint compacts, when it is a sealed compaction
+    /// ([`WorkspaceStore::compacting`]).
+    compacting: Option<Compacting>,
     workspace: WorkspaceId,
     sorter: super::bounded::Sorter,
     sorted: Option<PathBuf>,
@@ -690,6 +727,43 @@ impl RetainBuild {
     pub fn retention_stats(&self) -> &super::bounded::WorkStats {
         &self.sorter.stats
     }
+    /// Remove every entry retained for the same resource that the compaction
+    /// this checkpoint carries covers, whoever wrote it: a reader of the
+    /// resource takes the compaction in place of exactly those writes, so a
+    /// history that keeps them makes every newcomer replay what the
+    /// compaction already holds. The compaction and the segments it names
+    /// stay, and so does every write it does not cover.
+    fn sweep_covered(&self) -> Result<(), StoreError> {
+        let Some(compacting) = &self.compacting else {
+            return Ok(());
+        };
+        let Some((_, history, _)) = identity(&self.bytes, self.workspace) else {
+            return Err(invalid("invalid retained envelope"));
+        };
+        let payloads = self.store.payloads().clone();
+        let workspace = self.workspace;
+        self.store.replace_history(&history, None, &|bytes| {
+            if bytes == self.bytes.as_slice() {
+                return false;
+            }
+            let Some(body) = body_of(bytes, workspace) else {
+                return false;
+            };
+            let Some((_, op)) = payloads.open_document(&body) else {
+                return false;
+            };
+            let Some((_, floor)) = compacting
+                .covered
+                .iter()
+                .find(|(author, _)| author == op.author.as_bytes())
+            else {
+                return false;
+            };
+            op.seq <= *floor && !compacting.holds(&op)
+        })?;
+        Ok(())
+    }
+
     /// Collect the generations the lineage's CURRENT no longer names; done
     /// at once while a capture is leased, which collects them later
     /// ([`WorkspaceStore::collect_or_defer`]).
@@ -718,6 +792,10 @@ impl RetainBuild {
             sync_dir_once(parent)?;
         }
         if self.duplicate {
+            // A retry of a checkpoint already retained: its sweep may have
+            // been cut short after the commit, and it changes nothing when it
+            // ran.
+            self.sweep_covered()?;
             self.phase = self.collect(false)?;
         } else if stage_checkpoint {
             let name = hex::encode(rand::random::<[u8; 16]>());
@@ -1045,6 +1123,7 @@ impl RetainBuild {
                     )?;
                 }
                 self.written = self.bytes.len() as u64;
+                self.sweep_covered()?;
                 self.phase = self.collect(true)?;
             }
             RetainPhase::Collect(gc) => {
@@ -1291,6 +1370,7 @@ impl WorkspaceStore {
             scratch,
             digest: *blake3::hash(&bytes).as_bytes(),
             key: checkpoint_key(&bytes, self.workspace_id),
+            compacting: self.compacting(&bytes),
             bytes,
             checkpoint: true,
             workspace: self.workspace_id,
@@ -1393,6 +1473,7 @@ impl WorkspaceStore {
             pending_current: None,
             scratch,
             digest,
+            compacting: checkpoint.then(|| self.compacting(&bytes)).flatten(),
             bytes,
             checkpoint,
             workspace: self.workspace_id,

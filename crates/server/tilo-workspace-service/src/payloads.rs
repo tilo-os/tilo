@@ -144,6 +144,15 @@ pub trait ShellPayloads: Send + Sync + 'static {
         None
     }
 
+    /// The writes `body` replaces when it is a compaction of a resource's
+    /// sealed history, as each author's highest superseded sequence; `None`
+    /// when it is not one. A reader of the resource takes the compaction in
+    /// place of exactly those writes, so a store that keeps them keeps what
+    /// no reader of the compaction is sent.
+    fn compaction_covers(&self, _body: &[u8]) -> Option<Vec<([u8; 32], u64)>> {
+        None
+    }
+
     /// An upper bound on the memory one decoded body holds beyond its bytes,
     /// for the store's bounded-work accounting.
     fn decoded_overhead(&self) -> usize;

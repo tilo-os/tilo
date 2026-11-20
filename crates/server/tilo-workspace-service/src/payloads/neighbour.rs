@@ -126,6 +126,23 @@ impl ShellPayloads for NeighbourPayloads {
         }
     }
 
+    fn compaction_covers(&self, body: &[u8]) -> Option<Vec<([u8; 32], u64)>> {
+        if !NeighbourMsg::is_app_document(body) {
+            return None;
+        }
+        let NeighbourMsg::AppDocument { envelope, .. } = postcard::from_bytes(body).ok()? else {
+            return None;
+        };
+        let compaction = collab_types::SealedCompaction::parse(&envelope).ok()?;
+        Some(
+            compaction
+                .covers
+                .iter()
+                .map(|(author, seq)| (*author.as_bytes(), *seq))
+                .collect(),
+        )
+    }
+
     fn decoded_overhead(&self) -> usize {
         std::mem::size_of::<NeighbourMsg>()
     }

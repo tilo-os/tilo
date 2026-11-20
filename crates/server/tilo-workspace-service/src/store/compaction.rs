@@ -3,7 +3,7 @@
 //! A channel's entries live in one lineage per author (`<author>-<channel>`).
 //! Compaction reads every lineage's current generation without the owner
 //! ([`WorkspaceStore::channel_entries`]; retained files are immutable) and
-//! decides what a snapshot contains. [`WorkspaceStore::replace_channel`]
+//! decides what a snapshot contains. [`WorkspaceStore::replace_history`]
 //! then runs on the persistence owner: it writes the snapshot's lineage
 //! first and only afterwards gives each other lineage a generation without
 //! the entries the caller named. The caller names entries by content, so an
@@ -27,7 +27,7 @@ pub struct ChannelEntry {
     /// The retained co-edit body (for documents, the desktop's peer-sync
     /// message, which only the injected `ShellPayloads` adapter reads).
     pub body: Vec<u8>,
-    /// Digest of the whole file, which [`WorkspaceStore::replace_channel`]
+    /// Digest of the whole file, which [`WorkspaceStore::replace_history`]
     /// removes by.
     pub digest: [u8; 32],
     /// File size.
@@ -42,7 +42,7 @@ pub(crate) struct SnapshotWrite {
     pub frames: Vec<Vec<u8>>,
 }
 
-/// What [`WorkspaceStore::replace_channel`] did.
+/// What [`WorkspaceStore::replace_history`] did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Replaced {
     pub removed: usize,
@@ -159,7 +159,7 @@ impl WorkspaceStore {
     /// Returns an error when a write or directory barrier fails; what was
     /// already switched stays switched, and nothing is removed from a lineage
     /// before the snapshot is durable.
-    pub(crate) fn replace_channel(
+    pub(crate) fn replace_history(
         &self,
         channel: &[u8; 32],
         snapshot: Option<SnapshotWrite>,
@@ -508,7 +508,7 @@ mod tests {
         let folded: HashSet<[u8; 32]> = read.iter().map(|entry| entry.digest).collect();
         let snapshot = frame(5, true, b"snapshot");
         let outcome = store
-            .replace_channel(
+            .replace_history(
                 &[9; 32],
                 Some(SnapshotWrite {
                     author: [5; 32],
@@ -605,7 +605,7 @@ mod tests {
         let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), false).unwrap();
         let first = frame(5, true, b"first");
         store
-            .replace_channel(
+            .replace_history(
                 &[9; 32],
                 Some(SnapshotWrite {
                     author: [5; 32],
@@ -616,7 +616,7 @@ mod tests {
             .unwrap();
         let second = frame(5, true, b"second");
         store
-            .replace_channel(
+            .replace_history(
                 &[9; 32],
                 Some(SnapshotWrite {
                     author: [5; 32],
@@ -634,7 +634,7 @@ mod tests {
         assert_eq!(bodies, vec![b"second".to_vec(), b"first".to_vec()]);
         let digest = file_digest(&first);
         store
-            .replace_channel(
+            .replace_history(
                 &[9; 32],
                 Some(SnapshotWrite {
                     author: [5; 32],

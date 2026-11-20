@@ -228,7 +228,7 @@ fn compact(store: &WorkspaceStore, entries: &[ChannelEntry]) -> Replaced {
     .unwrap();
     let remove: HashSet<[u8; 32]> = folded.removed.iter().copied().collect();
     store
-        .replace_channel(
+        .replace_history(
             &channel(),
             Some(SnapshotWrite {
                 author: key(99).verifying_key().to_bytes(),
@@ -597,7 +597,7 @@ fn a_large_snapshot_is_framed_in_segments_the_fold_reads_back() {
     let tmp = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
     store
-        .replace_channel(
+        .replace_history(
             &channel(),
             Some(SnapshotWrite {
                 author: key(7).verifying_key().to_bytes(),
@@ -1559,7 +1559,7 @@ fn keyed_round(
     let remove: HashSet<[u8; 32]> = folded.removed.iter().copied().collect();
     Some(
         store
-            .replace_channel(
+            .replace_history(
                 &channel(),
                 Some(SnapshotWrite {
                     author: key(99).verifying_key().to_bytes(),

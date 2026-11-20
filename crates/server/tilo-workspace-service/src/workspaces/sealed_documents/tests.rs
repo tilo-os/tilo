@@ -21,7 +21,7 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 pub(super) const APP: &str = "so.tilo.notes";
-const RECORD: &str = "welcome";
+pub(super) const RESOURCE: &str = "welcome";
 
 pub(super) fn title(bytes: &[u8]) -> Option<String> {
     automerge::AutoCommit::load(bytes)
@@ -49,13 +49,13 @@ pub(super) async fn set_title(
 pub(super) async fn readable(workspaces: &Workspaces, workspace: &str) -> Option<String> {
     title(
         &workspaces
-            .resource_document(workspace, APP, RECORD)
+            .resource_document(workspace, APP, RESOURCE)
             .await
             .unwrap()?,
     )
 }
 
-/// Wait until the node reads `wanted` as [`RECORD`]'s title: every write that got there is
+/// Wait until the node reads `wanted` as [`RESOURCE`]'s title: every write that got there is
 /// followed.
 pub(super) async fn follows(workspaces: &Workspaces, workspace: &str, wanted: &str) {
     tilo_test_env::within("the node follows the record's writes", async {
@@ -66,13 +66,18 @@ pub(super) async fn follows(workspaces: &Workspaces, workspace: &str, wanted: &s
     .await;
 }
 
-/// Wait until the node's copy of [`RECORD`] holds `wanted` at `field`: a write that changes
+/// Wait until the node's copy of [`RESOURCE`] holds `wanted` at `field`: a write that changes
 /// no title is followed too, and a check made before it lands reads a copy without it.
-async fn follows_field(workspaces: &Workspaces, workspace: &str, field: &str, wanted: &str) {
+pub(super) async fn follows_field(
+    workspaces: &Workspaces,
+    workspace: &str,
+    field: &str,
+    wanted: &str,
+) {
     tilo_test_env::within("the node follows the record's writes", async {
         loop {
             let held = workspaces
-                .resource_document(workspace, APP, RECORD)
+                .resource_document(workspace, APP, RESOURCE)
                 .await
                 .expect("the node reads its record");
             let holds = held
@@ -125,7 +130,7 @@ async fn lounge_reading(capacity: usize) -> Lounge {
     let (member_key, member_cert) =
         member_device(&workspaces, &created.workspace, (&key, &cert), 3).await;
     workspaces
-        .author_workspace_document(&created.workspace, &cert, (APP, RECORD), |doc| {
+        .author_workspace_document(&created.workspace, &cert, (APP, RESOURCE), |doc| {
             doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
         })
         .await
@@ -133,7 +138,7 @@ async fn lounge_reading(capacity: usize) -> Lounge {
     let member = SealingMember::join(
         &workspaces,
         &created.workspace,
-        (APP, RECORD),
+        (APP, RESOURCE),
         member_key.clone(),
     )
     .await;
@@ -193,7 +198,7 @@ async fn a_node_reads_and_resets_a_record_its_members_seal() {
     );
 
     workspaces
-        .author_workspace_document(&workspace, &governor, (APP, RECORD), |doc| {
+        .author_workspace_document(&workspace, &governor, (APP, RESOURCE), |doc| {
             doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
         })
         .await
@@ -202,7 +207,7 @@ async fn a_node_reads_and_resets_a_record_its_members_seal() {
         readable(&workspaces, &workspace).await.as_deref(),
         Some("Welcome")
     );
-    let own = governor_published(&workspaces, &workspace, RECORD, &governor)
+    let own = governor_published(&workspaces, &workspace, RESOURCE, &governor)
         .await
         .expect("the governor published its write");
     assert!(own.encryption.is_some(), "never in the clear");
@@ -326,7 +331,7 @@ pub(super) async fn subscribed_member(
 }
 
 /// Send `delta`, `member`'s write, to the server `client` reaches.
-fn send_members_delta(
+pub(super) fn send_members_delta(
     client: &crate::ServerClient,
     workspace_id: WorkspaceId,
     member: &ed25519_dalek::SigningKey,
@@ -345,7 +350,7 @@ fn send_members_delta(
 
 /// Send `message`, a sealed write of the member `key` signs, to the server `client` reaches,
 /// as the member's own writes travel.
-fn send_sealed(
+pub(super) fn send_sealed(
     client: &crate::ServerClient,
     workspace_id: WorkspaceId,
     key: &ed25519_dalek::SigningKey,
@@ -381,7 +386,7 @@ pub(super) fn seal_and_send_title(
 }
 
 /// A newcomer opening `held` in order: the record as a device joining now reads it.
-fn newcomer_opens(member: &SealingMember, held: &[SignedOp]) -> automerge::AutoCommit {
+pub(super) fn newcomer_opens(member: &SealingMember, held: &[SignedOp]) -> automerge::AutoCommit {
     let mut newcomer = automerge::AutoCommit::new();
     for op in held {
         member.open_into(op, &mut newcomer);
@@ -405,7 +410,7 @@ pub(super) async fn retained_until(
 ) -> Vec<SignedOp> {
     tilo_test_env::within("the retained writes to follow the node", async {
         loop {
-            let held = retained_writes(server, workspace_id, RECORD).await;
+            let held = retained_writes(server, workspace_id, RESOURCE).await;
             if wanted(&mut newcomer_opens(member, &held)) {
                 return held;
             }
@@ -479,7 +484,7 @@ async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
     let newest = format!("line {}", WRITES + 2);
     let held = tilo_test_env::within("the node retains the member's checkpoint", async {
         loop {
-            let held = retained_writes(&server, workspace_id, RECORD).await;
+            let held = retained_writes(&server, workspace_id, RESOURCE).await;
             let folded = held.iter().any(|op| {
                 op.author.as_bytes() == &member_key.verifying_key().to_bytes()
                     && op.kind == collab_types::OpKind::Compaction
@@ -569,7 +574,7 @@ async fn members_writes_the_node_took_in_survive_a_hard_stop() {
         std::fs::copy(&path, &copy).unwrap();
         copy_dir(path.parent().unwrap(), stopped.path());
         let held = match GovernedWorkspace::open(copy, device.as_ref()) {
-            Ok(reopened) => reopened.readable_document(APP, RECORD).await.unwrap(),
+            Ok(reopened) => reopened.readable_document(APP, RESOURCE).await.unwrap(),
             // Copied while the workspace wrote its next state.
             Err(_) => None,
         };
@@ -678,7 +683,7 @@ async fn writes_held_for_a_late_surface_are_all_taken_in_once_it_arrives() {
     tilo_test_env::within("the governor follows every write", async {
         let mut seen = 0;
         while seen < WRITES {
-            if followed.recv().await.unwrap().record == RECORD {
+            if followed.recv().await.unwrap().record == RESOURCE {
                 seen += 1;
             }
         }
@@ -712,7 +717,7 @@ async fn a_node_follows_every_part_its_members_start_sealed() {
         ..
     } = lounge().await;
     for index in 0..40 {
-        let record = neighbour_wire::document_part(RECORD, index);
+        let record = neighbour_wire::document_part(RESOURCE, index);
         let part = member.part(&workspaces, &workspace, &record).await;
         for line in 0..3 {
             set_title(
@@ -847,12 +852,15 @@ async fn a_record_of_a_sealed_workspace_is_sealed_from_its_first_write() {
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
     workspaces
-        .author_workspace_document(&workspace, &cert, (APP, RECORD), |doc| {
+        .author_workspace_document(&workspace, &cert, (APP, RESOURCE), |doc| {
             doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
         })
         .await
         .unwrap();
-    let held = retained_once(&server, workspace_id, RECORD, |op| op.encryption.is_some()).await;
+    let held = retained_once(&server, workspace_id, RESOURCE, |op| {
+        op.encryption.is_some()
+    })
+    .await;
     assert!(held.iter().all(holds_nothing_in_the_clear));
     assert_eq!(
         readable(&workspaces, &workspace).await.as_deref(),
@@ -1187,7 +1195,7 @@ async fn members_write_over_time(lounge: &Lounge, client: &crate::ServerClient) 
     // is retained a moment after it.
     tilo_test_env::within("the resource to be retained whole", async {
         loop {
-            let held = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
+            let held = retained_writes(&lounge.server, lounge.workspace_id, RESOURCE).await;
             if title(&newcomer_opens(&lounge.member, &held).save()).as_deref() == Some(newest) {
                 assert!(!held.is_empty(), "the record is retained");
                 return;
@@ -1202,12 +1210,12 @@ async fn members_write_over_time(lounge: &Lounge, client: &crate::ServerClient) 
 /// The governor founds the record again, and archives the history it replaces.
 async fn refound_the_document(workspaces: &Workspaces, workspace: &str) {
     let refounded = workspaces
-        .refound_document(workspace, APP, RECORD)
+        .refound_document(workspace, APP, RESOURCE)
         .await
         .expect("the governor founds the record again");
     assert_eq!(
         (refounded.app.as_str(), refounded.record.as_str()),
-        (APP, RECORD)
+        (APP, RESOURCE)
     );
     assert!(
         refounded.archived > 0,
@@ -1259,12 +1267,12 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
 
     // The damage: this author's founding checkpoint and one change are gone
     // from the store, as eu1's history lost them.
-    let channel = neighbour_wire::app_document_channel(APP, RECORD);
+    let channel = neighbour_wire::app_document_channel(APP, RESOURCE);
     let root = state_root(&lounge.workspaces, &lounge.workspace, lounge.workspace_id).await;
     let damaged = lose_the_documents_base(&root, &channel, &lounge.governor);
 
     // Before the repair: a device joining now does not reach the record.
-    let broken = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
+    let broken = retained_writes(&lounge.server, lounge.workspace_id, RESOURCE).await;
     assert_ne!(
         title(&newcomer_opens(&lounge.member, &broken).save()).as_deref(),
         Some(newest.as_str()),
@@ -1410,7 +1418,7 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
     // The damage, and the repair, while that device is away. The damage is
     // done to the store's files, so it waits for the store to hold the
     // member's writes the node already follows.
-    let channel = neighbour_wire::app_document_channel(APP, RECORD);
+    let channel = neighbour_wire::app_document_channel(APP, RESOURCE);
     let root = state_root(&workspaces, &workspace, workspace_id).await;
     server
         .workspace_documents()
@@ -1419,7 +1427,7 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
         .expect("the workspace's store settles");
     lose_the_documents_base(&root, &channel, &governor);
     workspaces
-        .refound_document(&workspace, APP, RECORD)
+        .refound_document(&workspace, APP, RESOURCE)
         .await
         .expect("the governor founds the record again");
 
@@ -1436,9 +1444,9 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
 
     // What a device joining now is replayed: it reads the record the governor
     // reads, with the away device's changes in it.
-    let replayed = retained_writes(&server, workspace_id, RECORD).await;
+    let replayed = retained_writes(&server, workspace_id, RESOURCE).await;
     let held_by_governor = workspaces
-        .resource_document(&workspace, APP, RECORD)
+        .resource_document(&workspace, APP, RESOURCE)
         .await
         .unwrap()
         .expect("the governor holds the record");
@@ -1544,7 +1552,7 @@ async fn a_record_that_does_not_read_whole_leaves_the_others_read() {
     let read = workspaces.whole_documents(workspace, None).await.unwrap();
     assert!(!read.is_whole());
     let unread: Vec<_> = read.unread.iter().map(|(route, _)| route.clone()).collect();
-    assert_eq!(unread, [(APP.to_owned(), RECORD.to_owned())]);
+    assert_eq!(unread, [(APP.to_owned(), RESOURCE.to_owned())]);
     assert!(
         read.unread[0].1.contains("do not merge"),
         "why it is unread: {}",
@@ -1563,7 +1571,7 @@ async fn a_record_that_does_not_read_whole_leaves_the_others_read() {
 async fn read_key(workspaces: &Workspaces, workspace: &str, key: &str) -> Option<String> {
     automerge::AutoCommit::load(
         &workspaces
-            .resource_document(workspace, APP, RECORD)
+            .resource_document(workspace, APP, RESOURCE)
             .await
             .unwrap()?,
     )
@@ -1610,8 +1618,9 @@ async fn a_change_a_repair_kept_is_taken_in_once_what_it_builds_on_arrives() {
         .and_then(std::path::Path::parent)
         .unwrap()
         .to_path_buf();
-    let archive =
-        crate::workspaces::repaired_documents::repaired_document_dir(&root, workspace, APP, RECORD);
+    let archive = crate::workspaces::repaired_documents::repaired_document_dir(
+        &root, workspace, APP, RESOURCE,
+    );
     std::fs::create_dir_all(&archive).unwrap();
     let kept_at = archive.join(format!("{}.change", kept.hash()));
     std::fs::write(&kept_at, kept.raw_bytes()).unwrap();
@@ -1641,7 +1650,7 @@ async fn a_change_a_repair_kept_is_taken_in_once_what_it_builds_on_arrives() {
     );
     // What the node wrote, a member that lacks the kept change opens, and
     // holds it then.
-    let own = governor_published(workspaces, workspace, RECORD, &lounge.governor)
+    let own = governor_published(workspaces, workspace, RESOURCE, &lounge.governor)
         .await
         .expect("the node published the kept change");
     let mut lacking = lounge.member.document().fork_at(&after_lost).unwrap();
@@ -1713,7 +1722,7 @@ impl Peer {
         }
     }
 
-    /// The sequence numbers of `author`'s writes of [`RECORD`] this device hears live, in order,
+    /// The sequence numbers of `author`'s writes of [`RESOURCE`] this device hears live, in order,
     /// up to and including `last`: each write the device took in, as many times as it arrived.
     async fn hears(&mut self, author: [u8; 32], last: u64) -> Vec<u64> {
         let heard = &mut self.heard;
@@ -1738,19 +1747,19 @@ impl Peer {
     }
 }
 
-/// The sequence number of `message`, when it is `author`'s write of [`RECORD`].
+/// The sequence number of `message`, when it is `author`'s write of [`RESOURCE`].
 fn write_of(message: &NeighbourMsg, author: [u8; 32]) -> Option<u64> {
     match message {
         NeighbourMsg::AppDocument {
             document_id,
             envelope,
             ..
-        } if document_id == RECORD && envelope.author.as_bytes() == &author => Some(envelope.seq),
+        } if document_id == RESOURCE && envelope.author.as_bytes() == &author => Some(envelope.seq),
         _ => None,
     }
 }
 
-/// The sequence numbers of `author`'s writes of [`RECORD`] the server sends `client` live, in
+/// The sequence numbers of `author`'s writes of [`RESOURCE`] the server sends `client` live, in
 /// order, up to and including `last`, as many times as each arrived.
 async fn delivered(client: &crate::ServerClient, author: [u8; 32], last: u64) -> Vec<u64> {
     tilo_test_env::within("the session is sent the writes", async {
@@ -1820,7 +1829,7 @@ async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
     let sealing = SealingMember::join(
         &lounge.workspaces,
         &lounge.workspace,
-        (APP, RECORD),
+        (APP, RESOURCE),
         writer.key.clone(),
     )
     .await;
@@ -1897,7 +1906,7 @@ async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
 }
 
 /// Write `value` at `key` into `replica` as its next change, and hand that
-/// change to the workspace as the member's write of [`RECORD`].
+/// change to the workspace as the member's write of [`RESOURCE`].
 async fn burst_write(
     member: &SealingMember,
     workspaces: &Workspaces,
@@ -1921,7 +1930,7 @@ async fn burst_write(
 async fn a_repair_is_tried_for_a_write_only_when_that_write_could_release_what_it_keeps() {
     let lounge = Box::new(lounge().await);
     let (workspaces, workspace) = (&lounge.workspaces, lounge.workspace.as_str());
-    let tried = || super::super::repaired_documents::tried(workspace, APP, RECORD);
+    let tried = || super::super::repaired_documents::tried(workspace, APP, RESOURCE);
     // The record as the member joined it, the write the node never got, and
     // the change the repair kept on top of it.
     let joined = lounge.member.document().get_heads();
@@ -1951,8 +1960,9 @@ async fn a_repair_is_tried_for_a_write_only_when_that_write_could_release_what_i
         .and_then(std::path::Path::parent)
         .unwrap()
         .to_path_buf();
-    let archive =
-        crate::workspaces::repaired_documents::repaired_document_dir(&root, workspace, APP, RECORD);
+    let archive = crate::workspaces::repaired_documents::repaired_document_dir(
+        &root, workspace, APP, RESOURCE,
+    );
     std::fs::create_dir_all(&archive).unwrap();
     let kept_at = archive.join(format!("{}.change", kept.hash()));
     std::fs::write(&kept_at, kept.raw_bytes()).unwrap();
@@ -2087,7 +2097,7 @@ async fn a_kept_change_a_bot_showed_another_name_in_keeps_the_name_it_showed() {
         .unwrap();
     // The change the bot made on top of the record, showing a name of its own.
     let record = workspaces
-        .resource_document(workspace, APP, RECORD)
+        .resource_document(workspace, APP, RESOURCE)
         .await
         .unwrap()
         .unwrap();
@@ -2115,8 +2125,9 @@ async fn a_kept_change_a_bot_showed_another_name_in_keeps_the_name_it_showed() {
         .and_then(std::path::Path::parent)
         .unwrap()
         .to_path_buf();
-    let archive =
-        crate::workspaces::repaired_documents::repaired_document_dir(&root, workspace, APP, RECORD);
+    let archive = crate::workspaces::repaired_documents::repaired_document_dir(
+        &root, workspace, APP, RESOURCE,
+    );
     std::fs::create_dir_all(&archive).unwrap();
     let kept_at = archive.join(format!("{}.change", kept.hash()));
     std::fs::write(&kept_at, kept.raw_bytes()).unwrap();
@@ -2130,7 +2141,7 @@ async fn a_kept_change_a_bot_showed_another_name_in_keeps_the_name_it_showed() {
         }
     })
     .await;
-    let published = last_published(workspaces, workspace, RECORD)
+    let published = last_published(workspaces, workspace, RESOURCE)
         .await
         .expect("the host published the kept change");
     assert_eq!(
@@ -2146,7 +2157,7 @@ async fn a_kept_change_a_bot_showed_another_name_in_keeps_the_name_it_showed() {
     lounge.server.shutdown().await;
 }
 
-/// Every write of [`RECORD`] the server sends `client` live, as `(author, seq)`
+/// Every write of [`RESOURCE`] the server sends `client` live, as `(author, seq)`
 /// in the order they arrived, up to and including `author`'s write `last`.
 async fn writes_sent(
     client: &crate::ServerClient,
@@ -2174,7 +2185,7 @@ async fn writes_sent(
             else {
                 continue;
             };
-            if document_id != RECORD {
+            if document_id != RESOURCE {
                 continue;
             }
             let write = (*envelope.author.as_bytes(), envelope.seq);
@@ -2241,7 +2252,7 @@ async fn readers_that_fell_behind_read_every_write_once() {
     let sealing = SealingMember::join(
         &lounge.workspaces,
         &lounge.workspace,
-        (APP, RECORD),
+        (APP, RESOURCE),
         peer.key.clone(),
     )
     .await;
@@ -2327,13 +2338,13 @@ async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_ke
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
     let (member_key, member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
     workspaces
-        .author_workspace_document(&workspace, &cert, (APP, RECORD), |doc| {
+        .author_workspace_document(&workspace, &cert, (APP, RESOURCE), |doc| {
             doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
         })
         .await
         .unwrap();
     let member =
-        SealingMember::join(&workspaces, &workspace, (APP, RECORD), member_key.clone()).await;
+        SealingMember::join(&workspaces, &workspace, (APP, RESOURCE), member_key.clone()).await;
     let page = Box::pin(subscribed_member(
         &server,
         &member_key,
@@ -2344,7 +2355,7 @@ async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_ke
     // The page's parts: two behind the chain's head, and the head.
     let mut written = Vec::new();
     for index in [0, 1, 3] {
-        let record = neighbour_wire::document_part(RECORD, index);
+        let record = neighbour_wire::document_part(RESOURCE, index);
         let part = member.part(&workspaces, &workspace, &record).await;
         let ((), message) = part.seal(&workspace, |doc| {
             doc.put(ROOT, "title", format!("part {index}")).unwrap();
@@ -2354,7 +2365,7 @@ async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_ke
         written.push(record);
     }
     // The host's own: a part behind the head, as a host seeds or repairs one.
-    let host_part = neighbour_wire::document_part(RECORD, 2);
+    let host_part = neighbour_wire::document_part(RESOURCE, 2);
     workspaces
         .author_workspace_document(&workspace, &cert, (APP, &host_part), |doc| {
             doc.put(ROOT, "title", "the host's part")
@@ -2362,13 +2373,13 @@ async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_ke
         })
         .await
         .unwrap();
-    written.extend([host_part, RECORD.to_owned()]);
+    written.extend([host_part, RESOURCE.to_owned()]);
     // The server keeps a write before the governor takes it in, and a start
     // replays what the server keeps only into the records the governor holds:
     // both have to be there before this host stops, or the restart races the
     // write it replays.
     tilo_test_env::within("the server and the governor hold the page's parts", async {
-        for record in written.iter().filter(|record| record.as_str() != RECORD) {
+        for record in written.iter().filter(|record| record.as_str() != RESOURCE) {
             while retained_writes(&server, workspace_id, record)
                 .await
                 .is_empty()
@@ -2442,17 +2453,17 @@ async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
     let (member_key, member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
     workspaces
-        .author_workspace_document(&workspace, &cert, (APP, RECORD), |doc| {
+        .author_workspace_document(&workspace, &cert, (APP, RESOURCE), |doc| {
             doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
         })
         .await
         .unwrap();
     let member =
-        SealingMember::join(&workspaces, &workspace, (APP, RECORD), member_key.clone()).await;
+        SealingMember::join(&workspaces, &workspace, (APP, RESOURCE), member_key.clone()).await;
     // A desktop's part behind the chain's head, kept by the link alone.
     let (device_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 5).await;
-    let older = neighbour_wire::document_part(RECORD, 0);
-    let device = SealingMember::join(&workspaces, &workspace, (APP, RECORD), device_key)
+    let older = neighbour_wire::document_part(RESOURCE, 0);
+    let device = SealingMember::join(&workspaces, &workspace, (APP, RESOURCE), device_key)
         .await
         .part(&workspaces, &workspace, &older)
         .await;
@@ -2544,11 +2555,11 @@ async fn a_device_writes_while_its_copy_fails(
         .failing
         .store(failing, std::sync::atomic::Ordering::Release);
     let peer = Peer::link(&lounge, 5).await;
-    let record = neighbour_wire::document_part(RECORD, 0);
+    let record = neighbour_wire::document_part(RESOURCE, 0);
     let part = SealingMember::join(
         &lounge.workspaces,
         &lounge.workspace,
-        (APP, RECORD),
+        (APP, RESOURCE),
         peer.key.clone(),
     )
     .await
@@ -2645,7 +2656,7 @@ async fn page_leaves_a_hole(lounge: &Lounge, client: &crate::ServerClient) -> Si
         panic!("a document write")
     };
     tilo_test_env::within("the server retains the stuck write", async {
-        while !retained_writes(&lounge.server, lounge.workspace_id, RECORD)
+        while !retained_writes(&lounge.server, lounge.workspace_id, RESOURCE)
             .await
             .iter()
             .any(|op| op.signature == envelope.signature)
@@ -2656,7 +2667,7 @@ async fn page_leaves_a_hole(lounge: &Lounge, client: &crate::ServerClient) -> Si
     .await;
     // As a reader is refused it: the record a newcomer is sent waits for a change no device
     // will ever send.
-    let held = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
+    let held = retained_writes(&lounge.server, lounge.workspace_id, RESOURCE).await;
     assert!(
         !newcomer_opens(&lounge.member, &held)
             .get_missing_deps(&[])
@@ -2666,12 +2677,12 @@ async fn page_leaves_a_hole(lounge: &Lounge, client: &crate::ServerClient) -> Si
     *envelope
 }
 
-/// Wait until what a newcomer is sent of [`RECORD`] holds neither `stuck` nor anything that waits
+/// Wait until what a newcomer is sent of [`RESOURCE`] holds neither `stuck` nor anything that waits
 /// for a change it lacks, and reads `title`: the record whole without the stuck write.
 async fn newcomer_reads_whole_without(lounge: &Lounge, stuck: &SignedOp, wanted: &str) {
     tilo_test_env::within("the server folds the stuck write away", async {
         loop {
-            let held = retained_writes(&lounge.server, lounge.workspace_id, RECORD).await;
+            let held = retained_writes(&lounge.server, lounge.workspace_id, RESOURCE).await;
             let mut read = automerge::AutoCommit::new();
             let opens = held
                 .iter()
@@ -2765,13 +2776,13 @@ async fn a_store_holding_a_stuck_write_is_repaired_when_its_server_starts() {
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
     let (member_key, member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
     workspaces
-        .author_workspace_document(&workspace, &cert, (APP, RECORD), |doc| {
+        .author_workspace_document(&workspace, &cert, (APP, RESOURCE), |doc| {
             doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
         })
         .await
         .unwrap();
     let member =
-        SealingMember::join(&workspaces, &workspace, (APP, RECORD), member_key.clone()).await;
+        SealingMember::join(&workspaces, &workspace, (APP, RESOURCE), member_key.clone()).await;
     let client = Box::pin(subscribed_member(
         &server,
         &member_key,

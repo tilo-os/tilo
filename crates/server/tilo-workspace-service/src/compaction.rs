@@ -705,7 +705,7 @@ impl Compactor {
             if !dropped.is_empty() {
                 store.archive_entries(&channel, &|bytes| dropped.contains(&file_digest(bytes)))?;
             }
-            store.replace_channel(&channel, Some(SnapshotWrite { author, frames }), &|bytes| {
+            store.replace_history(&channel, Some(SnapshotWrite { author, frames }), &|bytes| {
                 remove.contains(&file_digest(bytes))
             })
         })
@@ -956,7 +956,7 @@ impl Compactor {
                     "the statement's snapshot is not retained",
                 ));
             }
-            store.replace_channel(&channel, None, &|bytes| {
+            store.replace_history(&channel, None, &|bytes| {
                 crate::store::retained::body_of(bytes, workspace_number)
                     .is_some_and(|body| covered.contains(&entry_id(&body)))
             })
