@@ -2095,6 +2095,7 @@ impl ListRow {
         cx.place_children();
         let band = self.text_band();
         self.with_face(|face| face.compose(cx, band, check));
+        self.flow_html(cx);
     }
 
     fn reveal_actions(&self) -> bool {

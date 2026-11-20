@@ -661,6 +661,13 @@ impl Widget for NavRow {
                     ),
                     TextLook::new(title.clone(), &style, Some(quiet)),
                 );
+                // The heading stands as far in from the list's edge, and as far down its band,
+                // as painted.
+                cx.flow(&format!(
+                    "display:flex;align-items:flex-end;padding:{}px 0 0 {}px;",
+                    (layout.band.y0 - self.rect.y0).max(0.0),
+                    (layout.title_x0 - self.rect.x0).max(0.0)
+                ));
             }
             NavRowKind::Caption { caption, .. } => {
                 cx.element("p");

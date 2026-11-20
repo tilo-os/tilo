@@ -18,11 +18,13 @@ fn find<'a>(node: &'a Composed, widget: &str) -> Vec<&'a Composed> {
     found
 }
 
-/// Whether a list row's own parts say `title`.
+/// Whether a list row's own parts say `title`: its words, grouped as the page
+/// lays them out, not the rows nested in it.
 fn says(row: &Composed, title: &str) -> bool {
-    row.children
-        .iter()
-        .any(|part| matches!(&part.own, Some(Own::Text(look)) if look.text == title))
+    row.children.iter().any(|part| {
+        matches!(&part.own, Some(Own::Text(look)) if look.text == title)
+            || part.widget == "Region" && says(part, title)
+    })
 }
 
 /// Whether `path` is `node` or stands somewhere under it.
@@ -362,5 +364,43 @@ fn the_page_tree_composes_as_a_tree() {
             .as_ref()
             .and_then(|node| node.name.as_deref()),
         Some("Expand")
+    );
+}
+
+/// The notebook as the web page shows it, rendered from the same composition:
+/// the note's title, its blocks and the sidebar's row are the page's own
+/// elements, and nothing in it is placed where the frame put it.
+#[test]
+fn the_notebook_renders_as_a_web_page() {
+    let mut app = notes();
+    add_note(&mut app, "Weekend", "Hike, then *pancakes*.");
+    let page = add_note(
+        &mut app,
+        "Groceries",
+        "# Milk\n\nFresh **eggs**, please.\n\n- bread\n- butter",
+    );
+    open(&mut app, page);
+    let composition = app.harness().composition();
+    let mut rendered = ui::composition::page::Page::new();
+    let body = rendered.render(&composition);
+    let html = ui::composition::page::document("Groceries", app.harness().theme(), &body, "");
+    println!("placed by their own html: {:?}", rendered.placed);
+    println!("<<<PAGE\n{html}\nPAGE>>>");
+    for expected in [
+        "Groceries",
+        "<h1",
+        ">Milk<",
+        "<strong>eggs</strong>",
+        "<li",
+        ">bread<",
+        "Weekend",
+    ] {
+        assert!(html.contains(expected), "{expected} missing from the page");
+    }
+    assert!(
+        [";left:", "\"left:", ";top:", "\"top:", "position:absolute"]
+            .iter()
+            .all(|placed| !body.contains(placed)),
+        "the browser lays the page out"
     );
 }

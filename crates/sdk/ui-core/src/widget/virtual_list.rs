@@ -1482,6 +1482,21 @@ impl Widget for VirtualRows {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("ul");
         cx.children();
+        // The rows stand in from the list's edges as far as the list sets them in, and no less
+        // than the row's lift reaches past its words, so a chosen row's tint stays inside the
+        // list. Both sides alike: the browser's own scrollbar needs no gutter kept for it.
+        let [x, _, _, _] = cx.node().rect;
+        let left = cx
+            .node()
+            .children
+            .iter()
+            .map(|row| row.rect[0] - x)
+            .reduce(f64::min)
+            .unwrap_or(0.0);
+        let inset = left.max(crate::chrome::row_bleed(cx.theme()));
+        cx.flow(&format!(
+            "display:flex;flex-direction:column;padding:0 {inset}px;"
+        ));
         let chosen: Vec<vello::kurbo::Rect> = self
             .mounted
             .iter()

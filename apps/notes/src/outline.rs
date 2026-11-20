@@ -148,6 +148,7 @@ impl NotesOutline {
 impl Widget for NotesOutline {
     fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
         cx.children();
+        cx.flow("display:flex;flex-direction:column;");
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {

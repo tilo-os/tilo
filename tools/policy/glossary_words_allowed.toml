@@ -639,7 +639,11 @@ paths = ["crates/server/tilo-workspace-service/src/apps/collab_app_broker/execut
 [[allow]]
 reason = "CSS's own property and keyword names (white-space, space-between) in the styles the HTML presenter writes."
 words = ["space"]
-paths = ["crates/browser/tilo-browser-runtime/web/view-present.mjs"]
+paths = [
+    "crates/browser/tilo-browser-runtime/web/view-present.mjs",
+    "crates/sdk/ui-core/src/composition/page.rs",
+    "crates/sdk/ui-core/src/composition/page.css",
+]
 
 [[allow]]
 reason = "The standard library's blocking hand-off between threads."

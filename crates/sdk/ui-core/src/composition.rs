@@ -4,6 +4,8 @@
 
 use serde::Serialize;
 
+pub mod page;
+
 /// The code that composes what only a page shows: a control's face, its
 /// icon as SVG outlines. A widget's `html` reaches it through
 /// [`HTML_CODE`] rather than calling it, because every widget's `html`
@@ -716,6 +718,48 @@ fn content_name(align: taffy::JustifyContent) -> &'static str {
     }
 }
 
+/// The composed node at `path` among `nodes` and the regions they were grouped into.
+fn find_mut<'a>(nodes: &'a mut [Composed], path: &str) -> Option<&'a mut Composed> {
+    for node in nodes {
+        if node.path == path {
+            return Some(node);
+        }
+        if node.widget == "Region"
+            && let Some(found) = find_mut(&mut node.children, path)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// `layout` without the sizes the frame gave it: what a page keeps of a node's style when its
+/// parent's CSS sizes it instead.
+#[must_use]
+pub fn without_sizes(layout: &str) -> String {
+    layout
+        .split(';')
+        .filter(|declaration| {
+            let name = declaration.split(':').next().unwrap_or_default();
+            !declaration.is_empty()
+                && !matches!(
+                    name,
+                    "width"
+                        | "height"
+                        | "min-width"
+                        | "min-height"
+                        | "max-width"
+                        | "max-height"
+                        | "flex-basis"
+                        | "flex-grow"
+                        | "flex-shrink"
+                        | "margin"
+                )
+        })
+        .map(|declaration| format!("{declaration};"))
+        .collect()
+}
+
 /// Whether `node` or a widget under it already composes the control `target`.
 fn composed_target(node: &Composed, target: &str) -> bool {
     node.semantics
@@ -913,11 +957,12 @@ pub fn compose_alone(
         .accessibility()
         .map(|access| crate::a11y::with_synthetic_bounds(access, widget));
     composed.focusable = widget.is_focusable();
-    let mut none = |_: Option<[u8; 4]>| (Vec::new(), false);
+    let mut none = |_: Option<[u8; 4]>| (Vec::new(), Vec::new(), false);
     let mut cx = HtmlCx {
         composed,
         theme,
         compose_children: &mut none,
+        child_widgets: Vec::new(),
     };
     widget.html(&mut cx);
     cx.composed.forget_semantics_children();
@@ -968,7 +1013,14 @@ pub struct HtmlCx<'a> {
     pub(crate) theme: &'a crate::Theme,
     /// Composes the widget's laid-out children on the ground it fills (straight sRGB), in the
     /// theme its paint hands them there; whether they stand where its layout node put them.
-    pub(crate) compose_children: &'a mut dyn FnMut(Option<[u8; 4]>) -> (Vec<Composed>, bool),
+    /// Composes its children; with them, the address of the widget each is (0 for a layout
+    /// node that is no widget).
+    #[allow(clippy::type_complexity, reason = "the walk's one callback")]
+    pub(crate) compose_children:
+        &'a mut dyn FnMut(Option<[u8; 4]>) -> (Vec<Composed>, Vec<usize>, bool),
+    /// The path each child widget composed at, by the widget's address: what [`Self::region`]
+    /// and [`Self::restyle`] find a widget's element by, wherever the widget moved it since.
+    pub(crate) child_widgets: Vec<(usize, String)>,
 }
 
 impl<'a> HtmlCx<'a> {
@@ -985,9 +1037,120 @@ impl<'a> HtmlCx<'a> {
     /// The widget's laid-out children, in its element, as its layout node lays them out.
     pub fn children(&mut self) {
         let ground = self.composed.ground.as_ref().and_then(|ground| ground.fill);
-        let (children, flows) = (self.compose_children)(ground);
+        let (children, widgets, flows) = (self.compose_children)(ground);
+        self.child_widgets = widgets
+            .into_iter()
+            .zip(&children)
+            .filter(|(address, _)| *address != 0)
+            .map(|(address, child)| (address, child.path.clone()))
+            .collect();
         self.composed.children = children;
         self.composed.flows = flows;
+    }
+
+    /// The composed children ([`Self::children`]) that are `widgets`, taken out of where they
+    /// stood and put, in the order given, in a `tag` element of their own keyed `key`, which lays
+    /// them out as `css` says: a column of a shell, a header row. A widget that places its
+    /// children at rects itself groups them this way, so a page lays them out with CSS instead of
+    /// at where the frame put them. The region stands where the first of them stood; a widget
+    /// that composed nothing (one not laid out now) is left out. Returns whether it holds any.
+    pub fn region(
+        &mut self,
+        key: &str,
+        tag: &'static str,
+        css: &str,
+        widgets: &[&dyn crate::widget::Widget],
+    ) -> bool {
+        let paths: Vec<String> = widgets
+            .iter()
+            .filter_map(|widget| self.child_path(*widget).map(str::to_owned))
+            .collect();
+        self.group(key, tag, css, |child| {
+            paths.iter().position(|path| *path == child.path)
+        })
+    }
+
+    /// The path the child that is `widget` composed at.
+    pub(crate) fn child_path(&self, widget: &dyn crate::widget::Widget) -> Option<&str> {
+        let address = std::ptr::from_ref(widget).cast::<()>() as usize;
+        self.child_widgets
+            .iter()
+            .find(|(at, _)| *at == address)
+            .map(|(_, path)| path.as_str())
+    }
+
+    /// The composed children `member` ranks, taken out of where they stood and put, in its
+    /// order, in a `tag` element of their own keyed `key`, laid out as `css` says
+    /// ([`Self::region`]). Returns whether it holds any.
+    pub fn group(
+        &mut self,
+        key: &str,
+        tag: &'static str,
+        css: &str,
+        member: impl Fn(&Composed) -> Option<usize>,
+    ) -> bool {
+        let mut at = None;
+        let mut members = Vec::new();
+        let mut index = 0;
+        self.composed.children.retain(|child| {
+            let rank = member(child);
+            if let Some(rank) = rank {
+                at.get_or_insert(index);
+                members.push((rank, child.clone()));
+            } else {
+                index += 1;
+            }
+            rank.is_none()
+        });
+        let Some(at) = at else {
+            return false;
+        };
+        members.sort_by_key(|(rank, _)| *rank);
+        let members: Vec<Composed> = members.into_iter().map(|(_, child)| child).collect();
+        let rect = members.iter().fold(None::<[f64; 4]>, |bounds, member| {
+            let [x, y, w, h] = member.rect;
+            Some(bounds.map_or(member.rect, |[bx, by, bw, bh]| {
+                let (x0, y0) = (bx.min(x), by.min(y));
+                let (x1, y1) = ((bx + bw).max(x + w), (by + bh).max(y + h));
+                [x0, y0, x1 - x0, y1 - y0]
+            }))
+        });
+        let mut region = Composed::new(
+            format!("{}#{key}", self.composed.path),
+            "Region",
+            rect.unwrap_or_default(),
+        );
+        region.tag = Some(tag);
+        region.layout = Some(css.to_owned());
+        region.flows = true;
+        region.children = members;
+        self.composed.children.insert(at, region);
+        self.composed.flows = true;
+        true
+    }
+
+    /// The widget's children flow as `css` lays them out (`display:flex;flex-direction:column`),
+    /// in place of where it puts them itself: what a widget that places its children by hand
+    /// says it does, so a page lays them out the same way at any width.
+    pub fn flow(&mut self, css: &str) {
+        self.composed.layout = Some(css.to_owned());
+        self.composed.flows = true;
+    }
+
+    /// The composed child that is `widget` is laid out by `css` instead of its layout node's
+    /// style: what its parent's CSS layout asks of it (to fill a column) rather than the size the
+    /// frame gave it.
+    pub fn restyle(
+        &mut self,
+        widget: &dyn crate::widget::Widget,
+        css: impl FnOnce(&str) -> String,
+    ) {
+        let Some(path) = self.child_path(widget).map(str::to_owned) else {
+            return;
+        };
+        if let Some(child) = find_mut(&mut self.composed.children, &path) {
+            child.layout = Some(css(child.layout.as_deref().unwrap_or_default()));
+        }
     }
 
     /// The widget places its children ([`Self::children`]) at their rects itself, among parts
@@ -1459,12 +1622,18 @@ mod tests {
         let composition = host.composition();
         let row = find(&composition.root, "ListRow").expect("the row is composed");
         assert_eq!(row.tag, Some("li"));
-        assert!(!row.flows, "its parts stand where the canvas paints them");
+        assert!(row.flows, "a page lays its parts out, at any width");
+        fn under<'a>(node: &'a Composed, key: &str) -> Option<&'a Composed> {
+            node.children.iter().find_map(|part| {
+                if part.path.ends_with(&format!("#{key}")) {
+                    Some(part)
+                } else {
+                    under(part, key)
+                }
+            })
+        }
         let part = |key: &str| {
-            row.children
-                .iter()
-                .find(|part| part.path.ends_with(&format!("#{key}")))
-                .unwrap_or_else(|| panic!("no {key} part in {:?}", row.children))
+            under(row, key).unwrap_or_else(|| panic!("no {key} part in {:?}", row.children))
         };
         let words = |key: &str| match &part(key).own {
             Some(Own::Text(look)) => look.clone(),
@@ -1477,18 +1646,27 @@ mod tests {
         );
         assert_eq!(words("value").text, "12");
         assert!(matches!(&part("leading").own, Some(Own::Face(face)) if face.icon.is_some()));
-        // The line under the title stands under it, both after the icon.
-        let (title, secondary, icon) = (
-            part("title").rect,
-            part("secondary").rect,
-            part("leading").rect,
-        );
+        // The icon leads, then the words (the title's line over the line under it), then the
+        // value; none of them where the frame put it.
+        let order: Vec<&str> = row
+            .children
+            .iter()
+            .filter_map(|part| part.path.rsplit('#').next())
+            .collect();
+        assert_eq!(order, ["leading", "words", "value"]);
+        let words_region = part("words");
+        let lines: Vec<&str> = words_region
+            .children
+            .iter()
+            .filter_map(|part| part.path.rsplit('#').next())
+            .collect();
+        assert_eq!(lines, ["title-line", "secondary"]);
         assert!(
-            secondary[1] >= title[1] + title[3] - 0.5,
-            "{title:?} {secondary:?}"
+            words_region
+                .layout
+                .as_deref()
+                .is_some_and(|css| css.contains("flex-direction:column"))
         );
-        assert!(title[0] >= icon[0] + icon[2], "{icon:?} {title:?}");
-        assert!((title[0] - secondary[0]).abs() < 0.5);
     }
 
     #[test]

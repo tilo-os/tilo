@@ -225,6 +225,8 @@ pub type NotesEditor = RichTextSurface<PageBody>;
 /// The notes' chain, and the part of it a note is kept in.
 mod page_body;
 use page_body::Kept;
+
+mod page;
 pub use page_body::PageBody;
 
 /// Notes is a prose editor, so ordinary blocks must reflow to the available
@@ -1731,8 +1733,12 @@ impl Default for MainPanel {
 }
 
 impl Widget for MainPanel {
+    /// A scrolling page: the title, the note's dates and its body in one
+    /// reading column, centred once the panel is wider than the reading
+    /// measure, the body's drag handles hanging in the gutter left of the
+    /// text edge the title stands on.
     fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
-        cx.children();
+        self.compose_page(cx);
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {

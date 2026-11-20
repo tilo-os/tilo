@@ -390,3 +390,106 @@ fn painted(cx: &mut HtmlCx<'_>, key: &str, rect: Rect) {
         cx.part(key, "ListRowPart", rect).painted(0);
     }
 }
+
+impl super::ListRow {
+    /// The row's parts as a page lays them out: what leads it, its words (the
+    /// title's line over the lines under it) and what trails them, in a row as
+    /// tall as its lines. Each part keeps the look it was composed with; where it
+    /// stands is the page's.
+    pub(super) fn flow_html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        let path = cx.node().path.clone();
+        let key = |child: &crate::composition::Composed| {
+            child
+                .path
+                .strip_prefix(&path)
+                .and_then(|rest| rest.strip_prefix('#'))
+                .map(str::to_owned)
+        };
+        // The lift is the row's own ground: the page tints the row under a pointer.
+        let mut lift_rect = None;
+        if let Some(index) = cx
+            .node()
+            .children
+            .iter()
+            .position(|child| key(child).as_deref() == Some("lift"))
+        {
+            let lift = cx.node().children.remove(index);
+            lift_rect = Some(lift.rect);
+            if cx.node().ground.is_none()
+                && let Some(ground) = lift.ground
+            {
+                cx.ground(ground);
+            }
+        }
+        // A part that is a picture of the row's paint keeps that picture's size.
+        for child in &mut cx.node().children {
+            if matches!(child.own, Some(crate::composition::Own::Painted { .. }))
+                && child.layout.is_none()
+            {
+                child.layout = Some(format!(
+                    "flex:none;width:{}px;height:{}px;",
+                    child.rect[2], child.rect[3]
+                ));
+            }
+        }
+        let theme = cx.theme().clone();
+        let m = self.metrics(&theme);
+        let title_line = ["prefix", "title"];
+        cx.group(
+            "title-line",
+            "span",
+            &format!(
+                "display:flex;align-items:baseline;gap:{}px;min-width:0;",
+                m.tag_gap
+            ),
+            |child| {
+                let key = key(child)?;
+                title_line
+                    .iter()
+                    .position(|line| *line == key)
+                    .or_else(|| key.starts_with("tag:").then_some(title_line.len()))
+            },
+        );
+        let words = [
+            "title-line",
+            "subtitle",
+            "secondary",
+            "facts",
+            "change",
+            "note",
+        ];
+        cx.group(
+            "words",
+            "span",
+            "display:flex;flex-direction:column;flex:1;min-width:0;",
+            |child| {
+                let key = key(child)?;
+                words.iter().position(|word| *word == key)
+            },
+        );
+        // The row's ground stands where its lift is drawn, set in from the row's edges or
+        // bleeding past them, and its words as far in from the ground as painted.
+        let [x, _, width, _] = cx.node().rect;
+        let words = cx
+            .node()
+            .children
+            .iter()
+            .map(|child| child.rect[0])
+            .reduce(f64::min);
+        let (margin, inner) = match (lift_rect, words) {
+            (Some([lx, _, lw, _]), Some(words)) => (
+                format!(
+                    "margin:0 {}px 0 {}px;",
+                    (x + width - lx - lw).max(0.0),
+                    (lx - x).max(0.0)
+                ),
+                (words - lx).max(0.0),
+            ),
+            _ => (String::new(), m.bleed),
+        };
+        cx.flow(&format!(
+            "display:flex;flex-direction:row;align-items:center;gap:{}px;min-height:{}px;padding:{}px {}px {}px {inner}px;{margin}min-width:0;",
+            m.column_gap, m.min_height, m.pad_y, m.bleed, m.pad_y
+        ));
+    }
+}

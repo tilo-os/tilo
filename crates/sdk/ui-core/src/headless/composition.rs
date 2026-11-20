@@ -196,11 +196,15 @@ impl<'a> Walk<'a> {
                 .iter()
                 .map(|&child| self.compose(child, base, &mut inner, path))
                 .collect();
+            let widgets = children_nodes
+                .iter()
+                .map(|child| self.node_widgets.get(child).copied().unwrap_or(0))
+                .collect();
             if grounded {
                 self.grounds.borrow_mut().pop();
             }
             let flows = self.flows(node, base, &children);
-            (children, flows)
+            (children, widgets, flows)
         };
         let mut cx = HtmlCx {
             composed: Composed {
@@ -233,6 +237,7 @@ impl<'a> Walk<'a> {
             },
             theme,
             compose_children: &mut compose_children,
+            child_widgets: Vec::new(),
         };
         self.open.borrow_mut().extend(at);
         widget.html(&mut cx);
