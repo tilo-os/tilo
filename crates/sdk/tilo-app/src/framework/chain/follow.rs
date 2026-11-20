@@ -43,6 +43,7 @@ impl ChainCore {
             moved |= self.look();
             moved |= self.follow_waiting();
         }
+        moved |= self.open_in_turn();
         moved
     }
 
