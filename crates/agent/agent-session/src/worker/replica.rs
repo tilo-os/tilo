@@ -1902,7 +1902,13 @@ fn beside_keys_written(
 ) -> Option<Vec<Vec<String>>> {
     match mutation {
         DocumentMutation::Incremental(bytes) => {
-            let changes = tilo_automerge_isolate::changes(bytes)?;
+            // The changes as their admission parsed them, when they wait there unapplied:
+            // parsing a list of a few hundred issues again cost a tenth of a second.
+            let hashes = tilo_automerge_isolate::change_hashes(bytes)?;
+            let changes: Vec<automerge::Change> = match mirror.admitted(&hashes) {
+                Some(admitted) => admitted.into_iter().cloned().collect(),
+                None => tilo_automerge_isolate::changes(bytes)?,
+            };
             if !changes.iter().all(|change| mirror.holds(&change.hash())) {
                 return None;
             }
@@ -2435,6 +2441,80 @@ mod tests {
         assert!(
             names.contains(&(stack, "Local stack".to_owned())),
             "and so is the agent whose session wrote for them: {names:?}"
+        );
+    }
+
+    /// What a list of issues written into a part writes is read from its changes as their
+    /// admission parsed them: reading it costs less than parsing them. Parsing every change
+    /// again cost each list of 200 issues more than a tenth of a second on a hosted workspace.
+    #[test]
+    fn what_a_list_writes_is_read_without_parsing_it_again() {
+        use automerge::ReadDoc as _;
+        use std::time::{Duration, Instant};
+
+        const PARA: &str = "The page should load in a second whatever the tracker holds, and a \
+            click should answer within a frame. This paragraph stands in for what a real issue says. ";
+        let list = |doc: &mut AutoCommit, first: usize| {
+            let issues = match doc.get(automerge::ROOT, "issues").unwrap() {
+                Some((_, id)) => id,
+                None => doc
+                    .put_object(automerge::ROOT, "issues", automerge::ObjType::Map)
+                    .unwrap(),
+            };
+            for at in first..first + 200 {
+                let issue = doc
+                    .put_object(&issues, format!("issue-{at}"), automerge::ObjType::Map)
+                    .unwrap();
+                doc.put(&issue, "title", format!("ENG-{at} Fix the list"))
+                    .unwrap();
+                let body = doc
+                    .put_object(&issue, "body", automerge::ObjType::Text)
+                    .unwrap();
+                doc.splice_text(&body, 0, 0, &PARA.repeat(2 + at % 7))
+                    .unwrap();
+                doc.commit();
+            }
+        };
+        let mut doc = AutoCommit::new();
+        list(&mut doc, 0);
+        let whole = doc.save();
+        let heads = doc.get_heads();
+        list(&mut doc, 200);
+        let bytes = doc.save_after(&heads);
+        let mutation = DocumentMutation::Incremental(bytes.clone());
+
+        let mut mirror = Deferred::from(AutoCommit::load(&whole).unwrap());
+        assert!(matches!(
+            mirror.admit_unapplied(&bytes),
+            Ok(Applied::Changed(true))
+        ));
+        let parsed = tilo_automerge_isolate::changes(&bytes).unwrap();
+        let written =
+            beside_keys_written(&mut mirror, &mutation).expect("it reads what they write");
+        assert_eq!(
+            Some(written),
+            ui::framework::keys_written(mirror.unsettled().0, &parsed),
+            "the same keys as the changes parsed anew"
+        );
+
+        // The fastest of a few tries: what the work costs, not what the machine did meanwhile.
+        let fastest = |work: &mut dyn FnMut() -> Duration| {
+            (0..5).map(|_| work()).min().unwrap_or(Duration::ZERO)
+        };
+        let parsing = fastest(&mut || {
+            let began = Instant::now();
+            std::hint::black_box(tilo_automerge_isolate::changes(&bytes));
+            began.elapsed()
+        });
+        let reading = fastest(&mut || {
+            let began = Instant::now();
+            std::hint::black_box(beside_keys_written(&mut mirror, &mutation));
+            began.elapsed()
+        });
+        eprintln!("parsing the list took {parsing:?}, reading what it writes {reading:?}");
+        assert!(
+            reading <= parsing,
+            "reading what a list writes took {reading:?}, parsing it {parsing:?}"
         );
     }
 }
