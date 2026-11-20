@@ -307,6 +307,23 @@ impl StatePeer {
         PeerDocumentCapture::from_document(document, maximum)
     }
 
+    /// Whether the device `reader` may read the resource at `route` now and, for one read through its
+    /// keys (`sealed`), whether the sealed writes held cover every admitted write: what
+    /// [`Self::open_document`] decides before it opens anything, decided without opening it.
+    ///
+    /// # Errors
+    /// As [`Self::open_document`] refuses before it opens: the reader may not read the resource,
+    /// it is not held, or its history does not cover every admitted write.
+    pub fn document_opens(
+        &self,
+        reader: [u8; 32],
+        route: (&str, &str),
+        now: SystemTime,
+        sealed: bool,
+    ) -> Result<(), PeerDocumentReadError> {
+        self.readable(reader, route, now, sealed).map(drop)
+    }
+
     /// `app`'s `record` for the device `reader`, under its current membership and Read
     /// permission: the document itself when it is held in the clear; an encrypted record's
     /// retained sealed history opened through the embedding owner's channel keys (`open`) onto

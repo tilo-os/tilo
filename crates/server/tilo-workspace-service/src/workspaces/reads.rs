@@ -112,6 +112,38 @@ impl Workspaces {
         read
     }
 
+    /// Whether `app`'s `resource` of `workspace` reads for this service's own device now, decided
+    /// as [`Self::own_read`] decides it before it opens anything: held here, its checkpoint and
+    /// its keys arrived, and the sealed writes held cover its history. One this device may not
+    /// read, or that does not open, waits for nothing: its read says why. Opening a sealed
+    /// resource costs its whole history the first time after a start, seconds for a part of a
+    /// large tracker, so nothing that only asks whether it could read one opens it.
+    pub(crate) async fn own_readable(
+        &self,
+        workspace: &str,
+        (app, resource): (&str, &str),
+    ) -> bool {
+        let Some((peer, device)) = self.replica(workspace).await else {
+            return false;
+        };
+        if !peer.holds_document(app, resource) || peer.checkpoint_pending(app, resource) {
+            return false;
+        }
+        let Some(reader) = self.own_reader(workspace).await else {
+            return true;
+        };
+        let sealed = match content_keys(&peer, device.as_ref(), workspace, (app, resource)).await {
+            Ok(Sealing::Due) => return false,
+            Ok(Sealing::Clear) => false,
+            Ok(Sealing::Sealed(_)) => true,
+            Err(_) => return true,
+        };
+        !matches!(
+            peer.document_opens(reader, (app, resource), tilo_clock::wall(), sealed),
+            Err(PeerDocumentReadError::Incomplete)
+        )
+    }
+
     /// Every document `workspace` holds here, by its app and route.
     ///
     /// # Errors
