@@ -22,11 +22,14 @@ from tilo import Entry, Invocation, Resource
 __all__ = [
     "Album",
     "Artist",
+    "Catalogue",
     "CatalogueTrack",
     "Playlist",
     "Preferences",
     "Track",
     "Library",
+    "SetCatalogueArgs",
+    "ImportCatalogueArgs",
     "CreatePlaylistArgs",
     "DeletePlaylistArgs",
     "ImportTrackArgs",
@@ -43,6 +46,8 @@ class Artist(TypedDict):
     name: str
     genre: str
     monthly_listeners: int
+
+Catalogue = Literal["unset", "disabled", "you_tube", "spotify"]
 
 class CatalogueTrack(TypedDict):
     track: Track
@@ -73,6 +78,16 @@ class Track(TypedDict):
     yt_id: str
     plays: int
 
+SetCatalogueArgs = TypedDict("SetCatalogueArgs", {
+    "catalogue": "Catalogue",
+})
+"""The arguments of `set-catalogue`."""
+
+ImportCatalogueArgs = TypedDict("ImportCatalogueArgs", {
+    "catalogue": "Catalogue",
+})
+"""The arguments of `import-catalogue`."""
+
 CreatePlaylistArgs = TypedDict("CreatePlaylistArgs", {
     "name": "str",
     "track": NotRequired["str | None"],
@@ -91,7 +106,11 @@ ImportTrackArgs = TypedDict("ImportTrackArgs", {
 
 class Library(Resource):
     """Music — `music.library`."""
-    __surface__ = "so.tilo.music@32828bf91e94576d"
+    __surface__ = "so.tilo.music@26a9509bd0593501"
+    @property
+    def catalogue(self) -> Catalogue:
+        """Read only."""
+        return self.fields["catalogue"]
     recommendations: Preferences
     @property
     def artists(self) -> dict[str, Artist]:
@@ -109,6 +128,22 @@ class Library(Resource):
     liked: list[str]
     saved_albums: list[str]
     followed_artists: list[str]
+
+    def set_catalogue(self, *, catalogue: Catalogue) -> None:
+        """Runs the app's action."""
+        return self.action("set-catalogue", catalogue=catalogue)
+
+    def set_catalogue_many(self, items: list[SetCatalogueArgs]) -> list[dict[str, Any]]:
+        """Runs `set-catalogue` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-catalogue", items)
+
+    def import_catalogue(self, *, catalogue: Catalogue) -> None:
+        """Runs the app's action."""
+        return self.action("import-catalogue", catalogue=catalogue)
+
+    def import_catalogue_many(self, items: list[ImportCatalogueArgs]) -> list[dict[str, Any]]:
+        """Runs `import-catalogue` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import-catalogue", items)
 
     def create_playlist(self,
         *,
@@ -152,6 +187,6 @@ class Library(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"create_playlist", "create_playlist_many", "delete_playlist", "delete_playlist_many", "import_track", "import_track_many", "spotify_account_status", "search"})
+    __actions__ = frozenset({"set_catalogue", "set_catalogue_many", "import_catalogue", "import_catalogue_many", "create_playlist", "create_playlist_many", "delete_playlist", "delete_playlist_many", "import_track", "import_track_many", "spotify_account_status", "search"})
 
 

@@ -21074,6 +21074,42 @@
         ],
         "description": ""
       },
+      "music.library.set-catalogue.Arguments": {
+        "type": "object",
+        "properties": {
+          "catalogue": {
+            "enum": [
+              "unset",
+              "disabled",
+              "you_tube",
+              "spotify"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "catalogue"
+        ],
+        "description": ""
+      },
+      "music.library.import-catalogue.Arguments": {
+        "type": "object",
+        "properties": {
+          "catalogue": {
+            "enum": [
+              "unset",
+              "disabled",
+              "you_tube",
+              "spotify"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "catalogue"
+        ],
+        "description": ""
+      },
       "music.library.create-playlist.Arguments": {
         "type": "object",
         "properties": {
@@ -35212,6 +35248,18 @@
       "resource": "monitor.processes",
       "action": "copy-pid",
       "arguments": "#/components/schemas/monitor.processes.copy-pid.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "music.library",
+      "action": "set-catalogue",
+      "arguments": "#/components/schemas/music.library.set-catalogue.Arguments"
+    },
+    {
+      "app": "so.tilo.music",
+      "resource": "music.library",
+      "action": "import-catalogue",
+      "arguments": "#/components/schemas/music.library.import-catalogue.Arguments"
     },
     {
       "app": "so.tilo.music",

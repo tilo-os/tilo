@@ -22,7 +22,7 @@ use ui::widget::{AppModel, Continuable, Element, ModelPath, Queryable, TaffyTree
 
 use super::{Music, Page};
 use crate::actions::MusicEffect;
-use crate::model::Library;
+use crate::model::{Catalogue, Library};
 use ui::widget::DrawChild;
 
 type Shared = Rc<RefCell<Music>>;
@@ -92,6 +92,26 @@ impl Music {
                     .map_err(|error| error.to_string())?,
             );
             return Ok(ui::framework::Effected::done());
+        }
+        let choice = match effect {
+            MusicEffect::BrowseSpotify => Some(Library::SET_CATALOGUE.with(Catalogue::Spotify)),
+            MusicEffect::BrowseYouTube => Some(Library::SET_CATALOGUE.with(Catalogue::YouTube)),
+            MusicEffect::DisableCatalogue => Some(Library::SET_CATALOGUE.with(Catalogue::Disabled)),
+            MusicEffect::UsePreviousCatalogue => {
+                let catalogue = self
+                    .legacy_catalogue
+                    .choice()
+                    .ok_or_else(|| crate::i18n::t("music-no-legacy-catalogue"))?;
+                Some(Library::IMPORT_CATALOGUE.with(catalogue))
+            }
+            _ => None,
+        };
+        if let Some(choice) = choice {
+            if !cx.dispatcher().may_invoke(&choice) {
+                return Err(crate::i18n::t("music-catalogue-edit-denied"));
+            }
+            cx.submit(choice);
+            return cx.when_landed(|(), _, _| Ok(ui::framework::Effected::done()));
         }
         let invocation = cx.invocation().unwrap_or_default();
         let answer = self.begin_effect(invocation, effect)?;

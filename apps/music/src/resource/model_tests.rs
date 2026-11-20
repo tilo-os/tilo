@@ -153,6 +153,29 @@ tilo_test_env::scenario! {
 }
 
 #[test]
+fn a_catalogue_edit_replicates_from_a_library_without_the_field() {
+    use automerge::transaction::Transactable as _;
+
+    let mut laptop = sample();
+    let old = laptop.state().unwrap();
+    laptop
+        .doc_mut()
+        .delete(automerge::ROOT, "catalogue")
+        .unwrap();
+    assert_eq!(laptop.state().unwrap(), old);
+    let mut phone = laptop.fork();
+    laptop
+        .apply(Library::SET_CATALOGUE.with(Catalogue::Spotify))
+        .unwrap();
+    edit(&mut phone, &Library::like("tk_v2", true)).unwrap();
+    laptop.sync_with(&mut phone).unwrap();
+    let merged = phone.state().unwrap();
+    assert_eq!(merged, laptop.state().unwrap());
+    assert_eq!(merged.catalogue, Catalogue::Spotify);
+    assert!(merged.is_liked("tk_v2"));
+}
+
+#[test]
 fn an_agents_changes_render_as_musics_sentences() {
     use ui::tilo_actions::ActionInvoker;
 

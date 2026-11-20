@@ -340,7 +340,11 @@ pub trait MusicBackend: Send + Sync {
     /// The backend's name, for the status log.
     fn name(&self) -> &str;
 
-    fn select_source(&self, _spotify: bool, _sign_in: bool) -> Result<(), BackendError> {
+    fn spotify_catalogue(&self) -> Result<&dyn MusicBackend, BackendError> {
+        Err(BackendError("Spotify is unavailable in this build".into()))
+    }
+
+    fn connect_spotify_library(&self) -> Result<(), BackendError> {
         Err(BackendError("Spotify is unavailable in this build".into()))
     }
 
@@ -389,10 +393,6 @@ pub trait MusicBackend: Send + Sync {
 
     /// Open the connection before the first query; blocks, so it runs off the UI thread.
     fn warm(&self) {}
-
-    fn catalogue_label(&self) -> &'static str {
-        "YouTube Music"
-    }
 
     /// A playable stream URL for a video id; offline errors.
     ///

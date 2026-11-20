@@ -36,7 +36,7 @@ use crate::backend::{
 };
 use crate::lyrics::{self, LyricsLine, LyricsWorker, TrackMeta};
 use crate::model::{
-    Album, Artist, CacheState, CatalogueTrack, Library, Playback, RepeatMode, Track,
+    Album, Artist, CacheState, Catalogue, CatalogueTrack, Library, Playback, RepeatMode, Track,
 };
 use crate::mpris::{MprisCommand, MprisHandle, PlaybackStatus, PlayerSnapshot};
 #[cfg(test)]
@@ -281,9 +281,8 @@ pub(crate) struct Music {
     search_query: String,
     pending_catalogue_query: Option<String>,
     catalogue_invocation: Option<tilo_actions::InvocationId>,
-    spotify_catalogue: bool,
-    /// Whether this device connected an online catalogue; Home fetches nothing until it has.
-    catalogue_connected: bool,
+    catalogue: Catalogue,
+    legacy_catalogue: crate::storage::LegacyCatalogue,
     source_invocation: Option<tilo_actions::InvocationId>,
     source_disconnect_pending: bool,
     spotify_jobs: HashMap<u64, spotify::PendingJob>,
@@ -357,8 +356,7 @@ pub(crate) struct Music {
     stream_recovery: Option<(String, u64)>,
     last_tick: Instant,
 
-    /// A permutation of `pb.queue` while shuffle is on, rebuilt on demand: the shuffle
-    /// flag is synced, the order is not.
+    /// A permutation of the local queue while shuffle is on, rebuilt on demand.
     shuffle_order: Vec<usize>,
     /// The xorshift state that builds the shuffle order; tests set it for determinism.
     shuffle_rng: u64,
@@ -438,6 +436,7 @@ pub(crate) struct Music {
     playlist_mosaics: std::cell::RefCell<HashMap<String, (Vec<u64>, vello::peniko::ImageData)>>,
     home: Option<HomeContent>,
     home_asked: Option<Instant>,
+    home_request: Option<u64>,
     /// A Home fetch that came back empty: the skeleton and the animation loop stop.
     home_failed: bool,
     failed_pages: HashSet<String>,
@@ -509,6 +508,9 @@ struct NameDlg {
 
 impl Music {
     pub(crate) fn queue_catalogue_query(&mut self, query: &str) {
+        if self.catalogue == Catalogue::Disabled {
+            return;
+        }
         let query = query.trim();
         if !query.is_empty() && query != self.search_query {
             self.pending_catalogue_query = Some(query.to_owned());
@@ -638,9 +640,8 @@ impl Music {
                 source_buttons: Self::make_source_buttons(),
                 ..Page::default()
             },
-            spotify_catalogue: device_profile.spotify_catalogue,
-            catalogue_connected: device_profile.catalogue_connected
-                || device_profile.spotify_catalogue,
+            catalogue: Catalogue::Unset,
+            legacy_catalogue: device_profile.legacy_catalogue,
             source_invocation: None,
             source_disconnect_pending: false,
             spotify_jobs: HashMap::new(),
@@ -743,6 +744,7 @@ impl Music {
             playlist_mosaics: std::cell::RefCell::default(),
             home: None,
             home_asked: None,
+            home_request: None,
             home_failed: false,
             failed_pages: HashSet::new(),
             pages_asked: HashMap::new(),
@@ -818,6 +820,7 @@ impl Music {
                 return;
             }
         };
+        self.adopt_catalogue(next_library.catalogue);
         self.stored_library.clone_from(&next_library);
         self.library_revision = self.library_revision.wrapping_add(1);
         self.lib = next_library;
@@ -919,8 +922,7 @@ impl Music {
             return Ok(());
         }
         crate::storage::save_device_profile(&crate::storage::DeviceProfile {
-            spotify_catalogue: self.spotify_catalogue,
-            catalogue_connected: self.catalogue_connected,
+            legacy_catalogue: self.legacy_catalogue,
             local_file: self.kept_local_file(),
             playback: self.pb.clone(),
             queue_catalogue: self.queue_catalogue(),
@@ -982,9 +984,46 @@ impl Music {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_legacy_catalogue_for_test(
+        &mut self,
+        legacy: crate::storage::LegacyCatalogue,
+    ) {
+        self.legacy_catalogue = legacy;
+    }
+
+    fn adopt_catalogue(&mut self, choice: Catalogue) {
+        if self.catalogue == choice {
+            return;
+        }
+        self.catalogue = choice;
+        self.reset_catalogue_pages();
+    }
+
+    fn reset_catalogue_pages(&mut self) {
+        self.complete_catalogue_search(Err("The music catalogue changed".into()));
+        self.search.source_changed(self.catalogue);
+        self.home = None;
+        self.home_asked = None;
+        self.home_request = None;
+        self.home_failed = false;
+        self.spotify_library_offset = 50;
+        self.spotify_library_more = true;
+        self.source_error = None;
+        self.live_results = None;
+        self.live_bundle = None;
+        self.live_search_pending = None;
+        self.active_search_request = None;
+        self.live_query_sent = None;
+        self.search_query.clear();
+        self.search_error = None;
+        self.dirty = true;
+    }
+
     /// Show the shared library, keeping this device's cache; an empty projection keeps
     /// what is there.
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::Library) {
+        self.adopt_catalogue(state.catalogue);
         self.stored_library.clone_from(state);
         self.library_revision = self.library_revision.wrapping_add(1);
         if state.tracks.is_empty()
@@ -1151,7 +1190,13 @@ impl Music {
                     .and_then(|device| device.get("name"))
                     .and_then(serde_json::Value::as_str)
                     .map_or_else(
-                        || self.backend_name.clone(),
+                        || {
+                            if self.catalogue == Catalogue::Spotify {
+                                self.catalogue.label().to_owned()
+                            } else {
+                                self.backend_name.clone()
+                            }
+                        },
                         |name| {
                             crate::i18n::t_args("music-spotify-output", &[("device", name.into())])
                         },
@@ -1174,7 +1219,14 @@ impl Music {
             .offer(MusicEffect::NEW_SPOTIFY_PLAYLIST)
             .offer(MusicEffect::DISCONNECT_SPOTIFY)
             .offer(MusicEffect::BROWSE_SPOTIFY)
-            .offer(MusicEffect::BROWSE_YOU_TUBE);
+            .offer(MusicEffect::BROWSE_YOU_TUBE)
+            .offer(MusicEffect::DISABLE_CATALOGUE);
+        let bindings =
+            if self.catalogue == Catalogue::Unset && self.legacy_catalogue.choice().is_some() {
+                bindings.offer(MusicEffect::USE_PREVIOUS_CATALOGUE)
+            } else {
+                bindings
+            };
         ui::framework::LiveRow::typed_with::<crate::row_types::Source>(
             "music.source:catalogue",
             self.source_status(),
@@ -3234,12 +3286,12 @@ impl Music {
         self.worker = Some(worker);
     }
 
-    /// Fire a real YouTube-Music search for the current query on the worker.
+    /// Search the workspace catalogue for the current query on the worker.
     /// No-op offline builds still spawn the worker (which reports the offline
     /// backend); the UI keeps showing the local library either way.
     fn request_live_search(&mut self) {
         let q = self.search_query.trim().to_string();
-        if q.is_empty() {
+        if q.is_empty() || self.catalogue == Catalogue::Disabled {
             return;
         }
         self.ensure_worker();
@@ -3254,6 +3306,7 @@ impl Music {
         };
         if let Some(w) = &self.worker {
             if let Err(error) = w.request(StreamRequest::Search {
+                catalogue: self.catalogue,
                 query: q.clone(),
                 request_id,
             }) {
@@ -3303,84 +3356,8 @@ impl Music {
                 StreamUpdate::Spotify { request_id, result } => {
                     self.finish_spotify_operation(request_id, result);
                 }
-                StreamUpdate::SourceSelected { result } => {
-                    // The search asks the catalogue the person chose.
-                    self.search.source_changed();
-                    if let Some(invocation) = self.source_invocation.take() {
-                        let update = match result {
-                            Ok((name, live)) => {
-                                if self.source_disconnect_pending {
-                                    self.spotify_devices.clear();
-                                    self.spotify_device_buttons.clear();
-                                    self.open_file_layout_visible = None;
-                                    self.spotify_remote_state = serde_json::Value::Null;
-                                    self.spotify_remote_queue = None;
-                                }
-                                if self.source_disconnect_pending
-                                    && self
-                                        .pb
-                                        .current
-                                        .as_ref()
-                                        .is_some_and(|id| id.starts_with("spotify:"))
-                                {
-                                    self.audio.stop();
-                                    self.pb.playing = false;
-                                }
-                                // The person chose a catalogue, or left the one
-                                // they had: Home follows what they chose.
-                                self.catalogue_connected = !self.source_disconnect_pending;
-                                self.source_disconnect_pending = false;
-                                self.source_error = None;
-                                self.spotify_catalogue = name.starts_with("Spotify");
-                                self.backend_name = name;
-                                self.backend_live = live;
-                                self.report_device_profile_error();
-                                self.playlist_pages
-                                    .retain(|id, _| !id.starts_with("spotify:"));
-                                self.playlist_requested
-                                    .retain(|id| !id.starts_with("spotify:"));
-                                self.artist_pages
-                                    .retain(|id, _| !id.starts_with("spotify:"));
-                                self.artist_requested
-                                    .retain(|id| !id.starts_with("spotify:"));
-                                self.album_pages.retain(|id, _| !id.starts_with("spotify:"));
-                                self.album_requested
-                                    .retain(|id| !id.starts_with("spotify:"));
-                                self.failed_pages.retain(|id| !id.starts_with("spotify:"));
-                                self.home = None;
-                                self.spotify_library_offset = 50;
-                                self.spotify_library_more = true;
-                                self.home_asked = None;
-                                self.home_failed = false;
-                                self.live_results = None;
-                                self.live_bundle = None;
-                                self.live_search_pending = None;
-                                self.active_search_request = None;
-                                self.live_query_sent = None;
-                                self.search_error = None;
-                                self.view = View::Home;
-                                self.set_scroll_y(0.0);
-                                tilo_actions::InvocationUpdate::Succeeded {
-                                    invocation,
-                                    output: tilo_actions::ActionOutput::default(),
-                                }
-                            }
-                            Err(message) => {
-                                self.source_error = Some(message.clone());
-                                self.notify(ToastKind::Error, message.clone());
-                                tilo_actions::InvocationUpdate::Failed {
-                                    invocation,
-                                    error: tilo_actions::ActionFailure {
-                                        code: "music.source_failed".into(),
-                                        message,
-                                        details: None,
-                                        retryable: false,
-                                    },
-                                }
-                            }
-                        };
-                        self.resource_stream_results.push(update);
-                    }
+                StreamUpdate::SpotifyConnection { result } => {
+                    self.finish_spotify_connection(result);
                 }
                 StreamUpdate::Backend { name, live } => {
                     self.backend_live = live;
@@ -3396,7 +3373,14 @@ impl Music {
                     request_id,
                     error,
                 } => self.apply_search_failure(&query, request_id, &error),
-                StreamUpdate::Home { content } => {
+                StreamUpdate::Home {
+                    request_id,
+                    content,
+                } => {
+                    if self.home_request != Some(request_id) {
+                        continue;
+                    }
+                    self.home_request = None;
                     self.spotify_library_offset = 50;
                     self.spotify_library_more = content
                         .sections
@@ -3406,7 +3390,11 @@ impl Music {
                     self.home = Some(*content);
                     self.home_failed = false;
                 }
-                StreamUpdate::HomeUnavailable { error } => {
+                StreamUpdate::HomeUnavailable { request_id, error } => {
+                    if self.home_request != Some(request_id) {
+                        continue;
+                    }
+                    self.home_request = None;
                     // No live Home (offline build / network error): stop the
                     // skeleton and let the honest empty Home settle.
                     self.home_failed = true;
@@ -3905,13 +3893,22 @@ impl Music {
 
     /// Fetch Home from the connected catalogue, once; with none connected nothing is fetched.
     fn ensure_home(&mut self) {
-        if self.home_asked.is_some() || !self.allow_network || !self.catalogue_connected {
+        if self.home_asked.is_some() || !self.allow_network || !self.catalogue.has_online_home() {
             return;
         }
         self.ensure_worker();
+        let Some(request_id) = self.next_worker_request_id() else {
+            return;
+        };
         if let Some(w) = &self.worker {
-            match w.request(StreamRequest::Home) {
-                Ok(()) => self.home_asked = Some(ui::time::now()),
+            match w.request(StreamRequest::Home {
+                catalogue: self.catalogue,
+                request_id,
+            }) {
+                Ok(()) => {
+                    self.home_asked = Some(ui::time::now());
+                    self.home_request = Some(request_id);
+                }
                 Err(error) => {
                     self.home_failed = true;
                     self.notify(
@@ -4659,7 +4656,7 @@ impl Music {
             Action::Nav(View::Lyrics),
         );
         self.push_checked_menu("Queue", self.view == View::Queue, Action::ToggleQueue);
-        if self.spotify_catalogue {
+        if self.catalogue == Catalogue::Spotify {
             self.push_menu(
                 crate::i18n::t("music-spotify-devices"),
                 Action::SpotifyEffect(crate::actions::MusicEffect::SpotifyDevices),

@@ -4,6 +4,8 @@
 
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
+use crate::model::Catalogue;
+
 use crate::backend::{
     AlbumPage, ArtistPage, HomeContent, MusicBackend, PlaylistPage, ResolvedStream, SearchBundle,
     default_backend, preferred_backend,
@@ -28,12 +30,10 @@ pub enum StreamRequest {
         request_id: u64,
     },
     DisconnectSpotify,
-    Source {
-        spotify: bool,
-        sign_in: bool,
-    },
+    ConnectSpotifyLibrary,
     /// A whole search in one call.
     Search {
+        catalogue: Catalogue,
         query: String,
         request_id: u64,
     },
@@ -44,7 +44,10 @@ pub enum StreamRequest {
         /// Monotonic identity: a response that is not the newest request's is ignored.
         request_id: u64,
     },
-    Home,
+    Home {
+        catalogue: Catalogue,
+        request_id: u64,
+    },
     Artist(String),
     Album(String),
     Playlist(String),
@@ -62,8 +65,8 @@ pub enum StreamUpdate {
         account: String,
         request_id: u64,
     },
-    SourceSelected {
-        result: Result<(String, bool), String>,
+    SpotifyConnection {
+        result: Result<(), String>,
     },
     Backend {
         name: String,
@@ -92,10 +95,12 @@ pub enum StreamUpdate {
         error: String,
     },
     Home {
+        request_id: u64,
         content: Box<HomeContent>,
     },
     /// The Home fetch failed: the skeleton stops and the empty Home shows.
     HomeUnavailable {
+        request_id: u64,
         error: String,
     },
     Artist {
@@ -282,8 +287,8 @@ fn validate_request(request: &StreamRequest) -> Result<(), String> {
                 return Err("music resource identifier is empty or too long".to_string());
             }
         }
-        StreamRequest::Home
-        | StreamRequest::Source { .. }
+        StreamRequest::Home { .. }
+        | StreamRequest::ConnectSpotifyLibrary
         | StreamRequest::DisconnectSpotify
         | StreamRequest::ConnectSpotifyPlayback
         | StreamRequest::ConnectSpotify => {}
@@ -345,9 +350,9 @@ fn handle_request(
         StreamRequest::ConnectSpotifyPlayback => {
             let result = backend
                 .spotify_playback(true)
-                .map(|_| (crate::i18n::t("music-spotify-playback-authorized"), true))
+                .map(drop)
                 .map_err(|error| error.to_string());
-            let _ = up_tx.send(StreamUpdate::SourceSelected { result });
+            let _ = up_tx.send(StreamUpdate::SpotifyConnection { result });
         }
         StreamRequest::NativeSpotify {
             track_id,
@@ -377,25 +382,29 @@ fn handle_request(
         StreamRequest::DisconnectSpotify => {
             let result = backend
                 .disconnect_spotify()
-                .map(|()| (backend.name().to_string(), backend.is_live()))
                 .map_err(|error| error.to_string());
-            let _ = up_tx.send(StreamUpdate::SourceSelected { result });
+            let _ = up_tx.send(StreamUpdate::SpotifyConnection { result });
         }
         StreamRequest::ConnectSpotify => {
             let result = backend
                 .connect_spotify_read_only()
-                .map(|()| (backend.name().to_string(), backend.is_live()))
                 .map_err(|error| error.to_string());
-            let _ = up_tx.send(StreamUpdate::SourceSelected { result });
+            let _ = up_tx.send(StreamUpdate::SpotifyConnection { result });
         }
-        StreamRequest::Source { spotify, sign_in } => {
+        StreamRequest::ConnectSpotifyLibrary => {
             let result = backend
-                .select_source(spotify, sign_in)
-                .map(|()| (backend.name().to_string(), backend.is_live()))
+                .connect_spotify_library()
                 .map_err(|error| error.to_string());
-            let _ = up_tx.send(StreamUpdate::SourceSelected { result });
+            let _ = up_tx.send(StreamUpdate::SpotifyConnection { result });
         }
-        StreamRequest::Search { query, request_id } => match backend.search_all(&query) {
+        StreamRequest::Search {
+            catalogue,
+            query,
+            request_id,
+        } => match catalogue
+            .backend(backend)
+            .and_then(|source| source.search_all(&query))
+        {
             Ok(bundle) => {
                 let _ = up_tx.send(StreamUpdate::SearchResults {
                     query,
@@ -431,15 +440,20 @@ fn handle_request(
                 });
             }
         },
-        StreamRequest::Home => match backend.home() {
+        StreamRequest::Home {
+            catalogue,
+            request_id,
+        } => match catalogue.backend(backend).and_then(MusicBackend::home) {
             Ok(content) => {
                 let _ = up_tx.send(StreamUpdate::Home {
+                    request_id,
                     content: Box::new(content),
                 });
             }
             Err(e) => {
                 let _ = up_tx.send(StreamUpdate::Note(format!("home: {e}")));
                 let _ = up_tx.send(StreamUpdate::HomeUnavailable {
+                    request_id,
                     error: e.to_string(),
                 });
             }
@@ -521,6 +535,7 @@ mod tests {
             let worker = StreamWorker::unavailable_for_test();
             let error = worker
                 .request(StreamRequest::Search {
+                    catalogue: Catalogue::YouTube,
                     query: "anything".into(),
                     request_id: 1,
                 })
@@ -532,6 +547,7 @@ mod tests {
             let worker = StreamWorker::spawn_offline();
             let error = worker
                 .request(StreamRequest::Search {
+                    catalogue: Catalogue::YouTube,
                     query: "x".repeat(MAX_QUERY_BYTES + 1),
                     request_id: 1,
                 })
@@ -559,11 +575,17 @@ mod tests {
             };
             for _ in 0..REQUEST_QUEUE_LIMIT {
                 worker
-                    .request(StreamRequest::Home)
+                    .request(StreamRequest::Home {
+                        catalogue: Catalogue::YouTube,
+                        request_id: 1,
+                    })
                     .expect("capacity remains available");
             }
             let error = worker
-                .request(StreamRequest::Home)
+                .request(StreamRequest::Home {
+                    catalogue: Catalogue::YouTube,
+                    request_id: 1,
+                })
                 .expect_err("one more request is back-pressured");
             assert!(error.contains("busy"));
             drop(request_rx);

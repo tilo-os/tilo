@@ -204,11 +204,52 @@ impl Default for Playback {
     }
 }
 
+/// Which online catalogue this workspace wants to browse.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Catalogue {
+    #[default]
+    Unset,
+    Disabled,
+    YouTube,
+    Spotify,
+}
+
+impl Catalogue {
+    pub(crate) fn has_online_home(self) -> bool {
+        matches!(self, Self::Spotify | Self::YouTube)
+    }
+
+    pub(crate) fn backend(
+        self,
+        backend: &dyn crate::backend::MusicBackend,
+    ) -> Result<&dyn crate::backend::MusicBackend, crate::backend::BackendError> {
+        match self {
+            Self::Unset | Self::YouTube => Ok(backend),
+            Self::Spotify => backend.spotify_catalogue(),
+            Self::Disabled => Err(crate::backend::BackendError(
+                "Online catalogue disabled".into(),
+            )),
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Unset | Self::YouTube => "YouTube Music",
+            Self::Spotify => "Spotify",
+            Self::Disabled => "",
+        }
+    }
+}
+
 /// The music library: the catalog the person brought in, their playlists,
 /// likes, saved albums, followed artists and recommendation feedback.
 #[derive(Clone, Debug, Default, PartialEq, Model)]
 #[model(check = Library::valid)]
 pub struct Library {
+    /// Online catalogue for this workspace. Account access is granted separately.
+    #[model(readonly)]
+    pub catalogue: Catalogue,
     /// Recommendation feedback, governed by this library's sharing permissions.
     pub recommendations: crate::recommendations::Preferences,
     /// Artists, by id. Only importing a track adds one.

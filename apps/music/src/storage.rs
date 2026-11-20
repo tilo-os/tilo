@@ -1,4 +1,4 @@
-//! Device-local persistence: playback preferences and a content-addressed media cache.
+//! Device-local persistence: paused playback and a content-addressed media cache.
 //! Neither paths nor media bytes enter the document or the peer channel.
 
 use std::collections::BTreeMap;
@@ -8,17 +8,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tilo_clock::unix_now_ms;
 
-use crate::model::Playback;
+use crate::model::{Catalogue, Playback};
 
-/// Device-private state; `playing` is left out, so a launch never starts audio.
+/// Device-private state. Playback is saved paused, so a launch never starts audio.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeviceProfile {
-    /// Catalogue choice belongs to this device, never its members.
-    #[serde(default)]
-    pub spotify_catalogue: bool,
-    /// Whether this device connected a catalogue; until it has, Music contacts no provider.
-    #[serde(default)]
-    pub catalogue_connected: bool,
+    #[serde(flatten)]
+    pub(crate) legacy_catalogue: LegacyCatalogue,
     #[serde(default)]
     pub local_file: Option<crate::local_file::LocalFile>,
     #[serde(default)]
@@ -26,6 +22,27 @@ pub struct DeviceProfile {
     /// Catalogue metadata stays private until it is saved to the library.
     #[serde(default)]
     pub queue_catalogue: Vec<crate::model::CatalogueTrack>,
+}
+
+/// Preserve old keys for an explicit import. No current selection is saved here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct LegacyCatalogue {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    spotify_catalogue: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    catalogue_connected: Option<bool>,
+}
+
+impl LegacyCatalogue {
+    pub(crate) fn choice(self) -> Option<Catalogue> {
+        if self.spotify_catalogue == Some(true) {
+            Some(Catalogue::Spotify)
+        } else if self.catalogue_connected == Some(true) {
+            Some(Catalogue::YouTube)
+        } else {
+            None
+        }
+    }
 }
 
 /// The device's index of cached media: ids are app data, hashes and paths are not.
@@ -346,6 +363,32 @@ fn dirs_data_dir() -> PathBuf {
 mod tests {
     use super::*;
 
+    #[test]
+    fn old_catalogue_flags_survive_playback_saves_until_the_person_chooses_to_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("device-profile.json");
+        for (json, expected) in [
+            (r#"{"spotify_catalogue":true}"#, Some(Catalogue::Spotify)),
+            (
+                r#"{"spotify_catalogue":false,"catalogue_connected":true}"#,
+                Some(Catalogue::YouTube),
+            ),
+            (
+                r#"{"spotify_catalogue":false,"catalogue_connected":false}"#,
+                None,
+            ),
+        ] {
+            crate::files::write(&path, json.as_bytes()).unwrap();
+            let mut profile = load_device_profile_from(&path);
+            assert_eq!(profile.legacy_catalogue.choice(), expected);
+            profile.playback.volume = 37;
+            save_device_profile_to(&path, &profile).unwrap();
+            let saved = load_device_profile_from(&path);
+            assert_eq!(saved.legacy_catalogue, profile.legacy_catalogue);
+            assert_eq!(saved.playback.volume, 37);
+        }
+    }
+
     tilo_test_env::scenario! {
         /// What this device keeps on disk: the profile and the media cache.
         fn device_storage_round_trips_and_survives_failure_and_corruption;
@@ -354,10 +397,7 @@ mod tests {
         {
             let dir = std::env::temp_dir().join(format!("tilo-music-profile-{}", std::process::id()));
             let path = dir.join("device-profile.json");
-            let mut profile = DeviceProfile {
-                spotify_catalogue: true,
-                ..DeviceProfile::default()
-            };
+            let mut profile = DeviceProfile::default();
             profile.playback.current = Some("tk_g1".into());
             profile.playback.queue = vec!["tk_g1".into()];
             profile.playback.playing = true;
@@ -366,7 +406,10 @@ mod tests {
             save_device_profile_to(&path, &profile).expect("save local profile");
 
             let loaded = load_device_profile_from(&path);
-            assert!(loaded.spotify_catalogue);
+            let json: serde_json::Value =
+                serde_json::from_slice(&crate::files::read(&path).unwrap()).unwrap();
+            assert!(json.get("spotify_catalogue").is_none());
+            assert!(json.get("catalogue_connected").is_none());
             assert_eq!(loaded.playback.current, profile.playback.current);
             assert_eq!(loaded.playback.position_ms, 12_345);
             assert_eq!(loaded.playback.volume, 37);

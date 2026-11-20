@@ -188,9 +188,14 @@ impl SearchView {
         self.pumped.is_some() && !self.withhold && self.engine.results().pending()
     }
 
-    pub(in crate::app) fn source_changed(&self) {
+    pub(in crate::app) fn source_changed(&mut self, choice: crate::model::Catalogue) {
         if let Some(catalogue) = &self.catalogue {
-            catalogue.source_changed();
+            catalogue.set_choice(choice);
+            if self.engine.is_open() {
+                let query = self.engine.results().query.clone();
+                self.engine.close();
+                self.engine.set_query(query);
+            }
         }
     }
 }

@@ -4,6 +4,7 @@ use super::Music;
 use crate::{
     actions::MusicEffect,
     backend::{SpotifyOperation, SpotifyReply},
+    model::Catalogue,
 };
 
 pub(super) struct PendingJob {
@@ -22,14 +23,13 @@ impl Music {
         self.ctx_in_playlist = None;
         self.ctx_queue_index = None;
         self.menu_anchor_row = None;
-        let choices = if self.spotify_catalogue {
+        let mut choices = if self.catalogue == Catalogue::Spotify {
             vec![
-                ("music-browse-spotify", MusicEffect::BrowseSpotify),
+                ("music-connect-spotify", MusicEffect::ConnectSpotify),
                 (
                     "music-connect-spotify-library",
                     MusicEffect::ConnectSpotifyLibrary,
                 ),
-                ("music-browse-youtube", MusicEffect::BrowseYouTube),
                 (
                     "music-spotify-playback",
                     MusicEffect::ConnectSpotifyPlayback,
@@ -39,16 +39,23 @@ impl Music {
         } else {
             vec![
                 ("music-connect-spotify", MusicEffect::ConnectSpotify),
-                ("music-browse-youtube", MusicEffect::BrowseYouTube),
+                ("music-browse-spotify", MusicEffect::BrowseSpotify),
             ]
         };
+        choices.extend([
+            ("music-browse-youtube", MusicEffect::BrowseYouTube),
+            ("music-disable-catalogue", MusicEffect::DisableCatalogue),
+        ]);
+        if self.catalogue == Catalogue::Unset && self.legacy_catalogue.choice().is_some() {
+            choices.push(("music-import-catalogue", MusicEffect::UsePreviousCatalogue));
+        }
         for (key, effect) in choices {
             self.push_menu(
                 crate::i18n::t_args(key, &[]),
                 super::Action::SpotifyEffect(effect),
             );
         }
-        if self.spotify_catalogue
+        if self.catalogue == Catalogue::Spotify
             && self.home.is_some()
             && self.spotify_library_more
             && self.spotify_library_offset <= 1950
@@ -73,6 +80,66 @@ impl Music {
         self.dirty = true;
     }
 
+    pub(super) fn finish_spotify_connection(&mut self, result: Result<(), String>) {
+        let Some(invocation) = self.source_invocation.take() else {
+            return;
+        };
+        let disconnected = std::mem::take(&mut self.source_disconnect_pending);
+        let update = match result {
+            Ok(()) => {
+                self.spotify_devices.clear();
+                self.spotify_device_buttons.clear();
+                self.open_file_layout_visible = None;
+                self.spotify_remote_state = serde_json::Value::Null;
+                self.spotify_remote_queue = None;
+                if disconnected
+                    && self
+                        .pb
+                        .current
+                        .as_deref()
+                        .is_some_and(|id| id.starts_with("spotify:"))
+                {
+                    self.audio.stop();
+                    self.pb.playing = false;
+                    self.report_device_profile_error();
+                }
+                // These are views of the account grant, which may now name a
+                // different account or have been removed.
+                self.playlist_pages
+                    .retain(|id, _| !id.starts_with("spotify:"));
+                self.playlist_requested
+                    .retain(|id| !id.starts_with("spotify:"));
+                self.artist_pages
+                    .retain(|id, _| !id.starts_with("spotify:"));
+                self.artist_requested
+                    .retain(|id| !id.starts_with("spotify:"));
+                self.album_pages.retain(|id, _| !id.starts_with("spotify:"));
+                self.album_requested
+                    .retain(|id| !id.starts_with("spotify:"));
+                self.failed_pages.retain(|id| !id.starts_with("spotify:"));
+                self.reset_catalogue_pages();
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                }
+            }
+            Err(message) => {
+                self.source_error = Some(message.clone());
+                self.notify(super::ToastKind::Error, message.clone());
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "music.source_failed".into(),
+                        message,
+                        details: None,
+                        retryable: false,
+                    },
+                }
+            }
+        };
+        self.resource_stream_results.push(update);
+    }
+
     pub(super) fn artist_followed(&self, id: &str) -> bool {
         if !id.starts_with("spotify:artist:") {
             return self.lib.is_artist_followed(id);
@@ -90,7 +157,7 @@ impl Music {
             })
     }
     pub(super) fn refresh_spotify_control_flags(&mut self) {
-        let page_ready = self.spotify_catalogue
+        let page_ready = self.catalogue == Catalogue::Spotify
             && self.home.is_some()
             && self.spotify_library_more
             && self.spotify_library_offset <= 1950
@@ -101,7 +168,9 @@ impl Music {
         for button in &mut self.page.source_buttons {
             match button.test_id() {
                 Some("music-spotify-library-more") => button.set_enabled(page_ready),
-                Some("music-spotify-create-playlist") => button.set_enabled(self.spotify_catalogue),
+                Some("music-spotify-create-playlist") => {
+                    button.set_enabled(self.catalogue == Catalogue::Spotify);
+                }
                 _ => {}
             }
         }
@@ -110,8 +179,10 @@ impl Music {
     pub(super) fn source_widget_mode(&self) -> u8 {
         match self.view {
             super::View::Home => 2,
-            super::View::Playlists if self.spotify_catalogue => 3,
-            super::View::Queue if self.spotify_catalogue || self.spotify_remote_queue.is_some() => {
+            super::View::Playlists if self.catalogue == Catalogue::Spotify => 3,
+            super::View::Queue
+                if self.catalogue == Catalogue::Spotify || self.spotify_remote_queue.is_some() =>
+            {
                 1
             }
             _ => 0,
@@ -271,7 +342,7 @@ impl Music {
     pub(super) fn snap_spotify(&mut self, scenario: &str) {
         use crate::backend::{HomeContent, HomeItem, HomeItemKind, HomeSection, SpotifyDevice};
         self.backend_name = "Spotify".into();
-        self.spotify_catalogue = true;
+        self.catalogue = Catalogue::Spotify;
         self.home_asked = Some(ui::time::now());
         self.home = Some(HomeContent {
             sections: vec![HomeSection {
@@ -392,7 +463,7 @@ impl Music {
             return Err("Wait for the current Spotify requests to finish".into());
         }
         let operation = if matches!(effect, MusicEffect::SpotifyLibraryMore) {
-            if !self.spotify_catalogue
+            if self.catalogue != Catalogue::Spotify
                 || self.home.is_none()
                 || !self.spotify_library_more
                 || self.spotify_library_offset > 1950
@@ -1329,7 +1400,7 @@ mod tests {
                 "opening the picker never initiates consent"
             );
             assert!(app.source_invocation.is_none());
-            assert_eq!(app.menu_actions.len(), 2);
+            assert_eq!(app.menu_actions.len(), 4);
             assert!(matches!(
                 app.menu_actions[0],
                 super::super::Action::SpotifyEffect(MusicEffect::ConnectSpotify)
@@ -1349,7 +1420,7 @@ mod tests {
                 .expect("choice uses the host action API");
             assert_eq!(intent.address.action, MusicEffect::ConnectSpotify.id());
             assert!(app.take_control_invocation().is_none());
-            app.spotify_catalogue = true;
+            app.catalogue = Catalogue::Spotify;
             app.open_sources_menu();
             assert!(app.menu_actions.iter().any(|action| matches!(
                 action,
@@ -1566,7 +1637,7 @@ mod tests {
             }
             let bindings = app.control_action_bindings();
             assert!(bindings.iter().any(|binding| matches!(&binding.kind, ui::widget::ControlBindingKind::Action(address) if address.action == <MusicEffect as ui::tilo_resource::Effect>::id(&MusicEffect::SpotifyQueue))));
-            app.spotify_catalogue = false;
+            app.catalogue = Catalogue::Unset;
             app.spotify_remote_queue = None;
             assert!(
                 app.children()
