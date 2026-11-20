@@ -9,7 +9,7 @@ both, and `stack.sh help` covers the commands.
 
 | File | What it is |
 | --- | --- |
-| `stack.sh` | the one command: `up`, `restart`, `env`, `status`, `logs`, `browser`, `check`, `down` |
+| `stack.sh` | the one command: `up`, `restart`, `env`, `status`, `logs`, `mail-account`, `browser`, `check`, `down` |
 | `cargo.sh` | how the native stack compiles: the cargo drop-in `TILO_SH_CARGO` names (default `$CARGO`, else `cargo`), also the cargo the web bundle's build script gets |
 | `build-on-builder.sh` | the programs and the bundle's module built at once on the build server, in one command |
 | `port-check.py` | which of a base's ports this machine would not give the stack (another process's, or the kernel's temporary ports), and where that machine's temporary-port range begins: `stack.sh up` checks it here and on the build server |
@@ -24,6 +24,16 @@ both, and `stack.sh help` covers the commands.
 | `integration/vm-proofs.py` | what the workspace's VM must be for the Browser in it: sandboxes, the browser user, its device key, memory |
 | `integration/reviewer.py` | the visa run's reviewer endpoint, played by such a person |
 | `integration/seed-history.py` | the Lounge's chat history, posted through the API server (`up --seed`) |
+
+`TILO_SH_MAIL_STAND_IN=1 stack.sh up` also starts a stand-in mail server:
+an IMAP and an SMTP server with real sockets that take one made-up login
+(`lab@example.test`), show an empty inbox and send nothing. It is built with
+the programs and listens on two of the stack's base ports; its certificate
+is added to this stack's trust bundle alone. `stack.sh mail-account` prints
+what a person types into a mail account's settings, so a sign-in can be
+rehearsed in a browser against the stack with no real mail account. A stack
+on the build server carries it the same way, and its ports are forwarded
+here with the rest.
 
 When a production manifest changes a service's environment, change the
 matching `*_env` function in `stack.sh` the same way.

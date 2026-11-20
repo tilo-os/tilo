@@ -54,15 +54,23 @@ build_programs() {
   cd "$repo"
   cargo build --locked --profile lounge-local --features tilo-server/agents \
     -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p tilo-cli -p tilolang-process \
+    -p tilo-account-probe --example mail_stand_in \
     --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin tilo \
     --bin tilolang-process
   local dir=$CARGO_TARGET_DIR/$stage/programs program
-  mkdir -p "$dir"
+  mkdir -p "$dir" "$dir/examples"
   for program in tilo-server discord-worker tilo-api fake-discord tilo tilolang-process; do
     cmp -s "$CARGO_TARGET_DIR/lounge-local/$program" "$dir/$program" && continue
     cp --reflink=auto "$CARGO_TARGET_DIR/lounge-local/$program" "$dir/.$program.next"
     mv -f "$dir/.$program.next" "$dir/$program"
   done
+  # The stand-in mail server is an example, since it makes a certificate with the
+  # crate's test-time dependencies; the stack starts it as mail-stand-in.
+  program=$CARGO_TARGET_DIR/lounge-local/examples/mail_stand_in
+  if ! cmp -s "$program" "$dir/examples/mail_stand_in"; then
+    cp --reflink=auto "$program" "$dir/examples/.mail_stand_in.next"
+    mv -f "$dir/examples/.mail_stand_in.next" "$dir/examples/mail_stand_in"
+  fi
 }
 
 # The wasm-bindgen the bundle binds with: the crate's pinned version, built

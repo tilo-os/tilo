@@ -3,15 +3,16 @@
 //!
 //! ```text
 //! mail_stand_in --name imap.NAME --name smtp.NAME --login LOGIN --password-file FILE \
-//!     --write-certificate FILE [--imap ADDRESS] [--smtp ADDRESS]
+//!     --write-certificate FILE [--imap ADDRESS] [--smtp ADDRESS] [--imap-tls] [--smtp-tls]
 //! ```
 //!
 //! As a mail server does, port 993 and port 465 are TLS from the first byte and every other
-//! port greets in the clear and upgrades with `STARTTLS`. The program makes one certificate
-//! for the names it is given and writes it to the file named: whoever signs in has to trust
-//! it, so it is added to the trust bundle of the stack that is rehearsed and of nothing else.
-//! The password is read from a file, so it stands on no command line. No real mail server,
-//! no real address and nobody's password belong here.
+//! port greets in the clear and upgrades with `STARTTLS`; `--imap-tls` and `--smtp-tls` say
+//! the first of it for another port, where the client is told to expect it. The program makes
+//! one certificate for the names it is given and writes it to the file named: whoever signs in
+//! has to trust it, so it is added to the trust bundle of the stack that is rehearsed and of
+//! nothing else. The password is read from a file, so it stands on no command line. No real
+//! mail server, no real address and nobody's password belong here.
 
 #[path = "../src/stand_in.rs"]
 mod stand_in;
@@ -20,7 +21,8 @@ use std::convert::Infallible;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: mail_stand_in --name NAME [--name NAME ..] --login LOGIN \
-     --password-file FILE --write-certificate FILE [--imap ADDRESS] [--smtp ADDRESS]";
+     --password-file FILE --write-certificate FILE [--imap ADDRESS] [--smtp ADDRESS] \
+     [--imap-tls] [--smtp-tls]";
 
 fn main() -> ExitCode {
     match stood_in() {
@@ -36,9 +38,21 @@ fn main() -> ExitCode {
 fn stood_in() -> Result<Infallible, String> {
     let (mut imap, mut smtp) = ("127.0.0.1:993".to_owned(), "127.0.0.1:465".to_owned());
     let mut names = Vec::new();
+    let (mut imap_tls, mut smtp_tls) = (false, false);
     let (mut login, mut password_file, mut certificate_file) = (None, None, None);
     let mut said = std::env::args().skip(1);
     while let Some(flag) = said.next() {
+        match flag.as_str() {
+            "--imap-tls" => {
+                imap_tls = true;
+                continue;
+            }
+            "--smtp-tls" => {
+                smtp_tls = true;
+                continue;
+            }
+            _ => {}
+        }
         let value = said.next().ok_or_else(|| format!("{flag} needs a value"))?;
         match flag.as_str() {
             "--imap" => imap = value,
@@ -71,8 +85,8 @@ fn stood_in() -> Result<Infallible, String> {
             .is_some_and(|(_, said)| said == port)
     };
     let up = stand_in::started(stand_in::Serving {
-        imap_wrapped: on_port(&imap, "993"),
-        smtp_wrapped: on_port(&smtp, "465"),
+        imap_wrapped: imap_tls || on_port(&imap, "993"),
+        smtp_wrapped: smtp_tls || on_port(&smtp, "465"),
         names,
         login,
         password,

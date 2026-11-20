@@ -17,5 +17,10 @@ rm -rf "$out"
 mkdir -p "$out"
 cargo build --locked --profile lounge-check --features tilo-server/agents \
   -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p tilo-cli -p tilolang-process \
+  -p tilo-account-probe --example mail_stand_in \
   "${bins[@]/#/--bin=}"
 for bin in "${bins[@]}"; do cp "$target/lounge-check/$bin" "$out/"; done
+# The stand-in mail server is an example, since it makes a certificate with the
+# crate's test-time dependencies; the stack starts it as mail-stand-in.
+mkdir -p "$out/examples"
+cp "$target/lounge-check/examples/mail_stand_in" "$out/examples/"

@@ -94,6 +94,32 @@ fn the_sign_in_proof_is_taken_for_the_one_login_and_refused_for_another() {
 }
 
 #[test]
+fn a_stack_signs_in_with_imap_on_tls_and_smtp_by_upgrade_at_once() {
+    // What the local stack starts: the IMAP port is TLS from the first byte and
+    // the SMTP port upgrades, and the settings Mail keeps for a port that is not
+    // 143 say exactly that, so a made-up account signs in on both.
+    let up = started(Serving {
+        names: vec!["localhost".to_owned()],
+        login: LOGIN.to_owned(),
+        password: TAKEN.to_owned(),
+        imap: "127.0.0.1:0".to_owned(),
+        smtp: "127.0.0.1:0".to_owned(),
+        imap_wrapped: true,
+        smtp_wrapped: false,
+    })
+    .expect("the stand-in starts");
+    let account = super::email_account(up.imap.port(), up.smtp.port());
+    assert_eq!(
+        crate::LiveAccountTester::email_with_roots(
+            &account,
+            &accounts::Secret::password(TAKEN),
+            roots_of(&up),
+        ),
+        Ok("IMAP and SMTP sign-in succeeded".into())
+    );
+}
+
+#[test]
 fn on_ports_that_are_tls_from_the_first_byte_both_servers_take_the_one_login() {
     let up = stand_in(true);
     let tls = Arc::new(

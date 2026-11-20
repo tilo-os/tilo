@@ -7,7 +7,8 @@
 //! connection is secure. Signed in, it shows an empty inbox. It keeps no mail and sends none:
 //! a message handed to it is refused, so nothing a person writes is swallowed.
 //!
-//! The example `mail_stand_in` is this module as a program; the crate's tests sign in to it
+//! The example `mail_stand_in` is this module as a program (the local stack starts it as
+//! `mail-stand-in`); the crate's tests sign in to it
 //! with the proof itself.
 
 use std::io::{BufRead, BufReader, Read, Write};

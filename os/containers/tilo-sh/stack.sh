@@ -62,6 +62,17 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          the build server
   stack.sh mail          the mail the entry sent (wait-list confirmations,
                          invitations), with the links in each
+  stack.sh mail-account  the account of this stack's stand-in mail server, as
+                         a person types it into Mail's settings: a made-up
+                         address at example.test, its password, and the
+                         incoming and outgoing server and port (TLS from the
+                         first byte for IMAP, STARTTLS for SMTP).
+                         A stack brought up with TILO_SH_MAIL_STAND_IN=1 has
+                         it: an IMAP and an SMTP server with real sockets
+                         that show an empty inbox and send nothing, built with
+                         the programs and started with the stack on two of
+                         its base's ports, with its certificate in this
+                         stack's trust bundle alone
   stack.sh keys          whether the keys of people's sealed stores are kept
                          apart from the state: what the server says in its
                          log, and where the files lie
@@ -198,7 +209,8 @@ Already-built inputs, which a check hands the stack so its bring-up compiles
 and lays out nothing (see docs/testing-tilo-sh.md):
   TILO_SH_PROGRAMS  a directory of the programs the other services run
                     (tilo-api with tilolang-process beside it, which a task's
-                    tilolang programs start in, and fake-discord for --discord)
+                    tilolang programs start in, fake-discord for --discord and
+                    mail-stand-in for TILO_SH_MAIL_STAND_IN=1)
   TILO_SH_LOUNGE    the server's laid-out context, as lounge-context.sh makes it
                     (bin/, bots/, fonts/, surfaces/, entrypoint.sh)
   TILO_SH_SITE      the web entry's laid-out site, as web-entry-context.sh makes
@@ -210,6 +222,11 @@ OCI archive or a registry reference instead of this checkout's t build (e.g.
 the registry.tilo.so/tilo/lounge@sha256:… production pins).
 TILO_SH_VM_HOST=0 leaves the VM host out where it could run (it runs as
 root through sudo).
+TILO_SH_MAIL_STAND_IN=1 adds a stand-in mail server to the stack, for
+setting a mail account up in a browser with no real mail server: one
+made-up login at example.test, an empty inbox, nothing sent. \`stack.sh
+mail-account\` prints what a person types. Up without --images only: it is
+built with this checkout's programs, so a rehearsal of what ships has none.
 TILO_SH_TERMINAL_ON_MACHINE=1, on a stack with no VM host, has the
 workspaces' Terminal start its programs (cargo, git, ...) on this machine as
 the stack's own user, with the PATH it was brought up with; nothing confines
@@ -250,6 +267,8 @@ site_port=$((base + 20))       # Caddy: the site's public origin (tilo.sh, Cloud
 web_port=$((base + 21))        # the web entry's own plain listener (8080), behind it
 releases_port=$((base + 22))   # this checkout's tilo command, as the site's /releases serves it
 mail_port=$((base + 23))       # the mail sink the entry's mail goes to instead of Resend
+mail_stand_in_imap_port=$((base + 24))  # the stand-in mail server's IMAP, when TILO_SH_MAIL_STAND_IN=1
+mail_stand_in_smtp_port=$((base + 25))  # its SMTP
 discord_rest_port=$((base + 40))
 discord_gateway_port=$((base + 41))
 discord_control_port=$((base + 42))
@@ -406,7 +425,8 @@ use_mode "$(cat "$state/mode" 2>/dev/null || echo native)"
 stack_tcp_ports() {
   printf '%s\n' "$server_port" "$plain_port" "$routes_port" "$server_web_port" \
     "$live_port" "$caddy_http_port" "$api_port" "$site_port" "$web_port" \
-    "$releases_port" "$mail_port" "$discord_rest_port" "$discord_gateway_port" \
+    "$releases_port" "$mail_port" "$mail_stand_in_imap_port" \
+    "$mail_stand_in_smtp_port" "$discord_rest_port" "$discord_gateway_port" \
     "$discord_control_port"
 }
 stack_udp_ports() { printf '%s\n' "$packet_port" "$iroh_port" "$link_port"; }
@@ -830,7 +850,9 @@ env_args() { local line; while IFS= read -r line; do printf -- '--env\0%s\0' "$l
 # own; the services reach the internet (font catalog, releases) as this
 # machine does. TILO_SH_EXTRA_ROOTS names a PEM file of more roots, on the
 # machine the stack is on, for a rehearsal against a stand-in server (a
-# mail server's own certificate), which only this stack then trusts.
+# mail server's own certificate), which only this stack then trusts. The
+# stand-in mail server's certificate is kept under the state, beside the
+# login it takes, and is trusted the same way while it is there.
 trust_bundle() {
   local system
   for system in /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem /etc/ssl/certs/ca-certificates.crt; do
@@ -839,6 +861,9 @@ trust_bundle() {
       if [[ -n ${TILO_SH_EXTRA_ROOTS:-} ]]; then
         [[ -f $TILO_SH_EXTRA_ROOTS ]] || die "TILO_SH_EXTRA_ROOTS names no file: $TILO_SH_EXTRA_ROOTS"
         cat "$TILO_SH_EXTRA_ROOTS" >> "$state/trust-bundle.pem"
+      fi
+      if [[ -f $state/mail-stand-in/certificate.pem ]]; then
+        cat "$state/mail-stand-in/certificate.pem" >> "$state/trust-bundle.pem"
       fi
       return
     fi
@@ -864,6 +889,75 @@ start_mail() {
     ((SECONDS < deadline)) || die "the mail sink did not start within a minute: $(cat "$log")"
     sleep 0.1
   done
+}
+
+# The stand-in mail server (TILO_SH_MAIL_STAND_IN=1): an IMAP and an SMTP
+# server with real sockets that take one made-up login, show an empty inbox
+# and send nothing. It is built with the programs and started by the stack's
+# own `up`, before the server, so a person sets a mail account up in a
+# browser against this stack and signs in, with no real mail server and
+# nobody's address or password. Its made-up login and password lie under the
+# state (stack.sh mail-account prints them), and its certificate joins this
+# stack's trust bundle alone.
+start_mail_stand_in() {
+  local dir=$state/mail-stand-in log=$state/logs/mail-stand-in.log login password
+  [[ -x $programs/mail-stand-in ]] \
+    || die "TILO_SH_MAIL_STAND_IN=1 needs mail-stand-in beside the other programs, and $programs holds none: a directory TILO_SH_PROGRAMS names has to be built with it (t's tilo-sh-programs builds one)"
+  mkdir -p "$dir"
+  stop_mail_stand_in
+  login=lab@example.test
+  password=$(cat "$dir/password" 2>/dev/null || true)
+  if [[ -z $password ]]; then
+    password=$(od -An -tx1 -N12 /dev/urandom | tr -d ' \n')
+    (umask 077 && printf '%s\n' "$password" > "$dir/password")
+  fi
+  printf '%s\n' "$login" > "$dir/login"
+  : > "$log"
+  setsid "$programs/mail-stand-in" --name localhost --login "$login" \
+    --password-file "$dir/password" --write-certificate "$dir/certificate.pem" \
+    --imap "127.0.0.1:$mail_stand_in_imap_port" --smtp "127.0.0.1:$mail_stand_in_smtp_port" \
+    --imap-tls >> "$log" 2>&1 < /dev/null 9>&- &
+  local pid=$!
+  printf '%s\n' "$pid" > "$dir/pid"
+  # A stand-in that exited failed; one still starting on a loaded machine is given a minute.
+  local deadline=$((SECONDS + 60))
+  until grep -q 'mail stand-in: IMAP at' "$log" 2>/dev/null; do
+    kill -0 "$pid" 2>/dev/null || die "the mail stand-in exited: $(cat "$log")"
+    ((SECONDS < deadline)) || die "the mail stand-in did not start within a minute: $(cat "$log")"
+    sleep 0.1
+  done
+  say "mail stand-in on $mail_stand_in_imap_port (IMAP) and $mail_stand_in_smtp_port (SMTP); stack.sh mail-account prints the account"
+}
+
+stop_mail_stand_in() {
+  local pidfile=$state/mail-stand-in/pid pid deadline
+  [[ -f $pidfile ]] || return 0
+  pid=$(cat "$pidfile")
+  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  deadline=$((SECONDS + 10))
+  while kill -0 "$pid" 2>/dev/null && ((SECONDS < deadline)); do sleep 0.1; done
+  rm -f "$pidfile"
+}
+
+# mail-account: what a person types into a mail account's settings to reach
+# this stack's stand-in server (the stack brought up with
+# TILO_SH_MAIL_STAND_IN=1).
+mail_account() {
+  local dir=$state/mail-stand-in login password
+  [[ -f $dir/login && -f $dir/password ]] \
+    || die 'this stack has no stand-in mail server: TILO_SH_MAIL_STAND_IN=1 stack.sh up'
+  login=$(cat "$dir/login") password=$(cat "$dir/password")
+  cat <<EOF
+A mail account for this stack, as a person types it:
+
+  Email address:  $login
+  Username:       $login
+  Password:       $password
+  Incoming (IMAP): localhost:$mail_stand_in_imap_port, SSL/TLS
+  Outgoing (SMTP): localhost:$mail_stand_in_smtp_port, STARTTLS
+
+It shows an empty inbox, sends no mail, and takes no other login.
+EOF
 }
 
 # invite [WORKSPACE] [-- --role ROLE] [--email ADDRESS]: an invite link to
@@ -1339,6 +1433,7 @@ build_programs() {
     say "building the programs ($cargo build --profile $profile; only what changed compiles)"
     (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-server/agents \
       -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p tilo-cli -p tilolang-process \
+      -p tilo-account-probe --example mail_stand_in \
       --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin tilo \
       --bin tilolang-process >&2) \
       || die "the build failed (above); if it built but did not bring the programs back, TILO_SH_CARGO names another cargo drop-in to build with"
@@ -1397,7 +1492,7 @@ bundle_stage() {
 # from it (the server's context, the CLI's release) is kept too; one that did
 # is renamed into place, and a service running the old one keeps it.
 copy_programs() {
-  local from=$1 file
+  local from=$1 file stand_in=$1/examples/mail_stand_in
   mkdir -p "$programs"
   for file in tilo-server discord-worker tilo-api fake-discord tilo tilolang-process; do
     [[ -x $from/$file ]] || die "the build left no $from/$file; TILO_SH_CARGO names another cargo drop-in to build with"
@@ -1405,6 +1500,13 @@ copy_programs() {
     cp --reflink=auto "$from/$file" "$programs/.$file.next" || die "could not copy $file"
     mv -f "$programs/.$file.next" "$programs/$file"
   done
+  # The stand-in mail server is an example, since it makes a certificate with
+  # the crate's test-time dependencies; the stack starts it as mail-stand-in.
+  [[ -x $stand_in ]] || die "the build left no $stand_in; TILO_SH_CARGO names another cargo drop-in to build with"
+  if ! cmp -s "$stand_in" "$programs/mail-stand-in"; then
+    cp --reflink=auto "$stand_in" "$programs/.mail-stand-in.next" || die 'could not copy mail-stand-in'
+    mv -f "$programs/.mail-stand-in.next" "$programs/mail-stand-in"
+  fi
 }
 
 # What a layout made from FILEs (and this checkout's commit) was made from:
@@ -1890,6 +1992,9 @@ up_native() {
   # server, which reads where to place a workspace once, when it starts.
   [[ -z $discord ]] || start_native_discord
   start_mail
+  # Before the TLS and the bundle, so its certificate is trusted by the server
+  # that signs a mail account in.
+  [[ ${TILO_SH_MAIL_STAND_IN:-0} != 1 ]] || start_mail_stand_in
   start_native_tls
   trust_bundle
   say "tls up ($((SECONDS - phase))s)"
@@ -2109,6 +2214,10 @@ up() {
 up_images() {
   local discord=$1
   command -v podman >/dev/null || die 'needs podman'
+  # The stand-in is built with this checkout's programs, which the images are
+  # not: a stack here starts it, a rehearsal of what ships does not.
+  [[ ${TILO_SH_MAIL_STAND_IN:-0} != 1 ]] \
+    || die 'TILO_SH_MAIL_STAND_IN=1 starts a stand-in mail server with this checkout'"'"'s programs: up without --images'
   # Rootless, as on any developer's machine: rootful podman gives the web
   # entry no pasta network, and keep-id is what maps the images' users onto
   # this account's files. In a VM as root, check-in-vm.sh runs it as a user.
@@ -2261,11 +2370,12 @@ down() {
   for pid in releases discord mail; do
     [[ -f $state/$pid.pid ]] && { kill "$(cat "$state/$pid.pid")" 2>/dev/null || true; rm -f "$state/$pid.pid"; }
   done
+  stop_mail_stand_in
   if [[ -n $wipe ]]; then
     # The volumes belong to the containers' users (10001, 65532) inside this
     # account's user namespace: only that namespace removes them.
-    podman_ unshare rm -rf "$state/server" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" 2>/dev/null \
-      || rm -rf "$state/server" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail"
+    podman_ unshare rm -rf "$state/server" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/mail-stand-in" 2>/dev/null \
+      || rm -rf "$state/server" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/mail-stand-in"
     # The keys of people's sealed stores open nothing once what they opened is
     # gone: the stack's own folder goes with its state. One the caller named
     # (TILO_SH_PEOPLE_KEYS) is the caller's, and is left.
@@ -2411,9 +2521,10 @@ supervisor_pid() {
 
 # The ports this machine keeps: the server's public origin and the addresses a
 # page dials, the API server the SDKs and agents use, the web entry and the
-# releases, the mail sink, and the fake Discord when one runs.
+# releases, the mail sink and the stand-in mail server's two, and the fake
+# Discord when one runs.
 forward_tcp() {
-  printf '%s\n' "$server_port,$live_port,$plain_port,$routes_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$discord_rest_port,$discord_gateway_port,$discord_control_port"
+  printf '%s\n' "$server_port,$live_port,$plain_port,$routes_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$mail_stand_in_imap_port,$mail_stand_in_smtp_port,$discord_rest_port,$discord_gateway_port,$discord_control_port"
 }
 
 # The page reaches the server over QUIC (WebTransport, then iroh), which ssh
@@ -2688,6 +2799,7 @@ if remote_here && [[ $cmd != up ]]; then
     logs)
       if [[ ${1:-} == remote ]]; then cat "$state/logs/remote.log"; else remote_cmd logs "$@"; fi ;;
     mail) remote_cmd mail ;;
+    mail-account) remote_cmd mail-account ;;
     keys) remote_cmd keys ;;
     browser) browser "$@" ;;
     check)
@@ -2705,6 +2817,7 @@ case $cmd in
   restart) restart "$@" ;;
   logs) [[ -n ${1:-} ]] || die 'logs NAME: server, tls, api, web, discord, releases, mail, bundle'; cat "$state/logs/$1.log" ;;
   mail) list_mail ;;
+  mail-account) mail_account ;;
   keys) keys_apart ;;
   owner) declare_owner "$@" ;;
   invite) invite_link "$@" ;;

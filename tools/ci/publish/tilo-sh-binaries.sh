@@ -28,8 +28,12 @@ mkdir -p "$out/bin"
 # The API server starts a task's tilolang programs in tilolang-process, which it finds beside
 # itself: one build, one directory.
 cargo build --locked --profile lounge-check -p tilo-api -p fake-discord -p tilolang-process \
+  -p tilo-account-probe --example mail_stand_in \
   --bin tilo-api --bin fake-discord --bin tilolang-process
 for bin in tilo-api fake-discord tilolang-process; do cp "$target/lounge-check/$bin" "$out/bin/"; done
+# The stand-in mail server is an example, since it makes a certificate with the
+# crate's test-time dependencies; the stack starts it as mail-stand-in.
+cp "$target/lounge-check/examples/mail_stand_in" "$out/bin/mail-stand-in"
 bash tools/ci/publish/lounge-context.sh "$out/lounge" "$binaries" "$fonts"
 # Outside the image a Tilo program finds the font catalog in fonts/ beside itself,
 # and the stack reads this layout as it is (in a check, read-only).
