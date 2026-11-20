@@ -313,6 +313,9 @@ site_health=http://127.0.0.1:$site_port/healthz
 site_host_header="Host: $site_host:$site_port"
 
 state=${TILO_SH_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tilo-sh-local}
+# A remote stack's state is named from its checkout (`remote_state`), wherever the build server
+# keeps that checkout.
+[[ $state == /* ]] || state=$repo/$state
 # Where the keys of people's sealed stores are kept: beside the state folder,
 # never in it, so a copy or a backup of the state alone opens nobody's
 # sign-ins, keys or vault items. Whoever backs both up keeps them apart.
@@ -392,10 +395,10 @@ case $(cat "$state/mode" 2>/dev/null) in
       remote_why="it is up here already, its state in $state"
     fi ;;
 esac
-# Where a remote stack's own state lives: the same path here and on the build
-# server (the worktree is built at its real path, and this is the one part of
-# it the build server keeps for the stack).
-remote_state=${TILO_SH_REMOTE_STATE:-$repo/target/tilo-stack/$base}
+# Where a remote stack's own state lives: in the checkout's target directory on the build server
+# (the one part of it the build server keeps for the stack), named from the checkout's top, as
+# the build server's checkout need not be at this one's path (t's is at /src).
+remote_state=${TILO_SH_REMOTE_STATE:-target/tilo-stack/$base}
 
 # The programs: the release's code and opt-level without the whole-program
 # link, so a change relinks in seconds instead of LTO's minutes. Built here
@@ -2853,7 +2856,8 @@ up_remote() {
   [[ -z $seed ]] || args+=(--seed)
   [[ -z $discord ]] || args+=(--discord)
   [[ -z ${fake_oauth:-} ]] || args+=(--fake-oauth)
-  mkdir -p "$state/logs" "$(dirname -- "$remote_state")"
+  mkdir -p "$state/logs"
+  (cd "$repo" && mkdir -p "$(dirname -- "$remote_state")")
   echo remote > "$state/mode"
   mode=remote
   printf '%s\n' "$remote_state" > "$state/remote-state"
