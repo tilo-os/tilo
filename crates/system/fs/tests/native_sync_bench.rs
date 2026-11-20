@@ -35,6 +35,13 @@
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
+    clippy::similar_names,
+    clippy::unnested_or_patterns,
+    clippy::doc_markdown,
+    clippy::map_unwrap_or,
+    clippy::redundant_closure,
+    clippy::too_many_lines,
+    clippy::unneeded_late_initialization,
     reason = "in a benchmark these are the assertion or fixture arithmetic, not a hazard"
 )]
 

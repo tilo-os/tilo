@@ -1691,7 +1691,8 @@ fn keep_generation(namespace: &Arc<Mutex<Namespace>>, kept: &KeptTree) -> Result
     kept.keep(namespace)?;
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"tilo.fs.namespace-generation.v1\0");
-    for (chunk, heads) in namespace.lock_recover().document_heads() {
+    let heads = namespace.lock_recover().document_heads();
+    for (chunk, heads) in heads {
         hasher.update(&chunk.to_le_bytes());
         hasher.update(&(heads.len() as u64).to_le_bytes());
         for head in heads {

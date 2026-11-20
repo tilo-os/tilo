@@ -43,16 +43,18 @@ fn regular_file(path: &Path) -> Result<bool> {
 /// Whether the tree's kept documents are there: the directory exists and holds a document or a
 /// journal of one.
 fn kept_documents(dir: &Path) -> Result<bool> {
-    let entries = match std::fs::read_dir(dir) {
+    let mut entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error).context("inspect the kept workspace tree"),
     };
-    for entry in entries {
-        entry.context("inspect the kept workspace tree")?;
-        return Ok(true);
+    match entries.next() {
+        Some(entry) => {
+            entry.context("inspect the kept workspace tree")?;
+            Ok(true)
+        }
+        None => Ok(false),
     }
-    Ok(false)
 }
 
 pub(super) fn inspect(cache: &Path) -> Result<WorkspaceStatus> {
