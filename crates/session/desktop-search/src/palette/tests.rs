@@ -744,30 +744,27 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase escape_clears_what_was_typed_before_it_closes;
-    // Escape clears what was typed before it closes the search: a slip of
-    // the finger costs the query, not the search. A second Escape on the
-    // empty field closes it, as the launcher's did.
+    phase escape_closes_the_search_whatever_was_typed;
+    // Escape closes search from wherever the person stands in it: a query
+    // still in the field is no reason for the card to stay over what they
+    // were doing.
     {
         let mut search = DesktopSearch::new();
         search.open(data());
         settled(&mut search);
         search.set_query("notes");
         settled(&mut search);
-        assert!(search.escape(), "the shell's search clears its query");
-        assert!(search.is_open(), "the first Escape keeps search open");
-        assert_eq!(search.query(), "", "…and clears the query");
-        settled(&mut search);
-        assert!(
-            search.results().iter().any(|hit| hit.title == "Sheets"),
-            "the empty field lists everything again"
-        );
-        assert!(search.escape());
-        assert!(!search.is_open(), "Escape on the empty field closes");
+        assert!(search.escape(), "the shell's search takes Escape");
+        assert!(!search.is_open(), "Escape closes search with a query typed");
         assert!(
             !search.escape(),
             "and Escape on a closed search is not the shell's to handle"
         );
+        // An empty field closes it the same way.
+        search.open(data());
+        settled(&mut search);
+        assert!(search.escape());
+        assert!(!search.is_open(), "Escape on the empty field closes");
     }
 
     phase enter_on_a_typed_app_name_chooses_its_launch;

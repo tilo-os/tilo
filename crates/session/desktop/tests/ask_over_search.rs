@@ -191,12 +191,16 @@ fn an_ask_that_arrives_unasked_does_not_take_the_searchs_keys() {
         session.host.intents.borrow()
     );
 
-    // The person's Escape still belongs to the search they opened: it clears what they typed
-    // (search's own rule) rather than being swallowed by the card.
+    // The person's Escape still belongs to the search they opened: it closes it rather than
+    // being swallowed by the card.
     session
         .chrome
         .send_host_event(&ui::synthetic_input::named_key(NamedKey::Escape));
     session.frame();
+    assert!(
+        !session.handle.search_open(),
+        "the person's Escape closed the search under the card"
+    );
     assert!(
         !session
             .host
@@ -332,11 +336,7 @@ fn a_search_opened_again_does_not_keep_the_query_of_the_last_one() {
     session.settle_search();
     assert_eq!(session.handle.search_rows().0, "notes");
 
-    // Escape on a typed field clears it; the person closes the search with a second Escape.
-    session
-        .chrome
-        .send_host_event(&ui::synthetic_input::named_key(NamedKey::Escape));
-    session.frame();
+    // Escape closes the search, query and all.
     session
         .chrome
         .send_host_event(&ui::synthetic_input::named_key(NamedKey::Escape));
@@ -397,8 +397,8 @@ fn a_search_opened_again_after_a_press_away_starts_empty() {
     assert_eq!(session.handle.search_rows().0, "s");
 }
 
-/// Search closed with Escape on an empty field and opened again: the field starts empty, with the
-/// caret in it, and the first thing typed is the query.
+/// Search closed with Escape and opened again: the field starts empty, with the caret in it, and
+/// the first thing typed is the query.
 #[test]
 fn a_search_closed_with_escape_opens_again_empty() {
     let mut session = session((1280, 800));
@@ -410,10 +410,6 @@ fn a_search_closed_with_escape_opens_again_empty() {
     }
     session.type_text("notes");
     session.settle_search();
-    session
-        .chrome
-        .send_host_event(&ui::synthetic_input::named_key(NamedKey::Escape));
-    session.frame();
     session
         .chrome
         .send_host_event(&ui::synthetic_input::named_key(NamedKey::Escape));

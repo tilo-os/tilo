@@ -428,10 +428,9 @@ impl DesktopSearch {
         self.finish();
     }
 
-    /// What Escape does in the shell's search: a typed query is cleared first
-    /// and search stays open, so a slip of the finger never costs the whole
-    /// search; Escape on the empty field closes it. Returns whether the shell
-    /// did that.
+    /// What Escape does in the shell's search: it closes, whatever the person
+    /// typed there. A search is a card over what they were doing, and Escape
+    /// on it means they are done with it. Returns whether the shell did that.
     ///
     /// A step that asks for a value, a row's other actions, or a question a
     /// window's control asked is the palette's own to back out of, before it
@@ -442,11 +441,7 @@ impl DesktopSearch {
         if !self.is_open() || self.palette.in_argument_mode() {
             return false;
         }
-        if self.query().is_empty() {
-            self.close();
-        } else {
-            self.set_query("");
-        }
+        self.close();
         true
     }
 

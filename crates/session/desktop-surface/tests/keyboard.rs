@@ -1416,6 +1416,22 @@ fn the_search_chord_is_never_the_windows() {
     );
 }
 
+/// Escape on the open palette closes it, whatever holds the field: a card over what the person is
+/// doing is dismissed by the key that dismisses every card of theirs.
+#[test]
+fn escape_closes_the_search_that_has_a_query_in_its_field() {
+    let mut shell = Shell::new(1, 450);
+    shell.handle.open_search(Scope::Workspace, None);
+    shell.settle_search();
+    shell.type_search("notes");
+    assert_eq!(shell.handle.search_rows().0, "notes");
+    shell.key_search(NamedKey::Escape);
+    assert!(
+        !shell.handle.search_open(),
+        "Escape closes the search with a query typed"
+    );
+}
+
 #[test]
 fn search_an_app_opened_asks_it_and_follows_its_answer_once_it_is_in() {
     let mut shell = Shell::new(1, 450);

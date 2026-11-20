@@ -256,20 +256,14 @@ fn the_bars_name_and_face_open_the_menu_and_the_card() {
     );
 }
 
-/// Search is up, the query typed and cleared by Escape: the bar stands clear of the search's
-/// scrim and stays live, so a press on the workspace's name leaves search and opens the menu — one
-/// press, not one to leave search and another to open what was pressed.
+/// Search is up with a query typed: the bar stands clear of the search's scrim and stays live, so
+/// a press on the workspace's name leaves search and opens the menu — one press, not one to leave
+/// search and another to open what was pressed.
 #[test]
 fn a_press_on_the_bar_over_search_leaves_search_and_does_what_it_pressed() {
     let mut shell = shell();
     shell.open_search_and_type("workspace");
     assert!(shell.page.handle.search_open(), "search is up");
-    shell.chrome.send_host_event(&named_key(NamedKey::Escape));
-    shell.frames(3);
-    assert!(
-        shell.page.handle.search_open(),
-        "Escape clears the typed query and leaves search up"
-    );
 
     let name = shell.workspace_name();
     shell.click(name);
