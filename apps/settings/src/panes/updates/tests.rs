@@ -325,8 +325,7 @@ tilo_test_env::scenario! {
         assert!(
             lines.iter().any(|line| line
                 .starts_with("Status: Not installed. Windows support is a separate download")
-                && line.contains("about 1.9 GB")
-                && line.contains("about 3.1 GB")),
+                && line.contains(&disclosure().sentence())),
             "{lines:?}"
         );
         assert_eq!(lines.last().map(String::as_str), Some("Install"));
@@ -1255,4 +1254,107 @@ fn a_stalled_update_control_never_holds_the_window() {
     );
     assert_eq!(*control.rollbacks.lock().unwrap(), 1);
     assert_eq!(model.borrow().rollback_target(), None);
+}
+
+/// What the window publishes for `id`: search and agents read the offer from this.
+fn published(
+    app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
+    id: &str,
+) -> ui::tilo_actions::Availability {
+    app.actions()
+        .expect("the actions are published")
+        .into_iter()
+        .find(|action| action.address.action == id)
+        .unwrap_or_else(|| panic!("`{id}` is published"))
+        .contract
+        .availability
+}
+
+/// The install and remove offers a window publishes with Windows support `readiness`.
+fn windows_offers(
+    readiness: WindowsReadiness,
+) -> (
+    ui::tilo_actions::Availability,
+    ui::tilo_actions::Availability,
+) {
+    crate::area::replace_in_next_window(move |context| {
+        let mut area = UpdatesArea::new(context);
+        area.set_windows_support(readiness);
+        area
+    });
+    let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+    app.settle();
+    (
+        published(&mut app, "install-windows-support"),
+        published(&mut app, "remove-windows-support"),
+    )
+}
+
+/// The offer search shows is the one the device can act on: installing once it is installed is
+/// not offered, and removing what is not there is not either.
+#[test]
+fn the_windows_support_offer_follows_the_installed_state() {
+    use ui::tilo_actions::Availability;
+
+    let installed = windows_offers(WindowsReadiness::Ready);
+    assert_eq!(
+        installed.0,
+        Availability::Unavailable {
+            code: "windows.support".into(),
+            reason: "Windows support is installed.".into(),
+        }
+    );
+    assert_eq!(installed.1, Availability::Available);
+
+    let missing = windows_offers(needs_install());
+    assert_eq!(missing.0, Availability::Available);
+    assert!(
+        matches!(&missing.1, Availability::Unavailable { code, reason }
+            if code == "windows.support" && reason.starts_with("Windows support is not installed.")),
+        "{:?}",
+        missing.1
+    );
+}
+
+/// Every state Settings can read hides exactly the offer it cannot carry out.
+#[test]
+fn each_windows_support_state_hides_what_it_cannot_do() {
+    let cases = [
+        (WindowsReadiness::Ready, vec!["install-windows-support"]),
+        (needs_install(), vec!["remove-windows-support"]),
+        (
+            WindowsReadiness::Installing(None),
+            vec!["install-windows-support", "remove-windows-support"],
+        ),
+        (
+            WindowsReadiness::WaitingForNetwork,
+            vec!["install-windows-support"],
+        ),
+        (
+            WindowsReadiness::Failed("the network went away".into(), disclosure()),
+            Vec::new(),
+        ),
+        (
+            WindowsReadiness::NotOffered,
+            vec!["install-windows-support", "remove-windows-support"],
+        ),
+    ];
+    for (readiness, hidden) in cases {
+        let statuses = super::windows_card::support_statuses(&readiness);
+        let ids: Vec<&str> = statuses
+            .iter()
+            .map(ui::framework::EffectStatus::id)
+            .collect();
+        assert_eq!(ids, hidden, "{readiness:?}");
+        for status in &statuses {
+            assert_eq!(
+                status.availability(),
+                Some(&ui::tilo_actions::Availability::Unavailable {
+                    code: "windows.support".into(),
+                    reason: readiness.message(),
+                }),
+                "{readiness:?}"
+            );
+        }
+    }
 }

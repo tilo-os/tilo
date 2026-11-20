@@ -129,13 +129,8 @@ impl WindowsSupport {
         };
         let banner = match &self.readiness {
             Readiness::NeedsInstall(disclosure) => {
-                let size = disclosure.download_bytes.saturating_add(500_000_000) / 1_000_000_000;
                 Banner::warning(strings::t("windows-support-missing-title"))
-                    .with_message(strings::format(
-                        "windows-support-missing",
-                        "size",
-                        &size.max(1).to_string(),
-                    ))
+                    .with_message(missing_message(disclosure))
                     .with_action(install("windows-support-install"))
             }
             Readiness::Failed(error, _) => {
@@ -177,7 +172,8 @@ impl WindowsSupport {
         Some(Box::new(banner))
     }
 
-    /// Take in what changed since the last call; `Some` once an install from here ended.
+    /// Take in what changed since the last call; `Some` once support arrived, whichever view
+    /// started the install, or once an install from this page failed.
     pub(crate) fn drain(&mut self) -> Option<Finished> {
         let live = self.live.as_mut()?;
         let finished = live
@@ -187,14 +183,35 @@ impl WindowsSupport {
         if finished.is_some() {
             live.job = None;
         }
-        if live.changed.swap(false, Ordering::AcqRel) || finished.is_some() {
-            self.readiness = Readiness::read();
+        let changed = live.changed.swap(false, Ordering::AcqRel);
+        if finished.is_some() || changed {
+            let before = std::mem::replace(&mut self.readiness, Readiness::read());
+            if finished.is_none() && arrived(&before, &self.readiness) {
+                return Some(Finished::Ready);
+            }
         }
         Some(match finished? {
             Ok(()) => Finished::Ready,
             Err(error) => Finished::Failed(error),
         })
     }
+}
+
+/// Whether support became ready between two reads: an install this page did not start (another
+/// view's action, the helper finishing a deferred download) still says on this page that it is
+/// done.
+fn arrived(before: &Readiness, after: &Readiness) -> bool {
+    !matches!(before, Readiness::Ready) && matches!(after, Readiness::Ready)
+}
+
+/// The line a program's page shows before support downloads: its size is the extension
+/// catalogue's, so the figure is the one that will actually be downloaded.
+fn missing_message(disclosure: &SizeDisclosure) -> String {
+    strings::format(
+        "windows-support-missing",
+        "size",
+        &SizeDisclosure::gigabytes(disclosure.download_bytes),
+    )
 }
 
 /// Windows support as a capture of `scenario` shows it: installed, unless the scenario is about
@@ -253,5 +270,47 @@ mod tests {
         );
         let installed = WindowsApp::new_offline_scenario("detail");
         assert!(installed.support.banner(&installed.intents).is_none());
+    }
+
+    /// The page shows the size the extension catalogue publishes, not a figure of its own.
+    #[test]
+    fn a_program_page_shows_the_size_the_catalogue_publishes() {
+        let catalogue = SizeDisclosure {
+            download_bytes: 3_400_000_000,
+            installed_bytes: 3_400_000_000,
+        };
+        assert_eq!(
+            missing_message(&catalogue),
+            "This program needs it to open. It's a download of about 3.4 GB."
+        );
+        let staged = SizeDisclosure {
+            download_bytes: 2_100_000_000,
+            installed_bytes: 5_300_000_000,
+        };
+        assert!(missing_message(&staged).contains("about 2.1 GB"));
+    }
+
+    /// Support that arrives while the page is open says so on the page, even when another view
+    /// started the install.
+    #[test]
+    fn support_arriving_from_another_view_is_announced() {
+        let disclosure = SizeDisclosure {
+            download_bytes: 3_400_000_000,
+            installed_bytes: 3_400_000_000,
+        };
+        assert!(arrived(
+            &Readiness::NeedsInstall(disclosure),
+            &Readiness::Ready
+        ));
+        assert!(arrived(&Readiness::Installing(None), &Readiness::Ready));
+        assert!(!arrived(&Readiness::Ready, &Readiness::Ready));
+        assert!(!arrived(
+            &Readiness::Ready,
+            &Readiness::NeedsInstall(disclosure)
+        ));
+        assert!(!arrived(
+            &Readiness::Installing(None),
+            &Readiness::Failed("the download stopped".into(), disclosure)
+        ));
     }
 }

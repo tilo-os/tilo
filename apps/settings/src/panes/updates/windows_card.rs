@@ -13,6 +13,30 @@ use super::{
 
 use ui::tilo_resource::Effect as _;
 
+/// The availability Settings publishes for the Windows support actions, from what this device
+/// reports: the install is offered while it is not installed and the removal while it is. Search
+/// publishes the same actions, so the offer a person finds there follows the installed state too.
+pub(super) fn support_statuses(readiness: &WindowsReadiness) -> Vec<ui::framework::EffectStatus> {
+    let offered = readiness.offered_actions();
+    let reason = readiness.message();
+    [
+        (
+            WindowsSupportAction::Install,
+            UpdatesEffect::INSTALL_WINDOWS_SUPPORT,
+        ),
+        (
+            WindowsSupportAction::Remove,
+            UpdatesEffect::REMOVE_WINDOWS_SUPPORT,
+        ),
+    ]
+    .into_iter()
+    .filter(|(action, _)| !offered.contains(action))
+    .map(|(_, effect)| {
+        ui::framework::EffectStatus::unavailable(effect, "windows.support", reason.clone())
+    })
+    .collect()
+}
+
 impl UpdatesModel {
     /// The Windows support card's title and lines, in order, as the person
     /// reads them. Nothing (not even the title) on a system whose image does

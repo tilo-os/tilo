@@ -47,6 +47,9 @@ crate::area::pane_area! {
     fn busy(&self) -> bool {
         UpdatesArea::busy(self)
     }
+    fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        UpdatesArea::statuses(self)
+    }
 }
 
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&UpdatesArea> {
@@ -979,6 +982,13 @@ impl UpdatesModel {
         self.codec_status = status();
         self.codec_status_provider = status;
         self.codec_runner = runner;
+        self
+    }
+
+    /// Show `readiness` as a capture's scene staged it, without reading the device.
+    #[must_use]
+    pub fn with_windows_support(mut self, readiness: WindowsReadiness) -> Self {
+        self.windows_support = readiness;
         self
     }
 
@@ -2434,6 +2444,7 @@ pub struct UpdatesArea {
     sections: crate::sections::Sections,
     devices: bool,
     codec_status: Option<CodecPackStatus>,
+    windows_support: Option<WindowsReadiness>,
     model: std::cell::OnceCell<Rc<RefCell<UpdatesModel>>>,
     shown: LocalState<u64>,
 }
@@ -2445,9 +2456,36 @@ impl UpdatesArea {
             sections: cx.sections.clone(),
             devices: cx.devices,
             codec_status: cx.scene().and_then(|scene| scene.codec_status.clone()),
+            windows_support: cx.scene().and_then(|scene| scene.windows_support.clone()),
             model: std::cell::OnceCell::new(),
             shown: LocalState::new(0),
         }
+    }
+
+    /// What this device says about Windows support, for the availability the window publishes.
+    /// A capture shows its own state; a live window reads the small status files the extension
+    /// helper keeps, so the offer follows an install another view finished without opening this
+    /// pane or running a command.
+    fn windows_readiness(&self) -> WindowsReadiness {
+        if !self.devices {
+            return self
+                .windows_support
+                .clone()
+                .unwrap_or(WindowsReadiness::NotOffered);
+        }
+        WindowsReadiness::read()
+    }
+
+    /// Windows support is offered only in the states that can act: the install while it is not
+    /// installed, the removal while it is. The rest of the window (and search, which publishes
+    /// the same actions) reads the offer from this.
+    pub(crate) fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        windows_card::support_statuses(&self.windows_readiness())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_windows_support(&mut self, readiness: WindowsReadiness) {
+        self.windows_support = Some(readiness);
     }
 
     pub fn model(&self) -> &Rc<RefCell<UpdatesModel>> {
@@ -2466,6 +2504,10 @@ impl UpdatesArea {
                 )
             } else {
                 model
+            };
+            let model = match (&self.devices, self.windows_support.clone()) {
+                (false, Some(readiness)) => model.with_windows_support(readiness),
+                _ => model,
             };
             Rc::new(RefCell::new(model))
         })

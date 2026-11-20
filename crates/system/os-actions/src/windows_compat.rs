@@ -61,7 +61,10 @@ impl SizeDisclosure {
         Self::parse(&std::fs::read_to_string(id().catalogue_path()).ok()?)
     }
 
-    fn gigabytes(bytes: u64) -> String {
+    /// `bytes` as a person reads a download size, to a tenth of a gigabyte ("3.4"), for every
+    /// place that shows one.
+    #[must_use]
+    pub fn gigabytes(bytes: u64) -> String {
         let tenths = bytes.div_ceil(100_000_000);
         format!("{}.{}", tenths / 10, tenths % 10)
     }
