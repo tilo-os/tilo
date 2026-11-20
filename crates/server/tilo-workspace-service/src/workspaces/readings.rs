@@ -28,6 +28,15 @@ pub(super) struct Reading {
         )
     )]
     pub(super) device: Option<DeviceKeys>,
+    /// What the last reads of its sealed documents opened ([`super::sealed_documents::readable_now`]).
+    #[cfg_attr(
+        not(any(feature = "agents", feature = "web")),
+        allow(
+            dead_code,
+            reason = "sealed documents are read only where a page or an agent reads them"
+        )
+    )]
+    pub(super) opened: std::sync::Arc<super::sealed_documents::MergedDocuments>,
 }
 
 type Governed = std::sync::Weak<tokio::sync::Mutex<GovernedWorkspace>>;
@@ -66,6 +75,7 @@ impl GovernedWorkspace {
             replica: self.peer.clone(),
             workspace: self.workspace().to_owned(),
             device: self.device.clone(),
+            opened: std::sync::Arc::default(),
         }
     }
 }

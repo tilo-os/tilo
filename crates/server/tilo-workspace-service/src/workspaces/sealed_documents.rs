@@ -18,6 +18,7 @@ use collab_types::{ArtifactId, ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
 use key_group::ContentKeys;
 use neighbour_wire::NeighbourMsg;
+use tilo_lock::MutexRecover as _;
 use tilo_peer_state::StatePeer;
 
 use tilo_peer_state::UnmergedReason;
@@ -369,12 +370,92 @@ pub(super) async fn readable_now(
     else {
         return Ok(None);
     };
-    let opened = held.opened(&mut keys.open())?;
+    // Opened over what its last read merged: a document nobody wrote since reads as that read
+    // made it, and one being written merges only the writes it took since.
+    let route = (app.to_owned(), resource.to_owned());
+    let prior = reading.opened.take(&route);
+    let (opened, next) = held.opened_over(&mut keys.open(), prior)?;
+    if let Some(next) = next {
+        reading.opened.keep(route, next);
+    }
     Ok(Some(merged_or_named(
         opened,
         &reading.workspace,
         (app, resource),
     )))
+}
+
+/// The sealed documents of a workspace as their last reads opened them, so the next read of each
+/// opens only the writes it took since ([`tilo_peer_state::HeldDocument::opened_over`]).
+///
+/// What each read is kept; the merged document a later write is merged into is kept only for the
+/// documents read most lately, as it is far larger: a document being written is read again and
+/// again, one at rest is read as it was saved.
+#[derive(Default)]
+pub(super) struct MergedDocuments(std::sync::Mutex<OpenedState>);
+
+#[derive(Default)]
+struct OpenedState {
+    documents: std::collections::HashMap<(String, String), (u64, tilo_peer_state::MergedDocument)>,
+    reads: u64,
+}
+
+#[cfg_attr(
+    not(any(feature = "agents", feature = "web")),
+    allow(
+        dead_code,
+        reason = "sealed documents are read only where a page or an agent reads them"
+    )
+)]
+impl MergedDocuments {
+    /// Documents whose merged state is kept.
+    const MERGED: usize = 8;
+
+    /// Documents whose read is kept at all: past it, the read longest ago goes.
+    const READS: usize = 4096;
+
+    /// What the last read of `route` left, taken out: a read beside it opens the document whole.
+    fn take(&self, route: &(String, String)) -> Option<tilo_peer_state::MergedDocument> {
+        let mut state = self.0.lock_recover();
+        state.documents.remove(route).map(|(_, opened)| opened)
+    }
+
+    /// Keep what a read of `route` left, for the next one.
+    fn keep(&self, route: (String, String), opened: tilo_peer_state::MergedDocument) {
+        let mut state = self.0.lock_recover();
+        state.reads = state.reads.saturating_add(1);
+        let at = state.reads;
+        state.documents.insert(route, (at, opened));
+        let mut merged: Vec<(u64, (String, String))> = state
+            .documents
+            .iter()
+            .filter(|(_, (_, opened))| opened.holds_merged())
+            .map(|(route, (at, _))| (*at, route.clone()))
+            .collect();
+        if merged.len() > Self::MERGED {
+            merged.sort_unstable();
+            for (_, route) in merged
+                .iter()
+                .take(merged.len().saturating_sub(Self::MERGED))
+            {
+                if let Some((_, opened)) = state.documents.get_mut(route) {
+                    opened.lighten();
+                }
+            }
+        }
+        if state.documents.len() > Self::READS {
+            let mut by_age: Vec<(u64, (String, String))> = state
+                .documents
+                .iter()
+                .map(|(route, (at, _))| (*at, route.clone()))
+                .collect();
+            by_age.sort_unstable();
+            let over = state.documents.len().saturating_sub(Self::READS);
+            for (_, route) in by_age.into_iter().take(over) {
+                state.documents.remove(&route);
+            }
+        }
+    }
 }
 
 /// `resource` of `app` as `peer` holds it, its sealed history opened with `keys` where it has
@@ -432,11 +513,11 @@ pub(super) async fn whole_document(
     peer: &StatePeer,
     device: Option<&super::DeviceKeys>,
     workspace: &str,
-    (app, record): (&str, &str),
+    (app, resource): (&str, &str),
 ) -> Result<Vec<u8>, String> {
-    if !peer.publication().is_sealed_document(app, record) {
+    if !peer.publication().is_sealed_document(app, resource) {
         return peer
-            .document(app, record)
+            .document(app, resource)
             .ok_or_else(|| "the host holds no copy of it".to_owned());
     }
     let device = device.ok_or("it is sealed and this host has no channel keys")?;
@@ -448,10 +529,10 @@ pub(super) async fn whole_document(
         Some(Err(error)) => return Err(format!("its channel's keys did not open: {error}")),
         Some(Ok(keys)) => keys,
     };
-    let keys = DocumentKeys::app_document(keys, workspace, (app, record));
+    let keys = DocumentKeys::app_document(keys, workspace, (app, resource));
     let opened = peer
         .publication()
-        .opened_document(app, record, &mut keys.open())
+        .opened_document(app, resource, &mut keys.open())
         .map_err(|error| format!("its sealed history does not open: {error}"))?
         .ok_or("its sealed history holds no write")?;
     // A write stuck behind a change its writer never sent is no part of the record anyone will

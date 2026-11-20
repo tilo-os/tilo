@@ -1029,11 +1029,44 @@ pub(super) fn open_sealed(
     document: &super::Document,
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
 ) -> Result<OpenedDocument, String> {
+    open_sealed_after(document, open, None).map(|(opened, _)| opened)
+}
+
+/// [`open_sealed`] over what `prior`, an earlier opening of the document, merged: where the
+/// document only took writes since (its base and the history `prior` merged are as they were),
+/// only those are opened and merged, so reading a document its writes keep growing costs the
+/// writes it took, not its whole history each time. Also what this opening merged, for the next one, unless it
+/// left a write out or a write waits for segments: such a write may merge once more arrive, and
+/// only an opening of the whole history takes it in then.
+pub(super) fn open_sealed_after(
+    document: &super::Document,
+    open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+    prior: Option<MergedDocument>,
+) -> Result<(OpenedDocument, Option<MergedDocument>), String> {
     let sealed: Vec<&SignedOp> = document.sealed.iter().collect();
+    let base = document.doc.committed_document().get_heads();
+    let prior = match prior.filter(|prior| prior.continued_by(&base, &sealed)) {
+        // Nothing written since: it reads as the last read made it.
+        Some(prior) if prior.through == sealed.len() => {
+            let document = prior.saved.clone();
+            return Ok((
+                OpenedDocument {
+                    document,
+                    unmerged: Vec::new(),
+                },
+                Some(prior),
+            ));
+        }
+        prior => prior,
+    };
+    let (from, merged) = match prior.and_then(|prior| Some((prior.through, prior.merged?))) {
+        Some(continued) => continued,
+        None => (0, (*document.doc).clone()),
+    };
     let mut unmerged = Vec::new();
     let mut writes = Vec::new();
     let mut transfers = crate::document_frame::Transfers::default();
-    for (index, write) in sealed.iter().enumerate() {
+    for (index, write) in sealed.iter().enumerate().skip(from) {
         match open(write).and_then(|plain| transfers.take(*write.author.as_bytes(), &plain)) {
             Ok(Some(mutation)) => writes.push((index, mutation)),
             Ok(None) => {}
@@ -1051,19 +1084,23 @@ pub(super) fn open_sealed(
         of: &|index| signed.get(index).copied(),
         held: &|| super::unsent_bases::HeldThrough::of(document),
     };
-    let (mut merged, left) = merge_writes(
-        (*document.doc).clone(),
-        writes,
-        LeftOut::Named,
-        Some(&signers),
-    )?;
+    let (mut merged, left) = merge_writes(merged, writes, LeftOut::Named, Some(&signers))?;
     unmerged.extend(left.into_iter().map(|(index, reason, _)| (index, reason)));
     unmerged.sort_by_key(|(index, _)| *index);
-    Ok(OpenedDocument {
-        document: merged.save_with_options(automerge::SaveOptions {
-            retain_orphans: false,
-            ..automerge::SaveOptions::default()
-        }),
+    let saved = merged.save_with_options(automerge::SaveOptions {
+        retain_orphans: false,
+        ..automerge::SaveOptions::default()
+    });
+    let next = (unmerged.is_empty() && transfers.is_empty()).then(|| MergedDocument {
+        base,
+        first: sealed.first().map(|write| Mark::of(write)),
+        through: sealed.len(),
+        last: sealed.last().map(|write| Mark::of(write)),
+        saved: saved.clone(),
+        merged: Some(merged),
+    });
+    let opened = OpenedDocument {
+        document: saved,
         unmerged: unmerged
             .into_iter()
             .filter_map(|(index, reason)| {
@@ -1075,7 +1112,80 @@ pub(super) fn open_sealed(
                 })
             })
             .collect(),
-    })
+    };
+    Ok((opened, next))
+}
+
+/// A sealed document as an opening of it left it, every write of its history merged
+/// ([`HeldDocument::opened_over`]): a later opening of the document that only took writes since merges
+/// just those over it.
+pub struct MergedDocument {
+    /// The heads of the document's cleartext base it was opened over.
+    base: Vec<automerge::ChangeHash>,
+    /// The first write of the history it merged, and its last.
+    first: Option<Mark>,
+    last: Option<Mark>,
+    /// How many writes of the history it merged.
+    through: usize,
+    /// The document with them merged, saved.
+    saved: Vec<u8>,
+    /// The document with them merged, while it is kept ([`Self::lighten`]).
+    merged: Option<AutoCommit>,
+}
+
+impl Clone for MergedDocument {
+    /// A copy keeps what was read, not the document to merge further writes into: that is the one
+    /// kept apart.
+    fn clone(&self) -> Self {
+        Self {
+            base: self.base.clone(),
+            first: self.first,
+            last: self.last,
+            through: self.through,
+            saved: self.saved.clone(),
+            merged: None,
+        }
+    }
+}
+
+impl MergedDocument {
+    /// Keep only what was read: an opening after it reads it again only while the document took
+    /// no write since, and opens the whole history once one comes. The merged document is the
+    /// larger part by far; a reader keeps it for the documents being written.
+    pub fn lighten(&mut self) {
+        self.merged = None;
+    }
+
+    /// Whether it still holds the merged document a later write merges into.
+    #[must_use]
+    pub fn holds_merged(&self) -> bool {
+        self.merged.is_some()
+    }
+
+    /// Whether the document with base heads `base` and history `sealed` is this one with only
+    /// writes added after it: a compaction replaces the history's start, and a new base is
+    /// another state of it.
+    fn continued_by(&self, base: &[automerge::ChangeHash], sealed: &[&SignedOp]) -> bool {
+        if self.base != base || sealed.len() < self.through {
+            return false;
+        }
+        let Some(last) = self.through.checked_sub(1) else {
+            return true;
+        };
+        sealed.first().map(|write| Mark::of(write)) == self.first
+            && sealed.get(last).map(|write| Mark::of(write)) == self.last
+    }
+}
+
+/// One write of a sealed history, told apart from every other: its writer, its sequence, and its
+/// signature.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Mark([u8; 32], u64, collab_types::crypto::Signature);
+
+impl Mark {
+    fn of(write: &SignedOp) -> Self {
+        Self(*write.author.as_bytes(), write.seq, write.signature)
+    }
 }
 
 /// A document as a state held it once ([`PeerPublication::held_document`]),
@@ -1101,6 +1211,30 @@ impl HeldDocument {
             });
         }
         open_sealed(&self.0, open)
+    }
+
+    /// [`Self::opened`] over `prior`, what an earlier opening of this document left
+    /// ([`open_sealed_after`]), and what this one leaves for the next: `None` for a document
+    /// written in the clear, which reads as it is saved at no cost.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::opened`].
+    pub fn opened_over(
+        &self,
+        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+        prior: Option<MergedDocument>,
+    ) -> Result<(OpenedDocument, Option<MergedDocument>), String> {
+        if !self.0.encryption_required {
+            return self.opened(open).map(|opened| (opened, None));
+        }
+        open_sealed_after(&self.0, open, prior)
+    }
+
+    /// Whether its writes are sealed.
+    #[must_use]
+    pub fn is_sealed(&self) -> bool {
+        self.0.encryption_required
     }
 }
 

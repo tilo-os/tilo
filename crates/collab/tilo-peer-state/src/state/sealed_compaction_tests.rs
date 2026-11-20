@@ -2073,7 +2073,7 @@ tilo_test_env::scenario! {
     }
 }
 
-fn sealer(
+pub(super) fn sealer(
     keys: &ContentKeys,
     record: &str,
 ) -> impl FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> {
@@ -2092,13 +2092,13 @@ tilo_test_env::scenario! {
     {
         let f = fixture();
         let keys = f.keys();
-        let mut host = f.host.clone();
-        assert!(!host.publication().is_sealed_document(APP, RECORD));
-        let mut document = AutoCommit::load(&host.document(APP, RECORD).unwrap()).unwrap();
+        let mut sealing = f.host.clone();
+        assert!(!sealing.publication().is_sealed_document(APP, RECORD));
+        let mut document = AutoCommit::load(&sealing.document(APP, RECORD).unwrap()).unwrap();
         let heads = document.get_heads();
         document.put(ROOT, "value", "sealed").unwrap();
         document.commit_edit("fixture", "value");
-        let message = host
+        let message = sealing
             .publication_mut()
             .publish_sealed_incremental(
                 APP,
@@ -2110,8 +2110,8 @@ tilo_test_env::scenario! {
             )
             .unwrap();
         assert!(envelope_of(&message).encryption.is_some());
-        assert!(host.publication().is_sealed_document(APP, RECORD));
-        let opened = host
+        assert!(sealing.publication().is_sealed_document(APP, RECORD));
+        let opened = sealing
             .publication()
             .opened_document(APP, RECORD, &mut |op| open(&keys, op))
             .unwrap()
@@ -2127,7 +2127,7 @@ tilo_test_env::scenario! {
             "\"sealed\""
         );
         assert!(
-            host.publication_mut()
+            sealing.publication_mut()
                 .publish_incremental(APP, RECORD, Vec::new(), &f.owner, f.now)
                 .is_err()
         );
