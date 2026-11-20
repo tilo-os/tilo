@@ -450,6 +450,20 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
       window.history.replaceState(window.history.state, '', link.format(route));
     }
   }
+  // The web version is the page the server renders of a workspace: this
+  // browser is a device of it now, and the page takes over from here. What
+  // the link named of an app is the page it opens, and the thing it named
+  // there is what that page opens first; a link naming none lands on the
+  // workspace's front page, which lists its apps.
+  if (peer && route.target.scope.kind === 'workspace' && route.target.scope.workspace) {
+    deps.onPageFirst?.(peer);
+    const app = route.target.app ? `/${String(route.target.app).split('.').pop()}` : '';
+    const resource = typeof route.target.resource === 'string'
+      ? route.target.resource : route.target.resource?.id;
+    const show = app && resource ? `/${encodeURIComponent(resource)}` : '';
+    window.location.replace(`${entry.base}w/${route.target.scope.workspace}${app}${show}`);
+    return null;
+  }
   // A listed workspace is shown under its listed name, not its workspace id.
   const scope = route.target.scope;
   const listed = listedAt(workspaces, scope, admittedWorkspace);
