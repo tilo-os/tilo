@@ -15,6 +15,7 @@ use collab_types::{ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
 use key_group::ContentKeys;
 use neighbour_wire::NeighbourMsg;
+use tilo_resource_store::wire::{Command, Reply};
 use tilo_resource_store::{Cell, Query, Resource, Stamp, Store, Value};
 
 use super::super::Workspaces;
@@ -132,6 +133,26 @@ async fn title(workspaces: &Workspaces, workspace: &str, id: &str) -> Option<Val
         .map(|held| held.scalar("title"))
 }
 
+/// The title of the issue `id` of `workspace`, as an app reads it through the service.
+async fn title_through_service(
+    workspaces: &Workspaces,
+    workspace: &str,
+    id: &str,
+) -> Option<Value> {
+    let get = Command::Get {
+        kind: KIND.to_owned(),
+        id: id.to_owned(),
+    };
+    match workspaces
+        .resource_command(workspace, APP, get)
+        .await
+        .unwrap()
+    {
+        Reply::Resource(held) => held.map(|held| held.scalar("title")),
+        _ => None,
+    }
+}
+
 /// The service writes its device's resources through its own store, as the device's signed and
 /// sealed document writes the workspace's other members follow, and reads them back at once.
 #[tokio::test]
@@ -168,27 +189,22 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
         order: None,
         fields: BTreeMap::from([("title".to_owned(), Cell::One(Value::Text(title.into())))]),
     };
-    let read = |workspaces: &Workspaces, workspace: &str, id: &str| {
-        let workspaces = workspaces.clone();
-        let workspace = workspace.to_owned();
-        let id = id.to_owned();
-        async move {
-            workspaces
-                .resource_get(&workspace, KIND, &id)
-                .await
-                .unwrap()
-                .map(|held| held.scalar("title"))
-        }
-    };
     for title in ["First", "Renamed"] {
         workspaces
-            .write_resources(&workspace, APP, |store| {
-                store.put(KIND, "i-1", issue(title), &stamp)
-            })
+            .resource_command(
+                &workspace,
+                APP,
+                Command::Put {
+                    kind: KIND.to_owned(),
+                    id: "i-1".to_owned(),
+                    resource: issue(title),
+                    stamp: stamp.clone(),
+                },
+            )
             .await
             .unwrap();
         assert_eq!(
-            read(&workspaces, &workspace, "i-1").await,
+            title_through_service(&workspaces, &workspace, "i-1").await,
             Some(Value::Text(title.into())),
             "the write is read back at once"
         );
@@ -221,7 +237,9 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
     }
     // A reader the issue's set leaves out reads nothing of it.
     assert!(
-        read(&workspaces, &workspace, "i-2").await.is_none(),
+        title_through_service(&workspaces, &workspace, "i-2")
+            .await
+            .is_none(),
         "an issue nobody wrote is not there"
     );
     drop(workspaces);
@@ -233,7 +251,7 @@ async fn a_device_writes_its_resources_through_the_service_and_reads_them_back()
         signer: Arc::new(key),
     }));
     assert_eq!(
-        read(&workspaces, &workspace, "i-1").await,
+        title_through_service(&workspaces, &workspace, "i-1").await,
         Some(Value::Text("Renamed".into())),
         "a restart reads the store back"
     );

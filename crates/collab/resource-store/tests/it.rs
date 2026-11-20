@@ -837,8 +837,206 @@ mod store {
             invoker: "ada".to_owned(),
             invocation: invocation.to_owned(),
             membership: vec!["m1".to_owned()],
-            undoes: None,
+            ..Stamp::default()
         }
+    }
+
+    /// Two devices that made a note and its body as one action, then edited its text and counter
+    /// at once: `i2` here, `i3` there, each with the other's change.
+    fn edited_on_two_devices() -> (Store, Store) {
+        use serde_json::json;
+        use tilo_resource_store::wire::{Command, Edit, write};
+
+        let mut here = Store::new();
+        let mut there = Store::new();
+        // One action, one request: the note and its body.
+        let made = write(
+            &mut here,
+            Command::Batch(vec![
+                Command::Put {
+                    kind: ISSUE.to_owned(),
+                    id: "a".to_owned(),
+                    resource: resource("board", "a0", "Draft", "open"),
+                    stamp: stamp("make", "i1"),
+                },
+                Command::Edit {
+                    kind: ISSUE.to_owned(),
+                    id: "a".to_owned(),
+                    edits: vec![
+                        Edit::Splice {
+                            field: "body".to_owned(),
+                            at: 0,
+                            delete: 0,
+                            insert: "Hello".to_owned(),
+                        },
+                        Edit::Add {
+                            field: "votes".to_owned(),
+                            by: 1,
+                        },
+                        Edit::Set {
+                            field: "meta".to_owned(),
+                            value: json!({"tags": ["a", "b"]}),
+                        },
+                    ],
+                    stamp: stamp("make", "i1"),
+                },
+            ]),
+        )
+        .unwrap();
+        send(&made, &mut there);
+        // Two devices edit the same text and counter at once: both edits are kept.
+        let edit = |store: &mut Store, insert: &str, at: usize, invocation: &str| {
+            write(
+                store,
+                Command::Edit {
+                    kind: ISSUE.to_owned(),
+                    id: "a".to_owned(),
+                    edits: vec![
+                        Edit::Splice {
+                            field: "body".to_owned(),
+                            at,
+                            delete: 0,
+                            insert: insert.to_owned(),
+                        },
+                        Edit::Add {
+                            field: "votes".to_owned(),
+                            by: 1,
+                        },
+                    ],
+                    stamp: stamp("edit", invocation),
+                },
+            )
+            .unwrap()
+        };
+        let mine = edit(&mut here, "Oh, ", 0, "i2");
+        let theirs = edit(&mut there, " world", 5, "i3");
+        send(&theirs, &mut here);
+        send(&mine, &mut there);
+        (here, there)
+    }
+
+    /// The content of the issue `a`, as everyone may read it; `None` for any other answer.
+    fn content_of(store: &Store) -> Option<serde_json::Value> {
+        use tilo_resource_store::wire::{Command, Reply, read};
+        match read(
+            store,
+            &Command::Content {
+                kind: ISSUE.to_owned(),
+                id: "a".to_owned(),
+            },
+            &|_| true,
+        ) {
+            Some(Reply::Content(content)) => content,
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn an_apps_commands_write_content_as_one_and_read_back_its_versions() {
+        use serde_json::json;
+        use tilo_resource_store::wire::{Command, Reply, read};
+        use tilo_resource_store::{Version, VersionKind};
+
+        let all = |_: &str| true;
+        let (here, there) = edited_on_two_devices();
+        let content = content_of;
+        assert_eq!(
+            content(&here),
+            Some(json!({"body": "Oh, Hello world", "votes": 3, "meta": {"tags": ["a", "b"]}}))
+        );
+        assert_eq!(content(&here), content(&there));
+        assert!(
+            matches!(
+                read(
+                    &here,
+                    &Command::Content {
+                        kind: ISSUE.to_owned(),
+                        id: "a".to_owned()
+                    },
+                    &|_| false
+                ),
+                Some(Reply::Content(None))
+            ),
+            "content is read only by whom the resource's readers admit"
+        );
+
+        let versions = match read(
+            &here,
+            &Command::Versions {
+                kind: ISSUE.to_owned(),
+                id: "a".to_owned(),
+            },
+            &all,
+        ) {
+            Some(Reply::Versions(versions)) => versions,
+            other => panic!("versions are read: {other:?}"),
+        };
+        let invocations: Vec<(&str, VersionKind)> = versions
+            .iter()
+            .map(|version: &Version| {
+                (
+                    version
+                        .stamp
+                        .as_ref()
+                        .map_or("", |stamp| stamp.invocation.as_str()),
+                    version.kind,
+                )
+            })
+            .collect();
+        assert_eq!(invocations.first(), Some(&("i1", VersionKind::Made)));
+        assert!(
+            invocations
+                .iter()
+                .any(|(invocation, _)| *invocation == "i2")
+        );
+        assert!(
+            invocations
+                .iter()
+                .any(|(invocation, _)| *invocation == "i3")
+        );
+    }
+
+    #[test]
+    fn an_apps_undo_takes_back_only_its_own_characters_and_redo_puts_them_back() {
+        use serde_json::json;
+        use tilo_resource_store::wire::{Command, write};
+
+        let (mut here, _) = edited_on_two_devices();
+        let content = content_of;
+        // Redo is the undo of an undo.
+        let undo = Stamp {
+            undoes: Some("i2".to_owned()),
+            ..stamp("edit", "i4")
+        };
+        write(
+            &mut here,
+            Command::Undo {
+                invocation: "i2".to_owned(),
+                stamp: undo,
+            },
+        )
+        .unwrap();
+        assert_eq!(content(&here).unwrap()["body"], json!("Hello world"));
+        write(
+            &mut here,
+            Command::Undo {
+                invocation: "i4".to_owned(),
+                stamp: stamp("edit", "i5"),
+            },
+        )
+        .unwrap();
+        assert_eq!(content(&here).unwrap()["body"], json!("Oh, Hello world"));
+        assert!(
+            write(
+                &mut here,
+                Command::Count {
+                    kind: ISSUE.to_owned(),
+                    filters: Vec::new()
+                }
+            )
+            .is_err(),
+            "a read is no write"
+        );
     }
 
     #[test]

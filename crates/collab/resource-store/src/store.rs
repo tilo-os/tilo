@@ -75,6 +75,8 @@ pub enum StoreError {
     Missing { kind: String, id: String },
     /// The document refused the change, or what was given as one is none.
     Document(automerge::AutomergeError),
+    /// A read was given where a write was asked for.
+    NotAWrite,
 }
 
 impl std::fmt::Display for StoreError {
@@ -82,6 +84,7 @@ impl std::fmt::Display for StoreError {
         match self {
             Self::Missing { kind, id } => write!(f, "there is no {kind} `{id}`"),
             Self::Document(error) => write!(f, "the document refused the change: {error}"),
+            Self::NotAWrite => write!(f, "that is a read, not a write"),
         }
     }
 }
@@ -448,11 +451,11 @@ impl Store {
             let Some(doc) = self.existing(&doc_id)? else {
                 continue;
             };
-            let Some((before, after)) = span_of(doc, invocation) else {
+            let Some(span) = crate::undo::Span::of(doc, invocation) else {
                 continue;
             };
-            let was = doc.fork_at(&before)?;
-            let became = doc.fork_at(&after)?;
+            let was = doc.fork_at(&span.before)?;
+            let became = doc.fork_at(&span.after)?;
             if let Some((kind, id)) = crate::admit::content_resource(&doc_id) {
                 let (was_map, became_map) = (
                     ReadDoc::hydrate(&was, &ROOT, None)?,
@@ -470,7 +473,7 @@ impl Store {
                 }
                 let ((), change) = self.edit_content(&kind, &id, stamp, |tx, root| {
                     for key in changed {
-                        restore_key(&was, &key, tx, root)?;
+                        crate::undo::undo_key(&span, (&was, &became), &key, tx, root)?;
                     }
                     Ok(())
                 })?;
@@ -752,6 +755,35 @@ impl Store {
         self.refused.get(doc).into_iter().flatten()
     }
 
+    /// The content of the resource `id` of `kind`, as JSON; `None` while nothing was written to
+    /// it, or its document is not in memory.
+    #[must_use]
+    pub fn content_json(&self, kind: &str, id: &str) -> Option<serde_json::Value> {
+        let (doc_id, _) = self.content_of(kind, id).ok()?;
+        let doc = self.docs.get(&doc_id)?;
+        (doc.length(ROOT) > 0).then(|| crate::wire::json_of(doc, &ROOT))
+    }
+
+    /// The versions of the resource `id` of `kind`, oldest first: each change that made, changed
+    /// or removed it, or changed its content, as its action stamped it. One whose document is
+    /// not in memory has none.
+    #[must_use]
+    pub fn versions(&self, kind: &str, id: &str) -> Vec<crate::history::Version> {
+        let mut versions = Vec::new();
+        if let Some(held) = self.index.get(kind, id)
+            && let Some(doc) = self.docs.get(&held.doc)
+        {
+            versions.extend(crate::history::of(doc, &held.doc, id));
+        }
+        if let Ok((content, _)) = self.content_of(kind, id)
+            && let Some(doc) = self.docs.get(&content)
+        {
+            versions.extend(crate::history::of(doc, &content, id));
+        }
+        versions.sort_by_key(|version| version.op);
+        versions
+    }
+
     /// The types and verbs declared so far: what a peer's change is checked against.
     #[must_use]
     pub const fn schema(&self) -> &Schema {
@@ -995,24 +1027,6 @@ impl Store {
     }
 }
 
-/// The heads `doc` stood at before the first change of `invocation`, and the heads its last one
-/// made: the stretch of history it wrote. `None` for a document it did not change.
-fn span_of(doc: &Automerge, invocation: &str) -> Option<(Vec<ChangeHash>, Vec<ChangeHash>)> {
-    let mut first = None;
-    let mut last = None;
-    for change in doc.get_changes_meta(&[]) {
-        let stamp = change
-            .message
-            .as_deref()
-            .and_then(|message| serde_json::from_str::<Stamp>(message).ok());
-        if stamp.is_some_and(|stamp| stamp.invocation == invocation) {
-            first.get_or_insert(change.deps);
-            last = Some(change.hash);
-        }
-    }
-    Some((first?, vec![last?]))
-}
-
 /// What the key `key` of the map `map` holds; `None` where it holds nothing.
 fn hydrated_key(map: &automerge::hydrate::Value, key: &str) -> Option<automerge::hydrate::Value> {
     match map {
@@ -1023,7 +1037,7 @@ fn hydrated_key(map: &automerge::hydrate::Value, key: &str) -> Option<automerge:
 
 /// Gives the key `key` of the map `to` in `tx` what it holds in the map at the root of `was`:
 /// its value as it stood, texts with their marks; nothing where it held nothing.
-fn restore_key(
+pub(crate) fn restore_key(
     was: &Automerge,
     key: &str,
     tx: &mut automerge::transaction::Transaction<'_>,
