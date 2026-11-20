@@ -651,7 +651,7 @@ src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 name=${src#/dev/mapper/}
 command -v cryptsetup >/dev/null \
   || { echo "the image carries no cryptsetup, so its own LUKS2 header cannot be read here"; exit 1; }
-dump=$(cryptsetup luksDump "$name")
+dump=$(cryptsetup luksDump "/dev/mapper/$name")
 printf "%s\n" "$dump" | grep -q systemd-recovery \
   || { echo "no systemd-recovery token in the header"; exit 1; }
 slots=$(printf "%s\n" "$dump" | sed -n "/^Keyslots:/,/^Tokens:/p" | grep -cE "^  [0-9]+:")
