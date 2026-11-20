@@ -1,10 +1,11 @@
-//! A write waits for a part of its chain the workspace has not sent yet, and the workspace's
-//! other requests are answered meanwhile.
+//! A write or a listing waits for parts of a chain the workspace has not sent yet, and the
+//! workspace's other requests are answered meanwhile.
 //!
-//! Every request of a workspace is served on one thread. A server that restarted holds only the
-//! newest part of a tracker's issues, and a write under an older issue waits for that issue's
-//! part. The part is held back here ([`HeldBack`]) for as long as the test likes: while the
-//! write waits, a listing of the same workspace is answered within a small multiple of what it
+//! Every request of a workspace is served on one thread. A server that restarted, or a fresh
+//! member, holds only some parts of a tracker's issues, or none, and a write under an older
+//! issue waits for that issue's part, as a listing of the issues waits for the chain. What it
+//! waits for is held back here ([`HeldBack`]) for as long as the test likes: meanwhile a
+//! listing of another app of the same workspace is answered within a small multiple of what it
 //! costs when nothing waits, and once the part is let go the write lands with the answer it
 //! would have had.
 use super::*;
@@ -36,6 +37,29 @@ fn median(mut samples: Vec<Duration>) -> Duration {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_write_waiting_for_its_part_leaves_the_workspace_answering() {
+    // The workspace lists the oldest issue's part and has not sent it.
+    held_back_beside(
+        |workspace| HeldBack::listed(workspace, tasks::issue_list::chain().part(0).as_str()),
+        false,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_and_a_listing_waiting_for_a_part_leave_the_workspace_answering() {
+    // The service was told nothing of the oldest issue's part: the tracker asks for it as its
+    // chains are handed over, and waits for it.
+    held_back_beside(
+        |workspace| HeldBack::unlisted(workspace, tasks::issue_list::chain().part(0).as_str()),
+        true,
+    )
+    .await;
+}
+
+/// Restart a server holding a tracker of two parts, hold back what `held_back` names, and
+/// measure a listing of the notes while a write under the oldest issue (and, with
+/// `list_issues`, a listing of the issues) waits for it.
+async fn held_back_beside(held_back: impl FnOnce(&str) -> HeldBack, list_issues: bool) {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let server = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
@@ -114,7 +138,6 @@ async fn a_write_waiting_for_its_part_leaves_the_workspace_answering() {
         .expect("a note is written");
     }
     let oldest = oldest.unwrap();
-    let first_part = tasks::issue_list::chain().part(0);
     assert!(
         workspaces
             .resource_document(
@@ -168,8 +191,25 @@ async fn a_write_waiting_for_its_part_leaves_the_workspace_answering() {
     }
     let normal = median(normal);
 
-    // The oldest issue's part is held back, and a write under that issue waits for it.
-    let held = HeldBack::new(first_part.as_str());
+    // What the oldest issue is in is held back, and a write under that issue waits for it.
+    let held = held_back(&workspace);
+    let issues_listed = list_issues.then(|| {
+        let service = service.clone();
+        let person = person.clone();
+        let route = route.clone();
+        tokio::spawn(async move {
+            service
+                .query(
+                    &person,
+                    CatalogueQuery {
+                        provider: Some(record_provider(&route)),
+                        max_results: 16,
+                        ..CatalogueQuery::default()
+                    },
+                )
+                .await
+        })
+    });
     let write = tokio::spawn({
         let service = service.clone();
         let person = person.clone();
@@ -214,6 +254,9 @@ async fn a_write_waiting_for_its_part_leaves_the_workspace_answering() {
         !write.is_finished(),
         "the write waits for the part held back"
     );
+    if let Some(listed) = &issues_listed {
+        assert!(!listed.is_finished(), "the issues' listing waits for them");
+    }
     let ratio = beside.as_secs_f64() / normal.as_secs_f64().max(1e-6);
     println!(
         "a listing took {normal:?} with nothing waiting and {beside:?} while a write waited for \
@@ -234,5 +277,16 @@ async fn a_write_waiting_for_its_part_leaves_the_workspace_answering() {
     });
     assert!(answer["value"].is_object(), "{answer}");
     println!("the write landed {took:?} after it was asked");
+    if let Some(listed) = issues_listed {
+        let page = listed
+            .await
+            .unwrap()
+            .expect("the issues are listed")
+            .expect("the tracker answers");
+        assert!(
+            !page.rows.is_empty(),
+            "the tracker lists its issues once they arrive"
+        );
+    }
     drop(served);
 }

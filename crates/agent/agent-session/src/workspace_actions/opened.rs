@@ -142,7 +142,7 @@ impl Workspace {
         for route in routes {
             // A part a test holds back: owed, and not asked for until it is let go.
             #[cfg(feature = "test-support")]
-            if super::held_back::hidden(&route.document) {
+            if super::held_back::hidden(&route.cluster_id, &route.document) {
                 owing = true;
                 continue;
             }
@@ -324,6 +324,12 @@ impl Worker {
             app_id: &route.app_id,
             record: &route.document,
         };
+        // A test holds it back, as a workspace that sends what it holds once it is opened has
+        // still to send it.
+        #[cfg(feature = "test-support")]
+        if super::held_back::hidden(&route.cluster_id, &route.document) {
+            return Err(Outcome::Rejected(ActionCallError::NotReady));
+        }
         // Asked for now: the same call goes through once it arrived, which the caller waits for
         // as the workspace's state rather than a reason to read.
         // A workspace that replayed everything it held when this device joined has nothing

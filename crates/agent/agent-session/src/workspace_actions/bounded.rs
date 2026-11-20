@@ -940,8 +940,12 @@ impl Worker {
         }
         super::catch_up::tell_kept(&mut held.held, state, kept);
         super::catch_up::tell_kept(&mut held.held, state, wanted);
-        // The parts of its chains the workspace has still to send, waited on.
+        // The parts of its chains the workspace has still to send, waited on: off this
+        // thread for a write or a listing, which is held until they arrive.
         self.hold_chains(&super::Writer::Bounded(key.clone()), &holder, state);
+        if self.hold_for_chains() {
+            return Err(ActionCallError::NotReady);
+        }
         let held = self
             .bounded
             .get_mut(&key)
@@ -1136,6 +1140,9 @@ impl Worker {
             .refresh(workspace_id, super::Needs::Joined)
             .map_err(Outcome::Rejected)?;
         self.hold_chains(&super::Writer::Bounded(key.clone()), &key.0, &state);
+        if self.hold_for_chains() {
+            return Err(super::api_outcome(&super::part_wait::not_ready()));
+        }
         let held = self
             .bounded
             .remove(key)
@@ -1143,7 +1150,7 @@ impl Worker {
         let tried = asked(&held);
         if let Err(error) = &tried
             && super::part_wait::arriving(error)
-            && self.hold_for_part(confirmed)
+            && self.hold_for_part(Some(confirmed))
         {
             self.bounded.insert(key.clone(), held);
             return Err(super::api_outcome(error));

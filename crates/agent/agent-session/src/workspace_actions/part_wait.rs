@@ -28,8 +28,11 @@ pub(super) const PART_WAIT: Duration = Duration::from_secs(30);
 /// The first pause before a write waiting for its part is applied again:
 /// short, as a part usually arrives at once.
 const PART_LOOK: Duration = Duration::from_millis(10);
-/// The longest pause between those tries, as a part stays away.
-const PART_LOOK_MAX: Duration = Duration::from_millis(250);
+/// The longest pause between those tries, as a part stays away: a part that arrives, or the
+/// word that the workspace holds none of it, wakes the write at once, so the pause only
+/// bounds what nothing announced. Every try takes the workspace's thread, and a shorter
+/// one held the workspace's other requests behind tries that found nothing new.
+const PART_LOOK_MAX: Duration = Duration::from_secs(1);
 
 /// One operation to apply to what is mounted here, as the request named it.
 pub(super) struct Invoked<'a> {
@@ -58,10 +61,11 @@ struct Awaiting {
     tried: Tried,
     /// When it is applied again at the latest.
     at: Instant,
-    /// How many writes had landed in its workspace when it was held: a change of the
-    /// workspace that landed none (a person arriving, a listing) brings no part, and the write
-    /// is not applied again for it, which held the next request behind it every time.
-    landings: u64,
+    /// How far its workspace had moved when it was held ([`Worker::moved`]): a change of the
+    /// workspace that landed nothing and answered nothing (a person arriving, a listing)
+    /// brings no part, and the write is not applied again for it, which held the next
+    /// request behind it every time.
+    moved: u64,
     job: Job,
 }
 
@@ -77,18 +81,58 @@ pub(super) struct PartWaits {
     held: Option<Tried>,
     /// How the write about to be applied again waited so far.
     resumed: Option<Tried>,
+    /// Whether the request being served may wait off this thread for the parts of a chain
+    /// still on their way ([`Worker::hold_chains`]): a write and a listing may.
+    holdable: bool,
+    /// The request being served found parts of a chain on their way and did not wait for
+    /// them here: it is held until they arrive ([`Worker::hold_for_chains`]).
+    chains_owed: bool,
+    /// Whether the request being served is applied again after waiting off this thread.
+    again: bool,
+}
+
+/// What a request does about parts of a chain still on their way ([`Worker::hold_chains`]).
+pub(super) enum ChainWait {
+    /// Waits for them here, as a request that cannot be held does.
+    Here,
+    /// Is held off this thread until they arrive.
+    Held,
+    /// Waited for them long enough: goes on without them.
+    GaveUp,
 }
 
 impl PartWaits {
     /// Start serving the request asked at `queued`: a write applied again
     /// once its part arrived goes on with how it waited so far.
-    pub(super) fn begin(&mut self, queued: Instant) {
+    /// A write or listing (`holdable`) waits off the thread for the parts of a chain too.
+    pub(super) fn begin(&mut self, queued: Instant, holdable: bool) {
+        self.holdable = holdable;
+        self.chains_owed = false;
+        self.again = self.resumed.is_some();
         self.serving = Some(self.resumed.take().unwrap_or(Tried {
             queued,
             look: PART_LOOK,
             confirmed: None,
         }));
         self.held = None;
+    }
+
+    /// Whether the request being served is applied again after waiting off this thread.
+    pub(super) const fn again(&self) -> bool {
+        self.again
+    }
+
+    /// What the request being served does about parts of a chain still on their way, waited
+    /// for `wait` from when it was asked: held off this thread within it, when it may be.
+    pub(super) fn chain_wait(&mut self, wait: Duration) -> ChainWait {
+        let Some(tried) = self.serving.filter(|_| self.holdable) else {
+            return ChainWait::Here;
+        };
+        if tried.queued.elapsed() >= wait {
+            return ChainWait::GaveUp;
+        }
+        self.chains_owed = true;
+        ChainWait::Held
     }
 
     /// Whether the request being served waits for its part: its caller is not
@@ -158,20 +202,31 @@ impl Worker {
             }
         })?;
         self.hold_chains(&super::Writer::Mounted(holder.clone()), holder, &state);
+        if self.hold_for_chains() {
+            return Err(not_ready());
+        }
         let error = match self.invoke_mounted(holder, invoked) {
             Ok(output) => return Ok(output),
             Err(error) => error,
         };
         if arriving(&error) {
-            self.hold_for_part(invoked.confirmed);
+            self.hold_for_part(Some(invoked.confirmed));
         }
         Err(error)
     }
 
+    /// The request being served found parts of a chain it reads on their way and did not
+    /// wait for them here ([`Worker::hold_chains`]): have it wait off this thread for them,
+    /// as for a part it changes. Whether it waits: nothing more of it is done now.
+    pub(super) fn hold_for_chains(&mut self) -> bool {
+        std::mem::take(&mut self.part_waits.chains_owed) && self.hold_for_part(None)
+    }
+
     /// The request being served found its part not arrived: have it wait off
     /// this thread for the part, unless it waited [`PART_WAIT`] already, which
-    /// leaves the refusal to its caller. Whether it waits.
-    pub(super) fn hold_for_part(&mut self, confirmed: bool) -> bool {
+    /// leaves the refusal to its caller. Whether it waits. `confirmed` is whether its person
+    /// confirmed it, when it was asked of them yet.
+    pub(super) fn hold_for_part(&mut self, confirmed: Option<bool>) -> bool {
         let now = Instant::now();
         let tried = self.part_waits.serving.unwrap_or(Tried {
             queued: now,
@@ -186,7 +241,7 @@ impl Worker {
             return false;
         }
         self.part_waits.held = Some(Tried {
-            confirmed: tried.confirmed.or(Some(confirmed)),
+            confirmed: tried.confirmed.or(confirmed),
             ..tried
         });
         true
@@ -202,10 +257,10 @@ impl Worker {
         let at = Instant::now()
             .checked_add(tried.look)
             .unwrap_or_else(Instant::now);
-        let landings = self.landings(workspace_id);
+        let moved = self.moved(workspace_id);
         self.part_waits.awaiting.push_back(Awaiting {
             workspace_id,
-            landings,
+            moved,
             tried: Tried {
                 look: tried.look.saturating_mul(2).min(PART_LOOK_MAX),
                 ..tried
@@ -218,18 +273,18 @@ impl Worker {
     }
 
     /// Apply again the writes waiting for their part whose pause is over, and
-    /// every one of `changed`, the workspace that just changed, once a write
-    /// landed in it since they were held.
+    /// every one of `changed`, the workspace that just changed, once something
+    /// landed in it or the workspace answered for a document since they were held.
     pub(super) fn try_parts_again(&mut self, changed: Option<WorkspaceId>) {
         let now = Instant::now();
-        let landed = changed.map(|workspace_id| (workspace_id, self.landings(workspace_id)));
+        let landed = changed.map(|workspace_id| (workspace_id, self.moved(workspace_id)));
         let (due, waiting): (VecDeque<_>, VecDeque<_>) =
             std::mem::take(&mut self.part_waits.awaiting)
                 .into_iter()
                 .partition(|awaiting| {
                     awaiting.at <= now
-                        || landed.is_some_and(|(workspace_id, landings)| {
-                            awaiting.workspace_id == workspace_id && awaiting.landings != landings
+                        || landed.is_some_and(|(workspace_id, moved)| {
+                            awaiting.workspace_id == workspace_id && awaiting.moved != moved
                         })
                 });
         self.part_waits.awaiting = waiting;
@@ -246,12 +301,17 @@ impl Worker {
         }
     }
 
-    /// How many writes landed in `workspace_id` as this service holds it.
-    fn landings(&self, workspace_id: WorkspaceId) -> u64 {
-        self.workspaces
-            .get(&workspace_id)
-            .and_then(|workspace| workspace.documents.as_ref())
-            .map_or(0, crate::workspace_documents::WorkspaceDocuments::landings)
+    /// How far `workspace_id` moved as this service holds it: the writes that landed in it,
+    /// and the documents the workspace answered for.
+    fn moved(&self, workspace_id: WorkspaceId) -> u64 {
+        self.workspaces.get(&workspace_id).map_or(0, |workspace| {
+            let landings = workspace
+                .documents
+                .as_ref()
+                .map_or(0, crate::workspace_documents::WorkspaceDocuments::landings);
+            let answered = u64::try_from(workspace.answered.len()).unwrap_or(u64::MAX);
+            landings.wrapping_add(answered)
+        })
     }
 
     /// [`Self::invoke_on`] once: `invoked` on what is mounted at `holder`.
@@ -271,6 +331,15 @@ impl Worker {
             invoked.arguments,
             invoked.confirmed,
         )
+    }
+}
+
+/// The refusal of a request held while what it reads arrives: its caller hears it only if
+/// it is not held after all.
+pub(super) fn not_ready() -> tilo_actions::api::ApiError {
+    tilo_actions::api::ApiError::Unavailable {
+        code: tilo_actions::api::NOT_READY.to_owned(),
+        reason: tilo_actions::api::NOT_READY_REASON.to_owned(),
     }
 }
 

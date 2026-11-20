@@ -709,6 +709,17 @@ impl Worker {
                 return;
             }
             if owed {
+                // A write or a listing waits off the thread: every other request of the
+                // workspace waited behind one parked here for as long as the parts took.
+                match self.part_waits.chain_wait(CHAIN_WAIT) {
+                    super::part_wait::ChainWait::Here => {}
+                    super::part_wait::ChainWait::Held => return,
+                    super::part_wait::ChainWait::GaveUp => {
+                        tracing::warn!(app = %holder.app_id, document = %holder.document,
+                            "workspace actions: parts of a chain did not arrive in time");
+                        return;
+                    }
+                }
                 std::thread::park_timeout(look);
                 look = look.saturating_mul(2).min(CHAIN_LOOK_MAX);
             }

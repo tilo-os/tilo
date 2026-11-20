@@ -65,7 +65,7 @@ impl Reads {
     /// What the workspace holds of the record, readable or still sealed.
     pub(crate) fn holds(&self, route: &DocumentRoute) -> bool {
         #[cfg(feature = "test-support")]
-        if crate::workspace_actions::held_back::hidden(&route.document) {
+        if crate::workspace_actions::held_back::hidden(&route.cluster_id, &route.document) {
             return false;
         }
         self.0
@@ -74,7 +74,15 @@ impl Reads {
 
     /// The records the workspace holds, by app and route.
     pub(crate) fn documents(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
-        self.0.listing(workspace)
+        let listed = self.0.listing(workspace);
+        #[cfg(feature = "test-support")]
+        let listed = listed.map(|mut listed| {
+            listed.retain(|(_, document)| {
+                !crate::workspace_actions::held_back::unlisted(workspace, document)
+            });
+            listed
+        });
+        listed
     }
 
     /// The workspaces the service holds.
@@ -88,7 +96,7 @@ impl Reads {
         since: Option<&[[u8; 32]]>,
     ) -> Result<DocumentRead, String> {
         #[cfg(feature = "test-support")]
-        if crate::workspace_actions::held_back::hidden(&route.document) {
+        if crate::workspace_actions::held_back::hidden(&route.cluster_id, &route.document) {
             return Ok(DocumentRead::Absent);
         }
         self.0

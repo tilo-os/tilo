@@ -1737,7 +1737,10 @@ impl Worker {
             _ => (String::new(), String::new()),
         };
         let step = job.step_kind();
-        self.part_waits.begin(queued);
+        self.part_waits.begin(
+            queued,
+            matches!(job, Job::Invoke { .. } | Job::Catalogue { .. }),
+        );
         self.take(job);
         // What it ended, it ended now, as a listing of runs says.
         self.log().stamp_ended();
@@ -1796,13 +1799,29 @@ impl Worker {
                     caller,
                     done,
                 } => {
-                    self.voice_catalogue(workspace_id, &caller, &query);
+                    if !self.part_waits.again() {
+                        self.voice_catalogue(workspace_id, &caller, &query);
+                    }
                     let result = if query.view_resource.is_some() {
                         self.view_catalogue_page(workspace_id, &caller, &query)
                     } else {
                         self.catalogue_page(workspace_id, &caller, &query)
                     };
-                    done.complete(result);
+                    // Parts of the chains it lists on their way: it waits off this thread for
+                    // them, and every other request of the workspace is served meanwhile.
+                    if self.hold_for_chains() || self.part_waits.held() {
+                        self.await_part(
+                            workspace_id,
+                            Job::Catalogue {
+                                workspace_id,
+                                query,
+                                caller,
+                                done,
+                            },
+                        );
+                    } else {
+                        done.complete(result);
+                    }
                 }
                 Job::Invoke {
                     workspace_id,
@@ -2433,6 +2452,10 @@ impl Worker {
             // was last used taken up: an item made since is one of its
             // resources.
             self.brought_up_to_date(&holder, &state);
+            // Parts of its chains on their way: it waits off this thread for them.
+            if self.hold_for_chains() {
+                return Err(api_outcome(&part_wait::not_ready()));
+            }
             self.publishes(&holder, &target.address)
         };
         if let Some(output) = self.source_read(workspace_id, caller, request, published_here)? {
@@ -2460,7 +2483,11 @@ impl Worker {
                 .map(|(output, left_at)| (withheld.shown(output), left_at));
         }
         let mounting = timing_start();
-        let mounted = self.mount(&route, &state).map_err(|_| unknown_action())?;
+        self.mount(&route, &state).map_err(|_| unknown_action())?;
+        if self.hold_for_chains() {
+            return Err(api_outcome(&part_wait::not_ready()));
+        }
+        let mounted = self.mounted.get_mut(&holder).ok_or_else(unknown_action)?;
         timing_done("action.mount", mounting);
         if share_link {
             // Sharing asks the record for everything it lists, which is what
