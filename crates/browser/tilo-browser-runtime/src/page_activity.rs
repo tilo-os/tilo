@@ -142,16 +142,6 @@ impl tilo_session::activity::History for PageLayout {
         self.0.document_mut().get_heads().hash(&mut hasher);
         hasher.finish()
     }
-
-    /// The page keeps its layout in the desktop's own document, kept in its profile's store, and
-    /// holds no workspace service to read or write one through: there is nothing to attach.
-    fn attach(
-        &self,
-        _: &std::sync::Arc<tilo_session::engine::Engine>,
-        _: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
-        _: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
-    ) {
-    }
 }
 
 /// The name and colour presence shows for a person, by the actor they write as.
