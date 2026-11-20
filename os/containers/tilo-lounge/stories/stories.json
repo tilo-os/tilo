@@ -112,7 +112,7 @@
         "Ada invites Grace to it",
         "Grace receives the invitation"
       ],
-      "needs": "A CalDAV server on the runner (the Nextcloud container can serve one) and a mail sink to read Grace's invitation."
+      "driver": "calendar-invite.mjs"
     },
     {
       "id": "nextcloud-files",
@@ -124,7 +124,7 @@
         "The files arrive in the workspace",
         "A file changed in Nextcloud changes in the workspace too"
       ],
-      "needs": "A real Nextcloud container (rootless podman on the builder) seeded with a user and files, reachable from the check's sandbox."
+      "driver": "nextcloud-files.mjs"
     },
     {
       "id": "microsoft-mail-onedrive",

@@ -35,6 +35,18 @@
     }
   },
   "steps": {
+    "calendar-invite": {
+      "Ada connects their calendar": 90000,
+      "Ada creates an event": 30000,
+      "Ada invites Grace to it": 20000,
+      "Grace receives the invitation": 40000
+    },
+    "nextcloud-files": {
+      "Ada chooses Nextcloud and signs in": 90000,
+      "Ada picks the folders to bring": 30000,
+      "The files arrive in the workspace": 60000,
+      "A file changed in Nextcloud changes in the workspace too": 30000
+    },
     "invite-live": {
       "Ada opens Tilo": 15000,
       "Ada opens Tilo again": 15000,
