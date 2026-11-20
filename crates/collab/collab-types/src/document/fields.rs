@@ -113,7 +113,7 @@ mod tests {
         let mut two = base.fork();
         two.set_actor(ActorId::random());
         two.put(&meta, "home", values.1).unwrap();
-        one.merge(&mut two).unwrap();
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut one, &mut two).unwrap();
         (one, meta)
     }
 

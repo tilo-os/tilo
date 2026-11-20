@@ -17,7 +17,7 @@ impl Namespace {
     /// # Errors
     /// `data` is not what [`Self::save`] writes, or a record in it is no document.
     pub fn from_bytes(
-        author: impl Into<String>,
+        author: impl Into<super::MountAuthor>,
         data: &[u8],
     ) -> Result<Self, automerge::AutomergeError> {
         Self::from_records(author, unbundle(data)?)
@@ -30,7 +30,7 @@ impl Namespace {
     /// # Errors
     /// One of them does not load.
     pub fn from_records(
-        author: impl Into<String>,
+        author: impl Into<super::MountAuthor>,
         documents: impl IntoIterator<Item = (TreeChunk, Vec<u8>)>,
     ) -> Result<Self, automerge::AutomergeError> {
         Self::from_documents_read(author, documents).map(|(namespace, _)| namespace)
@@ -43,7 +43,7 @@ impl Namespace {
     /// # Errors
     /// One of them does not load.
     pub fn from_documents_read(
-        author: impl Into<String>,
+        author: impl Into<super::MountAuthor>,
         documents: impl IntoIterator<Item = (TreeChunk, Vec<u8>)>,
     ) -> Result<(Self, BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>), automerge::AutomergeError>
     {
@@ -66,16 +66,16 @@ impl Namespace {
             .each_mut()
             .map(|(chunk, doc)| (chunk, doc.get_heads()))
             .collect();
-        let author = author.into();
+        let mount: super::MountAuthor = author.into();
         // Resume the id counter past ids we authored before, so a restart can't reuse a node id.
-        let prefix = format!("{author}/");
+        let prefix = format!("{}/", mount.author);
         let max_local = docs
             .node_ids()
             .filter_map(|id| id.strip_prefix(&prefix)?.parse::<u64>().ok())
             .map(|n| n.saturating_add(1))
             .max()
             .unwrap_or(0);
-        let mut ns = Self::over(docs, author, max_local);
+        let mut ns = Self::over(docs, mount, max_local);
         ns.ensure_document_ids();
         ns.rebuild_document_index();
         // Name what opening wrote as the mount's now: a merge made before the next save settles
@@ -349,6 +349,7 @@ impl Namespace {
         known: &BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>,
     ) -> Vec<ResourceWrite> {
         self.note_change();
+        self.name_records();
         let mut writes = Vec::new();
         for (chunk, doc) in self.doc.each_mut() {
             let held = known.get(&chunk).map_or(&[][..], Vec::as_slice);
@@ -513,6 +514,44 @@ impl Namespace {
     #[must_use]
     pub fn holds_tree(&self) -> bool {
         self.doc.node_ids().next().is_some()
+    }
+
+    /// Name every record of this mount's tree as what it is, when the mount holds a workspace's
+    /// tree: the id, kind, home and workspace a reader checks before it opens a record. A mount
+    /// that founds a tree names it before it publishes anything, so a page's Files opens what the
+    /// mount wrote; a record that already names itself is left as it is.
+    fn name_records(&mut self) {
+        let Some(workspace) = self.workspace.clone() else {
+            return;
+        };
+        let chunks: Vec<TreeChunk> = self.doc.records().collect();
+        for chunk in chunks {
+            self.name_record(chunk, &workspace);
+        }
+    }
+
+    /// Name the record `chunk` of `workspace`'s tree as what it is: the id, kind, home and
+    /// workspace every reader checks before it opens a record, stamped into the document this
+    /// mount publishes. A mount that founds a tree no page would open is one the page's Files
+    /// cannot show ("record identity does not match its binding"). Whether the document names
+    /// itself afterwards, already or by this stamp.
+    fn name_record(&mut self, chunk: TreeChunk, workspace: &str) -> bool {
+        let Some(id) =
+            collab_types::document::DocumentId::parse(&fs_protocol::tree::chunk_document_id(chunk))
+        else {
+            return false;
+        };
+        let Some(doc) = self.doc.doc_mut(chunk) else {
+            return false;
+        };
+        doc.commit_named();
+        collab_types::document::identity::init_scoped(
+            doc,
+            &id,
+            &collab_types::document::ResourceType::new(fs_protocol::tree::TREE_KIND),
+            workspace,
+            Some(workspace),
+        )
     }
 }
 

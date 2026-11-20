@@ -18,7 +18,7 @@ use fs::full_replica::{
     HomePeerBundle, HomePeerSet, aggregate_status, hydrate_full_workspace,
     prune_obsolete_workspace_content, save_status, validate_home_peer_set,
 };
-use fs::namespace::ROOT_INO;
+use fs::namespace::{MountAuthor, ROOT_INO};
 use fs::sync;
 use fs::workspace_authority::{
     WorkspaceAuthority, WorkspaceAuthorityEnvelope, load_persisted_content_peers,
@@ -1142,8 +1142,11 @@ async fn replica_workspace(
     for peer in &bootstrap {
         hydrator.add_peer(peer.clone());
     }
-    let (namespace_value, kept) =
-        open_namespace(endpoint.id().to_string(), namespace_path.as_deref())?;
+    let (namespace_value, kept) = open_namespace(
+        MountAuthor::person(endpoint.id().to_string(), member(governor))
+            .in_workspace(ticket.workspace_id().to_string()),
+        namespace_path.as_deref(),
+    )?;
     let namespace = Arc::new(Mutex::new(namespace_value));
     // A home peer keeps the workspace's tree and every byte it names: the
     // tree is the Files record it follows, and the content it hydrates.
@@ -1363,8 +1366,6 @@ async fn serve(
         }
     }
     let fresh = np.as_ref().is_none_or(|dir| !namespace_kept(dir));
-    let (ns_value, kept) = open_namespace(author.clone(), np.as_deref())?;
-    let namespace = Arc::new(Mutex::new(ns_value));
     // This mount's tree, as the Files app's person record of the workspace that holds it: this
     // daemon is the app's windowless endpoint, so what changes here reaches the person's other
     // devices and the members of a shared workspace. A workspace that seals its records hands
@@ -1373,6 +1374,12 @@ async fn serve(
         || collab_types::personal_cluster(&credentials.user_public_key()).to_string(),
         |ticket| ticket.workspace_id().to_string(),
     );
+    let (ns_value, kept) = open_namespace(
+        MountAuthor::person(author.clone(), member(credentials.user_public_key()))
+            .in_workspace(holder.clone()),
+        np.as_deref(),
+    )?;
+    let namespace = Arc::new(Mutex::new(ns_value));
     let _tree_document = fs::tree_document::spawn(
         Arc::clone(&namespace),
         holder,
@@ -1605,7 +1612,11 @@ async fn mount(
         hydrator.add_peer(peer.clone());
     }
 
-    let (namespace, kept) = open_namespace(author, np.as_deref())?;
+    let (namespace, kept) = open_namespace(
+        MountAuthor::person(author, member(credentials.user_public_key()))
+            .in_workspace(ticket.workspace_id().to_string()),
+        np.as_deref(),
+    )?;
     let namespace = Arc::new(Mutex::new(namespace));
     // The shared workspace's Files record holds this tree for every member: a mount that has none
     // yet is given it whole.
@@ -1784,16 +1795,22 @@ async fn final_flush(
     }
 }
 
+/// The member a person's root key is, as every workspace names them: the id their changes and
+/// the nodes they make are read by.
+fn member(key: [u8; 32]) -> tilo_actions::MemberId {
+    tilo_actions::MemberId::person(tilo_actions::PersonId::from_root(key))
+}
+
 /// A mount's namespace: the documents kept at `dir`, each with its journal of later changes, or
 /// an empty tree the workspace's Files record fills. Every change is journaled before the request
 /// that made it is answered, so a process killed at any instant starts again holding every change
 /// it answered for.
 fn open_namespace(
-    author: String,
+    mount: MountAuthor,
     dir: Option<&Path>,
 ) -> Result<(Namespace, Option<Arc<KeptTree>>)> {
     let Some(dir) = dir else {
-        return Ok((Namespace::new(author)?, None));
+        return Ok((Namespace::new(mount)?, None));
     };
     // The build before this kept the whole tree in `namespace.bin` beside the kept documents;
     // nothing reads it now, so it is set aside with the generations it kept rather than left
@@ -1812,9 +1829,9 @@ fn open_namespace(
     let (kept, documents) = KeptTree::open(dir)
         .with_context(|| format!("open the kept workspace tree at {}", dir.display()))?;
     let (mut namespace, read) = if documents.is_empty() {
-        (Namespace::new(author)?, std::collections::BTreeMap::new())
+        (Namespace::new(mount)?, std::collections::BTreeMap::new())
     } else {
-        match Namespace::from_documents_read(author.clone(), documents) {
+        match Namespace::from_documents_read(mount.clone(), documents) {
             Ok(opened) => opened,
             Err(error) => {
                 // A document or one of its journals is damaged. The documents' last saves are
@@ -1823,7 +1840,7 @@ fn open_namespace(
                     "the workspace tree at {} does not read ({error}); starting from its last saves",
                     dir.display()
                 );
-                Namespace::from_documents_read(author, kept.saved_only()?)?
+                Namespace::from_documents_read(mount, kept.saved_only()?)?
             }
         }
     };

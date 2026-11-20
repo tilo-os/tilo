@@ -405,13 +405,17 @@ impl Worker {
             }
         }
         let author = hex::encode(self.own_device.key.verifying_key().to_bytes());
+        // Every document the tree is kept as names itself as Files' document of this workspace,
+        // as a page's Files window names the one it founds: a tree a call wrote is then one every
+        // page opens, not one whose identity it refuses.
+        let mount = tilo_fs::namespace::MountAuthor::device(author).in_workspace(workspace);
         let Some((records, held)) = self.tree_records(workspace_id, workspace)? else {
-            let tree = Namespace::new(&author)
+            let tree = Namespace::new(mount)
                 .map_err(|error| refused(format!("a tree could not be founded: {error}")))?;
             self.trees.insert(key, KeptTree::read(BTreeMap::new()));
             return Ok((tree, None));
         };
-        let tree = Namespace::from_records(&author, records)
+        let tree = Namespace::from_records(mount, records)
             .map_err(|error| refused(format!("the workspace's tree does not read: {error}")))?;
         self.trees.insert(key, KeptTree::read(held.clone()));
         Ok((tree, Some(held)))
@@ -550,7 +554,7 @@ impl Worker {
         held: Option<&BTreeSet<TreeChunk>>,
         writes: Vec<tilo_fs::namespace::ResourceWrite>,
     ) -> Result<(), String> {
-        for mut write in writes {
+        for write in writes {
             if write.changes.is_empty() {
                 continue;
             }
@@ -564,14 +568,6 @@ impl Worker {
             if prior.is_none() && held.is_some_and(|held| held.contains(&write.chunk)) {
                 return Err("the workspace's tree could not be read to name it".into());
             }
-            // Each document names itself as Files' document of the workspace, as a page's
-            // Files window names the one it founds: a tree a call wrote is then one every page
-            // opens, not one whose identity it refuses.
-            write.changes = named_identity(
-                &write,
-                workspace,
-                prior.as_ref().map(|(bytes, _)| bytes.as_slice()),
-            )?;
             if !held.is_some_and(|held| held.contains(&write.chunk)) {
                 let genesis = DocumentMutation::Snapshot(AutoCommit::new().save());
                 self.commit(workspace_id, &route, &genesis)?;
@@ -714,49 +710,6 @@ impl Worker {
             None,
         ))
     }
-}
-
-/// `write`'s changes, naming the document they make as what it is: `chunk` of `workspace`'s
-/// tree, kept as Files' shared document of the workspace. It carries the id, kind, home and
-/// workspace the framework stamps on a document its window opens, so a page's Files window
-/// opens the tree a call wrote; one written without them is a document no page opens, whatever
-/// the call that wrote it answered. `prior` is the document as it stands before the write,
-/// `None` for one nobody wrote yet.
-fn named_identity(
-    write: &tilo_fs::namespace::ResourceWrite,
-    workspace: &str,
-    prior: Option<&[u8]>,
-) -> Result<Vec<u8>, String> {
-    let document = if write.chunk == 0 {
-        fs_protocol::tree::document_id()
-    } else {
-        fs_protocol::tree::chunk_document_id(write.chunk)
-    };
-    let id = ui::resource::DocumentId::parse(&document)
-        .ok_or_else(|| format!("{document:?} is no document id of Files"))?;
-    let mut doc = match prior {
-        Some(bytes) => AutoCommit::load(bytes)
-            .map_err(|error| format!("the tree's document {document:?} does not read: {error}"))?,
-        None => AutoCommit::new(),
-    };
-    let before = doc.get_heads();
-    tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &write.changes)
-        .map_err(|error| format!("the tree's changes do not read: {error}"))?;
-    let written = doc.get_heads();
-    ui::resource::init_scoped(
-        &mut doc,
-        &id,
-        &ui::resource::ResourceType::new(fs_protocol::tree::TREE_KIND),
-        workspace,
-        Some(workspace),
-    );
-    if doc.get_heads() == written {
-        // The document already names itself: the write goes as it came.
-        return Ok(write.changes.clone());
-    }
-    // Every change the document holds beyond `before`, the identity's among them: a change
-    // stream the workspace takes onto what it has, as the write it received was.
-    Ok(doc.save_after(&before))
 }
 
 /// The length of the content `hash` names: what the store knows of it, or,

@@ -413,10 +413,12 @@ impl Peer {
             .ok_or_else(|| anyhow::anyhow!("this device's person has no valid key"))?,
         );
         let key = device.cert().device_public_key;
+        let person = device.cert().user_public_key;
         let content = content::SessionContent::new(workspace, key, &link, Arc::clone(&self.store));
         let state = self.state.join(workspace.to_string());
         let replica =
-            tree::TreeReplica::start(link, workspace, &state, key, Arc::clone(&content)).await?;
+            tree::TreeReplica::start(link, workspace, &state, key, person, Arc::clone(&content))
+                .await?;
         let actor = fs_protocol::FileActor {
             person: collab_types::Ed25519PublicKey(device.cert().user_public_key),
             device: collab_types::Ed25519PublicKey(key),

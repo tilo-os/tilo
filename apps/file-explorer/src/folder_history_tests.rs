@@ -162,3 +162,40 @@ fn a_restore_to_an_older_version_is_one_history_step() {
     let after = changes(&folder, &AuthorDirectory::new(), Some(document));
     assert_eq!(after.len(), listed.len() + 1, "one step: {after:#?}");
 }
+
+/// The person at `[3; 32]`, as the workspace names them.
+fn ada() -> ui::tilo_actions::MemberId {
+    ui::tilo_actions::MemberId::person("ada")
+}
+
+/// A document the person copied into the workspace's folder on their computer: `letter.txt`,
+/// which the mount writes as their certified device.
+fn copied_into_the_mount() -> (Folder, String) {
+    let mut namespace =
+        ::fs::namespace::Namespace::new(::fs::namespace::MountAuthor::person("laptop", ada()))
+            .unwrap();
+    let ino = namespace
+        .create_file(ROOT_INO, "letter.txt", Some(&hash(3)), 3, 1)
+        .unwrap();
+    let node = namespace.id_for_ino(ino).unwrap().to_owned();
+    (Folder::of(&mut namespace), node)
+}
+
+#[test]
+fn a_file_copied_into_the_mount_reads_as_the_person_whose_device_it_is() {
+    let (folder, node) = copied_into_the_mount();
+    let mut authors = AuthorDirectory::new();
+    authors.register_member(
+        &ada(),
+        ui::history_source::author_for_identity("Ada", "ada"),
+    );
+    let listed = changes(&folder, &authors, None);
+    let copied = listed
+        .iter()
+        .find(|change| change.node.as_deref() == Some(node.as_str()))
+        .unwrap_or_else(|| panic!("the copy is a change of the file: {listed:#?}"));
+    assert_eq!(
+        copied.entry.author.name, "Ada",
+        "the person who copied it in, never a member nobody can name"
+    );
+}

@@ -336,6 +336,67 @@ impl DocumentIndexDigest {
     }
 }
 
+/// Whose device a mount is: the id its nodes are named by, and the person whose certified device
+/// it is. A mount's changes name that person ([`collab_types::actors::device_actor`], the actor
+/// every mount of a record writes as) and so do the nodes it makes, so a page reads who copied a
+/// file in instead of a member it cannot name.
+#[derive(Clone, Debug)]
+pub struct MountAuthor {
+    author: String,
+    person: Option<tilo_actions::MemberId>,
+    /// The workspace whose tree this mount holds, when it is a workspace's: every record of the
+    /// tree names itself as Files' record of it before the mount publishes it.
+    workspace: Option<String>,
+}
+
+impl MountAuthor {
+    /// A mount nobody's certified device is: a test's, or a program that writes no one person's
+    /// files.
+    pub fn device(author: impl Into<String>) -> Self {
+        Self {
+            author: author.into(),
+            person: None,
+            workspace: None,
+        }
+    }
+
+    /// The mount of `person`'s certified device, which `author` (its device key) names.
+    #[must_use]
+    pub fn person(author: impl Into<String>, person: tilo_actions::MemberId) -> Self {
+        Self {
+            author: author.into(),
+            person: Some(person),
+            workspace: None,
+        }
+    }
+
+    /// The mount of `workspace`'s tree: its records name themselves as Files' records of it, so
+    /// every page opens the tree this device wrote.
+    #[must_use]
+    pub fn in_workspace(mut self, workspace: impl Into<String>) -> Self {
+        self.workspace = Some(workspace.into());
+        self
+    }
+}
+
+impl From<String> for MountAuthor {
+    fn from(author: String) -> Self {
+        Self::device(author)
+    }
+}
+
+impl From<&str> for MountAuthor {
+    fn from(author: &str) -> Self {
+        Self::device(author)
+    }
+}
+
+impl From<&String> for MountAuthor {
+    fn from(author: &String) -> Self {
+        Self::device(author.clone())
+    }
+}
+
 #[derive(Clone)]
 pub struct Namespace {
     /// The document; its every change is announced to [`Self::subscribe_changes`]
@@ -345,6 +406,12 @@ pub struct Namespace {
     id_to_ino: HashMap<String, u64>,
     next_ino: u64,
     author: String,
+    /// The person whose certified device this mount is, when it is one: its changes and the
+    /// nodes it makes name them.
+    person: Option<tilo_actions::MemberId>,
+    /// The workspace whose tree this mount holds, when it is a workspace's: each record names
+    /// itself as Files' record of it when the mount publishes it.
+    workspace: Option<String>,
     next_id: u64,
     /// Stable-record catalogue for the mount's paged record projection, updated with
     /// structural mutations rather than rebuilt by every page request.
@@ -487,13 +554,26 @@ fn read_u64(doc: &Chunks, obj: &Obj, key: &str) -> u64 {
 impl Namespace {
     /// A namespace over `doc`, its documents already in place, with only the root bound and
     /// every derived index empty.
-    fn over(doc: Chunks, author: String, next_id: u64) -> Self {
+    fn over(mut doc: Chunks, mount: MountAuthor, next_id: u64) -> Self {
+        // The person's device writes every document of the mount: the handle keeps two of their
+        // computers' actors apart, and every reader names the person from it.
+        if let Some(person) = &mount.person {
+            let writer = automerge::ActorId::from(
+                collab_types::actors::device_actor(&person.actor_bytes(), doc.index().get_actor())
+                    .as_slice(),
+            );
+            for (_, held) in doc.each_mut() {
+                held.set_actor(writer.clone());
+            }
+        }
         let mut ns = Self {
             doc,
             ino_to_id: HashMap::new(),
             id_to_ino: HashMap::new(),
             next_ino: ROOT_INO + 1,
-            author,
+            author: mount.author,
+            person: mount.person,
+            workspace: mount.workspace,
             next_id,
             document_index: BTreeMap::new(),
             document_index_revision: String::new(),
@@ -517,7 +597,7 @@ impl Namespace {
         ns
     }
 
-    pub fn new(author: impl Into<String>) -> Result<Self, automerge::AutomergeError> {
+    pub fn new(author: impl Into<MountAuthor>) -> Result<Self, automerge::AutomergeError> {
         let mut ns = Self::over(Chunks::new(AutoCommit::new()), author.into(), 0);
         let root_document_id = FileDocumentId::new();
         ns.doc.put(
@@ -543,6 +623,14 @@ impl Namespace {
 
     pub fn author(&self) -> &str {
         &self.author
+    }
+
+    /// Who the nodes this mount makes are named by: the person whose certified device it is,
+    /// else the device id a bare mount names itself by.
+    fn node_author(&self) -> String {
+        self.person
+            .as_ref()
+            .map_or_else(|| self.author.clone(), |person| person.id().to_owned())
     }
 
     /// Write `action` into the tree as whoever this thread acts for ([`acting_as`]).
@@ -1495,7 +1583,7 @@ impl Namespace {
             hash: hash.map(hash_to_hex),
             size,
             mtime,
-            author: self.author.clone(),
+            author: self.node_author(),
         };
         if !self.write_action(&created) {
             return None;
@@ -1647,7 +1735,7 @@ impl Namespace {
             hash: hash.map(hash_to_hex),
             size,
             mtime,
-            author: self.author.clone(),
+            author: self.node_author(),
         })
     }
 

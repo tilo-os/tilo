@@ -191,19 +191,19 @@ type ReadHeads = BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>;
 /// and journals, or the saves alone when a journal does not read (damaged on disk), or a new one
 /// when nothing is kept.
 fn open_namespace(
-    author: &str,
+    mount: &tilo_fs::namespace::MountAuthor,
     kept: &KeptDocuments,
     documents: Vec<(TreeChunk, Vec<u8>)>,
 ) -> std::io::Result<(Namespace, ReadHeads)> {
     let new = || {
-        Namespace::new(author)
+        Namespace::new(mount.clone())
             .map(|namespace| (namespace, ReadHeads::new()))
             .map_err(std::io::Error::other)
     };
     if documents.is_empty() {
         return new();
     }
-    match Namespace::from_documents_read(author, documents) {
+    match Namespace::from_documents_read(mount.clone(), documents) {
         Ok(opened) => Ok(opened),
         Err(error) => {
             tracing::warn!(%error, "the tree's journal does not read; it starts from the documents' last saves");
@@ -211,7 +211,7 @@ fn open_namespace(
             if saved.is_empty() {
                 return new();
             }
-            Namespace::from_documents_read(author, saved)
+            Namespace::from_documents_read(mount.clone(), saved)
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
         }
     }
@@ -229,17 +229,25 @@ impl TreeReplica {
         workspace: WorkspaceId,
         state: &Path,
         device: [u8; 32],
+        person: [u8; 32],
         content: Arc<SessionContent>,
     ) -> std::io::Result<Self> {
         let kept_at = state.join(KEPT);
-        let author = hex::encode(device);
+        // The mount of the person's certified device holds this workspace's tree: every document
+        // it publishes names them and names itself as Files' document of the workspace, so a page
+        // opens the tree this device wrote.
+        let mount = tilo_fs::namespace::MountAuthor::person(
+            hex::encode(device),
+            tilo_actions::MemberId::person(tilo_actions::PersonId::from_root(person)),
+        )
+        .in_workspace(workspace.to_string());
         // Reading the kept chunks and indexing every node they name walks the whole tree. On
         // a runtime worker it would hold that worker — and the holder's clients, and the agents
         // it serves, wait for one — for as long as a repository's tree takes, so it goes to a
         // thread of the blocking pool instead.
         let (kept, namespace) = tokio::task::spawn_blocking(move || {
             let (kept, documents) = KeptDocuments::open(&kept_at)?;
-            let (mut namespace, read) = open_namespace(&author, &kept, documents)?;
+            let (mut namespace, read) = open_namespace(&mount, &kept, documents)?;
             kept.opened(&mut namespace, read)?;
             Ok::<_, std::io::Error>((Arc::new(kept), namespace))
         })
@@ -1435,7 +1443,12 @@ mod tests {
         }
         std::fs::write(dir.path().join("stray"), b"x").unwrap();
         let (kept, documents) = KeptDocuments::open(dir.path()).unwrap();
-        let (mut read, _) = open_namespace("laptop", &kept, documents).unwrap();
+        let (mut read, _) = open_namespace(
+            &tilo_fs::namespace::MountAuthor::device("laptop"),
+            &kept,
+            documents,
+        )
+        .unwrap();
         assert!(read.lookup(tilo_fs::namespace::ROOT_INO, "a.txt").is_some());
         assert_eq!(read.document_heads(), namespace.document_heads());
     }

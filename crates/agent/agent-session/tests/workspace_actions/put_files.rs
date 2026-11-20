@@ -966,3 +966,88 @@ mod by_path;
 /// The workspace's files as its listing offers them to an agent.
 #[path = "files_listed.rs"]
 mod files_listed;
+
+/// Why a page's store refuses `bytes` as `document` of `workspace`'s Files, or `None` when it
+/// opens it: the identity every page checks before it shows a document, which a mount that writes
+/// the tree must carry as a page's own window does.
+fn page_refusal(bytes: &[u8], document: &str, workspace: &str) -> Option<String> {
+    let doc = automerge::AutoCommit::load(bytes).expect("the document reads");
+    let checkout = ui::resource::DocumentCheckout::new(
+        ui::resource::DocumentId::parse(document).expect("a document id"),
+        ui::resource::ResourceType::new(fs_protocol::tree::TREE_KIND),
+    );
+    ui::resource::validate_identity(&doc, &checkout, workspace)
+        .err()
+        .map(|refusal| refusal.to_string())
+}
+
+/// A computer's mounted folder founds the workspace's tree, as the folder `tilo login` mounts
+/// does: the page of the person whose computer it is opens every document the mount wrote.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tree_a_computers_mount_founds_is_one_a_page_opens() {
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Owner", 1);
+    let serving = enrol(&owner, "lounge-server", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = crate::harness::hosted::start(
+        &owner,
+        &serving,
+        state.path(),
+        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+    )
+    .await;
+    let workspaces = hosted.server.workspaces().unwrap();
+    let lounge = workspaces.create("Lounge").await.unwrap();
+    workspaces
+        .publish(
+            &lounge.workspace,
+            &serving.cert,
+            tilo_server_protocol::directory::Listing {
+                description: "Everyone".into(),
+                default_role: tilo_peer_state::join::Role::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    let workspace = lounge.workspace.clone();
+    let computer = enrol(&owner, "Ada's laptop", DeviceCapabilities::member());
+    let laptop =
+        super::resource_support::open_admitted_peer(&hosted, &computer, &serving, &workspace).await;
+    let mount = tilo_fs::namespace::MountAuthor::person(
+        hex::encode(computer.cert.device_public_key),
+        ui::permissions::MemberId::person(hex::encode(owner.verifying_key().to_bytes())),
+    )
+    .in_workspace(&workspace);
+    let mut folder = tilo_fs::Namespace::new(mount).unwrap();
+    folder
+        .create_file(tilo_fs::ROOT_INO, "notes.txt", None, 0, 1)
+        .unwrap();
+    publish(&laptop, &mut folder).await;
+    tree_when(&hosted, &workspace, |tree| {
+        file_at(tree, "", "notes.txt").is_some()
+    })
+    .await;
+
+    let index = workspaces
+        .resource_document(&workspace, FILES_APP, &tree_document())
+        .await
+        .unwrap()
+        .expect("the workspace keeps the tree's own document");
+    let mut kept = vec![(tree_document(), index)];
+    let listed = automerge::AutoCommit::load(&kept[0].1).expect("the tree's own document reads");
+    for chunk in fs_protocol::tree::listed_chunks(&listed) {
+        let document = fs_protocol::tree::chunk_document_id(chunk);
+        let bytes = workspaces
+            .resource_document(&workspace, FILES_APP, &document)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("the workspace keeps chunk {chunk}"));
+        kept.push((document, bytes));
+    }
+    for (document, bytes) in kept {
+        assert_eq!(
+            page_refusal(&bytes, &document, &workspace),
+            None,
+            "{document} is one a page opens"
+        );
+    }
+}
