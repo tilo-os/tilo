@@ -371,6 +371,13 @@ pub(crate) trait ResourceApi {
     fn item(&self, _id: &str) -> Option<tilo_actions::ResourceSpec> {
         None
     }
+    /// Answer a read of `item`, which names nothing the resource holds but
+    /// something the kind derives over what it keeps beside it (a mail
+    /// folder, read as the messages of it every part holds): `None` for a
+    /// resource that derives nothing, whose read answers as it would have.
+    fn read_over(&self, _item: &str) -> Option<Result<serde_json::Value, String>> {
+        None
+    }
     /// How many items the resource keeps past the page its publication
     /// carries, across the parts it is kept in: what a listing of it reaches
     /// past that page, counted without building them.

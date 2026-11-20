@@ -435,6 +435,18 @@ impl ViewStorage {
             .collect()
     }
 
+    /// Answer a read of `item` that names nothing the app's own resource
+    /// holds but something a chain it keeps derives over its parts (a mail
+    /// folder, read as the messages every part holds): what a read of the
+    /// app's resource falls back to, and `None` when no chain derives
+    /// anything of it.
+    pub(crate) fn read_over(&self, item: &str) -> Option<Result<serde_json::Value, String>> {
+        self.chains
+            .apis()
+            .into_iter()
+            .find_map(|api| api.read_over(item))
+    }
+
     /// The items `name` names among what the chain `parent` holds, each built
     /// alone by the part keeping it ([`ResourceApi::items_named`]): what a
     /// path naming one costs, however many items the chain holds.

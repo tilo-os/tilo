@@ -29,6 +29,7 @@ use crate::message_states::MessageStates;
 use crate::model::{Addr, Folder, Message, MessageId, normalize_subject};
 use crate::resource::{
     MAX_DRAFT_ADDRESS_CHARS, MAX_DRAFT_BODY_CHARS, MAX_DRAFT_SUBJECT_CHARS, Mail, MessageState,
+    folder_place_id,
 };
 
 /// The most characters a `Message-ID` or conversation key holds.
@@ -822,7 +823,7 @@ pub(crate) fn message_named(item: &str) -> Option<&str> {
 
 /// The folder an item names: `folder:<key>`, `mail.folder:<key>` or a
 /// published path ending in one.
-fn folder_named(item: &str) -> Option<Folder> {
+pub(crate) fn folder_named(item: &str) -> Option<Folder> {
     let last = item.rsplit('/').next().unwrap_or(item);
     last.strip_prefix("mail.folder:")
         .or_else(|| last.strip_prefix("folder:"))
@@ -1031,7 +1032,7 @@ impl MessageStates {
                 "folders": Folder::ALL
                     .iter()
                     .map(|folder| serde_json::json!({
-                        "item": format!("mail.folder:{}", folder.as_key()),
+                        "item": folder_place_id(folder.as_key()),
                         "name": folder.as_key(),
                         "messages": self.held_newest().iter().filter(|(_, _, state)| state.folder == *folder).count(),
                     }))
@@ -1076,7 +1077,9 @@ impl MessageStates {
         }))
     }
 
-    fn listing(&self, folder: Option<Folder>) -> Vec<serde_json::Value> {
+    /// The messages `folder` holds, newest first ([`MOST_LISTED`] at most),
+    /// as a listing names them; every folder's when none is named.
+    pub(crate) fn listing(&self, folder: Option<Folder>) -> Vec<serde_json::Value> {
         self.held_newest()
             .into_iter()
             .filter(|(_, _, state)| folder.is_none_or(|folder| state.folder == folder))
@@ -1288,7 +1291,7 @@ impl Mail {
                 "folders": Folder::ALL
                     .iter()
                     .map(|folder| serde_json::json!({
-                        "item": format!("mail.folder:{}", folder.as_key()),
+                        "item": folder_place_id(folder.as_key()),
                         "name": folder.as_key(),
                     }))
                     .collect::<Vec<_>>(),

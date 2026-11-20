@@ -1111,7 +1111,7 @@ impl MailApp {
     fn folder_search(&self) -> SearchRequest {
         let folder = self.shared.borrow().folder;
         SearchRequest::within(ScopeDecl::new(
-            format!("mail.folder:{}", folder.as_key()),
+            crate::resource::folder_place_id(folder.as_key()),
             crate::i18n::t(folder.message()),
         ))
     }

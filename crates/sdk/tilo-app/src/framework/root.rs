@@ -37,6 +37,7 @@ use super::view::ViewCx;
 use ui_core::widget::DrawChild;
 
 mod controls;
+mod derived;
 mod facts;
 mod live_head;
 mod open_link;
@@ -2064,15 +2065,27 @@ impl ResourceRoot {
             && let Some(request) = op.unscoped()
             && request.type_id == READ_TYPE
         {
-            let output = read(
+            match read(
                 self.typed.as_ref(),
                 &self.resource,
                 &*self.typed.state(),
                 doc,
                 request.payload,
-            )
-            .map_err(tilo_resource::Refusal::new)?;
-            return Ok(Some(completed(output)));
+            ) {
+                Ok(output) => return Ok(Some(completed(output))),
+                Err(why) => {
+                    // An item the resource does not hold may be one what it
+                    // keeps beside it derives over its parts, as a mail folder
+                    // is the messages the chain beside the mailbox holds; a
+                    // resource that derives nothing answers as it would have.
+                    if let Some(answer) = derived::answer(&self.storage, request.payload) {
+                        return Ok(Some(completed(
+                            answer.map_err(tilo_resource::Refusal::new)?,
+                        )));
+                    }
+                    return Err(tilo_resource::Refusal::new(why));
+                }
+            }
         }
         // A chain of parts kept beside the record reads from its parts: what
         // it holds is not in the record's document, and a caller reading the

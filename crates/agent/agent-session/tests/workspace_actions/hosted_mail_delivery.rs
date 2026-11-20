@@ -555,3 +555,121 @@ async fn a_file_over_100_mib_downloads_in_time_flat_in_its_size() {
         "{large} bytes took {large_took:?}, {small} bytes {small_took:?}"
     );
 }
+
+/// The workspace's resource routes, as `tilo ls` and `tilo read` reach them.
+fn routes(workspace: &str) -> String {
+    format!("/v1/workspaces/{workspace}/resources")
+}
+
+/// What `tilo ls path` lists, through the API.
+async fn listed(client: &tilo_api::client::Client, routes: &str, path: &str) -> Value {
+    client
+        .get(&format!(
+            "{routes}?path={}",
+            tilo_api::client::encode_query(path)
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("ls {path}: {error:#}"))
+}
+
+/// What `tilo read path` answers, through the API.
+async fn read(
+    client: &tilo_api::client::Client,
+    routes: &str,
+    path: &str,
+) -> Result<Value, String> {
+    client
+        .get(&format!("{routes}/{}", tilo_api::client::encode_path(path)))
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// The path a listing gives the row `label`.
+fn row_path(listing: &Value, label: &str) -> String {
+    let row = listing["rows"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{listing}"))
+        .iter()
+        .find(|row| row["label"] == label)
+        .unwrap_or_else(|| panic!("{label} is listed: {listing}"));
+    row["path"]
+        .as_str()
+        .map_or_else(|| panic!("{label} has a path: {row}"), str::to_owned)
+}
+
+/// The paths a read names its children by.
+fn child_paths(read: &Value) -> Vec<String> {
+    read["children"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{read}"))
+        .iter()
+        .map(|child| {
+            child["path"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{child}"))
+                .to_owned()
+        })
+        .collect()
+}
+
+/// Every path the mail API names reads, and the Inbox one reads the message delivered into it:
+/// the children a read prints are what the next call takes, whichever form they are written in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_folder_the_mail_api_names_reads_the_messages_in_it() {
+    let (_on_server, client, workspace, _keys, _token) = importer().await;
+    let answer = client
+        .act_invoked(
+            &workspace,
+            MESSAGES,
+            DELIVER,
+            &json!({
+                "from": "Dana Ruiz <dana@example.test>",
+                "to": "ada@example.test",
+                "subject": "Offsite venue",
+                "body": "Please book the harbour venue for 14 people.",
+                "date": "2026-10-12T09:00:00Z",
+                "folder": "inbox",
+                "read": false,
+            }),
+            "migrate-thunderbird",
+            "Bring Thunderbird in",
+            "migrate-thunderbird-folders",
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{MESSAGES}#{DELIVER}: {error:#}"));
+    assert_eq!(answer["status"], "ok", "{answer}");
+
+    let routes = routes(&workspace);
+    let apps = listed(&client, &routes, "mail").await;
+    let mailbox = row_path(&apps, "Mail");
+    // The mailbox's read names the folders it holds, as the paths the next read takes.
+    let mailbox_read = read(&client, &routes, &mailbox)
+        .await
+        .unwrap_or_else(|why| panic!("read {mailbox}: {why}"));
+    let children = child_paths(&mailbox_read);
+    assert!(!children.is_empty(), "{mailbox_read}");
+    let folders = listed(&client, &routes, &mailbox).await;
+    let inbox = row_path(&folders, "Inbox");
+    // The messages' read names the message it holds, which reads on its own.
+    let messages_read = read(&client, &routes, "mail/Messages")
+        .await
+        .unwrap_or_else(|why| panic!("read mail/Messages: {why}"));
+    let messages = child_paths(&messages_read);
+
+    for path in children
+        .iter()
+        .chain(&messages)
+        .chain(std::iter::once(&inbox))
+    {
+        read(&client, &routes, path)
+            .await
+            .unwrap_or_else(|why| panic!("read {path}, which the API named: {why}"));
+    }
+    let folder = read(&client, &routes, &inbox)
+        .await
+        .unwrap_or_else(|why| panic!("read {inbox}: {why}"));
+    assert!(
+        folder.to_string().contains("Offsite venue"),
+        "the inbox holds the message delivered into it: {folder}"
+    );
+}

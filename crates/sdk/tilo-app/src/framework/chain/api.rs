@@ -47,6 +47,10 @@ impl ResourceApi for ChainState {
         ChainState::item(self, id)
     }
 
+    fn read_over(&self, item: &str) -> Option<Result<serde_json::Value, String>> {
+        ChainState::read_over(self, item)
+    }
+
     fn past_page_len(&self) -> usize {
         ChainState::past_page_len(self)
     }
@@ -138,6 +142,27 @@ fn arriving(chain: &ChainState) -> tilo_resource::Refusal {
 }
 
 impl ChainState {
+    pub(crate) fn id(&self) -> &str {
+        &self.core.id
+    }
+
+    /// Who reads and writes the parts here.
+    pub(crate) fn reader(&self) -> &tilo_resource::MemberId {
+        &self.core.workspace.me
+    }
+
+    /// Answer a read of `item` that names no item a part keeps but something
+    /// the kind derives over every part held ([`Chained::read_over`]): the
+    /// messages of a folder, which is what a read of the resource keeping the
+    /// chain beside it falls back to. `None` when the kind derives nothing of
+    /// it.
+    pub(super) fn read_over(&self, item: &str) -> Option<Result<serde_json::Value, String>> {
+        let part = self.part();
+        let parts = self.parts();
+        let typed = (part.typed)(&parts);
+        (part.read_over)(&*(self.base)(), &*typed, item)
+    }
+
     /// Write `action` into its part now, as [`Self::apply_as`] does, or say
     /// its part is on its way (`Ok(Write::Arriving)`) with nothing kept to be
     /// written later: a write asked through the API answers its caller, never

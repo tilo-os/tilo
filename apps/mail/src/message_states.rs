@@ -686,6 +686,22 @@ impl ui::framework::Chained for MessageStates {
         places(mail, parts)
     }
 
+    /// A folder read answers the messages it holds, from every part: a
+    /// folder is no item a part keeps, so the mailbox's read falls back to
+    /// this for the folders it names.
+    fn read_over(
+        _mail: &Mail,
+        parts: &[(u64, Rc<Self>)],
+        item: &str,
+    ) -> Option<Result<serde_json::Value, String>> {
+        let folder = crate::held::folder_named(item)?;
+        let all = Self::of(parts);
+        Some(Ok(serde_json::json!({
+            "folder": folder.as_key(),
+            "messages": all.listing(Some(folder)),
+        })))
+    }
+
     const BESIDE_RESOURCE: bool = true;
 
     /// The window shows flags on every message it loads, from any part, so

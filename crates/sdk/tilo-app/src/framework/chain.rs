@@ -1718,15 +1718,6 @@ impl ChainState {
         Some(state)
     }
 
-    pub(crate) fn id(&self) -> &str {
-        &self.core.id
-    }
-
-    /// Who reads and writes the parts here.
-    pub(crate) fn reader(&self) -> &tilo_resource::MemberId {
-        &self.core.workspace.me
-    }
-
     fn part(&self) -> &'static PartType {
         self.core.part
     }

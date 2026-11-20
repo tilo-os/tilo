@@ -982,13 +982,13 @@ impl Mail {
             .into_iter()
             .map(|folder| {
                 ui::search::ScopeDecl::new(
-                    format!("mail.folder:{}", folder.as_key()),
+                    folder_place_id(folder.as_key()),
                     crate::i18n::t(folder.message()),
                 )
             })
             .collect::<Vec<_>>();
         scopes.extend(self.folders.iter().map(|(id, folder)| {
-            ui::search::ScopeDecl::new(format!("mail.folder:{id}"), folder.name.clone())
+            ui::search::ScopeDecl::new(folder_place_id(id.as_str()), folder.name.clone())
         }));
         scopes
     }
@@ -1005,7 +1005,7 @@ impl Mail {
         for folder in Folder::ALL {
             let mut place = Derived::new(crate::i18n::t(folder.message()))
                 .of_kind("folder")
-                .identified(folder_place_id(folder.as_key()))
+                .addressed(folder_place_id(folder.as_key()))
                 .with_effect(&MailEffect::Open {
                     target: MailTarget::Folder(folder.as_key().to_owned()),
                 });
@@ -1020,7 +1020,7 @@ impl Mail {
             places.push(
                 Derived::new(folder.name.clone())
                     .of_kind("folder")
-                    .identified(folder_place_id(id.as_str())),
+                    .addressed(folder_place_id(id.as_str())),
             );
         }
         places
@@ -1077,9 +1077,11 @@ pub(crate) fn draft_place_id(id: &str) -> String {
     }
 }
 
-/// The id of the folder `key`'s place among the mailbox's.
+/// The address the folder `key`'s place is published under, and the item a
+/// read names the folder's messages by: the mailbox's read answers its
+/// folders with this, so the path it hands out names the folder itself.
 pub(crate) fn folder_place_id(key: &str) -> String {
-    format!("folder:{key}")
+    format!("mail.folder:{key}")
 }
 
 /// The id of the message `id`'s place beneath its folder's.
@@ -1089,11 +1091,7 @@ pub(crate) fn message_place_id(id: &str) -> String {
 
 /// The published id of the folder `key`'s place.
 pub fn folder_resource(key: &str) -> String {
-    format!(
-        "{}/derived/{}",
-        <Mail as tilo_resource::Resource>::KIND,
-        folder_place_id(key)
-    )
+    folder_place_id(key)
 }
 
 /// The mailbox `doc` holds, when it reads as one.
