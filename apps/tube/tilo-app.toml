@@ -96,6 +96,11 @@ kind = "read"
 asks = "query"
 [[offers]]
 resource = "tube.library"
+action = "import-previous-watch-history"
+label = "Import previous watch history"
+confirm = true
+[[offers]]
+resource = "tube.library"
 action = "pair-device"
 label = "Pair with an invitation"
 kind = "outside"
@@ -210,3 +215,22 @@ resource-kind = "tube.setting"
 action = "set-segment-handling"
 label = "Set segment handling"
 kind = "read"
+[[offers]]
+resource = "tube.watch-history"
+action = "import"
+label = "Import watch history"
+asks = "watched"
+[[offers]]
+resource = "tube.watch-history"
+action = "forget"
+label = "Remove from history"
+asks = "video"
+[[offers]]
+resource = "tube.watch-history"
+action = "clear"
+label = "Clear watch history"
+[[offers]]
+resource = "tube.watch-history"
+action = "import-previous"
+label = "Import earlier viewing history"
+asks = "previous"

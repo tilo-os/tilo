@@ -91,6 +91,18 @@ schemes = ["music"]
 
 [[offers]]
 resource = "music.library"
+action = "set-catalogue"
+label = "Choose the online catalogue for this workspace"
+operation = "document"
+asks = "catalogue"
+[[offers]]
+resource = "music.library"
+action = "import-catalogue"
+label = "Import the previous catalogue into this workspace"
+operation = "document"
+asks = "catalogue"
+[[offers]]
+resource = "music.library"
 action = "create-playlist"
 label = "Create playlist"
 operation = "document"
@@ -256,11 +268,14 @@ kind = "outside"
 resource = "music.source:catalogue"
 resource-kind = "music.source"
 action = "browse-spotify"
-label = "Browse Spotify"
-kind = "outside"
+label = "Use Spotify"
 [[offers]]
 resource = "music.source:catalogue"
 resource-kind = "music.source"
 action = "browse-you-tube"
-label = "Browse YouTube Music"
-kind = "outside"
+label = "Use YouTube Music"
+[[offers]]
+resource = "music.source:catalogue"
+resource-kind = "music.source"
+action = "disable-catalogue"
+label = "Disable catalogue"
