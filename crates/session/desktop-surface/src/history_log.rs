@@ -5,7 +5,6 @@
 use std::collections::BTreeMap;
 
 use automerge::AutoCommit;
-use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::shared_resource;
 
@@ -55,11 +54,10 @@ pub fn change_author(message: Option<&str>) -> Option<String> {
 /// the host knows them.
 pub type PersonOf<'a> = &'a dyn Fn(&str) -> Option<(String, (u8, u8, u8))>;
 
-/// Who each actor of the layout's document `doc` writes for, by actor (hex): the names the document
-/// holds ([`desktop_doc::author_names`]) and those its changes name, so a pane names every change
-/// of the layout by its person.
+/// Who each actor of the layout's document `doc` writes for, by actor (hex): the people its changes
+/// name, so a pane names every change of the layout by its person.
 pub fn authors_of(doc: &mut AutoCommit) -> BTreeMap<String, String> {
-    let mut authors = desktop_doc::author_names(doc);
+    let mut authors = BTreeMap::new();
     for change in doc.get_changes(&[]) {
         let Some(author) = change_author(change.message()) else {
             continue;
@@ -102,6 +100,7 @@ mod tests {
     use super::*;
     use crate::activity::{ActivitySnapshot, WorkspaceActivityPane};
     use tilo_automerge::ApplyIncoming as _;
+    use tilo_desktop_model::desktop_doc;
     use tilo_desktop_model::{IdMinter, Layout, Tab, TileContent};
 
     fn app(minter: &mut IdMinter, title: &str) -> Tab {

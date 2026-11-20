@@ -4,7 +4,7 @@
 //! This module is the only definition of the shape: [`seed`] writes it from a [`Layout`],
 //! [`rebuild`] reads it back. Topology is [`crate::topology`]'s; the host owns the document, decides
 //! when to commit, and stamps history.
-//! Shape: `{ active: workspace id, authors_v1?: {actor → author},
+//! Shape: `{ active: workspace id,
 //! window_records_v1?: {tab id → record id}, window_authors_v1?: {strip or
 //! tab id → person}, window_opened_by_v1?: {tab id → json agent run},
 //! view_v1: json, workspaces: [ { id: workspace id, name, owner?,
@@ -48,7 +48,6 @@ const WORKSPACES_KEY: &str = "workspaces";
 pub(crate) const ACTIVE_KEY: &str = "active";
 const VIEW_KEY: &str = "view_v1";
 const LOCAL_KEY: &str = "local_v1";
-const AUTHORS_KEY: &str = "authors_v1";
 const GRANTS_KEY: &str = "grants";
 const SANDBOX_KEY: &str = "sandbox";
 const PRESETS_KEY: &str = "presets_v1";
@@ -660,12 +659,6 @@ fn tile_from_blob(blob: &[u8], title: &str) -> TileContent {
 /// front of those it holds — a workspace's own layout ([`write_shared`]) names none — shows
 /// its first one.
 pub fn rebuild(doc: &AutoCommit, desktop: &mut Layout) {
-    if let Some(active) = doc
-        .str_at(&ROOT, ACTIVE_KEY)
-        .and_then(|text| WorkspaceId::parse(&text))
-    {
-        desktop.active = active;
-    }
     if obj(doc, &ROOT, WORKSPACES_KEY).is_none() {
         return;
     }
@@ -705,6 +698,14 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut Layout) {
         rebuilt.push(ws);
     }
     desktop.workspaces = rebuilt;
+    // A layout a workspace shares holds no workspace in front ([`write_shared`]): which one a
+    // person shows is their own view of it. The shell shows the first workspace the document holds.
+    desktop.active = doc
+        .str_at(&ROOT, ACTIVE_KEY)
+        .and_then(|text| WorkspaceId::parse(&text))
+        .filter(|active| desktop.workspaces.iter().any(|held| held.id() == *active))
+        .or_else(|| desktop.workspaces.first().map(Workspace::id))
+        .unwrap_or_default();
 
     for (id, entry) in entries {
         let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.id() == id) else {
@@ -891,20 +892,6 @@ fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[DocTab]) {
         group.active_tab = tabs.first().map_or(0, |t| t.id);
     }
     group.tabs = tabs;
-}
-
-/// The names this document's changes are known by, by actor (hex), when a
-/// host recorded them: a layout read into this document from one that named its
-/// changes' authors keeps the names people already saw.
-pub fn author_names(doc: &AutoCommit) -> std::collections::BTreeMap<String, String> {
-    doc.bytes_at(&ROOT, AUTHORS_KEY)
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
-}
-
-/// Record the names [`author_names`] reads.
-pub fn set_author_names(doc: &mut AutoCommit, names: &std::collections::BTreeMap<String, String>) {
-    put_json_if_changed(doc, &ROOT, AUTHORS_KEY, names);
 }
 
 /// Whether `doc` holds the layout this module writes: a root holding the

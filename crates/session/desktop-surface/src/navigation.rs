@@ -2210,8 +2210,20 @@ mod tests {
         }
 
         phase open_focuses_the_shown_window_of_an_app_or_launches_one;
+        // A page that reloads reads the workspace's layout back — which holds no workspace in
+        // front, that is its person's own view — and asks for its window at once.
         {
-            let tree = tree();
+            let mut doc = automerge::AutoCommit::new();
+            assert!(tilo_desktop_model::desktop_doc::write_shared(
+                &mut doc,
+                &tree(),
+                &[],
+                &tilo_desktop_model::ownership::Authors::default()
+            ));
+            doc.commit();
+            let tree = tilo_desktop_model::shared_resource::read(&doc, None)
+                .expect("the layout")
+                .tree;
             let open = |app: &str| chrome("show-app", serde_json::json!({"app":app}));
             let shown = RouteIds {
                 workspace: WorkspaceId::from_u128(u128::MAX),
