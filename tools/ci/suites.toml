@@ -10,7 +10,8 @@
 #     a changed path matches one of the group's inputs or the suite itself;
 #   * a [[covered]] entry: exercised by the named, already guarded suite, or,
 #     with `check = "<name>"`, by the named t check, which runs it in its own
-#     image; or
+#     image on every change (a check that runs on idle or when asked is not
+#     required, so its suite is [[unrequired]]); or
 #   * an [[unrequired]] entry with the reason it cannot be a required check.
 #
 # `tools/ci/suites.py check` (part of tools/policy/run.sh) rejects a
@@ -289,12 +290,6 @@ suites = [
   "os/tests/test_rpm_snapshot_fingerprint.py",
   "os/tests/test_kernel_build_environment.py",
 ]
-
-# The folder hand-over needs a tilo.sh stack and a FUSE mount, which no cheap suite has: the
-# peer-handover check brings both up in a job of its own.
-[[covered]]
-suite = "os/containers/tilo-sh/test-peer-handover.sh"
-check = "peer-handover"
 
 [[group]]
 name = "pipewire-echo-cancel"
@@ -1738,6 +1733,10 @@ reason = "needs a whole tilo.sh stack of its own under bwrap, from the built pro
 [[unrequired]]
 suite = "os/containers/tilo-sh/test-vm-host.sh"
 reason = "needs root, KVM, loop devices and the built VM host and hosted guest images; the tilo-sh-vm-host check runs it in a VM of its own on dispatch"
+
+[[unrequired]]
+suite = "os/containers/tilo-sh/test-peer-handover.sh"
+reason = "needs a whole tilo.sh stack and a FUSE mount, and the tilo-sh-programs build it needs costs more than a change should; the peer-handover check runs it on main's idle and when named"
 
 [[unrequired]]
 suite = "os/containers/tilo-sh/test-peer-kill-midwrite.sh"
