@@ -170,3 +170,4 @@ entry-failure-the-host = der Host
 entry-failure-refused-fallback = Dieser Link oder diese Einladung lässt sich nicht verwenden.
 entry-failure-open-host = { $server } öffnen
 entry-failure-others = Oder öffne einen anderen deiner Arbeitsbereiche
+entry-failure-elsewhere = Oder öffne stattdessen eines davon

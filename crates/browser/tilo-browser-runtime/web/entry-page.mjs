@@ -2353,7 +2353,9 @@ async function otherWorkspaces({scope, entry, runtime}) {
   const choices = remembering(() => workspaceChoices({home: entry.home, homeWorkspace: homeWorkspaceOf(entry),
     entered: enteredWorkspaces(), current: scope, own})) ?? [];
   return choices.filter(choice => choice.home || choice.own || link).map(choice => ({
-    label: choice.own ? 'Your own desktop' : choice.name,
+    // Named as the workspace switcher names it: it is no workspace.
+    label: choice.own ? 'Your desktop' : choice.name,
+    own: Boolean(choice.own),
     note: choice.unavailable ? 'Didn’t open last time' : null,
     open: () => {
       // The own desktop is no workspace a bare entry could reopen: the choice kept stays.

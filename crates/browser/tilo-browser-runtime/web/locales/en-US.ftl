@@ -176,3 +176,4 @@ entry-failure-the-host = the host
 entry-failure-refused-fallback = This link or invitation can’t be used.
 entry-failure-open-host = Open { $server }
 entry-failure-others = Or open another of your workspaces
+entry-failure-elsewhere = Or open one of these instead

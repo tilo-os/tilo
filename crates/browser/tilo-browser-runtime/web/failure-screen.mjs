@@ -211,7 +211,8 @@ export function failureDetails({cause, host = null, step = null, error = null, b
  * The failure screen in `document` (index.html, `#arrival-failure`), shown
  * while `data-failure` is on the root. `show({screen, details, others})`
  * fills it: `others` are `{label, note, open}` for the person's other workspaces
- * (their own desktop among them), listed under the screen's own action.
+ * (their desktop among them), listed under the screen's own action.
+ * `own` marks the person's desktop, which is no workspace: a list holding it is not called one.
  * `onRetry` runs on Try again.
  */
 export function domFailureView({document = globalThis.document, messages = () => new Map(), onRetry = () => {},
@@ -272,7 +273,10 @@ export function domFailureView({document = globalThis.document, messages = () =>
           return item;
         }));
       }
-      set('arrival-failure-others-heading', others.length ? say('entry-failure-others', 'Or open another of your workspaces') : '');
+      const heading = others.some(other => other.own)
+        ? say('entry-failure-elsewhere', 'Or open one of these instead')
+        : say('entry-failure-others', 'Or open another of your workspaces');
+      set('arrival-failure-others-heading', others.length ? heading : '');
       const group = $('arrival-failure-elsewhere');
       if (group) group.hidden = !others.length;
       set('arrival-failure-summary', say('arrival-reconnect-details', 'Technical details'));

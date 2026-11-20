@@ -144,7 +144,7 @@ test('both locales word every screen, with the workspace’s name and without', 
       }
     }
     for (const id of ['entry-failure-step-load', 'entry-failure-step-join', 'entry-failure-step-open', 'entry-failure-step-draw',
-      'entry-failure-open-host', 'entry-failure-others', 'entry-failure-the-host', 'entry-failure-refused-fallback']) {
+      'entry-failure-open-host', 'entry-failure-others', 'entry-failure-elsewhere', 'entry-failure-the-host', 'entry-failure-refused-fallback']) {
       assert.ok(messages.get(id), `${name}: ${id}`);
     }
   }
@@ -193,6 +193,10 @@ test('the screen shows one action first and the other workspaces under it, in th
   assert.deepEqual(button.children.map(part => part.textContent), ['Lounge', 'Didn’t open last time']);
   button.listeners.click();
   assert.deepEqual(opened.at(-1), 'lounge');
+  // The person's desktop is no workspace: a list holding it is not called one.
+  view.show({screen: local, others: [{label: 'Your desktop', own: true, open: () => {}}, {label: 'Lounge', open: () => {}}]});
+  assert.equal(made['arrival-failure-others-heading'].textContent, 'Or open one of these instead');
+  view.show({screen: local, details: 'Cause: unreachable', others: [{label: 'Lounge', open: () => {}}]});
   // The words reach screen readers through the status line.
   assert.match(made.status.textContent, /^Can’t connect to 127\.0\.0\.1:24100\. This site loads/);
 
