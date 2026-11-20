@@ -28,9 +28,9 @@ pub fn unmount_and_join(session: fuser::BackgroundSession, mount_point: &Path) -
     }
 }
 
-/// Unmounts the filesystem at `mount_point`; one still in use has its writes
-/// flushed, then its connection ended and its mount detached. Returns whether it
-/// did: where this process may not unmount, fuser's own unmount does it.
+/// Unmounts the filesystem at `mount_point`; one still in use has its connection
+/// ended and its mount detached. Returns whether it did: where this process may
+/// not unmount, fuser's own unmount does it.
 #[cfg(target_os = "linux")]
 fn end_connection(mount_point: &Path) -> io::Result<bool> {
     use rustix::io::Errno;
@@ -42,11 +42,11 @@ fn end_connection(mount_point: &Path) -> io::Result<bool> {
         Err(Errno::BUSY) => {}
         Err(error) => return Err(error.into()),
     }
-    // Writes the kernel still holds (pages of a file mapped shared) reach
-    // the daemon now; ending the connection would drop them.
-    if let Ok(root) = std::fs::File::open(mount_point) {
-        let _ = rustix::fs::syncfs(&root);
-    }
+    // The mount point is never opened here: serving that open is what the session being ended
+    // must do, and the thread that would wait for it is this one. Every change this daemon
+    // answered is already journaled and its content committed, so nothing of its own is left in
+    // the kernel to flush.
+    //
     // `MNT_FORCE` makes FUSE abort the connection before the unmount, so
     // its open files fail with `ENOTCONN` and the workers' reads end.
     unmount(mount_point, UnmountFlags::FORCE | UnmountFlags::DETACH)?;
