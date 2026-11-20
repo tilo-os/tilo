@@ -4303,6 +4303,7 @@ impl Filesystem for QuickFS {
         reply: ReplyCreate,
     ) {
         let _answering = self.activity.begin();
+        note_request("create");
         let writer =
             match self.admit_writer(req.pid(), None, fs_protocol::file_action::verbs::NEW_FILE) {
                 Ok(writer) => writer,
@@ -4365,6 +4366,7 @@ impl Filesystem for QuickFS {
         reply: ReplyWrite,
     ) {
         let _answering = self.activity.begin();
+        note_request("write");
         if let Err(e) = self.check_open_handle_access(ino.0, fh, Access::Write) {
             reply.error(to_errno(e));
             return;
@@ -4384,6 +4386,7 @@ impl Filesystem for QuickFS {
         reply: ReplyEmpty,
     ) {
         let _answering = self.activity.begin();
+        note_request("flush");
         let _writer = self.note_writer(req.pid());
         match self.flush_inode(ino.0) {
             Ok(()) => reply.ok(),
@@ -4440,6 +4443,7 @@ impl Filesystem for QuickFS {
         reply: ReplyEmpty,
     ) {
         let _answering = self.activity.begin();
+        note_request("release");
         if let Some(passthrough) = &self.passthrough {
             passthrough.release(fh.0);
         }
@@ -4536,6 +4540,7 @@ impl Filesystem for QuickFS {
         reply: ReplyEntry,
     ) {
         let _answering = self.activity.begin();
+        note_request("mkdir");
         let _writer =
             match self.admit_writer(req.pid(), None, fs_protocol::file_action::verbs::NEW_FOLDER) {
                 Ok(writer) => writer,
