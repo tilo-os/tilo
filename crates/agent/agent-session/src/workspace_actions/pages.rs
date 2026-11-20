@@ -15,6 +15,20 @@ use super::{
 use tilo_actions::remote::{Completer, Pending};
 use tilo_server_protocol::page::{OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal};
 
+/// How long a page's act waits for a replica that is taking its document's
+/// parts in: the parts arrive off the service's thread, and a person's click
+/// waits them out rather than being answered "not ready".
+const ACT_WAIT: std::time::Duration = std::time::Duration::from_millis(10);
+/// The most waits one act makes: a fifth of a second together, which is a long
+/// time to lay a document's parts out and short enough not to hold the thread.
+const ACT_TRIES: u32 = 20;
+
+/// Whether `error` says the record is not ready yet, as a replica taking its
+/// parts in does.
+fn not_ready(error: &ActionCallError) -> bool {
+    matches!(error, ActionCallError::NotReady)
+}
+
 /// What a page asks of the service's thread.
 pub(super) enum PageJob {
     Open {
@@ -382,36 +396,58 @@ impl Worker {
             return Ok(Vec::new());
         }
         let (workspace_id, who, route) = app.ok_or_else(|| unavailable("the page was closed"))?;
-        let started = std::time::Instant::now();
-        // Others' writes since are merged before the person acts, as they
-        // would have seen them in a window.
-        let state = self
-            .refresh(workspace_id, Needs::Workspace)
-            .map_err(refused)?;
-        let refreshed = started.elapsed();
-        let key = self
-            .bounded_replica(workspace_id, &who, &route, &state)
-            .map_err(refused)?;
-        let held_at = started.elapsed();
         let acting = act.is_some();
-        let patches = self
-            .bounded
-            .get(&key)
-            .ok_or_else(|| unavailable("the page's document did not open"))?
-            .held
-            .app
-            .page_act(act)
-            .map_err(not_shown)?;
-        let acted = started.elapsed();
-        self.save_page(workspace_id, &key, (&who, &route, &state))?;
+        // A replica holding neither its document's parts nor the parts of its
+        // chains answers that it is not ready while they are on their way off
+        // this thread. What a person did is asked again until they are here:
+        // they see the one click they made, and nothing they typed is lost to a
+        // read that was still arriving.
+        let mut tries = 0;
+        let (patches, refreshed, held_at, acted, saved_at) = 'act: loop {
+            let started = std::time::Instant::now();
+            // Others' writes since are merged before the person acts, as they
+            // would have seen them in a window.
+            let state = match self.refresh(workspace_id, Needs::Workspace) {
+                Ok(state) => state,
+                Err(error) if acting && not_ready(&error) && tries < ACT_TRIES => {
+                    tries += 1;
+                    std::thread::sleep(ACT_WAIT);
+                    continue 'act;
+                }
+                Err(error) => return Err(refused(error)),
+            };
+            let refreshed = started.elapsed();
+            let key = match self.bounded_replica(workspace_id, &who, &route, &state) {
+                Ok(key) => key,
+                Err(error) if acting && not_ready(&error) && tries < ACT_TRIES => {
+                    tries += 1;
+                    std::thread::sleep(ACT_WAIT);
+                    continue 'act;
+                }
+                Err(error) => return Err(refused(error)),
+            };
+            let held_at = started.elapsed();
+            let patches = self
+                .bounded
+                .get(&key)
+                .ok_or_else(|| unavailable("the page's document did not open"))?
+                .held
+                .app
+                .page_act(act.clone())
+                .map_err(not_shown)?;
+            let acted = started.elapsed();
+            self.save_page(workspace_id, &key, (&who, &route, &state))?;
+            break 'act (patches, refreshed, held_at, acted, started.elapsed());
+        };
         tracing::debug!(
             page,
             acted = acting,
+            tries,
             patches = patches.len(),
             refresh_ms = refreshed.as_millis(),
             replica_ms = held_at.saturating_sub(refreshed).as_millis(),
             view_ms = acted.saturating_sub(held_at).as_millis(),
-            save_ms = started.elapsed().saturating_sub(acted).as_millis(),
+            save_ms = saved_at.saturating_sub(acted).as_millis(),
             "workspace actions: a page was acted on"
         );
         Ok(patches
