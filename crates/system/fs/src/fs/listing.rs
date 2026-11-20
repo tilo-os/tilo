@@ -1,15 +1,21 @@
 //! A folder as the mount shows it: the listing the view allows, and the
 //! requests a daemon answers.
 //!
-//! A listing is taken once per revision of the tree and the ACL and kept, so a
-//! folder's later pages do not build it again.
+//! A listing is taken once and kept, so a folder's later pages do not build it
+//! again. Its pages are one pass over the folder: while a listing is being read
+//! the tree can be moving (a folder just filled is still being published), and
+//! rebuilding for every page would ask for a thousand names once per page. A
+//! page therefore continues the listing its first page took, and the next
+//! listing asks again. An ACL change is different: a page must not show what
+//! was just revoked, so that rebuilds even mid-listing.
 
 use fuser::FileType;
 use tilo_lock::MutexRecover as _;
 
 use super::{QuickFS, child_path};
 
-/// A directory listing as the mount's identity sees it, with the revision it was taken at.
+/// A directory listing as the mount's identity sees it, with the revisions it was taken at:
+/// the folder, the ACL, and the tree.
 pub(super) struct ReaddirCache {
     pub(super) key: (u64, u64, String),
     pub(super) entries: Vec<(u64, FileType, fs_protocol::FileNameV1)>,
@@ -35,24 +41,45 @@ impl QuickFS {
         &self,
         ino: u64,
     ) -> Option<Vec<(u64, FileType, fs_protocol::FileNameV1)>> {
-        // A listing is good while nothing in the tree or the ACL changed: a folder's pages then
-        // pay for it once, not once per page. The revision is read before the folder is, so a
-        // cached page never asks the namespace for a thousand names to throw them away.
+        self.listed(ino, None)
+    }
+
+    /// One page of a listing at `offset`: the first page of a listing is taken fresh, and its
+    /// later pages continue it.
+    pub(super) fn listing_page(
+        &self,
+        ino: u64,
+        offset: u64,
+    ) -> Option<Vec<(u64, FileType, fs_protocol::FileNameV1)>> {
+        self.listed(ino, Some(offset))
+    }
+
+    fn listed(
+        &self,
+        ino: u64,
+        page: Option<u64>,
+    ) -> Option<Vec<(u64, FileType, fs_protocol::FileNameV1)>> {
+        // The revision is read before the folder is, so a cached page never asks the namespace
+        // for a thousand names to throw them away.
         let revision = {
             let ns = self.ns();
             ns.indexed_document_revision().to_owned()
         };
-        let key = self
+        let acl_revision = self
             .enforcement
             .as_ref()
-            .map(|(acl, _)| (ino, acl.revision(), revision));
+            .map_or(0, |(acl, _)| acl.revision());
+        let key = (ino, acl_revision, revision);
         {
             let cache = self.readdir_cache.lock_recover();
-            if let Some(key) = &key
-                && let Some(cached) = cache.as_ref()
-                && cached.key == *key
-            {
-                return Some(cached.entries.clone());
+            if let Some(cached) = cache.as_ref() {
+                // A listing's continuation keeps the listing it started, even if the tree moved
+                // on while its pages were being read; a later listing asks again.
+                let continuing = page.is_some_and(|offset| offset > 0);
+                let same_listing = cached.key.0 == ino && cached.key.1 == acl_revision;
+                if cached.key == key || (continuing && same_listing) {
+                    return Some(cached.entries.clone());
+                }
             }
         }
         let (entries, dir_path) = {
@@ -60,23 +87,24 @@ impl QuickFS {
             (ns.readdir(ino), ns.path_for(ino))
         };
         let entries = entries?;
-        // Without enforcement there is no ACL revision to key a listing on, and nothing to
-        // filter: the folder answers as it is.
-        let (Some((acl, identity)), Some(key)) = (&self.enforcement, key) else {
-            return Some(entries);
+        // Without enforcement there is nothing to filter: the folder answers as it is.
+        let visible = match (&self.enforcement, dir_path) {
+            (None, _) => entries,
+            (Some((acl, identity)), Some(dir_path)) => {
+                if !acl.visible(identity, &dir_path) {
+                    return None;
+                }
+                entries
+                    .into_iter()
+                    .filter(|(_, _, name)| {
+                        name == "."
+                            || name == ".."
+                            || acl.visible(identity, &child_path(&dir_path, name.as_bytes()))
+                    })
+                    .collect()
+            }
+            (Some(_), None) => return None,
         };
-        let dir_path = dir_path?;
-        if !acl.visible(identity, &dir_path) {
-            return None;
-        }
-        let visible: Vec<_> = entries
-            .into_iter()
-            .filter(|(_, _, name)| {
-                name == "."
-                    || name == ".."
-                    || acl.visible(identity, &child_path(&dir_path, name.as_bytes()))
-            })
-            .collect();
         {
             let mut cache = self.readdir_cache.lock_recover();
             cache.replace(ReaddirCache {

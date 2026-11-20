@@ -4015,7 +4015,7 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(ENOENT));
             return;
         }
-        let Some(entries) = self.visible_entries(ino.0) else {
+        let Some(entries) = self.listing_page(ino.0, offset) else {
             reply.error(to_errno(ENOTDIR));
             return;
         };
@@ -4054,7 +4054,7 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(ENOENT));
             return;
         }
-        let Some(entries) = self.visible_entries(ino.0) else {
+        let Some(entries) = self.listing_page(ino.0, offset) else {
             reply.error(to_errno(ENOTDIR));
             return;
         };
