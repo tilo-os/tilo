@@ -175,11 +175,10 @@ impl super::WindowGroup {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        let band = self.bar.get_rect().inflate(0.0, 6.0);
-        let spare = crate::widget::tooltip::on_screen(presence, band);
+        // The chip naming who opened a tab stands below it, over the top of the window.
+        let spare = crate::widget::tooltip::on_screen(presence, self.get_rect());
         self.bar
             .draw_holder_chip(scene, transform, tr, theme, spare);
-        let spare = crate::widget::tooltip::on_screen(presence, self.get_rect());
         self.bar
             .draw_opened_by_tip(scene, transform, tr, theme, spare);
         self.opened_by.place(self.bar.opened_by_stop());

@@ -169,7 +169,7 @@ fn mark_span(theme: &Theme) -> (f64, f64) {
     (f64::from(rhythm.related), f64::from(rhythm.tight))
 }
 
-fn draw_chip_marked(
+pub(crate) fn draw_chip_marked(
     scene: &mut Scene,
     transform: Affine,
     text_renderer: &mut TextRenderer,
@@ -288,6 +288,21 @@ pub fn draw_hover_tooltip_on(
     draw_chip(scene, transform, text_renderer, theme, rect, label);
 }
 
+/// Where [`draw_person_tooltip_on`] puts a chip naming a person: its label beside the person's
+/// colour mark, on `anchor`'s side, inside `viewport`.
+pub fn person_tooltip_rect_on(
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    anchor: (Rect, TooltipSide),
+    label: &str,
+    viewport: Rect,
+) -> Rect {
+    let (width, height) = chip_size_in_viewport(label, text_renderer, theme, viewport);
+    let (mark_px, mark_gap) = mark_span(theme);
+    let size = (width + mark_px + mark_gap, height);
+    chip_rect_on(theme, anchor.1, anchor.0, size, viewport)
+}
+
 pub fn draw_person_tooltip_on(
     scene: &mut Scene,
     transform: Affine,
@@ -297,10 +312,7 @@ pub fn draw_person_tooltip_on(
     (label, color): (&str, vello::peniko::Color),
     viewport: Rect,
 ) {
-    let (width, height) = chip_size_in_viewport(label, text_renderer, theme, viewport);
-    let (mark_px, mark_gap) = mark_span(theme);
-    let size = (width + mark_px + mark_gap, height);
-    let rect = chip_rect_on(theme, anchor.1, anchor.0, size, viewport);
+    let rect = person_tooltip_rect_on(text_renderer, theme, anchor, label, viewport);
     draw_chip_marked(
         scene,
         transform,

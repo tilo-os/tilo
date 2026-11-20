@@ -1,4 +1,5 @@
-//! What a button in the bar names: the tip the pointer rests on.
+//! What a button in the bar names: the tip the pointer rests on. A tab someone else opened shows
+//! the chip naming them instead ([`TabBar::holder_chip`]), never both.
 
 use vello::kurbo::{Point, Rect};
 
@@ -16,7 +17,7 @@ impl TabBar {
             && let Some(&icon) = self.tab_rects.first()
             && icon.contains(point)
         {
-            return Some((icon, tab.title.clone()));
+            return (!self.names_its_opener(0)).then(|| (icon, tab.title.clone()));
         }
         if let Some(index) = self
             .tab_rects
@@ -25,7 +26,8 @@ impl TabBar {
             && let Some(tab) = self.tabs.get(index)
             && !tab.title.is_empty()
         {
-            return Some((self.tab_rects[index], tab.title.clone()));
+            return (!self.names_its_opener(index))
+                .then(|| (self.tab_rects[index], tab.title.clone()));
         }
         if !self.window_controls {
             return None;

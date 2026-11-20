@@ -1,6 +1,6 @@
 use crate::color_compat::ColorCompat;
 use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
-use crate::i18n::{widget_format, widget_text};
+use crate::i18n::widget_text;
 use crate::icons;
 use crate::paint::PaintCtx;
 use crate::presence::{PresenceCtx, PresenceKey};
@@ -31,6 +31,8 @@ mod bar_layout;
 #[cfg(test)]
 #[path = "tabs_close_tests.rs"]
 mod close_tests;
+#[path = "tabs_holder_chip.rs"]
+mod holder_chip;
 #[path = "tabs_new_tab.rs"]
 mod new_tab;
 #[path = "tabs_paint.rs"]
@@ -2654,45 +2656,6 @@ impl TabBar {
     pub fn is_held(&self, id: u64) -> bool {
         self.held_ids.get(&id).is_some_and(|holder| holder.keeps)
     }
-    /// Name whoever opened the tab under the pointer, in their colour, beside it: on a window
-    /// someone else keeps that also explains why it offers no close and will not move. Within the
-    /// strip's band.
-    pub(crate) fn draw_holder_chip(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        viewport: Rect,
-    ) {
-        if self.pending_drag.is_some() {
-            return;
-        }
-        let Some((t, rect)) = self
-            .hover_idx
-            .and_then(|i| self.tabs.get(i).zip(self.tab_rects.get(i)))
-        else {
-            return;
-        };
-        let Some(holder) = self.held_ids.get(&t.id) else {
-            return;
-        };
-        let label = widget_format(
-            "tab-opened-by-person",
-            &[("name", holder.name.clone().into())],
-        );
-        let color = theme.tokens.colors.presence.of_rgb(holder.rgb);
-        super::tooltip::draw_person_tooltip_on(
-            scene,
-            transform,
-            tr,
-            theme,
-            (*rect, super::tooltip::TooltipSide::Beside),
-            (&label, color),
-            viewport,
-        );
-    }
-
     /// How far the held tab being dragged is pulled from its place, if one
     /// is: following the drag, or springing back after it.
     fn resist_offset(&self) -> Option<(u64, vello::kurbo::Vec2)> {
