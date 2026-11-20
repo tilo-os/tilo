@@ -35,7 +35,7 @@ impl Shared {
         &mut self,
         tab: tilo_desktop_model::TabId,
     ) -> Option<tilo_desktop_model::RemovedTab> {
-        let removed = self.tree.close_tab(tab)?;
+        let removed = self.tree.edit().close_tab(tab)?;
         let said = crate::i18n::t_args(
             "shell-window-closed",
             &[(
@@ -70,7 +70,7 @@ impl Shared {
         search: &Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
     ) -> Self {
         Self {
-            tree,
+            tree: tilo_desktop_model::edited::Edited::new(tree),
             dock: super::floats::Dock::default(),
             asked_floats: Vec::new(),
             holders: HashMap::new(),

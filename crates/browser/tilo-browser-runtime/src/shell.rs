@@ -255,7 +255,15 @@ impl ChromeSource for PageChrome {
     }
 
     fn with_authors<R>(&self, answer: impl FnOnce(&mut Authors) -> R) -> R {
-        answer(&mut self.authorship.authors.borrow_mut())
+        // Asking whether a command may go reads the authors through here too: only what changed
+        // them counts as a change of the desktop.
+        let mut authors = (**self.authorship.authors.borrow()).clone();
+        let answered = answer(&mut authors);
+        let mut held = self.authorship.authors.borrow_mut();
+        if authors != **held {
+            held.set(authors);
+        }
+        answered
     }
 
     /// This page's person as everyone here sees them: their name (numbered when someone else
@@ -2501,7 +2509,7 @@ mod tests {
     fn a_guest_is_offered_no_close_on_another_guests_window() {
         let (tree, authors) = lounge();
         let shared = crate::desktop::Shared::default();
-        shared.authors.borrow_mut().clone_from(&authors);
+        shared.authors.borrow_mut().edit().clone_from(&authors);
         let mut person = |id: &str| (id.to_owned(), (1, 2, 3));
         let theirs = authors
             .iter()
@@ -2528,7 +2536,7 @@ mod tests {
     fn a_window_of_someone_who_left_offers_its_close() {
         let (tree, authors) = lounge();
         let shared = crate::desktop::Shared::default();
-        shared.authors.borrow_mut().clone_from(&authors);
+        shared.authors.borrow_mut().edit().clone_from(&authors);
         shared.role.set(Some(Role::Editor));
         let mut person = |id: &str| (id.to_owned(), (1, 2, 3));
         shared

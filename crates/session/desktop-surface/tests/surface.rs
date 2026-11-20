@@ -2990,5 +2990,8 @@ mod wheel;
 #[path = "surface/wakes.rs"]
 mod wakes;
 
+#[path = "surface/edits.rs"]
+mod edits;
+
 #[path = "surface/search.rs"]
 mod search;

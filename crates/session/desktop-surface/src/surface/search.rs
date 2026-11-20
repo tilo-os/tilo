@@ -48,7 +48,7 @@ pub(super) enum SearchRequest {
 /// show there, a window's search control (or an app's own search button) asks what that window
 /// shows, narrowed to the app that window has in front.
 pub(super) fn search_asked(
-    tree: &mut Layout,
+    tree: &Layout,
     strip: StripId,
     new_tab: Option<GroupId>,
     search_in: Option<(GroupId, ui::search::SearchRequest)>,
@@ -59,7 +59,7 @@ pub(super) fn search_asked(
     });
     if let Some((group, request)) = search_in {
         let part = request.part().cloned();
-        let app = super::find_group(tree, strip, group)
+        let app = super::lookup::group_in(tree, strip, group)
             .and_then(|window| window.tabs.iter().find(|tab| tab.id == window.active_tab))
             .and_then(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
             .map(String::from);

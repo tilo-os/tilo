@@ -155,7 +155,7 @@ pub(crate) struct Inputs {
 /// The person who made each strip or opened each window, by its id. Kept
 /// with the desktop: who may close, move or rename each one
 /// ([`tilo_desktop_model::ownership`]).
-pub(crate) type Authors = Rc<RefCell<BTreeMap<u64, String>>>;
+pub(crate) type Authors = Rc<RefCell<tilo_desktop_model::edited::Edited<BTreeMap<u64, String>>>>;
 
 /// The roles a workspace answers a page's person holds, in the order
 /// [`SharedRole`] counts them.
@@ -347,7 +347,7 @@ pub(crate) struct Shared {
     /// looked, for the frame metrics.
     wakers: Arc<std::sync::Mutex<Vec<&'static str>>>,
     /// The record each tab shows, once its component created or opened it.
-    records: Rc<RefCell<HashMap<TabId, DocumentCheckout>>>,
+    documents: Rc<RefCell<tilo_desktop_model::edited::Edited<HashMap<TabId, DocumentCheckout>>>>,
     /// A tab bound a record since the desktop was last saved.
     records_changed: Rc<Cell<bool>>,
     /// Tabs that could not open yet: a peer's desktop named a record
@@ -369,7 +369,7 @@ pub(crate) struct Shared {
     /// read. Each is written back to the shared shell under the spelling it
     /// arrived in, as native keeps the record a window held
     /// ([`tilo_desktop_surface::host::records::adopted`]).
-    unbound: Rc<RefCell<HashMap<TabId, String>>>,
+    unbound: Rc<RefCell<tilo_desktop_model::edited::Edited<HashMap<TabId, String>>>>,
     /// The content, by hash, each tab opened with its app is to open: what
     /// another window handed over (a capture, a recording).
     opened_content: Rc<RefCell<HashMap<TabId, String>>>,
@@ -380,7 +380,13 @@ pub(crate) struct Shared {
     pub authors: Authors,
     /// The agent run that opened each window an agent opened, by tab, as the
     /// workspace's shell last said.
-    pub opened_by: Rc<RefCell<BTreeMap<TabId, tilo_desktop_model::ownership::OpenedBy>>>,
+    pub opened_by: Rc<
+        RefCell<
+            tilo_desktop_model::edited::Edited<
+                BTreeMap<TabId, tilo_desktop_model::ownership::OpenedBy>,
+            >,
+        >,
+    >,
     /// The governance's revision and the shell's when the page last projected the governance onto
     /// it: a projection is due when either moved.
     pub projected_at: Rc<std::cell::Cell<Option<(u64, u64)>>>,
@@ -448,7 +454,7 @@ pub(crate) struct Shared {
 impl Shared {
     /// The record the window of `tab` shows, once its component opened one.
     pub fn resource_of(&self, tab: TabId) -> Option<DocumentCheckout> {
-        self.records.borrow().get(&tab).cloned()
+        self.documents.borrow().get(&tab).cloned()
     }
 
     /// `person` as the desktop's policy asks about them here, among the
@@ -536,7 +542,7 @@ impl Shared {
         let kind = definition.resource_type.clone();
         let own = definition.member_resource;
         let shows = |route: &str| route == record || (record.is_empty() && own);
-        let records = self.records.borrow();
+        let records = self.documents.borrow();
         handle.read(|tree| {
             tree.tabs().map(|tab| tab.id).find(|tab| {
                 records
@@ -811,14 +817,14 @@ impl Shared {
     /// window named.
     pub fn window_resources(&self, tree: &Layout) -> Vec<(TabId, String)> {
         tilo_desktop_surface::host::records::live(
-            &self.records.borrow(),
+            &self.documents.borrow(),
             &self.unbound.borrow(),
             tree,
         )
     }
 
     pub fn bound_records(&self) -> Vec<(TabId, DocumentCheckout)> {
-        self.records
+        self.documents
             .borrow()
             .iter()
             .map(|(tab, checkout)| (*tab, checkout.clone()))
@@ -851,7 +857,7 @@ impl Shared {
     /// application and the record id, empty for the package's primary
     /// record.
     pub fn live_record_of(&self, tree: &Layout, tab: TabId) -> Option<(String, String)> {
-        tilo_desktop_surface::host::records::of_window(tree, &self.records.borrow(), tab)
+        tilo_desktop_surface::host::records::of_window(tree, &self.documents.borrow(), tab)
     }
 
     /// The record each window shows, by its tab: what the session's roster places a person's
@@ -861,7 +867,7 @@ impl Shared {
     /// following it brings that window forward rather than opening Notes again. A window drawn by
     /// its app's own surface names no app here; the shell's tree says which app it runs.
     pub fn shown_records(&self) -> Vec<(u64, Option<String>, String)> {
-        self.records
+        self.documents
             .borrow()
             .iter()
             .map(|(tab, checkout)| (*tab, None, checkout.id.route().to_owned()))
@@ -1072,9 +1078,13 @@ impl Tiles {
         let definition = application(app_id).ok_or_else(|| not_in_the_browser(app_id))?;
         let unbound = self.shared.unbound.borrow().get(&tab.id).cloned();
         if let Some(id) = unbound.as_deref().and_then(DocumentId::from_route) {
-            self.shared.unbound.borrow_mut().remove(&tab.id);
+            self.shared.unbound.borrow_mut().edit().remove(&tab.id);
             let checkout = DocumentCheckout::new(id, definition.resource_type.clone());
-            self.shared.records.borrow_mut().insert(tab.id, checkout);
+            self.shared
+                .documents
+                .borrow_mut()
+                .edit()
+                .insert(tab.id, checkout);
         }
         if definition.app_id() == tilo_desktop::feedback::PACKAGE {
             return Ok(self.private_feedback(tab.id)?);
@@ -1119,8 +1129,9 @@ impl Tiles {
         let record = component.record().clone();
         let previous = self
             .shared
-            .records
+            .documents
             .borrow_mut()
+            .edit()
             .insert(tab.id, record.clone());
         if previous.is_none_or(|previous| previous.id != record.id) {
             self.shared.records_changed.set(true);
@@ -1378,7 +1389,7 @@ impl Tiles {
         store: &ResourceStore,
         tab: TabId,
     ) -> Result<(LaunchTarget, Option<DocumentId>), Unready> {
-        let saved = self.shared.records.borrow().get(&tab).cloned();
+        let saved = self.shared.documents.borrow().get(&tab).cloned();
         match saved {
             Some(checkout) => Ok((
                 LaunchTarget::Record {
@@ -1460,7 +1471,7 @@ impl Tiles {
         );
         let taken = self
             .shared
-            .records
+            .documents
             .borrow()
             .iter()
             .any(|(other, checkout)| *other != tab && checkout.id == default.id);
@@ -1540,7 +1551,7 @@ impl TileSource for Tiles {
                     .borrow_mut()
                     .insert(tab.id, detail.clone());
                 self.shared.landed.borrow_mut().remove(&tab.id);
-                if self.shared.records.borrow().contains_key(&tab.id) {
+                if self.shared.documents.borrow().contains_key(&tab.id) {
                     self.shared.waiting.borrow_mut().insert(tab.id);
                 }
                 TileHost::new(ui::widget::TileContent::Notice {
@@ -1556,7 +1567,7 @@ impl TileSource for Tiles {
                 let said = cause.map_or_else(|| technical.clone(), |cause| cause.to_string());
                 self.shared.unopened.borrow_mut().insert(tab.id, said);
                 self.shared.landed.borrow_mut().remove(&tab.id);
-                if self.shared.records.borrow().contains_key(&tab.id) {
+                if self.shared.documents.borrow().contains_key(&tab.id) {
                     self.shared.waiting.borrow_mut().insert(tab.id);
                 }
                 web_sys::console::warn_1(
@@ -1611,11 +1622,13 @@ impl TileSource for Tiles {
             self.shared
                 .unbound
                 .borrow_mut()
+                .edit()
                 .insert(id, record.to_owned());
         }
         self.shared
             .authors
             .borrow_mut()
+            .edit()
             .insert(id, self.inputs.author.clone());
         Some(app_tab(id, app, title))
     }
@@ -1625,7 +1638,7 @@ impl TileSource for Tiles {
         let kind = application(app)?.resource_type.clone();
         let bound = self
             .shared
-            .records
+            .documents
             .borrow()
             .iter()
             .find(|(_, checkout)| checkout.id.route() == record && checkout.kind == kind)
@@ -1645,7 +1658,7 @@ impl TileSource for Tiles {
     }
 
     fn window_resource(&self, tab: TabId) -> Option<(String, String)> {
-        self.shared.records.borrow().get(&tab).map(|checkout| {
+        self.shared.documents.borrow().get(&tab).map(|checkout| {
             (
                 checkout.id.route().to_owned(),
                 checkout.kind.as_str().to_owned(),
@@ -1726,8 +1739,8 @@ pub(crate) struct Persistence {
     store: Rc<dyn DurableStore>,
     saved_revision: Cell<u64>,
     records_changed: Rc<Cell<bool>>,
-    records: Rc<RefCell<HashMap<TabId, DocumentCheckout>>>,
-    unbound: Rc<RefCell<HashMap<TabId, String>>>,
+    documents: Rc<RefCell<tilo_desktop_model::edited::Edited<HashMap<TabId, DocumentCheckout>>>>,
+    unbound: Rc<RefCell<tilo_desktop_model::edited::Edited<HashMap<TabId, String>>>>,
     authors: Authors,
     /// The layout's own document: the profile's copy of it, which is the layout's
     /// history when this page is in no workspace. The rules of the document —
@@ -1780,7 +1793,7 @@ impl Persistence {
             // No workspace holds this shell: what the person changed is this page's
             // change of its own document.
             let records = tilo_desktop_surface::host::records::live(
-                &self.records.borrow(),
+                &self.documents.borrow(),
                 &self.unbound.borrow(),
                 &tree,
             );
@@ -1869,6 +1882,21 @@ impl Store for ProfileStore {
     }
 }
 
+/// How many times each part of what [`shared_value`] reads was changed.
+pub(crate) type SharedEdits = (u64, u64, u64, u64, u64);
+
+/// How many times what [`shared_value`] reads was changed, for the shell `handle` with `shared`:
+/// the same count reads the same desktop.
+pub(crate) fn shared_edits(handle: &DesktopHandle, shared: &Shared) -> SharedEdits {
+    (
+        handle.tree_edits(),
+        shared.documents.borrow().edits(),
+        shared.unbound.borrow().edits(),
+        shared.authors.borrow().edits(),
+        shared.opened_by.borrow().edits(),
+    )
+}
+
 /// The desktop as peers share it: the tree and each tab's record.
 pub(crate) fn shared_value(
     handle: &DesktopHandle,
@@ -1876,7 +1904,7 @@ pub(crate) fn shared_value(
 ) -> tilo_desktop_model::ownership::SharedDesktop {
     let tree = handle.shared_tree();
     let records = tilo_desktop_surface::host::records::live(
-        &shared.records.borrow(),
+        &shared.documents.borrow(),
         &shared.unbound.borrow(),
         &tree,
     );
@@ -1903,20 +1931,23 @@ pub(crate) fn apply_shared(
     }
     {
         let (bound, unbound) = adopted_records(&desktop);
-        shared.unbound.borrow_mut().extend(unbound);
+        shared.unbound.borrow_mut().edit().extend(unbound);
         let mut authors = shared.authors.borrow_mut();
+        let authors_edited = authors.edit();
         for (id, author) in &desktop.authors {
-            authors.entry(*id).or_insert_with(|| author.clone());
+            authors_edited.entry(*id).or_insert_with(|| author.clone());
         }
         drop(authors);
-        shared.opened_by.borrow_mut().clone_from(&desktop.opened_by);
-        let mut records = shared.records.borrow_mut();
+        shared
+            .opened_by
+            .borrow_mut()
+            .edit()
+            .clone_from(&desktop.opened_by);
+        let mut held = shared.documents.borrow_mut();
+        let held = held.edit();
         for (tab, checkout) in bound {
-            if records
-                .get(&tab)
-                .is_none_or(|bound| bound.id != checkout.id)
-            {
-                records.insert(tab, checkout);
+            if held.get(&tab).is_none_or(|bound| bound.id != checkout.id) {
+                held.insert(tab, checkout);
                 shared.records_changed.set(true);
             }
         }
@@ -1941,6 +1972,7 @@ pub(crate) fn return_to(
         serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
     {
         let mut authors = shared.authors.borrow_mut();
+        let authors = authors.edit();
         let live: std::collections::HashSet<u64> = desktop
             .tree
             .workspaces
@@ -2087,9 +2119,9 @@ pub(crate) fn mount(
     };
     let tree = if let Some(stored) = stored {
         let (bound, unbound) = adopted_records(&stored);
-        *shared.records.borrow_mut() = bound;
-        *shared.unbound.borrow_mut() = unbound;
-        *shared.authors.borrow_mut() = stored.authors;
+        shared.documents.borrow_mut().set(bound);
+        shared.unbound.borrow_mut().set(unbound);
+        shared.authors.borrow_mut().set(stored.authors);
         // How this device showed the shell — the strip and window in front,
         // the widths, the displays — as it was left, as native opens it.
         let mut tree = stored.tree;
@@ -2149,7 +2181,7 @@ pub(crate) fn mount(
         store,
         saved_revision: Cell::new(0),
         records_changed: Rc::clone(&shared.records_changed),
-        records: Rc::clone(&shared.records),
+        documents: Rc::clone(&shared.documents),
         unbound: Rc::clone(&shared.unbound),
         authors: Rc::clone(&shared.authors),
         peer: inputs.peer,

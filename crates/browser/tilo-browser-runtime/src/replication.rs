@@ -150,6 +150,10 @@ pub(crate) struct Joined {
     /// This page's own desktop as it last wrote it into the record: a
     /// frame that changed nothing shared writes nothing.
     local_value: Option<serde_json::Value>,
+    /// The mount whose desktop `local_value` was read from, and how many times what it reads had
+    /// changed then ([`crate::desktop::shared_edits`]): a frame that changed none of it reads the
+    /// same desktop, and neither reads nor compares it again.
+    local_edits: Option<(u64, crate::desktop::SharedEdits)>,
     /// The person's view of this workspace's layout as they left it
     /// ([`tilo_desktop_model::person_view`]): theirs on every device of theirs.
     view: DocumentReplica,
@@ -267,6 +271,7 @@ pub(crate) fn open(
         desktop_sending: DesktopSending::Snapshot,
         desktop_value: None,
         local_value: None,
+        local_edits: None,
         view: DocumentReplica::new(AutoCommit::new()),
         view_sending: DesktopSending::Snapshot,
         view_shown: None,
@@ -2243,20 +2248,25 @@ impl Joined {
         if !tilo_desktop_model::commands::policy::writes(self.role.role()) {
             return;
         }
-        let Some((desktop, author)) = self.mounts.values().find_map(|mounted| {
-            mounted.attachment.desktop.as_ref().map(|(handle, shared)| {
-                (
-                    crate::desktop::shared_value(handle, shared),
-                    mounted.attachment.author.clone(),
-                )
-            })
+        let Some((id, handle, shared, author)) = self.mounts.iter().find_map(|(&id, mounted)| {
+            mounted
+                .attachment
+                .desktop
+                .as_ref()
+                .map(|(handle, shared)| (id, handle, shared, mounted.attachment.author.clone()))
         }) else {
             return;
         };
+        let edits = (id, crate::desktop::shared_edits(handle, shared));
+        if self.local_edits == Some(edits) {
+            return;
+        }
+        let desktop = crate::desktop::shared_value(handle, shared);
         // The shell as it reads to a peer: what it says moved is what the
         // workspace decides on, and an unchanged shell writes nothing.
         let value = serde_json::to_value(&desktop).unwrap_or(serde_json::Value::Null);
         if self.local_value.as_ref() == Some(&value) {
+            self.local_edits = Some(edits);
             return;
         }
         if let Some(refusal) = self.rearranges_others(&value, &author) {
@@ -2324,6 +2334,7 @@ impl Joined {
             && self.desktop.pending_outbound_delta().0.is_empty()
         {
             self.local_value = Some(value);
+            self.local_edits = Some(edits);
             return;
         }
         let mutation = if self.desktop_sending == DesktopSending::Changes {
@@ -2342,6 +2353,7 @@ impl Joined {
             self.desktop_sending = DesktopSending::Changes;
             self.desktop_value = desktop_value(self.desktop.document());
             self.local_value = Some(value);
+            self.local_edits = Some(edits);
         }
     }
 }

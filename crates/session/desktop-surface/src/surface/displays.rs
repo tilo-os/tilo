@@ -309,7 +309,7 @@ impl Shared {
     /// there. The strip the display shows becomes the active one, so focus and the strip the person
     /// works in travel together; every other display keeps its own.
     pub(super) fn focus_display(&mut self, display: u32, pick: Option<GroupId>) -> bool {
-        let tree = &mut self.tree;
+        let tree = self.tree.edit();
         if !tree.is_partitioned() || !tree.outputs.displays.iter().any(|d| d.id == display) {
             return false;
         }
@@ -542,7 +542,7 @@ impl DesktopHandle {
     /// [`OutputPartition::reconcile`]: tilo_desktop_model::OutputPartition::reconcile
     pub fn set_displays(&self, displays: &[Display]) -> bool {
         let mut shared = self.shared.borrow_mut();
-        let changed = shared.tree.reconcile_displays(displays);
+        let changed = shared.tree.edit().reconcile_displays(displays);
         if changed {
             shared.changed();
         }
@@ -612,7 +612,7 @@ impl DesktopHandle {
     /// there is no such display or no focused window.
     pub fn move_focused_to_display(&self, steps: i32) -> bool {
         let mut shared = self.shared.borrow_mut();
-        let tree = &mut shared.tree;
+        let tree = shared.tree.edit();
         if !tree.is_partitioned() || steps == 0 {
             return false;
         }
@@ -652,17 +652,24 @@ impl DesktopSurface {
         let surface = self.rect;
         let plans = {
             let mut shared = self.shared.borrow_mut();
-            let tree = &mut shared.tree;
-            if tree.is_partitioned() {
-                tree.outputs.place_unhomed(&tree.workspaces);
-                if let Some(strip_id) = self.shown
-                    && let Some(group) = tree.active_group_for(strip_id)
-                {
-                    tree.outputs.note_focus(strip_id, group);
-                }
-                // Every display keeps the strip it shows; one never told takes the active strip,
-                // and the focused display follows it.
-                tree.note_shown_strip();
+            if shared.tree.is_partitioned() {
+                // Each frame keeps the displays' strips as they are, which counts as a change of
+                // the tree only when one moved.
+                let before = shared.tree.outputs.clone();
+                let shown = self.shown;
+                shared.tree.edit_when(|tree| {
+                    tree.outputs.place_unhomed(&tree.workspaces);
+                    if let Some(strip_id) = shown
+                        && let Some(group) = tree.active_group_for(strip_id)
+                    {
+                        tree.outputs.note_focus(strip_id, group);
+                    }
+                    // Every display keeps the strip it shows; one never told takes the active
+                    // strip, and the focused display follows it.
+                    tree.note_shown_strip();
+                    tree.outputs != before
+                });
+                let tree = &shared.tree;
                 let displays = tree.outputs.displays.clone();
                 let order = tree.outputs.reading_order();
                 let focused = tree.outputs.focused_display();

@@ -464,42 +464,47 @@ impl DesktopSurface {
             if changed {
                 shared.changed();
             }
-            let tabs = shared.tree.workspaces.iter_mut().flat_map(|workspace| {
-                workspace
-                    .strips
-                    .iter_mut()
-                    .flat_map(|strip| strip.window_groups.iter_mut())
-                    .flat_map(|group| group.tabs.iter_mut())
-            });
             // A person's own name for a tab, where they gave one, stands in front of the app's: the
-            // tab keeps it and holds the app's for when the person clears theirs.
+            // tab keeps it and holds the app's for when the person clears theirs. Every frame
+            // passes here; the tree counts a change only when a title changed.
             let mut renamed = Vec::new();
-            for tab in tabs {
-                // A tab that shows one thing of the app is the person's place of that thing: it
-                // names itself by what it shows, and no window's name is written into it.
-                if tilo_desktop_model::apps::shows_a_view(tab) {
-                    continue;
+            changed |= shared.tree.edit_when(|tree| {
+                let mut titled = false;
+                let tabs = tree.workspaces.iter_mut().flat_map(|workspace| {
+                    workspace
+                        .strips
+                        .iter_mut()
+                        .flat_map(|strip| strip.window_groups.iter_mut())
+                        .flat_map(|group| group.tabs.iter_mut())
+                });
+                for tab in tabs {
+                    // A tab that shows one thing of the app is the person's place of that thing: it
+                    // names itself by what it shows, and no window's name is written into it.
+                    if tilo_desktop_model::apps::shows_a_view(tab) {
+                        continue;
+                    }
+                    let before = tab.title.clone();
+                    if let Some(name) = names.get(&tab.id) {
+                        titled |= tab.set_window_title(name);
+                    } else if sections.contains(&tab.id)
+                        && let Some(app) = app_name_of(tab)
+                    {
+                        titled |= tab.set_window_title(&app);
+                    } else if named_before
+                        .get(&tab.id)
+                        .is_some_and(|name| tab.title == *name)
+                        && let Some(app) = app_name_of(tab)
+                    {
+                        // The app names nothing any more — the note it showed is closed — so the window
+                        // goes back to its app's name rather than keeping a place it has left.
+                        titled |= tab.set_window_title(&app);
+                    }
+                    if tab.title != before {
+                        renamed.push(descriptor(tab));
+                    }
                 }
-                let before = tab.title.clone();
-                if let Some(name) = names.get(&tab.id) {
-                    changed |= tab.set_window_title(name);
-                } else if sections.contains(&tab.id)
-                    && let Some(app) = app_name_of(tab)
-                {
-                    changed |= tab.set_window_title(&app);
-                } else if named_before
-                    .get(&tab.id)
-                    .is_some_and(|name| tab.title == *name)
-                    && let Some(app) = app_name_of(tab)
-                {
-                    // The app names nothing any more — the note it showed is closed — so the window
-                    // goes back to its app's name rather than keeping a place it has left.
-                    changed |= tab.set_window_title(&app);
-                }
-                if tab.title != before {
-                    renamed.push(descriptor(tab));
-                }
-            }
+                titled
+            });
             (changed, renamed)
         };
         // A window's name is what it shows, not a window the shell gained or lost: the rows rename

@@ -921,6 +921,7 @@ fn move_to_strip(
     before: Option<GroupId>,
 ) -> bool {
     let Shared { tree, minter, .. } = shared;
+    let tree = tree.edit();
     let moved = tree
         .workspaces
         .iter_mut()
@@ -965,6 +966,7 @@ fn move_to_strip(
 /// does.
 fn join_group(shared: &mut Shared, ids: RouteIds, into_strip: StripId, into: GroupId) -> bool {
     let Shared { tree, minter, .. } = shared;
+    let tree = tree.edit();
     let same_workspace = tree
         .active_workspace()
         .is_some_and(|workspace| workspace.id() == ids.workspace);
@@ -1064,8 +1066,8 @@ pub(super) fn join_place(
         return false;
     };
     if ids.group == into && ids.strip == strip {
-        shared.tree.set_active_group(strip, into);
-        if let Some(group) = super::find_group(&mut shared.tree, strip, into) {
+        shared.tree.edit().set_active_group(strip, into);
+        if let Some(group) = super::find_group(shared.tree.edit(), strip, into) {
             group.activate_tab(ids.tab);
         }
         shared.replaced = true;
@@ -1077,6 +1079,7 @@ pub(super) fn join_place(
 /// Carry the tab at `ids` into workspace `to` , with a window of its own.
 fn move_to_workspace(shared: &mut Shared, ids: RouteIds, to: WorkspaceId) -> bool {
     let Shared { tree, minter, .. } = shared;
+    let tree = tree.edit();
     let moved = move_tab_to_workspace(tree, ids.tab, to, &mut || Ok(minter.mint())).is_ok();
     shared.replaced |= moved;
     moved
@@ -1084,7 +1087,7 @@ fn move_to_workspace(shared: &mut Shared, ids: RouteIds, to: WorkspaceId) -> boo
 
 /// Carry the window `group` onto display `display` .
 pub(super) fn move_to_display(shared: &mut Shared, group: GroupId, display: u32) -> bool {
-    let tree = &mut shared.tree;
+    let tree = shared.tree.edit();
     let moved = tree.outputs.move_group(&tree.workspaces, group, display);
     if moved {
         tree.external_revision = tree.external_revision.wrapping_add(1);
@@ -1101,7 +1104,7 @@ fn width_preset(
     width: tilo_desktop_model::WindowWidth,
     ops: &mut Vec<super::row_op::RowOp>,
 ) -> bool {
-    match super::find_group(&mut shared.tree, ids.strip, ids.group) {
+    match super::find_group(shared.tree.edit(), ids.strip, ids.group) {
         Some(group) => {
             group.width = width;
             ops.push(super::row_op::RowOp::Width(ids.strip, ids.group, width));
@@ -1116,6 +1119,7 @@ fn width_preset(
 fn equalize(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::row_op::RowOp>) -> bool {
     let strip = shared
         .tree
+        .edit()
         .workspaces
         .iter_mut()
         .find(|workspace| workspace.id() == ids.workspace)
@@ -1179,6 +1183,7 @@ fn stop_desktop_control(shared: &mut Shared, ids: RouteIds) -> bool {
     let workspace = workspace.id();
     shared
         .tree
+        .edit()
         .workspaces
         .iter_mut()
         .find(|held| held.id() == workspace)
@@ -1209,6 +1214,7 @@ fn detach(
         None => return false,
     };
     let Shared { tree, minter, .. } = shared;
+    let tree = tree.edit();
     let Some(moved) = tree.split_tab_into_new_group(ids.strip, ids.tab, insert_at, minter) else {
         return false;
     };

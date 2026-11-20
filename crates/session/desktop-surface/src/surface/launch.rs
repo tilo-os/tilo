@@ -36,16 +36,18 @@ pub(super) fn open(
         let id = strip.id;
         let workspace = shared
             .tree
+            .edit()
             .workspaces
             .iter_mut()
             .find(|w| w.id() == workspace_id)?;
         workspace.strips.push(strip);
-        shared.tree.active_strip.insert(workspace_id, id);
+        shared.tree.edit().active_strip.insert(workspace_id, id);
         id
     };
     let after = shared.tree.active_group_for(strip);
     let model = shared
         .tree
+        .edit()
         .workspaces
         .iter_mut()
         .flat_map(|w| w.strips.iter_mut())
@@ -75,6 +77,7 @@ pub(super) fn open(
     // as any other group does, by the same rule ([`WorkspaceLayout::place_missing`]).
     if let Some(workspace) = shared
         .tree
+        .edit()
         .workspaces
         .iter_mut()
         .find(|w| w.id() == workspace_id)
@@ -86,8 +89,8 @@ pub(super) fn open(
     // strip gives it, as the record keeps places: by its corner of the work
     // area, so every member finds it there. The row stands it there, since
     // only the row knows the place the strip's share makes for it.
-    shared.tree.set_active_group(strip, group_id);
-    shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
+    shared.tree.edit().set_active_group(strip, group_id);
+    shared.tree.edit().external_revision = shared.tree.external_revision.wrapping_add(1);
     Some(RowOp::Open {
         strip,
         group: group_id,

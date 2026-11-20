@@ -218,7 +218,7 @@ enum HintReading {
 }
 
 struct Shared {
-    tree: Layout,
+    tree: tilo_desktop_model::edited::Edited<Layout>,
     /// The floating windows this device stands in the floating layer's column, and where the
     /// layer put each ([`DesktopHandle::docked_cards`], [`DesktopHandle::dock_at`]).
     dock: floats::Dock,
@@ -457,6 +457,12 @@ impl DesktopHandle {
 
     pub fn revision(&self) -> u64 {
         self.shared.borrow().revision
+    }
+
+    /// How many times the tree was changed: the same count is the same tree, so what publishes the
+    /// tree when it changed compares this count, not the tree.
+    pub fn tree_edits(&self) -> u64 {
+        self.shared.borrow().tree.edits()
     }
 
     /// The floating windows that stand as cards in the floating layer's column on this device.
@@ -734,7 +740,7 @@ impl DesktopHandle {
         // A tree kept beside the state file carries no range of its own: it writes where this
         // shell's ids were minted.
         tree.salt = shared.minter.salt();
-        shared.tree = tree;
+        shared.tree.set(tree);
         shared.replaced = true;
         shared.changed();
     }
@@ -752,19 +758,16 @@ impl DesktopHandle {
         height: u32,
     ) -> bool {
         let mut shared = self.shared.borrow_mut();
-        let Some(held) = shared
-            .tree
-            .workspaces
-            .iter_mut()
-            .find(|held| held.id() == workspace)
-        else {
-            return false;
-        };
-        if !held.layout.set_drawn_height(group, height) {
-            return false;
+        let drawn = shared.tree.edit_when(|tree| {
+            tree.workspaces
+                .iter_mut()
+                .find(|held| held.id() == workspace)
+                .is_some_and(|held| held.layout.set_drawn_height(group, height))
+        });
+        if drawn {
+            shared.wake.wake();
         }
-        shared.wake.wake();
-        true
+        drawn
     }
 
     /// The workspace snapshot, excluding process-local stream proxies and device presentation.
@@ -866,6 +869,7 @@ impl DesktopHandle {
     ) -> Result<Option<StripId>, String> {
         let mut shared = self.shared.borrow_mut();
         let Shared { tree, minter, .. } = &mut *shared;
+        let tree = tree.edit();
         let made =
             tilo_desktop_model::commands::apply_to_active_workspace(tree, command, &mut || {
                 Ok(minter.mint())
@@ -1720,12 +1724,12 @@ impl DesktopSurface {
         };
         let mut shared = self.shared.borrow_mut();
         if shared.tree.active_group_for(strip_id) == Some(group)
-            || find_group(&mut shared.tree, strip_id, group).is_none()
+            || lookup::group_in(&shared.tree, strip_id, group).is_none()
         {
             return;
         }
-        shared.tree.set_active_group(strip_id, group);
-        shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
+        shared.tree.edit().set_active_group(strip_id, group);
+        shared.tree.edit().external_revision = shared.tree.external_revision.wrapping_add(1);
         shared.changed();
     }
 
@@ -1744,7 +1748,7 @@ impl DesktopSurface {
             changed |= window_move::carry_out(&mut shared, strip_id, row, payload, down);
         }
         if let Some((group, index)) = row.take_pending_group_reorder() {
-            changed |= displays::carry_dropped(&mut shared.tree, strip_id, row, group, index);
+            changed |= displays::carry_dropped(shared.tree.edit(), strip_id, row, group, index);
         }
         // A window lifted over the shell, or let go back into its strip.
         if let Some(ask) = row.take_pending_float() {
@@ -1783,26 +1787,27 @@ impl DesktopSurface {
             if let Some((from, to)) = group.take_pending_tab_reorder() {
                 changed |= shared
                     .tree
+                    .edit()
                     .reorder_tab_within_group(group.id, from, to)
                     .is_some();
             }
             if let Some(tab) = group.take_tab_activation() {
-                if let Some(model) = find_group(&mut shared.tree, strip_id, group.id)
+                if let Some(model) = find_group(shared.tree.edit(), strip_id, group.id)
                     && model.tabs.iter().any(|t| t.id == tab)
                 {
                     model.activate_tab(tab);
                 }
-                shared.tree.set_active_group(strip_id, group.id);
+                shared.tree.edit().set_active_group(strip_id, group.id);
                 changed = true;
             }
             if let Some(width) = group.take_pending_width_change()
-                && let Some(model) = find_group(&mut shared.tree, strip_id, group.id)
+                && let Some(model) = find_group(shared.tree.edit(), strip_id, group.id)
             {
                 model.width = width;
                 changed = true;
             }
             if let Some(maximized) = group.take_pending_maximize_change()
-                && let Some(model) = find_group(&mut shared.tree, strip_id, group.id)
+                && let Some(model) = find_group(shared.tree.edit(), strip_id, group.id)
             {
                 model.maximized = maximized;
                 changed = true;
@@ -1817,16 +1822,17 @@ impl DesktopSurface {
             }
         }
         if let Some(topology) = row.take_pending_topology_change() {
-            changed |= displays::carry_topology(&mut shared.tree, strip_id, row, topology);
+            changed |= displays::carry_topology(shared.tree.edit(), strip_id, row, topology);
         }
-        if let Some(request) = search::search_asked(&mut shared.tree, strip_id, new_tab, search_in)
-        {
+        if let Some(request) = search::search_asked(&shared.tree, strip_id, new_tab, search_in) {
             shared.search_request = Some(request);
         }
         shared.menus.extend(window_menu::take_asked_menus(row));
-        changed |= window_menu::give_back_display(&mut shared.tree, strip_id, row);
+        changed |= shared
+            .tree
+            .edit_when(|tree| window_menu::give_back_display(tree, strip_id, row));
         if changed {
-            shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
+            shared.tree.edit().external_revision = shared.tree.external_revision.wrapping_add(1);
             shared.changed();
         }
     }
@@ -2074,13 +2080,13 @@ impl DesktopSurface {
             return false;
         };
         let host = build_tile(self.tiles.as_mut(), self.controls.as_ref(), workspace, &tab);
-        let Some(model) = find_group(&mut shared.tree, strip, group) else {
+        let Some(model) = find_group(shared.tree.edit(), strip, group) else {
             return false;
         };
         model.tabs.push(tab.clone());
         model.active_tab = tab.id;
         let index = model.tabs.len().saturating_sub(1);
-        shared.tree.set_active_group(strip, group);
+        shared.tree.edit().set_active_group(strip, group);
         if let Some(widget) = self
             .rows
             .get_mut(&strip)
@@ -2089,7 +2095,7 @@ impl DesktopSurface {
             widget.insert_detached_tab(index, descriptor(&tab), host);
             widget.set_active_tab(tab.id);
         }
-        shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
+        shared.tree.edit().external_revision = shared.tree.external_revision.wrapping_add(1);
         shared.changed();
         true
     }

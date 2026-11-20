@@ -18,6 +18,7 @@ pub mod branch;
 pub mod closed_tabs;
 pub mod commands;
 pub mod desktop_doc;
+pub mod edited;
 pub mod grants;
 pub mod history;
 pub mod ids;

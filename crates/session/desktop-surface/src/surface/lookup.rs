@@ -44,3 +44,18 @@ pub(super) fn find_group(
         .iter_mut()
         .find(|g| g.id == group)
 }
+
+/// The window group `group` of the strip `strip`.
+pub(super) fn group_in(
+    tree: &Layout,
+    strip: StripId,
+    group: GroupId,
+) -> Option<&tilo_desktop_model::WindowGroup> {
+    tree.workspaces
+        .iter()
+        .flat_map(|w| &w.strips)
+        .find(|s| s.id == strip)?
+        .window_groups
+        .iter()
+        .find(|g| g.id == group)
+}
