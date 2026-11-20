@@ -19,8 +19,8 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc};
 
 mod history_access;
-mod retained;
 mod replication;
+mod retained;
 pub use history_access::HistoryUnavailable;
 pub mod sync;
 pub use sync::{DocumentSync, Outbound};
@@ -3014,7 +3014,6 @@ impl ResourceStore {
         merged
     }
 
-
     /// Withdraw from the open record `id` the changes `refused` names, which
     /// the workspace refused, with every local change made on top of them, and
     /// note one [`ResourceRefusal`] per action they carried, saying `reason`
@@ -3189,7 +3188,6 @@ impl ResourceStore {
             .map(|parked| std::mem::take(&mut parked.action_state.refusals))
             .unwrap_or_default()
     }
-
 
     /// Do something with a record's document. `None` if the record is not open here.
     pub fn with<R>(&self, id: &DocumentId, f: impl FnOnce(&mut AutoCommit) -> R) -> Option<R> {

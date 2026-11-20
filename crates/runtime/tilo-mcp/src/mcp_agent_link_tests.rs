@@ -218,9 +218,21 @@ impl Journal {
             return Vec::new();
         }
         vec![
-            journal_row("", "", Some(descriptor("", "new-entry", OperationKind::Document))),
-            journal_row(FIRST, "First", Some(descriptor(FIRST, "archive", OperationKind::Document))),
-            journal_row(SECOND, "Second", Some(descriptor(SECOND, "archive", OperationKind::Document))),
+            journal_row(
+                "",
+                "",
+                Some(descriptor("", "new-entry", OperationKind::Document)),
+            ),
+            journal_row(
+                FIRST,
+                "First",
+                Some(descriptor(FIRST, "archive", OperationKind::Document)),
+            ),
+            journal_row(
+                SECOND,
+                "Second",
+                Some(descriptor(SECOND, "archive", OperationKind::Document)),
+            ),
         ]
     }
 
@@ -317,7 +329,10 @@ impl ActionProvider for Journal {
                 reason: "this workspace has no machine to place a window in".into(),
             }));
         }
-        let accepted = matches!(request.target.address.action.as_str(), "new-entry" | "archive");
+        let accepted = matches!(
+            request.target.address.action.as_str(),
+            "new-entry" | "archive"
+        );
         Pending::ready(if accepted {
             Ok(InvocationReceipt {
                 invocation,

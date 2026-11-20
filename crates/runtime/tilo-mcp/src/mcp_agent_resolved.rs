@@ -213,65 +213,64 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // The rows the path was resolved through carry the actions each resource
         // offers: the action named is run from what the workspace already
         // answered, and only a name none of them holds is asked of it again.
-        let (named_at, descriptor) =
-            if let Some(found) = delivered_action(&resolved, action) {
-                (resolved.path.clone(), crate::refusal::not_allowed(found)?)
-            } else if let Some(descriptor) = self.action_named(&resolved, action).await? {
-                (resolved.path.clone(), descriptor)
-            } else {
-                // Not one of the target's actions by its id: what the target
-                // offers decides (a label, the start of an id), as listing it
-                // shows. A path naming the app alone means the app's own
-                // actions and those it publishes on its resources.
-                if let Some(node) = resolved.node.clone() {
-                    let mut levels = std::mem::take(&mut resolved.levels);
-                    let here = self
-                        .level(&resolved.provider, &node.id, &mut levels)
-                        .await?;
-                    resolved.levels = levels;
-                    resolved.actions = if here.own.is_empty() {
-                        node.actions.clone()
-                    } else {
-                        here.own
-                    };
+        let (named_at, descriptor) = if let Some(found) = delivered_action(&resolved, action) {
+            (resolved.path.clone(), crate::refusal::not_allowed(found)?)
+        } else if let Some(descriptor) = self.action_named(&resolved, action).await? {
+            (resolved.path.clone(), descriptor)
+        } else {
+            // Not one of the target's actions by its id: what the target
+            // offers decides (a label, the start of an id), as listing it
+            // shows. A path naming the app alone means the app's own
+            // actions and those it publishes on its resources.
+            if let Some(node) = resolved.node.clone() {
+                let mut levels = std::mem::take(&mut resolved.levels);
+                let here = self
+                    .level(&resolved.provider, &node.id, &mut levels)
+                    .await?;
+                resolved.levels = levels;
+                resolved.actions = if here.own.is_empty() {
+                    node.actions.clone()
+                } else {
+                    here.own
+                };
+            }
+            // `notes#open` is what the listing of a stopped app says to
+            // call; once the app runs, it answers what is in it.
+            let opens = parsed.segments.is_empty() && arguments.is_empty();
+            // There it names the app's own verb, never an action whose id only begins with it
+            // (Notes' `open-link`): one by its whole id was asked above.
+            if opens && starts_app(action) {
+                return self.running(&resolved, action).await.map(answered);
+            }
+            // With arguments the word that starts an app is no other action's either: it names
+            // an action of the running app only where the app calls one that, by its id or its
+            // label, never another whose id merely begins with it, which nobody asked for.
+            let starts = parsed.segments.is_empty() && starts_app(action);
+            let picked = self.pick_action_in(action, &resolved).await;
+            // Found, and refused below as the word that starts an app: the word only begins
+            // the id of another action the app offers.
+            let begins_another = starts && picked.is_ok();
+            match named_beyond_its_start(starts, action, &resolved.path, picked) {
+                Ok((at, found)) => (at, crate::refusal::not_allowed(found)?),
+                // The open's own arguments are a file, which reaches the app's open whether
+                // the app runs or not. Arguments that name no file are another action's where
+                // the app offers one the word begins: the caller is told which, and nothing
+                // is run.
+                Err(_) if starts && (opens_a_file(&arguments) || !begins_another) => {
+                    let opening = (parsed, resolved.app_id.as_str(), action);
+                    return self
+                        .launched(opening, arguments, invocation, wait_ms)
+                        .await
+                        .map(answered);
                 }
-                // `notes#open` is what the listing of a stopped app says to
-                // call; once the app runs, it answers what is in it.
-                let opens = parsed.segments.is_empty() && arguments.is_empty();
-                // There it names the app's own verb, never an action whose id only begins with it
-                // (Notes' `open-link`): one by its whole id was asked above.
-                if opens && starts_app(action) {
-                    return self.running(&resolved, action).await.map(answered);
+                // Not offered here: the workspace decides whether it is the caller's role
+                // that keeps it from them, as a call by its address is decided.
+                Err(error) => {
+                    let asked = (arguments, invocation, wait_ms);
+                    return Box::pin(self.unoffered(&resolved, action, &error, asked)).await;
                 }
-                // With arguments the word that starts an app is no other action's either: it names
-                // an action of the running app only where the app calls one that, by its id or its
-                // label, never another whose id merely begins with it, which nobody asked for.
-                let starts = parsed.segments.is_empty() && starts_app(action);
-                let picked = self.pick_action_in(action, &resolved).await;
-                // Found, and refused below as the word that starts an app: the word only begins
-                // the id of another action the app offers.
-                let begins_another = starts && picked.is_ok();
-                match named_beyond_its_start(starts, action, &resolved.path, picked) {
-                    Ok((at, found)) => (at, crate::refusal::not_allowed(found)?),
-                    // The open's own arguments are a file, which reaches the app's open whether
-                    // the app runs or not. Arguments that name no file are another action's where
-                    // the app offers one the word begins: the caller is told which, and nothing
-                    // is run.
-                    Err(_) if starts && (opens_a_file(&arguments) || !begins_another) => {
-                        let opening = (parsed, resolved.app_id.as_str(), action);
-                        return self
-                            .launched(opening, arguments, invocation, wait_ms)
-                            .await
-                            .map(answered);
-                    }
-                    // Not offered here: the workspace decides whether it is the caller's role
-                    // that keeps it from them, as a call by its address is decided.
-                    Err(error) => {
-                        let asked = (arguments, invocation, wait_ms);
-                        return Box::pin(self.unoffered(&resolved, action, &error, asked)).await;
-                    }
-                }
-            };
+            }
+        };
         self.keep_levels(&resolved.provider, &resolved.levels);
         let history = resolved.history();
         let known = ResolvedAction {
