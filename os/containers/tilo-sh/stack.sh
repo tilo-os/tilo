@@ -990,8 +990,11 @@ start_mail_stand_in() {
   # asks for, which a machine allows only to root or inside a network namespace
   # of its own (the story check brings the stack up in one). Where it cannot be
   # bound, a rehearsal names the servers by hand.
+  # A provider names its servers under its domain, and its certificate is for
+  # those names and the ones a mail program asks its document under.
   setsid "$programs/mail-stand-in" --name localhost --name "$domain" \
-    --name "autoconfig.$domain" --login "$login" \
+    --name "autoconfig.$domain" --name "imap.$domain" --name "smtp.$domain" \
+    --login "$login" \
     --password-file "$dir/password" --write-certificate "$dir/certificate.pem" \
     --imap "127.0.0.1:$mail_stand_in_imap_port" --smtp "127.0.0.1:$mail_stand_in_smtp_port" \
     --imap-tls --autoconfig "127.0.0.1:$mail_stand_in_document_port" \
@@ -1026,14 +1029,14 @@ autoconfig_document() {
     <displayName>The local tilo.sh stack's mail</displayName>
     <displayShortName>the stack</displayShortName>
     <incomingServer type="imap">
-      <hostname>localhost</hostname>
+      <hostname>imap.$2</hostname>
       <port>$mail_stand_in_imap_port</port>
       <socketType>SSL</socketType>
       <authentication>password-cleartext</authentication>
       <username>%EMAILADDRESS%</username>
     </incomingServer>
     <outgoingServer type="smtp">
-      <hostname>localhost</hostname>
+      <hostname>smtp.$2</hostname>
       <port>$mail_stand_in_smtp_port</port>
       <socketType>STARTTLS</socketType>
       <authentication>password-cleartext</authentication>

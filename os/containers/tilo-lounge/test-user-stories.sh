@@ -105,7 +105,7 @@ fcntl.ioctl(sock, SIOCSIFFLAGS, struct.pack("16sH", b"lo", flags | IFF_UP))
     fi
     mkdir -p "$TILO_SH_STATE"
     { cat /etc/hosts
-      for name in "$domain" "autoconfig.$domain"; do
+      for name in "$domain" "autoconfig.$domain" "imap.$domain" "smtp.$domain"; do
         printf '127.0.0.1 %s\n::1 %s\n' "$name" "$name"
       done; } > "$TILO_SH_STATE/private-hosts"
     if ! mount --bind "$TILO_SH_STATE/private-hosts" /etc/hosts; then
