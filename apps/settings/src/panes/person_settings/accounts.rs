@@ -636,7 +636,7 @@ impl AccountsModel {
             &t("settings-web-accounts-icloud-open"),
         )
         .role(ButtonRole::Secondary)
-        .on_click(|| ui::widget::open_external_url(APPLE_ACCOUNT_PAGE));
+        .on_view(|| ui::widget::open_external_url(APPLE_ACCOUNT_PAGE));
         let mut items = vec![
             note(&t("settings-web-accounts-icloud-how")),
             row(Box::new(

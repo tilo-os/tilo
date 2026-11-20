@@ -86,6 +86,7 @@ pub enum PersonSettingsEffect {
     AddMailAccount,
     /// Stop a sign-in on a provider's page that made no account yet.
     #[effect(kind = "outside")]
+    #[effect(label = "settings-effect-cancel-account-sign-in")]
     CancelSignIn {
         #[param("The sign-in's id, as the list names it")]
         sign_in: String,
