@@ -254,4 +254,41 @@ tilo_test_env::scenario! {
         probe.app.pump_collab_presence();
         assert_eq!(probe.body("body").as_deref(), Some("edited"));
     }
+
+    phase an_action_asked_while_the_app_joins_goes_out_once_it_joined;
+    {
+        let mut probe = joining(runtime_collab::WorkspaceStatus::Ready);
+        let invoke = crate::collaboration::CollabRequest::RemoteAction {
+            message: tilo_actions::remote::RemoteActionMessage::Invoke(
+                tilo_actions::remote::InvokeRequest {
+                    on_behalf_of: None,
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: tilo_actions::remote::person_vault::target(
+                        tilo_actions::remote::person_vault::ENTRIES,
+                    ),
+                    argument: tilo_actions::remote::InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    wait_ms: None,
+                    appearance: None,
+                },
+            ),
+        };
+        probe.app.collaboration.held_requests.push_back(invoke);
+        probe.app.pump_collab_presence();
+        assert_eq!(
+            probe.app.collaboration_state(),
+            CollaborationState::Connecting
+        );
+        assert_eq!(
+            probe.app.collaboration.held_requests.len(),
+            1,
+            "the join carries nothing else yet, and a dropped invocation is never answered"
+        );
+        probe.broker.answer();
+        probe.pump_until("the held invocation sent", |app| {
+            app.collaboration_state().is_ready() && app.collaboration.held_requests.is_empty()
+        });
+    }
 }

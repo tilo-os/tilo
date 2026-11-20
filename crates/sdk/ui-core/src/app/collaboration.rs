@@ -640,6 +640,35 @@ impl App {
         self.pump_collab_presence_inner(false).0
     }
 
+    /// Send what the window's clients asked of the broker. An action request made while the
+    /// connection still joins its primary route waits for it: the manager carries nothing else
+    /// until then, and an invocation it dropped would never be answered.
+    fn send_collab_requests(&mut self) {
+        let collaboration = &mut self.collaboration;
+        collaboration
+            .held_requests
+            .extend(crate::widget::take_collab_requests(
+                self.root_widget.as_mut(),
+            ));
+        let connecting = matches!(
+            collaboration.manager.state(),
+            crate::collaboration::CollaborationState::Connecting
+        );
+        let mut held = std::collections::VecDeque::new();
+        for request in collaboration.held_requests.drain(..) {
+            let action = matches!(
+                request,
+                crate::collaboration::CollabRequest::RemoteAction { .. }
+            );
+            if action && connecting {
+                held.push_back(request);
+            } else {
+                collaboration.manager.send(request);
+            }
+        }
+        collaboration.held_requests = held;
+    }
+
     fn pump_collab_presence_inner(
         &mut self,
         model_refresh: bool,
@@ -664,9 +693,7 @@ impl App {
         // One route reconcile serves both the inbound drain and the owned
         // publication queue.
         self.pump_document_routes();
-        for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
-            self.collaboration.manager.send(request);
-        }
+        self.send_collab_requests();
         any |= self.apply_heard_elsewhere();
         self.pump_document_content();
         let (drained, action_surface_may_have_changed) = self.drain_collab_presence_events();

@@ -704,6 +704,10 @@ pub(super) struct CollaborationRuntime {
     /// join held up, refused or lost changes it without changing the
     /// window's model.
     pub(super) shown_sync_status: Option<String>,
+    /// Action requests the window's clients made while `manager` was still joining its primary
+    /// route, which carries nothing else yet: sent, in order, once it is ready. Dropped, an
+    /// invocation would wait for an answer that never comes.
+    pub(super) held_requests: std::collections::VecDeque<crate::collaboration::CollabRequest>,
 }
 
 impl CollaborationRuntime {
@@ -720,6 +724,7 @@ impl CollaborationRuntime {
             history: crate::collaboration::DocumentHistory::default(),
             key_access: None,
             shown_sync_status: None,
+            held_requests: std::collections::VecDeque::new(),
         }
     }
 }
