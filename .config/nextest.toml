@@ -411,6 +411,13 @@ filter = 'package(tilo-agent-session) and binary(it) and test(workspace_actions:
 success-output = "final"
 slow-timeout = { period = "60s", terminate-after = 30 }
 
+# How long a tracker's first listing after a restart takes, and how long another
+# workspace's request waits while it runs: the numbers are what the bounds are
+# about, so they show in every log, not only in one that failed.
+[[profile.default.overrides]]
+filter = 'package(tilo-agent-session) and binary(it) and test(workspace_actions::tracker_listing::)'
+success-output = "final"
+
 # How fast a workspace takes records and files at each size it is filled to:
 # seeding the larger sizes and timing every path takes minutes, so the bound
 # only has to catch a run that stopped. Printed on a pass too, so the table
