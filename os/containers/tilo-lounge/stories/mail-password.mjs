@@ -82,16 +82,23 @@ const scrollTo = async (tab, id) => {
   fail(`the ${id} never came on screen as the page scrolled`);
 };
 const {search} = searcher({until, failed: fail, dump: async () => {}});
-// A field a person presses until the page says it holds the keyboard: the
-// first press on a window just opened can be the one that brings it in front.
-const focusField = async (tab, id, tries = 3) => {
+// A field a person presses and types into, until the page holds what they
+// typed: the first press on a window just opened can be the one that brings it
+// in front, and a field nothing was typed into says so.
+const typeInto = async (one, id, text, tries = 3) => {
+  let value = '';
+  let said = '';
   for (let pressed = 0; pressed < tries; pressed += 1) {
-    if (!await pressWidget(tab, id)) fail(`the page offers no ${id} to press`);
-    const node = (await nodesOf(tab)).find(node => node.id === id);
-    if (node?.focused) return;
-    await sleep(300);
+    const node = (await nodesOf(one.tab)).find(node => node.id === id);
+    if (!node) fail(`the page offers no ${id} to press`);
+    if (!await pressWidget(one.tab, id)) fail(`the ${id} is not where a person can press it`);
+    await story.web.type(one, text);
+    value = (await nodesOf(one.tab)).find(node => node.id === id)?.value ?? '';
+    if (value === text) return;
+    said = `bounds ${JSON.stringify(node.bounds)}`;
+    await sleep(400);
   }
-  fail(`the ${id} never took the keyboard (${await visible(tab)})`);
+  fail(`the ${id} holds ${JSON.stringify(value)}, not ${JSON.stringify(text)} (${said}; ${await visible(one.tab)})`);
 };
 // A search a person makes again where the page was still drawing: the chord
 // sent while a window mounts opens nothing, and pressing it again is what a
@@ -179,11 +186,7 @@ try {
     await pressAny(ada.tab, ['Other mail account'],
       `(${TREE_TEXT}).includes('Email address')`, 'choosing another provider');
     // A person presses the field and types the address, and nothing else.
-    await focusField(ada.tab, 'settings.web.accounts.address');
-    await story.web.type(ada, mail.address);
-    // What the field took, before the page is asked to look it up.
-    const typed = (await nodesOf(ada.tab)).find(node => node.id === 'settings.web.accounts.address')?.value ?? '';
-    if (typed !== mail.address) fail(`the address field holds ${JSON.stringify(typed)}, not ${JSON.stringify(mail.address)}`);
+    await typeInto(ada, 'settings.web.accounts.address', mail.address);
     if (!await pressWidget(ada.tab, 'settings.web.accounts.find')) fail('the accounts page offers no Set up');
   });
 
@@ -215,8 +218,7 @@ try {
       if (shown && !shown.includes(port)) fail(`Mail shows “${shown}” as the incoming server, not the provider's on port ${port}`);
       console.log(`Mail found the servers by itself: ${mail.imap} and ${mail.smtp} (${shown})`);
       await scrollTo(ada.tab, 'settings.web.accounts.password');
-      await focusField(ada.tab, 'settings.web.accounts.password');
-      await story.web.type(ada, mail.password);
+      await typeInto(ada, 'settings.web.accounts.password', mail.password);
     } else {
       await shows(ada.tab, 'Incoming server (IMAP)', 'the page asking for the servers', stepLimit(3));
       const [incoming, incomingPort] = mail.imap.split(':');
@@ -229,8 +231,7 @@ try {
         ['settings.web.accounts.password', mail.password],
       ]) {
         await scrollTo(ada.tab, id);
-        await focusField(ada.tab, id);
-        await story.web.type(ada, value);
+        await typeInto(ada, id, value);
       }
       // What the page said when it found nothing: a lookup that came back empty
       // says so; one whose request did not reach the host says that instead.
