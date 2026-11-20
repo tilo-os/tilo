@@ -2651,8 +2651,9 @@ fn the_shell_starts_on_the_picture_the_person_chose() {
         .expect("the choice is cleared");
 }
 
-/// The workspace menu offers making, branching, joining, leaving and settings, and choosing join
-/// lists the workspaces this computer holds.
+/// The workspace switcher offers making, joining and settings; branching and leaving stay
+/// session actions the settings sheet and search reach; choosing join lists the workspaces this
+/// computer holds.
 #[test]
 fn the_workspace_menu_offers_joining_leaving_and_settings() {
     let _settled = ui::motion::testing::settled();
@@ -2660,13 +2661,7 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
     session.step(Duration::from_millis(1)).unwrap();
     invoke(&mut session, CHROME_RESOURCE, "workspace-menu");
     let menu = session.accessible_labels().join("\n");
-    for row in [
-        "New workspace",
-        "Branch workspace",
-        "Join a workspace",
-        "Leave workspace",
-        "Workspace settings",
-    ] {
+    for row in ["New workspace", "Join a workspace", "Workspace settings"] {
         assert!(menu.contains(row), "the menu offers {row}: {menu}");
     }
     let offered: Vec<String> = session

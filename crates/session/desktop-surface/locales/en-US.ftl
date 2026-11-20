@@ -78,6 +78,7 @@ topbar-profile = { $name } (you): your profile
 topbar-face-agent = { $name }, agent
 topbar-faces-more = { $count } more
 workspace-menu-new-strip = New strip
+workspace-menu-settings = Workspace settings
 profile-card = Your profile
 profile-card-of = { $name }’s profile
 profile-id = Person ID

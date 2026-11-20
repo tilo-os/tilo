@@ -43,6 +43,12 @@ impl TopBarChrome {
         self.control_rect(Self::CONTROL_WORKSPACE_SETTINGS)
     }
 
+    /// Where the strip's name was last drawn, for anchoring the strips menu
+    /// ([`ChromeIntent::ShowStrips`]); zero where the bar names no strip.
+    pub fn strip_menu_rect(&self) -> Rect {
+        self.ws_strip_rect
+    }
+
     /// Semibold — a clickable title without tipping into the clock's h1/h2 tier.
     pub fn workspace_name_text_weight(&self) -> TextWeight {
         TextWeight::Semibold

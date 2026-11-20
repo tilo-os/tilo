@@ -883,7 +883,11 @@ impl DesktopChrome {
                 if at.is_none() && self.overlays.dismissed_recently(Part::WorkspaceMenu) {
                     return;
                 }
-                let model = self.workspace_menu_model(at.is_some());
+                let model = self.workspace_menu_model(if at.is_some() {
+                    MenuPlace::Shell
+                } else {
+                    MenuPlace::Bar
+                });
                 match at {
                     Some((x, y)) => self.workspace_menu.open_at(
                         &model,
@@ -928,10 +932,9 @@ impl DesktopChrome {
                     self.handle.acknowledge(refusal);
                 }
             }
-            // The strip's name in the bar opens the strip switcher, as a menu on the shown strip.
-            ChromeIntent::ShowStrips => self
-                .navigator
-                .open_for_choosing(&self.navigator_frame, ui::time::now()),
+            // The strip's name in the bar lists the strips under itself, where the person pressed;
+            // where the bar names no strip (too narrow for it), the strip column's labels open.
+            ChromeIntent::ShowStrips => self.show_strips(),
             ChromeIntent::ToggleStrips => self
                 .navigator
                 .toggle_from_keyboard(&self.navigator_frame, ui::time::now()),
@@ -960,12 +963,13 @@ impl DesktopChrome {
             .any(|action| action.id == JOIN_WORKSPACE)
     }
 
-    /// What the workspace menu offers now. Behind the bar's name it is the switcher: every
-    /// workspace of this desktop, the one shown marked, then the person's others the host knows,
-    /// then making or joining one. Opened on the shell (`shell`), it holds the shell's own
-    /// commands instead: the welcome verbs its launchpad declares, which the same host actions run
-    /// from the cards, search and an agent, and a new strip.
-    fn workspace_menu_model(&self, shell: bool) -> WorkspaceMenuModel {
+    /// What the workspace menu offers now, opened at `place` . Behind the bar's name it is the
+    /// switcher: every workspace of this desktop, the one shown marked, then the person's others
+    /// the host knows, then making or joining one, then the shown workspace's settings. Behind the
+    /// strip's name it lists the workspace's strips and makes one. Opened on the shell, it holds
+    /// the shell's own commands instead: the welcome verbs its launchpad declares, which the same
+    /// host actions run from the cards, search and an agent, and a new strip.
+    fn workspace_menu_model(&self, place: MenuPlace) -> WorkspaceMenuModel {
         let actions = self.handle.host_actions();
         let row = |action: &HostAction| WorkspaceAction {
             id: action.id.clone(),
@@ -973,7 +977,32 @@ impl DesktopChrome {
             icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
             destructive: action.destructive,
         };
-        if shell {
+        if place == MenuPlace::Strips {
+            let shown = self.navigator_frame.strip;
+            let strips = self.handle.read(|tree| {
+                tree.active_workspace()
+                    .map(|workspace| {
+                        workspace
+                            .strips
+                            .iter()
+                            .enumerate()
+                            .map(|(at, strip)| WorkspaceEntry {
+                                name: names::strip_named(&strip.name, at),
+                                current: Some(strip.id) == shown,
+                                choice: WorkspaceMenuChoice::Strip(strip.id),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            });
+            return WorkspaceMenuModel {
+                place,
+                strips,
+                can_add_strip: self.may_add_strip(),
+                ..WorkspaceMenuModel::default()
+            };
+        }
+        if place == MenuPlace::Shell {
             return WorkspaceMenuModel {
                 place: MenuPlace::Shell,
                 shell: actions
@@ -1023,6 +1052,13 @@ impl DesktopChrome {
                         }),
                 )
                 .collect(),
+            // What is about this workspace (its name, its people, leaving it) is in its settings.
+            settings: Some(WorkspaceAction {
+                id: WORKSPACE_SETTINGS.to_owned(),
+                title: crate::i18n::t("workspace-menu-settings"),
+                icon: Some(ui::icons::Icon::Settings),
+                destructive: false,
+            }),
             ..WorkspaceMenuModel::default()
         }
     }
@@ -1050,6 +1086,19 @@ impl DesktopChrome {
     }
 
     /// Whether the person may add a strip to the workspace shown.
+    /// The bar's strip name lists the workspace's strips under itself, where it was pressed; with
+    /// no name on the bar, the strip column's labels open instead.
+    fn show_strips(&mut self) {
+        let anchor = self.bar.strip_menu_rect();
+        if anchor.is_zero_area() {
+            self.navigator
+                .open_for_choosing(&self.navigator_frame, ui::time::now());
+        } else if !self.overlays.dismissed_recently(Part::WorkspaceMenu) {
+            let model = self.workspace_menu_model(MenuPlace::Strips);
+            self.workspace_menu.toggle(&model, anchor, self.rect);
+        }
+    }
+
     fn may_add_strip(&self) -> bool {
         self.rules
             .may(&DesktopCommand::CreateStrip {
@@ -1075,14 +1124,13 @@ impl DesktopChrome {
             WorkspaceMenuChoice::Action(id) => {
                 self.ask(DesktopAsk::HostAction(id));
             }
-            // Made in the strip switcher, the one place strips are.
+            WorkspaceMenuChoice::Strip(strip) => {
+                self.apply_navigation(StripNavigation::Strip(StripCommand::Focus(strip)));
+            }
+            // Made and shown at once: the bar then names it, where it is renamed from the strip
+            // column's labels.
             WorkspaceMenuChoice::NewStrip => {
-                if let Some(navigation) = self
-                    .navigator
-                    .new_strip(&self.navigator_frame, ui::time::now())
-                {
-                    self.apply_navigation(navigation);
-                }
+                self.apply_navigation(StripNavigation::Strip(StripCommand::Create(String::new())));
             }
         }
     }

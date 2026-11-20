@@ -455,7 +455,7 @@ fn the_workspace_menu_offers_the_persons_other_workspaces() {
             HostActionSource::Identity,
         ),
     ]);
-    let model = chrome.workspace_menu_model(false);
+    let model = chrome.workspace_menu_model(crate::workspace_menu::MenuPlace::Bar);
     let ids: Vec<&str> = model
         .actions
         .iter()

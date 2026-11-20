@@ -110,6 +110,7 @@ topbar-profile = { $name } (du): dein Profil
 topbar-face-agent = { $name }, Agent
 topbar-faces-more = { $count } weitere
 workspace-menu-new-strip = Neue Leiste
+workspace-menu-settings = Arbeitsbereichseinstellungen
 profile-card = Dein Profil
 profile-card-of = Profil von { $name }
 profile-id = Personen-ID

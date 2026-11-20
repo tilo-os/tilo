@@ -1,10 +1,12 @@
 //! The workspace switcher behind the top bar's workspace name, and the menu a secondary press on
 //! the shell opens where the pointer is.
 //!
-//! The switcher is only that: every workspace the person has, the one they are in marked, and the
-//! two ways to another one (a new one, or joining one). What is about the workspace itself lives
-//! where it is looked for: its settings sheet holds its name, its people and leaving it; the strip
-//! column on the content's edge makes strips; the Tilo mark opens the overview.
+//! The switcher is only that: every workspace the person has, the one they are in marked, the two
+//! ways to another one (a new one, or joining one), and the way into the shown workspace's own
+//! settings, which hold its name, its people and leaving it. The Tilo mark opens the overview.
+//!
+//! Behind the strip's name beside it ([`MenuPlace::Strips`]) the same menu lists the workspace's
+//! strips, the shown one marked, and makes a new one, next to where the person pressed.
 //!
 //! Opened on the shell ([`MenuPlace::Shell`]), the menu says what the shell itself offers: its own
 //! verbs, and a new strip.
@@ -80,6 +82,8 @@ pub enum MenuPlace {
     Bar,
     /// A secondary press on the shell: what the shell itself offers.
     Shell,
+    /// Behind the bar's strip name: the workspace's strips, then a new one.
+    Strips,
 }
 
 /// How many of the shell's own verbs a menu offers before it stops being about the place the person
@@ -98,7 +102,12 @@ pub struct WorkspaceMenuModel {
     pub workspaces: Vec<WorkspaceEntry>,
     /// The ways to another workspace: a new one, joining one. Unused on the shell.
     pub actions: Vec<WorkspaceAction>,
-    /// The person may add a strip to the workspace shown: the shell's menu offers one.
+    /// The way into the shown workspace's own settings, last in the switcher.
+    pub settings: Option<WorkspaceAction>,
+    /// The shown workspace's strips, the one shown among them: the strips menu's rows.
+    pub strips: Vec<WorkspaceEntry>,
+    /// The person may add a strip to the workspace shown: the shell's and the strips menu offer
+    /// one.
     pub can_add_strip: bool,
 }
 
@@ -107,6 +116,9 @@ pub struct WorkspaceMenuModel {
 pub enum WorkspaceMenuChoice {
     /// Go to this workspace of the desktop, by its id.
     Switch(String),
+    /// Show this strip of the workspace.
+    Strip(tilo_desktop_model::StripId),
+    /// Make a strip and show it.
     NewStrip,
     /// The host's own command, by id.
     Action(String),
@@ -149,7 +161,27 @@ impl WorkspaceMenu {
         match model.place {
             MenuPlace::Bar => Self::switcher_rows(model),
             MenuPlace::Shell => Self::shell_rows(model),
+            MenuPlace::Strips => Self::strips_rows(model),
         }
+    }
+
+    /// The strips menu: the workspace's strips, then a new one.
+    fn strips_rows(model: &WorkspaceMenuModel) -> Vec<Row> {
+        let mut rows: Vec<Row> = model.strips.iter().map(WorkspaceEntry::row).collect();
+        if model.can_add_strip {
+            if !rows.is_empty() {
+                rows.push(Row::rule());
+            }
+            rows.push(Self::new_strip_row());
+        }
+        rows
+    }
+
+    fn new_strip_row() -> Row {
+        Row::new(
+            MenuItem::selection(t("workspace-menu-new-strip")).with_icon(Icon::Plus),
+            Some(WorkspaceMenuChoice::NewStrip),
+        )
     }
 
     /// The switcher: the workspaces, then the ways to another one.
@@ -159,6 +191,12 @@ impl WorkspaceMenu {
             rows.push(Row::rule());
         }
         rows.extend(model.actions.iter().map(WorkspaceAction::row));
+        if let Some(settings) = &model.settings {
+            if !rows.is_empty() {
+                rows.push(Row::rule());
+            }
+            rows.push(settings.row());
+        }
         rows
     }
 
@@ -174,10 +212,7 @@ impl WorkspaceMenu {
             if !rows.is_empty() {
                 rows.push(Row::rule());
             }
-            rows.push(Row::new(
-                MenuItem::selection(t("workspace-menu-new-strip")).with_icon(Icon::Plus),
-                Some(WorkspaceMenuChoice::NewStrip),
-            ));
+            rows.push(Self::new_strip_row());
         }
         rows
     }
@@ -353,6 +388,7 @@ impl Widget for WorkspaceMenu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_desktop_model::StripId;
 
     fn action(id: &str, title: &str) -> WorkspaceAction {
         WorkspaceAction {
@@ -390,6 +426,11 @@ mod tests {
             actions: vec![
                 action("new-workspace", "New workspace"),
                 action("join-workspace", "Join a workspace"),
+            ],
+            settings: Some(action("workspace-settings", "Workspace settings")),
+            strips: vec![
+                entry("Strip 1", true, WorkspaceMenuChoice::Strip(StripId(1))),
+                entry("Research", false, WorkspaceMenuChoice::Strip(StripId(2))),
             ],
             // The switcher offers no strips, whatever the person may do.
             can_add_strip: true,
@@ -451,6 +492,8 @@ mod tests {
                     None,
                     Some("New workspace".to_owned()),
                     Some("Join a workspace".to_owned()),
+                    None,
+                    Some("Workspace settings".to_owned()),
                 ]
             );
             assert_eq!(menu.marked().as_deref(), Some("Studio"), "the one the person is in is marked");
@@ -493,6 +536,42 @@ mod tests {
             let mut menu = opened(&model());
             menu.toggle(&model(), Rect::ZERO, Rect::new(0.0, 0.0, 800.0, 600.0));
             assert!(!menu.is_open());
+        }
+
+        phase the_strip_name_lists_the_strips_and_makes_a_new_one;
+        {
+            let strips = WorkspaceMenuModel {
+                place: MenuPlace::Strips,
+                ..model()
+            };
+            let mut menu = opened(&strips);
+            assert_eq!(
+                menu.labels(),
+                [
+                    Some("Strip 1".to_owned()),
+                    Some("Research".to_owned()),
+                    None,
+                    Some("New strip".to_owned()),
+                ],
+                "the strips, then a new one; nothing about workspaces"
+            );
+            assert_eq!(menu.marked().as_deref(), Some("Strip 1"));
+            assert!(menu.choose("Research"));
+            assert_eq!(
+                menu.take_choice(),
+                Some(WorkspaceMenuChoice::Strip(StripId(2)))
+            );
+            let mut menu = opened(&strips);
+            assert!(menu.choose("New strip"));
+            assert_eq!(menu.take_choice(), Some(WorkspaceMenuChoice::NewStrip));
+            let viewer = opened(&WorkspaceMenuModel {
+                can_add_strip: false,
+                ..strips
+            });
+            assert!(
+                !viewer.labels().contains(&Some("New strip".to_owned())),
+                "no new strip for someone who may not add one"
+            );
         }
 
         phase a_press_on_the_shell_offers_its_verbs_and_a_new_strip;

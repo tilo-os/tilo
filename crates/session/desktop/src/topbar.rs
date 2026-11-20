@@ -732,8 +732,8 @@ impl TopBarChrome {
             self.rect.x0 + f64::from(theme.tokens.spacing.s3),
         ) + f64::from(theme.tokens.spacing.s2);
         self.place_workspace_pill(theme, text_renderer, center_y, label_x);
-        let center_left = f64::midpoint(self.rect.x0, self.rect.x1)
-            - self.center_band_width(theme, text_renderer) / 2.0;
+        let center_band = self.center_band_width(theme, text_renderer);
+        let center_left = f64::midpoint(self.rect.x0, self.rect.x1) - center_band / 2.0;
         self.place_strip_name(
             theme,
             text_renderer,
@@ -749,6 +749,19 @@ impl TopBarChrome {
         self.place_center_widget(theme, text_renderer, center_y);
         let beside_avatar_x = (!self.is_compact())
             .then(|| self.place_session_clusters(theme, text_renderer, center_y));
+        // A phone-wide bar shows no clock: the strip's name may reach up to the people on
+        // the right, so the shown strip is named, and its strips listed, there too.
+        if center_band <= 0.0 && self.ws_strip_rect.is_zero_area() && beside_avatar_x.is_some() {
+            self.place_strip_name(
+                theme,
+                text_renderer,
+                center_y,
+                (
+                    self.ws_pill_rect.x1,
+                    self.placed.people_x - f64::from(theme.tokens.spacing.s3),
+                ),
+            );
+        }
         self.placed.center_dx = self.center_yield(theme).unwrap_or(0.0);
         self.placed.ask_beside = beside_avatar_x.is_some();
         if let Some(beside_avatar_x) = beside_avatar_x {
