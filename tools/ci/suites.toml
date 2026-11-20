@@ -1917,7 +1917,7 @@ check = "secureboot-enrolment-x86_64"
 
 [[unrequired]]
 suite = "os/kernel/tests/test-boot-smoke-compressed.sh"
-reason = "needs a C toolchain and QEMU"
+reason = "hermetic: the test stands a script in for qemu-system, so it boots no VM and needs no KVM; it runs on dispatch and main's idle rather than on every change"
 check = "kernel-boot-smoke-compressed"
 
 [[unrequired]]
