@@ -370,9 +370,11 @@ fn apply(txn: &redb::WriteTransaction, write: &Write<'_>) -> io::Result<bool> {
             }
         }
         Write::Batch(writes) => {
+            let mut removed = false;
             for write in writes {
-                apply(txn, write)?;
+                removed |= apply(txn, write)?;
             }
+            return Ok(removed);
         }
     }
     Ok(false)
